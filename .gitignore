@@ -1,0 +1,13 @@
+.env
+data/
+mcp-folder/
+node_modules/
+__pycache__/
+*.pyc
+.mcp_embed_cache.pkl
+.env.local
+.env.*.local
+.env.development
+.env.staging
+.env.production
+

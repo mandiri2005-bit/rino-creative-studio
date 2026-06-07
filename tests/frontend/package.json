@@ -1,0 +1,23 @@
+{
+  "name": "rino-frontend-tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "jest --coverage",
+    "test:watch": "jest --watch"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-node": "^29.7.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/*.test.js"],
+    "coverageThreshold": {
+      "global": {
+        "functions": 80,
+        "lines": 80
+      }
+    }
+  }
+}

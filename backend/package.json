@@ -1,0 +1,29 @@
+{
+  "name": "rino-creative-studio-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test ../tests/node/helpers.test.mjs",
+    "test:routes": "node --test ../tests/node/routes.test.mjs",
+    "test:all": "node --test ../tests/node/helpers.test.mjs && node --test ../tests/node/routes.test.mjs"
+  },
+  "dependencies": {
+    "@clerk/express": "^2.1.23",
+    "@google/genai": "^1.0.0",
+    "cors": "^2.8.5",
+    "drizzle-orm": "^0.45.2",
+    "express": "^4.19.2",
+    "form-data": "^4.0.5",
+    "ioredis": "^5.11.1",
+    "jimp": "^0.22.12",
+    "multer": "^2.1.1",
+    "pg": "^8.21.0",
+    "svix": "^1.95.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

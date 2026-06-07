@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install --no-cache-dir fastapi uvicorn numpy openai
+COPY mcp_files.py mcp_files_stdio.py ./
+RUN mkdir -p /mcp-folder
+EXPOSE 8001
+CMD ["sh", "-c", "python mcp_files.py --folder /mcp-folder --search ${MCP_SEARCH_MODE:-bm25}"]

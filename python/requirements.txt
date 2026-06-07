@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+openai
+requests
+numpy
+pdfplumber
+python-docx
+openpyxl
+python-multipart
+google-genai
+asyncpg
+python-dotenv
+python-jose[cryptography]
+httpx
+redis

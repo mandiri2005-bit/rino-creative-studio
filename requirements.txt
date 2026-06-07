@@ -1,0 +1,6 @@
+google-genai
+asyncpg
+python-jose[cryptography]
+httpx
+python-dotenv
+redis
