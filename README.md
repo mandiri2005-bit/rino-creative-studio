@@ -62,3 +62,4 @@ Browser :8080
 - **Chat / Image / Veo / Sora / Whisk / Flow** — set in Settings panel (browser localStorage) or `.env LAOZHANG_API_KEY`
 - **Batch Images / TTS / Imagen** — `.env GEMINI_API_KEY`; TTS supports multiple keys (one per line in UI) for quota rotation
 # rino-creative-studio
+# Updated at Sun Jun  7 15:06:49 +01 2026
