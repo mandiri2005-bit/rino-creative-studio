@@ -27,7 +27,7 @@ export function requireAuth(req, res, next) {
   //   return res.status(403).json({ error: "Forbidden — no organisation" });
   // }
 
-  req.auth = auth;
+  req.authData = auth;
   next();
 }
 
@@ -35,10 +35,10 @@ export function requireAuth(req, res, next) {
 
 /** Returns the Clerk org ID (tenant) — null if user has no org yet. */
 export function getTenantId(req) {
-  return req.auth?.orgId ?? null;
+  return (req.authData ?? req.auth)?.orgId ?? null;
 }
 
 /** Returns the Clerk user ID. */
 export function getUserId(req) {
-  return req.auth?.userId ?? null;
+  return (req.authData ?? req.auth)?.userId ?? null;
 }
