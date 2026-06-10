@@ -33,6 +33,24 @@ const PYTHON_API  = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 const MCP_API     = process.env.MCP_API_URL    || "http://127.0.0.1:8001";
 const GEMINI_KEY  = process.env.GEMINI_API_KEY || "";
 
+// Maps a language code to a display name; otherwise passes the value through
+// AS-IS so any language/register the LLM supports works (jv, su, fr, "Darija
+// Maroko", "Basa Jawa Krama", …). Mirrors _resolve_narasi_lang in laozhang_api.py.
+const _NARASI_LANG_NAMES = {
+  id:"Bahasa Indonesia", en:"English", jv:"Basa Jawa (Javanese)",
+  su:"Basa Sunda (Sundanese)", ms:"Bahasa Melayu (Malay)", ban:"Basa Bali (Balinese)",
+  min:"Baso Minangkabau", ar:"العربية (Arabic)", zh:"中文 (Chinese)",
+  ja:"日本語 (Japanese)", ko:"한국어 (Korean)", es:"Español (Spanish)",
+  fr:"Français (French)", de:"Deutsch (German)", nl:"Nederlands (Dutch)",
+  pt:"Português (Portuguese)", hi:"हिन्दी (Hindi)", th:"ภาษาไทย (Thai)",
+  vi:"Tiếng Việt (Vietnamese)", tl:"Tagalog (Filipino)",
+};
+const resolveLang = (lang) => {
+  if(!lang) return "Bahasa Indonesia";
+  const k = String(lang).trim().toLowerCase();
+  return _NARASI_LANG_NAMES[k] || String(lang).trim();
+};
+
 // ── directories ──────────────────────────────────────────────────────────────
 const DATA_DIR   = path.join(__dirname, "data");
 const OUTPUT_DIR = path.join(__dirname, "output");
@@ -75,6 +93,7 @@ async function pyProxy(req, res, pyPath, extraHeaders = {}) {
 
 // ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
+app.get("/health", (req, res) => res.sendStatus(200));
 const googleCancelFlags=new Map(); // jobId -> true when cancelled
 const ttsCancelFlags=new Map();   // jobId -> true when cancelled
 app.use(cors());
@@ -166,6 +185,16 @@ app.post(
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
+
+// ── Global API auth guard ───────────────────────────────────────────────────
+// Every /api/* route requires a valid Clerk token EXCEPT the allowlist below.
+const PUBLIC_API = new Set([
+  "/api/health",
+]);
+app.use("/api", (req, res, next) => {
+  if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
+  return requireAuth(req, res, next);
+});
 app.use("/images", express.static(OUTPUT_DIR, {maxAge:"1h"}));
 app.use("/audio",  express.static(TTS_DIR,    {maxAge:"1h"}));
 app.use("/imgs",   express.static(IMG_DIR,    {maxAge:"1h"}));
@@ -484,7 +513,7 @@ app.post("/api/narasi/stitch/:jobId", async(req,res)=>{
       const bodyText=parts.join("\n");
       const totalWords=bodyText.split(/\s+/).filter(Boolean).length;
       const lang=body.language||"id";
-      const langLabel=lang==="id"?"Bahasa Indonesia":"English";
+      const langLabel=resolveLang(lang);
       const markdown=`> **Gaya:** ${body.style||"storytelling"} | **Bahasa:** ${langLabel} | **${totalWords} kata**
 
 ---
@@ -888,7 +917,8 @@ const _narasiGoogleHandler=async(req,res)=>{
     let maxTok=Math.max(6000, chapCount*600+2000);
     const lang=body.language||"id";
     const style=body.style||"storytelling";
-    const langLabel=lang==="id"?"Bahasa Indonesia":"English";
+    const langLabel=resolveLang(lang);
+    console.log(`[narasi-google] action=${action} raw_language=${JSON.stringify(lang)} -> langLabel=${JSON.stringify(langLabel)}`);
 
     if(action==="brief"){
       prompt=`You are writing a ${style} narrative titled: "${body.topic}"\nLanguage: ${langLabel}\n\nOutline:\n${body.outline||""}\n\nWrite a concise NARRATIVE BRIEF (max 300 words) covering: overall tone, voice, emotional arc, key themes, how chapters connect, recurring motifs.\nWrite in ${langLabel}. Return ONLY the brief text, no headings, no markdown.`;
@@ -904,12 +934,12 @@ const _narasiGoogleHandler=async(req,res)=>{
           if(ragData.ok&&ragData.context_text){ragBlock=ragData.context_text+"\n";console.log(`[RAG] Google path: passages=${ragData.passages}`);}
         }catch(e){console.warn("[RAG] failed:",e.message);}
       }
-      prompt=`You are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic}"\nLanguage: ${langLabel}\n\n`
+      prompt=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; any references/context may be in another language but do NOT mirror them.\n\nYou are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic}"\nLanguage: ${langLabel}\n\n`
         +ragBlock
         +_getStyleRulesJS(style)+"\n\n"
         +(body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:"")
         +(body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:"")
-        +`THIS CHAPTER:\n  Title: ${c.title}\n  Summary: ${c.description}\n  Target: ${body.word_target} words (range: ${body.word_min}–${body.word_max})\n\nWrite EXACTLY ${body.word_target} words. Do NOT include chapter title. Return ONLY the body text.`;
+        +`THIS CHAPTER:\n  Title: ${c.title}\n  Summary: ${c.description}\n  Target: ${body.word_target} words (range: ${body.word_min}–${body.word_max})\n\nWrite EXACTLY ${body.word_target} words in ${langLabel}. Do NOT include chapter title. Return ONLY the body text.`;
       maxTok=Math.max(2000,Math.ceil((body.word_max||500)*1.5*1.2));
 
     } else if(body.chapters&&Array.isArray(body.chapters)&&body.chapters.length){
@@ -951,7 +981,9 @@ const _narasiGoogleHandler=async(req,res)=>{
             if(rd.ok&&rd.context_text){chRagBlock=rd.context_text+"\n";console.log(`[RAG] Google multi-chapter bab=${c.id} passages=${rd.passages}`);}
           }catch(e){console.warn("[RAG] multi-chapter failed:",e.message);}
         }
-        const cp=`You are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic||""}"
+        const cp=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; references/context may be in another language but do NOT mirror them.
+
+You are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic||""}"
 Language: ${langLabel}
 
 ${chRagBlock}${styleRules}
@@ -960,14 +992,23 @@ ${antidrift}${body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:""}${body.outline
   Summary: ${c.description||""}
   Target: ${wt} words (range: ${wmin}–${wmax})
 
-Write EXACTLY ${wt} words (count carefully). Do NOT include chapter title. Return ONLY body text.`;
+Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chapter title. Return ONLY body text.`;
 
+        // Token budget scales with THIS chapter's word target (wt). ~2 tokens
+        // per word for Latin-script + generous headroom for non-English scripts
+        // (Javanese/Arabic/CJK use more tokens/word). Ceiling 24000 covers even
+        // an ~800-word chapter without the 65536 slowdown.
+        const chapMaxTok=Math.min(24000,Math.max(1024,Math.ceil(wt*4)+512));
+        // thinkingConfig only valid on Gemini 2.5; budget scales with length.
+        const genCfg={maxOutputTokens:chapMaxTok};
+        if(/gemini-2\.5/.test(model)){
+          genCfg.thinkingConfig={thinkingBudget:Math.min(4096,Math.ceil(wt*1.5))};
+        }
         try{
           const r2=await ai.models.generateContent({
             model,
             contents:[{role:"user",parts:[{text:cp}]}],
-            config:{maxOutputTokens:65536},
-            generationConfig:{maxOutputTokens:65536}
+            config:genCfg,
           });
           let ct=(r2.text||"").trim();
           let finishReason=r2.candidates?.[0]?.finishReason||"unknown";
@@ -976,8 +1017,7 @@ Write EXACTLY ${wt} words (count carefully). Do NOT include chapter title. Retur
             console.warn(`[narasi-google] bab ${c.id} EMPTY/SHORT (${ct.split(/\s+/).filter(Boolean).length} words) -- retrying`);
             const r3=await ai.models.generateContent({
               model,contents:[{role:"user",parts:[{text:cp}]}],
-              config:{maxOutputTokens:65536},
-            generationConfig:{maxOutputTokens:65536}
+              config:genCfg,
             });
             if(r3.text&&r3.text.trim()){
               ct=r3.text.trim();
@@ -1026,9 +1066,9 @@ Write EXACTLY ${wt} words (count carefully). Do NOT include chapter title. Retur
       const revise=body.revise_instruction&&body.current_outline;
       const outlineFmt=`Return ONLY a plain-text list, one chapter per line, using this EXACT format with pipe separators:\nID|TITLE|WORDS|DESCRIPTION\n\nExample:\n1|Prolog: Bayangan Raksasa|400|Memperkenalkan lanskap Jawa Tengah pada abad kedelapan dan surplus pertanian yang memungkinkan berdirinya peradaban kompleks.\n2|Geografi sebagai Takdir|500|Analisis bagaimana abu vulkanik Merapi menciptakan tanah subur yang menjadi fondasi ekonomi surplus.\n\nRules:\n- NO pipes inside TITLE or DESCRIPTION fields — rephrase if needed\n- WORDS must be integers only\n- Total words must sum to ${body.word_min}–${body.word_max}\n- Deeper/climactic chapters get MORE words; intro/epilog get FEWER\n- NO markdown, NO JSON, NO fences, NO extra lines`;
       if(revise){
-        prompt=`Revise this narrative outline for: "${body.topic}"\nStyle: ${style} | Language: ${langLabel}\n\nCURRENT OUTLINE:\n${body.current_outline}\n\nREVISION INSTRUCTION: ${body.revise_instruction}\n\n${outlineFmt}`;
+        prompt=`OUTPUT LANGUAGE: ${langLabel}. ALL titles and descriptions MUST be in ${langLabel} (the example below may be in another language — do NOT copy its language).\n\nRevise this narrative outline for: "${body.topic}"\nStyle: ${style} | Language: ${langLabel}\n\nCURRENT OUTLINE:\n${body.current_outline}\n\nREVISION INSTRUCTION: ${body.revise_instruction}\n\n${outlineFmt}`;
       } else {
-        prompt=`Create a narrative outline for a ${style} narrative titled: "${body.topic}"\nLanguage: ${langLabel} | Chapters: EXACTLY ${chapCount} (no more, no less)\n\nCRITICAL: Return EXACTLY ${chapCount} pipe-delimited line(s). Do NOT split into extra Pembuka/Isi/Penutup entries beyond the ${chapCount} total.\n\nWORD WEIGHTS: Do NOT divide equally. Climactic chapters get MORE words. Intro/conclusion get FEWER. Total must sum to ${body.word_min}–${body.word_max}.\n\n${outlineFmt}`;
+        prompt=`OUTPUT LANGUAGE: ${langLabel}. ALL chapter titles and descriptions MUST be written in ${langLabel} (the format example below may be in another language — do NOT copy its language).\n\nCreate a narrative outline for a ${style} narrative titled: "${body.topic}"\nLanguage: ${langLabel} | Chapters: EXACTLY ${chapCount} (no more, no less)\n\nCRITICAL: Return EXACTLY ${chapCount} pipe-delimited line(s). Do NOT split into extra Pembuka/Isi/Penutup entries beyond the ${chapCount} total.\n\nWORD WEIGHTS: Do NOT divide equally. Climactic chapters get MORE words. Intro/conclusion get FEWER. Total must sum to ${body.word_min}–${body.word_max}.\n\n${outlineFmt}`;
       }
     }
 
