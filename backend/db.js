@@ -57,10 +57,17 @@ function _uuid5(name) {
  * Uses Clerk orgId if present; falls back to a UUID derived from userId.
  */
 function resolveTenantId(req) {
-  const orgId  = req.auth?.orgId  ?? null;
-  const userId = req.auth?.userId ?? null;
-  if (orgId)  return orgId;
-  if (userId) return _uuid5(`clerk-user-${userId}`);
+  const a = req.authData ?? req.auth ?? {};
+  const claims = req.authClaims ?? a.sessionClaims ?? {};
+  // 1. Prefer the tenant_id claim from the JWT (same value Python uses).
+  const claimTid = claims.tenant_id ?? claims.org_id ?? null;
+  if (claimTid) return claimTid;
+  // 2. Clerk org id if present.
+  const orgId  = a.orgId  ?? null;
+  if (orgId) return orgId;
+  // 3. Fall back to a UUID derived from the raw userId (matches Python uuid5(user_id)).
+  const userId = a.userId ?? null;
+  if (userId) return _uuid5(userId);
   return DEV_TENANT_ID;
 }
 

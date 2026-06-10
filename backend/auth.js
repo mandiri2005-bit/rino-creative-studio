@@ -28,6 +28,7 @@ export function requireAuth(req, res, next) {
   // }
 
   req.authData = auth;
+  req.authClaims = auth.sessionClaims || {};
   next();
 }
 
