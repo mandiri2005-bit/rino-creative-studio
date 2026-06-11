@@ -5970,6 +5970,10 @@ function App(){
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+/* Signal that the React app has rendered, so auth.js can reveal #root
+   only after content exists (prevents blank screen on first load). */
+window.__appReady = true;
+window.dispatchEvent(new Event("app:ready"));
 </script>
 <script src="auth.js"></script>
 </body>

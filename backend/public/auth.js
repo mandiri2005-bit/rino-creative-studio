@@ -24,7 +24,11 @@
   function show(el) { if (el) el.style.display = "flex"; }
   function hide(el) { if (el) el.style.display = "none"; }
   function notifyUserChange() { window.dispatchEvent(new Event("clerk:userchange")); }
-  function showApp()  { hide($loading); hide($gate); if ($root) $root.style.visibility = "visible"; }
+  function _revealApp(){ hide($loading); hide($gate); if ($root) $root.style.visibility = "visible"; }
+  function showApp() {
+    if (window.__appReady) { _revealApp(); }
+    else { window.addEventListener("app:ready", _revealApp, { once: true }); }
+  }
   function showGate() { hide($loading); show($gate); if ($root) $root.style.visibility = "hidden"; }
   function closeAllModals() {
     [$siModal, $suModal].forEach(m => m && m.classList.remove("open"));
