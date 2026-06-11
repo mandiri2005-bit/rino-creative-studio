@@ -1,0 +1,5 @@
+# eval harness — packages BEYOND what the main project already installs
+# (project already provides: qdrant-client, sentence-transformers, openai, tqdm)
+
+PyYAML>=6.0        # load golden_set.yaml
+tabulate>=0.9.0    # compact score tables to stdout

@@ -1,0 +1,56 @@
+# =============================================================================
+# golden_set.yaml — FROZEN eval fixture for Rino Creative Studio RAG harness
+# =============================================================================
+# This is the fixed input set every later change (retrieval, registry, quality)
+# is judged against. Once frozen (Step 0.2 → committed), DO NOT edit it — a
+# changed fixture invalidates every comparison against the frozen baseline.
+#
+# Each entry has exactly these fields:
+#   id            : unique slug (stable identifier across runs)
+#   topic         : the topic string, phrased as a user/topic would
+#   style         : a STYLE KEY accepted by the pipeline (see note below)
+#   lang          : output language code ("id" or "en")
+#   prefer_source : true  -> retrieval does a first pass filtered to source='rino'
+#                            (proprietary content ranks first, falls back to corpus)
+#                   false -> normal corpus-wide retrieval
+#
+# -----------------------------------------------------------------------------
+# IMPORTANT — `style` is a REGISTRY STYLE KEY, not a corpus style_label.
+# -----------------------------------------------------------------------------
+# It flows into compare_rag_vs_standard(style=...) -> get_style_config(style).
+# Valid canonical keys (from style_rag_config.py):
+#   storytelling, bedtime_story, creative_nonfiction, big_history,
+#   pov_first_person, natgeo, youtube_popular_science, journalistic,
+#   literary_essay, podcast_narrative, academic_popular, cinematic_voiceover,
+#   narrative_nonfiction_mystery, fiction
+# Legacy aliases also resolve (epic->storytelling, discovery->natgeo,
+#   biographical->pov_first_person, expository->academic_popular,
+#   suspense->narrative_nonfiction_mystery, reflective->literary_essay).
+# Any other string falls back to _DEFAULT_CONFIG silently — so stick to the
+# keys above. (Corpus style_label values like 'conversational'/'political'/
+# 'lyrical'/'financial'/'dramatic' are a DIFFERENT axis and must NOT be used
+# here — they would all silently hit the default config.)
+# =============================================================================
+
+entries:
+  # ---- dummy entry 1: corpus-wide, Indonesian -------------------------------
+  - id: dummy-roman-empire-id
+    topic: "kejatuhan Kekaisaran Romawi Barat"
+    style: storytelling
+    lang: id
+    prefer_source: false
+
+  # ---- dummy entry 2: prefer rino, Indonesian -------------------------------
+  - id: dummy-majapahit-rino-id
+    topic: "kehidupan rakyat jelata di era Majapahit"
+    style: natgeo
+    lang: id
+    prefer_source: true
+
+# Replace the two dummies in Step 0.2 with 25 curated entries.
+# Distribution target (Step 0.2):
+#   - >= 13 entries lang 'id', >= 10 entries lang 'en'
+#   - exactly 6 entries prefer_source: true (topics that overlap the 70 rino
+#     books — Indonesian/SEA history, so source='rino' actually has relevant
+#     passages to surface)
+#   - vary `style` across the 14 registry keys above
