@@ -8,6 +8,7 @@ status/result/error; Redis only fronts the fast-changing progress string so the
 status endpoint stays cheap and the DB isn't written on every progress tick.
 """
 import os
+import re
 import logging
 
 import redis.asyncio as aioredis
@@ -28,7 +29,8 @@ async def init_redis() -> None:
     _redis = aioredis.from_url(_REDIS_URL, decode_responses=True)
     try:
         await _redis.ping()
-        log.info("Redis connected: %s", _REDIS_URL)
+        _safe = re.sub(r"://([^:/@]+):[^@]+@", r"://\1:****@", _REDIS_URL)
+        log.info("Redis connected: %s", _safe)
     except Exception as e:                       # don't kill startup if Redis is down
         log.error("Redis ping failed (progress will fall back to DB): %s", e)
 
