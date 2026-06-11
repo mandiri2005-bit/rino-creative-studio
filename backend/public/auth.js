@@ -96,9 +96,11 @@
     async signOut() {
       if (!_clerk) return;
       try {
-        await _clerk.signOut();
+        // Update UI immediately (optimistic) — don't wait for Clerk's server round-trip.
         _currentUser = null;
         notifyUserChange();
+        showGate();
+        _clerk.signOut();   // fire-and-forget; runs in background
         ["rc_lzkey","rc_imgkey","rc_veokey","rc_sorakey","rc_ds_route",
          "rc_nar_outline","rc_nar_outline_text","rc_nar_result"]
           .forEach(k => localStorage.removeItem(k));
