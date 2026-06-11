@@ -58,16 +58,11 @@ function _uuid5(name) {
  */
 function resolveTenantId(req) {
   const a = req.authData ?? req.auth ?? {};
-  const claims = req.authClaims ?? a.sessionClaims ?? {};
-  // 1. Prefer the tenant_id claim from the JWT (same value Python uses).
-  const claimTid = claims.tenant_id ?? claims.org_id ?? null;
-  if (claimTid) return claimTid;
-  // 2. Clerk org id if present.
   const orgId  = a.orgId  ?? null;
-  if (orgId) return orgId;
-  // 3. Fall back to a UUID derived from the raw userId (matches Python uuid5(user_id)).
   const userId = a.userId ?? null;
-  if (userId) return _uuid5(userId);
+  if (orgId)  return orgId;
+  // MUST match Python: uuid.uuid5(NAMESPACE_DNS, f"clerk-user-{user_id}")
+  if (userId) return _uuid5(`clerk-user-${userId}`);
   return DEV_TENANT_ID;
 }
 
@@ -83,7 +78,7 @@ function resolveTenantId(req) {
  * chat_sessions.user_id / usage_logs.user_id when the user row doesn't exist yet.
  */
 async function resolveUserId(req, tenantId = DEV_TENANT_ID) {
-  const clerkUserId = req.auth?.userId ?? null;
+  const clerkUserId = (req.authData ?? req.auth)?.userId ?? null;
   if (!clerkUserId) return DEV_USER_ID;
   try {
     const res = await query(
