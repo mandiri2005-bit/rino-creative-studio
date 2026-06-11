@@ -137,9 +137,13 @@ app.post(
         const yearLater = new Date(now); yearLater.setFullYear(yearLater.getFullYear() + 1);
 
         // ── Provision tenant (idempotent, RLS-safe via SECURITY DEFINER fn) ──
+        // tenant_id MUST be deterministic and match runtime resolveTenantId()
+        // (uuid5 of "clerk-user-<id>") — otherwise webhook + runtime create
+        // two separate tenants for the same user.
+        const detTenantId = _uuid5(`clerk-user-${data.id}`);
         const provRes = await pool.query(
           `SELECT provision_tenant($1,$2,$3,$4,$5,$6,'admin') AS tenant_id`,
-          [null, displayName || email.split("@")[0], slug, email, "free", data.id]
+          [detTenantId, displayName || email.split("@")[0], slug, email, "free", data.id]
         );
         const tenantId = provRes.rows[0].tenant_id
 
