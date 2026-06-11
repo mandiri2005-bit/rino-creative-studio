@@ -1706,6 +1706,7 @@ app.post("/api/chat/google", async (req, res) => {
 
     // ── Tenant + user resolution (Clerk, falls back to dev IDs) ──────────
     const tenantId = resolveTenantId(req);
+    console.log(`[chat/google][debug] tenantId=${tenantId} claims=${JSON.stringify(req.authClaims||{})} userId=${req.authData?.userId||req.auth?.userId||"none"}`);
     const userId   = await resolveUserId(req, tenantId);   // real users.id UUID | null
     // Normalise sessionId: use provided value or derive one from tenantId+timestamp
     const sid = sessionId || _uuid5(`google-session-${tenantId}-${Date.now()}`);
