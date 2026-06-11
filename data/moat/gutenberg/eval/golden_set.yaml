@@ -8,49 +8,175 @@
 # Each entry has exactly these fields:
 #   id            : unique slug (stable identifier across runs)
 #   topic         : the topic string, phrased as a user/topic would
-#   style         : a STYLE KEY accepted by the pipeline (see note below)
+#   style         : a REGISTRY STYLE KEY (see style_rag_config.py) — NOT a corpus
+#                   style_label. Flows into compare_rag_vs_standard(style=...).
 #   lang          : output language code ("id" or "en")
-#   prefer_source : true  -> retrieval does a first pass filtered to source='rino'
-#                            (proprietary content ranks first, falls back to corpus)
+#   prefer_source : true  -> retrieval first pass filtered to source='rino'
 #                   false -> normal corpus-wide retrieval
 #
-# -----------------------------------------------------------------------------
-# IMPORTANT — `style` is a REGISTRY STYLE KEY, not a corpus style_label.
-# -----------------------------------------------------------------------------
-# It flows into compare_rag_vs_standard(style=...) -> get_style_config(style).
-# Valid canonical keys (from style_rag_config.py):
-#   storytelling, bedtime_story, creative_nonfiction, big_history,
-#   pov_first_person, natgeo, youtube_popular_science, journalistic,
-#   literary_essay, podcast_narrative, academic_popular, cinematic_voiceover,
-#   narrative_nonfiction_mystery, fiction
-# Legacy aliases also resolve (epic->storytelling, discovery->natgeo,
-#   biographical->pov_first_person, expository->academic_popular,
-#   suspense->narrative_nonfiction_mystery, reflective->literary_essay).
-# Any other string falls back to _DEFAULT_CONFIG silently — so stick to the
-# keys above. (Corpus style_label values like 'conversational'/'political'/
-# 'lyrical'/'financial'/'dramatic' are a DIFFERENT axis and must NOT be used
-# here — they would all silently hit the default config.)
+# Distribution (this file): 25 entries | 14 id / 11 en | 6 prefer_source:true |
+# all 14 registry style keys used at least once.
 # =============================================================================
 
 entries:
-  # ---- dummy entry 1: corpus-wide, Indonesian -------------------------------
-  - id: dummy-roman-empire-id
-    topic: "kejatuhan Kekaisaran Romawi Barat"
-    style: storytelling
-    lang: id
-    prefer_source: false
 
-  # ---- dummy entry 2: prefer rino, Indonesian -------------------------------
-  - id: dummy-majapahit-rino-id
-    topic: "kehidupan rakyat jelata di era Majapahit"
+  # ===========================================================================
+  # prefer_source: true  (6) — topics that should overlap the 70 rino books
+  # (Indonesian / SEA history & culture). VERIFY each one retrieves rino
+  # passages before freezing (see Step 0.2 verification command).
+  # ===========================================================================
+  - id: rino-majapahit-rakyat-id
+    topic: "kehidupan rakyat jelata di era Kerajaan Majapahit"
     style: natgeo
     lang: id
     prefer_source: true
 
-# Replace the two dummies in Step 0.2 with 25 curated entries.
-# Distribution target (Step 0.2):
-#   - >= 13 entries lang 'id', >= 10 entries lang 'en'
-#   - exactly 6 entries prefer_source: true (topics that overlap the 70 rino
-#     books — Indonesian/SEA history, so source='rino' actually has relevant
-#     passages to surface)
-#   - vary `style` across the 14 registry keys above
+  - id: rino-sriwijaya-maritim-id
+    topic: "kejayaan Sriwijaya sebagai kerajaan maritim Nusantara"
+    style: big_history
+    lang: id
+    prefer_source: true
+
+  - id: rino-gajah-mada-palapa-id
+    topic: "Gajah Mada dan Sumpah Palapa yang menyatukan Nusantara"
+    style: storytelling
+    lang: id
+    prefer_source: true
+
+  - id: rino-borobudur-pembangunan-id
+    topic: "pembangunan candi Borobudur pada masa Wangsa Syailendra"
+    style: cinematic_voiceover
+    lang: id
+    prefer_source: true
+
+  - id: rino-rempah-nusantara-id
+    topic: "jalur perdagangan rempah dan pelabuhan kuno di Nusantara"
+    style: journalistic
+    lang: id
+    prefer_source: true
+
+  - id: rino-raja-nusantara-pov-id
+    topic: "memerintah sebuah kerajaan Nusantara dari sudut pandang sang raja"
+    style: pov_first_person
+    lang: id
+    prefer_source: true
+
+  # ===========================================================================
+  # prefer_source: false — Indonesian (8)
+  # ===========================================================================
+  - id: krakatau-1883-id
+    topic: "letusan dahsyat Gunung Krakatau tahun 1883"
+    style: narrative_nonfiction_mystery
+    lang: id
+    prefer_source: false
+
+  - id: komodo-naga-id
+    topic: "komodo, kadal raksasa terakhir di dunia"
+    style: youtube_popular_science
+    lang: id
+    prefer_source: false
+
+  - id: wayang-kulit-id
+    topic: "tradisi wayang kulit sebagai seni bercerita Jawa"
+    style: creative_nonfiction
+    lang: id
+    prefer_source: false
+
+  - id: proklamasi-1945-id
+    topic: "detik-detik proklamasi kemerdekaan Indonesia 1945"
+    style: journalistic
+    lang: id
+    prefer_source: false
+
+  - id: orangutan-borneo-id
+    topic: "orangutan dan hutan hujan Kalimantan"
+    style: natgeo
+    lang: id
+    prefer_source: false
+
+  - id: subak-bali-id
+    topic: "sistem irigasi subak Bali dan filosofi Tri Hita Karana"
+    style: academic_popular
+    lang: id
+    prefer_source: false
+
+  - id: malin-kundang-id
+    topic: "legenda Malin Kundang yang dikutuk menjadi batu"
+    style: fiction
+    lang: id
+    prefer_source: false
+
+  - id: dongeng-kancil-id
+    topic: "dongeng pengantar tidur tentang si Kancil yang cerdik"
+    style: bedtime_story
+    lang: id
+    prefer_source: false
+
+  # ===========================================================================
+  # prefer_source: false — English (11)
+  # ===========================================================================
+  - id: fall-roman-empire-en
+    topic: "the fall of the Western Roman Empire"
+    style: storytelling
+    lang: en
+    prefer_source: false
+
+  - id: darwin-evolution-en
+    topic: "Darwin and the theory of evolution by natural selection"
+    style: big_history
+    lang: en
+    prefer_source: false
+
+  - id: pompeii-vesuvius-en
+    topic: "the destruction of Pompeii by Mount Vesuvius"
+    style: narrative_nonfiction_mystery
+    lang: en
+    prefer_source: false
+
+  - id: apollo-11-en
+    topic: "the Apollo 11 first landing on the Moon"
+    style: cinematic_voiceover
+    lang: en
+    prefer_source: false
+
+  - id: marie-curie-en
+    topic: "Marie Curie and the discovery of radioactivity"
+    style: pov_first_person
+    lang: en
+    prefer_source: false
+
+  - id: barrier-reef-en
+    topic: "life on the Great Barrier Reef"
+    style: natgeo
+    lang: en
+    prefer_source: false
+
+  - id: french-revolution-en
+    topic: "the causes of the French Revolution"
+    style: academic_popular
+    lang: en
+    prefer_source: false
+
+  - id: gutenberg-press-en
+    topic: "Gutenberg and the printing press that changed the world"
+    style: youtube_popular_science
+    lang: en
+    prefer_source: false
+
+  - id: shackleton-antarctic-en
+    topic: "Shackleton's survival expedition in Antarctica"
+    style: podcast_narrative
+    lang: en
+    prefer_source: false
+
+  - id: egypt-pyramids-en
+    topic: "the building of the pyramids of ancient Egypt"
+    style: literary_essay
+    lang: en
+    prefer_source: false
+
+  - id: library-alexandria-en
+    topic: "the rise and loss of the Library of Alexandria"
+    style: creative_nonfiction
+    lang: en
+    prefer_source: false
