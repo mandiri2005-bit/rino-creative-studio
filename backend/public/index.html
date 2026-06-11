@@ -2262,7 +2262,7 @@ function BatchSection({settings,showToast}){
   const bModel=BATCH_MODELS.find(m=>m.id===settings.batchModelId)||BATCH_MODELS[0];
 
   useEffect(()=>{
-    api.batchJobs().then(setHistory).catch(()=>{});
+    api.batchJobs().then(d=>setHistory(Array.isArray(d)?d:[])).catch(()=>setHistory([]));
     _importJobsFn=(jobs)=>setJobs(jobs);
     if(_pendingBatchImport){setJobs(_pendingBatchImport);_pendingBatchImport=null;}
     return()=>{_importJobsFn=null;};
@@ -2278,13 +2278,13 @@ function BatchSection({settings,showToast}){
     if(!jobs.length)return showToast("Add jobs first","err");
     setBusy("submit");
     try{const r=await api.batchSubmit({settings:{modelId:settings.batchModelId,aspectRatio:settings.batchAspect,imageSize:settings.batchSize,displayName:"rino-batch"},jobs});
-      if(r.error)throw new Error(r.error);showToast("Batch submitted","ok");setHistory(await api.batchJobs());setSelected(r.jobName);}
+      if(r.error)throw new Error(r.error);showToast("Batch submitted","ok");setHistory((d=>Array.isArray(d)?d:[])(await api.batchJobs()));setSelected(r.jobName);}
     catch(e){showToast(e.message,"err");}setBusy("");
   };
   const doStatus=async n=>{setBusy("st"+n);try{const r=await api.batchStatus(n);setHistory(h=>h.map(j=>j.jobName===n?{...j,state:r.state}:j));showToast(r.state.replace("JOB_STATE_",""));}catch(e){showToast(e.message,"err");}setBusy("");};
   const doRetrieve=async n=>{setBusy("ret"+n);try{const r=await api.batchRetrieve(n);if(!r.ok){showToast("Not ready: "+r.state,"err");setBusy("");return;}showToast("Saved "+r.saved+" images","ok");setHistory(h=>h.map(j=>j.jobName===n?{...j,state:r.state,retrieved:r.saved}:j));setBImages(r.files.map(f=>({file:f.file,url:"/images/"+encodeURIComponent(f.file)})));}catch(e){showToast(e.message,"err");}setBusy("");};
 
-  const selRec=history.find(h=>h.jobName===selected);
+  const selRec=(Array.isArray(history)?history:[]).find(h=>h.jobName===selected);
   const mapping=selRec?selRec.mapping:jobs.map((j,i)=>({key:"image-"+(i+1),output:(j.output||("image-"+(i+1))).trim()}));
 
   return <div>
@@ -2313,7 +2313,7 @@ function BatchSection({settings,showToast}){
 
     <div style={{marginTop:22,marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
       <span style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:15,display:"flex",alignItems:"center",gap:8}}>{ic.dl} Retrieve</span>
-      <button className="btn sec" style={{padding:"6px 10px",fontSize:12}} onClick={async()=>setHistory(await api.batchJobs())}>{ic.refresh}</button>
+      <button className="btn sec" style={{padding:"6px 10px",fontSize:12}} onClick={async()=>{const d=await api.batchJobs();setHistory(Array.isArray(d)?d:[]);}}>{ic.refresh}</button>
     </div>
     <div className="hist-list">
       {history.map(h=>{const[c,l]=badgeFor(h.state);return<button key={h.jobName} className={"hist-item "+(selected===h.jobName?"on":"")} onClick={()=>setSelected(h.jobName)}>
