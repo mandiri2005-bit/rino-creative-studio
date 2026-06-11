@@ -5284,10 +5284,31 @@ function NarasiReviewSection({settings,showToast}){
 function NarasiSection({settings,showToast}){
   const[apiMode,setApiMode]=useState(()=>localStorage.getItem("rc_nar_mode")||"laozhang");
   const[chatModel,setChatModel]=useState(()=>localStorage.getItem("rc_nar_model")||"gemini-2.5-flash");
+  const[freeModel,setFreeModel]=useState(()=>localStorage.getItem("rc_nar_freemodel")==="true");
   const[googleKey,setGoogleKey]=useState(()=>localStorage.getItem("rc_nar_gkey")||"");
   const[topic,setTopic]=useState(()=>localStorage.getItem("rc_nar_topic")||"");
   const[style,setStyle]=useState(()=>localStorage.getItem("rc_nar_style")||"storytelling");
   const[language,setLanguage]=useState(()=>localStorage.getItem("rc_nar_lang")||"id");
+  // Known languages for the dropdown; "other" reveals a free-text box that
+  // accepts ANY language/register the LLM supports (e.g. "Basa Jawa Krama").
+  const NARASI_LANGS=[
+    {value:"id",label:"🇮🇩 Bahasa Indonesia"},
+    {value:"en",label:"🇺🇸 English"},
+    {value:"jv",label:"🪯 Basa Jawa"},
+    {value:"su",label:"🌄 Basa Sunda"},
+    {value:"ms",label:"🇲🇾 Bahasa Melayu"},
+    {value:"ban",label:"🛕 Basa Bali"},
+    {value:"min",label:"🏔️ Baso Minangkabau"},
+    {value:"ar",label:"🇸🇦 العربية"},
+    {value:"zh",label:"🇨🇳 中文"},
+    {value:"ja",label:"🇯🇵 日本語"},
+    {value:"es",label:"🇪🇸 Español"},
+    {value:"fr",label:"🇫🇷 Français"},
+    {value:"nl",label:"🇳🇱 Nederlands"},
+  ];
+  const _langKnown=NARASI_LANGS.some(l=>l.value===language);
+  const[langMode,setLangMode]=useState(_langKnown?language:"other");
+  const[langCustom,setLangCustom]=useState(_langKnown?"":language);
   const[wordMin,setWordMin]=useState(()=>Number(localStorage.getItem("rc_nar_wmin")||4000));
   const[wordMax,setWordMax]=useState(()=>Number(localStorage.getItem("rc_nar_wmax")||4500));
   const[chapCount,setChapCount]=useState(()=>Number(localStorage.getItem("rc_nar_chaps")||5));
@@ -5309,19 +5330,20 @@ function NarasiSection({settings,showToast}){
 
   useEffect(()=>{
     localStorage.setItem("rc_nar_mode",apiMode);
-    if(apiMode==="google"&&!chatModel.startsWith("gemini")){
+    if(!freeModel&&apiMode==="google"&&!chatModel.startsWith("gemini")){
       setChatModel("gemini-2.5-flash");
     }
   },[apiMode]);
 
   // Also guard when style changes auto-switches model while on Google API
   useEffect(()=>{
-    if(apiMode==="google"&&!chatModel.startsWith("gemini")){
+    if(!freeModel&&apiMode==="google"&&!chatModel.startsWith("gemini")){
       setChatModel("gemini-2.5-flash");
     }
   },[chatModel,apiMode]);
-  useEffect(()=>{if(apiMode==="laozhang"){const styleModels=NARASI_STYLE_MODELS[style]||NARASI_STYLE_MODELS["storytelling"];const valid=styleModels.map(m=>m.value);if(!valid.includes(chatModel))setChatModel(styleModels[0].value);}},[style,apiMode]);
+  useEffect(()=>{if(!freeModel&&apiMode==="laozhang"){const styleModels=NARASI_STYLE_MODELS[style]||NARASI_STYLE_MODELS["storytelling"];const valid=styleModels.map(m=>m.value);if(!valid.includes(chatModel))setChatModel(styleModels[0].value);}},[style,apiMode]);
   useEffect(()=>{localStorage.setItem("rc_nar_model",chatModel);},[chatModel]);
+  useEffect(()=>{localStorage.setItem("rc_nar_freemodel",freeModel);},[freeModel]);
   useEffect(()=>{localStorage.setItem("rc_nar_gkey",googleKey);},[googleKey]);
   useEffect(()=>{localStorage.setItem("rc_nar_topic",topic);},[topic]);
   useEffect(()=>{localStorage.setItem("rc_nar_style",style);},[style]);
@@ -5463,35 +5485,48 @@ function NarasiSection({settings,showToast}){
       jobIdRef.current=jobId;
       savedJobId&&localStorage.setItem("rc_nar_job_id",jobId);
 
-      // ── Tingkat 2+4: poll status, light up per-chapter checkboxes ──
-      // Backend now returns immediately; generation runs in background.
-      // Google path may still be blocking (server.js) — poll handles both:
-      // if status is already terminal on first poll, we just proceed.
       const chapIds=chapters.map(c=>String(c.id));
-      await new Promise((resolve)=>{
-        let polls=0;
-        const iv=setInterval(async()=>{
-          polls++;
-          if(abortRef.current){ clearInterval(iv); resolve(); return; }
-          if(polls>450){ clearInterval(iv); resolve(); return; } // ~15 min safety
-          let sd;
-          try{ sd=await api.narasiStatus(jobId); }catch{ return; }
-          // current = chapters completed so far → check those boxes
-          const done=Math.max(0, Math.min(chapIds.length, sd.current||0));
-          setChapProgress(p=>{
-            const n={...p};
-            chapIds.forEach((id,idx)=>{ if(idx<done) n[id]="done"; });
-            return n;
-          });
-          if(sd.status==="done"||sd.status==="cancelled"||sd.status==="error"){
-            clearInterval(iv);
-            genErrors=(sd.result&&sd.result.errors)||[];
-            if(sd.status==="cancelled") showToast("Narasi dibatalkan","ok");
-            if(sd.status==="error") showToast("Narasi gagal: "+(sd.error||""),"err");
-            resolve();
-          }
-        },2000);
-      });
+
+      if(apiMode==="google"){
+        // Google path (server.js) is BLOCKING: it only returns {ok:true,...}
+        // AFTER every chapter is written. So there is nothing to poll — the
+        // job is already complete. Mark all chapters done and proceed to stitch.
+        // (Polling /narasi/status here would hang ~15 min because Google jobs
+        //  are not tracked in the Python status store.)
+        genErrors=r.errors||[];
+        setChapProgress(p=>{
+          const n={...p};
+          chapIds.forEach(id=>{ n[id]="done"; });
+          return n;
+        });
+      } else {
+        // ── LaoZhang path: backend returns immediately, generation runs in
+        //    background → poll status and light up per-chapter checkboxes. ──
+        await new Promise((resolve)=>{
+          let polls=0;
+          const iv=setInterval(async()=>{
+            polls++;
+            if(abortRef.current){ clearInterval(iv); resolve(); return; }
+            if(polls>450){ clearInterval(iv); resolve(); return; } // ~15 min safety
+            let sd;
+            try{ sd=await api.narasiStatus(jobId); }catch{ return; }
+            // current = chapters completed so far → check those boxes
+            const done=Math.max(0, Math.min(chapIds.length, sd.current||0));
+            setChapProgress(p=>{
+              const n={...p};
+              chapIds.forEach((id,idx)=>{ if(idx<done) n[id]="done"; });
+              return n;
+            });
+            if(sd.status==="done"||sd.status==="cancelled"||sd.status==="error"){
+              clearInterval(iv);
+              genErrors=(sd.result&&sd.result.errors)||[];
+              if(sd.status==="cancelled") showToast("Narasi dibatalkan","ok");
+              if(sd.status==="error") showToast("Narasi gagal: "+(sd.error||""),"err");
+              resolve();
+            }
+          },2000);
+        });
+      }
       if(abortRef.current){ setGenerating(false); return; }
     }catch(e){
       setGenerating(false);setStage("outline");
@@ -5569,6 +5604,9 @@ function NarasiSection({settings,showToast}){
   const reset=()=>{setStage("input");setOutline(null);setOutlineText("");setNarasi("");setChapProgress({});localStorage.removeItem("rc_nar_outline");localStorage.removeItem("rc_nar_outline_text");localStorage.removeItem("rc_nar_result");};
 
   const lzStyleModels=NARASI_STYLE_MODELS[style]||NARASI_STYLE_MODELS["storytelling"];
+  // freeModel ON → expose the FULL model catalog (all providers/tiers), grouped.
+  // freeModel OFF → keep the curated, style-aware top-10 (LaoZhang) / Gemini set.
+  const freeModelGroups=CHAT_MODEL_TIERS;   // [{tier, models:[{value,label}]}]
   const models=apiMode==="google"?[
     {value:"gemini-2.5-flash",       label:"Gemini 2.5 Flash"},
     {value:"gemini-2.5-pro",         label:"Gemini 2.5 Pro"},
@@ -5590,15 +5628,30 @@ function NarasiSection({settings,showToast}){
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
         <div><div className="lbl">{ic.chat} AI Model</div>
           <select className="inp" value={chatModel} onChange={e=>setChatModel(e.target.value)}>
-            {models.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}
+            {freeModel
+              ? freeModelGroups.map(t=><optgroup key={t.tier} label={t.tier}>{t.models.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}</optgroup>)
+              : models.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
-          {apiMode==="laozhang"&&<p className="hint" style={{marginTop:4}}>✦ Top 10 model untuk gaya <strong>{NARASI_STYLES.find(s=>s.value===style)?.label||style}</strong> — sorted best first</p>}
+          <label style={{display:"flex",alignItems:"center",gap:6,marginTop:6,fontSize:11.5,cursor:"pointer",color:"var(--td)"}}>
+            <input type="checkbox" checked={freeModel} onChange={e=>setFreeModel(e.target.checked)} style={{cursor:"pointer"}}/>
+            🔓 Pilih model bebas (semua model, tanpa auto-switch per gaya)
+          </label>
+          {!freeModel&&apiMode==="laozhang"&&<p className="hint" style={{marginTop:4}}>✦ Top 10 model untuk gaya <strong>{NARASI_STYLES.find(s=>s.value===style)?.label||style}</strong> — sorted best first</p>}
+          {freeModel&&<p className="hint" style={{marginTop:4}}>🔓 Semua model tersedia. Pilihanmu tidak akan diganti otomatis saat ganti gaya.</p>}
         </div>
         <div><div className="lbl">🌐 Bahasa output</div>
-          <div style={{display:"flex",gap:6}}>
-            <button className={"btn "+(language==="id"?"pri":"sec")} style={{flex:1,padding:"7px 0",fontSize:12}} onClick={()=>setLanguage("id")}>🇮🇩 Bahasa Indonesia</button>
-            <button className={"btn "+(language==="en"?"pri":"sec")} style={{flex:1,padding:"7px 0",fontSize:12}} onClick={()=>setLanguage("en")}>🇺🇸 English</button>
-          </div>
+          <select className="inp" value={langMode}
+            onChange={e=>{const v=e.target.value;setLangMode(v);
+              if(v==="other"){setLanguage((langCustom||"").trim()||"id");}
+              else{setLanguage(v);}}}>
+            {NARASI_LANGS.map(l=><option key={l.value} value={l.value}>{l.label}</option>)}
+            <option value="other">✏️ Lainnya (ketik bahasa…)</option>
+          </select>
+          {langMode==="other"&&
+            <input className="inp" style={{marginTop:6}} value={langCustom}
+              placeholder="cth: Basa Jawa Krama, Bahasa Bugis, Português…"
+              onChange={e=>{setLangCustom(e.target.value);setLanguage(e.target.value.trim()||"id");}}/>}
+          <p className="hint" style={{marginTop:4}}>Output: <strong>{language||"id"}</strong></p>
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12,marginBottom:12}}>
@@ -5813,7 +5866,7 @@ function ClerkUserButton(){
           <div className="name">{name}</div>
           <div className="email">{email}</div>
         </div>
-        <button onClick={()=>{setMenuOpen(false);window.__clerkAuth?.signOut();}
+        <button onClick={()=>{setMenuOpen(false);(function(){try{var keep={rc_theme:1};var del=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf("rc_")===0&&!keep[k])del.push(k);}del.forEach(function(k){localStorage.removeItem(k);});}catch(e){}})();window.__clerkAuth?.signOut();}
           } className="signout">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           Sign out
