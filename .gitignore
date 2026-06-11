@@ -12,3 +12,20 @@ __pycache__/
 .env.production
 
 GOOGLE API KEY.txt
+
+# === cleanup additions ===
+.DS_Store
+**/.DS_Store
+*.bak
+*.bak2
+env prod
+env2.example
+*copy*.yml
+*copy*.html
+nginx.text
+spa.test
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.local
