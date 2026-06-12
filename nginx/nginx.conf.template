@@ -14,6 +14,10 @@ http {
     server_name _;
     root /usr/share/nginx/html; index index.html;
 
+    # index.html must always revalidate so deploys show up without a hard refresh
+    # (all app JS is inline in index.html — no hashed bundles to cache-bust).
+    location = /index.html { add_header Cache-Control "no-cache"; }
+
     location / { try_files $uri $uri/ /index.html; }
 
     location /webhooks/ {
