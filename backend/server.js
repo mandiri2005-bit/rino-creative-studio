@@ -1071,12 +1071,14 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
       }
       // Step 1.2: persist to Postgres via Python (database.py = source of truth)
       try{
-        await fetch(`${PYTHON_API}/narasi/persist`,{
+        const _pr=await fetch(`${PYTHON_API}/narasi/persist`,{
           method:"POST",
           headers:{"Content-Type":"application/json",
                    ...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})},
           body:JSON.stringify({job_id:jobId, topic:body.topic||"", style, chapters:persistChapters}),
         });
+        if(!_pr.ok) console.warn(`[narasi-google] persist HTTP ${_pr.status} — chapters NOT saved (auth/tenant?)`);
+        else console.log(`[narasi-google] persisted ${persistChapters.length} chapters -> DB`);
       }catch(e){console.warn("[narasi-google] persist failed (non-fatal):",e.message);}
 
       return res.json({ok:true,job_id:jobId,errors,drift_signals_detected:driftSignals});
