@@ -5864,11 +5864,8 @@ function NarasiSection({settings,showToast}){
         {doneInfo&&(
           <div className="card" style={{marginBottom:10,padding:"10px 16px",border:"1px solid var(--ok)",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
             <span style={{fontSize:13}}>✅ <b>±{doneInfo.words} kata</b>{doneInfo.errors?` · ${doneInfo.errors} error`:""}</span>
-            <code style={{fontSize:11,color:"var(--td)"}}>{doneInfo.filename}</code>
-            <span style={{fontSize:11.5,color:"var(--td)"}}>Unduh:</span>
-            <button className="btn sec" style={{padding:"4px 11px",fontSize:12}} onClick={()=>downloadTxt(doneInfo.markdown)}>TXT</button>
-            <button className="btn sec" style={{padding:"4px 11px",fontSize:12}} onClick={()=>downloadPdf(doneInfo.markdown)}>PDF</button>
-            <button className="btn pri" style={{padding:"4px 11px",fontSize:12}} onClick={()=>downloadHtml(doneInfo.markdown)}>HTML</button>
+            <span style={{fontSize:12,color:"var(--td)"}}>— unduh lewat tombol di atas ↑</span>
+            <div style={{flex:1}}/>
             <button className="btn sec" style={{padding:"4px 10px",fontSize:12}} onClick={()=>setDoneInfo(null)}>✕</button>
           </div>
         )}
