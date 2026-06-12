@@ -372,6 +372,25 @@ async def get_narasi_chapters(tenant_id, job_id) -> list:
     except Exception as e:
         log.error("get_narasi_chapters: %s", e); raise
 
+async def list_narasi_jobs(tenant_id, limit=15) -> list:
+    """Recent narasi jobs for a tenant that are reopenable from DB (Step 1.3 UI):
+    those with persisted chapters OR a stored stitched markdown. Newest first.
+    topic is stored in jobs.output_prefix by create_narasi_job."""
+    try:
+        rows = await _q_fetch(
+            """SELECT j.external_job_id, j.output_prefix AS topic, j.status,
+                      j.progress_total AS chapters, j.created_at
+                 FROM jobs j
+                WHERE j.job_type='narasi' AND j.tenant_id=$1
+                  AND (EXISTS (SELECT 1 FROM narasi_chapters c WHERE c.job_id=j.id)
+                       OR (j.result_payload->>'markdown') IS NOT NULL)
+                ORDER BY j.created_at DESC
+                LIMIT $2""",
+            _uid(tenant_id), int(limit), tenant=str(tenant_id))
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.error("list_narasi_jobs: %s", e); raise
+
 async def cleanup_old_jobs(tenant_id, older_than_hours=24) -> int:
     """Delete completed/failed jobs older than N hours."""
     try:

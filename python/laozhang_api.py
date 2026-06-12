@@ -4154,6 +4154,16 @@ async def narasi_outline_persist(body: dict,
         return {"ok": False, "error": str(_e)}
 
 
+@app.get("/narasi/jobs")
+async def narasi_jobs(user: CurrentUser = Depends(get_current_user)):
+    """List the tenant's recent reopenable narasi jobs (Step 1.3 read-back UI)."""
+    try:
+        return {"ok": True, "jobs": await db.list_narasi_jobs(user.tenant_id, limit=15)}
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("list narasi jobs failed (non-fatal): %s", _e)
+        return {"ok": False, "jobs": [], "error": str(_e)}
+
+
 @app.get("/narasi/status/{job_id}")
 async def narasi_status(job_id: str,
                         user: CurrentUser = Depends(get_current_user)):
