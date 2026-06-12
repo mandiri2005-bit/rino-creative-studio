@@ -5606,6 +5606,57 @@ function NarasiSection({settings,showToast}){
   };
 
   const downloadMd=(content,name)=>{const b=new Blob([content],{type:"text/markdown"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=name;a.click();URL.revokeObjectURL(a.href);};
+  // ── Export narasi: TXT (utf-8) · PDF (print→save) · polished editorial HTML ──
+  const _esc=(s)=>String(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+  const narasiName=()=>("narasi-"+((topic||"narasi").slice(0,40).trim().replace(/\s+/g,"-").replace(/[^a-zA-Z0-9-]/g,"")||"narasi"));
+  const _dlBlob=(blob,name)=>{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);};
+  const downloadTxt=(md)=>{
+    const txt=(md||"").replace(/^>\s?/gm,"").replace(/^#{1,6}\s+/gm,"")
+      .replace(/\*\*(.+?)\*\*/g,"$1").replace(/\*(.+?)\*/g,"$1").replace(/`([^`]+)`/g,"$1")
+      .replace(/\[(.+?)\]\((.*?)\)/g,"$1").replace(/^\s*---+\s*$/gm,"").replace(/\n{3,}/g,"\n\n").trim()+"\n";
+    _dlBlob(new Blob([txt],{type:"text/plain;charset=utf-8"}),narasiName()+".txt");
+  };
+  const buildNarasiHtml=(md)=>{
+    const lines=(md||"").split("\n");
+    let meta=""; const mi=lines.findIndex(l=>l.trim().startsWith(">"));
+    if(mi!==-1){meta=lines[mi].replace(/^>\s?/,"").replace(/\*\*/g,"");lines.splice(mi,1);}
+    const bodyMd=lines.join("\n").replace(/^\s*---+\s*$/m,"").trim();
+    const inner=DOMPurify.sanitize(marked.parse(bodyMd));
+    const title=(topic||"Narasi").trim();
+    const today=new Date().toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric"});
+    return '<!DOCTYPE html><html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+_esc(title)+'</title>'
+      +'<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+      +'<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,900&family=Spline+Sans+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
+      +'<style>'
+      +':root{--ink:#0b0a10;--paper:#f5f1e8;--accent:#c8341f;--mute:#6a6475;--line:rgba(11,10,16,.13)}'
+      +'*{margin:0;padding:0;box-sizing:border-box}'
+      +'body{background:var(--paper);color:var(--ink);font-family:Inter,sans-serif;line-height:1.75;-webkit-font-smoothing:antialiased}'
+      +'.wrap{max-width:760px;margin:0 auto;padding:0 28px}'
+      +'header{padding:64px 0 0;border-bottom:2.5px solid var(--ink)}'
+      +'.eyebrow{font-family:"Spline Sans Mono",monospace;font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--mute)}'
+      +'h1{font-family:Fraunces,serif;font-weight:900;font-size:clamp(32px,6vw,58px);line-height:1.02;letter-spacing:-.02em;margin:18px 0 14px}'
+      +'.meta{font-family:"Spline Sans Mono",monospace;font-size:12px;color:var(--accent);padding-bottom:24px}'
+      +'main{padding:36px 0 10px}'
+      +'main h2{font-family:Fraunces,serif;font-weight:600;font-size:clamp(22px,3.4vw,30px);letter-spacing:-.01em;margin:40px 0 14px;line-height:1.15}'
+      +'main h3{font-family:Fraunces,serif;font-weight:600;font-size:20px;margin:26px 0 10px}'
+      +'main p{font-size:16.5px;margin:0 0 16px;color:#26242c}'
+      +'main blockquote{border-left:3px solid var(--accent);background:rgba(200,52,31,.05);padding:12px 18px;margin:18px 0;font-style:italic;color:#3a3320}'
+      +'main strong{font-weight:600}main em{font-style:italic}'
+      +'main code{font-family:"Spline Sans Mono",monospace;font-size:.85em;background:rgba(22,35,63,.07);padding:1.5px 6px;border-radius:3px}'
+      +'main hr{border:0;border-top:1px solid var(--line);margin:30px 0}'
+      +'main ul,main ol{margin:0 0 16px 22px}main li{margin-bottom:6px}'
+      +'footer{border-top:1px solid var(--line);margin-top:48px;padding:26px 0 60px;text-align:center}'
+      +'footer .fm{font-family:Fraunces,serif;font-style:italic;font-size:16px}'
+      +'footer .fn{font-family:"Spline Sans Mono",monospace;font-size:11px;color:var(--mute);letter-spacing:.08em;margin-top:8px}'
+      +'@media print{body{background:#fff}}'
+      +'</style></head><body><div class="wrap">'
+      +'<header><div class="eyebrow">Rino Creative Studio · Narasi</div><h1>'+_esc(title)+'</h1>'+(meta?'<div class="meta">'+_esc(meta)+'</div>':'')+'</header>'
+      +'<main>'+inner+'</main>'
+      +'<footer><div class="fm">Rino Creative Studio</div><div class="fn">Dibuat '+_esc(today)+'</div></footer>'
+      +'</div></body></html>';
+  };
+  const downloadHtml=(md)=>{_dlBlob(new Blob([buildNarasiHtml(md)],{type:"text/html;charset=utf-8"}),narasiName()+".html");};
+  const downloadPdf=(md)=>{const w=window.open("","_blank");if(!w){showToast("Popup diblokir — izinkan popup untuk simpan PDF","err");return;}w.document.write(buildNarasiHtml(md));w.document.close();setTimeout(()=>{try{w.focus();w.print();}catch(e){}},700);};
   const reset=()=>{setStage("input");setOutline(null);setOutlineText("");setNarasi("");setChapProgress({});localStorage.removeItem("rc_nar_outline");localStorage.removeItem("rc_nar_outline_text");localStorage.removeItem("rc_nar_result");};
 
   const lzStyleModels=NARASI_STYLE_MODELS[style]||NARASI_STYLE_MODELS["storytelling"];
@@ -5806,12 +5857,18 @@ function NarasiSection({settings,showToast}){
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
           <span style={{fontSize:13,fontWeight:700}}>±{narasi.split(/\s+/).filter(Boolean).length} kata</span>
           <div style={{flex:1}}/>
-          <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={()=>downloadMd(narasi,`narasi-${topic.slice(0,30).replace(/\s+/g,"-")}.md`)}>{ic.dload} Download .md</button>
+          <span style={{fontSize:11.5,color:"var(--td)",marginRight:1}}>{ic.dload} Unduh:</span>
+          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>downloadTxt(narasi)} title="Teks polos UTF-8">TXT</button>
+          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>downloadPdf(narasi)} title="PDF — buka dialog cetak, pilih Simpan sebagai PDF">PDF</button>
+          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>downloadHtml(narasi)} title="HTML berstyle editorial">HTML</button>
         {doneInfo&&(
           <div className="card" style={{marginBottom:10,padding:"10px 16px",border:"1px solid var(--ok)",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
             <span style={{fontSize:13}}>✅ <b>±{doneInfo.words} kata</b>{doneInfo.errors?` · ${doneInfo.errors} error`:""}</span>
             <code style={{fontSize:11,color:"var(--td)"}}>{doneInfo.filename}</code>
-            <button className="btn pri" style={{padding:"4px 12px",fontSize:12}} onClick={()=>downloadMd(doneInfo.markdown,doneInfo.filename)}>⬇ Download</button>
+            <span style={{fontSize:11.5,color:"var(--td)"}}>Unduh:</span>
+            <button className="btn sec" style={{padding:"4px 11px",fontSize:12}} onClick={()=>downloadTxt(doneInfo.markdown)}>TXT</button>
+            <button className="btn sec" style={{padding:"4px 11px",fontSize:12}} onClick={()=>downloadPdf(doneInfo.markdown)}>PDF</button>
+            <button className="btn pri" style={{padding:"4px 11px",fontSize:12}} onClick={()=>downloadHtml(doneInfo.markdown)}>HTML</button>
             <button className="btn sec" style={{padding:"4px 10px",fontSize:12}} onClick={()=>setDoneInfo(null)}>✕</button>
           </div>
         )}
