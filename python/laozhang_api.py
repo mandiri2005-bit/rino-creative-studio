@@ -4098,6 +4098,22 @@ async def narasi_persist(body: dict,
                 _tenant, _job_uuid, _idx, _text, _wc,
                 ch.get("source_prompt") or "", _ids,
                 version=1, approved=False)
+            # ── moat capture + usage logging (parity with the LaoZhang path) ──
+            try:
+                _model = ch.get("model") or "gemini-2.5-flash"
+                _ti = int(ch.get("tokens_in") or 0)
+                _to = int(ch.get("tokens_out") or 0)
+                _cost = _calc_cost(_model, _ti, _to)
+                await db.save_moat_session(
+                    _tenant or None, _user, topic, style,
+                    {"rag_used": bool(ch.get("rag_used")), "sources": None,
+                     "passages": _ids, "prompt_used": ch.get("source_prompt") or "",
+                     "narration": _text},
+                    _model, _ti, _to, _cost)
+                await db.log_usage(_tenant, _user, _model, "narasi", _ti, _to, _cost,
+                                   job_id=_job_uuid, provider="gemini")
+            except Exception as _e2:
+                import logging as _lg; _lg.getLogger("narasi").warning("persist moat/usage chapter %s failed (non-fatal): %s", ch.get("index"), _e2)
             md_parts.append(f"## Bab {ch.get('id', _idx)}: {ch.get('title','')}\n\n{_text}")
             saved += 1
         except Exception as _e:
@@ -4111,6 +4127,31 @@ async def narasi_persist(body: dict,
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("persist finish failed: %s", _e)
     return {"ok": True, "job_id": job_id, "chapters_saved": saved}
+
+
+@app.post("/narasi/outline/persist")
+async def narasi_outline_persist(body: dict,
+                                 user: CurrentUser = Depends(get_current_user)):
+    """Persist a Google-path (Node) outline into narasi_outlines. Mirror of the
+    LaoZhang path's inline db.save_outline so both providers capture the outline
+    (research → outline moat artifact). Node calls this after action=outline."""
+    _tenant = user.tenant_id
+    _user   = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    try:
+        _chapters = body.get("chapters") or []
+        oid = await db.save_outline(
+            _tenant or None, _user,
+            (body.get("topic") or "").strip(),
+            (body.get("style") or "storytelling").strip(),
+            (body.get("language") or "id").strip(),
+            int(body.get("chap_count") or len(_chapters)),
+            body.get("outline_text") or "",
+            _chapters,
+            body.get("model") or "gemini-2.5-flash")
+        return {"ok": True, "outline_id": oid}
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("outline persist failed (non-fatal): %s", _e)
+        return {"ok": False, "error": str(_e)}
 
 
 @app.get("/narasi/status/{job_id}")

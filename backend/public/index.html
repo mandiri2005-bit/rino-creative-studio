@@ -733,7 +733,7 @@ const api={
   scriptTtsLz:(b)=>fetch("/api/script/tts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()),
   scriptTtsGoogle:(b)=>fetch("/api/script/tts/google",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiOutlineLz:(b)=>fetch("/api/narasi/outline",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()),
-  narasiOutlineGoogle:(b)=>fetch("/api/narasi/outline/google",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()),
+  narasiOutlineGoogle:async(b)=>fetch("/api/narasi/outline/google",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiGenerateLz:async(b)=>fetch("/api/narasi/generate",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiGenerateGoogle:async(b)=>fetch("/api/narasi/generate/google",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiCancel:async(jobId)=>fetch(`/api/narasi/cancel/${jobId}`,{method:"POST",headers:(await authHdrFresh())}).then(r=>r.json()),

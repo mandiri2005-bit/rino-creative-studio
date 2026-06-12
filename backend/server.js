@@ -202,7 +202,9 @@ app.use("/api", (req, res, next) => {
 app.use("/images", express.static(OUTPUT_DIR, {maxAge:"1h"}));
 app.use("/audio",  express.static(TTS_DIR,    {maxAge:"1h"}));
 app.use("/imgs",   express.static(IMG_DIR,    {maxAge:"1h"}));
-app.use(express.static(path.join(__dirname,"public")));
+app.use(express.static(path.join(__dirname,"public"),{
+  setHeaders:(res,p)=>{ if(p.endsWith("index.html")) res.setHeader("Cache-Control","no-cache"); }
+}));
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get("/api/health", (_,res) => res.json({ ok:true, gemini:!!GEMINI_KEY, python:PYTHON_API }));
@@ -1017,6 +1019,7 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
             config:genCfg,
           });
           let ct=(r2.text||"").trim();
+          let _genResp=r2;
           let finishReason=r2.candidates?.[0]?.finishReason||"unknown";
           // Retry if empty or too short
           if(!ct||ct.split(/\s+/).filter(Boolean).length<50){
@@ -1027,6 +1030,7 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
             });
             if(r3.text&&r3.text.trim()){
               ct=r3.text.trim();
+              _genResp=r3;
               finishReason=r3.candidates?.[0]?.finishReason||"unknown";
             }
           }
@@ -1059,6 +1063,9 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
           persistChapters.push({
             index:i, id:c.id, title:c.title, content:ct,
             source_prompt:cp, retrieved_ids:chPassageIds, word_count:wordCount,
+            model, tokens_in:_genResp?.usageMetadata?.promptTokenCount||0,
+            tokens_out:_genResp?.usageMetadata?.candidatesTokenCount||0,
+            rag_used:!!(body.use_rag&&chPassageIds.length),
           });
         }catch(e){
           errors.push({id:c.id,error:e.message});
@@ -1121,6 +1128,17 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
           if(diff)chapters.reduce((a,b)=>a.words>b.words?a:b).words+=diff;
         }
         const outlineText=chapters.map(c=>`## ${c.id}. ${c.title}\n*${c.words} kata*\n${c.description}`).join("\n\n");
+        // Persist outline to narasi_outlines via Python (mirror LaoZhang's inline save_outline)
+        try{
+          const _opr=await fetch(`${PYTHON_API}/narasi/outline/persist`,{
+            method:"POST",
+            headers:{"Content-Type":"application/json",
+                     ...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})},
+            body:JSON.stringify({topic:body.topic||"",style,language:lang,chap_count:chapters.length,outline_text:outlineText,chapters,model}),
+          });
+          if(!_opr.ok) console.warn(`[narasi-google] outline persist HTTP ${_opr.status}`);
+          else console.log(`[narasi-google] outline persisted -> narasi_outlines`);
+        }catch(e){console.warn("[narasi-google] outline persist failed (non-fatal):",e.message);}
         return res.json({ok:true,chapters,outline_text:outlineText});
       }
     }
