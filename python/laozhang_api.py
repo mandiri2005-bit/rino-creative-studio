@@ -3537,11 +3537,15 @@ async def rag_context(body: dict):
             query_instruction=_cfg.get("query_instruction"),
             prefer_source=os.environ.get("RAG_PREFER_SOURCE") or None,
         )
+        _passages = ctx.get("passages", [])
         return {
             "ok":           True,
             "context_text": ctx.get("context_text", ""),
             "sources":      ctx.get("sources", []),
-            "passages":     len(ctx.get("passages", [])),
+            "passages":     len(_passages),
+            "passage_ids":  [(p.get("passage_id") or p.get("id"))
+                             for p in _passages
+                             if (p.get("passage_id") or p.get("id"))],
         }
     except Exception as exc:
         return {"ok": False, "context_text": "", "sources": [], "passages": 0, "error": str(exc)}
@@ -3976,6 +3980,22 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # Accumulate for inter-chapter context
             previous_chapters.append({"id": chap_id, "title": chap_title, "text": text})
 
+            # ── Step 1.2: persist chapter to narasi_chapters (DB = source of truth) ──
+            try:
+                _retrieved_ids = []
+                if use_rag and rag_context_text:
+                    _retrieved_ids = [
+                        (p.get("passage_id") or p.get("id"))
+                        for p in (_rag_ctx.get("passages") or [])
+                        if (p.get("passage_id") or p.get("id"))
+                    ]
+                await db.save_narasi_chapter(
+                    _narasi_tenant, _narasi_job_uuid, i, text,
+                    len(text.split()), user, _retrieved_ids,
+                    version=1, approved=False)
+            except Exception as _e:
+                _log.warning("save_narasi_chapter failed (non-fatal): %s", _e)
+
             # ── Fix 5: moat capture (WS-G Task 5) — store generated narration ──
             try:
                 _rag_result = {
@@ -4021,17 +4041,76 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             await db.finish_narasi_job(_narasi_tenant, job_id, "error",
                                        error=str(errors[:3]))
         else:
+            _stitched_md = "\n\n".join(
+                f"## Bab {pc['id']}: {pc['title']}\n\n{pc['text']}"
+                for pc in previous_chapters
+            )
             await db.finish_narasi_job(_narasi_tenant, job_id, "done", result={
                 "chapters": len(chapters),
                 "errors": errors,
                 "auto_cancelled": auto_cancelled,
                 "bab1_words": bab1_words,
                 "tmp_dir": str(tmp_dir),
+                "markdown": _stitched_md,          # DB = source of truth for combined output
             })
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)
     await rc.delete_progress(job_id)
     return  # background task — return value unused
+
+
+@app.post("/narasi/persist")
+async def narasi_persist(body: dict,
+                         user: CurrentUser = Depends(get_current_user)):
+    """Persist a Google-path (Node) narration run into Postgres: create/find the
+    jobs row, write every chapter to narasi_chapters, store stitched markdown in
+    jobs.result_payload. Node generates with the user's Google key, then calls
+    this so all narasi_chapters writes go through database.py."""
+    _tenant = user.tenant_id
+    _user   = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    job_id  = (body.get("job_id") or str(uuid.uuid4())[:8])[:16]
+    topic   = (body.get("topic") or "").strip()
+    style   = (body.get("style") or "storytelling").strip()
+    chapters = body.get("chapters") or []   # [{index, content, source_prompt, retrieved_ids, word_count, id?, title?}]
+
+    # Idempotent: reuse the job row if one already exists for this external id.
+    _row = None
+    try:
+        _row = await db.get_job_by_external(_tenant, job_id)
+    except Exception:
+        _row = None
+    if not _row:
+        try:
+            await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters))
+            _row = await db.get_job_by_external(_tenant, job_id)
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("persist create_narasi_job failed: %s", _e)
+    _job_uuid = (_row or {}).get("id")
+
+    saved, md_parts = 0, []
+    for ch in chapters:
+        try:
+            _idx  = int(ch.get("index", saved))
+            _text = ch.get("content") or ""
+            _wc   = int(ch.get("word_count") or len(_text.split()))
+            _ids  = list(ch.get("retrieved_ids") or [])
+            await db.save_narasi_chapter(
+                _tenant, _job_uuid, _idx, _text, _wc,
+                ch.get("source_prompt") or "", _ids,
+                version=1, approved=False)
+            md_parts.append(f"## Bab {ch.get('id', _idx)}: {ch.get('title','')}\n\n{_text}")
+            saved += 1
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("persist chapter %s failed: %s", ch.get("index"), _e)
+
+    try:
+        await db.finish_narasi_job(_tenant, job_id, "done", result={
+            "chapters": saved, "source": "google",
+            "markdown": "\n\n".join(md_parts),
+        })
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("persist finish failed: %s", _e)
+    return {"ok": True, "job_id": job_id, "chapters_saved": saved}
 
 
 @app.get("/narasi/status/{job_id}")

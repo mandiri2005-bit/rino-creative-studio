@@ -956,6 +956,7 @@ const _narasiGoogleHandler=async(req,res)=>{
       await fsp.mkdir(tmpDir,{recursive:true});
       const chapters=body.chapters;
       const errors=[];
+      const persistChapters=[];   // Step 1.2: collect for Postgres persist
 
       // Anti-drift state
       let voiceSample="";
@@ -978,11 +979,12 @@ const _narasiGoogleHandler=async(req,res)=>{
         }
         // RAG: fetch Gutenberg passages for this chapter
         let chRagBlock="";
+        let chPassageIds=[];
         if(body.use_rag){
           try{
             const rr=await fetch(`${PYTHON_API}/rag/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic:`${body.topic||""} — ${c.title}`,style,top_k:5})});
             const rd=await rr.json();
-            if(rd.ok&&rd.context_text){chRagBlock=rd.context_text+"\n";console.log(`[RAG] Google multi-chapter bab=${c.id} passages=${rd.passages}`);}
+            if(rd.ok&&rd.context_text){chRagBlock=rd.context_text+"\n";chPassageIds=rd.passage_ids||[];console.log(`[RAG] Google multi-chapter bab=${c.id} passages=${rd.passages}`);}
           }catch(e){console.warn("[RAG] multi-chapter failed:",e.message);}
         }
         const cp=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; references/context may be in another language but do NOT mirror them.
@@ -1054,6 +1056,10 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
             `## Bab ${c.id}: ${c.title}\n\n${ct}\n`,
             "utf8"
           );
+          persistChapters.push({
+            index:i, id:c.id, title:c.title, content:ct,
+            source_prompt:cp, retrieved_ids:chPassageIds, word_count:wordCount,
+          });
         }catch(e){
           errors.push({id:c.id,error:e.message});
           await fsp.writeFile(
@@ -1063,6 +1069,16 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
           );
         }
       }
+      // Step 1.2: persist to Postgres via Python (database.py = source of truth)
+      try{
+        await fetch(`${PYTHON_API}/narasi/persist`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json",
+                   ...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})},
+          body:JSON.stringify({job_id:jobId, topic:body.topic||"", style, chapters:persistChapters}),
+        });
+      }catch(e){console.warn("[narasi-google] persist failed (non-fatal):",e.message);}
+
       return res.json({ok:true,job_id:jobId,errors,drift_signals_detected:driftSignals});
 
     } else {

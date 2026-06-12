@@ -335,9 +335,19 @@ async def lifespan(application):
 
 app = FastAPI(title="LaoZhang Chat API", lifespan=lifespan)
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+# CORS origins from env (comma-separated). Defaults to local dev + Railway staging.
+_cors_env = os.getenv("CORS_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] or [
+    "http://localhost:8080",
+    "https://ravishing-miracle-production-01b2.up.railway.app",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -3513,16 +3523,29 @@ async def rag_context(body: dict):
 
     try:
         from moat.gutenberg.rag_narration import get_narration_context
+        from moat.gutenberg.style_rag_config import get_style_config as _get_cfg
+        rag_style = _rag_style(style)
+        _cfg = _get_cfg(rag_style) if rag_style is not None else {
+            "style_filter": None, "structure_filter": None,
+            "min_quality": 3, "top_k": top_k, "query_instruction": None}
         ctx = await get_narration_context(
             topic=topic,
-            style=_rag_style(style),
+            style=_cfg.get("style_filter"),
+            structure=_cfg.get("structure_filter"),
+            min_quality=_cfg.get("min_quality", 3),
             top_k=top_k,
+            query_instruction=_cfg.get("query_instruction"),
+            prefer_source=os.environ.get("RAG_PREFER_SOURCE") or None,
         )
+        _passages = ctx.get("passages", [])
         return {
             "ok":           True,
             "context_text": ctx.get("context_text", ""),
             "sources":      ctx.get("sources", []),
-            "passages":     len(ctx.get("passages", [])),
+            "passages":     len(_passages),
+            "passage_ids":  [(p.get("passage_id") or p.get("id"))
+                             for p in _passages
+                             if (p.get("passage_id") or p.get("id"))],
         }
     except Exception as exc:
         return {"ok": False, "context_text": "", "sources": [], "passages": 0, "error": str(exc)}
@@ -3542,6 +3565,28 @@ async def narasi_outline(body: dict,
         raise HTTPException(500, f"{type(e).__name__}: {e}")
 
 
+# Maps a language code to a display name; otherwise passes the value through
+# AS-IS so any language/register the LLM supports works (jv, su, "Darija Maroko",
+# "Basa Jawa Krama", …). Mirrors resolve_language() in rag_narration.py.
+_NARASI_LANG_NAMES = {
+    "id": "Bahasa Indonesia", "en": "English",
+    "jv": "Basa Jawa (Javanese)", "su": "Basa Sunda (Sundanese)",
+    "ms": "Bahasa Melayu (Malay)", "ban": "Basa Bali (Balinese)",
+    "min": "Baso Minangkabau", "ar": "العربية (Arabic)",
+    "zh": "中文 (Chinese)", "ja": "日本語 (Japanese)", "ko": "한국어 (Korean)",
+    "es": "Español (Spanish)", "fr": "Français (French)", "de": "Deutsch (German)",
+    "nl": "Nederlands (Dutch)", "pt": "Português (Portuguese)",
+    "hi": "हिन्दी (Hindi)", "th": "ภาษาไทย (Thai)", "vi": "Tiếng Việt (Vietnamese)",
+    "tl": "Tagalog (Filipino)",
+}
+
+
+def _resolve_narasi_lang(language: str) -> str:
+    if not language:
+        return "Bahasa Indonesia"
+    return _NARASI_LANG_NAMES.get(language.strip().lower(), language.strip())
+
+
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
     model = (body.get("model") or "gemini-2.5-flash").strip()
@@ -3555,7 +3600,7 @@ async def _narasi_outline_impl(body: dict):
     current_outline = (body.get("current_outline") or "").strip()
     outline_for_brief = (body.get("outline") or "").strip()
     client = make_client(model)
-    lang_label = "Bahasa Indonesia" if language == "id" else "English"
+    lang_label = _resolve_narasi_lang(language)
     # Resolve tenant + user UUID once for usage logging (auth dependency set the context)
     _ou_ctx = _tenant_ctx.get()
     _ou_tenant = _ou_ctx.tenant_id or None
@@ -3608,6 +3653,8 @@ async def _narasi_outline_impl(body: dict):
     else:
         user = (
             f"Create a detailed narrative outline for a {style} narrative titled: \"{topic}\"\n"
+            f"OUTPUT LANGUAGE: {lang_label}. ALL chapter titles, descriptions, and outline_text "
+            f"MUST be written in {lang_label}.\n"
             f"Language: {lang_label} | Total words: {word_min}-{word_max} | Chapters: exactly {chap_count}\n\n"
             f"WORD WEIGHT RULES -- CRITICAL:\n"
             f"- Do NOT divide words equally across chapters\n"
@@ -3618,7 +3665,7 @@ async def _narasi_outline_impl(body: dict):
             f"  \"chapters\": array of exactly {chap_count} objects, each with:\n"
             f"    \"id\": chapter number as string\n"
             f"    \"title\": chapter title in {lang_label}\n"
-            f"    \"description\": 1-2 sentence summary\n"
+            f"    \"description\": 1-2 sentence summary, written in {lang_label}\n"
             f"    \"words\": integer word count weighted by topical depth\n"
             f"  \"outline_text\": the full outline as clean markdown\n"
             f"No markdown fences, no explanation. Just the JSON."
@@ -3754,7 +3801,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     use_rag  = bool(body.get("use_rag", False)) and RAG_AVAILABLE 
     brief = (body.get("brief") or "").strip()
     outline = (body.get("outline") or "").strip()
-    lang_label = "Bahasa Indonesia" if language == "id" else "English"
+    lang_label = _resolve_narasi_lang(language)
     tmp_dir = Path(f"/app/data/narasi_temp/{job_id}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     client = make_client(model)
@@ -3806,10 +3853,10 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     else:
                         # Broad genre (narrative non-fiction etc.) — no style filter
                         _cfg = {"style_filter": None, "structure_filter": None,
-                                "min_quality": 3, "top_k": 5}
+                                "min_quality": 3, "top_k": 5, "query_instruction": None}
                 except (ImportError, KeyError):
                     _cfg = {"style_filter": rag_style, "structure_filter": None,
-                            "min_quality": 3, "top_k": 5}
+                            "min_quality": 3, "top_k": 5, "query_instruction": None}
 
                 # Use chapter-specific query, not global topic for every chapter
                 rag_query = f"{chap_title}: {chap_desc}" if chap_desc else chap_title
@@ -3820,6 +3867,8 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     structure=_cfg["structure_filter"],
                     min_quality=_cfg["min_quality"],
                     top_k=_cfg["top_k"],
+                    query_instruction=_cfg.get("query_instruction"),
+                    prefer_source=os.environ.get("RAG_PREFER_SOURCE") or None,
                 )
                 rag_context_text = _rag_ctx.get("context_text", "")
                 _n_passages = len(_rag_ctx.get("passages", []))
@@ -3861,6 +3910,9 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     preamble
                     + (rag_context_text + "\n" if rag_context_text else "")
                     + prev_context
+                    + f"OUTPUT LANGUAGE: {lang_label}. Write the ENTIRE chapter ONLY in {lang_label}. "
+                      f"Any references/context above may be in another language — do NOT mirror them; "
+                      f"produce the chapter fully in {lang_label}.\n\n"
                     + f'You are writing Chapter {chap_id} of a {style} narrative titled: "{topic}"\n'
                     + f"Language: {lang_label}\n\n"
                     + style_rules + "\n"
@@ -3871,6 +3923,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     + ("Write EXACTLY {word_target} words (count carefully). ".format(word_target=word_target)
                        + ("Include [ANCHOR] and [BEAT] markers — these do NOT count toward the word target.\n"
                           if video_mode else "\n"))
+                    + f"Write ONLY in {lang_label}. "
                     + "Do NOT include chapter title/number in output.\n"
                       "Return ONLY the chapter body text. No headings, no markdown, no meta-commentary."
             )
@@ -3927,6 +3980,22 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # Accumulate for inter-chapter context
             previous_chapters.append({"id": chap_id, "title": chap_title, "text": text})
 
+            # ── Step 1.2: persist chapter to narasi_chapters (DB = source of truth) ──
+            try:
+                _retrieved_ids = []
+                if use_rag and rag_context_text:
+                    _retrieved_ids = [
+                        (p.get("passage_id") or p.get("id"))
+                        for p in (_rag_ctx.get("passages") or [])
+                        if (p.get("passage_id") or p.get("id"))
+                    ]
+                await db.save_narasi_chapter(
+                    _narasi_tenant, _narasi_job_uuid, i, text,
+                    len(text.split()), user, _retrieved_ids,
+                    version=1, approved=False)
+            except Exception as _e:
+                _log.warning("save_narasi_chapter failed (non-fatal): %s", _e)
+
             # ── Fix 5: moat capture (WS-G Task 5) — store generated narration ──
             try:
                 _rag_result = {
@@ -3972,17 +4041,76 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             await db.finish_narasi_job(_narasi_tenant, job_id, "error",
                                        error=str(errors[:3]))
         else:
+            _stitched_md = "\n\n".join(
+                f"## Bab {pc['id']}: {pc['title']}\n\n{pc['text']}"
+                for pc in previous_chapters
+            )
             await db.finish_narasi_job(_narasi_tenant, job_id, "done", result={
                 "chapters": len(chapters),
                 "errors": errors,
                 "auto_cancelled": auto_cancelled,
                 "bab1_words": bab1_words,
                 "tmp_dir": str(tmp_dir),
+                "markdown": _stitched_md,          # DB = source of truth for combined output
             })
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)
     await rc.delete_progress(job_id)
     return  # background task — return value unused
+
+
+@app.post("/narasi/persist")
+async def narasi_persist(body: dict,
+                         user: CurrentUser = Depends(get_current_user)):
+    """Persist a Google-path (Node) narration run into Postgres: create/find the
+    jobs row, write every chapter to narasi_chapters, store stitched markdown in
+    jobs.result_payload. Node generates with the user's Google key, then calls
+    this so all narasi_chapters writes go through database.py."""
+    _tenant = user.tenant_id
+    _user   = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    job_id  = (body.get("job_id") or str(uuid.uuid4())[:8])[:16]
+    topic   = (body.get("topic") or "").strip()
+    style   = (body.get("style") or "storytelling").strip()
+    chapters = body.get("chapters") or []   # [{index, content, source_prompt, retrieved_ids, word_count, id?, title?}]
+
+    # Idempotent: reuse the job row if one already exists for this external id.
+    _row = None
+    try:
+        _row = await db.get_job_by_external(_tenant, job_id)
+    except Exception:
+        _row = None
+    if not _row:
+        try:
+            await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters))
+            _row = await db.get_job_by_external(_tenant, job_id)
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("persist create_narasi_job failed: %s", _e)
+    _job_uuid = (_row or {}).get("id")
+
+    saved, md_parts = 0, []
+    for ch in chapters:
+        try:
+            _idx  = int(ch.get("index", saved))
+            _text = ch.get("content") or ""
+            _wc   = int(ch.get("word_count") or len(_text.split()))
+            _ids  = list(ch.get("retrieved_ids") or [])
+            await db.save_narasi_chapter(
+                _tenant, _job_uuid, _idx, _text, _wc,
+                ch.get("source_prompt") or "", _ids,
+                version=1, approved=False)
+            md_parts.append(f"## Bab {ch.get('id', _idx)}: {ch.get('title','')}\n\n{_text}")
+            saved += 1
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("persist chapter %s failed: %s", ch.get("index"), _e)
+
+    try:
+        await db.finish_narasi_job(_tenant, job_id, "done", result={
+            "chapters": saved, "source": "google",
+            "markdown": "\n\n".join(md_parts),
+        })
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("persist finish failed: %s", _e)
+    return {"ok": True, "job_id": job_id, "chapters_saved": saved}
 
 
 @app.get("/narasi/status/{job_id}")
@@ -4106,7 +4234,7 @@ async def narasi_stitch(job_id: str, body: dict):
     topic = (body.get("topic") or "").strip()
     style = (body.get("style") or "storytelling").strip()
     language = (body.get("language") or "id").strip()
-    lang_label = "Bahasa Indonesia" if language == "id" else "English"
+    lang_label = _resolve_narasi_lang(language)
     import re as _re
     files = sorted(tmp_dir.glob("*.txt"),
                    key=lambda f: [int(c) if c.isdigit() else c for c in _re.split(r'(\d+)', f.stem)])

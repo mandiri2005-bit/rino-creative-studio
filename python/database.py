@@ -328,6 +328,37 @@ async def finish_narasi_job(tenant_id, external_id, status, result=None, error=N
     except Exception as e:
         log.error("finish_narasi_job: %s", e); raise
 
+async def save_narasi_chapter(tenant_id, job_id, chapter_index, content,
+                              word_count, source_prompt, retrieved_ids,
+                              version=1, approved=False):
+    """Upsert one chapter into narasi_chapters (durable read-back + capture).
+    job_id is the jobs.id UUID (NOT the external 8-char id). Idempotent on
+    (job_id, chapter_index): a retry of the same chapter overwrites in place and
+    bumps version. retrieved_ids is a list of Qdrant passage_id strings → stored
+    as a real jsonb array (pass the list, let the codec encode once)."""
+    try:
+        cid = await _q_fetchval(
+            """INSERT INTO narasi_chapters
+                   (tenant_id, job_id, chapter_index, content, word_count,
+                    version, source_prompt, retrieved_ids, approved)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+               ON CONFLICT (job_id, chapter_index) DO UPDATE SET
+                   content       = EXCLUDED.content,
+                   word_count    = EXCLUDED.word_count,
+                   version       = narasi_chapters.version + 1,
+                   source_prompt = EXCLUDED.source_prompt,
+                   retrieved_ids = EXCLUDED.retrieved_ids,
+                   approved      = EXCLUDED.approved,
+                   updated_at    = now()
+               RETURNING id""",
+            _uid(tenant_id), _uid(job_id), int(chapter_index),
+            content or "", int(word_count or 0), int(version or 1),
+            source_prompt or "", list(retrieved_ids or []), bool(approved),
+            tenant=str(tenant_id))           # bg task has no request ctx → set tenant
+        return str(cid)
+    except Exception as e:
+        log.error("save_narasi_chapter: %s", e); raise
+
 async def cleanup_old_jobs(tenant_id, older_than_hours=24) -> int:
     """Delete completed/failed jobs older than N hours."""
     try:
