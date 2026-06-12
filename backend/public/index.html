@@ -737,7 +737,7 @@ const api={
   narasiGenerateLz:async(b)=>fetch("/api/narasi/generate",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiGenerateGoogle:async(b)=>fetch("/api/narasi/generate/google",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiCancel:async(jobId)=>fetch(`/api/narasi/cancel/${jobId}`,{method:"POST",headers:(await authHdrFresh())}).then(r=>r.json()),
-  narasiStitch:(jobId,b)=>fetch(`/api/narasi/stitch/${jobId}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()),
+  narasiStitch:async(jobId,b)=>fetch(`/api/narasi/stitch/${jobId}`,{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiStatus:async(jobId)=>fetch(`/api/narasi/status/${jobId}`,{headers:(await authHdrFresh())}).then(r=>r.json()),
   batchJobs:()=>fetch("/api/jobs").then(r=>r.json()),
   batchSubmit:async b=>fetch("/api/submit",{method:"POST",headers:{...{"Content-Type":"application/json"},...(authHdr())},body:JSON.stringify(b)}).then(r=>r.json()),

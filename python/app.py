@@ -4267,20 +4267,49 @@ async def narasi_save_edit(job_id: str, body: dict,
 
 
 @app.post("/narasi/stitch/{job_id}")
-async def narasi_stitch(job_id: str, body: dict):
-    """Stitch saved chapter files into final markdown."""
-    tmp_dir = Path(f"/app/data/narasi_temp/{job_id}")
-    if not tmp_dir.exists():
-        raise HTTPException(404, f"Job {job_id} not found")
-    topic = (body.get("topic") or "").strip()
-    style = (body.get("style") or "storytelling").strip()
-    language = (body.get("language") or "id").strip()
+async def narasi_stitch(job_id: str, body: dict,
+                        user: CurrentUser = Depends(get_current_user)):
+    """Read a job's narration back. Step 1.3: the DB is the source of truth
+    (jobs.result_payload markdown → narasi_chapters), so an old job survives a
+    redeploy. The temp dir is only a fast cache; we never regenerate."""
+    _tenant    = user.tenant_id
+    style      = (body.get("style") or "storytelling").strip()
+    language   = (body.get("language") or "id").strip()
     lang_label = _resolve_narasi_lang(language)
-    import re as _re
-    files = sorted(tmp_dir.glob("*.txt"),
-                   key=lambda f: [int(c) if c.isdigit() else c for c in _re.split(r'(\d+)', f.stem)])
-    parts = [f.read_text(encoding="utf-8") for f in files]
-    body_text = "\n".join(parts)
+
+    body_text = ""
+    # ── 1. DB = source of truth: stored stitched markdown, else narasi_chapters ──
+    try:
+        _row = await db.get_job_by_external(_tenant, job_id)
+        if _row:
+            _payload = _row.get("result_payload") or {}
+            if isinstance(_payload, str):
+                try: _payload = json.loads(_payload)
+                except Exception: _payload = {}
+            _stored_md = ((_payload or {}).get("markdown") or "")
+            if _stored_md.strip():
+                body_text = _stored_md
+            elif _row.get("id"):
+                _chs = await db.get_narasi_chapters(_tenant, _row["id"])
+                if _chs:
+                    body_text = "\n\n".join(
+                        f"## Bab {int(c['chapter_index']) + 1}\n\n{c.get('content', '')}"
+                        for c in _chs)
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("stitch DB read failed (non-fatal): %s", _e)
+
+    # ── 2. fallback: temp-dir cache (fast; gone after redeploy) ──
+    if not body_text.strip():
+        tmp_dir = Path(f"/app/data/narasi_temp/{job_id}")
+        if tmp_dir.exists():
+            import re as _re
+            files = sorted(tmp_dir.glob("*.txt"),
+                           key=lambda f: [int(c) if c.isdigit() else c for c in _re.split(r'(\d+)', f.stem)])
+            body_text = "\n".join(f.read_text(encoding="utf-8") for f in files)
+
+    if not body_text.strip():
+        raise HTTPException(404, f"Job {job_id} not found")
+
     total_words = len(body_text.split())
     markdown = (f"> **Gaya:** {style} | **Bahasa:** {lang_label} | **{total_words} kata**\n\n---\n\n"
                 + body_text)

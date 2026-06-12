@@ -359,6 +359,19 @@ async def save_narasi_chapter(tenant_id, job_id, chapter_index, content,
     except Exception as e:
         log.error("save_narasi_chapter: %s", e); raise
 
+async def get_narasi_chapters(tenant_id, job_id) -> list:
+    """Read all chapters for a job (ordered by chapter_index) from narasi_chapters.
+    job_id is the internal jobs.id UUID. Durable read-back path (Step 1.3): open an
+    old job → read from DB, never regenerate. Returns [] if none."""
+    try:
+        rows = await _q_fetch(
+            "SELECT chapter_index, content, word_count, version "
+            "FROM narasi_chapters WHERE job_id=$1 ORDER BY chapter_index ASC",
+            _uid(job_id), tenant=str(tenant_id))
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.error("get_narasi_chapters: %s", e); raise
+
 async def cleanup_old_jobs(tenant_id, older_than_hours=24) -> int:
     """Delete completed/failed jobs older than N hours."""
     try:
