@@ -389,6 +389,41 @@ async def _track_usage(user, model, endpoint, *, resp=None, tok_in=0, tok_out=0,
     except Exception as _e:
         _lg.getLogger("usage").warning("[usage] log failed endpoint=%s: %s", endpoint, _e)
 
+
+def _sniff_image(data: bytes):
+    """(content_type, ext) from magic bytes."""
+    if data[:8].startswith(b"\x89PNG"):       return "image/png", "png"
+    if data[:2] == b"\xff\xd8":               return "image/jpeg", "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return "image/webp", "webp"
+    return "image/png", "png"
+
+
+async def _capture_image_flow(user, model, job_type, images_b64):
+    """Synchronous image flows (generate-image / whisk / flow-images): create ONE
+    'done' jobs row, persist each generated image to R2 + assets (so it's durable
+    and captured for the moat — these used to be base64-only, ephemeral), and log
+    one usage_logs row per image, all linked to the job. No tenant → usage warns."""
+    tid = getattr(user, "tenant_id", None) if user else None
+    if not tid:
+        for b in images_b64:
+            if b:
+                await _track_usage(user, model, "image")
+        return
+    jid = await db.log_sync_job(tid, job_type, {"model": model, "count": len(images_b64)})
+    for i, b64 in enumerate(images_b64):
+        if not b64:
+            continue
+        try:
+            data = base64.b64decode(b64)
+            ct, ext = _sniff_image(data)
+            await _persist_asset(tid, asset_type="image", source_job_type=job_type,
+                                 filename=f"{job_type}_{i+1}.{ext}", data=data,
+                                 content_type=ct, job_id=jid,
+                                 metadata={"model": model, "kind": job_type})
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("usage").warning("[capture] %s: %s", job_type, _e)
+        await _track_usage(user, model, "image", job_id=jid)
+
 # ---------------------------------------------------------------------------
 # FastAPI app  — with DB lifespan (Phase 1 migration)
 # ---------------------------------------------------------------------------
@@ -1762,7 +1797,7 @@ async def generate_image(req: ImageRequest,
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
-        await _track_usage(user, req.model, "image", job_type="generate_image")
+        await _capture_image_flow(user, req.model, "generate_image", [b64])
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2376,7 +2411,7 @@ async def whisk_generate(
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
-        await _track_usage(user, req.model, "image", job_type="whisk")
+        await _capture_image_flow(user, req.model, "whisk", [b64])
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2473,12 +2508,9 @@ async def flow_images_only(
     finally:
         IMAGE_API_KEY = original_key
 
-    # one job for the request + one usage row per generated frame (no under-billing)
-    _jid = (await db.log_sync_job(user.tenant_id, "flow_image", {"model": req.model})
-            if (user and getattr(user, "tenant_id", None)) else None)
-    for _img in images:
-        if _img.get("image_b64"):
-            await _track_usage(user, req.model, "image", job_id=_jid)
+    # one job + persist each frame to R2/assets + one usage row per frame
+    await _capture_image_flow(user, req.model, "flow_image",
+                              [im.get("image_b64") for im in images])
     return {"images": images}
 
 

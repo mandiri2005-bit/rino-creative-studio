@@ -165,6 +165,33 @@ async function trackUsage(req, model, endpoint, provider = "gemini", count = 1, 
   } catch (e) { console.error("[trackUsage]", endpoint, e.message); }
 }
 
+function _sniffImage(buf) {
+  if (buf.slice(0,8).toString("latin1").startsWith("\x89PNG")) return ["image/png","png"];
+  if (buf[0] === 0xff && buf[1] === 0xd8) return ["image/jpeg","jpg"];
+  if (buf.slice(0,4).toString("latin1")==="RIFF" && buf.slice(8,12).toString("latin1")==="WEBP") return ["image/webp","webp"];
+  return ["image/png","png"];
+}
+// Synchronous image flows (google-native): ONE 'done' job + persist each image to
+// R2/assets (durable + moat capture; were base64-only) + one usage row per image.
+async function captureImageFlow(req, model, jobType, b64list, provider = "gemini") {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
+    const list = (b64list || []).filter(Boolean);
+    const jobId = await logSyncJob(tenantId, jobType, { model, count: list.length });
+    const cost = calcImageCost(model, 1);
+    for (let i = 0; i < list.length; i++) {
+      const buf = Buffer.from(list[i], "base64");
+      const [ct, ext] = _sniffImage(buf);
+      try {
+        await persistAsset({ tenantId, userId, jobId, assetType: "image", sourceJobType: jobType,
+          filename: `${jobType}_${i+1}.${ext}`, buffer: buf, contentType: ct, metadata: { model } });
+      } catch (e) { console.error("[captureImageFlow] persist", e.message); }
+      await logUsage(tenantId, userId, model || "unknown", "image", 0, 0, cost, null, provider, jobId);
+    }
+  } catch (e) { console.error("[captureImageFlow]", jobType, e.message); }
+}
+
 // ── WAV & batch helpers imported from utils.mjs ──
 
 // ── Express ───────────────────────────────────────────────────────────────────
@@ -473,7 +500,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       const okCount = images.filter(x=>x.image_b64).length;
       if (!okCount) throw new Error("Google native returned no images");
       console.log(`[flow/images/native] GOOGLE ok model=${nativeModel} scenes=${scenes.length} images=${okCount}`);
-      await trackUsage(req, nativeModel, "image", "gemini", okCount, "flow_image");
+      await captureImageFlow(req, nativeModel, "flow_image", images.map(im=>im.image_b64));
       return res.json({ images, via:"google_native" });
 
     } catch(e) {
@@ -1963,7 +1990,7 @@ app.post("/api/generate-image/google", async (req,res) => {
       config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
     const imgData = resp?.generatedImages?.[0]?.image?.imageBytes;
     if (!imgData) throw new Error("No image returned");
-    await trackUsage(req, model, "image", "gemini", 1, "generate_image");
+    await captureImageFlow(req, model, "generate_image", [imgData]);
     res.json({ image_b64: imgData });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -1997,7 +2024,7 @@ app.post("/api/whisk/google", async (req,res) => {
     });
     const imgPart = resp?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
     if (!imgPart) throw new Error("Gemini returned no image — try LaoZhang mode");
-    await trackUsage(req, "gemini-2.0-flash-exp", "image", "gemini", 1, "whisk");
+    await captureImageFlow(req, "gemini-2.0-flash-exp", "whisk", [imgPart.inlineData.data]);
     res.json({ image_b64: imgPart.inlineData.data });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -2074,7 +2101,7 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
       return { index:i, image_b64: data||"" };
     }));
     const images = results.map((r,i) => r.status==="fulfilled" ? r.value : { index:i, image_b64:"" });
-    await trackUsage(req, model, "image", "gemini", images.filter(im=>im?.image_b64).length, "flow_image");
+    await captureImageFlow(req, model, "flow_image", images.map(im=>im.image_b64));
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
