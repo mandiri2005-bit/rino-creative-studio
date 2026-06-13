@@ -127,7 +127,22 @@
 
       // window.Clerk is now the constructor (v5 exposes it after data-clerk-publishable-key is set)
       _clerk = window.Clerk;
-      await _clerk.load();
+      await _clerk.load({
+        // Brand the hosted Clerk sign-in/up widgets from code (no dashboard needed).
+        // Widget background is light → use the BLACK logo. Title overrides the
+        // default "Sign in to <app name>".
+        appearance: {
+          layout: {
+            logoImageUrl: window.location.origin + "/assets/ceritaai-mark-black.png",
+            logoPlacement: "inside",
+          },
+          variables: { colorPrimary: "#6366f1" },
+        },
+        localization: {
+          signIn: { start: { title: "Sign in to Cerita AI", subtitle: "Welcome back! Please sign in to continue" } },
+          signUp: { start: { title: "Create your Cerita AI account", subtitle: "Welcome! Please fill in the details to get started" } },
+        },
+      });
 
       _clerk.addListener(({ user }) => {
         _currentUser = user || null;
