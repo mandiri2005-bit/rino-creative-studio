@@ -29,3 +29,6 @@ __pycache__/
 *.pyc
 .env
 .env.local
+# eval run artifacts — keep the dir, ignore its contents
+eval/results/*
+!eval/results/.gitkeep
