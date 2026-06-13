@@ -1411,6 +1411,7 @@ app.post("/api/retrieve", requireAuth, async(req,res)=>{
   if(!ai) return res.status(400).json({error:"No API key"});
   try{
     const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
     const {jobName}=req.body||{};if(!jobName)return res.status(400).json({error:"jobName required"});
     const row = await findJobByJobName(tenantId, jobName);
     const record = row?.result_payload || null;
@@ -1432,8 +1433,13 @@ app.post("/api/retrieve", requireAuth, async(req,res)=>{
       const part=parts.find(p=>p?.inlineData?.data||p?.inline_data?.data);
       const data=part?.inlineData?.data||part?.inline_data?.data;
       if(!data){failed++;continue;}
-      const outName=`${filename}.png`;fs.writeFileSync(path.join(OUTPUT_DIR,outName),Buffer.from(data,"base64"));
-      files.push({key,file:outName});saved++;
+      const outName=`${filename}.png`;const _buf=Buffer.from(data,"base64");
+      fs.writeFileSync(path.join(OUTPUT_DIR,outName),_buf);
+      const _rec={key,file:outName};
+      try{ const a=await persistAsset({tenantId,userId,jobId:row?.id||null,assetType:"image",sourceJobType:"batch_image",filename:outName,buffer:_buf,contentType:"image/png",metadata:{batch:jobName}});
+           if(a){_rec.assetKey=a.key;_rec.assetId=a.id;} }
+      catch(e){console.error("[batch] R2 persist failed:",e.message);}
+      files.push(_rec);saved++;
     }
     if(row) await patchJobPayload(row.id, { state, retrieved: saved });
     res.json({ok:true,state,saved,failed,files});
@@ -1480,7 +1486,7 @@ function chunkTextForAudiobook(text, maxChars=4000){
   flush();
   return chunks;
 }
-async function runLaozhangTtsJob(jobId,{tenantId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
   let job=await getLiveJob(jobId);
   // Audiobook mode = treat whole transcript as continuous prose, chunk at ~4000 char.
   // Default = split by blank line (one file per paragraph), legacy behaviour.
@@ -1543,7 +1549,11 @@ async function runLaozhangTtsJob(jobId,{tenantId,apiKeys,model,voice,speed,langu
         try{wav=prependSilence(wav,silenceSeconds);}catch(_){/* keep original */}
       }
       fs.writeFileSync(path.join(TTS_DIR,filename),wav);
-      job.files.push({file:filename,url:`/audio/${encodeURIComponent(filename)}`});
+      const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
+      job.files.push(_f);
+      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice}});
+           if(a){_f.key=a.key;_f.assetId=a.id;} }
+      catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
       log(`✅ ${filename}`);
       await new Promise(r=>setTimeout(r,400));
       i++;job.progress=i;await flush();
@@ -1559,7 +1569,7 @@ async function runLaozhangTtsJob(jobId,{tenantId,apiKeys,model,voice,speed,langu
   await completeJob(jobId, { files: job.files, total: job.total });
 }
 
-async function runTtsJob(jobId,{tenantId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
   let job=await getLiveJob(jobId);
   const lines=transcriptBody.trim().split(/\n\n+/).filter(l=>l.trim());
   job.total=lines.length;job.progress=0;job.status="running";
@@ -1588,7 +1598,11 @@ async function runTtsJob(jobId,{tenantId,apiKeys,model,voice,silenceSeconds,audi
         let wav=convertToWav(raw,inlineData.mimeType||"audio/L16;rate=24000");
         if(silenceSeconds>0)wav=prependSilence(wav,silenceSeconds);
         fs.writeFileSync(path.join(TTS_DIR,filename),wav);
-        job.files.push({file:filename,url:`/audio/${encodeURIComponent(filename)}`});
+        const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
+        job.files.push(_f);
+        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice}});
+             if(a){_f.key=a.key;_f.assetId=a.id;} }
+        catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
         log(`✅ ${filename}`);
       }else{log(`⚠️  No audio for line ${i+1}`);}
       await new Promise(r=>setTimeout(r,1000));i++;job.progress=i;await flush();
@@ -1653,7 +1667,7 @@ app.post("/api/tts/start", requireAuth, async(req,res)=>{
   // Seed result_payload so list/restart shows model/voice/total before completion.
   await patchJobPayload(jobId, { apiMode, model, voice, total:lines.length });
   const runner=apiMode==="laozhang"?runLaozhangTtsJob:runTtsJob;
-  runner(jobId,{tenantId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
+  runner(jobId,{tenantId,userId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
     .catch(async e=>{ await failJob(jobId, e.message);
       await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal: "+e.message);return j;}); });
   res.json({ok:true,jobId,total:lines.length});
