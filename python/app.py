@@ -431,6 +431,28 @@ def make_client(model: str = "") -> OpenAI:
     return OpenAI(api_key=_req_key.get() or API_KEY, base_url=BASE_URL)
 
 
+# ── Review personas (rules) live SERVER-SIDE — never shipped to the client ────
+import os as _os_rp, json as _json_rp
+_REVIEW_PERSONAS = {}
+try:
+    with open(_os_rp.path.join(_os_rp.path.dirname(__file__), "review_personas.json"), encoding="utf-8") as _pf:
+        _REVIEW_PERSONAS = _json_rp.load(_pf)
+except Exception as _pe:
+    import logging as _lg_rp; _lg_rp.getLogger("narasi").warning("review_personas.json load failed: %s", _pe)
+
+def _review_persona_for(style):
+    """Map a style id to a server-side review persona (rules). Keeps the rule text
+    out of the client entirely."""
+    s = (style or "").lower()
+    if "harari" in s or "diamond" in s or "big history" in s or "academic popular" in s:
+        key = "harari"
+    elif "non-fiction" in s or "narrative" in s or "literary" in s or "journalistic" in s:
+        key = "narrative"
+    else:
+        key = "default"
+    return _REVIEW_PERSONAS.get(key) or _REVIEW_PERSONAS.get("default") or {}
+
+
 # Maps laozhang_api style names -> style_rag_config keys
 # style_rag_config._ALIASES handles all translation internally
 # Keeping a minimal map here only for the rare styles not in style_rag_config
@@ -4260,7 +4282,10 @@ async def narasi_review(body: dict, user: CurrentUser = Depends(get_current_user
     """Non-streaming editorial review — same pattern as narasi/generate. Auth'd +
     tenant-scoped so the capture (usage + moat) is isolated per tenant."""
     model = (body.get("model") or "gemini-2.5-flash").strip()
-    system = (body.get("system") or "You are a helpful editorial assistant.").strip()
+    # Rules come from the SERVER persona (by style), never from the client.
+    # Backward-compat: only use server persona when a style is actually sent.
+    _style = (body.get("style") or "").strip()
+    system = ((_review_persona_for(_style).get("system") if _style else body.get("system")) or "You are a helpful editorial assistant.").strip()
     message = (body.get("message") or "").strip()
     max_tokens = int(body.get("max_tokens") or 16000)
     if not message:
@@ -4952,7 +4977,10 @@ async def oneshot_fix_submit(body: dict,
                              user: CurrentUser = Depends(get_current_user)):
     """Submit a one-shot fix job. Returns job_id immediately, processes in background."""
     model     = (body.get("model")     or "gemini-2.5-pro").strip()
-    system    = (body.get("system")    or "").strip()
+    # One-Shot Fix sends persona_style → rules from SERVER persona (not client).
+    # VO Optimize sends its own `system` (VO_OPTIMIZE_SYSTEM, not editorial rules).
+    _ps = (body.get("persona_style") or "").strip()
+    system    = (_review_persona_for(_ps).get("system") if _ps else (body.get("system") or "")).strip()
     content   = (body.get("content")   or "").strip()
     file_name = (body.get("file_name") or "narasi").strip()
     if not content: raise HTTPException(400, "content required")

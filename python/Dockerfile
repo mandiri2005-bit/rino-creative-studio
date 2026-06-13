@@ -24,8 +24,9 @@ RUN pip install --no-cache-dir \
     asyncpg \
     python-dotenv
 
-# Copy top-level .py files (laozhang_api.py etc.)
+# Copy top-level .py files (laozhang_api.py etc.) + server-side data (review personas)
 COPY *.py ./
+COPY review_personas.json ./
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

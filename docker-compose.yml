@@ -24,6 +24,7 @@ services:
       - ./python/auth_middleware.py:/app/auth_middleware.py
       - ./python/database.py:/app/database.py
       - ./python/redis_client.py:/app/redis_client.py
+      - ./python/review_personas.json:/app/review_personas.json
     expose: ["8000"]
 
   # ── MCP File Search (optional — only starts with --profile mcp) ───────────
