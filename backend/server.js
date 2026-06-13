@@ -501,6 +501,10 @@ app.post("/api/narasi/cancel/:jobId", (req,res)=>{
   setTimeout(()=>googleCancelFlags.delete(req.params.jobId), 60000); // cleanup after 1min
   pyProxy(req,res,`/narasi/cancel/${req.params.jobId}`);
 });
+// PERSIST (proxy → Python) — durable write of generated chapters + capture cols
+// (retrieved_ids/source_prompt). Used by the Google handler server-side and the
+// Phase-1 E2E suite; tenant-scoped + auth-guarded by python Depends(get_current_user).
+app.post("/api/narasi/persist", (req,res)=>pyProxy(req,res,"/narasi/persist"));
 app.get("/api/narasi/jobs", (req,res)=>pyProxy(req,res,"/narasi/jobs"));
 app.post("/api/narasi/rate", (req,res)=>pyProxy(req,res,"/narasi/rate"));
 app.post("/api/narasi/rate-all", (req,res)=>pyProxy(req,res,"/narasi/rate-all"));

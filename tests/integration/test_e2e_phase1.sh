@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Rino Creative Studio — Phase 1 End-to-End Integration Tests (E01–E15)
+#  Rino Creative Studio — Phase 1 End-to-End Integration Tests (E01–E19)
 #
 #  Runs the full auth → endpoint → DB → restart-persistence chain against a
 #  live stack behind nginx at $BASE_URL.
+#
+#  E16–E19 cover Step 1 (durable + captured output) moat write/read paths:
+#    E16  persist → narasi_chapters with retrieved_ids        (1.2 write+capture)
+#    E17  reopen job → text read back from DB (status markdown) (1.3 durability)
+#    E18  rate chapter 5★ → approvals row + chapter.approved   (1.4 rating)
+#    E19  save-edit → correction_pairs.edit_distance (difflib) (1.5 edit signal)
+#  NOTE: the 0017 `revisions` table was superseded by the richer correction_pairs
+#  (0012: + edit_ratio + quality_tier); the edit signal lands there in this build.
 #
 #  Required env:
 #    CLERK_SECRET_KEY   — Clerk test-mode secret (sk_test_…)              [required]
@@ -42,7 +50,7 @@ CLERK_API="https://api.clerk.com/v1"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
-TOTAL=15
+TOTAL=19
 
 RUN_ID="$(date +%s)-$$"
 TENANT_A_EMAIL="e2e-a-${RUN_ID}@example.com"
@@ -57,6 +65,9 @@ TENANT_A_UUID=""; TENANT_B_UUID=""
 # Shared state captured across tests
 SESSION_A="e2e-sess-a-${RUN_ID}"   # chat session id used by E04/E05/E11
 ONESHOT_JOB_ID=""                  # captured in E07, reused in E08/E12
+NARASI_JOB_ID="e2e$(date +%s)"     # ≤16 chars: persist truncates job_id to 16 (E16, read E17–E19)
+NARASI_CHAPTER_ID=""               # chapter UUID captured in E17, rated in E18
+NARASI_MARKER="E2E_NARASI_MARKER_${RUN_ID}"  # unique text proving DB read-back
 
 # ─── Colours ─────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -524,11 +535,16 @@ else
 fi
 
 # =============================================================================
-#  E15 — Models endpoint is public
+#  E15 — Models endpoint is auth-guarded
+#  The node global API guard allowlists ONLY /api/health; every other /api/*
+#  (incl. /api/models) requires a valid Clerk token. Assert unauth → 401 and
+#  authed → 200 + a non-empty models array.
 # =============================================================================
-log "E15 — GET /api/models (no auth) → 200 + array of models"
-E15_STATUS=$(http_status "" GET /api/models)
-E15_BODY=$(curl -s "${BASE_URL}/api/models")
+log "E15 — GET /api/models: 401 unauth, 200 + models array authed"
+refresh_tokens
+E15_NOAUTH=$(http_status "" GET /api/models)
+E15_STATUS=$(http_status "$TOKEN_A" GET /api/models)
+E15_BODY=$(curl_auth "$TOKEN_A" GET /api/models)
 # /api/models returns {"models":[...]} (object wrapping the array). Accept either
 # a bare array or an object whose .models is a non-empty array.
 E15_OK=$(echo "$E15_BODY" | python3 -c "
@@ -539,10 +555,145 @@ try:
     print('yes' if isinstance(arr, list) and len(arr) > 0 else 'no')
 except: print('no')
 " 2>/dev/null || echo "no")
-if [[ "$E15_STATUS" == "200" && "$E15_OK" == "yes" ]]; then
-    pass "E15: /api/models public → 200, models array present"
+if [[ "$E15_NOAUTH" == "401" && "$E15_STATUS" == "200" && "$E15_OK" == "yes" ]]; then
+    pass "E15: /api/models guarded (unauth 401) + authed 200 with models array"
 else
-    fail "E15: HTTP ${E15_STATUS}, models_array=${E15_OK} (resp: ${E15_BODY:0:100})"
+    fail "E15: noauth=${E15_NOAUTH} authed=${E15_STATUS} models_array=${E15_OK} (resp: ${E15_BODY:0:100})"
+fi
+
+# =============================================================================
+#  E16 — Durable WRITE + capture: persist chapters with retrieved_ids (Step 1.2)
+#  POST /api/narasi/persist writes narasi_chapters (content + source_prompt +
+#  retrieved_ids jsonb) and finishes the job with stitched markdown in
+#  jobs.result_payload. Pure write path — no LLM call.
+# =============================================================================
+log "E16 — persist narasi chapters → narasi_chapters w/ retrieved_ids (Step 1.2)"
+refresh_tokens   # E08 restart aged the tokens; E16–E19 run late in the suite
+E16_RESP=$(curl_auth "$TOKEN_A" POST /api/narasi/persist -d "{
+    \"job_id\": \"${NARASI_JOB_ID}\",
+    \"topic\": \"E2E Majapahit ${RUN_ID}\",
+    \"style\": \"storytelling\",
+    \"chapters\": [{
+        \"index\": 0, \"id\": 1, \"title\": \"Kemegahan Majapahit\",
+        \"content\": \"${NARASI_MARKER} — Majapahit adalah kerajaan besar di Nusantara.\",
+        \"source_prompt\": \"Tulis bab tentang kemegahan Majapahit\",
+        \"retrieved_ids\": [\"e2e-passage-${RUN_ID}-1\", \"e2e-passage-${RUN_ID}-2\"],
+        \"word_count\": 9, \"model\": \"gemini-2.5-flash\"
+    }]
+}")
+E16_OK=$(echo "$E16_RESP" | json_val ok)
+E16_SAVED=$(echo "$E16_RESP" | json_val chapters_saved)
+if [[ "$E16_OK" == "True" && "${E16_SAVED:-0}" =~ ^[0-9]+$ && "${E16_SAVED:-0}" -ge 1 ]]; then
+    if $HAVE_PSQL; then
+        E16_DB=$(psql_safe "SELECT COUNT(*) FROM narasi_chapters nc
+                              JOIN jobs j ON nc.job_id = j.id
+                             WHERE j.external_job_id = '${NARASI_JOB_ID}'
+                               AND nc.tenant_id = '${TENANT_A_UUID}'
+                               AND nc.retrieved_ids::text LIKE '%e2e-passage-${RUN_ID}-1%'
+                               AND COALESCE(nc.source_prompt,'') <> ''")
+        if [[ "$E16_DB" == "1" ]]; then
+            pass "E16: chapter persisted with retrieved_ids + source_prompt (DB row verified)"
+        else
+            fail "E16: persist ok but DB check failed (matching rows=${E16_DB})"
+        fi
+    else
+        pass "E16: persist ok (chapters_saved=${E16_SAVED}; DB check skipped — no psql)"
+    fi
+else
+    fail "E16: persist failed — ok=${E16_OK} saved=${E16_SAVED} (resp: ${E16_RESP:0:160})"
+fi
+
+# =============================================================================
+#  E17 — Durable READ-BACK: reopen the job, text comes from DB (Step 1.3)
+#  GET /api/narasi/status returns jobs.result_payload (stitched markdown);
+#  /api/narasi/jobs lists the job; /api/narasi/chapters lists chapter rows.
+#  Proves an old job is read from Postgres, never regenerated. Captures chapter id.
+# =============================================================================
+log "E17 — read job back from DB: status.markdown + chapters list (Step 1.3)"
+E17_STATUS=$(curl_auth "$TOKEN_A" GET "/api/narasi/status/${NARASI_JOB_ID}")
+E17_FOUND=$(echo "$E17_STATUS" | json_val found)
+E17_MD_HAS=$(echo "$E17_STATUS" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin); r = d.get('result') or {}
+    md = r.get('markdown','') if isinstance(r, dict) else ''
+    print('yes' if '${NARASI_MARKER}' in (md or '') else 'no')
+except: print('no')" 2>/dev/null || echo no)
+E17_JOBS=$(curl_auth "$TOKEN_A" GET /api/narasi/jobs)
+E17_LISTED=$(echo "$E17_JOBS" | grep -c "${NARASI_JOB_ID}" || true)
+E17_CHAPS=$(curl_auth "$TOKEN_A" GET "/api/narasi/chapters/${NARASI_JOB_ID}")
+NARASI_CHAPTER_ID=$(echo "$E17_CHAPS" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin); c = d.get('chapters') or []
+    print(c[0].get('id','') if c else '')
+except: print('')" 2>/dev/null || echo "")
+if [[ "$E17_FOUND" == "True" && "$E17_MD_HAS" == "yes" && -n "$NARASI_CHAPTER_ID" ]]; then
+    pass "E17: job read from DB (markdown marker present, listed=${E17_LISTED}, chapter=${NARASI_CHAPTER_ID:0:8}…)"
+else
+    fail "E17: read-back failed — found=${E17_FOUND} marker=${E17_MD_HAS} listed=${E17_LISTED} chap=${NARASI_CHAPTER_ID:0:8}"
+fi
+
+# =============================================================================
+#  E18 — Rating signal written to approvals (Step 1.4)
+#  POST /api/narasi/rate {chapter_id, rating:5} → approvals row + chapter.approved.
+# =============================================================================
+log "E18 — rate chapter 5★ → approvals row (Step 1.4)"
+if [[ -z "$NARASI_CHAPTER_ID" ]]; then
+    skip "E18: no chapter id from E17"
+else
+    E18_RESP=$(curl_auth "$TOKEN_A" POST /api/narasi/rate \
+        -d "{\"chapter_id\":\"${NARASI_CHAPTER_ID}\",\"rating\":5}")
+    E18_OK=$(echo "$E18_RESP" | json_val ok)
+    E18_APPROVED=$(echo "$E18_RESP" | json_val approved)
+    if [[ "$E18_OK" == "True" && "$E18_APPROVED" == "True" ]]; then
+        if $HAVE_PSQL; then
+            E18_DB=$(psql_safe "SELECT COUNT(*) FROM approvals
+                                 WHERE chapter_id='${NARASI_CHAPTER_ID}'
+                                   AND tenant_id='${TENANT_A_UUID}' AND rating=5")
+            E18_FLAG=$(psql_safe "SELECT approved FROM narasi_chapters WHERE id='${NARASI_CHAPTER_ID}'")
+            if [[ "$E18_DB" =~ ^[0-9]+$ && "$E18_DB" -ge 1 && "$E18_FLAG" == "t" ]]; then
+                pass "E18: approval row written (rating=5) + chapter.approved=t"
+            else
+                fail "E18: rate ok but DB check failed (approvals=${E18_DB}, chapter.approved=${E18_FLAG})"
+            fi
+        else
+            pass "E18: rate ok, approved=True (DB check skipped — no psql)"
+        fi
+    else
+        fail "E18: rate failed — ok=${E18_OK} approved=${E18_APPROVED} (resp: ${E18_RESP:0:160})"
+    fi
+fi
+
+# =============================================================================
+#  E19 — Human edit captured with edit_distance (Step 1.5)
+#  POST /api/narasi/save-edit/{job_id} {original_text, corrected_text} → the
+#  server computes edit_distance via difflib and writes a correction_pairs row.
+# =============================================================================
+log "E19 — save-edit → correction_pairs.edit_distance via difflib (Step 1.5)"
+E19_RESP=$(curl_auth "$TOKEN_A" POST "/api/narasi/save-edit/${NARASI_JOB_ID}" -d "{
+    \"chap_id\": \"e2e-chap-1\",
+    \"original_text\": \"Majapahit adalah kerajaan besar di nusantara.\",
+    \"corrected_text\": \"Majapahit adalah kerajaan maritim terbesar di Nusantara pada abad ke-14.\",
+    \"style\": \"storytelling\", \"topic\": \"E2E Majapahit ${RUN_ID}\", \"language\": \"id\"
+}")
+E19_OK=$(echo "$E19_RESP" | json_val ok)
+E19_TIER=$(echo "$E19_RESP" | json_val quality_tier)
+E19_RATIO=$(echo "$E19_RESP" | json_val edit_ratio)
+if [[ "$E19_OK" == "True" && -n "$E19_TIER" ]]; then
+    if $HAVE_PSQL; then
+        E19_DB=$(psql_safe "SELECT COUNT(*) FROM correction_pairs
+                             WHERE tenant_id='${TENANT_A_UUID}' AND edit_distance > 0")
+        if [[ "$E19_DB" =~ ^[0-9]+$ && "$E19_DB" -ge 1 ]]; then
+            pass "E19: correction pair written (tier=${E19_TIER}, edit_ratio=${E19_RATIO}, edit_distance>0 in DB)"
+        else
+            fail "E19: save-edit ok but no correction_pairs row with edit_distance>0 (count=${E19_DB})"
+        fi
+    else
+        pass "E19: save-edit ok (tier=${E19_TIER}, edit_ratio=${E19_RATIO}; DB check skipped — no psql)"
+    fi
+else
+    fail "E19: save-edit failed — ok=${E19_OK} tier=${E19_TIER} (resp: ${E19_RESP:0:160})"
 fi
 
 # =============================================================================
