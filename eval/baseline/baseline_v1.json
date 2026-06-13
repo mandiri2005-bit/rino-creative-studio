@@ -1,0 +1,1165 @@
+{
+  "meta": {
+    "created_at": "2026-06-13T13:39:25",
+    "frozen_from": "run_20260613_133537.json",
+    "run_created_at": "2026-06-13T13:35:37",
+    "collection": "gutenberg_passages_v2_qwen3-0.6b",
+    "embed_model": "qwen3-0.6b",
+    "top_k": 10,
+    "n_entries": 25,
+    "golden_set": "golden_set.yaml",
+    "golden_sha256": "476451216ac483a22c9d16588dcc7b9bc3ce7664117e886c3610134eac58641d"
+  },
+  "entries": [
+    {
+      "id": "majapahit-puncak-kejayaan",
+      "prefer_source": true,
+      "passages": [
+        {
+          "passage_id": "900017_0003",
+          "score": 0.6267
+        },
+        {
+          "passage_id": "901377_0006",
+          "score": 0.5994
+        },
+        {
+          "passage_id": "901358_0001",
+          "score": 0.592
+        },
+        {
+          "passage_id": "900069_0001",
+          "score": 0.5849
+        },
+        {
+          "passage_id": "900428_0001",
+          "score": 0.562
+        },
+        {
+          "passage_id": "901316_0007",
+          "score": 0.5609
+        },
+        {
+          "passage_id": "900069_0008",
+          "score": 0.5591
+        },
+        {
+          "passage_id": "900875_0004",
+          "score": 0.5585
+        },
+        {
+          "passage_id": "900586_0001",
+          "score": 0.5577
+        },
+        {
+          "passage_id": "901093_0001",
+          "score": 0.5553
+        }
+      ]
+    },
+    {
+      "id": "sriwijaya-imperium-maritim",
+      "prefer_source": true,
+      "passages": [
+        {
+          "passage_id": "901041_0001",
+          "score": 0.5653
+        },
+        {
+          "passage_id": "900806_0001",
+          "score": 0.5512
+        },
+        {
+          "passage_id": "901388_0001",
+          "score": 0.5468
+        },
+        {
+          "passage_id": "900830_0001",
+          "score": 0.5344
+        },
+        {
+          "passage_id": "900925_0001",
+          "score": 0.5343
+        },
+        {
+          "passage_id": "900945_0003",
+          "score": 0.5314
+        },
+        {
+          "passage_id": "900535_0003",
+          "score": 0.5295
+        },
+        {
+          "passage_id": "901138_0001",
+          "score": 0.5268
+        },
+        {
+          "passage_id": "900945_0001",
+          "score": 0.5206
+        },
+        {
+          "passage_id": "900945_0005",
+          "score": 0.5191
+        }
+      ]
+    },
+    {
+      "id": "jalur-rempah-nusantara",
+      "prefer_source": true,
+      "passages": [
+        {
+          "passage_id": "901158_0016",
+          "score": 0.4909
+        },
+        {
+          "passage_id": "901323_0001",
+          "score": 0.4644
+        },
+        {
+          "passage_id": "901323_0013",
+          "score": 0.4635
+        },
+        {
+          "passage_id": "901339_0002",
+          "score": 0.4587
+        },
+        {
+          "passage_id": "901158_0001",
+          "score": 0.4559
+        },
+        {
+          "passage_id": "901303_0002",
+          "score": 0.454
+        },
+        {
+          "passage_id": "900003_0002",
+          "score": 0.4457
+        },
+        {
+          "passage_id": "901323_0007",
+          "score": 0.4413
+        },
+        {
+          "passage_id": "900901_0001",
+          "score": 0.4407
+        },
+        {
+          "passage_id": "901311_0007",
+          "score": 0.4397
+        }
+      ]
+    },
+    {
+      "id": "borobudur-mahakarya-syailendra",
+      "prefer_source": true,
+      "passages": [
+        {
+          "passage_id": "901377_0002",
+          "score": 0.4213
+        },
+        {
+          "passage_id": "900325_0001",
+          "score": 0.4161
+        },
+        {
+          "passage_id": "901349_0006",
+          "score": 0.4024
+        },
+        {
+          "passage_id": "900060_0002",
+          "score": 0.3916
+        },
+        {
+          "passage_id": "900542_0002",
+          "score": 0.3903
+        },
+        {
+          "passage_id": "900022_0046",
+          "score": 0.3867
+        },
+        {
+          "passage_id": "901380_0009",
+          "score": 0.3862
+        },
+        {
+          "passage_id": "901267_0009",
+          "score": 0.3853
+        },
+        {
+          "passage_id": "900042_0019",
+          "score": 0.3819
+        },
+        {
+          "passage_id": "900056_0037",
+          "score": 0.3807
+        }
+      ]
+    },
+    {
+      "id": "sumpah-palapa-gajah-mada",
+      "prefer_source": true,
+      "passages": [
+        {
+          "passage_id": "900658_0003",
+          "score": 0.6909
+        },
+        {
+          "passage_id": "900720_0001",
+          "score": 0.6651
+        },
+        {
+          "passage_id": "901364_0015",
+          "score": 0.6441
+        },
+        {
+          "passage_id": "900001_0001",
+          "score": 0.6211
+        },
+        {
+          "passage_id": "901143_0001",
+          "score": 0.5786
+        },
+        {
+          "passage_id": "900567_0001",
+          "score": 0.5602
+        },
+        {
+          "passage_id": "900017_0004",
+          "score": 0.5574
+        },
+        {
+          "passage_id": "901364_0016",
+          "score": 0.5559
+        },
+        {
+          "passage_id": "901347_0004",
+          "score": 0.5552
+        },
+        {
+          "passage_id": "900720_0003",
+          "score": 0.5539
+        }
+      ]
+    },
+    {
+      "id": "trowulan-jejak-majapahit",
+      "prefer_source": true,
+      "passages": [
+        {
+          "passage_id": "901358_0001",
+          "score": 0.5712
+        },
+        {
+          "passage_id": "901377_0006",
+          "score": 0.5575
+        },
+        {
+          "passage_id": "900017_0003",
+          "score": 0.5508
+        },
+        {
+          "passage_id": "900288_0001",
+          "score": 0.5502
+        },
+        {
+          "passage_id": "900000_0001",
+          "score": 0.5501
+        },
+        {
+          "passage_id": "901387_0001",
+          "score": 0.55
+        },
+        {
+          "passage_id": "900360_0007",
+          "score": 0.5456
+        },
+        {
+          "passage_id": "900181_0001",
+          "score": 0.5429
+        },
+        {
+          "passage_id": "900069_0011",
+          "score": 0.5414
+        },
+        {
+          "passage_id": "900779_0001",
+          "score": 0.5364
+        }
+      ]
+    },
+    {
+      "id": "kopi-indonesia-sejarah",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "900003_0006",
+          "score": 0.4985
+        },
+        {
+          "passage_id": "14294_0002",
+          "score": 0.4718
+        },
+        {
+          "passage_id": "900942_0001",
+          "score": 0.4674
+        },
+        {
+          "passage_id": "11313_0001",
+          "score": 0.4621
+        },
+        {
+          "passage_id": "78_0001",
+          "score": 0.462
+        },
+        {
+          "passage_id": "12953_0001",
+          "score": 0.4581
+        },
+        {
+          "passage_id": "901323_0013",
+          "score": 0.4566
+        },
+        {
+          "passage_id": "14346_0004",
+          "score": 0.4558
+        },
+        {
+          "passage_id": "900644_0001",
+          "score": 0.4522
+        },
+        {
+          "passage_id": "13746_0297",
+          "score": 0.4516
+        }
+      ]
+    },
+    {
+      "id": "indonesian-street-food",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901069_0001",
+          "score": 0.5324
+        },
+        {
+          "passage_id": "901139_0007",
+          "score": 0.5227
+        },
+        {
+          "passage_id": "900793_0001",
+          "score": 0.5156
+        },
+        {
+          "passage_id": "901348_0007",
+          "score": 0.5142
+        },
+        {
+          "passage_id": "12410_0368",
+          "score": 0.5054
+        },
+        {
+          "passage_id": "12418_0091",
+          "score": 0.504
+        },
+        {
+          "passage_id": "2481_0390",
+          "score": 0.5001
+        },
+        {
+          "passage_id": "900942_0001",
+          "score": 0.4987
+        },
+        {
+          "passage_id": "13381_0289",
+          "score": 0.4985
+        },
+        {
+          "passage_id": "12561_0248",
+          "score": 0.4957
+        }
+      ]
+    },
+    {
+      "id": "cincin-api-pasifik",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901361_0006",
+          "score": 0.5466
+        },
+        {
+          "passage_id": "2530_0009",
+          "score": 0.5431
+        },
+        {
+          "passage_id": "8823_0165",
+          "score": 0.5198
+        },
+        {
+          "passage_id": "901049_0001",
+          "score": 0.511
+        },
+        {
+          "passage_id": "3704_0500",
+          "score": 0.5109
+        },
+        {
+          "passage_id": "901361_0004",
+          "score": 0.5072
+        },
+        {
+          "passage_id": "901061_0004",
+          "score": 0.4977
+        },
+        {
+          "passage_id": "901361_0007",
+          "score": 0.4955
+        },
+        {
+          "passage_id": "1560_0223",
+          "score": 0.4935
+        },
+        {
+          "passage_id": "901368_0021",
+          "score": 0.4915
+        }
+      ]
+    },
+    {
+      "id": "indian-ocean-tsunami-2004",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "1560_0119",
+          "score": 0.5543
+        },
+        {
+          "passage_id": "456_0027",
+          "score": 0.5432
+        },
+        {
+          "passage_id": "10339_0094",
+          "score": 0.5407
+        },
+        {
+          "passage_id": "3620_0103",
+          "score": 0.5337
+        },
+        {
+          "passage_id": "2633_0014",
+          "score": 0.5307
+        },
+        {
+          "passage_id": "8910_0008",
+          "score": 0.5216
+        },
+        {
+          "passage_id": "497_0037",
+          "score": 0.5204
+        },
+        {
+          "passage_id": "944_0314",
+          "score": 0.5148
+        },
+        {
+          "passage_id": "11866_0035",
+          "score": 0.5137
+        },
+        {
+          "passage_id": "901368_0021",
+          "score": 0.5108
+        }
+      ]
+    },
+    {
+      "id": "kartini-emansipasi",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901294_0018",
+          "score": 0.6112
+        },
+        {
+          "passage_id": "900948_0001",
+          "score": 0.532
+        },
+        {
+          "passage_id": "901294_0017",
+          "score": 0.5208
+        },
+        {
+          "passage_id": "11289_0095",
+          "score": 0.5089
+        },
+        {
+          "passage_id": "6808_0002",
+          "score": 0.4997
+        },
+        {
+          "passage_id": "4220_0076",
+          "score": 0.4926
+        },
+        {
+          "passage_id": "13942_0237",
+          "score": 0.4895
+        },
+        {
+          "passage_id": "6808_0382",
+          "score": 0.4867
+        },
+        {
+          "passage_id": "12820_0028",
+          "score": 0.4858
+        },
+        {
+          "passage_id": "901294_0016",
+          "score": 0.4852
+        }
+      ]
+    },
+    {
+      "id": "lee-kuan-yew-singapore",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "13420_0007",
+          "score": 0.565
+        },
+        {
+          "passage_id": "3412_0089",
+          "score": 0.557
+        },
+        {
+          "passage_id": "12617_0001",
+          "score": 0.556
+        },
+        {
+          "passage_id": "13420_0006",
+          "score": 0.5342
+        },
+        {
+          "passage_id": "6408_0158",
+          "score": 0.5313
+        },
+        {
+          "passage_id": "2803_0001",
+          "score": 0.5261
+        },
+        {
+          "passage_id": "10610_0199",
+          "score": 0.5261
+        },
+        {
+          "passage_id": "13749_0351",
+          "score": 0.522
+        },
+        {
+          "passage_id": "7117_0015",
+          "score": 0.522
+        },
+        {
+          "passage_id": "14658_0009",
+          "score": 0.5204
+        }
+      ]
+    },
+    {
+      "id": "rambu-solo-toraja",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "900068_0005",
+          "score": 0.5061
+        },
+        {
+          "passage_id": "901196_0007",
+          "score": 0.4984
+        },
+        {
+          "passage_id": "76639_0401",
+          "score": 0.4933
+        },
+        {
+          "passage_id": "5775_0014",
+          "score": 0.475
+        },
+        {
+          "passage_id": "12353_0116",
+          "score": 0.4676
+        },
+        {
+          "passage_id": "901297_0009",
+          "score": 0.4645
+        },
+        {
+          "passage_id": "901275_0007",
+          "score": 0.4553
+        },
+        {
+          "passage_id": "2479_0095",
+          "score": 0.4535
+        },
+        {
+          "passage_id": "12328_0151",
+          "score": 0.4528
+        },
+        {
+          "passage_id": "7452_0248",
+          "score": 0.4513
+        }
+      ]
+    },
+    {
+      "id": "jakarta-sinking-city",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "944_0487",
+          "score": 0.5532
+        },
+        {
+          "passage_id": "4022_0132",
+          "score": 0.5432
+        },
+        {
+          "passage_id": "3066_0047",
+          "score": 0.5389
+        },
+        {
+          "passage_id": "3704_0495",
+          "score": 0.5327
+        },
+        {
+          "passage_id": "3620_0191",
+          "score": 0.5311
+        },
+        {
+          "passage_id": "2740_0129",
+          "score": 0.5295
+        },
+        {
+          "passage_id": "2690_0140",
+          "score": 0.5288
+        },
+        {
+          "passage_id": "4022_0153",
+          "score": 0.5288
+        },
+        {
+          "passage_id": "4022_0392",
+          "score": 0.5234
+        },
+        {
+          "passage_id": "2087_0386",
+          "score": 0.5229
+        }
+      ]
+    },
+    {
+      "id": "gamelan-lanskap-suara",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901382_0001",
+          "score": 0.6257
+        },
+        {
+          "passage_id": "901357_0002",
+          "score": 0.6225
+        },
+        {
+          "passage_id": "901382_0005",
+          "score": 0.6101
+        },
+        {
+          "passage_id": "901384_0018",
+          "score": 0.6043
+        },
+        {
+          "passage_id": "901362_0014",
+          "score": 0.6022
+        },
+        {
+          "passage_id": "901361_0010",
+          "score": 0.5983
+        },
+        {
+          "passage_id": "901373_0016",
+          "score": 0.5944
+        },
+        {
+          "passage_id": "901357_0001",
+          "score": 0.5942
+        },
+        {
+          "passage_id": "901362_0005",
+          "score": 0.5918
+        },
+        {
+          "passage_id": "901373_0014",
+          "score": 0.5892
+        }
+      ]
+    },
+    {
+      "id": "batik-bahasa-pola",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "900645_0007",
+          "score": 0.5816
+        },
+        {
+          "passage_id": "901069_0001",
+          "score": 0.5477
+        },
+        {
+          "passage_id": "900645_0006",
+          "score": 0.5427
+        },
+        {
+          "passage_id": "900114_0001",
+          "score": 0.5402
+        },
+        {
+          "passage_id": "900065_0007",
+          "score": 0.53
+        },
+        {
+          "passage_id": "901347_0004",
+          "score": 0.5237
+        },
+        {
+          "passage_id": "900215_0001",
+          "score": 0.5212
+        },
+        {
+          "passage_id": "901126_0007",
+          "score": 0.5192
+        },
+        {
+          "passage_id": "900678_0001",
+          "score": 0.519
+        },
+        {
+          "passage_id": "900188_0001",
+          "score": 0.5184
+        }
+      ]
+    },
+    {
+      "id": "krisis-moneter-1997",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901261_0007",
+          "score": 0.5417
+        },
+        {
+          "passage_id": "27558_0888",
+          "score": 0.5372
+        },
+        {
+          "passage_id": "2016_0161",
+          "score": 0.5357
+        },
+        {
+          "passage_id": "27509_0936",
+          "score": 0.5271
+        },
+        {
+          "passage_id": "27509_0965",
+          "score": 0.5142
+        },
+        {
+          "passage_id": "12217_0117",
+          "score": 0.5047
+        },
+        {
+          "passage_id": "11502_0245",
+          "score": 0.5019
+        },
+        {
+          "passage_id": "624_0143",
+          "score": 0.4961
+        },
+        {
+          "passage_id": "13045_0025",
+          "score": 0.4948
+        },
+        {
+          "passage_id": "27509_0898",
+          "score": 0.4947
+        }
+      ]
+    },
+    {
+      "id": "voc-first-multinational",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901339_0003",
+          "score": 0.5846
+        },
+        {
+          "passage_id": "901339_0001",
+          "score": 0.5795
+        },
+        {
+          "passage_id": "901339_0011",
+          "score": 0.5785
+        },
+        {
+          "passage_id": "901339_0006",
+          "score": 0.5543
+        },
+        {
+          "passage_id": "3176_0146",
+          "score": 0.5541
+        },
+        {
+          "passage_id": "4089_0210",
+          "score": 0.5302
+        },
+        {
+          "passage_id": "12320_0171",
+          "score": 0.5263
+        },
+        {
+          "passage_id": "6358_0001",
+          "score": 0.5221
+        },
+        {
+          "passage_id": "4900_4045",
+          "score": 0.5187
+        },
+        {
+          "passage_id": "4089_0083",
+          "score": 0.5186
+        }
+      ]
+    },
+    {
+      "id": "letusan-krakatau-1883",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "1592_0119",
+          "score": 0.5258
+        },
+        {
+          "passage_id": "1043_0002",
+          "score": 0.525
+        },
+        {
+          "passage_id": "2923_0012",
+          "score": 0.5169
+        },
+        {
+          "passage_id": "1697_0012",
+          "score": 0.5075
+        },
+        {
+          "passage_id": "5706_0146",
+          "score": 0.5072
+        },
+        {
+          "passage_id": "4557_0007",
+          "score": 0.5053
+        },
+        {
+          "passage_id": "5827_0041",
+          "score": 0.5043
+        },
+        {
+          "passage_id": "2577_0255",
+          "score": 0.5035
+        },
+        {
+          "passage_id": "12320_0197",
+          "score": 0.5008
+        },
+        {
+          "passage_id": "12852_0096",
+          "score": 0.5004
+        }
+      ]
+    },
+    {
+      "id": "mh370-vanishing",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "1284_0080",
+          "score": 0.528
+        },
+        {
+          "passage_id": "6082_0094",
+          "score": 0.5177
+        },
+        {
+          "passage_id": "3831_0228",
+          "score": 0.509
+        },
+        {
+          "passage_id": "3809_0029",
+          "score": 0.5076
+        },
+        {
+          "passage_id": "12555_0001",
+          "score": 0.5065
+        },
+        {
+          "passage_id": "861_0177",
+          "score": 0.5042
+        },
+        {
+          "passage_id": "793_0092",
+          "score": 0.5013
+        },
+        {
+          "passage_id": "68_0088",
+          "score": 0.4995
+        },
+        {
+          "passage_id": "6714_0068",
+          "score": 0.4968
+        },
+        {
+          "passage_id": "1268_0431",
+          "score": 0.4964
+        }
+      ]
+    },
+    {
+      "id": "perang-diponegoro",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "2481_0553",
+          "score": 0.6483
+        },
+        {
+          "passage_id": "754_0315",
+          "score": 0.6267
+        },
+        {
+          "passage_id": "2481_0554",
+          "score": 0.6129
+        },
+        {
+          "passage_id": "5851_0001",
+          "score": 0.611
+        },
+        {
+          "passage_id": "1115_0021",
+          "score": 0.6104
+        },
+        {
+          "passage_id": "11730_0107",
+          "score": 0.6088
+        },
+        {
+          "passage_id": "4668_0002",
+          "score": 0.6056
+        },
+        {
+          "passage_id": "2616_0001",
+          "score": 0.605
+        },
+        {
+          "passage_id": "5850_0001",
+          "score": 0.605
+        },
+        {
+          "passage_id": "4361_0001",
+          "score": 0.605
+        }
+      ]
+    },
+    {
+      "id": "puputan-bali",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901374_0011",
+          "score": 0.6765
+        },
+        {
+          "passage_id": "901374_0012",
+          "score": 0.6741
+        },
+        {
+          "passage_id": "901356_0011",
+          "score": 0.635
+        },
+        {
+          "passage_id": "901374_0013",
+          "score": 0.6169
+        },
+        {
+          "passage_id": "901382_0009",
+          "score": 0.605
+        },
+        {
+          "passage_id": "901384_0018",
+          "score": 0.6023
+        },
+        {
+          "passage_id": "901384_0001",
+          "score": 0.5928
+        },
+        {
+          "passage_id": "901382_0008",
+          "score": 0.5845
+        },
+        {
+          "passage_id": "901374_0008",
+          "score": 0.5795
+        },
+        {
+          "passage_id": "901382_0001",
+          "score": 0.5709
+        }
+      ]
+    },
+    {
+      "id": "wallace-line-boundary",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "1909_0355",
+          "score": 0.5651
+        },
+        {
+          "passage_id": "1228_0319",
+          "score": 0.5339
+        },
+        {
+          "passage_id": "3307_0012",
+          "score": 0.5244
+        },
+        {
+          "passage_id": "10060_0238",
+          "score": 0.5207
+        },
+        {
+          "passage_id": "2087_0438",
+          "score": 0.5196
+        },
+        {
+          "passage_id": "14558_0317",
+          "score": 0.5193
+        },
+        {
+          "passage_id": "2530_0201",
+          "score": 0.5171
+        },
+        {
+          "passage_id": "3704_0345",
+          "score": 0.5126
+        },
+        {
+          "passage_id": "7163_0028",
+          "score": 0.5114
+        },
+        {
+          "passage_id": "7177_0126",
+          "score": 0.5109
+        }
+      ]
+    },
+    {
+      "id": "homo-floresiensis-hobbit",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "551_0060",
+          "score": 0.5682
+        },
+        {
+          "passage_id": "1909_0137",
+          "score": 0.568
+        },
+        {
+          "passage_id": "900061_0010",
+          "score": 0.5645
+        },
+        {
+          "passage_id": "8508_0081",
+          "score": 0.5505
+        },
+        {
+          "passage_id": "6414_0294",
+          "score": 0.5463
+        },
+        {
+          "passage_id": "6710_0127",
+          "score": 0.5436
+        },
+        {
+          "passage_id": "11870_0125",
+          "score": 0.5432
+        },
+        {
+          "passage_id": "6335_0412",
+          "score": 0.5416
+        },
+        {
+          "passage_id": "900061_0005",
+          "score": 0.5406
+        },
+        {
+          "passage_id": "2530_0197",
+          "score": 0.5405
+        }
+      ]
+    },
+    {
+      "id": "ekspedisi-pamalayu-singhasari",
+      "prefer_source": false,
+      "passages": [
+        {
+          "passage_id": "901316_0002",
+          "score": 0.6183
+        },
+        {
+          "passage_id": "901386_0005",
+          "score": 0.5409
+        },
+        {
+          "passage_id": "901384_0003",
+          "score": 0.5321
+        },
+        {
+          "passage_id": "901386_0004",
+          "score": 0.5305
+        },
+        {
+          "passage_id": "900566_0003",
+          "score": 0.5137
+        },
+        {
+          "passage_id": "901375_0013",
+          "score": 0.5116
+        },
+        {
+          "passage_id": "900565_0005",
+          "score": 0.511
+        },
+        {
+          "passage_id": "900653_0001",
+          "score": 0.5109
+        },
+        {
+          "passage_id": "901382_0006",
+          "score": 0.5093
+        },
+        {
+          "passage_id": "901011_0005",
+          "score": 0.505
+        }
+      ]
+    }
+  ]
+}

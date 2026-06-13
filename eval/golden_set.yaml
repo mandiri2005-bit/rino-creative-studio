@@ -1,0 +1,192 @@
+# ============================================================================
+# eval/golden_set.yaml — FROZEN golden set for the RAG eval gate (Step 0.2)
+# Rino Creative Studio
+# ============================================================================
+# 25 curated documentary topics. Once committed in Step 0.2, DO NOT edit:
+# every later measurement (recall@k, output rubric) runs against this exact
+# set. A SHA256 of this file is stored in the frozen baseline (Step 0.4), so
+# any silent change is caught the next time the gate runs.
+#
+# Fields per entry
+#   id            unique slug — stable identifier carried across every run
+#   topic         the documentary topic fed to retrieval + both gen paths
+#   style         one of the 12 VERIFIED Qdrant style_label values only:
+#                   conversational  epic         unlabeled   biographical
+#                   expository      discovery    political   reflective
+#                   lyrical         financial    suspense    dramatic
+#   lang          output language: 'id' or 'en'
+#   prefer_source true -> retrieval prioritises source='rino' passages.
+#                 Set ONLY on styles where rino content is thick
+#                 (epic 1091 · expository 295 · political 141 · discovery 41).
+#
+# Locked distribution
+#   total          25
+#   language       15 id · 10 en
+#   prefer_source  6 true (all id) · 19 false
+#   true styles    epic ×2 · expository ×2 · political ×1 · discovery ×1
+#   coverage       all 12 style labels exercised at least once
+# ============================================================================
+
+# ── prefer_source: true — proprietary 'rino' content must rank to the top ────
+- id: majapahit-puncak-kejayaan
+  topic: "Puncak kejayaan Kerajaan Majapahit di bawah Hayam Wuruk dan cita-cita Nusantara"
+  style: epic
+  lang: id
+  prefer_source: true
+
+- id: sriwijaya-imperium-maritim
+  topic: "Sriwijaya sebagai imperium maritim dan pusat pembelajaran Buddha di Asia Tenggara"
+  style: epic
+  lang: id
+  prefer_source: true
+
+- id: jalur-rempah-nusantara
+  topic: "Jalur rempah Nusantara dan jaringan perdagangan dunia sebelum kedatangan bangsa Eropa"
+  style: expository
+  lang: id
+  prefer_source: true
+
+- id: borobudur-mahakarya-syailendra
+  topic: "Arsitektur dan makna kosmologis Candi Borobudur sebagai mahakarya Wangsa Syailendra"
+  style: expository
+  lang: id
+  prefer_source: true
+
+- id: sumpah-palapa-gajah-mada
+  topic: "Sumpah Palapa Gajah Mada dan ambisi penyatuan politik Nusantara"
+  style: political
+  lang: id
+  prefer_source: true
+
+- id: trowulan-jejak-majapahit
+  topic: "Trowulan: menelusuri jejak arkeologis ibu kota Kerajaan Majapahit"
+  style: discovery
+  lang: id
+  prefer_source: true
+
+# ── prefer_source: false — corpus-wide retrieval, all 12 styles exercised ────
+
+# conversational
+- id: kopi-indonesia-sejarah
+  topic: "Sejarah kopi Indonesia, dari tanam paksa kolonial hingga gelombang kopi specialty"
+  style: conversational
+  lang: id
+  prefer_source: false
+
+- id: indonesian-street-food
+  topic: "The world of Indonesian street food and the warung culture behind everyday eating"
+  style: conversational
+  lang: en
+  prefer_source: false
+
+# unlabeled
+- id: cincin-api-pasifik
+  topic: "Cincin Api Pasifik: mengapa Indonesia memiliki begitu banyak gunung berapi aktif"
+  style: unlabeled
+  lang: id
+  prefer_source: false
+
+- id: indian-ocean-tsunami-2004
+  topic: "How the 2004 Indian Ocean tsunami reshaped Aceh and global tsunami early-warning"
+  style: unlabeled
+  lang: en
+  prefer_source: false
+
+# biographical
+- id: kartini-emansipasi
+  topic: "Raden Ajeng Kartini dan benih gerakan emansipasi perempuan Indonesia"
+  style: biographical
+  lang: id
+  prefer_source: false
+
+- id: lee-kuan-yew-singapore
+  topic: "Lee Kuan Yew and the transformation of Singapore from trading port to global city"
+  style: biographical
+  lang: en
+  prefer_source: false
+
+# reflective
+- id: rambu-solo-toraja
+  topic: "Rambu Solo': filosofi kematian dan kehidupan dalam tradisi masyarakat Toraja"
+  style: reflective
+  lang: id
+  prefer_source: false
+
+- id: jakarta-sinking-city
+  topic: "A sinking Jakarta: living with land subsidence, floods, and a receding coastline"
+  style: reflective
+  lang: en
+  prefer_source: false
+
+# lyrical
+- id: gamelan-lanskap-suara
+  topic: "Gamelan: lanskap bunyi dan makna spiritual di balik musik tradisional Jawa dan Bali"
+  style: lyrical
+  lang: id
+  prefer_source: false
+
+- id: batik-bahasa-pola
+  topic: "Batik: the language of pattern, wax, and memory across the Indonesian archipelago"
+  style: lyrical
+  lang: en
+  prefer_source: false
+
+# financial
+- id: krisis-moneter-1997
+  topic: "Krisis moneter 1997 dan bagaimana badai ekonomi mengguncang Asia Tenggara"
+  style: financial
+  lang: id
+  prefer_source: false
+
+- id: voc-first-multinational
+  topic: "The VOC: how the world's first multinational corporation rose, ruled, and collapsed"
+  style: financial
+  lang: en
+  prefer_source: false
+
+# suspense
+- id: letusan-krakatau-1883
+  topic: "Letusan Krakatau 1883 dan dampak globalnya terhadap iklim, langit, dan peradaban"
+  style: suspense
+  lang: id
+  prefer_source: false
+
+- id: mh370-vanishing
+  topic: "The vanishing of flight MH370 and the largest search in modern aviation history"
+  style: suspense
+  lang: en
+  prefer_source: false
+
+# dramatic
+- id: perang-diponegoro
+  topic: "Perang Diponegoro: lima tahun perlawanan yang mengguncang tanah Jawa"
+  style: dramatic
+  lang: id
+  prefer_source: false
+
+- id: puputan-bali
+  topic: "The Puputan of Bali: a kingdom's final, fatal stand against colonial conquest"
+  style: dramatic
+  lang: en
+  prefer_source: false
+
+# expository
+- id: wallace-line-boundary
+  topic: "The Wallace Line: the invisible boundary splitting Asian and Australian wildlife"
+  style: expository
+  lang: en
+  prefer_source: false
+
+# discovery
+- id: homo-floresiensis-hobbit
+  topic: "Homo floresiensis: the discovery of the Flores 'hobbit' and a new human lineage"
+  style: discovery
+  lang: en
+  prefer_source: false
+
+# epic
+- id: ekspedisi-pamalayu-singhasari
+  topic: "Ekspedisi Pamalayu: ambisi Kertanegara dari Singhasari menaklukkan Bumi Melayu"
+  style: epic
+  lang: id
+  prefer_source: false
