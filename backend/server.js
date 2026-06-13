@@ -310,7 +310,7 @@ app.use(express.static(path.join(__dirname,"public"),{
 }));
 
 // ── Health ────────────────────────────────────────────────────────────────────
-app.get("/api/health", (_,res) => res.json({ ok:true, gemini:!!GEMINI_KEY, python:PYTHON_API }));
+app.get("/api/health", (_,res) => res.json({ ok:true, gemini:!!GEMINI_KEY, python:PYTHON_API, node:process.version, commit:process.env.RAILWAY_GIT_COMMIT_SHA||null }));
 app.get("/api/config", requireAuth, async (req,res) => {
   try { res.json(await getConfig(resolveTenantId(req))); }
   catch(e) { res.status(500).json({ error: e.message }); }
@@ -1824,7 +1824,10 @@ app.get("/api/assets", requireAuth, async (req, res) => {
       signedUrl: storage.isConfigured() ? await storage.signedUrl(r.s3_key, 600) : null,
     })));
     res.json({ assets, nextBefore: rows.length ? rows[rows.length - 1].created_at : null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error("[/api/assets] ERROR:", e && e.stack || e);
+    res.status(500).json({ error: e.message, stack: (e && e.stack || "").split("\n").slice(0, 5), node: process.version });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
