@@ -76,7 +76,7 @@ async function main() {
   } catch (e) { console.log("  (narasi_outlines skipped:", e.code || e.message, ")"); }
 
   // 3. chat sessions → transcript
-  for (const s of (await c.query("SELECT id,tenant_id,user_id,title,model FROM chat_sessions WHERE is_archived=false")).rows) {
+  for (const s of (await c.query("SELECT id,tenant_id,user_id,title,model,created_at FROM chat_sessions WHERE is_archived=false")).rows) {
     const msgs = (await c.query("SELECT role,content FROM chat_messages WHERE session_id=$1 ORDER BY sequence_number", [s.id])).rows;
     if (!msgs.length) continue;
     const transcript = `# ${s.title || "Chat"}\n_model: ${s.model || "?"}_\n\n` +
@@ -84,7 +84,7 @@ async function main() {
     await putAsset({
       tenantId: s.tenant_id, userId: s.user_id,
       key: `tenants/${s.tenant_id}/chat/${s.id}.txt`,   // canonical per-session key (matches live capture)
-      filename: `chat-${slug(s.title)}.txt`, text: transcript, kind: "chat",
+      filename: `chat-${s.created_at ? new Date(s.created_at).toISOString().slice(0,19).replace(/[:T]/g,"-") : "import"}.txt`, text: transcript, kind: "chat",
       extraMeta: { source_id: s.id, title: s.title, model: s.model, messages: msgs.length },
     });
     n.chat++;

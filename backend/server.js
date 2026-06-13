@@ -1,5 +1,5 @@
 /**
- * Rino Creative Studio — unified backend
+ * Cerita AI Studio — unified backend
  *
  * Direct routes  (Node @google/genai):
  *   Batch Images · TTS · Imagen
@@ -1809,6 +1809,38 @@ app.get("/api/assets/content", requireAuth, async (req, res) => {
   } catch (e) { console.error("[/api/assets/content]", e.message); res.status(500).json({ error: e.message }); }
 });
 
+// Delete a single asset from the vault (R2 object + DB row). RLS-scoped — the
+// DELETE only matches rows belonging to the caller's tenant.
+app.delete("/api/assets", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const key = req.query.key;
+    if (!key) return res.status(400).json({ error: "key required" });
+    const r = await query("DELETE FROM assets WHERE s3_key=$1 AND tenant_id=$2 RETURNING id", [key, tenantId], tenantId);
+    if (!r.rows.length) return res.status(404).json({ error: "asset not found" });
+    if (storage.isConfigured()) { try { await storage.del(key); } catch (e) { console.error("[delete asset] R2:", e.message); } }
+    res.json({ ok: true });
+  } catch (e) { console.error("[DELETE /api/assets]", e.message); res.status(500).json({ error: e.message }); }
+});
+
+// Tier-based vault retention sweep: delete expired assets (DB via SECURITY DEFINER
+// fn cleanup_expired_assets — free 7d/starter 14d/pro 30d/enterprise 90d) + their
+// R2 objects. Idempotent; runs daily + on a manual trigger.
+async function runAssetRetention() {
+  try {
+    const r = await query("SELECT s3_key FROM cleanup_expired_assets()", [], null);
+    const keys = r.rows.map((x) => x.s3_key).filter(Boolean);
+    let r2 = 0;
+    if (storage.isConfigured()) for (const k of keys) { try { await storage.del(k); r2++; } catch (e) {} }
+    if (keys.length) console.log(`[retention] removed ${keys.length} expired assets (${r2} R2 objects)`);
+    return keys.length;
+  } catch (e) { console.error("[retention]", e.message); return -1; }
+}
+app.post("/api/admin/cleanup-assets", requireAuth, async (req, res) => {
+  try { const n = await runAssetRetention(); res.json({ ok: n >= 0, removed: Math.max(0, n) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Durable "Media Vault" retrieval — lists the tenant's assets straight from the
 // assets table (survives redeploy + job cleanup), newest first, each with a fresh
 // 10-min signed R2 URL. Categorised for the gallery tabs:
@@ -2170,7 +2202,10 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 
-const server = app.listen(PORT,()=>{ console.log(`🎬 Rino Creative Studio :${PORT}`); console.log(`   Gemini: ${GEMINI_KEY?"set ✅":"MISSING ⚠️"}`); console.log(`   Python: ${PYTHON_API}`); });
+const server = app.listen(PORT,()=>{ console.log(`🎬 Cerita AI Studio :${PORT}`); console.log(`   Gemini: ${GEMINI_KEY?"set ✅":"MISSING ⚠️"}`); console.log(`   Python: ${PYTHON_API}`); });
+// Vault retention: daily sweep + once shortly after boot (tier-based, see cleanup_expired_assets).
+setInterval(runAssetRetention, 24*60*60*1000);
+setTimeout(runAssetRetention, 60*1000);
 // Prevent blank screen on long-running requests (storyboard 26+ scenes with images)
 server.timeout = 660000;          // 11 min — must be > storyboard AbortController (10 min)
 server.keepAliveTimeout = 660000;

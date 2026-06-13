@@ -1342,7 +1342,7 @@ async def stream_chat(req: ChatRequest,
                                 _tenant_id, bucket=storage.BUCKET, s3_key=_ckey,
                                 content_type="text/plain; charset=utf-8", size_bytes=len(_cb),
                                 asset_type="document", source_job_type=None, user_id=None,
-                                original_filename="chat.txt",
+                                original_filename=f"chat-{datetime.now():%Y%m%d-%H%M%S}.txt",
                                 metadata={"kind": "chat", "session_id": str(_session_id)})
                     except Exception as _ce:
                         print(f"[stream_chat] chat asset persist failed (non-fatal): {_ce}", flush=True)
