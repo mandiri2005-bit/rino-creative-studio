@@ -4245,15 +4245,20 @@ async def narasi_status(job_id: str,
 
 
 @app.post("/narasi/cancel/{job_id}")
-async def narasi_cancel(job_id: str):
-    """Signal the running narasi job to stop after the current chapter finishes."""
+async def narasi_cancel(job_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Signal the running narasi job to stop after the current chapter finishes.
+    Tenant-scoped: the job must belong to the caller's tenant (RLS)."""
+    _row = await db.get_job_by_external(user.tenant_id, job_id)
+    if not _row:
+        raise HTTPException(404, "job not found")
     await rc.set_cancel(f"narasi_{job_id}")
     return {"ok": True, "status": "cancel_requested", "job_id": job_id}
 
 
 @app.post("/narasi/review")
-async def narasi_review(body: dict):
-    """Non-streaming editorial review — same pattern as narasi/generate."""
+async def narasi_review(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """Non-streaming editorial review — same pattern as narasi/generate. Auth'd +
+    tenant-scoped so the capture (usage + moat) is isolated per tenant."""
     model = (body.get("model") or "gemini-2.5-flash").strip()
     system = (body.get("system") or "You are a helpful editorial assistant.").strip()
     message = (body.get("message") or "").strip()
@@ -4287,16 +4292,14 @@ async def narasi_review(body: dict):
         print(f"[review] model={resolved} finish={finish} in={in_tok} out={out_tok} max={safe_max} temp=0", flush=True)
         # Step 1.5: capture editorial review — usage + the review text as a moat artifact.
         try:
-            _rctx = _tenant_ctx.get()
-            _rtenant = getattr(_rctx, "tenant_id", None)
-            _ruser = (await _resolve_user_uuid(_rctx.tenant_id, _rctx.user_id)) if (_rtenant and getattr(_rctx, "user_id", None)) else None
-            if _rtenant:
-                await _log_narasi_usage(_rtenant, _ruser, model, resp)
-                await db.save_moat_session(
-                    _rtenant, _ruser, (body.get("topic") or "editorial_review"), "editorial_review",
-                    {"rag_used": False, "sources": None, "passages": None,
-                     "prompt_used": (system + "\n\n" + message)[:8000], "narration": text},
-                    model, in_tok, out_tok, _calc_cost(model, in_tok, out_tok))
+            _rtenant = user.tenant_id
+            _ruser = await _resolve_user_uuid(user.tenant_id, user.user_id)
+            await _log_narasi_usage(_rtenant, _ruser, model, resp)
+            await db.save_moat_session(
+                _rtenant, _ruser, (body.get("topic") or "editorial_review"), "editorial_review",
+                {"rag_used": False, "sources": None, "passages": None,
+                 "prompt_used": (system + "\n\n" + message)[:8000], "narration": text},
+                model, in_tok, out_tok, _calc_cost(model, in_tok, out_tok))
         except Exception as _ce:
             import logging as _lg; _lg.getLogger("narasi").warning("review capture failed (non-fatal): %s", _ce)
         return {"ok": True, "text": text, "finish_reason": finish, "usage": {"input": in_tok, "output": out_tok}}
