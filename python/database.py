@@ -239,6 +239,34 @@ async def create_job(tenant_id, user_id, job_type, file_name=None) -> str:
     except Exception as e:
         log.error("create_job: %s", e); raise
 
+async def insert_asset(tenant_id, *, bucket, s3_key, content_type, size_bytes,
+                       asset_type, user_id=None, job_id=None,
+                       source_job_type=None, original_filename=None,
+                       metadata=None) -> Optional[str]:
+    """Record one object-storage file in `assets` (storage metadata + moat capture).
+    Idempotent on (bucket, s3_key). Mirrors db.js insertAsset.
+      asset_type     ∈ video|audio|image|document|archive|other   (required)
+      source_job_type∈ batch_image|tts|imagen|veo|sora | None      (job_type_enum)
+    Tenant is passed explicitly (callers may run as background tasks with no ctx)."""
+    try:
+        aid = await _q_fetchval(
+            """INSERT INTO assets
+                   (tenant_id,user_id,job_id,bucket,s3_key,original_filename,
+                    content_type,size_bytes,asset_type,source_job_type,metadata)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11)
+               ON CONFLICT (bucket,s3_key) DO UPDATE SET
+                   size_bytes=EXCLUDED.size_bytes,
+                   content_type=EXCLUDED.content_type,
+                   updated_at=now()
+               RETURNING id""",
+            _uid(tenant_id), _uid(user_id), _uid(job_id), bucket, s3_key,
+            original_filename, content_type, int(size_bytes), asset_type,
+            source_job_type, metadata or {},
+            tenant=str(tenant_id))
+        return str(aid) if aid else None
+    except Exception as e:
+        log.error("insert_asset: %s", e); raise
+
 async def update_job_progress(job_id, progress) -> None:
     """Set progress_message and append to logs JSONB array."""
     try:

@@ -321,6 +321,7 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
 # ---------------------------------------------------------------------------
 from contextlib import asynccontextmanager
 import database as db
+import storage
 import redis_client as rc
 from auth_middleware import (get_current_user, CurrentUser,
                              _tenant_id as _ctx_tenant_id, _user_id as _ctx_user_id)
@@ -3815,6 +3816,31 @@ async def narasi_generate(body: dict,
     return {"ok": True, "job_id": job_id, "status": "started"}
 
 
+async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
+                         content_type, source_job_type=None, job_id=None,
+                         user_id=None, metadata=None):
+    """Step 2: upload bytes to R2 + record an `assets` row (R2 = source of truth,
+    disk = cache). Non-fatal: logs and returns None on any storage error so
+    generation never breaks. Mirrors persistAsset() in server.js.
+      asset_type     ∈ video|audio|image|document|archive|other
+      source_job_type∈ batch_image|tts|imagen|veo|sora | None"""
+    if not storage.is_configured():
+        _log.warning("[persist_asset] storage not configured — skipped %s", filename)
+        return None
+    try:
+        key = storage.build_key(tenant_id, job_id, asset_type, filename)
+        await storage.aupload_bytes(key, data, content_type)
+        return await db.insert_asset(
+            tenant_id, bucket=storage.BUCKET, s3_key=key,
+            content_type=content_type, size_bytes=len(data),
+            asset_type=asset_type, source_job_type=source_job_type,
+            user_id=user_id, job_id=job_id, original_filename=filename,
+            metadata=metadata or {})
+    except Exception as e:
+        _log.warning("[persist_asset] %s failed (non-fatal): %s", filename, e)
+        return None
+
+
 async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi_user):
     model    = (body.get("model")    or "gemini-2.5-flash").strip()
     topic    = (body.get("topic")    or "").strip()
@@ -3998,8 +4024,15 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 )
                 text = (resp2.choices[0].message.content or "").strip()
                 await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid)
-            (tmp_dir / f"{chap_id}.txt").write_text(
-                f"## Bab {chap_id}: {chap_title}\n\n{text}\n", encoding="utf-8")
+            _chap_txt = f"## Bab {chap_id}: {chap_title}\n\n{text}\n"
+            (tmp_dir / f"{chap_id}.txt").write_text(_chap_txt, encoding="utf-8")
+            # ── Step 2: persist chapter text to R2 + assets row (capture) ──
+            await _persist_asset(
+                _narasi_tenant, asset_type="document", source_job_type=None,
+                filename=f"{chap_id}.txt", data=_chap_txt.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+                job_id=_narasi_job_uuid, user_id=None,
+                metadata={"kind": "narasi", "chapter_id": chap_id, "title": chap_title})
             # Accumulate for inter-chapter context
             previous_chapters.append({"id": chap_id, "title": chap_title, "text": text})
 
