@@ -1050,40 +1050,62 @@ async def list_models():
 
 
 # -- Upload file -> returns extracted text ----------------------------------
+_VIDEO_EXTS = {"mp4", "mov", "webm", "m4v", "avi", "mkv"}
+_VIDEO_MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm",
+               "m4v": "video/x-m4v", "avi": "video/x-msvideo", "mkv": "video/x-matroska"}
+
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...),
+                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     content = await file.read()
     if len(content) > 20 * 1024 * 1024:  # 20 MB limit
         raise HTTPException(400, "File too large (max 20 MB)")
     fname = file.filename or "upload"
     ext = fname.lower().rsplit(".", 1)[-1]
 
+    # Persist the uploaded REFERENCE to R2 + assets (metadata.kind='upload') so it
+    # shows in the Media Vault "Uploads" tab and survives redeploy. Non-fatal:
+    # uploads still work inline if storage/tenant are absent.
+    async def _persist_upload(asset_type, content_type):
+        tid = getattr(user, "tenant_id", None) if user else None
+        if not tid:
+            return None
+        safe = f"{uuid.uuid4().hex[:8]}_{fname}"
+        return await _persist_asset(
+            tid, asset_type=asset_type, source_job_type=None, filename=safe,
+            data=content, content_type=content_type, job_id=None, user_id=None,
+            metadata={"kind": "upload", "original_filename": fname})
+
     # IMAGE PATH: return inline base64 + mime so chat can send as multimodal part
     if ext in IMAGE_EXTS:
         import base64 as _b64
         b64 = _b64.b64encode(content).decode("ascii")
         mime = IMAGE_MIME.get(ext, "image/png")
+        aid = await _persist_upload("image", mime)
         return {
-            "kind": "image",
-            "filename": fname,
-            "mime": mime,
-            "b64": b64,
-            "size_bytes": len(content),
+            "kind": "image", "filename": fname, "mime": mime, "b64": b64,
+            "size_bytes": len(content), "asset_id": aid,
             # legacy fields so old frontend doesn't break
-            "chars": 0,
-            "preview": f"[Image: {fname}, {len(content)} bytes]",
-            "text": "",
+            "chars": 0, "preview": f"[Image: {fname}, {len(content)} bytes]", "text": "",
         }
 
-    # TEXT PATH (default): parse and return extracted text
+    # VIDEO PATH: reference video — persist + return metadata (no inline payload)
+    if ext in _VIDEO_EXTS:
+        mime = _VIDEO_MIME.get(ext, "video/mp4")
+        aid = await _persist_upload("video", mime)
+        return {
+            "kind": "video", "filename": fname, "mime": mime,
+            "size_bytes": len(content), "asset_id": aid,
+            "chars": 0, "preview": f"[Video: {fname}, {len(content)} bytes]", "text": "",
+        }
+
+    # TEXT / SCRIPT / DOC PATH (default): parse and return extracted text
     text = parse_uploaded_file(fname, content)
     preview = text[:300] + ("..." if len(text) > 300 else "")
+    aid = await _persist_upload("document", file.content_type or "text/plain")
     return {
-        "kind": "text",
-        "filename": fname,
-        "chars": len(text),
-        "preview": preview,
-        "text": text,
+        "kind": "text", "filename": fname, "chars": len(text),
+        "preview": preview, "text": text, "asset_id": aid,
     }
 
 
@@ -4560,6 +4582,13 @@ async def narasi_review(body: dict, user: CurrentUser = Depends(get_current_user
                 {"rag_used": False, "sources": None, "passages": None,
                  "prompt_used": (system + "\n\n" + message)[:8000], "narration": text},
                 model, in_tok, out_tok, _calc_cost(model, in_tok, out_tok))
+            # Step 2: persist the review output to R2 + assets (Media Vault → Narasi Review)
+            await _persist_asset(
+                user.tenant_id, asset_type="document", source_job_type=None,
+                filename=f"review-{uuid.uuid4().hex[:8]}.txt",
+                data=(text or "").encode("utf-8"), content_type="text/plain; charset=utf-8",
+                user_id=None, metadata={"kind": "narasi_review", "style": _style,
+                                        "topic": (body.get("topic") or "")})
         except Exception as _ce:
             import logging as _lg; _lg.getLogger("narasi").warning("review capture failed (non-fatal): %s", _ce)
         return {"ok": True, "text": text, "finish_reason": finish, "usage": {"input": in_tok, "output": out_tok}}

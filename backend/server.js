@@ -21,7 +21,7 @@ import { GoogleGenAI } from "@google/genai";
 import Jimp from "jimp";
 import { parseAudioMime, makeWavHeader, convertToWav, prependSilence, buildJsonl, mkId as _mkId } from "./utils.mjs";
 import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile, resolveTenantId, resolveUserId, _uuid5, getOrCreateSession, appendMessage, logUsage, calcGoogleCost,
-         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, logSyncJob } from "./db.js";
+         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, listAssets, logSyncJob } from "./db.js";
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
@@ -430,7 +430,9 @@ app.post("/api/upload", upload.single("file"), async(req,res)=>{
   try{
     const form=new FormData();
     form.append("file",req.file.buffer,{filename:req.file.originalname,contentType:req.file.mimetype});
-    const pyRes=await fetch(`${PYTHON_API}/upload`,{method:"POST",body:form.getBuffer(),headers:{...form.getHeaders(),"Content-Length":String(form.getLengthSync())}});
+    const _uh={...form.getHeaders(),"Content-Length":String(form.getLengthSync()),
+               ...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};
+    const pyRes=await fetch(`${PYTHON_API}/upload`,{method:"POST",body:form.getBuffer(),headers:_uh});
     if(!pyRes.ok){const e=await pyRes.json();return res.status(pyRes.status).json(e);}
     res.json(await pyRes.json());
   }catch(e){res.status(500).json({error:e.message});}
@@ -1784,6 +1786,44 @@ app.get("/api/assets/sign", requireAuth, async (req, res) => {
     const url = await signedUrlForKey(tenantId, key);
     if (!url) return res.status(404).json({ error: "asset not found" });
     res.json({ url, expiresIn: 600 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Durable "Media Vault" retrieval — lists the tenant's assets straight from the
+// assets table (survives redeploy + job cleanup), newest first, each with a fresh
+// 10-min signed R2 URL. Categorised for the gallery tabs:
+//   ?category=image|video|flow|whisk|narasi|narasi_review   (or omit = all)
+// Also: ?limit=, paginate with ?before=<previous page's nextBefore>.
+const VAULT_CATEGORIES = {
+  image:         { sourceJobTypes: ["generate_image", "imagen", "batch_image"] },
+  video:         { sourceJobTypes: ["veo", "sora"] },
+  flow:          { sourceJobTypes: ["flow_image", "flow_storyboard"] },
+  whisk:         { sourceJobTypes: ["whisk"] },
+  narasi:        { assetType: "document", metadataKind: "narasi" },
+  outline:       { assetType: "document", metadataKind: "outline" },
+  chat:          { assetType: "document", metadataKind: "chat" },
+  narasi_review: { assetType: "document", metadataKind: "narasi_review" },
+  uploads:       { metadataKind: "upload" },   // user-uploaded reference assets
+};
+app.get("/api/assets", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const { category = null, limit = 50, before = null } = req.query;
+    const cat = category && category !== "all" ? (VAULT_CATEGORIES[category] || {}) : {};
+    const rows = await listAssets(tenantId, { ...cat, limit, before });
+    const assets = await Promise.all(rows.map(async (r) => ({
+      id: r.id,
+      assetType: r.asset_type,
+      sourceJobType: r.source_job_type,
+      filename: r.original_filename,
+      contentType: r.content_type,
+      sizeBytes: Number(r.size_bytes),
+      createdAt: r.created_at,
+      key: r.s3_key,
+      metadata: r.metadata,
+      signedUrl: storage.isConfigured() ? await storage.signedUrl(r.s3_key, 600) : null,
+    })));
+    res.json({ assets, nextBefore: rows.length ? rows[rows.length - 1].created_at : null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

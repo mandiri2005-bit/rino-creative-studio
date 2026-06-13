@@ -695,6 +695,7 @@ const NAV=[
   {id:"scripttts", icon:ic.mic, label:"Script → TTS", group:"Tools"},
   {id:"narasi", icon:ic.lay,   label:"Narasi AI",     group:"Tools"},
   {id:"narasireview", icon:ic.review, label:"Narasi Review", group:"Tools"},
+  {id:"mediavault", icon:ic.img2, label:"Media Vault", group:"Tools"},
 ];
 
 /* Auth header helper — injects Bearer token if Clerk is ready */
@@ -4608,6 +4609,106 @@ function NarasiReviewSection({settings,showToast}){
 }
 // ── END NARASI REVIEW SECTION ─────────────────────────────────────────────────
 
+// ── MEDIA VAULT — durable gallery of generated + uploaded assets (R2/assets) ───
+function MediaVaultSection({settings,showToast}){
+  const [tab,setTab]=useState("generated");   // "generated" | "uploads"
+  const [cat,setCat]=useState("all");         // category within Generated
+  const [items,setItems]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [q,setQ]=useState("");
+  const CATS=[
+    {id:"all",label:"All"},{id:"image",label:"Image"},{id:"video",label:"Video"},
+    {id:"flow",label:"Flow"},{id:"whisk",label:"Whisk"},
+    {id:"narasi",label:"Narasi"},{id:"outline",label:"Outline"},{id:"chat",label:"Chat"},
+    {id:"narasi_review",label:"Narasi Review"},
+  ];
+  const dl=async(a,fmt)=>{
+    try{
+      const txt=await(await fetch(a.signedUrl)).text();
+      const base=(((a.metadata&&a.metadata.original_filename)||a.filename||"document")).replace(/\.[^.]+$/,"");
+      exportDoc(fmt,txt,base,base,showToast);
+    }catch(e){ if(showToast)showToast("Download gagal: "+e.message,"err"); }
+  };
+  const load=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const category=tab==="uploads"?"uploads":cat;
+      const r=await fetch("/api/assets?category="+encodeURIComponent(category)+"&limit=120",{headers:await authHdrFresh()});
+      const d=await r.json();
+      setItems(Array.isArray(d.assets)?d.assets:[]);
+    }catch(e){ if(showToast)showToast("Gagal memuat Media Vault: "+e.message,"err"); setItems([]); }
+    finally{ setLoading(false); }
+  },[tab,cat]);
+  useEffect(()=>{ load(); },[load]);
+
+  const needle=q.trim().toLowerCase();
+  const shown=needle
+    ? items.filter(a=>(((a.metadata&&a.metadata.original_filename)||a.filename||"")+" "+((a.metadata&&a.metadata.model)||"")+" "+(a.sourceJobType||"")).toLowerCase().includes(needle))
+    : items;
+
+  const tBtn=(id,lbl,active)=>(
+    <button key={id} onClick={()=>{ if(id!==tab){setTab(id);} }}
+      style={{padding:"7px 15px",borderRadius:8,border:"1px solid var(--br)",cursor:"pointer",fontWeight:600,
+        background:active?"var(--ac)":"var(--be)",color:active?"#fff":"var(--td)"}}>{lbl}</button>
+  );
+  const chip=(c)=>(
+    <button key={c.id} onClick={()=>setCat(c.id)}
+      style={{padding:"5px 12px",borderRadius:20,border:"1px solid var(--br)",cursor:"pointer",fontSize:12.5,
+        background:cat===c.id?"var(--ac)":"transparent",color:cat===c.id?"#fff":"var(--td)"}}>{c.label}</button>
+  );
+  const card=(a)=>{
+    const cap=(a.metadata&&a.metadata.original_filename)||a.filename||a.sourceJobType||a.assetType||"asset";
+    const u=a.signedUrl;
+    // TEXT / document → card with TXT/PDF/HTML download (reuses exportDoc)
+    if(a.assetType==="document"){
+      const kind=(a.metadata&&a.metadata.kind)||"document";
+      return (
+        <div className="gc" key={a.id} style={{display:"flex",flexDirection:"column"}}>
+          <div style={{flex:1,minHeight:96,display:"flex",flexDirection:"column",justifyContent:"center",gap:6,padding:"14px 12px",background:"var(--be2)"}}>
+            <div style={{fontFamily:"var(--fm)",fontSize:10,letterSpacing:".08em",textTransform:"uppercase",color:"var(--ac)"}}>{kind}</div>
+            <div style={{fontSize:12.5,color:"var(--t)",overflow:"hidden",display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical"}}>{cap}</div>
+          </div>
+          <div style={{display:"flex",gap:5,padding:"8px 10px",borderTop:"1px solid var(--br)"}}>
+            {["txt","pdf","html"].map(f=>(
+              <button key={f} onClick={()=>dl(a,f)} disabled={!u}
+                style={{flex:1,padding:"5px 0",fontSize:10.5,borderRadius:6,border:"1px solid var(--br)",cursor:u?"pointer":"not-allowed",background:f==="html"?"var(--ac)":"var(--be)",color:f==="html"?"#fff":"var(--td)",fontWeight:600,textTransform:"uppercase"}}>{f}</button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    // IMAGE / VIDEO → clickable thumbnail
+    let media;
+    if(a.assetType==="image"&&u) media=<img src={u} alt={cap} loading="lazy"/>;
+    else if(a.assetType==="video"&&u) media=<video src={u} muted preload="metadata" style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block",background:"var(--be2)"}}/>;
+    else media=<div style={{width:"100%",aspectRatio:"16/9",display:"flex",alignItems:"center",justifyContent:"center",background:"var(--be2)",color:"var(--td)",fontFamily:"var(--fm)",fontSize:11,padding:8,textAlign:"center"}}>{(a.assetType||"file").toUpperCase()}</div>;
+    return (
+      <a className="gc" key={a.id} href={u||"#"} target="_blank" rel="noreferrer" title={cap}>
+        {media}
+        <div className="cap">{cap}</div>
+      </a>
+    );
+  };
+
+  return (
+    <div style={{maxWidth:1120,margin:"0 auto",padding:"0 0 3rem"}}>
+      <h2 style={{margin:"0 0 14px"}}>Media Vault</h2>
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        {tBtn("generated","Generated",tab==="generated")}
+        {tBtn("uploads","Uploads",tab==="uploads")}
+      </div>
+      {tab==="generated"&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>{CATS.map(chip)}</div>}
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Cari nama file / model…"
+        style={{width:"100%",maxWidth:380,padding:"8px 12px",borderRadius:8,border:"1px solid var(--br)",background:"var(--be)",color:"var(--t)",marginBottom:14}}/>
+      {loading
+        ? <div style={{color:"var(--td)",padding:24}}>Memuat…</div>
+        : shown.length===0
+          ? <div style={{color:"var(--td)",padding:"34px 0",textAlign:"center"}}>Belum ada aset di sini.</div>
+          : <div className="gallery">{shown.map(card)}</div>}
+    </div>
+  );
+}
+
 function NarasiSection({settings,showToast}){
   const[apiMode,setApiMode]=useState(()=>localStorage.getItem("rc_nar_mode")||"laozhang");
   const[chatModel,setChatModel]=useState(()=>localStorage.getItem("rc_nar_model")||"gemini-2.5-flash");
@@ -5340,6 +5441,7 @@ function App(){
       <div style={{display:page==="scripttts"?""  :"none"}}><ScriptTtsSection settings={sectionSettings} showToast={showToast}/></div>
       <div style={{display:page==="narasi"  ?""  :"none"}}><NarasiSection    settings={sectionSettings} showToast={showToast}/></div>
       <div style={{display:page==="narasireview"?"":"none"}}><NarasiReviewSection settings={sectionSettings} showToast={showToast}/></div>
+      <div style={{display:page==="mediavault"?"":"none"}}><MediaVaultSection settings={sectionSettings} showToast={showToast}/></div>
     </>
   );
 

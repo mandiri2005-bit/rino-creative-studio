@@ -422,6 +422,38 @@ async function insertAsset({
   return res.rows[0]?.id ?? null;
 }
 
+/**
+ * listAssets(tenantId, {assetType?, sourceJobType?, limit?, before?}) → rows
+ * Durable retrieval of a tenant's generated assets straight from the `assets`
+ * table (survives redeploy + any job cleanup). Newest first, RLS-scoped.
+ * Cursor pagination via `before` (pass the previous page's last created_at).
+ */
+async function listAssets(tenantId, {
+  assetType = null, sourceJobTypes = null, metadataKind = null, limit = 50, before = null,
+} = {}) {
+  const lim = Math.min(Math.max(1, parseInt(limit) || 50), 200);
+  const conds = ["tenant_id = $1", "is_deleted = false"];
+  const params = [tenantId];
+  if (assetType) { params.push(assetType); conds.push(`asset_type = $${params.length}`); }
+  if (Array.isArray(sourceJobTypes) && sourceJobTypes.length) {
+    params.push(sourceJobTypes);
+    conds.push(`source_job_type = ANY($${params.length}::job_type_enum[])`);
+  }
+  if (metadataKind) { params.push(metadataKind); conds.push(`metadata->>'kind' = $${params.length}`); }
+  if (before) { params.push(before); conds.push(`created_at < $${params.length}`); }
+  params.push(lim);
+  const res = await query(
+    `SELECT id, asset_type, source_job_type, bucket, s3_key, original_filename,
+            content_type, size_bytes, metadata, created_at
+       FROM assets
+      WHERE ${conds.join(" AND ")}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`,
+    params, tenantId
+  );
+  return res.rows;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // CHAT SESSIONS  (mirrors database.py get_or_create_session / append_message)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -579,6 +611,7 @@ export {
 
   // assets (object storage)
   insertAsset,
+  listAssets,
 
   // sync-flow job ledger
   logSyncJob,
