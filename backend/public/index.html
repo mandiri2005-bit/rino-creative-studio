@@ -4624,7 +4624,10 @@ function MediaVaultSection({settings,showToast}){
   ];
   const dl=async(a,fmt)=>{
     try{
-      const txt=await(await fetch(a.signedUrl)).text();
+      // fetch via same-origin proxy (avoids R2 CORS on direct browser fetch)
+      const r=await fetch("/api/assets/content?key="+encodeURIComponent(a.key),{headers:await authHdrFresh()});
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      const txt=await r.text();
       const base=(((a.metadata&&a.metadata.original_filename)||a.filename||"document")).replace(/\.[^.]+$/,"");
       exportDoc(fmt,txt,base,base,showToast);
     }catch(e){ if(showToast)showToast("Download gagal: "+e.message,"err"); }

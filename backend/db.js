@@ -589,6 +589,7 @@ export {
   resolveTenantId,
   resolveUserId,
   setTenantContext,
+  query,
 
   // config
   getConfig,

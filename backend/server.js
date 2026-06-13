@@ -21,7 +21,7 @@ import { GoogleGenAI } from "@google/genai";
 import Jimp from "jimp";
 import { parseAudioMime, makeWavHeader, convertToWav, prependSilence, buildJsonl, mkId as _mkId } from "./utils.mjs";
 import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile, resolveTenantId, resolveUserId, _uuid5, getOrCreateSession, appendMessage, logUsage, calcGoogleCost,
-         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, listAssets, logSyncJob } from "./db.js";
+         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, listAssets, logSyncJob, query } from "./db.js";
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
@@ -310,7 +310,7 @@ app.use(express.static(path.join(__dirname,"public"),{
 }));
 
 // ── Health ────────────────────────────────────────────────────────────────────
-app.get("/api/health", (_,res) => res.json({ ok:true, gemini:!!GEMINI_KEY, python:PYTHON_API, node:process.version, commit:process.env.RAILWAY_GIT_COMMIT_SHA||null }));
+app.get("/api/health", (_,res) => res.json({ ok:true, gemini:!!GEMINI_KEY, python:PYTHON_API }));
 app.get("/api/config", requireAuth, async (req,res) => {
   try { res.json(await getConfig(resolveTenantId(req))); }
   catch(e) { res.status(500).json({ error: e.message }); }
@@ -1789,6 +1789,26 @@ app.get("/api/assets/sign", requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Same-origin content proxy — streams an asset's bytes from R2 so the browser can
+// fetch() text (for TXT/PDF/HTML download) without hitting R2 CORS. RLS-scoped:
+// only returns content for a key the caller's tenant owns.
+app.get("/api/assets/content", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const key = req.query.key;
+    if (!key) return res.status(400).json({ error: "key required" });
+    const owns = await query(
+      "SELECT content_type FROM assets WHERE s3_key=$1 AND tenant_id=$2 AND is_deleted=false LIMIT 1",
+      [key, tenantId], tenantId
+    );
+    if (!owns.rows.length) return res.status(404).json({ error: "asset not found" });
+    if (!storage.isConfigured()) return res.status(503).json({ error: "storage not configured" });
+    const buf = await storage.downloadBytes(key);
+    res.setHeader("Content-Type", owns.rows[0].content_type || "application/octet-stream");
+    res.send(buf);
+  } catch (e) { console.error("[/api/assets/content]", e.message); res.status(500).json({ error: e.message }); }
+});
+
 // Durable "Media Vault" retrieval — lists the tenant's assets straight from the
 // assets table (survives redeploy + job cleanup), newest first, each with a fresh
 // 10-min signed R2 URL. Categorised for the gallery tabs:
@@ -1825,8 +1845,8 @@ app.get("/api/assets", requireAuth, async (req, res) => {
     })));
     res.json({ assets, nextBefore: rows.length ? rows[rows.length - 1].created_at : null });
   } catch (e) {
-    console.error("[/api/assets] ERROR:", e && e.stack || e);
-    res.status(500).json({ error: e.message, stack: (e && e.stack || "").split("\n").slice(0, 5), node: process.version });
+    console.error("[/api/assets]", e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
