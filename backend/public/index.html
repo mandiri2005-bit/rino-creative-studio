@@ -742,6 +742,7 @@ const api={
   narasiJobs:async()=>fetch("/api/narasi/jobs",{headers:(await authHdrFresh())}).then(r=>r.json()),
   narasiChapters:async(jobId)=>fetch(`/api/narasi/chapters/${jobId}`,{headers:(await authHdrFresh())}).then(r=>r.json()),
   narasiRate:async(chapter_id,rating)=>fetch("/api/narasi/rate",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify({chapter_id,rating})}).then(r=>r.json()),
+  narasiRateAll:async(job_id,rating)=>fetch("/api/narasi/rate-all",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify({job_id,rating})}).then(r=>r.json()),
   batchJobs:()=>fetch("/api/jobs").then(r=>r.json()),
   batchSubmit:async b=>fetch("/api/submit",{method:"POST",headers:{...{"Content-Type":"application/json"},...(authHdr())},body:JSON.stringify(b)}).then(r=>r.json()),
   batchStatus:n=>fetch("/api/status?name="+encodeURIComponent(n)).then(r=>r.json()),
@@ -5332,6 +5333,7 @@ function NarasiSection({settings,showToast}){
   const[pastJobs,setPastJobs]=useState([]);
   const[chapRatings,setChapRatings]=useState([]);
   const[ratingJobId,setRatingJobId]=useState(null);
+  const[narasiRating,setNarasiRating]=useState(0);
   const[doneInfo,setDoneInfo]=useState(null);
 
   useEffect(()=>{
@@ -5444,9 +5446,17 @@ function NarasiSection({settings,showToast}){
   };
 
   const loadPastJobs=async()=>{ try{ const r=await api.narasiJobs(); if(r&&r.ok) setPastJobs(r.jobs||[]); }catch{} };
-  const loadChapterRatings=async(jid)=>{ if(!jid){setChapRatings([]);setRatingJobId(null);return;} try{ const r=await api.narasiChapters(jid); if(r&&r.ok){setChapRatings(r.chapters||[]);setRatingJobId(jid);} }catch{} };
-  const rateChapter=async(chapterId,rating)=>{ setChapRatings(p=>p.map(c=>c.id===chapterId?{...c,rating}:c)); try{ const r=await api.narasiRate(chapterId,rating); if(!r||!r.ok) throw new Error((r&&r.error)||"gagal"); showToast(`Rating ${rating}★ tersimpan`,"ok"); }catch(e){ showToast("Rating gagal: "+e.message,"err"); if(ratingJobId) loadChapterRatings(ratingJobId); } };
+  const loadChapterRatings=async(jid)=>{ if(!jid){setChapRatings([]);setRatingJobId(null);setNarasiRating(0);return;} try{ const r=await api.narasiChapters(jid); if(r&&r.ok){const chs=r.chapters||[];setChapRatings(chs);setRatingJobId(jid);setNarasiRating((chs[0]&&chs[0].rating)||0);} }catch{} };
+  const rateNarasi=async(rating)=>{ if(!ratingJobId){showToast("Narasi belum siap dinilai","err");return;} setNarasiRating(rating); setChapRatings(p=>p.map(c=>({...c,rating}))); try{ const r=await api.narasiRateAll(ratingJobId,rating); if(!r||!r.ok) throw new Error((r&&r.error)||"gagal"); showToast(`Rating ${rating}★ tersimpan (${r.rated||"semua"} bab)`,"ok"); }catch(e){ showToast("Rating gagal: "+e.message,"err"); } };
+  const requireRating=()=>{ if(!narasiRating){ showToast("⚠️ Beri rating narasi dulu sebelum mengunduh","err"); const el=document.getElementById("narasi-rating-card"); if(el)el.scrollIntoView({behavior:"smooth",block:"center"}); return false; } return true; };
   useEffect(()=>{ loadPastJobs(); },[]);
+  useEffect(()=>{
+    const unrated=!!(narasi&&!narasiRating);
+    window.__rcsNarasiUnrated=unrated;
+    const h=(e)=>{ if(unrated){e.preventDefault();e.returnValue="";} };
+    window.addEventListener("beforeunload",h);
+    return ()=>window.removeEventListener("beforeunload",h);
+  },[narasi,narasiRating]);
 
   const recoverJob=async(jId)=>{
     if(!jId)return;
@@ -5868,9 +5878,9 @@ function NarasiSection({settings,showToast}){
           <span style={{fontSize:13,fontWeight:700}}>±{narasi.split(/\s+/).filter(Boolean).length} kata</span>
           <div style={{flex:1}}/>
           <span style={{fontSize:11.5,color:"var(--td)",marginRight:1}}>{ic.dload} Unduh:</span>
-          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>downloadTxt(narasi)} title="Teks polos UTF-8">TXT</button>
-          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>downloadPdf(narasi)} title="PDF — buka dialog cetak, pilih Simpan sebagai PDF">PDF</button>
-          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>downloadHtml(narasi)} title="HTML berstyle editorial">HTML</button>
+          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>{if(requireRating())downloadTxt(narasi);}} title="Teks polos UTF-8">TXT</button>
+          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>{if(requireRating())downloadPdf(narasi);}} title="PDF — buka dialog cetak, pilih Simpan sebagai PDF">PDF</button>
+          <button className="btn sec" style={{padding:"5px 11px",fontSize:11.5}} onClick={()=>{if(requireRating())downloadHtml(narasi);}} title="HTML berstyle editorial">HTML</button>
           <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={()=>setStage("outline")}>← Outline</button>
           {Object.values(chapProgress).some(v=>v==="error")&&<button className="btn sec" style={{padding:"5px 12px",fontSize:11.5,borderColor:"var(--da)",color:"var(--da)"}} disabled={generating} onClick={retryErrors}>🔄 Retry errors</button>}
           <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={reset}>{ic.trash} Reset</button>
@@ -5880,19 +5890,16 @@ function NarasiSection({settings,showToast}){
           <textarea className="inp ta mono" rows={32} value={narasi} onChange={e=>setNarasi(e.target.value)} style={{fontSize:12.5,lineHeight:1.8}}/>
         </div>
         {chapRatings.length>0&&(
-          <div className="card" style={{marginTop:14}}>
-            <div className="lbl">⭐ Beri rating tiap bab <span style={{fontWeight:400,color:"var(--tf)"}}>— sinyal kualitas untuk training (≥4★ = approved)</span></div>
-            {chapRatings.map((ch,idx)=>(
-              <div key={ch.id} style={{display:"flex",alignItems:"center",gap:12,padding:"7px 0",borderBottom:idx<chapRatings.length-1?"1px solid var(--brs)":"none"}}>
-                <span style={{fontSize:12.5,fontWeight:600,minWidth:54,color:"var(--td)"}}>Bab {ch.chapter_index+1}</span>
-                <div style={{display:"flex",gap:2}}>
-                  {[1,2,3,4,5].map(n=>(
-                    <span key={n} onClick={()=>rateChapter(ch.id,n)} title={n+" bintang"} style={{cursor:"pointer",fontSize:20,lineHeight:1,color:(ch.rating||0)>=n?"#f5b301":"var(--br)"}}>★</span>
-                  ))}
-                </div>
-                {ch.rating?(<span style={{fontSize:11.5,color:ch.rating>=4?"var(--su)":"var(--td)"}}>{ch.rating}★{ch.rating>=4?" · approved ✓":""}</span>):(<span style={{fontSize:11.5,color:"var(--tf)"}}>belum dinilai</span>)}
+          <div id="narasi-rating-card" className="card" style={{marginTop:14,border:"1px solid "+(narasiRating?"var(--brs)":"var(--wa)")}}>
+            <div className="lbl">⭐ Beri rating narasi <span style={{fontWeight:400,color:"var(--tf)"}}>— wajib sebelum unduh · berlaku untuk semua {chapRatings.length} bab (≥4★ = approved)</span></div>
+            <div style={{display:"flex",alignItems:"center",gap:14,padding:"4px 0"}}>
+              <div style={{display:"flex",gap:4}}>
+                {[1,2,3,4,5].map(n=>(
+                  <span key={n} onClick={()=>rateNarasi(n)} title={n+" bintang"} style={{cursor:"pointer",fontSize:30,lineHeight:1,color:narasiRating>=n?"#f5b301":"var(--br)"}}>★</span>
+                ))}
               </div>
-            ))}
+              {narasiRating?(<span style={{fontSize:13,color:narasiRating>=4?"var(--su)":"var(--td)"}}>{narasiRating}★{narasiRating>=4?" · approved ✓":""}</span>):(<span style={{fontSize:12.5,color:"var(--wa)",fontWeight:600}}>belum dinilai — klik bintang</span>)}
+            </div>
           </div>
         )}
       </>}
@@ -5967,6 +5974,7 @@ function ClerkUserButton(){
 function App(){
   const[theme,setTheme]=useState(()=>localStorage.getItem("rc_theme")||"dark");
   const[page,setPage]=useState("chat");
+  const guardNav=(id)=>{ if(id!=="narasi"&&window.__rcsNarasiUnrated&&!window.confirm("Narasi belum kamu beri rating ⭐. Pindah halaman tanpa menilai?"))return; setPage(id); };
   const[showSettings,setShowSettings]=useState(false);
   const[collapsed,setCollapsed]=useState(false);
   const[toast,setToast]=useState(null);
@@ -6024,7 +6032,7 @@ function App(){
       <div className="sb-nav">
         {navGroups.map(group=><div className="nav-group" key={group}>
           {!collapsed&&<div className="nav-label">{group}</div>}
-          {NAV.filter(n=>n.group===group).map(n=><button key={n.id} className={"navbtn "+(page===n.id?"on":"")} onClick={()=>setPage(n.id)} title={n.label}>
+          {NAV.filter(n=>n.group===group).map(n=><button key={n.id} className={"navbtn "+(page===n.id?"on":"")} onClick={()=>guardNav(n.id)} title={n.label}>
             {n.icon}<span>{n.label}</span>
           </button>)}
         </div>)}

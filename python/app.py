@@ -4183,6 +4183,28 @@ async def narasi_rate(body: dict, user: CurrentUser = Depends(get_current_user))
         return {"ok": False, "error": str(_e)}
 
 
+@app.post("/narasi/rate-all")
+async def narasi_rate_all(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """Rate EVERY chapter of a job with the same 1-5 value ('beri rating narasi')."""
+    job_id = (body.get("job_id") or "").strip()
+    try:
+        rating = int(body.get("rating") or 0)
+    except Exception:
+        rating = 0
+    if not job_id or rating < 1 or rating > 5:
+        return {"ok": False, "error": "job_id + rating (1-5) required"}
+    _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    try:
+        _row = await db.get_job_by_external(user.tenant_id, job_id)
+        if not _row or not _row.get("id"):
+            return {"ok": False, "error": "job not found"}
+        n = await db.save_approval_all(user.tenant_id, _user, _row["id"], rating)
+        return {"ok": True, "rated": n, "approved": rating >= 4}
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("rate-all failed (non-fatal): %s", _e)
+        return {"ok": False, "error": str(_e)}
+
+
 @app.get("/narasi/chapters/{job_id}")
 async def narasi_chapters_list(job_id: str, user: CurrentUser = Depends(get_current_user)):
     """Chapters of a job with their latest rating, for the rating UI (Step 1.4)."""

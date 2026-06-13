@@ -424,6 +424,27 @@ async def save_approval(tenant_id, user_id, chapter_id, rating) -> str:
     except Exception as e:
         log.error("save_approval: %s", e); raise
 
+async def save_approval_all(tenant_id, user_id, job_id, rating) -> int:
+    """Rate EVERY chapter of a job with the same 1-5 value ('beri rating narasi').
+    One approval row per chapter + reflect approved onto narasi_chapters. Returns
+    the number of chapters rated."""
+    approved = bool(rating and int(rating) >= 4)
+    try:
+        await _q_exec(
+            """INSERT INTO approvals (tenant_id, user_id, chapter_id, approved, rating)
+               SELECT $1,$2,nc.id,$4,$5 FROM narasi_chapters nc WHERE nc.job_id=$3""",
+            _uid(tenant_id), _uid(user_id), _uid(job_id), approved, int(rating),
+            tenant=str(tenant_id))
+        await _q_exec(
+            "UPDATE narasi_chapters SET approved=$2, updated_at=now() WHERE job_id=$1",
+            _uid(job_id), approved, tenant=str(tenant_id))
+        cnt = await _q_fetchval(
+            "SELECT count(*) FROM narasi_chapters WHERE job_id=$1",
+            _uid(job_id), tenant=str(tenant_id))
+        return int(cnt or 0)
+    except Exception as e:
+        log.error("save_approval_all: %s", e); raise
+
 async def cleanup_old_jobs(tenant_id, older_than_hours=24) -> int:
     """Delete completed/failed jobs older than N hours."""
     try:
