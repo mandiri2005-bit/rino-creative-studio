@@ -1,182 +1,192 @@
-# =============================================================================
-# golden_set.yaml — FROZEN eval fixture for Rino Creative Studio RAG harness
-# =============================================================================
-# This is the fixed input set every later change (retrieval, registry, quality)
-# is judged against. Once frozen (Step 0.2 → committed), DO NOT edit it — a
-# changed fixture invalidates every comparison against the frozen baseline.
+# ============================================================================
+# eval/golden_set.yaml — FROZEN golden set for the RAG eval gate (Step 0.2)
+# Rino Creative Studio
+# ============================================================================
+# 25 curated documentary topics. Once committed in Step 0.2, DO NOT edit:
+# every later measurement (recall@k, output rubric) runs against this exact
+# set. A SHA256 of this file is stored in the frozen baseline (Step 0.4), so
+# any silent change is caught the next time the gate runs.
 #
-# Each entry has exactly these fields:
-#   id            : unique slug (stable identifier across runs)
-#   topic         : the topic string, phrased as a user/topic would
-#   style         : a REGISTRY STYLE KEY (see style_rag_config.py) — NOT a corpus
-#                   style_label. Flows into compare_rag_vs_standard(style=...).
-#   lang          : output language code ("id" or "en")
-#   prefer_source : true  -> retrieval first pass filtered to source='rino'
-#                   false -> normal corpus-wide retrieval
+# Fields per entry
+#   id            unique slug — stable identifier carried across every run
+#   topic         the documentary topic fed to retrieval + both gen paths
+#   style         one of the 12 VERIFIED Qdrant style_label values only:
+#                   conversational  epic         unlabeled   biographical
+#                   expository      discovery    political   reflective
+#                   lyrical         financial    suspense    dramatic
+#   lang          output language: 'id' or 'en'
+#   prefer_source true -> retrieval prioritises source='rino' passages.
+#                 Set ONLY on styles where rino content is thick
+#                 (epic 1091 · expository 295 · political 141 · discovery 41).
 #
-# Distribution (this file): 25 entries | 14 id / 11 en | 6 prefer_source:true |
-# all 14 registry style keys used at least once.
-# =============================================================================
+# Locked distribution
+#   total          25
+#   language       15 id · 10 en
+#   prefer_source  6 true (all id) · 19 false
+#   true styles    epic ×2 · expository ×2 · political ×1 · discovery ×1
+#   coverage       all 12 style labels exercised at least once
+# ============================================================================
 
-entries:
+# ── prefer_source: true — proprietary 'rino' content must rank to the top ────
+- id: majapahit-puncak-kejayaan
+  topic: "Puncak kejayaan Kerajaan Majapahit di bawah Hayam Wuruk dan cita-cita Nusantara"
+  style: epic
+  lang: id
+  prefer_source: true
 
-  # ===========================================================================
-  # prefer_source: true  (6) — topics that should overlap the 70 rino books
-  # (Indonesian / SEA history & culture). VERIFY each one retrieves rino
-  # passages before freezing (see Step 0.2 verification command).
-  # ===========================================================================
-  - id: rino-majapahit-rakyat-id
-    topic: "kehidupan rakyat jelata di era Kerajaan Majapahit"
-    style: natgeo
-    lang: id
-    prefer_source: true
+- id: sriwijaya-imperium-maritim
+  topic: "Sriwijaya sebagai imperium maritim dan pusat pembelajaran Buddha di Asia Tenggara"
+  style: epic
+  lang: id
+  prefer_source: true
 
-  - id: rino-sriwijaya-maritim-id
-    topic: "kejayaan Sriwijaya sebagai kerajaan maritim Nusantara"
-    style: big_history
-    lang: id
-    prefer_source: true
+- id: jalur-rempah-nusantara
+  topic: "Jalur rempah Nusantara dan jaringan perdagangan dunia sebelum kedatangan bangsa Eropa"
+  style: expository
+  lang: id
+  prefer_source: true
 
-  - id: rino-gajah-mada-palapa-id
-    topic: "Gajah Mada dan Sumpah Palapa yang menyatukan Nusantara"
-    style: storytelling
-    lang: id
-    prefer_source: true
+- id: borobudur-mahakarya-syailendra
+  topic: "Arsitektur dan makna kosmologis Candi Borobudur sebagai mahakarya Wangsa Syailendra"
+  style: expository
+  lang: id
+  prefer_source: true
 
-  - id: rino-borobudur-pembangunan-id
-    topic: "pembangunan candi Borobudur pada masa Wangsa Syailendra"
-    style: cinematic_voiceover
-    lang: id
-    prefer_source: true
+- id: sumpah-palapa-gajah-mada
+  topic: "Sumpah Palapa Gajah Mada dan ambisi penyatuan politik Nusantara"
+  style: political
+  lang: id
+  prefer_source: true
 
-  - id: rino-rempah-nusantara-id
-    topic: "jalur perdagangan rempah dan pelabuhan kuno di Nusantara"
-    style: journalistic
-    lang: id
-    prefer_source: true
+- id: trowulan-jejak-majapahit
+  topic: "Trowulan: menelusuri jejak arkeologis ibu kota Kerajaan Majapahit"
+  style: discovery
+  lang: id
+  prefer_source: true
 
-  - id: rino-raja-nusantara-pov-id
-    topic: "memerintah sebuah kerajaan Nusantara dari sudut pandang sang raja"
-    style: pov_first_person
-    lang: id
-    prefer_source: true
+# ── prefer_source: false — corpus-wide retrieval, all 12 styles exercised ────
 
-  # ===========================================================================
-  # prefer_source: false — Indonesian (8)
-  # ===========================================================================
-  - id: krakatau-1883-id
-    topic: "letusan dahsyat Gunung Krakatau tahun 1883"
-    style: narrative_nonfiction_mystery
-    lang: id
-    prefer_source: false
+# conversational
+- id: kopi-indonesia-sejarah
+  topic: "Sejarah kopi Indonesia, dari tanam paksa kolonial hingga gelombang kopi specialty"
+  style: conversational
+  lang: id
+  prefer_source: false
 
-  - id: komodo-naga-id
-    topic: "komodo, kadal raksasa terakhir di dunia"
-    style: youtube_popular_science
-    lang: id
-    prefer_source: false
+- id: indonesian-street-food
+  topic: "The world of Indonesian street food and the warung culture behind everyday eating"
+  style: conversational
+  lang: en
+  prefer_source: false
 
-  - id: wayang-kulit-id
-    topic: "tradisi wayang kulit sebagai seni bercerita Jawa"
-    style: creative_nonfiction
-    lang: id
-    prefer_source: false
+# unlabeled
+- id: cincin-api-pasifik
+  topic: "Cincin Api Pasifik: mengapa Indonesia memiliki begitu banyak gunung berapi aktif"
+  style: unlabeled
+  lang: id
+  prefer_source: false
 
-  - id: proklamasi-1945-id
-    topic: "detik-detik proklamasi kemerdekaan Indonesia 1945"
-    style: journalistic
-    lang: id
-    prefer_source: false
+- id: indian-ocean-tsunami-2004
+  topic: "How the 2004 Indian Ocean tsunami reshaped Aceh and global tsunami early-warning"
+  style: unlabeled
+  lang: en
+  prefer_source: false
 
-  - id: orangutan-borneo-id
-    topic: "orangutan dan hutan hujan Kalimantan"
-    style: natgeo
-    lang: id
-    prefer_source: false
+# biographical
+- id: kartini-emansipasi
+  topic: "Raden Ajeng Kartini dan benih gerakan emansipasi perempuan Indonesia"
+  style: biographical
+  lang: id
+  prefer_source: false
 
-  - id: subak-bali-id
-    topic: "sistem irigasi subak Bali dan filosofi Tri Hita Karana"
-    style: academic_popular
-    lang: id
-    prefer_source: false
+- id: lee-kuan-yew-singapore
+  topic: "Lee Kuan Yew and the transformation of Singapore from trading port to global city"
+  style: biographical
+  lang: en
+  prefer_source: false
 
-  - id: malin-kundang-id
-    topic: "legenda Malin Kundang yang dikutuk menjadi batu"
-    style: fiction
-    lang: id
-    prefer_source: false
+# reflective
+- id: rambu-solo-toraja
+  topic: "Rambu Solo': filosofi kematian dan kehidupan dalam tradisi masyarakat Toraja"
+  style: reflective
+  lang: id
+  prefer_source: false
 
-  - id: dongeng-kancil-id
-    topic: "dongeng pengantar tidur tentang si Kancil yang cerdik"
-    style: bedtime_story
-    lang: id
-    prefer_source: false
+- id: jakarta-sinking-city
+  topic: "A sinking Jakarta: living with land subsidence, floods, and a receding coastline"
+  style: reflective
+  lang: en
+  prefer_source: false
 
-  # ===========================================================================
-  # prefer_source: false — English (11)
-  # ===========================================================================
-  - id: fall-roman-empire-en
-    topic: "the fall of the Western Roman Empire"
-    style: storytelling
-    lang: en
-    prefer_source: false
+# lyrical
+- id: gamelan-lanskap-suara
+  topic: "Gamelan: lanskap bunyi dan makna spiritual di balik musik tradisional Jawa dan Bali"
+  style: lyrical
+  lang: id
+  prefer_source: false
 
-  - id: darwin-evolution-en
-    topic: "Darwin and the theory of evolution by natural selection"
-    style: big_history
-    lang: en
-    prefer_source: false
+- id: batik-bahasa-pola
+  topic: "Batik: the language of pattern, wax, and memory across the Indonesian archipelago"
+  style: lyrical
+  lang: en
+  prefer_source: false
 
-  - id: pompeii-vesuvius-en
-    topic: "the destruction of Pompeii by Mount Vesuvius"
-    style: narrative_nonfiction_mystery
-    lang: en
-    prefer_source: false
+# financial
+- id: krisis-moneter-1997
+  topic: "Krisis moneter 1997 dan bagaimana badai ekonomi mengguncang Asia Tenggara"
+  style: financial
+  lang: id
+  prefer_source: false
 
-  - id: apollo-11-en
-    topic: "the Apollo 11 first landing on the Moon"
-    style: cinematic_voiceover
-    lang: en
-    prefer_source: false
+- id: voc-first-multinational
+  topic: "The VOC: how the world's first multinational corporation rose, ruled, and collapsed"
+  style: financial
+  lang: en
+  prefer_source: false
 
-  - id: marie-curie-en
-    topic: "Marie Curie and the discovery of radioactivity"
-    style: pov_first_person
-    lang: en
-    prefer_source: false
+# suspense
+- id: letusan-krakatau-1883
+  topic: "Letusan Krakatau 1883 dan dampak globalnya terhadap iklim, langit, dan peradaban"
+  style: suspense
+  lang: id
+  prefer_source: false
 
-  - id: barrier-reef-en
-    topic: "life on the Great Barrier Reef"
-    style: natgeo
-    lang: en
-    prefer_source: false
+- id: mh370-vanishing
+  topic: "The vanishing of flight MH370 and the largest search in modern aviation history"
+  style: suspense
+  lang: en
+  prefer_source: false
 
-  - id: french-revolution-en
-    topic: "the causes of the French Revolution"
-    style: academic_popular
-    lang: en
-    prefer_source: false
+# dramatic
+- id: perang-diponegoro
+  topic: "Perang Diponegoro: lima tahun perlawanan yang mengguncang tanah Jawa"
+  style: dramatic
+  lang: id
+  prefer_source: false
 
-  - id: gutenberg-press-en
-    topic: "Gutenberg and the printing press that changed the world"
-    style: youtube_popular_science
-    lang: en
-    prefer_source: false
+- id: puputan-bali
+  topic: "The Puputan of Bali: a kingdom's final, fatal stand against colonial conquest"
+  style: dramatic
+  lang: en
+  prefer_source: false
 
-  - id: shackleton-antarctic-en
-    topic: "Shackleton's survival expedition in Antarctica"
-    style: podcast_narrative
-    lang: en
-    prefer_source: false
+# expository
+- id: wallace-line-boundary
+  topic: "The Wallace Line: the invisible boundary splitting Asian and Australian wildlife"
+  style: expository
+  lang: en
+  prefer_source: false
 
-  - id: egypt-pyramids-en
-    topic: "the building of the pyramids of ancient Egypt"
-    style: literary_essay
-    lang: en
-    prefer_source: false
+# discovery
+- id: homo-floresiensis-hobbit
+  topic: "Homo floresiensis: the discovery of the Flores 'hobbit' and a new human lineage"
+  style: discovery
+  lang: en
+  prefer_source: false
 
-  - id: library-alexandria-en
-    topic: "the rise and loss of the Library of Alexandria"
-    style: creative_nonfiction
-    lang: en
-    prefer_source: false
+# epic
+- id: ekspedisi-pamalayu-singhasari
+  topic: "Ekspedisi Pamalayu: ambisi Kertanegara dari Singhasari menaklukkan Bumi Melayu"
+  style: epic
+  lang: id
+  prefer_source: false
