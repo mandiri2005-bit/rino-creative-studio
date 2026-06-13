@@ -83,7 +83,7 @@ async function main() {
       msgs.map((m) => `## ${m.role}\n\n${m.content}`).join("\n\n---\n\n");
     await putAsset({
       tenantId: s.tenant_id, userId: s.user_id,
-      key: `tenants/${s.tenant_id}/backfill/chat/${s.id}.txt`,
+      key: `tenants/${s.tenant_id}/chat/${s.id}.txt`,   // canonical per-session key (matches live capture)
       filename: `chat-${slug(s.title)}.txt`, text: transcript, kind: "chat",
       extraMeta: { source_id: s.id, title: s.title, model: s.model, messages: msgs.length },
     });

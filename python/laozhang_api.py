@@ -1326,6 +1326,26 @@ async def stream_chat(req: ChatRequest,
                         _tenant_id, _user_id, _model, "chat",
                         tok_in, tok_out, cost,
                         session_id=str(_session_id), provider=_provider)
+                    # Live-capture: upsert the session transcript → R2 + assets so the
+                    # chat is a downloadable file in the Media Vault. Deterministic
+                    # per-session key (matches the backfill key) → idempotent, no dupes.
+                    try:
+                        if storage.is_configured():
+                            _hist = await db.get_session_history(_tenant_id, _session_id)
+                            _tx = "# Chat\n\n" + "\n\n---\n\n".join(
+                                f"## {(m.get('role') or 'msg')}\n\n{m.get('content') or ''}"
+                                for m in (_hist or []) if m.get('content'))
+                            _ckey = f"tenants/{_tenant_id}/chat/{_session_id}.txt"
+                            _cb = _tx.encode("utf-8")
+                            await storage.aupload_bytes(_ckey, _cb, "text/plain; charset=utf-8")
+                            await db.insert_asset(
+                                _tenant_id, bucket=storage.BUCKET, s3_key=_ckey,
+                                content_type="text/plain; charset=utf-8", size_bytes=len(_cb),
+                                asset_type="document", source_job_type=None, user_id=None,
+                                original_filename="chat.txt",
+                                metadata={"kind": "chat", "session_id": str(_session_id)})
+                    except Exception as _ce:
+                        print(f"[stream_chat] chat asset persist failed (non-fatal): {_ce}", flush=True)
                 except Exception as db_err:
                     print(f"[stream_chat] DB append/usage error: {db_err}", flush=True)
         yield "data: [DONE]\n\n"
@@ -3804,7 +3824,21 @@ async def narasi_outline(body: dict,
     """Generate or revise a narrative outline with chapter weights."""
     import traceback as _tb
     try:
-        return await _narasi_outline_impl(body)
+        result = await _narasi_outline_impl(body)
+        # Live-capture: outline → R2 + assets (Media Vault → Outline), downloadable
+        try:
+            _ot = (result or {}).get("outline_text", "") if isinstance(result, dict) else ""
+            if _ot.strip() and getattr(user, "tenant_id", None):
+                await _persist_asset(
+                    user.tenant_id, asset_type="document", source_job_type=None,
+                    filename=f"outline-{uuid.uuid4().hex[:8]}.txt",
+                    data=_ot.encode("utf-8"), content_type="text/plain; charset=utf-8",
+                    user_id=None, metadata={"kind": "outline",
+                                            "topic": (body.get("topic") or ""),
+                                            "style": (body.get("style") or "")})
+        except Exception as _pe:
+            import logging as _lg; _lg.getLogger("narasi").warning("outline R2 persist failed (non-fatal): %s", _pe)
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -5330,6 +5364,18 @@ async def oneshot_fix_submit(body: dict,
                     body.get("style"), body.get("topic"), None, body.get("language"))
             except Exception as _ce:
                 import logging as _lg; _lg.getLogger("narasi").warning("oneshot correction capture failed (non-fatal): %s", _ce)
+
+            # Live-capture: fixed manuscript → R2 + assets (Media Vault → Narasi Review)
+            try:
+                if (fixed_book or "").strip():
+                    await _persist_asset(
+                        _TENANT_ID, asset_type="document", source_job_type=None,
+                        filename=f"oneshot-{uuid.uuid4().hex[:8]}.txt",
+                        data=fixed_book.encode("utf-8"), content_type="text/plain; charset=utf-8",
+                        user_id=None, metadata={"kind": "narasi_review", "subtype": "oneshot_fix",
+                                                "file_name": file_name})
+            except Exception as _pe:
+                import logging as _lg; _lg.getLogger("narasi").warning("oneshot R2 persist failed (non-fatal): %s", _pe)
 
             # Persist on the MAIN loop → uses the normal pool, no cross-loop error.
             await db.complete_job(job_id, {
