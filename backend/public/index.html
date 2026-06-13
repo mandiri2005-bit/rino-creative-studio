@@ -4142,7 +4142,7 @@ function _docHtml(md,title){
     +'<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
     +'<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,900&family=Spline+Sans+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
     +'<style>:root{--ink:#0b0a10;--paper:#f5f1e8;--accent:#c8341f;--mute:#6a6475;--line:rgba(11,10,16,.13)}'
-    +'*{margin:0;padding:0;box-sizing:border-box}body{background:var(--paper);color:var(--ink);font-family:Inter,sans-serif;line-height:1.75;-webkit-font-smoothing:antialiased}'
+    +'*{margin:0;padding:0;box-sizing:border-box}body{background:var(--paper);color:var(--ink);font-family:Inter,sans-serif;line-height:1.75;-webkit-font-smoothing:antialiased;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
     +'.wrap{max-width:760px;margin:0 auto;padding:0 28px}header{padding:64px 0 0;border-bottom:2.5px solid var(--ink)}'
     +'.eyebrow{font-family:"Spline Sans Mono",monospace;font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--mute)}'
     +'h1{font-family:Fraunces,serif;font-weight:900;font-size:clamp(32px,6vw,58px);line-height:1.02;letter-spacing:-.02em;margin:18px 0 14px}'
@@ -4152,8 +4152,12 @@ function _docHtml(md,title){
     +'main blockquote{border-left:3px solid var(--accent);background:rgba(200,52,31,.05);padding:12px 18px;margin:18px 0;font-style:italic;color:#3a3320}'
     +'main strong{font-weight:600}main em{font-style:italic}main code{font-family:"Spline Sans Mono",monospace;font-size:.85em;background:rgba(22,35,63,.07);padding:1.5px 6px;border-radius:3px}'
     +'main hr{border:0;border-top:1px solid var(--line);margin:30px 0}main ul,main ol{margin:0 0 16px 22px}main li{margin-bottom:6px}'
+    +'main table{width:100%;border-collapse:collapse;margin:20px 0;font-size:13.5px}'
+    +'main thead th{font-family:"Spline Sans Mono",monospace;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;background:rgba(11,10,16,.05);color:var(--ink);text-align:left;font-weight:600;padding:9px 11px;border:1px solid var(--line)}'
+    +'main td{padding:8px 11px;border:1px solid var(--line);color:#26242c;vertical-align:top}main tbody tr:nth-child(even){background:rgba(11,10,16,.025)}'
     +'footer{border-top:1px solid var(--line);margin-top:48px;padding:26px 0 60px;text-align:center}footer .fm{font-family:Fraunces,serif;font-style:italic;font-size:16px}'
-    +'footer .fn{font-family:"Spline Sans Mono",monospace;font-size:11px;color:var(--mute);letter-spacing:.08em;margin-top:8px}@media print{body{background:#fff}}</style></head><body><div class="wrap">'
+    +'footer .fn{font-family:"Spline Sans Mono",monospace;font-size:11px;color:var(--mute);letter-spacing:.08em;margin-top:8px}'
+    +'@page{margin:16mm}@media print{body{background:#fff}header{padding-top:8px}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}main h2,main h3{break-after:avoid}main blockquote,main table,main tr,main li{break-inside:avoid}}</style></head><body><div class="wrap">'
     +'<header><div class="eyebrow">Rino Creative Studio · Narasi</div><h1>'+_docEsc(t)+'</h1>'+(meta?'<div class="meta">'+_docEsc(meta)+'</div>':'')+'</header>'
     +'<main>'+inner+'</main><footer><div class="fm">Rino Creative Studio</div><div class="fn">Dibuat '+_docEsc(today)+'</div></footer></div></body></html>';
 }
@@ -4166,7 +4170,10 @@ function exportDoc(fmt,md,baseName,title,showToast){
     _docBlob(new Blob([_docHtml(md,title)],{type:"text/html;charset=utf-8"}),name+".html");
   }else{
     const w=window.open("","_blank"); if(!w){showToast&&showToast("Popup diblokir — izinkan popup untuk simpan PDF","err");return;}
-    w.document.write(_docHtml(md,title)); w.document.close(); setTimeout(()=>{try{w.focus();w.print();}catch(e){}},700);
+    w.document.write(_docHtml(md,title)); w.document.close();
+    const _go=()=>{try{w.focus();w.print();}catch(e){}};
+    try{ (w.document.fonts&&w.document.fonts.ready) ? w.document.fonts.ready.then(()=>setTimeout(_go,200)) : setTimeout(_go,900); }
+    catch(e){ setTimeout(_go,900); }
   }
 }
 function NarasiReviewSection({settings,showToast}){
