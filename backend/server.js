@@ -513,7 +513,8 @@ app.post("/api/flow/images/native", async (req, res) => {
   try {
     const r = await fetch(`${PYTHON_API}/flow/images`, {
       method:"POST",
-      headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey},
+      headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey,
+               ...(req.headers.authorization ? {authorization: req.headers.authorization} : {})},
       body: JSON.stringify({ scenes, model, aspect_ratio, image_style }),
     });
     const data = await r.json();
@@ -528,7 +529,7 @@ app.post("/api/flow/storyboard", async (req, res) => {
   const timer = setTimeout(() => controller.abort(), 600_000); // 10 min
   try {
     const headers = { "Content-Type": "application/json" };
-    for (const h of ["x-image-api-key","X-Image-API-Key","x-laozhang-api-key","X-LaoZhang-API-Key"]) {
+    for (const h of ["x-image-api-key","X-Image-API-Key","x-laozhang-api-key","X-LaoZhang-API-Key","authorization"]) {
       const v = req.headers[h.toLowerCase()] || req.headers[h];
       if (v) headers[h] = v;
     }
