@@ -305,6 +305,13 @@ app.use("/api", (req, res, next) => {
 app.use("/images", express.static(OUTPUT_DIR, {maxAge:"1h"}));
 app.use("/audio",  express.static(TTS_DIR,    {maxAge:"1h"}));
 app.use("/imgs",   express.static(IMG_DIR,    {maxAge:"1h"}));
+// Root path serves the public marketing landing (ceritaAI). Registered before the
+// static middleware so "/" returns landing.html instead of the default index.html.
+// The studio app remains reachable at /index.html (where landing CTAs point).
+app.get("/", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "landing.html"));
+});
 app.use(express.static(path.join(__dirname,"public"),{
   setHeaders:(res,p)=>{ if(p.endsWith("index.html")) res.setHeader("Cache-Control","no-cache"); }
 }));

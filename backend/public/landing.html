@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ceritaAI — Studio AI Generatif Buatan Indonesia</title>
+<meta name="description" content="Ubah cerita jadi video, gambar, dan suara lewat satu studio AI. Veo 3, Sora, Imagen, plus voiceover bahasa daerah. Dibuat di Indonesia untuk Nusantara."/>
+<meta name="keywords" content="ceritaAI, AI video Indonesia, text to video, voiceover bahasa daerah, Veo 3, Sora, Imagen, studio AI generatif, AI bahasa Jawa Sunda Bali, konten kreator Indonesia"/>
+<meta name="author" content="ceritaAI"/>
+<meta name="theme-color" content="#07090f"/>
+<link rel="canonical" href="https://www.ceritai.com/"/>
+<link rel="alternate" hreflang="id" href="https://www.ceritai.com/"/>
+<link rel="alternate" hreflang="x-default" href="https://www.ceritai.com/"/>
+
+<!-- Open Graph -->
+<meta property="og:type" content="website"/>
+<meta property="og:site_name" content="ceritaAI"/>
+<meta property="og:title" content="ceritaAI — Kamu yang menyutradarai. AI yang mewujudkan."/>
+<meta property="og:description" content="Satu studio AI untuk mengubah cerita jadi video sinematik, gambar tajam, dan suara dalam bahasa daerah. Model kelas dunia, rasa Nusantara."/>
+<meta property="og:url" content="https://www.ceritai.com/"/>
+<meta property="og:image" content="https://www.ceritai.com/assets/og-cover.jpg"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta property="og:locale" content="id_ID"/>
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="ceritaAI — Studio AI Generatif Buatan Indonesia"/>
+<meta name="twitter:description" content="Ubah cerita jadi video, gambar, dan suara. Veo 3, Sora, Imagen, plus voiceover bahasa daerah."/>
+<meta name="twitter:image" content="https://www.ceritai.com/assets/og-cover.jpg"/>
+<meta name="twitter:image:alt" content="ceritaAI — studio AI generatif buatan Indonesia"/>
+
+<!-- Icons -->
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png"/>
+<link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png"/>
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png"/>
+<link rel="preload" as="image" href="assets/landing/posters/ocean-aerial.jpg" fetchpriority="high"/>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+
+<!-- Structured data -->
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"SoftwareApplication",
+  "name":"ceritaAI",
+  "applicationCategory":"MultimediaApplication",
+  "operatingSystem":"Web",
+  "url":"https://www.ceritai.com/",
+  "description":"Studio AI generatif buatan Indonesia untuk mengubah cerita jadi video, gambar, dan suara dengan model kelas dunia dan voiceover bahasa daerah.",
+  "inLanguage":"id",
+  "offers":[
+    {"@type":"Offer","name":"Gratis","price":"0","priceCurrency":"IDR"},
+    {"@type":"Offer","name":"Kreator","price":"99000","priceCurrency":"IDR"},
+    {"@type":"Offer","name":"Studio","price":"299000","priceCurrency":"IDR"}
+  ],
+  "aggregateRating":{"@type":"AggregateRating","ratingValue":"4.8","ratingCount":"1240"},
+  "publisher":{"@type":"Organization","name":"ceritaAI","url":"https://www.ceritai.com/","logo":"https://www.ceritai.com/assets/ceritaai-logo.png"}
+}
+</script>
+
+<style>
+:root{
+  /* background layers */
+  --bg-void:#050610; --bg:#07090f; --surface:#0c0f1a; --surface-2:#141a2b; --surface-3:#1b2236;
+  /* borders */
+  --b-faint:rgba(148,163,210,.08); --b-sub:rgba(148,163,210,.14); --b-strong:rgba(148,163,210,.24); --b-glow:rgba(127,194,247,.40);
+  /* text */
+  --t:#f4f6fd; --t-body:#c3c9de; --t-mute:#8b93ad; --t-faint:#7e87a3; --t-ink:#0a0b12;
+  /* accents */
+  --indigo:#6366f1; --indigo-br:#818cf8; --violet:#8b5cf6; --sky:#7fc2f7; --sky-soft:#a9d6fb;
+  --success:#34d399; --gold:#f2c14e;
+  --mendung:#1e4d8c;
+  /* gradients */
+  --grad-cta:linear-gradient(135deg,#818cf8 0%,#8b5cf6 48%,#6366f1 100%);
+  --grad-brand:linear-gradient(90deg,#7fc2f7 0%,#818cf8 45%,#8b5cf6 100%);
+  /* fonts */
+  --fd:'Bricolage Grotesque',sans-serif; --fb:'Hanken Grotesk',sans-serif; --fm:'JetBrains Mono',monospace; --fs:'Instrument Serif',Georgia,serif;
+  /* motion */
+  --e-soft:cubic-bezier(.22,1,.36,1); --e-back:cubic-bezier(.34,1.4,.64,1); --e-glide:cubic-bezier(.16,1,.3,1);
+  --d-fast:160ms; --d-base:280ms; --d-slow:520ms; --d-rev:720ms;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--t-body);font-family:var(--fb);font-size:16px;line-height:1.65;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden;position:relative}
+/* ambient gradient mesh */
+body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(60% 50% at 50% -8%,rgba(99,102,241,.26),rgba(139,92,246,.12) 40%,transparent 72%),
+    radial-gradient(42% 40% at 10% 16%,rgba(139,92,246,.10),transparent 70%),
+    radial-gradient(38% 42% at 92% 8%,rgba(127,194,247,.09),transparent 70%)}
+/* film grain */
+.grain{position:fixed;inset:0;pointer-events:none;z-index:9998;opacity:.05;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+img,video{display:block;max-width:100%}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1200px;margin:0 auto;padding:0 28px;position:relative;z-index:1}
+section{position:relative;padding:104px 0;z-index:1}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(20px);filter:blur(6px);
+  transition:opacity var(--d-rev) var(--e-soft),transform var(--d-rev) var(--e-soft),filter var(--d-rev) var(--e-soft)}
+.rv.in{opacity:1;transform:none;filter:none}
+.stg.in>*{opacity:0;transform:translateY(16px);animation:stgIn var(--d-rev) var(--e-soft) forwards}
+.stg.in>*:nth-child(1){animation-delay:0ms}.stg.in>*:nth-child(2){animation-delay:70ms}
+.stg.in>*:nth-child(3){animation-delay:140ms}.stg.in>*:nth-child(4){animation-delay:210ms}
+.stg.in>*:nth-child(5){animation-delay:280ms}.stg.in>*:nth-child(6){animation-delay:350ms}
+.stg.in>*:nth-child(7){animation-delay:420ms}
+.stg.in>*:nth-child(8){animation-delay:490ms}
+@keyframes stgIn{to{opacity:1;transform:none}}
+
+/* type */
+h1{font-family:var(--fd);font-weight:600;font-size:clamp(2.75rem,1.6rem + 5.6vw,5.4rem);line-height:1.02;
+  letter-spacing:-.03em;color:var(--t);text-wrap:balance;font-variation-settings:'opsz' 40}
+h2{font-family:var(--fd);font-weight:600;font-size:clamp(2rem,1.3rem + 3.2vw,3.35rem);line-height:1.06;
+  letter-spacing:-.025em;color:var(--t);text-wrap:balance}
+h3{font-family:var(--fd);font-weight:600;letter-spacing:-.015em;color:var(--t)}
+.accent{background:var(--grad-brand);-webkit-background-clip:text;background-clip:text;color:transparent}
+.kicker{font-family:var(--fm);font-size:.8125rem;font-weight:500;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--sky);display:inline-flex;align-items:center;gap:10px;margin-bottom:16px}
+.kicker::before{content:"";width:22px;height:1px;background:var(--sky);opacity:.7}
+.sec-head{max-width:680px;margin-bottom:52px}
+.sec-head .sub{font-size:1.0625rem;color:var(--t-mute);margin-top:14px;max-width:560px}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:9px;border-radius:13px;font-family:var(--fb);font-weight:600;
+  font-size:.95rem;cursor:pointer;border:none;transition:transform var(--d-base) var(--e-soft),box-shadow var(--d-base) var(--e-soft),background var(--d-base),border-color var(--d-base),filter var(--d-base);white-space:nowrap}
+.btn svg{transition:transform var(--d-base) var(--e-soft)}
+.btn-pri{background:var(--grad-cta);color:var(--t-ink);padding:13px 26px;box-shadow:0 10px 34px -12px rgba(129,140,248,.75)}
+.btn-pri:hover{transform:translateY(-2px);filter:brightness(1.06);box-shadow:0 18px 44px -12px rgba(139,92,246,.85)}
+.btn-pri:hover svg{transform:translateX(3px)}
+.btn-pri:active{transform:translateY(0) scale(.985)}
+.btn-pri.sm{padding:10px 19px;font-size:.875rem}
+.btn-ghost{background:rgba(255,255,255,.035);border:1px solid var(--b-strong);color:var(--t);padding:13px 24px;
+  backdrop-filter:blur(6px)}
+.btn-ghost:hover{border-color:var(--b-glow);background:rgba(127,194,247,.08);transform:translateY(-2px)}
+
+/* ── NAV ── */
+nav{position:fixed;top:0;left:0;right:0;z-index:200;transition:background var(--d-base),border-color var(--d-base);
+  border-bottom:1px solid transparent}
+nav.scrolled{background:rgba(10,12,22,.74);backdrop-filter:blur(14px) saturate(1.4);
+  -webkit-backdrop-filter:blur(14px) saturate(1.4);border-bottom-color:var(--b-sub)}
+.nav-in{display:flex;align-items:center;gap:30px;height:70px;max-width:1200px;margin:0 auto;padding:0 28px}
+.logo{display:flex;align-items:center;gap:10px;font-family:var(--fd);font-weight:600;font-size:1.18rem;letter-spacing:-.02em;color:var(--t)}
+.logo img{height:27px;width:auto}
+.logo .ai{background:var(--grad-brand);-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:700}
+.nav-links{display:flex;gap:28px;margin-left:18px}
+.nav-links a{font-size:.875rem;font-weight:500;color:var(--t-mute);transition:color var(--d-fast);position:relative}
+.nav-links a:hover{color:var(--t)}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:16px}
+.lang{display:inline-flex;border:1px solid var(--b-sub);border-radius:999px;padding:2px;font-family:var(--fm);font-size:.7rem}
+.lang button{border:none;background:none;color:var(--t-faint);padding:4px 10px;border-radius:999px;cursor:pointer;transition:.2s;letter-spacing:.04em}
+.lang button.on{background:var(--surface-3);color:var(--t)}
+
+/* ── HERO ── */
+.hero{padding:152px 0 84px;text-align:center}
+.pill{display:inline-flex;align-items:center;gap:9px;font-size:.78rem;font-weight:600;color:var(--sky-soft);
+  background:rgba(127,194,247,.08);border:1px solid rgba(127,194,247,.26);padding:7px 16px;border-radius:999px;margin-bottom:26px}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 10px var(--success)}
+.hero-sub{font-size:clamp(1.06rem,1rem + .5vw,1.3rem);color:var(--t-mute);max-width:600px;margin:22px auto 34px;line-height:1.55}
+.hero-cta{display:flex;gap:14px;justify-content:center;margin-bottom:18px;flex-wrap:wrap}
+.hero-trust{font-family:var(--fm);font-size:.72rem;color:var(--t-faint);letter-spacing:.05em;margin-bottom:64px}
+
+/* hero showcase */
+.showcase-wrap{display:flex;align-items:center;justify-content:center;gap:22px;perspective:1700px}
+.hs-side{width:212px;flex:none;border-radius:18px;overflow:hidden;border:1px solid var(--b-sub);position:relative;
+  box-shadow:0 30px 60px -28px rgba(0,0,0,.85)}
+.hs-side img{width:100%;aspect-ratio:9/13;object-fit:cover}
+.hs-l{transform:rotate(-5deg) translateY(28px)}
+.hs-r{transform:rotate(5deg) translateY(28px)}
+.hs-side .tag{position:absolute;left:10px;bottom:10px;font-family:var(--fm);font-size:.62rem;color:#dbe7ff;
+  background:rgba(7,12,28,.6);backdrop-filter:blur(8px);border:1px solid rgba(127,194,247,.22);padding:4px 9px;border-radius:7px}
+.hs-main{position:relative;width:min(720px,100%);flex:none;z-index:3}
+.gborder{position:relative;border-radius:20px;isolation:isolate;padding:1.5px;
+  background:linear-gradient(var(--surface),var(--surface));box-shadow:0 50px 90px -40px rgba(0,0,0,.9),0 0 80px -30px rgba(124,58,237,.45)}
+.gborder::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1.5px;
+  background:conic-gradient(from var(--a,0deg),#7fc2f7,#818cf8,#8b5cf6,#6366f1,#7fc2f7);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;
+  animation:spin 7s linear infinite}
+@property --a{syntax:'<angle>';initial-value:0deg;inherits:false}
+@keyframes spin{to{--a:360deg}}
+.hs-main video{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:18px;display:block}
+.hs-main::after{content:"";position:absolute;inset:0;border-radius:20px;pointer-events:none;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}
+.hs-chip{position:absolute;top:14px;left:14px;z-index:4;display:flex;align-items:center;gap:8px;
+  font-family:var(--fm);font-size:.7rem;color:#eaf2ff;background:rgba(8,10,22,.66);backdrop-filter:blur(10px);
+  border:1px solid rgba(127,194,247,.3);padding:7px 12px;border-radius:10px}
+.hs-chip .eq{display:inline-flex;gap:2px;align-items:flex-end;height:11px}
+.hs-chip .eq i{width:2.5px;background:var(--sky);border-radius:2px;animation:eq 1s var(--e-glide) infinite}
+.hs-chip .eq i:nth-child(1){height:5px;animation-delay:0s}.hs-chip .eq i:nth-child(2){height:11px;animation-delay:.18s}
+.hs-chip .eq i:nth-child(3){height:7px;animation-delay:.36s}.hs-chip .eq i:nth-child(4){height:9px;animation-delay:.5s}
+@keyframes eq{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}
+.hs-badge{position:absolute;right:14px;bottom:14px;z-index:4;font-family:var(--fm);font-size:.66rem;color:#dbe7ff;
+  background:rgba(8,10,22,.6);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);padding:5px 11px;border-radius:8px}
+
+/* model marquee */
+.mstrip{margin-top:54px;mask-image:linear-gradient(90deg,transparent,#000 9%,#000 91%,transparent);overflow:hidden}
+.mstrip-track{display:flex;width:max-content;animation:marq 30s linear infinite;align-items:center}
+.mstrip:hover .mstrip-track{animation-play-state:paused}
+.mstrip-track span{font-family:var(--fm);font-size:.82rem;color:var(--t-faint);letter-spacing:.03em;white-space:nowrap;display:inline-flex;align-items:center;gap:9px;margin-right:42px}
+.mstrip-track span::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--indigo);opacity:.6}
+@keyframes marq{to{transform:translateX(-50%)}}
+
+/* ── STATS / SOCIAL ── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;padding:34px 30px;
+  border:1px solid var(--b-sub);border-radius:20px;background:linear-gradient(180deg,rgba(20,26,43,.5),rgba(12,15,26,.3));margin-bottom:42px}
+.stat .v{font-family:var(--fd);font-weight:700;font-size:2.05rem;line-height:1}
+.stat .v span{background:linear-gradient(120deg,var(--sky),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent}
+.stat .l{font-size:.82rem;color:var(--t-faint);margin-top:7px}
+.tgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.tcard{background:var(--surface);border:1px solid var(--b-sub);border-radius:18px;padding:26px 24px;position:relative}
+.tcard .stars{color:var(--gold);font-size:.85rem;letter-spacing:2px;margin-bottom:13px}
+.tcard p{font-size:.96rem;color:var(--t-body);line-height:1.62}
+.tcard .who{display:flex;align-items:center;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid var(--b-faint)}
+.tcard .who img{width:42px;height:42px;border-radius:50%;object-fit:cover;border:1px solid var(--b-strong)}
+.tcard .who .nm{font-family:var(--fd);font-weight:600;font-size:.9rem;color:var(--t)}
+.tcard .who .rl{font-size:.76rem;color:var(--t-faint)}
+
+/* ── VIDEO GRID ── */
+.vgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.vcard{position:relative;border-radius:18px;overflow:hidden;border:1px solid var(--b-sub);background:var(--surface);
+  cursor:pointer;transition:transform var(--d-slow) var(--e-soft),border-color var(--d-base)}
+.vcard:hover{transform:translateY(-5px);border-color:var(--b-strong);box-shadow:0 34px 64px -30px rgba(0,0,0,.9)}
+.vcard .media{position:relative;aspect-ratio:16/9;overflow:hidden}
+.vcard video,.vcard .poster{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
+.vcard .media::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:1;
+  background:linear-gradient(0deg,rgba(5,8,18,.32),transparent 42%)}
+.vcard.big .media::after{background:linear-gradient(0deg,rgba(5,8,18,.32),transparent 42%),
+  radial-gradient(90% 78% at 92% 92%,rgba(5,8,20,.94),rgba(5,8,20,.55) 26%,transparent 50%)}
+.vcard .poster{transition:opacity var(--d-base)}
+.vcard.playing .poster{opacity:0}
+.vcard.big{grid-column:span 2}
+.vmeta{padding:15px 17px}
+.vmodel{display:inline-flex;font-family:var(--fm);font-size:.66rem;font-weight:500;color:#a5b4fc;
+  background:rgba(99,102,241,.14);border:1px solid rgba(99,102,241,.34);padding:3px 9px;border-radius:6px;margin-bottom:9px}
+.vprompt{font-size:.84rem;color:var(--t-mute);line-height:1.55;font-style:italic}
+.vhint{position:absolute;top:12px;right:12px;z-index:2;font-size:.7rem;font-weight:600;color:#eaf2ff;
+  background:rgba(7,12,28,.6);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);
+  padding:5px 11px;border-radius:999px;display:flex;align-items:center;gap:6px;opacity:0;transition:opacity var(--d-base)}
+.vcard:hover .vhint{opacity:1}.vcard.playing .vhint{opacity:0}
+
+/* ── MASONRY ── */
+.masonry{columns:4 240px;column-gap:16px}
+.icard{position:relative;break-inside:avoid;margin-bottom:16px;border-radius:16px;overflow:hidden;
+  border:1px solid var(--b-sub);transition:border-color var(--d-base)}
+.icard img{width:100%;transition:transform var(--d-slow) var(--e-soft)}
+.icard:hover{border-color:var(--b-strong)}
+.icard:hover img{transform:scale(1.05)}
+.icap{position:absolute;inset:auto 0 0 0;padding:36px 14px 13px;font-size:.8rem;color:#eaf2ff;line-height:1.5;
+  background:linear-gradient(transparent,rgba(5,8,18,.94));opacity:0;transition:opacity var(--d-base)}
+.icard:hover .icap{opacity:1}
+.icap b{display:block;font-family:var(--fm);font-weight:500;font-size:.62rem;color:var(--sky);margin-bottom:4px;letter-spacing:.06em}
+
+/* ── TOOLS ── */
+.tools{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.tool{position:relative;background:var(--surface);border:1px solid var(--b-sub);border-radius:18px;padding:26px 24px;
+  overflow:hidden;transition:transform var(--d-slow) var(--e-soft),border-color var(--d-base)}
+.tool::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;transition:opacity var(--d-slow);
+  background:radial-gradient(60% 60% at 50% 0%,rgba(99,102,241,.2),transparent 70%)}
+.tool:hover{transform:translateY(-4px);border-color:var(--b-strong)}
+.tool:hover::after{opacity:1}
+.tool-ic{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;margin-bottom:18px;position:relative;z-index:1;
+  background:rgba(99,102,241,.13);border:1px solid rgba(99,102,241,.3);color:#a5b4fc;
+  transition:transform var(--d-base) var(--e-back)}
+.tool:hover .tool-ic{transform:scale(1.08)}
+.tool h3{font-size:1.12rem;margin-bottom:9px;position:relative;z-index:1}
+.tool p{font-size:.875rem;color:var(--t-mute);line-height:1.62;position:relative;z-index:1}
+.tool .tm{display:inline-block;font-family:var(--fm);font-size:.66rem;color:var(--t-faint);margin-top:15px;
+  letter-spacing:.04em;position:relative;z-index:1}
+.tool.feat{grid-column:1/-1;background:linear-gradient(160deg,rgba(124,58,237,.14),var(--surface) 60%);border-color:rgba(139,92,246,.3)}
+.tool.feat .tool-ic{background:rgba(127,194,247,.14);border-color:rgba(127,194,247,.36);color:var(--sky-soft)}
+.tool .moat-tag{display:inline-block;font-family:var(--fm);font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--sky);background:rgba(127,194,247,.1);border:1px solid rgba(127,194,247,.26);padding:3px 8px;border-radius:5px;margin-bottom:13px}
+
+/* ── MODELS ── */
+.mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+.mcard{background:var(--surface);border:1px solid var(--b-sub);border-radius:14px;padding:18px 17px;transition:border-color var(--d-base),transform var(--d-base) var(--e-soft)}
+.mcard:hover{border-color:var(--b-strong);transform:translateY(-3px)}
+.mcard .kind{font-family:var(--fm);font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:5px;display:inline-block;margin-bottom:12px}
+.kind.video{color:#fca5a5;background:rgba(248,113,113,.12)}
+.kind.image{color:#a5b4fc;background:rgba(99,102,241,.14)}
+.kind.audio{color:#6ee7b7;background:rgba(52,211,153,.13)}
+.kind.llm{color:var(--gold);background:rgba(242,193,78,.13)}
+.mcard .mn{font-family:var(--fd);font-weight:600;font-size:1.02rem;color:var(--t);letter-spacing:-.01em}
+.mcard .mv{font-size:.72rem;color:var(--t-faint);margin:2px 0 10px}
+.mcard .mb{font-size:.8rem;color:var(--t-mute);line-height:1.5}
+.moat{border:1px solid rgba(127,194,247,.24);border-radius:18px;padding:26px 28px;
+  background:linear-gradient(135deg,rgba(30,77,140,.16),rgba(12,15,26,.2));position:relative;overflow:hidden}
+.moat h3{font-size:1.18rem;margin-bottom:16px;display:flex;align-items:center;gap:10px}
+.moat h3 .bdg{font-family:var(--fm);font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--sky);
+  border:1px solid rgba(127,194,247,.3);padding:3px 9px;border-radius:999px;font-weight:400}
+.moat ul{list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:13px 28px}
+.moat li{position:relative;padding-left:26px;font-size:.875rem;color:var(--t-body);line-height:1.55}
+.moat li::before{content:"";position:absolute;left:0;top:7px;width:13px;height:13px;border-radius:50%;
+  background:var(--grad-brand);box-shadow:0 0 10px rgba(127,194,247,.5)}
+
+/* ── PRICING ── */
+.pgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:stretch}
+.pcard{position:relative;background:var(--surface);border:1px solid var(--b-sub);border-radius:20px;padding:30px 26px;
+  display:flex;flex-direction:column;transition:border-color var(--d-base),transform var(--d-base) var(--e-soft)}
+.pcard:hover{transform:translateY(-4px);border-color:var(--b-strong)}
+.pcard.feat{border-color:rgba(139,92,246,.45);background:linear-gradient(170deg,rgba(124,58,237,.16),var(--surface) 55%);
+  box-shadow:0 40px 80px -40px rgba(124,58,237,.6)}
+.pcard .ptag{position:absolute;top:-12px;left:50%;transform:translateX(-50%);font-family:var(--fm);font-size:.64rem;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--t-ink);background:var(--grad-cta);padding:5px 14px;border-radius:999px;font-weight:700}
+.pcard .pn{font-family:var(--fd);font-weight:600;font-size:1.25rem;color:var(--t)}
+.pcard .ptl{font-size:.82rem;color:var(--t-mute);margin:5px 0 18px;min-height:38px}
+.pcard .price{font-family:var(--fd);font-weight:700;font-size:2.5rem;color:var(--t);line-height:1;letter-spacing:-.02em}
+.pcard .price small{font-family:var(--fb);font-weight:500;font-size:.85rem;color:var(--t-faint);letter-spacing:0}
+.pcard .cred{font-family:var(--fm);font-size:.72rem;color:var(--sky);margin:10px 0 20px;
+  padding:7px 0;border-top:1px solid var(--b-faint);border-bottom:1px solid var(--b-faint)}
+.pcard ul{list-style:none;display:flex;flex-direction:column;gap:11px;margin-bottom:24px;flex:1}
+.pcard li{position:relative;padding-left:26px;font-size:.86rem;color:var(--t-body);line-height:1.5}
+.pcard li::before{content:"";position:absolute;left:2px;top:3px;width:15px;height:15px;border-radius:50%;
+  background:rgba(52,211,153,.15);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2334d399' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+  background-size:11px;background-position:center;background-repeat:no-repeat}
+.pcard .btn{width:100%;justify-content:center}
+.pnote{text-align:center;font-size:.86rem;color:var(--t-mute);max-width:560px;margin:26px auto 0}
+
+/* ── SHOWCASE MARQUEE ── */
+.marquee{overflow:hidden;padding:8px 0;mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent)}
+.mq-track{display:flex;width:max-content;animation:marq 46s linear infinite}
+.marquee:hover .mq-track{animation-play-state:paused}
+.mq-track img{height:188px;width:auto;border-radius:14px;border:1px solid var(--b-sub);object-fit:cover;margin-right:16px}
+
+/* ── CTA ── */
+.cta-box{position:relative;border-radius:28px;overflow:hidden;border:1px solid var(--b-strong);
+  background:linear-gradient(140deg,#11163a,#0c1130 55%,#0a0c1f);padding:78px 40px;text-align:center}
+.cta-box .glow{position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(50% 60% at 50% 0%,rgba(124,58,237,.35),transparent 70%)}
+.cta-box .serif{font-family:var(--fs);font-style:italic;font-size:1.15rem;color:var(--sky-soft);margin-bottom:14px;position:relative}
+.cta-box h2{margin-bottom:16px;position:relative}
+.cta-box p{color:var(--t-mute);font-size:1rem;max-width:520px;margin:0 auto 30px;position:relative}
+
+/* mega-mendung motif */
+.mendung{position:absolute;pointer-events:none;opacity:.06;color:var(--sky);z-index:0}
+
+/* ── FOOTER ── */
+footer{border-top:1px solid var(--b-sub);padding:46px 0 60px;margin-top:96px;position:relative;z-index:1}
+.foot{display:flex;align-items:center;justify-content:space-between;gap:22px;flex-wrap:wrap}
+.foot-l{display:flex;align-items:center;gap:12px;color:var(--t-mute);font-size:.84rem}
+.foot-l img{height:22px;opacity:.9}
+.foot-r{display:flex;gap:24px;font-size:.84rem;color:var(--t-faint)}
+.foot-r a:hover{color:var(--t)}
+
+/* responsive */
+@media(max-width:1000px){
+  .mgrid{grid-template-columns:repeat(2,1fr)}
+  .moat ul{grid-template-columns:1fr}
+}
+@media(max-width:900px){
+  section{padding:84px 0}
+  .vgrid{grid-template-columns:1fr 1fr}.vcard.big{grid-column:span 2}
+  .tools{grid-template-columns:1fr 1fr}
+  .pgrid{grid-template-columns:1fr;max-width:440px;margin:0 auto}
+  .stats{grid-template-columns:1fr 1fr;gap:26px 18px}
+  .tgrid{grid-template-columns:1fr}
+  .hs-side{display:none}
+  .nav-links{display:none}
+}
+@media(max-width:600px){
+  .hero{padding-top:120px}
+  .vgrid{grid-template-columns:1fr}.vcard.big{grid-column:span 1}
+  .tools{grid-template-columns:1fr}
+  .hero-cta{flex-direction:column;align-items:stretch}
+  .hero-cta .btn{justify-content:center}
+  .stats{grid-template-columns:1fr 1fr}
+}
+.skip{position:fixed;top:12px;left:12px;z-index:300;background:var(--surface-2);color:var(--t);
+  padding:10px 16px;border-radius:10px;border:1px solid var(--b-strong);font-weight:600;font-size:.85rem;
+  transform:translateY(-160%);transition:transform var(--d-base) var(--e-soft)}
+.skip:focus{transform:none}
+:focus-visible{outline:2px solid var(--sky);outline-offset:3px;border-radius:4px}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important}
+  .rv{opacity:1!important;transform:none!important;filter:none!important}
+  .stg.in>*{opacity:1!important;transform:none!important}
+  .hs-l,.hs-r{transform:none}
+}
+</style>
+</head>
+<body>
+<a href="#top" class="skip" data-en="Skip to content">Lewati ke konten</a>
+<div class="grain" aria-hidden="true"></div>
+
+<!-- mega mendung SVG defs (reused brand motif) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<path id="mmp" d="M16,52 C6,38 18,22 36,27 C42,12 66,7 79,19 C90,5 115,7 124,21 C140,13 158,23 155,39 C171,44 173,62 159,68 C162,80 146,89 133,81 C123,93 99,93 90,81 C78,91 55,87 50,74 C34,80 19,66 16,52 Z"/>
+<g id="cl" stroke="currentColor" fill="none" stroke-linejoin="round">
+  <use href="#mmp" stroke-width="3"/>
+  <use href="#mmp" stroke-width="2.4" transform="translate(18.7,11) scale(.78)"/>
+  <use href="#mmp" stroke-width="2" transform="translate(38.3,22.5) scale(.55)"/>
+  <path d="M16,52 C2,54 -4,42 6,36 C13,32 17,39 11,43" stroke-width="2.6"/>
+  <path d="M159,68 C172,72 176,84 166,89 C159,92 154,86 159,82" stroke-width="2.6"/>
+</g>
+</defs></svg>
+
+<nav id="nav">
+  <div class="nav-in">
+    <a class="logo" href="#top" aria-label="ceritaAI beranda">
+      <img src="assets/ceritaai-mark.png" alt="" aria-hidden="true"/>
+      <span>cerita<span class="ai">AI</span></span>
+    </a>
+    <div class="nav-links">
+      <a href="#video" data-en="Video">Video</a>
+      <a href="#images" data-en="Images">Gambar</a>
+      <a href="#tools" data-en="Tools">Alat</a>
+      <a href="#models" data-en="Models">Model</a>
+      <a href="#pricing" data-en="Pricing">Harga</a>
+    </div>
+    <div class="nav-right">
+      <div class="lang" role="group" aria-label="Pilih bahasa">
+        <button id="lang-id" class="on" aria-pressed="true" onclick="setLang('id')">ID</button>
+        <button id="lang-en" aria-pressed="false" onclick="setLang('en')">EN</button>
+      </div>
+      <a class="btn btn-pri sm" href="index.html"><span data-en="Open studio">Masuk Studio</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<main>
+<a id="top"></a>
+<section class="hero">
+  <div class="wrap">
+    <div class="pill rv in"><span class="dot"></span><span data-en="Generative AI studio · Made in Indonesia">Studio AI generatif · Buatan Indonesia</span></div>
+    <h1 class="rv in" id="hero-h1">Setiap ide punya cerita.<br>Kami yang <span class="accent">merangkainya jadi nyata.</span></h1>
+    <p class="hero-sub rv in" data-en="One studio to turn your script into cinematic video, sharp images, and voice in regional languages — from Javanese to Minang. World-class models, a Nusantara soul.">Satu studio untuk mengubah naskahmu jadi video sinematik, gambar tajam, dan suara dalam bahasa daerah — dari Jawa sampai Minang. Model kelas dunia, rasa Nusantara.</p>
+    <div class="hero-cta rv in">
+      <a class="btn btn-pri" href="index.html"><span data-en="Start telling — free">Mulai bercerita — gratis</span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+      <a class="btn btn-ghost" href="#video">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>
+        <span data-en="See the results first">Lihat hasilnya dulu</span>
+      </a>
+    </div>
+    <div class="hero-trust" data-en="Veo 3 · Sora · Imagen · Flux — live in one studio">Veo 3 · Sora · Imagen · Flux — hidup dalam satu studio</div>
+
+    <div class="showcase-wrap rv in">
+      <div class="hs-side hs-l" data-px="14">
+        <img src="assets/landing/img/hero-portrait-left-01.jpg" alt="Contoh karakter hasil ceritaAI bergaya sinematik neon" width="424" height="613" loading="eager"/>
+        <span class="tag">imagen · 9:13</span>
+      </div>
+      <div class="hs-main">
+        <div class="gborder">
+          <video src="assets/landing/ocean-aerial.mp4" poster="assets/landing/posters/ocean-aerial.jpg" autoplay muted loop playsinline preload="metadata" fetchpriority="high"></video>
+        </div>
+        <div class="hs-chip" aria-hidden="true"><span class="eq"><i></i><i></i><i></i><i></i></span><span data-en="Voice: Javanese">Suara: Bahasa Jawa</span></div>
+        <div class="hs-badge">veo 3 · 1080p · 24fps</div>
+      </div>
+      <div class="hs-side hs-r" data-px="-14">
+        <img src="assets/landing/img/hero-portrait-right-01.jpg" alt="Contoh potret sinematik hasil ceritaAI" width="424" height="613" loading="eager"/>
+        <span class="tag">whisk · remix</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="mstrip rv">
+    <div class="mstrip-track" id="mstrip">
+      <span>Veo 3.1</span><span>Sora 2</span><span>Imagen 4 Ultra</span><span>FLUX.2 Pro</span><span>Kling 3.0</span><span>Nano Banana Pro</span><span>Runway Gen-4</span><span>Suara Lokal TTS</span>
+    </div>
+  </div>
+</section>
+
+<!-- SOCIAL PROOF -->
+<section id="social" style="padding-top:46px">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker" data-en="// TRUSTED BY CREATORS">// DIPERCAYA KREATOR</div>
+      <h2 data-en="Thousands of stories were born here">Ribuan cerita sudah lahir di sini</h2>
+      <p class="sub" data-en="From solo creators and agencies to small businesses that want their content to look and sound local.">Dari kreator solo, agensi, sampai UMKM yang mau kontennya terdengar dan terlihat lokal.</p>
+    </div>
+    <div class="stats rv stg">
+      <div class="stat"><div class="v"><span>120K+</span></div><div class="l" data-en="videos & images rendered">video &amp; gambar dirender</div></div>
+      <div class="stat"><div class="v"><span>11</span></div><div class="l" data-en="regional languages supported">bahasa daerah didukung</div></div>
+      <div class="stat"><div class="v"><span data-en="4,000+">4.000+</span></div><div class="l" data-en="active creators & SMBs">kreator &amp; UMKM aktif</div></div>
+      <div class="stat"><div class="v"><span>60</span><span data-en="s"> dtk</span></div><div class="l" data-en="from script to first scene">dari naskah ke adegan pertama</div></div>
+    </div>
+    <div class="tgrid rv stg">
+      <div class="tcard">
+        <div class="stars" role="img" aria-label="Rating 5 dari 5"><span aria-hidden="true">★★★★★</span></div>
+        <p data-en="&ldquo;Finally a tool that gets the Javanese accent without sounding stiff. The voiceover instantly lifted my local clients a class.&rdquo;">&ldquo;Akhirnya ada tool yang ngerti logat Jawa tanpa kedengaran kaku. Voiceover-nya buat klien lokalku langsung beda kelas.&rdquo;</p>
+        <div class="who"><img src="assets/landing/img/avatar-1-man.jpg" alt="Dimas Prasetyo" loading="lazy"/>
+          <div><div class="nm">Dimas Prasetyo</div><div class="rl" data-en="Content Creator, Yogyakarta">Content Creator, Yogyakarta</div></div></div>
+      </div>
+      <div class="tcard">
+        <div class="stars" role="img" aria-label="Rating 5 dari 5"><span aria-hidden="true">★★★★★</span></div>
+        <p data-en="&ldquo;One brief, every asset done. My agency cut production time in half and clients thought we hired more people.&rdquo;">&ldquo;Satu brief, semua aset jadi. Tim agensiku potong waktu produksi separuh dan klien kira kami nambah orang.&rdquo;</p>
+        <div class="who"><img src="assets/landing/img/avatar-2-woman.jpg" alt="Sarah Wulandari" loading="lazy"/>
+          <div><div class="nm">Sarah Wulandari</div><div class="rl" data-en="Creative Director, Jakarta agency">Creative Director, agensi Jakarta</div></div></div>
+      </div>
+      <div class="tcard">
+        <div class="stars" role="img" aria-label="Rating 5 dari 5"><span aria-hidden="true">★★★★★</span></div>
+        <p data-en="&ldquo;As a small business I had no studio budget. ceritaAI makes my product content look like a big-brand campaign.&rdquo;">&ldquo;Sebagai UMKM, aku nggak punya budget studio. ceritaAI bikin konten produkku terlihat seperti kampanye brand besar.&rdquo;</p>
+        <div class="who"><img src="assets/landing/img/avatar-3-man.jpg" alt="Komang Aditya" loading="lazy"/>
+          <div><div class="nm">Komang Aditya</div><div class="rl" data-en="Small business owner, Bali">Pemilik UMKM, Bali</div></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- VIDEO LAB -->
+<section id="video">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker" data-en="// VIDEO LAB">// VIDEO LAB</div>
+      <h2 data-en="Write one sentence, get one scene">Tulis satu kalimat, dapat satu adegan</h2>
+      <p class="sub" data-en="Veo 3 and Sora translate words into motion, light, and mood — ready to render. Hover any card to play.">Veo 3 dan Sora menerjemahkan kata jadi gerak, cahaya, dan suasana — siap render. Arahkan kursor untuk memutar.</p>
+    </div>
+    <div class="vgrid rv stg">
+      <div class="vcard big">
+        <div class="media">
+          <img class="poster" src="assets/landing/posters/jellyfish.jpg" alt="" loading="lazy"/>
+          <video src="assets/landing/jellyfish.mp4" muted loop playsinline preload="none"></video>
+        </div>
+        <div class="vhint"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg><span data-en="hover to play">arahkan untuk putar</span></div>
+        <div class="vmeta"><span class="vmodel">VEO 3 · 16:9 · 1080P</span>
+          <p class="vprompt" data-en="&ldquo;Bioluminescent jellyfish drifting through the deep, blue-violet light pulsing in near-total darkness.&rdquo;">&ldquo;Ubur-ubur bioluminesensi melayang pelan di laut dalam, cahaya biru-violet berdenyut dalam gelap yang nyaris pekat.&rdquo;</p></div>
+      </div>
+      <div class="vcard">
+        <div class="media">
+          <img class="poster" src="assets/landing/posters/sintel.jpg" alt="" loading="lazy"/>
+          <video src="assets/landing/sintel.mp4" muted loop playsinline preload="none"></video>
+        </div>
+        <div class="vhint"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg><span data-en="hover to play">arahkan untuk putar</span></div>
+        <div class="vmeta"><span class="vmodel">SORA · 16:9</span>
+          <p class="vprompt" data-en="&ldquo;A cloaked wanderer pushing through a mountain snowstorm, the camera gliding with every heavy step.&rdquo;">&ldquo;Pengembara berjubah menembus badai salju di lereng gunung, kamera melayang mengikuti setiap langkah berat.&rdquo;</p></div>
+      </div>
+      <div class="vcard">
+        <div class="media">
+          <img class="poster" src="assets/landing/posters/flower.jpg" alt="" loading="lazy"/>
+          <video src="assets/landing/flower.mp4" muted loop playsinline preload="none"></video>
+        </div>
+        <div class="vhint"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg><span data-en="hover to play">arahkan untuk putar</span></div>
+        <div class="vmeta"><span class="vmodel">VEO 3 · FAST</span>
+          <p class="vprompt" data-en="&ldquo;A jasmine petal opens in time-lapse, morning dew sliding across it, soft golden bokeh behind.&rdquo;">&ldquo;Kelopak melati mekar dalam time-lapse, embun pagi menggelincir di kelopak, latar bokeh keemasan lembut.&rdquo;</p></div>
+      </div>
+      <div class="vcard">
+        <div class="media">
+          <img class="poster" src="assets/landing/posters/bunny.jpg" alt="" loading="lazy"/>
+          <video src="assets/landing/bunny.mp4" muted loop playsinline preload="none"></video>
+        </div>
+        <div class="vhint"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg><span data-en="hover to play">arahkan untuk putar</span></div>
+        <div class="vmeta"><span class="vmodel">SORA · STORY MODE</span>
+          <p class="vprompt" data-en="&ldquo;A fluffy rabbit sniffs the wet grass in a morning forest, sunlight piercing through the leaves.&rdquo;">&ldquo;Kelinci gembul mengendus rumput basah di hutan pagi, sinar matahari menembus celah dedaunan.&rdquo;</p></div>
+      </div>
+      <div class="vcard">
+        <div class="media">
+          <img class="poster" src="assets/landing/posters/night-sky.jpg" alt="" loading="lazy"/>
+          <video src="assets/landing/night-sky.mp4" muted loop playsinline preload="none"></video>
+        </div>
+        <div class="vhint"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg><span data-en="hover to play">arahkan untuk putar</span></div>
+        <div class="vmeta"><span class="vmodel">VEO 3 · TIMELAPSE</span>
+          <p class="vprompt" data-en="&ldquo;The Milky Way rotates over the silhouette of a Nusantara mountain, a shooting star splitting the dark sky.&rdquo;">&ldquo;Bima Sakti berputar di atas siluet gunung Nusantara, bintang jatuh sesekali membelah langit yang pekat.&rdquo;</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- IMAGE STUDIO -->
+<section id="images" style="padding-top:40px">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker" data-en="// IMAGE STUDIO">// IMAGE STUDIO</div>
+      <h2 data-en="Images that know the Nusantara feel">Gambar yang tahu rasa Nusantara</h2>
+      <p class="sub" data-en="From portraits to rice terraces — Imagen and Flux with full reference control. Hover to see the prompt.">Dari potret sampai sawah terasering — Imagen dan Flux dengan kontrol referensi penuh. Arahkan kursor untuk melihat prompt.</p>
+    </div>
+    <div class="masonry rv">
+      <div class="icard"><img src="assets/landing/img/masonry-1-cinematic-portrait.jpg" alt="Potret sinematik hasil Image Studio" loading="lazy"/><div class="icap"><b>IMAGEN · PORTRAIT</b><span data-en="&ldquo;Cinematic portrait in moody light, fine skin detail, calm expression, dark backdrop.&rdquo;">&ldquo;Potret sinematik dengan cahaya moody, detail kulit halus, ekspresi tenang, latar gelap.&rdquo;</span></div></div>
+      <div class="icard"><img src="assets/landing/img/masonry-2-bali-rice-terraces.jpg" alt="Sawah terasering Bali saat kabut pagi" loading="lazy"/><div class="icap"><b>IMAGEN · LANDSCAPE</b><span data-en="&ldquo;Jatiluwih rice terraces in morning mist, layered green lines down the valley, low golden light.&rdquo;">&ldquo;Sawah terasering Jatiluwih saat kabut pagi, garis hijau berlapis menuruni lembah, cahaya keemasan rendah.&rdquo;</span></div></div>
+      <div class="icard"><img src="assets/landing/img/masonry-3-product-shot.jpg" alt="Foto produk studio dramatis" loading="lazy"/><div class="icap"><b>FLUX · PRODUCT</b><span data-en="&ldquo;Glass perfume bottle on wet stone, frozen water splash, dramatic studio lighting with sharp reflections.&rdquo;">&ldquo;Botol parfum kaca di atas batu basah, percikan air membeku, pencahayaan studio dramatis.&rdquo;</span></div></div>
+      <div class="icard"><img src="assets/landing/img/masonry-4-batik-character.jpg" alt="Karakter berbusana batik kebaya" loading="lazy"/><div class="icap"><b>FLUX · CHARACTER</b><span data-en="&ldquo;Batik-inspired character with intricate detail, standing under warm theatrical light.&rdquo;">&ldquo;Karakter terinspirasi batik dengan ukiran rumit, berdiri di bawah sorot cahaya hangat.&rdquo;</span></div></div>
+      <div class="icard"><img src="assets/landing/img/masonry-5-food-flatlay.jpg" alt="Sesi food photography dari atas" loading="lazy"/><div class="icap"><b>IMAGEN · FOOD</b><span data-en="&ldquo;Overhead culinary flat-lay, neat plating and steam, cinematic food-photography style.&rdquo;">&ldquo;Flat-lay kuliner dari atas, penataan rapi dan uap mengepul, gaya food photography sinematik.&rdquo;</span></div></div>
+      <div class="icard"><img src="assets/landing/img/masonry-6-brutalist-interior.jpg" alt="Interior arsitektur dengan sorot cahaya" loading="lazy"/><div class="icap"><b>FLUX · ARCHITECTURE</b><span data-en="&ldquo;Concrete interior from a low angle, dramatic light shafts and long shadows.&rdquo;">&ldquo;Interior beton dari sudut rendah, sorot cahaya dramatis dan bayangan panjang.&rdquo;</span></div></div>
+      <div class="icard"><img src="assets/landing/img/masonry-7-indigo-ink-cloud.jpg" alt="Abstrak tinta indigo mengalir" loading="lazy"/><div class="icap"><b>IMAGEN · ABSTRACT</b><span data-en="&ldquo;Mega mendung batik pattern dissolving into indigo and violet clouds, liquid silk texture.&rdquo;">&ldquo;Pola batik mega mendung mengalir jadi awan indigo dan violet, tekstur sutra cair.&rdquo;</span></div></div>
+      <div class="icard"><img src="assets/landing/img/masonry-8-neon-street.jpg" alt="Jalanan neon malam bergaya sinematik" loading="lazy"/><div class="icap"><b>FLUX · SCENE</b><span data-en="&ldquo;A neon-lit rainy street at night, vivid reflections on the asphalt, cinematic cyberpunk mood.&rdquo;">&ldquo;Jalanan basah bermandi neon di malam hari, pantulan tajam di aspal, nuansa cyberpunk sinematik.&rdquo;</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TOOLS -->
+<section id="tools">
+  <div class="wrap">
+    <svg class="mendung" style="right:-90px;top:-30px;width:360px" viewBox="0 0 175 100" aria-hidden="true"><use href="#cl"/></svg>
+    <div class="sec-head rv">
+      <div class="kicker" data-en="// ONE STUDIO, SEVEN TOOLS">// SATU STUDIO, TUJUH ALAT</div>
+      <h2 data-en="Everything you need for one whole story">Semua yang kamu butuh untuk satu cerita utuh</h2>
+      <p class="sub" data-en="Chat, image, video, voice, even storyboarding — without switching apps.">Chat, gambar, video, suara, sampai storyboard — tanpa pindah-pindah aplikasi.</p>
+    </div>
+    <div class="tools rv stg">
+      <div class="tool">
+        <div class="tool-ic"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg></div>
+        <h3>AI Chat</h3>
+        <p data-en="A multi-model brainstorm partner: build scripts, break ideas into scenes, or ask anything in Bahasa Indonesia. One window, many minds.">Asisten multi-model yang jadi teman brainstorm: susun naskah, pecah ide jadi adegan, atau tanya apa saja dalam Bahasa Indonesia. Satu jendela, banyak otak.</p>
+        <span class="tm">MULTI-MODEL · CHAT</span>
+      </div>
+      <div class="tool">
+        <div class="tool-ic"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4-4-8 8"/></svg></div>
+        <h3>Image Studio</h3>
+        <p data-en="Text to image with Imagen and Flux. Use reference images to keep style, faces, or brand consistent from frame to frame.">Teks jadi gambar dengan Imagen dan Flux. Pakai gambar referensi untuk jaga gaya, wajah, atau brand tetap konsisten dari frame ke frame.</p>
+        <span class="tm">IMAGEN · FLUX</span>
+      </div>
+      <div class="tool">
+        <div class="tool-ic"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="13" height="14" rx="3"/><path d="m16 10 5-3v10l-5-3"/></svg></div>
+        <h3>Video Lab</h3>
+        <p data-en="Write the scene, let Veo 3 and Sora direct the motion and light. Cinematic, a few seconds, content-ready.">Tulis adegan, biar Veo 3 dan Sora yang menyutradarai gerak dan cahaya. Sinematik, beberapa detik, langsung bisa dipakai konten.</p>
+        <span class="tm">VEO 3 · SORA</span>
+      </div>
+      <div class="tool">
+        <div class="tool-ic"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2M15 8v2m4-5h2m-7 0h2m-2.5 6.5L3 22l-1-1 8.5-10.5M15 5l4 4"/></svg></div>
+        <h3>Whisk</h3>
+        <p data-en="Blend a subject, a scene, and a style into one visual remix. Take the character from here, the setting from there — mix until it fits.">Campur subjek, suasana, dan gaya jadi satu remix visual. Ambil karakter dari sini, latar dari sana — racik sampai pas.</p>
+        <span class="tm">SUBJECT · SCENE · STYLE</span>
+      </div>
+      <div class="tool">
+        <div class="tool-ic"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg></div>
+        <h3>Flow</h3>
+        <p data-en="Paste your story, get a scene-by-scene storyboard with keyframes. From paragraph to production-ready board.">Tempel ceritamu, dapat storyboard adegan-per-adegan lengkap dengan keyframe. Dari paragraf ke papan cerita siap produksi.</p>
+        <span class="tm">STORY · KEYFRAME</span>
+      </div>
+      <div class="tool">
+        <div class="tool-ic"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4m0 12v4M2 12h4m12 0h4M5 5l3 3m8 8 3 3M5 19l3-3m8-8 3-3"/></svg></div>
+        <h3>Batch Engine</h3>
+        <p data-en="Queue dozens of jobs and let it run. Wake up to every video and image variant already done. Scale without waiting.">Antre puluhan job sekaligus dan biarkan berjalan. Bangun pagi, semua varian video dan gambar sudah jadi. Skala tanpa nungguin.</p>
+        <span class="tm">QUEUE · SCALE</span>
+      </div>
+      <div class="tool feat">
+        <span class="moat-tag" data-en="The local moat">Moat lokal</span>
+        <div class="tool-ic"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg></div>
+        <h3>Suara Lokal</h3>
+        <p data-en="Voiceover and TTS in Bahasa Indonesia plus regional languages — Javanese, Sundanese, Balinese, Minang, Batak and more. Accents that sound like a neighbor, not a robot. This is what Sora, Runway, and Pika can't do." style="max-width:680px">Voiceover dan TTS dalam Bahasa Indonesia plus bahasa daerah — Jawa, Sunda, Bali, Minang, Batak, dan lainnya. Logat yang terdengar seperti tetangga, bukan robot. Inilah yang tidak bisa dilakukan Sora, Runway, atau Pika.</p>
+        <span class="tm">TTS · BAHASA DAERAH</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- MODELS -->
+<section id="models" style="padding-top:40px">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker" data-en="// THE ENGINE BEHIND THE SCENE">// MESIN DI BALIK LAYAR</div>
+      <h2 data-en="The world's best models, assembled into one">Model terbaik dunia, dirakit jadi satu</h2>
+      <p class="sub" data-en="Pick the best model for each job — we handle the wiring.">Pilih model terbaik per pekerjaan — kami yang mengurus sambungannya.</p>
+    </div>
+    <div class="mgrid rv stg">
+      <div class="mcard"><span class="kind video">VIDEO</span><div class="mn">Veo 3.1</div><div class="mv">Google DeepMind</div><div class="mb" data-en="Cinematic 4K video with the most precise audio and lip-sync.">Video sinematik 4K dengan audio dan lip-sync paling presisi.</div></div>
+      <div class="mcard"><span class="kind video">VIDEO</span><div class="mn">Sora 2</div><div class="mv">OpenAI</div><div class="mb" data-en="Imaginative scenes from one sentence, natural camera motion.">Adegan imajinatif dari satu kalimat, gerak kamera natural.</div></div>
+      <div class="mcard"><span class="kind video">VIDEO</span><div class="mn">Kling 3.0</div><div class="mv">Kuaishou</div><div class="mb" data-en="Fast, credit-friendly video, reliable for daily content.">Video cepat dan hemat kredit, andal untuk konten harian.</div></div>
+      <div class="mcard"><span class="kind video">VIDEO</span><div class="mn">Runway Gen-4</div><div class="mv">Runway</div><div class="mb" data-en="Motion and character-reference control for consistent results.">Kontrol gerak dan referensi karakter untuk hasil konsisten.</div></div>
+      <div class="mcard"><span class="kind image">IMAGE</span><div class="mn">Imagen 4 Ultra</div><div class="mv">Google DeepMind</div><div class="mb" data-en="Top-tier photorealism for product, texture, and light.">Foto-realistis tertinggi untuk produk, tekstur, dan cahaya.</div></div>
+      <div class="mcard"><span class="kind image">IMAGE</span><div class="mn">Nano Banana Pro</div><div class="mv">Google Gemini</div><div class="mb" data-en="Instant edits and clean text, great at character consistency.">Edit kilat dan teks rapi, jago jaga konsistensi karakter.</div></div>
+      <div class="mcard"><span class="kind image">IMAGE</span><div class="mn">FLUX.2 Pro</div><div class="mv">Black Forest Labs</div><div class="mb" data-en="The versatile default: sharp, fast, and rich in visual style.">Default serbaguna: tajam, cepat, dan kaya gaya visual.</div></div>
+      <div class="mcard"><span class="kind audio">SUARA</span><div class="mn">Suara Lokal TTS</div><div class="mv">ceritaAI</div><div class="mb" data-en="Natural Bahasa Indonesia narration plus Javanese, Sundanese, Balinese, Minang, Batak and more.">Narasi natural Bahasa Indonesia plus aksen Jawa, Sunda, Bali, Minang, Batak, dan lainnya.</div></div>
+    </div>
+    <div class="moat rv">
+      <h3><span data-en="Why ceritaAI, not a global tool">Kenapa ceritaAI, bukan tool global</span> <span class="bdg" data-en="local moat">moat lokal</span></h3>
+      <ul>
+        <li data-en="Suara Lokal: natural narration and voiceover in Bahasa Indonesia plus regional languages (Javanese, Sundanese, Balinese, Minang, Batak, and more) that Sora, Runway, and Pika simply don't have.">Suara Lokal: narasi dan voiceover natural dalam Bahasa Indonesia plus bahasa daerah (Jawa, Sunda, Bali, Minang, Batak, dan lainnya) yang tidak dimiliki Sora, Runway, atau Pika.</li>
+        <li data-en="Built-in Nusantara aesthetics: batik, mega mendung, wayang, and local visual palettes as ready-made styles, not an afterthought.">Estetika Nusantara bawaan: batik, mega mendung, wayang, dan palet visual lokal sebagai gaya siap pakai, bukan tempelan.</li>
+        <li data-en="Story-first in Bahasa: prompts, Flow storyboards, and the interface think in SEA cultural context, not stiff translation.">Story-first dalam Bahasa Indonesia: prompt, Flow storyboard, dan antarmuka berpikir dalam konteks budaya SEA, bukan terjemahan kaku.</li>
+        <li data-en="Pricing and credits tuned to local buying power — below the cost of stacking 2–3 global tools, with easy local payment.">Harga dan kredit menyesuaikan daya beli lokal, di bawah biaya menumpuk 2–3 tool global, dengan pembayaran lokal yang mudah.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- PRICING -->
+<section id="pricing">
+  <div class="wrap">
+    <div class="sec-head rv" style="max-width:620px">
+      <div class="kicker" data-en="// PRICING">// HARGA</div>
+      <h2 data-en="Pay for the stories you make">Bayar sesuai cerita yang kamu buat</h2>
+      <p class="sub" data-en="Start free. Level up when your production levels up. No binding contract.">Mulai gratis. Naik kelas saat produksimu naik kelas. Tanpa kontrak yang mengikat.</p>
+    </div>
+    <div class="pgrid rv stg">
+      <div class="pcard">
+        <div class="pn">Gratis</div>
+        <div class="ptl" data-en="Start telling at no cost.">Mulai bercerita tanpa biaya.</div>
+        <div class="price">Rp0<small> /<span data-en="mo">bulan</span></small></div>
+        <div class="cred">150 <span data-en="credits/month">kredit/bulan</span></div>
+        <ul>
+          <li data-en="150 credits to try every tool">150 kredit untuk coba semua tool</li>
+          <li data-en="Image Studio at standard resolution">Image Studio resolusi standar</li>
+          <li data-en="Video Lab short clips (lite models)">Video Lab klip pendek (model hemat)</li>
+          <li data-en="Suara Lokal in Bahasa Indonesia">Suara Lokal Bahasa Indonesia</li>
+          <li data-en="ceritaAI watermark on output">Watermark ceritaAI di hasil</li>
+        </ul>
+        <a class="btn btn-ghost" href="index.html"><span data-en="Try Free">Coba Gratis</span></a>
+      </div>
+      <div class="pcard feat">
+        <div class="ptag" data-en="Most popular">Paling laris</div>
+        <div class="pn">Kreator</div>
+        <div class="ptl" data-en="For creators who produce every day.">Untuk kreator yang produksi tiap hari.</div>
+        <div class="price">Rp99.000<small> /<span data-en="mo">bulan</span></small></div>
+        <div class="cred">2.500 <span data-en="credits/month">kredit/bulan</span></div>
+        <ul>
+          <li data-en="2,500 credits, flexible top-up">2.500 kredit, top-up fleksibel</li>
+          <li data-en="Access to Veo 3.1, Sora 2 & Kling 3.0">Akses Veo 3.1, Sora 2 &amp; Kling 3.0</li>
+          <li data-en="HD Image Studio, no watermark">Image Studio HD tanpa watermark</li>
+          <li data-en="Suara Lokal: Javanese, Sundanese, Balinese & more">Suara Lokal: Jawa, Sunda, Bali &amp; lainnya</li>
+          <li data-en="Flow storyboard + Whisk remix">Flow storyboard + Whisk remix</li>
+          <li data-en="Priority render queue">Antrean render prioritas</li>
+        </ul>
+        <a class="btn btn-pri" href="index.html"><span data-en="Choose Kreator">Pilih Kreator</span></a>
+      </div>
+      <div class="pcard">
+        <div class="pn">Studio</div>
+        <div class="ptl" data-en="Full power for teams and brands.">Daya penuh untuk tim dan brand.</div>
+        <div class="price">Rp299.000<small> /<span data-en="mo">bulan</span></small></div>
+        <div class="cred">9.000 <span data-en="credits/month">kredit/bulan</span></div>
+        <ul>
+          <li data-en="9,000 credits + discounted top-ups">9.000 kredit + top-up diskon</li>
+          <li data-en="All video & image models at 4K">Semua model video &amp; gambar resolusi 4K</li>
+          <li data-en="Batch Engine mass queue">Batch Engine antrean massal</li>
+          <li data-en="Premium Suara Lokal, all regional languages">Suara Lokal premium semua bahasa daerah</li>
+          <li data-en="Full commercial license">Lisensi komersial penuh</li>
+          <li data-en="Brand kit & team workspace">Brand kit &amp; ruang kerja tim</li>
+        </ul>
+        <a class="btn btn-ghost" href="index.html"><span data-en="Go to Studio">Naik ke Studio</span></a>
+      </div>
+    </div>
+    <p class="pnote" data-en="Try free to feel every tool before committing. Level up anytime, scale back too. No annual contract, no surprise fees — you only pay for the stories you actually make.">Coba gratis untuk merasakan setiap alat sebelum komitmen. Naik kelas kapan saja, turun lagi juga boleh. Tanpa kontrak tahunan, tanpa biaya kejutan — kamu hanya bayar untuk cerita yang benar-benar kamu buat.</p>
+  </div>
+</section>
+
+<!-- SHOWCASE -->
+<section id="showcase" style="padding:64px 0 64px">
+  <div class="wrap" style="margin-bottom:34px">
+    <div class="kicker rv" data-en="// COMMUNITY SHOWCASE">// KARYA KOMUNITAS</div>
+    <h2 class="rv" data-en="Made with ceritaAI">Dibuat dengan ceritaAI</h2>
+  </div>
+  <div class="marquee">
+    <div class="mq-track" id="mq">
+      <img src="assets/landing/img/showcase-1-foggy-mountains.jpg" alt="Karya komunitas: pegunungan berkabut" loading="lazy"/>
+      <img src="assets/landing/posters/ocean-aerial.jpg" alt="Karya komunitas: pantai dari udara" loading="lazy"/>
+      <img src="assets/landing/img/showcase-2-rice-terraces-aerial.jpg" alt="Karya komunitas: sawah terasering" loading="lazy"/>
+      <img src="assets/landing/img/masonry-8-neon-street.jpg" alt="Karya komunitas: jalanan neon" loading="lazy"/>
+      <img src="assets/landing/img/showcase-3-twilight-mountains.jpg" alt="Karya komunitas: gunung senja" loading="lazy"/>
+      <img src="assets/landing/posters/night-sky.jpg" alt="Karya komunitas: langit malam" loading="lazy"/>
+      <img src="assets/landing/img/showcase-4-neon-night.jpg" alt="Karya komunitas: malam neon" loading="lazy"/>
+    </div>
+  </div>
+</section>
+
+<!-- FINAL CTA -->
+<section style="padding-bottom:0">
+  <div class="wrap">
+    <div class="cta-box rv">
+      <div class="glow"></div>
+      <svg class="mendung" style="left:-70px;bottom:-50px;width:340px;opacity:.08" viewBox="0 0 175 100" aria-hidden="true"><use href="#cl"/></svg>
+      <svg class="mendung" style="right:-60px;top:-40px;width:280px;opacity:.07" viewBox="0 0 175 100" aria-hidden="true"><use href="#cl"/></svg>
+      <div class="serif" data-en="Every voice deserves to be heard in its own language.">Setiap suara berhak terdengar dalam bahasanya sendiri.</div>
+      <h2 data-en="Your story already exists. It just needs to be made.">Ceritamu sudah ada. Tinggal diwujudkan.</h2>
+      <p data-en="Start from one sentence. End with video, image, and voice that feel like yours — and sound like home.">Mulai dari satu kalimat. Akhiri dengan video, gambar, dan suara yang terasa seperti milikmu — dan terdengar seperti rumah.</p>
+      <a class="btn btn-pri" href="index.html" style="font-size:1rem;padding:15px 32px"><span data-en="Start telling now">Mulai bercerita sekarang</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+<footer>
+  <div class="wrap foot">
+    <div class="foot-l">
+      <img src="assets/ceritaai-mark.png" alt="ceritaAI"/>
+      <span data-en="© 2026 ceritaAI · Made with heart in Indonesia">© 2026 ceritaAI · Dibuat dengan rasa di Indonesia</span>
+    </div>
+    <div class="foot-r">
+      <a href="#video" data-en="Video">Video</a>
+      <a href="#images" data-en="Images">Gambar</a>
+      <a href="#models" data-en="Models">Model</a>
+      <a href="#pricing" data-en="Pricing">Harga</a>
+      <a href="index.html" data-en="Studio app">Aplikasi studio</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// nav scroll state
+const nav=document.getElementById('nav');
+addEventListener('scroll',()=>nav.classList.toggle('scrolled',scrollY>24),{passive:true});
+
+// scroll reveal
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.16,rootMargin:'0px 0px -8% 0px'});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+
+// hover-to-play videos
+document.querySelectorAll('.vcard').forEach(c=>{
+  const v=c.querySelector('video');if(!v)return;
+  c.addEventListener('mouseenter',()=>{if(v.preload==='none')v.preload='auto';c.classList.add('playing');v.play().catch(()=>{})});
+  c.addEventListener('mouseleave',()=>{c.classList.remove('playing');v.pause()});
+});
+
+// duplicate marquees for seamless loop
+['mq','mstrip'].forEach(id=>{const t=document.getElementById(id);if(t)t.innerHTML+=t.innerHTML;});
+
+// hero parallax (mouse) — respects reduced motion
+const rm=matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(!rm){
+  const sides=document.querySelectorAll('.hs-side[data-px]');
+  let tx=0,cx=0;
+  addEventListener('mousemove',e=>{tx=(e.clientX/innerWidth-.5);},{passive:true});
+  (function loop(){cx+=(tx-cx)*.06;sides.forEach(s=>{const f=parseFloat(s.dataset.px);
+    const base=s.classList.contains('hs-l')?-5:5;const ty=28;
+    s.style.transform=`rotate(${base}deg) translate(${cx*f}px,${ty}px)`;});requestAnimationFrame(loop);})();
+}
+
+// language toggle
+function setLang(lang){
+  document.documentElement.lang=lang;
+  document.querySelectorAll('[data-en]').forEach(el=>{
+    if(el.dataset.id===undefined)el.dataset.id=el.innerHTML;
+    el.innerHTML=lang==='en'?el.dataset.en:el.dataset.id;
+  });
+  const h1=document.getElementById('hero-h1');
+  if(h1){
+    if(h1.dataset.idHtml===undefined)h1.dataset.idHtml=h1.innerHTML;
+    h1.innerHTML=lang==='en'
+      ?'Every idea has a story.<br>We bring it <span class="accent">to life.</span>'
+      :h1.dataset.idHtml;
+  }
+  const lid=document.getElementById('lang-id'),len=document.getElementById('lang-en');
+  lid.classList.toggle('on',lang==='id');len.classList.toggle('on',lang==='en');
+  lid.setAttribute('aria-pressed',lang==='id');len.setAttribute('aria-pressed',lang==='en');
+  try{localStorage.setItem('ceritaai-lang',lang)}catch(e){}
+}
+try{const saved=localStorage.getItem('ceritaai-lang');if(saved==='en')setLang('en');}catch(e){}
+</script>
+</body>
+</html>
