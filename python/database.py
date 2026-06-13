@@ -267,6 +267,40 @@ async def insert_asset(tenant_id, *, bucket, s3_key, content_type, size_bytes,
     except Exception as e:
         log.error("insert_asset: %s", e); raise
 
+async def save_media_task(tenant_id, user_id, job_type, task_id) -> Optional[str]:
+    """Create a veo/sora job row recording the upstream provider task_id in
+    result_payload, so the UNauthenticated /stream endpoint can later resolve the
+    owning tenant via job_tenant_by_task(). user_id is stored only if it's a real
+    users.id UUID, else NULL (CurrentUser.user_id is a Clerk id, not a UUID)."""
+    try:
+        uid = None
+        try:
+            uid = _uid(user_id) if user_id else None
+        except Exception:
+            uid = None
+        jid = await _q_fetchval(
+            """INSERT INTO jobs (tenant_id,user_id,job_type,status,
+                                 progress_message,result_payload,started_at)
+               VALUES ($1,$2,$3::job_type_enum,'processing','Submitted',
+                       jsonb_build_object('task_id',$4::text),now())
+               RETURNING id""",
+            _uid(tenant_id), uid, job_type, task_id,
+            tenant=str(tenant_id))
+        return str(jid) if jid else None
+    except Exception as e:
+        log.error("save_media_task: %s", e); raise
+
+async def job_tenant_by_task(task_id) -> Optional[str]:
+    """Resolve the owning tenant of a veo/sora job by upstream task_id. Uses the
+    SECURITY DEFINER fn job_tenant_by_task() (migration 0018), so it is safe to
+    call from the /stream endpoint which has no tenant context. Returns None if
+    unknown (job never recorded, e.g. submit was unauthenticated)."""
+    try:
+        tid = await _q_fetchval("SELECT job_tenant_by_task($1::text)", str(task_id))
+        return str(tid) if tid else None
+    except Exception as e:
+        log.error("job_tenant_by_task: %s", e); return None
+
 async def update_job_progress(job_id, progress) -> None:
     """Set progress_message and append to logs JSONB array."""
     try:

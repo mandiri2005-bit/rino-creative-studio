@@ -261,6 +261,23 @@ async def get_current_user(
         tier=plan,
     )
 
+# ── Optional auth — capture tenant when a token is present, else None ─────────
+
+async def get_current_user_optional(
+    authorization: Optional[str] = Header(default=None),
+) -> Optional[CurrentUser]:
+    """Like get_current_user but NEVER raises: returns None when the token is
+    missing or invalid. Use on endpoints that should capture the tenant when a
+    token is present but must stay usable without one (e.g. Veo/Sora submit,
+    which historically ran unauthenticated). Sets the same ContextVars on success."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    try:
+        return await get_current_user(authorization=authorization)
+    except Exception as exc:
+        log.warning("optional auth: ignoring invalid token (%s)", exc)
+        return None
+
 # ── Public dependency — no auth, but sets dev placeholders ────────────────────
 
 async def public_endpoint() -> CurrentUser:

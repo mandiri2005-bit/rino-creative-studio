@@ -323,7 +323,7 @@ from contextlib import asynccontextmanager
 import database as db
 import storage
 import redis_client as rc
-from auth_middleware import (get_current_user, CurrentUser,
+from auth_middleware import (get_current_user, get_current_user_optional, CurrentUser,
                              _tenant_id as _ctx_tenant_id, _user_id as _ctx_user_id)
 
 @asynccontextmanager
@@ -1742,7 +1742,8 @@ class VeoSubmitRequest(BaseModel):
 
 
 @app.post("/veo/submit")
-async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Header(default=None)):
+async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Header(default=None),
+                     user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Veo 3.1 image-to-video or text-to-video task."""
     preset = req.preset or VEO_PRESETS["1080p_landscape"]
     headers = _veo_headers(x_veo_api_key)
@@ -1775,6 +1776,12 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
         res.raise_for_status()
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
+        # ── Step 2: record task→tenant so the unauthenticated /stream can capture ──
+        if user and task_id:
+            try:
+                await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id)
+            except Exception as _e:
+                print(f"[veo/submit] task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -1862,6 +1869,20 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
                 size_mb = len(res.content) / 1_048_576
                 print(f"[veo/stream] ✓ Saved {size_mb:.1f} MB -> {save_path}")
 
+                # ── Step 2: persist to R2 + assets row (tenant resolved by task_id) ──
+                try:
+                    _tid = await db.job_tenant_by_task(task_id)
+                    if _tid:
+                        await _persist_asset(
+                            _tid, asset_type="video", source_job_type="veo",
+                            filename=f"{safe_id}.mp4", data=res.content,
+                            content_type="video/mp4",
+                            metadata={"task_id": task_id, "kind": "veo"})
+                    else:
+                        print(f"[veo/stream] no tenant for task {task_id} — R2 capture skipped")
+                except Exception as _e:
+                    print(f"[veo/stream] R2 persist failed (non-fatal): {_e}")
+
                 return FResponse(
                     content=res.content,
                     media_type="video/mp4",
@@ -1914,7 +1935,8 @@ class SoraSubmitRequest(BaseModel):
 
 
 @app.post("/sora/submit")
-async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = Header(default=None)):
+async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = Header(default=None),
+                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Sora 2 text-to-video or image-to-video task."""
     headers = _sora_headers(x_sora_api_key)
 
@@ -1942,6 +1964,12 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
         print(f"[sora/submit] task_id={task_id} status={data.get('status')}")
+        # ── Step 2: record task→tenant so the unauthenticated /stream can capture ──
+        if user and task_id:
+            try:
+                await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id)
+            except Exception as _e:
+                print(f"[sora/submit] task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -2004,6 +2032,19 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
                     f.write(res.content)
                 size_mb = len(res.content) / 1_048_576
                 print(f"[sora/stream] ✓ Saved {size_mb:.1f} MB -> {save_path}")
+                # ── Step 2: persist to R2 + assets row (tenant resolved by task_id) ──
+                try:
+                    _tid = await db.job_tenant_by_task(task_id)
+                    if _tid:
+                        await _persist_asset(
+                            _tid, asset_type="video", source_job_type="sora",
+                            filename=f"{safe_id}.mp4", data=res.content,
+                            content_type="video/mp4",
+                            metadata={"task_id": task_id, "kind": "sora"})
+                    else:
+                        print(f"[sora/stream] no tenant for task {task_id} — R2 capture skipped")
+                except Exception as _e:
+                    print(f"[sora/stream] R2 persist failed (non-fatal): {_e}")
                 return FResponse(content=res.content, media_type="video/mp4",
                                  headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
                                           "Cache-Control": "no-store",
