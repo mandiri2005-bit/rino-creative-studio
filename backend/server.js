@@ -1414,6 +1414,8 @@ app.post("/api/submit", requireAuth, async(req,res)=>{
     // Durable record in jobs table. Google-specific fields live in result_payload.
     const jobId = await createJob(tenantId, userId, "batch_image", record.displayName);
     await completeJob(jobId, record);   // payload set; batch tracks real lifecycle in payload.state
+    try{ await logUsage(tenantId, userId, model, "batch", 0, 0, 0, null, "gemini"); }
+    catch(e){ console.error("[batch] logUsage failed:", e.message); }
     try{fs.unlinkSync(jsonlPath);}catch{}
     res.json({ok:true,jobName:batch.name,record:{...record,id:jobId}});
   }catch(e){console.error(e);res.status(500).json({error:e?.message||String(e)});}
@@ -1589,6 +1591,8 @@ async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,spee
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
+  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, 0, null, "laozhang"); }
+  catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 
 async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
@@ -1639,6 +1643,8 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
+  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, 0, null, "gemini"); }
+  catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 app.get("/api/tts/jobs", requireAuth, async(req,res)=>{
   try{
@@ -1760,6 +1766,8 @@ async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPr
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
+  try{ await logUsage(tenantId, userId, model, "image", 0, 0, 0, null, "gemini"); }
+  catch(e){ console.error("[imagen] logUsage failed:", e.message); }
 }
 app.get("/api/imagen/jobs", requireAuth, async(req,res)=>{
   try{

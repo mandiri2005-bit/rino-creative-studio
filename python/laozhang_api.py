@@ -1776,12 +1776,15 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
         res.raise_for_status()
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
-        # ── Step 2: record task→tenant so the unauthenticated /stream can capture ──
+        # ── Step 2: record task→tenant (jobs) + usage_logs so the generation is
+        #            tracked even though /stream is unauthenticated ──
         if user and task_id:
             try:
-                await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id)
+                _jid = await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id)
+                await db.log_usage(user.tenant_id, None, req.model, "video",
+                                   0, 0, 0.0, job_id=_jid, provider="laozhang")
             except Exception as _e:
-                print(f"[veo/submit] task capture failed (non-fatal): {_e}")
+                print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -1892,11 +1895,13 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
                 try:
                     _tid = await db.job_tenant_by_task(task_id)
                     if _tid:
+                        _jid = await db.media_job_id_by_task(_tid, task_id)
                         await _persist_asset(
                             _tid, asset_type="video", source_job_type="veo",
                             filename=f"{safe_id}.mp4", data=res.content,
-                            content_type="video/mp4",
+                            content_type="video/mp4", job_id=_jid, user_id=None,
                             metadata={"task_id": task_id, "kind": "veo"})
+                        await db.complete_media_task(_tid, task_id)
                     else:
                         print(f"[veo/stream] no tenant for task {task_id} — R2 capture skipped")
                 except Exception as _e:
@@ -1983,12 +1988,15 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
         print(f"[sora/submit] task_id={task_id} status={data.get('status')}")
-        # ── Step 2: record task→tenant so the unauthenticated /stream can capture ──
+        # ── Step 2: record task→tenant (jobs) + usage_logs so the generation is
+        #            tracked even though /stream is unauthenticated ──
         if user and task_id:
             try:
-                await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id)
+                _jid = await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id)
+                await db.log_usage(user.tenant_id, None, req.model, "video",
+                                   0, 0, 0.0, job_id=_jid, provider="laozhang")
             except Exception as _e:
-                print(f"[sora/submit] task capture failed (non-fatal): {_e}")
+                print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -2069,11 +2077,13 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
                 try:
                     _tid = await db.job_tenant_by_task(task_id)
                     if _tid:
+                        _jid = await db.media_job_id_by_task(_tid, task_id)
                         await _persist_asset(
                             _tid, asset_type="video", source_job_type="sora",
                             filename=f"{safe_id}.mp4", data=res.content,
-                            content_type="video/mp4",
+                            content_type="video/mp4", job_id=_jid, user_id=None,
                             metadata={"task_id": task_id, "kind": "sora"})
+                        await db.complete_media_task(_tid, task_id)
                     else:
                         print(f"[sora/stream] no tenant for task {task_id} — R2 capture skipped")
                 except Exception as _e:

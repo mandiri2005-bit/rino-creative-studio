@@ -315,6 +315,32 @@ async def asset_key_by_task(tenant_id, task_id) -> Optional[str]:
     except Exception as e:
         log.error("asset_key_by_task: %s", e); return None
 
+async def media_job_id_by_task(tenant_id, task_id) -> Optional[str]:
+    """jobs.id of the veo/sora job for this upstream task_id (or None), so the
+    captured asset row can be linked to its job."""
+    try:
+        jid = await _q_fetchval(
+            """SELECT id FROM jobs
+                WHERE result_payload->>'task_id'=$1 AND job_type IN ('veo','sora')
+                ORDER BY created_at DESC LIMIT 1""",
+            str(task_id), tenant=str(tenant_id))
+        return str(jid) if jid else None
+    except Exception as e:
+        log.error("media_job_id_by_task: %s", e); return None
+
+async def complete_media_task(tenant_id, task_id) -> None:
+    """Mark a veo/sora job 'done' once its video has been saved (from /stream).
+    Without this the submit-time job would sit in 'processing' forever."""
+    try:
+        await _q_exec(
+            """UPDATE jobs SET status='done', progress_message='Selesai',
+                   completed_at=now(), updated_at=now()
+               WHERE result_payload->>'task_id'=$1 AND job_type IN ('veo','sora')
+                 AND status<>'done'""",
+            str(task_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.error("complete_media_task: %s", e)
+
 async def update_job_progress(job_id, progress) -> None:
     """Set progress_message and append to logs JSONB array."""
     try:
