@@ -113,6 +113,28 @@ async function persistAsset({ tenantId, userId = null, jobId = null, assetType,
   return { key, id, signedUrl: await storage.signedUrl(key) };
 }
 
+// ── Signed-URL serving (Step 2.4) ──────────────────────────────────────────────
+// Fresh 600s signed R2 URL for a key the tenant owns. RLS-checked: the SELECT
+// only matches rows for the active tenant, so a user can never sign another
+// tenant's asset. Returns null if not found / storage off.
+async function signedUrlForKey(tenantId, key) {
+  if (!key || !storage.isConfigured()) return null;
+  const res = await query(
+    "SELECT 1 FROM assets WHERE s3_key=$1 AND tenant_id=$2 AND is_deleted=false LIMIT 1",
+    [key, tenantId], tenantId
+  );
+  if (!res.rows.length) return null;
+  return storage.signedUrl(key, 600);
+}
+// Enrich a result_payload.files array with a fresh signedUrl per file that has a
+// stored R2 key (added by persistAsset). Local `url` is kept as a fallback.
+async function signFiles(files) {
+  if (!Array.isArray(files) || !storage.isConfigured()) return files || [];
+  return Promise.all(files.map(async (f) =>
+    (f && f.key) ? { ...f, signedUrl: await storage.signedUrl(f.key, 600) } : f
+  ));
+}
+
 // ── WAV & batch helpers imported from utils.mjs ──
 
 // ── Express ───────────────────────────────────────────────────────────────────
@@ -1621,25 +1643,25 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
 app.get("/api/tts/jobs", requireAuth, async(req,res)=>{
   try{
     const rows = await listJobs(resolveTenantId(req), "tts");
-    res.json(rows.map(r => ({
+    res.json(await Promise.all(rows.map(async r => ({
       jobId:r.id, status:r.status, model:(r.result_payload?.model)||null,
       voice:(r.result_payload?.voice)||null, outputPrefix:r.output_prefix,
-      total:(r.result_payload?.total)||0, files:(r.result_payload?.files)||[],
+      total:(r.result_payload?.total)||0, files: await signFiles(r.result_payload?.files),
       createdAt:r.created_at
-    })));
+    }))));
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get("/api/tts/files", (_,res)=>{try{res.json(fs.readdirSync(TTS_DIR).filter(f=>/\.wav$/i.test(f)).map(f=>({file:f,url:`/audio/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
 app.get("/api/tts/job/:id", requireAuth, async(req,res)=>{
   try{
     const live = await getLiveJob(req.params.id);   // running job → rich live object
-    if(live) return res.json(live);
+    if(live){ live.files = await signFiles(live.files); return res.json(live); }
     const row = await getJob(resolveTenantId(req), req.params.id);   // finished → DB row
     if(row) return res.json({
       status:row.status,
       progress:(row.result_payload?.total)||0,
       total:(row.result_payload?.total)||0,
-      files:(row.result_payload?.files)||[],
+      files: await signFiles(row.result_payload?.files),
       logs:[]
     });
     res.status(404).json({error:"Not found"});
@@ -1681,6 +1703,22 @@ app.post("/api/tts/cancel/:id", requireAuth, async(req,res)=>{
   job.status="cancelling";
   await setLiveJob(jobId, job);
   res.json({ok:true,jobId,status:"cancelling"});
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ASSETS — signed-URL refresh (Step 2.4)
+// ══════════════════════════════════════════════════════════════════════════════
+// Frontend calls this to (re)mint a signed URL when one expires (10-min TTL).
+// RLS-scoped to the caller's tenant.
+app.get("/api/assets/sign", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const key = req.query.key;
+    if (!key) return res.status(400).json({ error: "key required" });
+    const url = await signedUrlForKey(tenantId, key);
+    if (!url) return res.status(404).json({ error: "asset not found" });
+    res.json({ url, expiresIn: 600 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1726,24 +1764,24 @@ async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPr
 app.get("/api/imagen/jobs", requireAuth, async(req,res)=>{
   try{
     const rows = await listJobs(resolveTenantId(req), "imagen");
-    res.json(rows.map(r => ({
+    res.json(await Promise.all(rows.map(async r => ({
       jobId:r.id, status:r.status, model:(r.result_payload?.model)||null,
       outputPrefix:r.output_prefix, total:(r.result_payload?.total)||0,
-      files:(r.result_payload?.files)||[], createdAt:r.created_at
-    })));
+      files: await signFiles(r.result_payload?.files), createdAt:r.created_at
+    }))));
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get("/api/imagen/files", (_,res)=>{try{res.json(fs.readdirSync(IMG_DIR).filter(f=>/\.jpe?g$/i.test(f)).map(f=>({file:f,url:`/imgs/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
 app.get("/api/imagen/job/:id", requireAuth, async(req,res)=>{
   try{
     const live = await getLiveJob(req.params.id);
-    if(live) return res.json(live);
+    if(live){ live.files = await signFiles(live.files); return res.json(live); }
     const row = await getJob(resolveTenantId(req), req.params.id);
     if(row) return res.json({
       status:row.status,
       progress:(row.result_payload?.total)||0,
       total:(row.result_payload?.total)||0,
-      files:(row.result_payload?.files)||[],
+      files: await signFiles(row.result_payload?.files),
       logs:[]
     });
     res.status(404).json({error:"Not found"});
