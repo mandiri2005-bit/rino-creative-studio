@@ -4164,6 +4164,38 @@ async def narasi_jobs(user: CurrentUser = Depends(get_current_user)):
         return {"ok": False, "jobs": [], "error": str(_e)}
 
 
+@app.post("/narasi/rate")
+async def narasi_rate(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """Record a 1-5 star rating for a chapter → approvals (Step 1.4 moat signal)."""
+    chapter_id = (body.get("chapter_id") or "").strip()
+    try:
+        rating = int(body.get("rating") or 0)
+    except Exception:
+        rating = 0
+    if not chapter_id or rating < 1 or rating > 5:
+        return {"ok": False, "error": "chapter_id + rating (1-5) required"}
+    _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    try:
+        aid = await db.save_approval(user.tenant_id, _user, chapter_id, rating)
+        return {"ok": True, "approval_id": aid, "approved": rating >= 4}
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("rate failed (non-fatal): %s", _e)
+        return {"ok": False, "error": str(_e)}
+
+
+@app.get("/narasi/chapters/{job_id}")
+async def narasi_chapters_list(job_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Chapters of a job with their latest rating, for the rating UI (Step 1.4)."""
+    try:
+        _row = await db.get_job_by_external(user.tenant_id, job_id)
+        if not _row or not _row.get("id"):
+            return {"ok": True, "chapters": []}
+        return {"ok": True, "chapters": await db.get_chapters_for_rating(user.tenant_id, _row["id"])}
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("chapters list failed (non-fatal): %s", _e)
+        return {"ok": False, "chapters": [], "error": str(_e)}
+
+
 @app.get("/narasi/status/{job_id}")
 async def narasi_status(job_id: str,
                         user: CurrentUser = Depends(get_current_user)):

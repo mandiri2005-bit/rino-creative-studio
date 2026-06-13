@@ -740,6 +740,8 @@ const api={
   narasiStitch:async(jobId,b)=>fetch(`/api/narasi/stitch/${jobId}`,{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
   narasiStatus:async(jobId)=>fetch(`/api/narasi/status/${jobId}`,{headers:(await authHdrFresh())}).then(r=>r.json()),
   narasiJobs:async()=>fetch("/api/narasi/jobs",{headers:(await authHdrFresh())}).then(r=>r.json()),
+  narasiChapters:async(jobId)=>fetch(`/api/narasi/chapters/${jobId}`,{headers:(await authHdrFresh())}).then(r=>r.json()),
+  narasiRate:async(chapter_id,rating)=>fetch("/api/narasi/rate",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify({chapter_id,rating})}).then(r=>r.json()),
   batchJobs:()=>fetch("/api/jobs").then(r=>r.json()),
   batchSubmit:async b=>fetch("/api/submit",{method:"POST",headers:{...{"Content-Type":"application/json"},...(authHdr())},body:JSON.stringify(b)}).then(r=>r.json()),
   batchStatus:n=>fetch("/api/status?name="+encodeURIComponent(n)).then(r=>r.json()),
@@ -5328,6 +5330,8 @@ function NarasiSection({settings,showToast}){
   const jobIdRef=useRef(null);
   const[savedJobId,setSavedJobId]=useState(()=>localStorage.getItem("rc_nar_job_id")||null);
   const[pastJobs,setPastJobs]=useState([]);
+  const[chapRatings,setChapRatings]=useState([]);
+  const[ratingJobId,setRatingJobId]=useState(null);
   const[doneInfo,setDoneInfo]=useState(null);
 
   useEffect(()=>{
@@ -5440,6 +5444,8 @@ function NarasiSection({settings,showToast}){
   };
 
   const loadPastJobs=async()=>{ try{ const r=await api.narasiJobs(); if(r&&r.ok) setPastJobs(r.jobs||[]); }catch{} };
+  const loadChapterRatings=async(jid)=>{ if(!jid){setChapRatings([]);setRatingJobId(null);return;} try{ const r=await api.narasiChapters(jid); if(r&&r.ok){setChapRatings(r.chapters||[]);setRatingJobId(jid);} }catch{} };
+  const rateChapter=async(chapterId,rating)=>{ setChapRatings(p=>p.map(c=>c.id===chapterId?{...c,rating}:c)); try{ const r=await api.narasiRate(chapterId,rating); if(!r||!r.ok) throw new Error((r&&r.error)||"gagal"); showToast(`Rating ${rating}★ tersimpan`,"ok"); }catch(e){ showToast("Rating gagal: "+e.message,"err"); if(ratingJobId) loadChapterRatings(ratingJobId); } };
   useEffect(()=>{ loadPastJobs(); },[]);
 
   const recoverJob=async(jId)=>{
@@ -5448,7 +5454,7 @@ function NarasiSection({settings,showToast}){
     try{
       const sr=await api.narasiStitch(jId,{topic,style,language});
       if(sr.error)throw new Error(sr.error);
-      setNarasi(sr.markdown||"");setStage("result");
+      setNarasi(sr.markdown||"");setStage("result");loadChapterRatings(jId);
       localStorage.removeItem("rc_nar_job_id");setSavedJobId(null);
       const filename=`narasi-${topic.slice(0,40).replace(/\s+/g,"-").replace(/[^a-zA-Z0-9-]/g,"")}.md`;
       setDoneInfo({words:sr.total_words,errors:0,filename,markdown:sr.markdown||""});
@@ -5555,6 +5561,7 @@ function NarasiSection({settings,showToast}){
       const sr=await api.narasiStitch(jobId,{topic,style,language});
       if(sr.error)throw new Error(sr.error);
       setNarasi(sr.markdown||"");
+      loadChapterRatings(jobId);
       setGenerating(false);
       jobIdRef.current=null;
       localStorage.removeItem("rc_nar_job_id");setSavedJobId(null);
@@ -5657,7 +5664,7 @@ function NarasiSection({settings,showToast}){
   };
   const downloadHtml=(md,suffix,titleArg)=>{_dlBlob(new Blob([buildNarasiHtml(md,titleArg)],{type:"text/html;charset=utf-8"}),narasiName()+(suffix||"")+".html");};
   const downloadPdf=(md,titleArg)=>{const w=window.open("","_blank");if(!w){showToast("Popup diblokir — izinkan popup untuk simpan PDF","err");return;}w.document.write(buildNarasiHtml(md,titleArg));w.document.close();setTimeout(()=>{try{w.focus();w.print();}catch(e){}},700);};
-  const reset=()=>{setStage("input");setOutline(null);setOutlineText("");setNarasi("");setChapProgress({});localStorage.removeItem("rc_nar_outline");localStorage.removeItem("rc_nar_outline_text");localStorage.removeItem("rc_nar_result");};
+  const reset=()=>{setStage("input");setOutline(null);setOutlineText("");setNarasi("");setChapProgress({});setChapRatings([]);setRatingJobId(null);localStorage.removeItem("rc_nar_outline");localStorage.removeItem("rc_nar_outline_text");localStorage.removeItem("rc_nar_result");};
 
   const lzStyleModels=NARASI_STYLE_MODELS[style]||NARASI_STYLE_MODELS["storytelling"];
   // freeModel ON → expose the FULL model catalog (all providers/tiers), grouped.
@@ -5872,6 +5879,22 @@ function NarasiSection({settings,showToast}){
           <div className="lbl">📄 Narasi final — edit langsung</div>
           <textarea className="inp ta mono" rows={32} value={narasi} onChange={e=>setNarasi(e.target.value)} style={{fontSize:12.5,lineHeight:1.8}}/>
         </div>
+        {chapRatings.length>0&&(
+          <div className="card" style={{marginTop:14}}>
+            <div className="lbl">⭐ Beri rating tiap bab <span style={{fontWeight:400,color:"var(--tf)"}}>— sinyal kualitas untuk training (≥4★ = approved)</span></div>
+            {chapRatings.map((ch,idx)=>(
+              <div key={ch.id} style={{display:"flex",alignItems:"center",gap:12,padding:"7px 0",borderBottom:idx<chapRatings.length-1?"1px solid var(--brs)":"none"}}>
+                <span style={{fontSize:12.5,fontWeight:600,minWidth:54,color:"var(--td)"}}>Bab {ch.chapter_index+1}</span>
+                <div style={{display:"flex",gap:2}}>
+                  {[1,2,3,4,5].map(n=>(
+                    <span key={n} onClick={()=>rateChapter(ch.id,n)} title={n+" bintang"} style={{cursor:"pointer",fontSize:20,lineHeight:1,color:(ch.rating||0)>=n?"#f5b301":"var(--br)"}}>★</span>
+                  ))}
+                </div>
+                {ch.rating?(<span style={{fontSize:11.5,color:ch.rating>=4?"var(--su)":"var(--td)"}}>{ch.rating}★{ch.rating>=4?" · approved ✓":""}</span>):(<span style={{fontSize:11.5,color:"var(--tf)"}}>belum dinilai</span>)}
+              </div>
+            ))}
+          </div>
+        )}
       </>}
     </div>}
   </div>;

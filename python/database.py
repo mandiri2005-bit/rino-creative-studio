@@ -391,6 +391,39 @@ async def list_narasi_jobs(tenant_id, limit=15) -> list:
     except Exception as e:
         log.error("list_narasi_jobs: %s", e); raise
 
+async def get_chapters_for_rating(tenant_id, job_id) -> list:
+    """Chapters of a job with their latest 1-5 rating, for the per-chapter rating UI
+    (Step 1.4). Returns [{id, chapter_index, rating}] ordered by chapter_index."""
+    try:
+        rows = await _q_fetch(
+            """SELECT nc.id, nc.chapter_index,
+                      (SELECT a.rating FROM approvals a
+                        WHERE a.chapter_id = nc.id
+                        ORDER BY a.created_at DESC LIMIT 1) AS rating
+                 FROM narasi_chapters nc
+                WHERE nc.job_id = $1
+                ORDER BY nc.chapter_index ASC""",
+            _uid(job_id), tenant=str(tenant_id))
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.error("get_chapters_for_rating: %s", e); raise
+
+async def save_approval(tenant_id, user_id, chapter_id, rating) -> str:
+    """Record a 1-5 rating for a chapter (Step 1.4 moat signal). approved=true when
+    rating >= 4; also reflects that flag onto narasi_chapters.approved."""
+    approved = bool(rating and int(rating) >= 4)
+    try:
+        aid = await _q_fetchval(
+            """INSERT INTO approvals (tenant_id, user_id, chapter_id, approved, rating)
+               VALUES ($1,$2,$3,$4,$5) RETURNING id""",
+            _uid(tenant_id), _uid(user_id), _uid(chapter_id), approved, int(rating),
+            tenant=str(tenant_id))
+        await _q_exec("UPDATE narasi_chapters SET approved=$2, updated_at=now() WHERE id=$1",
+                      _uid(chapter_id), approved, tenant=str(tenant_id))
+        return str(aid)
+    except Exception as e:
+        log.error("save_approval: %s", e); raise
+
 async def cleanup_old_jobs(tenant_id, older_than_hours=24) -> int:
     """Delete completed/failed jobs older than N hours."""
     try:

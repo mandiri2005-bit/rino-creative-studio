@@ -502,8 +502,9 @@ app.post("/api/narasi/cancel/:jobId", (req,res)=>{
   pyProxy(req,res,`/narasi/cancel/${req.params.jobId}`);
 });
 app.get("/api/narasi/jobs", (req,res)=>pyProxy(req,res,"/narasi/jobs"));
+app.post("/api/narasi/rate", (req,res)=>pyProxy(req,res,"/narasi/rate"));
+app.get("/api/narasi/chapters/:jobId", (req,res)=>pyProxy(req,res,`/narasi/chapters/${req.params.jobId}`));
 app.get("/api/narasi/status/:jobId", (req,res)=>pyProxy(req,res,`/narasi/status/${req.params.jobId}`));
-app.get("/api/narasi/jobs", (req,res)=>pyProxy(req,res,"/narasi/jobs"));
 app.post("/api/narasi/stitch/:jobId", async(req,res)=>{
   try{
     const{jobId}=req.params;
