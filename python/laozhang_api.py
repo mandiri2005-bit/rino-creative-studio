@@ -1853,6 +1853,25 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
                 },
             )
 
+    # ── Step 2: R2 fallback — local disk cache may be gone after a redeploy ──
+    try:
+        _tid = await db.job_tenant_by_task(task_id)
+        if _tid:
+            _k = await db.asset_key_by_task(_tid, task_id)
+            if _k and storage.is_configured() and await storage.aexists(_k):
+                _bytes = await storage.adownload_bytes(_k)
+                print(f"[veo/stream] ✓ Serving from R2: {_k} ({len(_bytes)} bytes)")
+                return FResponse(
+                    content=_bytes, media_type="video/mp4",
+                    headers={
+                        "Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
+                        "Cache-Control": "no-store",
+                        "X-Veo-R2": "true",
+                    },
+                )
+    except Exception as _e:
+        print(f"[veo/stream] R2 fallback check failed (non-fatal): {_e}")
+
     print(f"[veo/stream] Fetching: {content_url}")
 
     for attempt in range(6):
@@ -2018,6 +2037,20 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
             return FResponse(content=f.read(), media_type="video/mp4",
                              headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
                                       "Cache-Control": "no-store", "X-Sora-Cached": "true"})
+
+    # ── Step 2: R2 fallback — local disk cache may be gone after a redeploy ──
+    try:
+        _tid = await db.job_tenant_by_task(task_id)
+        if _tid:
+            _k = await db.asset_key_by_task(_tid, task_id)
+            if _k and storage.is_configured() and await storage.aexists(_k):
+                _bytes = await storage.adownload_bytes(_k)
+                print(f"[sora/stream] ✓ Serving from R2: {_k} ({len(_bytes)} bytes)")
+                return FResponse(content=_bytes, media_type="video/mp4",
+                                 headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
+                                          "Cache-Control": "no-store", "X-Sora-R2": "true"})
+    except Exception as _e:
+        print(f"[sora/stream] R2 fallback check failed (non-fatal): {_e}")
 
     print(f"[sora/stream] Fetching: {content_url}")
     last_err = None

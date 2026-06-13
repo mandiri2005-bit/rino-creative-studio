@@ -301,6 +301,20 @@ async def job_tenant_by_task(task_id) -> Optional[str]:
     except Exception as e:
         log.error("job_tenant_by_task: %s", e); return None
 
+async def asset_key_by_task(tenant_id, task_id) -> Optional[str]:
+    """R2 s3_key of the video captured for this upstream task_id (or None). Lets
+    the /stream endpoint serve from R2 when the local disk cache is gone after a
+    redeploy — the whole point of Step 2."""
+    try:
+        return await _q_fetchval(
+            """SELECT s3_key FROM assets
+                WHERE tenant_id=$1 AND asset_type='video'
+                  AND metadata->>'task_id'=$2 AND is_deleted=false
+                ORDER BY created_at DESC LIMIT 1""",
+            _uid(tenant_id), str(task_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.error("asset_key_by_task: %s", e); return None
+
 async def update_job_progress(job_id, progress) -> None:
     """Set progress_message and append to logs JSONB array."""
     try:
