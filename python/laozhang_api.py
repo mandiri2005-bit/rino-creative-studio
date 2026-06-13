@@ -4361,9 +4361,11 @@ async def narasi_save_edit(job_id: str, body: dict,
         return {"ok": False, "reason": "original_text and corrected_text required"}
 
     try:
-        ctx = _tenant_ctx.get()
+        # Resolve the Clerk user id → users.id UUID (save_correction_pair casts
+        # user_id to UUID; passing the raw Clerk id silently failed the capture).
+        _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
         pair = await db.save_correction_pair(
-            moat_sid, ctx.tenant_id or db._DEV_TENANT_ID, ctx.user_id or None,
+            moat_sid, user.tenant_id or db._DEV_TENANT_ID, _user,
             original_text, corrected_text,
             style_label, topic, duration_min, language)
         return {"ok": True, "quality_tier": pair.get("quality_tier"),
