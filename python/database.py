@@ -239,6 +239,124 @@ async def create_job(tenant_id, user_id, job_type, file_name=None) -> str:
     except Exception as e:
         log.error("create_job: %s", e); raise
 
+async def insert_asset(tenant_id, *, bucket, s3_key, content_type, size_bytes,
+                       asset_type, user_id=None, job_id=None,
+                       source_job_type=None, original_filename=None,
+                       metadata=None) -> Optional[str]:
+    """Record one object-storage file in `assets` (storage metadata + moat capture).
+    Idempotent on (bucket, s3_key). Mirrors db.js insertAsset.
+      asset_type     ∈ video|audio|image|document|archive|other   (required)
+      source_job_type∈ batch_image|tts|imagen|veo|sora | None      (job_type_enum)
+    Tenant is passed explicitly (callers may run as background tasks with no ctx)."""
+    try:
+        aid = await _q_fetchval(
+            """INSERT INTO assets
+                   (tenant_id,user_id,job_id,bucket,s3_key,original_filename,
+                    content_type,size_bytes,asset_type,source_job_type,metadata)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11)
+               ON CONFLICT (bucket,s3_key) DO UPDATE SET
+                   size_bytes=EXCLUDED.size_bytes,
+                   content_type=EXCLUDED.content_type,
+                   updated_at=now()
+               RETURNING id""",
+            _uid(tenant_id), _uid(user_id), _uid(job_id), bucket, s3_key,
+            original_filename, content_type, int(size_bytes), asset_type,
+            source_job_type, metadata or {},
+            tenant=str(tenant_id))
+        return str(aid) if aid else None
+    except Exception as e:
+        log.error("insert_asset: %s", e); raise
+
+async def save_media_task(tenant_id, user_id, job_type, task_id) -> Optional[str]:
+    """Create a veo/sora job row recording the upstream provider task_id in
+    result_payload, so the UNauthenticated /stream endpoint can later resolve the
+    owning tenant via job_tenant_by_task(). user_id is stored only if it's a real
+    users.id UUID, else NULL (CurrentUser.user_id is a Clerk id, not a UUID)."""
+    try:
+        uid = None
+        try:
+            uid = _uid(user_id) if user_id else None
+        except Exception:
+            uid = None
+        jid = await _q_fetchval(
+            """INSERT INTO jobs (tenant_id,user_id,job_type,status,
+                                 progress_message,result_payload,started_at)
+               VALUES ($1,$2,$3::job_type_enum,'processing','Submitted',
+                       jsonb_build_object('task_id',$4::text),now())
+               RETURNING id""",
+            _uid(tenant_id), uid, job_type, task_id,
+            tenant=str(tenant_id))
+        return str(jid) if jid else None
+    except Exception as e:
+        log.error("save_media_task: %s", e); raise
+
+async def log_sync_job(tenant_id, job_type, result=None) -> Optional[str]:
+    """Insert an already-'done' jobs row for a SYNCHRONOUS one-shot AI flow
+    (generate_image/whisk/flow_image/flow_storyboard/script_tts) so the jobs table
+    is a complete activity ledger. user_id left NULL (CurrentUser.user_id is a
+    Clerk id, not a users.id UUID). Returns job id or None."""
+    try:
+        jid = await _q_fetchval(
+            """INSERT INTO jobs (tenant_id,job_type,status,progress_message,
+                                 result_payload,started_at,completed_at)
+               VALUES ($1,$2::job_type_enum,'done','Selesai',$3,now(),now())
+               RETURNING id""",
+            _uid(tenant_id), job_type, result or {}, tenant=str(tenant_id))
+        return str(jid) if jid else None
+    except Exception as e:
+        log.error("log_sync_job: %s", e); return None
+
+async def job_tenant_by_task(task_id) -> Optional[str]:
+    """Resolve the owning tenant of a veo/sora job by upstream task_id. Uses the
+    SECURITY DEFINER fn job_tenant_by_task() (migration 0018), so it is safe to
+    call from the /stream endpoint which has no tenant context. Returns None if
+    unknown (job never recorded, e.g. submit was unauthenticated)."""
+    try:
+        tid = await _q_fetchval("SELECT job_tenant_by_task($1::text)", str(task_id))
+        return str(tid) if tid else None
+    except Exception as e:
+        log.error("job_tenant_by_task: %s", e); return None
+
+async def asset_key_by_task(tenant_id, task_id) -> Optional[str]:
+    """R2 s3_key of the video captured for this upstream task_id (or None). Lets
+    the /stream endpoint serve from R2 when the local disk cache is gone after a
+    redeploy — the whole point of Step 2."""
+    try:
+        return await _q_fetchval(
+            """SELECT s3_key FROM assets
+                WHERE tenant_id=$1 AND asset_type='video'
+                  AND metadata->>'task_id'=$2 AND is_deleted=false
+                ORDER BY created_at DESC LIMIT 1""",
+            _uid(tenant_id), str(task_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.error("asset_key_by_task: %s", e); return None
+
+async def media_job_id_by_task(tenant_id, task_id) -> Optional[str]:
+    """jobs.id of the veo/sora job for this upstream task_id (or None), so the
+    captured asset row can be linked to its job."""
+    try:
+        jid = await _q_fetchval(
+            """SELECT id FROM jobs
+                WHERE result_payload->>'task_id'=$1 AND job_type IN ('veo','sora')
+                ORDER BY created_at DESC LIMIT 1""",
+            str(task_id), tenant=str(tenant_id))
+        return str(jid) if jid else None
+    except Exception as e:
+        log.error("media_job_id_by_task: %s", e); return None
+
+async def complete_media_task(tenant_id, task_id) -> None:
+    """Mark a veo/sora job 'done' once its video has been saved (from /stream).
+    Without this the submit-time job would sit in 'processing' forever."""
+    try:
+        await _q_exec(
+            """UPDATE jobs SET status='done', progress_message='Selesai',
+                   completed_at=now(), updated_at=now()
+               WHERE result_payload->>'task_id'=$1 AND job_type IN ('veo','sora')
+                 AND status<>'done'""",
+            str(task_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.error("complete_media_task: %s", e)
+
 async def update_job_progress(job_id, progress) -> None:
     """Set progress_message and append to logs JSONB array."""
     try:

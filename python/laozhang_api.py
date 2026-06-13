@@ -295,6 +295,35 @@ def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     return 0.0
 
 
+# ── Per-image generation cost (USD) — best-effort flat price per image. ────────
+# Update as provider rates change. Longest-matching prefix wins (mirrors _calc_cost).
+_IMAGE_COSTS: dict[str, float] = {
+    "imagen-4.0-ultra":  0.06,
+    "imagen-4.0-fast":   0.02,
+    "imagen-4.0":        0.04,
+    "imagen-3":          0.04,
+    "imagen":            0.04,
+    "nano-banana-hd":    0.039,
+    "nano-banana":       0.039,
+    "gemini-2.0-flash":  0.039,   # gemini native image (whisk/google)
+    "gemini-2.5-flash":  0.039,
+    "flux-kontext-max":  0.08,
+    "flux-kontext":      0.05,
+    "flux":              0.03,
+    "seedream":          0.03,
+    "gpt-image-1":       0.04,
+    "dall-e-3":          0.04,
+}
+_IMAGE_COST_DEFAULT = 0.04
+
+def _calc_image_cost(model: str, count: int = 1) -> float:
+    """Estimate USD cost for `count` generated images of `model`."""
+    m = (model or "").lower()
+    key = max((k for k in _IMAGE_COSTS if m.startswith(k)), key=len, default=None)
+    price = _IMAGE_COSTS[key] if key else _IMAGE_COST_DEFAULT
+    return round(price * max(0, int(count)), 6)
+
+
 async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, session_id=None):
     """Best-effort usage logging for narasi LLM endpoints — writes to usage_logs
     with endpoint='narasi'. Never raises: cost tracking must not break generation.
@@ -316,13 +345,93 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("log_usage (narasi) failed (non-fatal): %s", _e)
 
+
+def _provider_for(model: str) -> str:
+    m = (model or "").lower()
+    if m.startswith("gemini") or m.startswith("imagen"):   return "gemini"
+    if m.startswith("deepseek"):                            return "deepseek"
+    if m.startswith(("gpt", "o3", "o1")):                   return "openai"
+    return "laozhang"
+
+
+async def _track_usage(user, model, endpoint, *, resp=None, tok_in=0, tok_out=0,
+                       cost=None, provider=None, job_id=None, session_id=None,
+                       job_type=None):
+    """Leak-proof usage logging: ONE usage_logs row per AI call, so no generation
+    goes unbilled. When `job_type` is given (and no job_id), also inserts a 'done'
+    jobs row for the synchronous flow and links the usage to it. No-op (with a
+    warning) when there is no tenant. endpoint ∈ chat|image|tts|video|embedding|batch|other."""
+    import logging as _lg
+    tenant_id = getattr(user, "tenant_id", None) if user else None
+    if not tenant_id:
+        _lg.getLogger("usage").warning(
+            "[usage] endpoint=%s model=%s NOT logged — no tenant (unauthenticated call)",
+            endpoint, model)
+        return
+    try:
+        if job_type and not job_id:
+            job_id = await db.log_sync_job(tenant_id, job_type,
+                                           {"model": model, "endpoint": endpoint})
+        if resp is not None:
+            usage = getattr(resp, "usage", None)
+            if usage:
+                tok_in  = int(getattr(usage, "prompt_tokens", 0) or 0)
+                tok_out = int(getattr(usage, "completion_tokens", 0) or 0)
+        if cost is not None:
+            _cost = cost
+        elif endpoint == "image":
+            _cost = _calc_image_cost(model)
+        else:
+            _cost = _calc_cost(model, tok_in, tok_out)
+        await db.log_usage(tenant_id, None, model, endpoint, tok_in, tok_out, _cost,
+                           provider=provider or _provider_for(model),
+                           job_id=job_id, session_id=session_id)
+    except Exception as _e:
+        _lg.getLogger("usage").warning("[usage] log failed endpoint=%s: %s", endpoint, _e)
+
+
+def _sniff_image(data: bytes):
+    """(content_type, ext) from magic bytes."""
+    if data[:8].startswith(b"\x89PNG"):       return "image/png", "png"
+    if data[:2] == b"\xff\xd8":               return "image/jpeg", "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return "image/webp", "webp"
+    return "image/png", "png"
+
+
+async def _capture_image_flow(user, model, job_type, images_b64):
+    """Synchronous image flows (generate-image / whisk / flow-images): create ONE
+    'done' jobs row, persist each generated image to R2 + assets (so it's durable
+    and captured for the moat — these used to be base64-only, ephemeral), and log
+    one usage_logs row per image, all linked to the job. No tenant → usage warns."""
+    tid = getattr(user, "tenant_id", None) if user else None
+    if not tid:
+        for b in images_b64:
+            if b:
+                await _track_usage(user, model, "image")
+        return
+    jid = await db.log_sync_job(tid, job_type, {"model": model, "count": len(images_b64)})
+    for i, b64 in enumerate(images_b64):
+        if not b64:
+            continue
+        try:
+            data = base64.b64decode(b64)
+            ct, ext = _sniff_image(data)
+            await _persist_asset(tid, asset_type="image", source_job_type=job_type,
+                                 filename=f"{job_type}_{i+1}.{ext}", data=data,
+                                 content_type=ct, job_id=jid,
+                                 metadata={"model": model, "kind": job_type})
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("usage").warning("[capture] %s: %s", job_type, _e)
+        await _track_usage(user, model, "image", job_id=jid)
+
 # ---------------------------------------------------------------------------
 # FastAPI app  — with DB lifespan (Phase 1 migration)
 # ---------------------------------------------------------------------------
 from contextlib import asynccontextmanager
 import database as db
+import storage
 import redis_client as rc
-from auth_middleware import (get_current_user, CurrentUser,
+from auth_middleware import (get_current_user, get_current_user_optional, CurrentUser,
                              _tenant_id as _ctx_tenant_id, _user_id as _ctx_user_id)
 
 @asynccontextmanager
@@ -994,7 +1103,8 @@ class OnceRequest(BaseModel):
     max_tokens: int = 12000  # high enough for thinking/reasoning models
 
 @app.post("/chat/once")
-async def chat_once(req: OnceRequest):
+async def chat_once(req: OnceRequest,
+                    user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     FALLBACK_MODEL = "gemini-2.5-flash"
 
     def _try_model(model_name: str) -> str:
@@ -1029,6 +1139,7 @@ async def chat_once(req: OnceRequest):
     if not text and req.model != FALLBACK_MODEL:
         print(f"[chat/once] {req.model} returned empty, falling back to {FALLBACK_MODEL}")
         text = _try_model(FALLBACK_MODEL)
+    await _track_usage(user, req.model, "chat", tok_out=len((text or "").split()))
     return {"text": text}
 
 
@@ -1651,7 +1762,8 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
 
 @app.post("/generate-image")
 async def generate_image(req: ImageRequest,
-                         x_image_api_key: str = Header(None, alias="X-Image-API-Key")):
+                         x_image_api_key: str = Header(None, alias="X-Image-API-Key"),
+                         user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     cfg = IMAGE_MODELS.get(req.model)
     if not cfg:
         raise HTTPException(400, f"Unknown image model: {req.model}")
@@ -1685,6 +1797,7 @@ async def generate_image(req: ImageRequest,
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
+        await _capture_image_flow(user, req.model, "generate_image", [b64])
         return {
             "image_b64": b64,
             "model": req.model,
@@ -1741,7 +1854,8 @@ class VeoSubmitRequest(BaseModel):
 
 
 @app.post("/veo/submit")
-async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Header(default=None)):
+async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Header(default=None),
+                     user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Veo 3.1 image-to-video or text-to-video task."""
     preset = req.preset or VEO_PRESETS["1080p_landscape"]
     headers = _veo_headers(x_veo_api_key)
@@ -1774,6 +1888,15 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
         res.raise_for_status()
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
+        # ── Step 2: record task→tenant (jobs) + usage_logs so the generation is
+        #            tracked even though /stream is unauthenticated ──
+        if user and task_id:
+            try:
+                _jid = await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id)
+                await db.log_usage(user.tenant_id, None, req.model, "video",
+                                   0, 0, 0.0, job_id=_jid, provider="laozhang")
+            except Exception as _e:
+                print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -1845,6 +1968,25 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
                 },
             )
 
+    # ── Step 2: R2 fallback — local disk cache may be gone after a redeploy ──
+    try:
+        _tid = await db.job_tenant_by_task(task_id)
+        if _tid:
+            _k = await db.asset_key_by_task(_tid, task_id)
+            if _k and storage.is_configured() and await storage.aexists(_k):
+                _bytes = await storage.adownload_bytes(_k)
+                print(f"[veo/stream] ✓ Serving from R2: {_k} ({len(_bytes)} bytes)")
+                return FResponse(
+                    content=_bytes, media_type="video/mp4",
+                    headers={
+                        "Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
+                        "Cache-Control": "no-store",
+                        "X-Veo-R2": "true",
+                    },
+                )
+    except Exception as _e:
+        print(f"[veo/stream] R2 fallback check failed (non-fatal): {_e}")
+
     print(f"[veo/stream] Fetching: {content_url}")
 
     for attempt in range(6):
@@ -1860,6 +2002,22 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
                     f.write(res.content)
                 size_mb = len(res.content) / 1_048_576
                 print(f"[veo/stream] ✓ Saved {size_mb:.1f} MB -> {save_path}")
+
+                # ── Step 2: persist to R2 + assets row (tenant resolved by task_id) ──
+                try:
+                    _tid = await db.job_tenant_by_task(task_id)
+                    if _tid:
+                        _jid = await db.media_job_id_by_task(_tid, task_id)
+                        await _persist_asset(
+                            _tid, asset_type="video", source_job_type="veo",
+                            filename=f"{safe_id}.mp4", data=res.content,
+                            content_type="video/mp4", job_id=_jid, user_id=None,
+                            metadata={"task_id": task_id, "kind": "veo"})
+                        await db.complete_media_task(_tid, task_id)
+                    else:
+                        print(f"[veo/stream] no tenant for task {task_id} — R2 capture skipped")
+                except Exception as _e:
+                    print(f"[veo/stream] R2 persist failed (non-fatal): {_e}")
 
                 return FResponse(
                     content=res.content,
@@ -1913,7 +2071,8 @@ class SoraSubmitRequest(BaseModel):
 
 
 @app.post("/sora/submit")
-async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = Header(default=None)):
+async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = Header(default=None),
+                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Sora 2 text-to-video or image-to-video task."""
     headers = _sora_headers(x_sora_api_key)
 
@@ -1941,6 +2100,15 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
         print(f"[sora/submit] task_id={task_id} status={data.get('status')}")
+        # ── Step 2: record task→tenant (jobs) + usage_logs so the generation is
+        #            tracked even though /stream is unauthenticated ──
+        if user and task_id:
+            try:
+                _jid = await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id)
+                await db.log_usage(user.tenant_id, None, req.model, "video",
+                                   0, 0, 0.0, job_id=_jid, provider="laozhang")
+            except Exception as _e:
+                print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -1990,6 +2158,20 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
                              headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
                                       "Cache-Control": "no-store", "X-Sora-Cached": "true"})
 
+    # ── Step 2: R2 fallback — local disk cache may be gone after a redeploy ──
+    try:
+        _tid = await db.job_tenant_by_task(task_id)
+        if _tid:
+            _k = await db.asset_key_by_task(_tid, task_id)
+            if _k and storage.is_configured() and await storage.aexists(_k):
+                _bytes = await storage.adownload_bytes(_k)
+                print(f"[sora/stream] ✓ Serving from R2: {_k} ({len(_bytes)} bytes)")
+                return FResponse(content=_bytes, media_type="video/mp4",
+                                 headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
+                                          "Cache-Control": "no-store", "X-Sora-R2": "true"})
+    except Exception as _e:
+        print(f"[sora/stream] R2 fallback check failed (non-fatal): {_e}")
+
     print(f"[sora/stream] Fetching: {content_url}")
     last_err = None
 
@@ -2003,6 +2185,21 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
                     f.write(res.content)
                 size_mb = len(res.content) / 1_048_576
                 print(f"[sora/stream] ✓ Saved {size_mb:.1f} MB -> {save_path}")
+                # ── Step 2: persist to R2 + assets row (tenant resolved by task_id) ──
+                try:
+                    _tid = await db.job_tenant_by_task(task_id)
+                    if _tid:
+                        _jid = await db.media_job_id_by_task(_tid, task_id)
+                        await _persist_asset(
+                            _tid, asset_type="video", source_job_type="sora",
+                            filename=f"{safe_id}.mp4", data=res.content,
+                            content_type="video/mp4", job_id=_jid, user_id=None,
+                            metadata={"task_id": task_id, "kind": "sora"})
+                        await db.complete_media_task(_tid, task_id)
+                    else:
+                        print(f"[sora/stream] no tenant for task {task_id} — R2 capture skipped")
+                except Exception as _e:
+                    print(f"[sora/stream] R2 persist failed (non-fatal): {_e}")
                 return FResponse(content=res.content, media_type="video/mp4",
                                  headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
                                           "Cache-Control": "no-store",
@@ -2144,6 +2341,7 @@ def _split_scene_batches(total: int, max_per: int = MAX_SCENES_PER_BATCH):
 async def whisk_generate(
         req: WhiskRequest,
         x_image_api_key: Optional[str] = Header(None, alias="X-Image-API-Key"),
+        user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """
     Whisk: combine Subject + Scene + Style into one generated image.
@@ -2213,6 +2411,7 @@ async def whisk_generate(
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
+        await _capture_image_flow(user, req.model, "whisk", [b64])
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2245,6 +2444,7 @@ class FlowImagesRequest(BaseModel):
 async def flow_images_only(
         req: FlowImagesRequest,
         x_image_api_key: Optional[str] = Header(None, alias="X-Image-API-Key"),
+        user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """Generate storyboard images for already-generated scenes (no text generation).
     Supports all IMAGE_MODELS -- used by frontend Google mode with nano-banana models.
@@ -2308,6 +2508,9 @@ async def flow_images_only(
     finally:
         IMAGE_API_KEY = original_key
 
+    # one job + persist each frame to R2/assets + one usage row per frame
+    await _capture_image_flow(user, req.model, "flow_image",
+                              [im.get("image_b64") for im in images])
     return {"images": images}
 
 
@@ -3815,6 +4018,31 @@ async def narasi_generate(body: dict,
     return {"ok": True, "job_id": job_id, "status": "started"}
 
 
+async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
+                         content_type, source_job_type=None, job_id=None,
+                         user_id=None, metadata=None):
+    """Step 2: upload bytes to R2 + record an `assets` row (R2 = source of truth,
+    disk = cache). Non-fatal: logs and returns None on any storage error so
+    generation never breaks. Mirrors persistAsset() in server.js.
+      asset_type     ∈ video|audio|image|document|archive|other
+      source_job_type∈ batch_image|tts|imagen|veo|sora | None"""
+    if not storage.is_configured():
+        _log.warning("[persist_asset] storage not configured — skipped %s", filename)
+        return None
+    try:
+        key = storage.build_key(tenant_id, job_id, asset_type, filename)
+        await storage.aupload_bytes(key, data, content_type)
+        return await db.insert_asset(
+            tenant_id, bucket=storage.BUCKET, s3_key=key,
+            content_type=content_type, size_bytes=len(data),
+            asset_type=asset_type, source_job_type=source_job_type,
+            user_id=user_id, job_id=job_id, original_filename=filename,
+            metadata=metadata or {})
+    except Exception as e:
+        _log.warning("[persist_asset] %s failed (non-fatal): %s", filename, e)
+        return None
+
+
 async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi_user):
     model    = (body.get("model")    or "gemini-2.5-flash").strip()
     topic    = (body.get("topic")    or "").strip()
@@ -3998,8 +4226,15 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 )
                 text = (resp2.choices[0].message.content or "").strip()
                 await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid)
-            (tmp_dir / f"{chap_id}.txt").write_text(
-                f"## Bab {chap_id}: {chap_title}\n\n{text}\n", encoding="utf-8")
+            _chap_txt = f"## Bab {chap_id}: {chap_title}\n\n{text}\n"
+            (tmp_dir / f"{chap_id}.txt").write_text(_chap_txt, encoding="utf-8")
+            # ── Step 2: persist chapter text to R2 + assets row (capture) ──
+            await _persist_asset(
+                _narasi_tenant, asset_type="document", source_job_type=None,
+                filename=f"{chap_id}.txt", data=_chap_txt.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+                job_id=_narasi_job_uuid, user_id=None,
+                metadata={"kind": "narasi", "chapter_id": chap_id, "title": chap_title})
             # Accumulate for inter-chapter context
             previous_chapters.append({"id": chap_id, "title": chap_title, "text": text})
 
@@ -4427,7 +4662,8 @@ async def narasi_stitch(job_id: str, body: dict,
 
 
 @app.post("/script/tts")
-async def script_to_tts(body: dict):
+async def script_to_tts(body: dict,
+                        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """
     Transform a raw script into TTS-ready text with emotion/intonation tags.
     Preserves the original language. Enriches with contextual tone tags.
@@ -4691,6 +4927,7 @@ async def script_to_tts(body: dict):
     result = _re.sub(r"\n?```$", "", result, flags=_re.MULTILINE).strip()
 
     paragraphs = [p.strip() for p in result.split("\n\n") if p.strip()]
+    await _track_usage(user, model, "tts", resp=resp, job_type="script_tts")
     return {"ok": True, "transcript": result, "paragraphs": paragraphs, "count": len(paragraphs)}
 
 
@@ -4698,6 +4935,7 @@ async def script_to_tts(body: dict):
 async def flow_storyboard(
         req: FlowStoryboardRequest,
         x_image_api_key: Optional[str] = Header(None, alias="X-Image-API-Key"),
+        user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """
     Use Gemini to parse a script into cinematic scenes.
@@ -4843,6 +5081,8 @@ async def flow_storyboard(
 
     # Re-index globally so indexes are continuous 0 .. N-1 across all batches
     scenes = [{"index": i, **s} for i, s in enumerate(scenes_data)]
+    # storyboard parsing = one LLM call (per batch); record it so it isn't unbilled
+    await _track_usage(user, req.chat_model, "other", job_type="flow_storyboard")
 
     # Optionally generate storyboard images in parallel
     if req.generate_images:

@@ -18,10 +18,18 @@ services:
       # RAG: rank proprietary "rino" source first (rag_narration.py reads this via
       # `os.environ.get(...) or None`, so empty = disabled). Compose pulls it from .env.
       - RAG_PREFER_SOURCE=${RAG_PREFER_SOURCE:-}
+      # ── Object storage (Cloudflare R2 / S3-compatible) — Step 2 ───────────
+      - STORAGE_ENDPOINT=${STORAGE_ENDPOINT:-}
+      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY:-}
+      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY:-}
+      - STORAGE_BUCKET=${STORAGE_BUCKET:-}
+      - STORAGE_REGION=${STORAGE_REGION:-auto}
+      - STORAGE_PUBLIC_URL=${STORAGE_PUBLIC_URL:-}
     volumes:
       # S3/R2 will replace veo & sora outputs (WS3) — mounts removed
       - ./data/narasi_temp:/app/data/narasi_temp
       - ./python/laozhang_api.py:/app/laozhang_api.py
+      - ./python/storage.py:/app/storage.py
       - /Users/rino/Documents/ProjectQ/moat:/app/moat
       - hf-cache:/root/.cache/huggingface          # ← persist embedding model
       - ./python/auth_middleware.py:/app/auth_middleware.py
@@ -67,12 +75,20 @@ services:
       - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
       - CLERK_WEBHOOK_SECRET=${CLERK_WEBHOOK_SECRET}
       - REDIS_URL=${REDIS_URL}
+      # ── Object storage (Cloudflare R2 / S3-compatible) — Step 2 ───────────
+      - STORAGE_ENDPOINT=${STORAGE_ENDPOINT:-}
+      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY:-}
+      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY:-}
+      - STORAGE_BUCKET=${STORAGE_BUCKET:-}
+      - STORAGE_REGION=${STORAGE_REGION:-auto}
+      - STORAGE_PUBLIC_URL=${STORAGE_PUBLIC_URL:-}
     volumes:
       # S3/R2 will replace batch, tts & imgs outputs (WS3) — mounts removed
       - /Users/rino/Documents/ProjectQ/moat:/app/moat
       - ./data/narasi_temp:/app/narasi_temp
       - ./data/output:/app/output
       - ./backend/server.js:/app/server.js
+      - ./backend/storage.mjs:/app/storage.mjs
       - ./backend/auth.js:/app/auth.js
       - ./backend/db.js:/app/db.js
     expose: ["3000"]

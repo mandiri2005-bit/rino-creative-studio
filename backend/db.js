@@ -388,6 +388,41 @@ async function patchJobPayload(jobId, patch) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// ASSETS  (object-storage file references — Step 2; mirrors database.py insert_asset)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * insertAsset({...}) → string (asset id UUID)
+ * Records one object-storage file in `assets` (storage metadata + moat capture).
+ * Idempotent on (bucket, s3_key): a re-upload updates size/content_type.
+ *   assetType      ∈ video|audio|image|document|archive|other   (required)
+ *   sourceJobType  ∈ batch_image|tts|imagen|veo|sora | null      (job_type_enum)
+ */
+async function insertAsset({
+  tenantId, userId = null, jobId = null,
+  bucket, s3Key, originalFilename = null,
+  contentType, sizeBytes = 0, assetType,
+  sourceJobType = null, metadata = {},
+} = {}) {
+  const res = await query(
+    `INSERT INTO assets
+         (tenant_id, user_id, job_id, bucket, s3_key, original_filename,
+          content_type, size_bytes, asset_type, source_job_type, metadata)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11::jsonb)
+     ON CONFLICT (bucket, s3_key) DO UPDATE SET
+         size_bytes   = EXCLUDED.size_bytes,
+         content_type = EXCLUDED.content_type,
+         updated_at   = now()
+     RETURNING id`,
+    [tenantId, userId, jobId, bucket, s3Key, originalFilename,
+     contentType, sizeBytes, assetType, sourceJobType,
+     JSON.stringify(metadata || {})],
+    tenantId
+  );
+  return res.rows[0]?.id ?? null;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // CHAT SESSIONS  (mirrors database.py get_or_create_session / append_message)
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -460,19 +495,38 @@ async function appendMessage(
 async function logUsage(
   tenantId, userId, model, endpoint,
   tokensIn, tokensOut, costUsd,
-  sessionId = null, provider = "gemini"
+  sessionId = null, provider = "gemini", jobId = null
 ) {
   await query(
     `INSERT INTO usage_logs
-         (tenant_id, user_id, session_id, endpoint,
+         (tenant_id, user_id, session_id, job_id, endpoint,
           model_alias, model_upstream, provider,
           tokens_in, tokens_out, cost_usd,
           finish_reason, http_status)
-     VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,'stop',200)`,
-    [tenantId, userId, sessionId, endpoint,
+     VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,'stop',200)`,
+    [tenantId, userId, sessionId, jobId, endpoint,
      model, provider, tokensIn, tokensOut, costUsd],
     tenantId
   );
+}
+
+/**
+ * logSyncJob(tenantId, jobType, result?) → string (job id) | null
+ * Inserts an already-'done' jobs row for a synchronous one-shot AI flow (Node
+ * google-native routes). Mirrors database.py log_sync_job. user_id left NULL.
+ */
+async function logSyncJob(tenantId, jobType, result = {}) {
+  try {
+    const res = await query(
+      `INSERT INTO jobs (tenant_id, job_type, status, progress_message,
+                         result_payload, started_at, completed_at)
+       VALUES ($1, $2::job_type_enum, 'done', 'Selesai', $3::jsonb, now(), now())
+       RETURNING id`,
+      [tenantId, jobType, JSON.stringify(result || {})],
+      tenantId
+    );
+    return res.rows[0]?.id ?? null;
+  } catch (e) { console.error("[logSyncJob]", jobType, e.message); return null; }
 }
 
 // ── Google model cost table ($/M tokens) ─────────────────────────────────────
@@ -522,6 +576,12 @@ export {
   listJobs,
   findJobByJobName,
   patchJobPayload,
+
+  // assets (object storage)
+  insertAsset,
+
+  // sync-flow job ledger
+  logSyncJob,
 
   // chat sessions + usage
   getOrCreateSession,

@@ -13,3 +13,4 @@ python-dotenv
 python-jose[cryptography]
 httpx
 redis
+boto3

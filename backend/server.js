@@ -21,11 +21,12 @@ import { GoogleGenAI } from "@google/genai";
 import Jimp from "jimp";
 import { parseAudioMime, makeWavHeader, convertToWav, prependSilence, buildJsonl, mkId as _mkId } from "./utils.mjs";
 import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile, resolveTenantId, resolveUserId, _uuid5, getOrCreateSession, appendMessage, logUsage, calcGoogleCost,
-         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload } from "./db.js";
+         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, logSyncJob } from "./db.js";
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
+import * as storage from "./storage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT        = process.env.PORT        || 3000;
@@ -87,6 +88,108 @@ async function pyProxy(req, res, pyPath, extraHeaders = {}) {
     if (!pyRes.ok) { const e = await pyRes.json().catch(() => ({error: pyRes.statusText})); return res.status(pyRes.status).json({error: e.error || e.detail || pyRes.statusText}); }
     res.json(await pyRes.json());
   } catch(e) { res.status(500).json({ error: e.message }); }
+}
+
+// ── Object storage: persist a generated file to R2 + record it in `assets` ──────
+// Step 2. R2 is the source of truth; local disk stays a best-effort cache. Returns
+// { key, id, signedUrl }. Falls back gracefully (logs, returns null) if R2 isn't
+// configured yet, so generation never breaks on a storage hiccup.
+//   assetType     ∈ image|audio|video|document|archive|other
+//   sourceJobType ∈ batch_image|tts|imagen|veo|sora | null  (job_type_enum)
+async function persistAsset({ tenantId, userId = null, jobId = null, assetType,
+                              sourceJobType = null, filename, buffer,
+                              contentType, metadata = {} }) {
+  if (!storage.isConfigured()) {
+    console.warn("[persistAsset] storage not configured — skipped", filename);
+    return null;
+  }
+  const key = storage.buildKey(tenantId, jobId, assetType, filename);
+  await storage.uploadBytes(key, buffer, contentType);
+  const id = await insertAsset({
+    tenantId, userId, jobId, bucket: storage.BUCKET_NAME, s3Key: key,
+    originalFilename: filename, contentType, sizeBytes: buffer.length,
+    assetType, sourceJobType, metadata,
+  });
+  return { key, id, signedUrl: await storage.signedUrl(key) };
+}
+
+// ── Signed-URL serving (Step 2.4) ──────────────────────────────────────────────
+// Fresh 600s signed R2 URL for a key the tenant owns. RLS-checked: the SELECT
+// only matches rows for the active tenant, so a user can never sign another
+// tenant's asset. Returns null if not found / storage off.
+async function signedUrlForKey(tenantId, key) {
+  if (!key || !storage.isConfigured()) return null;
+  const res = await query(
+    "SELECT 1 FROM assets WHERE s3_key=$1 AND tenant_id=$2 AND is_deleted=false LIMIT 1",
+    [key, tenantId], tenantId
+  );
+  if (!res.rows.length) return null;
+  return storage.signedUrl(key, 600);
+}
+// Enrich a result_payload.files array with a fresh signedUrl per file that has a
+// stored R2 key (added by persistAsset). Local `url` is kept as a fallback.
+async function signFiles(files) {
+  if (!Array.isArray(files) || !storage.isConfigured()) return files || [];
+  return Promise.all(files.map(async (f) =>
+    (f && f.key) ? { ...f, signedUrl: await storage.signedUrl(f.key, 600) } : f
+  ));
+}
+
+// ── Usage logging for AI calls made directly in Node (anti revenue-leakage) ─────
+// One usage_logs row per AI call. Proxied flows are logged Python-side (at the
+// upstream call), so this only covers the google-native routes that hit the model
+// from Node. Best-effort: never throws.
+//   endpoint ∈ chat|image|tts|video|embedding|batch|other
+// Per-image cost (USD), best-effort — mirrors _IMAGE_COSTS in laozhang_api.py.
+const IMAGE_COSTS = {
+  "imagen-4.0-ultra":0.06,"imagen-4.0-fast":0.02,"imagen-4.0":0.04,"imagen":0.04,
+  "nano-banana-hd":0.039,"nano-banana":0.039,"gemini-2.0-flash":0.039,
+  "gemini-2.5-flash":0.039,"flux-kontext-max":0.08,"flux-kontext":0.05,"flux":0.03,
+  "seedream":0.03,"gpt-image-1":0.04,"dall-e-3":0.04,
+};
+function calcImageCost(model, count = 1) {
+  const m = (model || "").toLowerCase();
+  const k = Object.keys(IMAGE_COSTS).filter(x => m.startsWith(x)).sort((a,b)=>b.length-a.length)[0];
+  const p = k ? IMAGE_COSTS[k] : 0.04;
+  return +(p * Math.max(0, count)).toFixed(6);
+}
+async function trackUsage(req, model, endpoint, provider = "gemini", count = 1, jobType = null) {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
+    const jobId = jobType ? await logSyncJob(tenantId, jobType, { model, endpoint }) : null;
+    const cost = endpoint === "image" ? calcImageCost(model, 1) : 0;
+    for (let i = 0; i < Math.max(1, count); i++) {
+      await logUsage(tenantId, userId, model || "unknown", endpoint, 0, 0, cost, null, provider, jobId);
+    }
+  } catch (e) { console.error("[trackUsage]", endpoint, e.message); }
+}
+
+function _sniffImage(buf) {
+  if (buf.slice(0,8).toString("latin1").startsWith("\x89PNG")) return ["image/png","png"];
+  if (buf[0] === 0xff && buf[1] === 0xd8) return ["image/jpeg","jpg"];
+  if (buf.slice(0,4).toString("latin1")==="RIFF" && buf.slice(8,12).toString("latin1")==="WEBP") return ["image/webp","webp"];
+  return ["image/png","png"];
+}
+// Synchronous image flows (google-native): ONE 'done' job + persist each image to
+// R2/assets (durable + moat capture; were base64-only) + one usage row per image.
+async function captureImageFlow(req, model, jobType, b64list, provider = "gemini") {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
+    const list = (b64list || []).filter(Boolean);
+    const jobId = await logSyncJob(tenantId, jobType, { model, count: list.length });
+    const cost = calcImageCost(model, 1);
+    for (let i = 0; i < list.length; i++) {
+      const buf = Buffer.from(list[i], "base64");
+      const [ct, ext] = _sniffImage(buf);
+      try {
+        await persistAsset({ tenantId, userId, jobId, assetType: "image", sourceJobType: jobType,
+          filename: `${jobType}_${i+1}.${ext}`, buffer: buf, contentType: ct, metadata: { model } });
+      } catch (e) { console.error("[captureImageFlow] persist", e.message); }
+      await logUsage(tenantId, userId, model || "unknown", "image", 0, 0, cost, null, provider, jobId);
+    }
+  } catch (e) { console.error("[captureImageFlow]", jobType, e.message); }
 }
 
 // ── WAV & batch helpers imported from utils.mjs ──
@@ -397,6 +500,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       const okCount = images.filter(x=>x.image_b64).length;
       if (!okCount) throw new Error("Google native returned no images");
       console.log(`[flow/images/native] GOOGLE ok model=${nativeModel} scenes=${scenes.length} images=${okCount}`);
+      await captureImageFlow(req, nativeModel, "flow_image", images.map(im=>im.image_b64));
       return res.json({ images, via:"google_native" });
 
     } catch(e) {
@@ -409,7 +513,8 @@ app.post("/api/flow/images/native", async (req, res) => {
   try {
     const r = await fetch(`${PYTHON_API}/flow/images`, {
       method:"POST",
-      headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey},
+      headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey,
+               ...(req.headers.authorization ? {authorization: req.headers.authorization} : {})},
       body: JSON.stringify({ scenes, model, aspect_ratio, image_style }),
     });
     const data = await r.json();
@@ -424,7 +529,7 @@ app.post("/api/flow/storyboard", async (req, res) => {
   const timer = setTimeout(() => controller.abort(), 600_000); // 10 min
   try {
     const headers = { "Content-Type": "application/json" };
-    for (const h of ["x-image-api-key","X-Image-API-Key","x-laozhang-api-key","X-LaoZhang-API-Key"]) {
+    for (const h of ["x-image-api-key","X-Image-API-Key","x-laozhang-api-key","X-LaoZhang-API-Key","authorization"]) {
       const v = req.headers[h.toLowerCase()] || req.headers[h];
       if (v) headers[h] = v;
     }
@@ -1238,6 +1343,7 @@ app.post("/api/script/tts/google", async(req,res)=>{
     });
     let text=(result.text||"").trim().replace(/^```[^\n]*\n?/mg,"").replace(/\n?```$/mg,"").trim();
     const paragraphs=text.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
+    await trackUsage(req, model, "tts", "gemini", 1, "script_tts");
     res.json({ok:true,transcript:text,paragraphs,count:paragraphs.length});
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -1368,6 +1474,8 @@ app.post("/api/submit", requireAuth, async(req,res)=>{
     // Durable record in jobs table. Google-specific fields live in result_payload.
     const jobId = await createJob(tenantId, userId, "batch_image", record.displayName);
     await completeJob(jobId, record);   // payload set; batch tracks real lifecycle in payload.state
+    try{ await logUsage(tenantId, userId, model, "batch", 0, 0, calcImageCost(model, record.count||0), null, "gemini"); }
+    catch(e){ console.error("[batch] logUsage failed:", e.message); }
     try{fs.unlinkSync(jsonlPath);}catch{}
     res.json({ok:true,jobName:batch.name,record:{...record,id:jobId}});
   }catch(e){console.error(e);res.status(500).json({error:e?.message||String(e)});}
@@ -1387,6 +1495,7 @@ app.post("/api/retrieve", requireAuth, async(req,res)=>{
   if(!ai) return res.status(400).json({error:"No API key"});
   try{
     const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
     const {jobName}=req.body||{};if(!jobName)return res.status(400).json({error:"jobName required"});
     const row = await findJobByJobName(tenantId, jobName);
     const record = row?.result_payload || null;
@@ -1408,8 +1517,13 @@ app.post("/api/retrieve", requireAuth, async(req,res)=>{
       const part=parts.find(p=>p?.inlineData?.data||p?.inline_data?.data);
       const data=part?.inlineData?.data||part?.inline_data?.data;
       if(!data){failed++;continue;}
-      const outName=`${filename}.png`;fs.writeFileSync(path.join(OUTPUT_DIR,outName),Buffer.from(data,"base64"));
-      files.push({key,file:outName});saved++;
+      const outName=`${filename}.png`;const _buf=Buffer.from(data,"base64");
+      fs.writeFileSync(path.join(OUTPUT_DIR,outName),_buf);
+      const _rec={key,file:outName};
+      try{ const a=await persistAsset({tenantId,userId,jobId:row?.id||null,assetType:"image",sourceJobType:"batch_image",filename:outName,buffer:_buf,contentType:"image/png",metadata:{batch:jobName}});
+           if(a){_rec.assetKey=a.key;_rec.assetId=a.id;} }
+      catch(e){console.error("[batch] R2 persist failed:",e.message);}
+      files.push(_rec);saved++;
     }
     if(row) await patchJobPayload(row.id, { state, retrieved: saved });
     res.json({ok:true,state,saved,failed,files});
@@ -1456,7 +1570,7 @@ function chunkTextForAudiobook(text, maxChars=4000){
   flush();
   return chunks;
 }
-async function runLaozhangTtsJob(jobId,{tenantId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
   let job=await getLiveJob(jobId);
   // Audiobook mode = treat whole transcript as continuous prose, chunk at ~4000 char.
   // Default = split by blank line (one file per paragraph), legacy behaviour.
@@ -1519,7 +1633,11 @@ async function runLaozhangTtsJob(jobId,{tenantId,apiKeys,model,voice,speed,langu
         try{wav=prependSilence(wav,silenceSeconds);}catch(_){/* keep original */}
       }
       fs.writeFileSync(path.join(TTS_DIR,filename),wav);
-      job.files.push({file:filename,url:`/audio/${encodeURIComponent(filename)}`});
+      const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
+      job.files.push(_f);
+      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice}});
+           if(a){_f.key=a.key;_f.assetId=a.id;} }
+      catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
       log(`✅ ${filename}`);
       await new Promise(r=>setTimeout(r,400));
       i++;job.progress=i;await flush();
@@ -1533,9 +1651,11 @@ async function runLaozhangTtsJob(jobId,{tenantId,apiKeys,model,voice,speed,langu
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
+  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, 0, null, "laozhang"); }
+  catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 
-async function runTtsJob(jobId,{tenantId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
   let job=await getLiveJob(jobId);
   const lines=transcriptBody.trim().split(/\n\n+/).filter(l=>l.trim());
   job.total=lines.length;job.progress=0;job.status="running";
@@ -1564,7 +1684,11 @@ async function runTtsJob(jobId,{tenantId,apiKeys,model,voice,silenceSeconds,audi
         let wav=convertToWav(raw,inlineData.mimeType||"audio/L16;rate=24000");
         if(silenceSeconds>0)wav=prependSilence(wav,silenceSeconds);
         fs.writeFileSync(path.join(TTS_DIR,filename),wav);
-        job.files.push({file:filename,url:`/audio/${encodeURIComponent(filename)}`});
+        const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
+        job.files.push(_f);
+        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice}});
+             if(a){_f.key=a.key;_f.assetId=a.id;} }
+        catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
         log(`✅ ${filename}`);
       }else{log(`⚠️  No audio for line ${i+1}`);}
       await new Promise(r=>setTimeout(r,1000));i++;job.progress=i;await flush();
@@ -1579,29 +1703,31 @@ async function runTtsJob(jobId,{tenantId,apiKeys,model,voice,silenceSeconds,audi
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
+  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, 0, null, "gemini"); }
+  catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 app.get("/api/tts/jobs", requireAuth, async(req,res)=>{
   try{
     const rows = await listJobs(resolveTenantId(req), "tts");
-    res.json(rows.map(r => ({
+    res.json(await Promise.all(rows.map(async r => ({
       jobId:r.id, status:r.status, model:(r.result_payload?.model)||null,
       voice:(r.result_payload?.voice)||null, outputPrefix:r.output_prefix,
-      total:(r.result_payload?.total)||0, files:(r.result_payload?.files)||[],
+      total:(r.result_payload?.total)||0, files: await signFiles(r.result_payload?.files),
       createdAt:r.created_at
-    })));
+    }))));
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get("/api/tts/files", (_,res)=>{try{res.json(fs.readdirSync(TTS_DIR).filter(f=>/\.wav$/i.test(f)).map(f=>({file:f,url:`/audio/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
 app.get("/api/tts/job/:id", requireAuth, async(req,res)=>{
   try{
     const live = await getLiveJob(req.params.id);   // running job → rich live object
-    if(live) return res.json(live);
+    if(live){ live.files = await signFiles(live.files); return res.json(live); }
     const row = await getJob(resolveTenantId(req), req.params.id);   // finished → DB row
     if(row) return res.json({
       status:row.status,
       progress:(row.result_payload?.total)||0,
       total:(row.result_payload?.total)||0,
-      files:(row.result_payload?.files)||[],
+      files: await signFiles(row.result_payload?.files),
       logs:[]
     });
     res.status(404).json({error:"Not found"});
@@ -1629,7 +1755,7 @@ app.post("/api/tts/start", requireAuth, async(req,res)=>{
   // Seed result_payload so list/restart shows model/voice/total before completion.
   await patchJobPayload(jobId, { apiMode, model, voice, total:lines.length });
   const runner=apiMode==="laozhang"?runLaozhangTtsJob:runTtsJob;
-  runner(jobId,{tenantId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
+  runner(jobId,{tenantId,userId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
     .catch(async e=>{ await failJob(jobId, e.message);
       await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal: "+e.message);return j;}); });
   res.json({ok:true,jobId,total:lines.length});
@@ -1646,10 +1772,26 @@ app.post("/api/tts/cancel/:id", requireAuth, async(req,res)=>{
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ASSETS — signed-URL refresh (Step 2.4)
+// ══════════════════════════════════════════════════════════════════════════════
+// Frontend calls this to (re)mint a signed URL when one expires (10-min TTL).
+// RLS-scoped to the caller's tenant.
+app.get("/api/assets/sign", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const key = req.query.key;
+    if (!key) return res.status(400).json({ error: "key required" });
+    const url = await signedUrlForKey(tenantId, key);
+    if (!url) return res.status(404).json({ error: "asset not found" });
+    res.json({ url, expiresIn: 600 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // IMAGEN  (direct @google/genai, sequential)
 // ══════════════════════════════════════════════════════════════════════════════
 const PAUSE_MODELS=["imagen-4.0-ultra-generate-001","imagen-4.0-generate-001","imagen-4.0-fast-generate-001"];
-async function runImagenJob(jobId,{tenantId,apiKey,model,prompts,outputPrefix,aspectRatio,resolution}){
+async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPrefix,aspectRatio,resolution}){
   let job=await getLiveJob(jobId);job.total=prompts.length;job.progress=0;job.status="running";
   const flush=()=>setLiveJob(jobId,job);
   await flush();
@@ -1669,7 +1811,11 @@ async function runImagenJob(jobId,{tenantId,apiKey,model,prompts,outputPrefix,as
         const img=await Jimp.read(buf);img.resize(w,h);
         const resized=await img.getBufferAsync(Jimp.MIME_JPEG);
         fs.writeFileSync(path.join(IMG_DIR,filename),resized);
-        job.files.push({file:filename,url:`/imgs/${encodeURIComponent(filename)}`});
+        const _f={file:filename,url:`/imgs/${encodeURIComponent(filename)}`};
+        job.files.push(_f);
+        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"image",sourceJobType:"imagen",filename,buffer:resized,contentType:"image/jpeg",metadata:{model,width:w,height:h}});
+             if(a){_f.key=a.key;_f.assetId=a.id;} }
+        catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
         log(`✅ ${filename}`);
       }
       if(PAUSE_MODELS.includes(model)&&(i+1)%20===0&&i+1<prompts.length){log("⏸️  Pausing 90s…");await new Promise(r=>setTimeout(r,90000));log("▶️  Resuming");}
@@ -1680,28 +1826,30 @@ async function runImagenJob(jobId,{tenantId,apiKey,model,prompts,outputPrefix,as
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
+  try{ await logUsage(tenantId, userId, model, "image", 0, 0, calcImageCost(model, (job.files||[]).length), null, "gemini"); }
+  catch(e){ console.error("[imagen] logUsage failed:", e.message); }
 }
 app.get("/api/imagen/jobs", requireAuth, async(req,res)=>{
   try{
     const rows = await listJobs(resolveTenantId(req), "imagen");
-    res.json(rows.map(r => ({
+    res.json(await Promise.all(rows.map(async r => ({
       jobId:r.id, status:r.status, model:(r.result_payload?.model)||null,
       outputPrefix:r.output_prefix, total:(r.result_payload?.total)||0,
-      files:(r.result_payload?.files)||[], createdAt:r.created_at
-    })));
+      files: await signFiles(r.result_payload?.files), createdAt:r.created_at
+    }))));
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get("/api/imagen/files", (_,res)=>{try{res.json(fs.readdirSync(IMG_DIR).filter(f=>/\.jpe?g$/i.test(f)).map(f=>({file:f,url:`/imgs/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
 app.get("/api/imagen/job/:id", requireAuth, async(req,res)=>{
   try{
     const live = await getLiveJob(req.params.id);
-    if(live) return res.json(live);
+    if(live){ live.files = await signFiles(live.files); return res.json(live); }
     const row = await getJob(resolveTenantId(req), req.params.id);
     if(row) return res.json({
       status:row.status,
       progress:(row.result_payload?.total)||0,
       total:(row.result_payload?.total)||0,
-      files:(row.result_payload?.files)||[],
+      files: await signFiles(row.result_payload?.files),
       logs:[]
     });
     res.status(404).json({error:"Not found"});
@@ -1717,7 +1865,7 @@ app.post("/api/imagen/start", requireAuth, async(req,res)=>{
   await setLiveJob(jobId, { jobId, model, outputPrefix, status:"queued",
     total:prompts.length, progress:0, logs:[], files:[], createdAt:new Date().toISOString() });
   await patchJobPayload(jobId, { model, total:prompts.length });
-  runImagenJob(jobId,{tenantId,apiKey:key,model,prompts,outputPrefix,aspectRatio,resolution})
+  runImagenJob(jobId,{tenantId,userId,apiKey:key,model,prompts,outputPrefix,aspectRatio,resolution})
     .catch(async e=>{ await failJob(jobId, e.message);
       await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal:"+e.message);return j;}); });
   res.json({ok:true,jobId,total:prompts.length});
@@ -1843,6 +1991,7 @@ app.post("/api/generate-image/google", async (req,res) => {
       config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
     const imgData = resp?.generatedImages?.[0]?.image?.imageBytes;
     if (!imgData) throw new Error("No image returned");
+    await captureImageFlow(req, model, "generate_image", [imgData]);
     res.json({ image_b64: imgData });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -1876,6 +2025,7 @@ app.post("/api/whisk/google", async (req,res) => {
     });
     const imgPart = resp?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
     if (!imgPart) throw new Error("Gemini returned no image — try LaoZhang mode");
+    await captureImageFlow(req, "gemini-2.0-flash-exp", "whisk", [imgPart.inlineData.data]);
     res.json({ image_b64: imgPart.inlineData.data });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -1929,6 +2079,7 @@ app.post("/api/flow/storyboard/google/text", async (req,res) => {
       try { scenes = JSON.parse(m?.[0] || "[]"); } catch { scenes = []; }
     }
     if (!Array.isArray(scenes)) scenes = [];
+    await trackUsage(req, chat_model, "other", "gemini", 1, "flow_storyboard");
     res.json({ scenes, style, scene_count: scenes.length });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -1951,6 +2102,7 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
       return { index:i, image_b64: data||"" };
     }));
     const images = results.map((r,i) => r.status==="fulfilled" ? r.value : { index:i, image_b64:"" });
+    await captureImageFlow(req, model, "flow_image", images.map(im=>im.image_b64));
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
