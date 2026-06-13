@@ -11,6 +11,8 @@
     "test:all": "node --test ../tests/node/helpers.test.mjs && node --test ../tests/node/routes.test.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.726.0",
+    "@aws-sdk/s3-request-presigner": "^3.726.0",
     "@clerk/express": "^2.1.23",
     "@google/genai": "^1.0.0",
     "cors": "^2.8.5",
