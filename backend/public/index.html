@@ -4969,7 +4969,7 @@ function NarasiReviewSection({settings,showToast}){
       const lzKey=settings?.laozhangKey||"";
       if(lzKey)headers["X-LaoZhang-API-Key"]=lzKey;
       headers["X-DeepSeek-Route"]=settings?.deepseekRoute||"deepseek";
-      Object.assign(headers,authHdr());
+      Object.assign(headers,await authHdrFresh());
       const resp=await fetch("/api/narasi/oneshot-fix",{method:"POST",headers,
         body:JSON.stringify({model:model,system:persona.system,content:effectiveContent,file_name:effectiveFileName})});
       const data=await resp.json();
@@ -4978,7 +4978,7 @@ function NarasiReviewSection({settings,showToast}){
       setOneshotProgress("Job diterima — AI sedang memproses...");
       pollRef.current=setInterval(async()=>{
         try{
-          const hdr={...{"Content-Type":"application/json"},...(lzKey&&{"X-LaoZhang-API-Key":lzKey}),"X-DeepSeek-Route":settings?.deepseekRoute||"deepseek",...authHdr()};
+          const hdr={...{"Content-Type":"application/json"},...(lzKey&&{"X-LaoZhang-API-Key":lzKey}),"X-DeepSeek-Route":settings?.deepseekRoute||"deepseek",...(await authHdrFresh())};
           const sd=await(await fetch(`/api/narasi/oneshot-fix/status/${data.job_id}`,{headers:hdr})).json();
           setOneshotProgress(sd.progress||"");
           if(sd.status==="done"){
@@ -5150,14 +5150,14 @@ function NarasiReviewSection({settings,showToast}){
             if(pollRef.current)clearInterval(pollRef.current);
             setOneshotStatus("processing");setOneshotProgress("Mengirim VO request...");setOneshotJobId(null);
             try{
-              const headers={"Content-Type":"application/json"};
+              const headers={"Content-Type":"application/json",...(await authHdrFresh())};
               const lzKey=settings?.laozhangKey||"";if(lzKey)headers["X-LaoZhang-API-Key"]=lzKey;
               const resp=await fetch("/api/narasi/oneshot-fix",{method:"POST",headers,body:JSON.stringify({model,system:VO_OPTIMIZE_SYSTEM,content:fixedBook||effectiveContent,file_name:(fixedBook?"fixed-":"")+effectiveFileName,temperature:parseFloat(((100-voSlider)/100).toFixed(2))})});
               const data=await resp.json();if(!data.ok)throw new Error(data.detail||"Gagal");
               setOneshotJobId(data.job_id);setOneshotProgress("AI sedang mengoptimasi VO...");
               pollRef.current=setInterval(async()=>{
                 try{
-                  const hdr={...{"Content-Type":"application/json"},...(lzKey&&{"X-LaoZhang-API-Key":lzKey}),"X-DeepSeek-Route":settings?.deepseekRoute||"deepseek",...authHdr()};
+                  const hdr={...{"Content-Type":"application/json"},...(lzKey&&{"X-LaoZhang-API-Key":lzKey}),"X-DeepSeek-Route":settings?.deepseekRoute||"deepseek",...(await authHdrFresh())};
                   const sd=await(await fetch("/api/narasi/oneshot-fix/status/"+data.job_id,{headers:hdr})).json();
                   setOneshotProgress(sd.progress||"");
                   if(sd.status==="done"){
@@ -5218,11 +5218,10 @@ function NarasiReviewSection({settings,showToast}){
                 ))}
               </div>
               {busy&&<button className="btn sec" style={{fontSize:11,padding:"4px 10px"}} onClick={()=>abortRef.current?.abort()}>Stop</button>}
-              <button className="btn sec" style={{fontSize:11,padding:"4px 10px"}} onClick={()=>copyText(review)}>{ic.copy} Copy</button>
-              <button className="btn sec" style={{fontSize:11,padding:"4px 10px"}} onClick={()=>downloadMd(`# Editorial Review — ${effectiveFileName}\n\nEditor: ${persona.role}\n\n---\n\n${review}`,`review-${effectiveFileName.replace(/\.[^.]+$/,"")}.md`)}>{ic.dload} .md</button>
+              <span style={{fontSize:10.5,color:"var(--tf)"}}>🔒 rule dilindungi</span>
             </div>
           </div>
-          <div style={{background:"var(--be)",borderRadius:10,border:"1px solid var(--br)",maxHeight:560,overflowY:"auto"}}>
+          <div onCopy={e=>e.preventDefault()} onCut={e=>e.preventDefault()} onContextMenu={e=>e.preventDefault()} onDragStart={e=>e.preventDefault()} style={{background:"var(--be)",borderRadius:10,border:"1px solid var(--br)",maxHeight:560,overflowY:"auto",userSelect:"none",WebkitUserSelect:"none",MozUserSelect:"none",msUserSelect:"none"}}>
             <ReviewRenderer text={review} mode={viewMode}/>
           </div>
         </div>
