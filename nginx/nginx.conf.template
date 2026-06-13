@@ -18,6 +18,10 @@ http {
     # (all app JS is inline in index.html — no hashed bundles to cache-bust).
     location = /index.html { add_header Cache-Control "no-cache"; }
 
+    # public marketing landing (ceritaAI) is the site root; studio app stays at /index.html
+    location = / { add_header Cache-Control "no-cache"; try_files /landing.html =404; }
+    location = /landing.html { add_header Cache-Control "no-cache"; }
+
     location / { try_files $uri $uri/ /index.html; }
 
     location /webhooks/ {
