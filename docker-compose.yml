@@ -15,6 +15,9 @@ services:
       - DATABASE_POOL_URL_DEV=${DATABASE_POOL_URL_DEV}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - CLERK_JWT_ISSUER=${CLERK_JWT_ISSUER}
+      # RAG: rank proprietary "rino" source first (rag_narration.py reads this via
+      # `os.environ.get(...) or None`, so empty = disabled). Compose pulls it from .env.
+      - RAG_PREFER_SOURCE=${RAG_PREFER_SOURCE:-}
     volumes:
       # S3/R2 will replace veo & sora outputs (WS3) — mounts removed
       - ./data/narasi_temp:/app/data/narasi_temp
