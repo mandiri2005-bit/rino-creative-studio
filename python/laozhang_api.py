@@ -4582,6 +4582,13 @@ async def narasi_review(body: dict, user: CurrentUser = Depends(get_current_user
                 {"rag_used": False, "sources": None, "passages": None,
                  "prompt_used": (system + "\n\n" + message)[:8000], "narration": text},
                 model, in_tok, out_tok, _calc_cost(model, in_tok, out_tok))
+            # Step 2: persist the review output to R2 + assets (Media Vault → Narasi Review)
+            await _persist_asset(
+                user.tenant_id, asset_type="document", source_job_type=None,
+                filename=f"review-{uuid.uuid4().hex[:8]}.txt",
+                data=(text or "").encode("utf-8"), content_type="text/plain; charset=utf-8",
+                user_id=None, metadata={"kind": "narasi_review", "style": _style,
+                                        "topic": (body.get("topic") or "")})
         except Exception as _ce:
             import logging as _lg; _lg.getLogger("narasi").warning("review capture failed (non-fatal): %s", _ce)
         return {"ok": True, "text": text, "finish_reason": finish, "usage": {"input": in_tok, "output": out_tok}}

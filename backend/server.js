@@ -1800,6 +1800,8 @@ const VAULT_CATEGORIES = {
   flow:          { sourceJobTypes: ["flow_image", "flow_storyboard"] },
   whisk:         { sourceJobTypes: ["whisk"] },
   narasi:        { assetType: "document", metadataKind: "narasi" },
+  outline:       { assetType: "document", metadataKind: "outline" },
+  chat:          { assetType: "document", metadataKind: "chat" },
   narasi_review: { assetType: "document", metadataKind: "narasi_review" },
   uploads:       { metadataKind: "upload" },   // user-uploaded reference assets
 };

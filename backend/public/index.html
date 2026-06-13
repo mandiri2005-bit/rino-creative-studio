@@ -4619,8 +4619,16 @@ function MediaVaultSection({settings,showToast}){
   const CATS=[
     {id:"all",label:"All"},{id:"image",label:"Image"},{id:"video",label:"Video"},
     {id:"flow",label:"Flow"},{id:"whisk",label:"Whisk"},
-    {id:"narasi",label:"Narasi"},{id:"narasi_review",label:"Narasi Review"},
+    {id:"narasi",label:"Narasi"},{id:"outline",label:"Outline"},{id:"chat",label:"Chat"},
+    {id:"narasi_review",label:"Narasi Review"},
   ];
+  const dl=async(a,fmt)=>{
+    try{
+      const txt=await(await fetch(a.signedUrl)).text();
+      const base=(((a.metadata&&a.metadata.original_filename)||a.filename||"document")).replace(/\.[^.]+$/,"");
+      exportDoc(fmt,txt,base,base,showToast);
+    }catch(e){ if(showToast)showToast("Download gagal: "+e.message,"err"); }
+  };
   const load=useCallback(async()=>{
     setLoading(true);
     try{
@@ -4651,6 +4659,25 @@ function MediaVaultSection({settings,showToast}){
   const card=(a)=>{
     const cap=(a.metadata&&a.metadata.original_filename)||a.filename||a.sourceJobType||a.assetType||"asset";
     const u=a.signedUrl;
+    // TEXT / document → card with TXT/PDF/HTML download (reuses exportDoc)
+    if(a.assetType==="document"){
+      const kind=(a.metadata&&a.metadata.kind)||"document";
+      return (
+        <div className="gc" key={a.id} style={{display:"flex",flexDirection:"column"}}>
+          <div style={{flex:1,minHeight:96,display:"flex",flexDirection:"column",justifyContent:"center",gap:6,padding:"14px 12px",background:"var(--be2)"}}>
+            <div style={{fontFamily:"var(--fm)",fontSize:10,letterSpacing:".08em",textTransform:"uppercase",color:"var(--ac)"}}>{kind}</div>
+            <div style={{fontSize:12.5,color:"var(--t)",overflow:"hidden",display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical"}}>{cap}</div>
+          </div>
+          <div style={{display:"flex",gap:5,padding:"8px 10px",borderTop:"1px solid var(--br)"}}>
+            {["txt","pdf","html"].map(f=>(
+              <button key={f} onClick={()=>dl(a,f)} disabled={!u}
+                style={{flex:1,padding:"5px 0",fontSize:10.5,borderRadius:6,border:"1px solid var(--br)",cursor:u?"pointer":"not-allowed",background:f==="html"?"var(--ac)":"var(--be)",color:f==="html"?"#fff":"var(--td)",fontWeight:600,textTransform:"uppercase"}}>{f}</button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    // IMAGE / VIDEO → clickable thumbnail
     let media;
     if(a.assetType==="image"&&u) media=<img src={u} alt={cap} loading="lazy"/>;
     else if(a.assetType==="video"&&u) media=<video src={u} muted preload="metadata" style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block",background:"var(--be2)"}}/>;
