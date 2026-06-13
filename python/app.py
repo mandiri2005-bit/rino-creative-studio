@@ -3752,8 +3752,9 @@ async def _narasi_outline_impl(body: dict):
             result.get("outline_text", ""),
             result.get("chapters", []),
             model)
+        await _log_narasi_usage(_octx.tenant_id, _outline_user, model, resp)
     except Exception as _e:
-        import logging as _lg; _lg.getLogger("narasi").warning("save_outline failed (non-fatal): %s", _e)
+        import logging as _lg; _lg.getLogger("narasi").warning("save_outline/usage failed (non-fatal): %s", _e)
 
     return result
 
@@ -4284,6 +4285,20 @@ async def narasi_review(body: dict):
         in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
         out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
         print(f"[review] model={resolved} finish={finish} in={in_tok} out={out_tok} max={safe_max} temp=0", flush=True)
+        # Step 1.5: capture editorial review — usage + the review text as a moat artifact.
+        try:
+            _rctx = _tenant_ctx.get()
+            _rtenant = getattr(_rctx, "tenant_id", None)
+            _ruser = (await _resolve_user_uuid(_rctx.tenant_id, _rctx.user_id)) if (_rtenant and getattr(_rctx, "user_id", None)) else None
+            if _rtenant:
+                await _log_narasi_usage(_rtenant, _ruser, model, resp)
+                await db.save_moat_session(
+                    _rtenant, _ruser, (body.get("topic") or "editorial_review"), "editorial_review",
+                    {"rag_used": False, "sources": None, "passages": None,
+                     "prompt_used": (system + "\n\n" + message)[:8000], "narration": text},
+                    model, in_tok, out_tok, _calc_cost(model, in_tok, out_tok))
+        except Exception as _ce:
+            import logging as _lg; _lg.getLogger("narasi").warning("review capture failed (non-fatal): %s", _ce)
         return {"ok": True, "text": text, "finish_reason": finish, "usage": {"input": in_tok, "output": out_tok}}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -5005,6 +5020,14 @@ async def oneshot_fix_submit(body: dict,
             finish  = getattr(resp.choices[0], "finish_reason", "unknown")
             print(f"[oneshot-fix] model={resolved} finish={finish} in={in_tok} out={out_tok} max={ceiling} temp={temperature}", flush=True)
             await _log_narasi_usage(_TENANT_ID, _USER_ID, model, resp, job_id=job_id)
+            # Step 1.5: capture the AI fix (One-Shot Fix / VO Optimize) as a
+            # correction pair (input -> fixed) — same moat signal as a human edit.
+            try:
+                await db.save_correction_pair(
+                    None, _TENANT_ID, _USER_ID, content, fixed_book,
+                    body.get("style"), body.get("topic"), None, body.get("language"))
+            except Exception as _ce:
+                import logging as _lg; _lg.getLogger("narasi").warning("oneshot correction capture failed (non-fatal): %s", _ce)
 
             # Persist on the MAIN loop → uses the normal pool, no cross-loop error.
             await db.complete_job(job_id, {

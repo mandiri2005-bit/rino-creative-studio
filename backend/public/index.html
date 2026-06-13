@@ -4899,7 +4899,7 @@ function NarasiReviewSection({settings,showToast}){
   };
 
   const streamCall=async(systemPrompt,message,onChunk)=>{
-    const headers={"Content-Type":"application/json"};
+    const headers={"Content-Type":"application/json",...(await authHdrFresh())};
     let endpoint,body;
     if(apiMode==="google"){
       endpoint="/api/chat/google";
