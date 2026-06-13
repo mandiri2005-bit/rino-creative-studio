@@ -302,7 +302,7 @@ app.post("/api/chat/agentic", async (req,res) => {
   try {
     const lzk2 = req.headers["x-laozhang-api-key"] || "";
     const pyRes = await fetch(`${PYTHON_API}/chat/stream`, {
-      method:"POST", headers:{"Content-Type":"application/json",...(lzk2&&{"X-LaoZhang-API-Key":lzk2})},
+      method:"POST", headers:{"Content-Type":"application/json",...(lzk2&&{"X-LaoZhang-API-Key":lzk2}),...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})},
       body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
         model:req.body.model||"claude-sonnet", system:req.body.system||"You are a helpful assistant. Use the search_files tool when the user asks about their documents.",
         temperature:req.body.temperature||0.7, max_tokens:8192, use_tools:true, mcp_paths:req.body.mcpPaths||"",
@@ -317,7 +317,7 @@ app.post("/api/chat/agentic", async (req,res) => {
 
 app.post("/api/cancel/:id",  async(req,res)=>{ try{const _hc={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/cancel/${req.params.id}`,{method:"POST",headers:_hc})).json());}catch(e){res.status(500).json({error:e.message});} });
 app.get ("/api/history/:id", async(req,res)=>{ try{const _hh={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/history/${req.params.id}`,{headers:_hh})).json());}catch(e){res.status(500).json({error:e.message});} });
-app.post("/api/save",        async(req,res)=>{ try{res.json(await(await fetch(`${PYTHON_API}/save`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(req.body)})).json());}catch(e){res.status(500).json({error:e.message});} });
+app.post("/api/save",        async(req,res)=>{ try{const _hs={"Content-Type":"application/json",...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/save`,{method:"POST",headers:_hs,body:JSON.stringify(req.body)})).json());}catch(e){res.status(500).json({error:e.message});} });
 app.delete("/api/session/:id",async(req,res)=>{ try{const _hd={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};await fetch(`${PYTHON_API}/session/${req.params.id}`,{method:"DELETE",headers:_hd});res.json({status:"cleared"});}catch(e){res.status(500).json({error:e.message});} });
 app.get("/api/models",       async(req,res)=>{ try{res.json(await(await fetch(`${PYTHON_API}/models`)).json());}catch(e){res.status(500).json({error:e.message});} });
 
@@ -443,18 +443,10 @@ app.post("/api/script/tts", (req,res)=>pyProxy(req,res,"/script/tts"));
 // ── Narasi AI — LaoZhang (outline + brief + chapter) ─────────────────────
 app.post("/api/narasi/outline",  (req,res)=>pyProxy(req,res,"/narasi/outline"));
 app.post("/api/narasi/generate", (req,res)=>pyProxy(req,res,"/narasi/generate"));
-app.post("/api/narasi/review", async (req,res) => {
-  try {
-    const lzk = req.headers["x-laozhang-api-key"] || "";
-    const pyRes = await fetch(`${PYTHON_API}/narasi/review`, {
-      method:"POST",
-      headers:{"Content-Type":"application/json",...(lzk&&{"X-LaoZhang-API-Key":lzk})},
-      body: JSON.stringify(req.body),
-    });
-    if (!pyRes.ok) { const e = await pyRes.json().catch(()=>({error:pyRes.statusText})); return res.status(pyRes.status).json({error:e.error||e.detail||pyRes.statusText}); }
-    res.json(await pyRes.json());
-  } catch(e) { res.status(500).json({error:e.message}); }
-});
+// review requires auth (python Depends) + DeepSeek routing. pyProxy forwards
+// Authorization + X-LaoZhang-API-Key + X-DeepSeek-Route; the old inline handler
+// dropped Authorization → python 401 "Missing or invalid Authorization header".
+app.post("/api/narasi/review", (req,res)=>pyProxy(req,res,"/narasi/review"));
 // SAVE-EDIT  (proxy → Python) — captures correction pairs for the moat (WS-G Task 5)
 app.post("/api/narasi/save-edit/:jobId", async(req,res)=>{
   try{

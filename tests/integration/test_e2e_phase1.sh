@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Rino Creative Studio — Phase 1 End-to-End Integration Tests (E01–E19)
+#  Rino Creative Studio — Phase 1 End-to-End Integration Tests (E01–E20)
 #
 #  Runs the full auth → endpoint → DB → restart-persistence chain against a
 #  live stack behind nginx at $BASE_URL.
 #
-#  E16–E19 cover Step 1 (durable + captured output) moat write/read paths:
+#  E16–E20 cover Step 1 (durable + captured output) moat write/read paths:
 #    E16  persist → narasi_chapters with retrieved_ids        (1.2 write+capture)
 #    E17  reopen job → text read back from DB (status markdown) (1.3 durability)
 #    E18  rate chapter 5★ → approvals row + chapter.approved   (1.4 rating)
 #    E19  save-edit → correction_pairs.edit_distance (difflib) (1.5 edit signal)
+#    E20  /api/narasi/review authed → text (server-side persona; auth-fwd guard)
 #  NOTE: the 0017 `revisions` table was superseded by the richer correction_pairs
 #  (0012: + edit_ratio + quality_tier); the edit signal lands there in this build.
 #
@@ -50,7 +51,7 @@ CLERK_API="https://api.clerk.com/v1"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
-TOTAL=19
+TOTAL=20
 
 RUN_ID="$(date +%s)-$$"
 TENANT_A_EMAIL="e2e-a-${RUN_ID}@example.com"
@@ -694,6 +695,32 @@ if [[ "$E19_OK" == "True" && -n "$E19_TIER" ]]; then
     fi
 else
     fail "E19: save-edit failed — ok=${E19_OK} tier=${E19_TIER} (resp: ${E19_RESP:0:160})"
+fi
+
+# =============================================================================
+#  E20 — Editorial Review end-to-end (auth forwarding + server-side persona)
+#  POST /api/narasi/review must forward Authorization to python (Depends auth) and
+#  resolve the persona server-side from `style`. Guards the regression where the
+#  node handler dropped the auth header → python 401. Real (non-streaming) call.
+# =============================================================================
+log "E20 — /api/narasi/review authed → returns review text (server-side persona)"
+refresh_tokens
+E20_RESP=$(curl_auth "$TOKEN_A" POST /api/narasi/review -d "{
+    \"model\": \"gemini-2.5-flash\",
+    \"style\": \"storytelling\",
+    \"message\": \"Beri satu kalimat review editorial singkat untuk teks ini: 'Majapahit adalah kerajaan besar di Nusantara.'\",
+    \"max_tokens\": 256
+}")
+E20_ERR=$(echo "$E20_RESP" | json_val error)
+E20_TEXTLEN=$(echo "$E20_RESP" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin); print(len((d.get('text') or '').strip()))
+except: print(0)" 2>/dev/null || echo 0)
+if [[ -z "$E20_ERR" && "${E20_TEXTLEN:-0}" =~ ^[0-9]+$ && "${E20_TEXTLEN:-0}" -ge 1 ]]; then
+    pass "E20: review returned ${E20_TEXTLEN} chars (auth forwarded + persona resolved)"
+else
+    fail "E20: review failed — error='${E20_ERR}' textlen=${E20_TEXTLEN} (resp: ${E20_RESP:0:160})"
 fi
 
 # =============================================================================
