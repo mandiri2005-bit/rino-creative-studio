@@ -135,6 +135,21 @@ async function signFiles(files) {
   ));
 }
 
+// ── Usage logging for AI calls made directly in Node (anti revenue-leakage) ─────
+// One usage_logs row per AI call. Proxied flows are logged Python-side (at the
+// upstream call), so this only covers the google-native routes that hit the model
+// from Node. Best-effort: never throws.
+//   endpoint ∈ chat|image|tts|video|embedding|batch|other
+async function trackUsage(req, model, endpoint, provider = "gemini", count = 1) {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
+    for (let i = 0; i < Math.max(1, count); i++) {
+      await logUsage(tenantId, userId, model || "unknown", endpoint, 0, 0, 0, null, provider);
+    }
+  } catch (e) { console.error("[trackUsage]", endpoint, e.message); }
+}
+
 // ── WAV & batch helpers imported from utils.mjs ──
 
 // ── Express ───────────────────────────────────────────────────────────────────
@@ -443,6 +458,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       const okCount = images.filter(x=>x.image_b64).length;
       if (!okCount) throw new Error("Google native returned no images");
       console.log(`[flow/images/native] GOOGLE ok model=${nativeModel} scenes=${scenes.length} images=${okCount}`);
+      await trackUsage(req, nativeModel, "image", "gemini", okCount);
       return res.json({ images, via:"google_native" });
 
     } catch(e) {
@@ -1284,6 +1300,7 @@ app.post("/api/script/tts/google", async(req,res)=>{
     });
     let text=(result.text||"").trim().replace(/^```[^\n]*\n?/mg,"").replace(/\n?```$/mg,"").trim();
     const paragraphs=text.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
+    await trackUsage(req, model, "tts", "gemini");
     res.json({ok:true,transcript:text,paragraphs,count:paragraphs.length});
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -1931,6 +1948,7 @@ app.post("/api/generate-image/google", async (req,res) => {
       config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
     const imgData = resp?.generatedImages?.[0]?.image?.imageBytes;
     if (!imgData) throw new Error("No image returned");
+    await trackUsage(req, model, "image", "gemini");
     res.json({ image_b64: imgData });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -1964,6 +1982,7 @@ app.post("/api/whisk/google", async (req,res) => {
     });
     const imgPart = resp?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
     if (!imgPart) throw new Error("Gemini returned no image — try LaoZhang mode");
+    await trackUsage(req, "gemini-2.0-flash-exp", "image", "gemini");
     res.json({ image_b64: imgPart.inlineData.data });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -2017,6 +2036,7 @@ app.post("/api/flow/storyboard/google/text", async (req,res) => {
       try { scenes = JSON.parse(m?.[0] || "[]"); } catch { scenes = []; }
     }
     if (!Array.isArray(scenes)) scenes = [];
+    await trackUsage(req, chat_model, "other", "gemini");
     res.json({ scenes, style, scene_count: scenes.length });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -2039,6 +2059,7 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
       return { index:i, image_b64: data||"" };
     }));
     const images = results.map((r,i) => r.status==="fulfilled" ? r.value : { index:i, image_b64:"" });
+    await trackUsage(req, model, "image", "gemini", images.filter(im=>im?.image_b64).length);
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });

@@ -316,6 +316,41 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("log_usage (narasi) failed (non-fatal): %s", _e)
 
+
+def _provider_for(model: str) -> str:
+    m = (model or "").lower()
+    if m.startswith("gemini") or m.startswith("imagen"):   return "gemini"
+    if m.startswith("deepseek"):                            return "deepseek"
+    if m.startswith(("gpt", "o3", "o1")):                   return "openai"
+    return "laozhang"
+
+
+async def _track_usage(user, model, endpoint, *, resp=None, tok_in=0, tok_out=0,
+                       cost=None, provider=None, job_id=None, session_id=None):
+    """Leak-proof usage logging: ONE usage_logs row per AI call, so no generation
+    goes unbilled. No-op (with a warning) when there is no tenant to attribute the
+    call to. endpoint ∈ chat|image|tts|video|embedding|batch|other. `user` is a
+    CurrentUser-or-None (from get_current_user_optional)."""
+    import logging as _lg
+    tenant_id = getattr(user, "tenant_id", None) if user else None
+    if not tenant_id:
+        _lg.getLogger("usage").warning(
+            "[usage] endpoint=%s model=%s NOT logged — no tenant (unauthenticated call)",
+            endpoint, model)
+        return
+    try:
+        if resp is not None:
+            usage = getattr(resp, "usage", None)
+            if usage:
+                tok_in  = int(getattr(usage, "prompt_tokens", 0) or 0)
+                tok_out = int(getattr(usage, "completion_tokens", 0) or 0)
+        _cost = cost if cost is not None else _calc_cost(model, tok_in, tok_out)
+        await db.log_usage(tenant_id, None, model, endpoint, tok_in, tok_out, _cost,
+                           provider=provider or _provider_for(model),
+                           job_id=job_id, session_id=session_id)
+    except Exception as _e:
+        _lg.getLogger("usage").warning("[usage] log failed endpoint=%s: %s", endpoint, _e)
+
 # ---------------------------------------------------------------------------
 # FastAPI app  — with DB lifespan (Phase 1 migration)
 # ---------------------------------------------------------------------------
@@ -995,7 +1030,8 @@ class OnceRequest(BaseModel):
     max_tokens: int = 12000  # high enough for thinking/reasoning models
 
 @app.post("/chat/once")
-async def chat_once(req: OnceRequest):
+async def chat_once(req: OnceRequest,
+                    user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     FALLBACK_MODEL = "gemini-2.5-flash"
 
     def _try_model(model_name: str) -> str:
@@ -1030,6 +1066,7 @@ async def chat_once(req: OnceRequest):
     if not text and req.model != FALLBACK_MODEL:
         print(f"[chat/once] {req.model} returned empty, falling back to {FALLBACK_MODEL}")
         text = _try_model(FALLBACK_MODEL)
+    await _track_usage(user, req.model, "chat", tok_out=len((text or "").split()))
     return {"text": text}
 
 
@@ -1652,7 +1689,8 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
 
 @app.post("/generate-image")
 async def generate_image(req: ImageRequest,
-                         x_image_api_key: str = Header(None, alias="X-Image-API-Key")):
+                         x_image_api_key: str = Header(None, alias="X-Image-API-Key"),
+                         user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     cfg = IMAGE_MODELS.get(req.model)
     if not cfg:
         raise HTTPException(400, f"Unknown image model: {req.model}")
@@ -1686,6 +1724,7 @@ async def generate_image(req: ImageRequest,
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
+        await _track_usage(user, req.model, "image")
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2229,6 +2268,7 @@ def _split_scene_batches(total: int, max_per: int = MAX_SCENES_PER_BATCH):
 async def whisk_generate(
         req: WhiskRequest,
         x_image_api_key: Optional[str] = Header(None, alias="X-Image-API-Key"),
+        user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """
     Whisk: combine Subject + Scene + Style into one generated image.
@@ -2298,6 +2338,7 @@ async def whisk_generate(
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
+        await _track_usage(user, req.model, "image")
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2330,6 +2371,7 @@ class FlowImagesRequest(BaseModel):
 async def flow_images_only(
         req: FlowImagesRequest,
         x_image_api_key: Optional[str] = Header(None, alias="X-Image-API-Key"),
+        user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """Generate storyboard images for already-generated scenes (no text generation).
     Supports all IMAGE_MODELS -- used by frontend Google mode with nano-banana models.
@@ -2393,6 +2435,10 @@ async def flow_images_only(
     finally:
         IMAGE_API_KEY = original_key
 
+    # one row per generated frame so multi-image storyboards aren't under-billed
+    for _img in images:
+        if _img.get("image_b64"):
+            await _track_usage(user, req.model, "image")
     return {"images": images}
 
 
@@ -4544,7 +4590,8 @@ async def narasi_stitch(job_id: str, body: dict,
 
 
 @app.post("/script/tts")
-async def script_to_tts(body: dict):
+async def script_to_tts(body: dict,
+                        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """
     Transform a raw script into TTS-ready text with emotion/intonation tags.
     Preserves the original language. Enriches with contextual tone tags.
@@ -4808,6 +4855,7 @@ async def script_to_tts(body: dict):
     result = _re.sub(r"\n?```$", "", result, flags=_re.MULTILINE).strip()
 
     paragraphs = [p.strip() for p in result.split("\n\n") if p.strip()]
+    await _track_usage(user, model, "tts", resp=resp)
     return {"ok": True, "transcript": result, "paragraphs": paragraphs, "count": len(paragraphs)}
 
 
@@ -4815,6 +4863,7 @@ async def script_to_tts(body: dict):
 async def flow_storyboard(
         req: FlowStoryboardRequest,
         x_image_api_key: Optional[str] = Header(None, alias="X-Image-API-Key"),
+        user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """
     Use Gemini to parse a script into cinematic scenes.
@@ -4960,6 +5009,8 @@ async def flow_storyboard(
 
     # Re-index globally so indexes are continuous 0 .. N-1 across all batches
     scenes = [{"index": i, **s} for i, s in enumerate(scenes_data)]
+    # storyboard parsing = one LLM call (per batch); record it so it isn't unbilled
+    await _track_usage(user, req.chat_model, "other")
 
     # Optionally generate storyboard images in parallel
     if req.generate_images:
