@@ -21,11 +21,12 @@ import { GoogleGenAI } from "@google/genai";
 import Jimp from "jimp";
 import { parseAudioMime, makeWavHeader, convertToWav, prependSilence, buildJsonl, mkId as _mkId } from "./utils.mjs";
 import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile, resolveTenantId, resolveUserId, _uuid5, getOrCreateSession, appendMessage, logUsage, calcGoogleCost,
-         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload } from "./db.js";
+         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset } from "./db.js";
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
+import * as storage from "./storage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT        = process.env.PORT        || 3000;
@@ -87,6 +88,29 @@ async function pyProxy(req, res, pyPath, extraHeaders = {}) {
     if (!pyRes.ok) { const e = await pyRes.json().catch(() => ({error: pyRes.statusText})); return res.status(pyRes.status).json({error: e.error || e.detail || pyRes.statusText}); }
     res.json(await pyRes.json());
   } catch(e) { res.status(500).json({ error: e.message }); }
+}
+
+// ── Object storage: persist a generated file to R2 + record it in `assets` ──────
+// Step 2. R2 is the source of truth; local disk stays a best-effort cache. Returns
+// { key, id, signedUrl }. Falls back gracefully (logs, returns null) if R2 isn't
+// configured yet, so generation never breaks on a storage hiccup.
+//   assetType     ∈ image|audio|video|document|archive|other
+//   sourceJobType ∈ batch_image|tts|imagen|veo|sora | null  (job_type_enum)
+async function persistAsset({ tenantId, userId = null, jobId = null, assetType,
+                              sourceJobType = null, filename, buffer,
+                              contentType, metadata = {} }) {
+  if (!storage.isConfigured()) {
+    console.warn("[persistAsset] storage not configured — skipped", filename);
+    return null;
+  }
+  const key = storage.buildKey(tenantId, jobId, assetType, filename);
+  await storage.uploadBytes(key, buffer, contentType);
+  const id = await insertAsset({
+    tenantId, userId, jobId, bucket: storage.BUCKET_NAME, s3Key: key,
+    originalFilename: filename, contentType, sizeBytes: buffer.length,
+    assetType, sourceJobType, metadata,
+  });
+  return { key, id, signedUrl: await storage.signedUrl(key) };
 }
 
 // ── WAV & batch helpers imported from utils.mjs ──
@@ -1649,7 +1673,7 @@ app.post("/api/tts/cancel/:id", requireAuth, async(req,res)=>{
 // IMAGEN  (direct @google/genai, sequential)
 // ══════════════════════════════════════════════════════════════════════════════
 const PAUSE_MODELS=["imagen-4.0-ultra-generate-001","imagen-4.0-generate-001","imagen-4.0-fast-generate-001"];
-async function runImagenJob(jobId,{tenantId,apiKey,model,prompts,outputPrefix,aspectRatio,resolution}){
+async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPrefix,aspectRatio,resolution}){
   let job=await getLiveJob(jobId);job.total=prompts.length;job.progress=0;job.status="running";
   const flush=()=>setLiveJob(jobId,job);
   await flush();
@@ -1669,7 +1693,11 @@ async function runImagenJob(jobId,{tenantId,apiKey,model,prompts,outputPrefix,as
         const img=await Jimp.read(buf);img.resize(w,h);
         const resized=await img.getBufferAsync(Jimp.MIME_JPEG);
         fs.writeFileSync(path.join(IMG_DIR,filename),resized);
-        job.files.push({file:filename,url:`/imgs/${encodeURIComponent(filename)}`});
+        const _f={file:filename,url:`/imgs/${encodeURIComponent(filename)}`};
+        job.files.push(_f);
+        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"image",sourceJobType:"imagen",filename,buffer:resized,contentType:"image/jpeg",metadata:{model,width:w,height:h}});
+             if(a){_f.key=a.key;_f.assetId=a.id;} }
+        catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
         log(`✅ ${filename}`);
       }
       if(PAUSE_MODELS.includes(model)&&(i+1)%20===0&&i+1<prompts.length){log("⏸️  Pausing 90s…");await new Promise(r=>setTimeout(r,90000));log("▶️  Resuming");}
@@ -1717,7 +1745,7 @@ app.post("/api/imagen/start", requireAuth, async(req,res)=>{
   await setLiveJob(jobId, { jobId, model, outputPrefix, status:"queued",
     total:prompts.length, progress:0, logs:[], files:[], createdAt:new Date().toISOString() });
   await patchJobPayload(jobId, { model, total:prompts.length });
-  runImagenJob(jobId,{tenantId,apiKey:key,model,prompts,outputPrefix,aspectRatio,resolution})
+  runImagenJob(jobId,{tenantId,userId,apiKey:key,model,prompts,outputPrefix,aspectRatio,resolution})
     .catch(async e=>{ await failJob(jobId, e.message);
       await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal:"+e.message);return j;}); });
   res.json({ok:true,jobId,total:prompts.length});
