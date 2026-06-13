@@ -21,7 +21,7 @@ import { GoogleGenAI } from "@google/genai";
 import Jimp from "jimp";
 import { parseAudioMime, makeWavHeader, convertToWav, prependSilence, buildJsonl, mkId as _mkId } from "./utils.mjs";
 import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile, resolveTenantId, resolveUserId, _uuid5, getOrCreateSession, appendMessage, logUsage, calcGoogleCost,
-         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset } from "./db.js";
+         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, logSyncJob } from "./db.js";
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
@@ -140,12 +140,27 @@ async function signFiles(files) {
 // upstream call), so this only covers the google-native routes that hit the model
 // from Node. Best-effort: never throws.
 //   endpoint ∈ chat|image|tts|video|embedding|batch|other
-async function trackUsage(req, model, endpoint, provider = "gemini", count = 1) {
+// Per-image cost (USD), best-effort — mirrors _IMAGE_COSTS in laozhang_api.py.
+const IMAGE_COSTS = {
+  "imagen-4.0-ultra":0.06,"imagen-4.0-fast":0.02,"imagen-4.0":0.04,"imagen":0.04,
+  "nano-banana-hd":0.039,"nano-banana":0.039,"gemini-2.0-flash":0.039,
+  "gemini-2.5-flash":0.039,"flux-kontext-max":0.08,"flux-kontext":0.05,"flux":0.03,
+  "seedream":0.03,"gpt-image-1":0.04,"dall-e-3":0.04,
+};
+function calcImageCost(model, count = 1) {
+  const m = (model || "").toLowerCase();
+  const k = Object.keys(IMAGE_COSTS).filter(x => m.startsWith(x)).sort((a,b)=>b.length-a.length)[0];
+  const p = k ? IMAGE_COSTS[k] : 0.04;
+  return +(p * Math.max(0, count)).toFixed(6);
+}
+async function trackUsage(req, model, endpoint, provider = "gemini", count = 1, jobType = null) {
   try {
     const tenantId = resolveTenantId(req);
     const userId   = await resolveUserId(req, tenantId);
+    const jobId = jobType ? await logSyncJob(tenantId, jobType, { model, endpoint }) : null;
+    const cost = endpoint === "image" ? calcImageCost(model, 1) : 0;
     for (let i = 0; i < Math.max(1, count); i++) {
-      await logUsage(tenantId, userId, model || "unknown", endpoint, 0, 0, 0, null, provider);
+      await logUsage(tenantId, userId, model || "unknown", endpoint, 0, 0, cost, null, provider, jobId);
     }
   } catch (e) { console.error("[trackUsage]", endpoint, e.message); }
 }
@@ -458,7 +473,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       const okCount = images.filter(x=>x.image_b64).length;
       if (!okCount) throw new Error("Google native returned no images");
       console.log(`[flow/images/native] GOOGLE ok model=${nativeModel} scenes=${scenes.length} images=${okCount}`);
-      await trackUsage(req, nativeModel, "image", "gemini", okCount);
+      await trackUsage(req, nativeModel, "image", "gemini", okCount, "flow_image");
       return res.json({ images, via:"google_native" });
 
     } catch(e) {
@@ -1300,7 +1315,7 @@ app.post("/api/script/tts/google", async(req,res)=>{
     });
     let text=(result.text||"").trim().replace(/^```[^\n]*\n?/mg,"").replace(/\n?```$/mg,"").trim();
     const paragraphs=text.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
-    await trackUsage(req, model, "tts", "gemini");
+    await trackUsage(req, model, "tts", "gemini", 1, "script_tts");
     res.json({ok:true,transcript:text,paragraphs,count:paragraphs.length});
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -1431,7 +1446,7 @@ app.post("/api/submit", requireAuth, async(req,res)=>{
     // Durable record in jobs table. Google-specific fields live in result_payload.
     const jobId = await createJob(tenantId, userId, "batch_image", record.displayName);
     await completeJob(jobId, record);   // payload set; batch tracks real lifecycle in payload.state
-    try{ await logUsage(tenantId, userId, model, "batch", 0, 0, 0, null, "gemini"); }
+    try{ await logUsage(tenantId, userId, model, "batch", 0, 0, calcImageCost(model, record.count||0), null, "gemini"); }
     catch(e){ console.error("[batch] logUsage failed:", e.message); }
     try{fs.unlinkSync(jsonlPath);}catch{}
     res.json({ok:true,jobName:batch.name,record:{...record,id:jobId}});
@@ -1783,7 +1798,7 @@ async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPr
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
-  try{ await logUsage(tenantId, userId, model, "image", 0, 0, 0, null, "gemini"); }
+  try{ await logUsage(tenantId, userId, model, "image", 0, 0, calcImageCost(model, (job.files||[]).length), null, "gemini"); }
   catch(e){ console.error("[imagen] logUsage failed:", e.message); }
 }
 app.get("/api/imagen/jobs", requireAuth, async(req,res)=>{
@@ -1948,7 +1963,7 @@ app.post("/api/generate-image/google", async (req,res) => {
       config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
     const imgData = resp?.generatedImages?.[0]?.image?.imageBytes;
     if (!imgData) throw new Error("No image returned");
-    await trackUsage(req, model, "image", "gemini");
+    await trackUsage(req, model, "image", "gemini", 1, "generate_image");
     res.json({ image_b64: imgData });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -1982,7 +1997,7 @@ app.post("/api/whisk/google", async (req,res) => {
     });
     const imgPart = resp?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
     if (!imgPart) throw new Error("Gemini returned no image — try LaoZhang mode");
-    await trackUsage(req, "gemini-2.0-flash-exp", "image", "gemini");
+    await trackUsage(req, "gemini-2.0-flash-exp", "image", "gemini", 1, "whisk");
     res.json({ image_b64: imgPart.inlineData.data });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -2036,7 +2051,7 @@ app.post("/api/flow/storyboard/google/text", async (req,res) => {
       try { scenes = JSON.parse(m?.[0] || "[]"); } catch { scenes = []; }
     }
     if (!Array.isArray(scenes)) scenes = [];
-    await trackUsage(req, chat_model, "other", "gemini");
+    await trackUsage(req, chat_model, "other", "gemini", 1, "flow_storyboard");
     res.json({ scenes, style, scene_count: scenes.length });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -2059,7 +2074,7 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
       return { index:i, image_b64: data||"" };
     }));
     const images = results.map((r,i) => r.status==="fulfilled" ? r.value : { index:i, image_b64:"" });
-    await trackUsage(req, model, "image", "gemini", images.filter(im=>im?.image_b64).length);
+    await trackUsage(req, model, "image", "gemini", images.filter(im=>im?.image_b64).length, "flow_image");
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });

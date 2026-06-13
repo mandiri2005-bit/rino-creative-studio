@@ -295,6 +295,35 @@ def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     return 0.0
 
 
+# ── Per-image generation cost (USD) — best-effort flat price per image. ────────
+# Update as provider rates change. Longest-matching prefix wins (mirrors _calc_cost).
+_IMAGE_COSTS: dict[str, float] = {
+    "imagen-4.0-ultra":  0.06,
+    "imagen-4.0-fast":   0.02,
+    "imagen-4.0":        0.04,
+    "imagen-3":          0.04,
+    "imagen":            0.04,
+    "nano-banana-hd":    0.039,
+    "nano-banana":       0.039,
+    "gemini-2.0-flash":  0.039,   # gemini native image (whisk/google)
+    "gemini-2.5-flash":  0.039,
+    "flux-kontext-max":  0.08,
+    "flux-kontext":      0.05,
+    "flux":              0.03,
+    "seedream":          0.03,
+    "gpt-image-1":       0.04,
+    "dall-e-3":          0.04,
+}
+_IMAGE_COST_DEFAULT = 0.04
+
+def _calc_image_cost(model: str, count: int = 1) -> float:
+    """Estimate USD cost for `count` generated images of `model`."""
+    m = (model or "").lower()
+    key = max((k for k in _IMAGE_COSTS if m.startswith(k)), key=len, default=None)
+    price = _IMAGE_COSTS[key] if key else _IMAGE_COST_DEFAULT
+    return round(price * max(0, int(count)), 6)
+
+
 async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, session_id=None):
     """Best-effort usage logging for narasi LLM endpoints — writes to usage_logs
     with endpoint='narasi'. Never raises: cost tracking must not break generation.
@@ -326,11 +355,12 @@ def _provider_for(model: str) -> str:
 
 
 async def _track_usage(user, model, endpoint, *, resp=None, tok_in=0, tok_out=0,
-                       cost=None, provider=None, job_id=None, session_id=None):
+                       cost=None, provider=None, job_id=None, session_id=None,
+                       job_type=None):
     """Leak-proof usage logging: ONE usage_logs row per AI call, so no generation
-    goes unbilled. No-op (with a warning) when there is no tenant to attribute the
-    call to. endpoint ∈ chat|image|tts|video|embedding|batch|other. `user` is a
-    CurrentUser-or-None (from get_current_user_optional)."""
+    goes unbilled. When `job_type` is given (and no job_id), also inserts a 'done'
+    jobs row for the synchronous flow and links the usage to it. No-op (with a
+    warning) when there is no tenant. endpoint ∈ chat|image|tts|video|embedding|batch|other."""
     import logging as _lg
     tenant_id = getattr(user, "tenant_id", None) if user else None
     if not tenant_id:
@@ -339,12 +369,20 @@ async def _track_usage(user, model, endpoint, *, resp=None, tok_in=0, tok_out=0,
             endpoint, model)
         return
     try:
+        if job_type and not job_id:
+            job_id = await db.log_sync_job(tenant_id, job_type,
+                                           {"model": model, "endpoint": endpoint})
         if resp is not None:
             usage = getattr(resp, "usage", None)
             if usage:
                 tok_in  = int(getattr(usage, "prompt_tokens", 0) or 0)
                 tok_out = int(getattr(usage, "completion_tokens", 0) or 0)
-        _cost = cost if cost is not None else _calc_cost(model, tok_in, tok_out)
+        if cost is not None:
+            _cost = cost
+        elif endpoint == "image":
+            _cost = _calc_image_cost(model)
+        else:
+            _cost = _calc_cost(model, tok_in, tok_out)
         await db.log_usage(tenant_id, None, model, endpoint, tok_in, tok_out, _cost,
                            provider=provider or _provider_for(model),
                            job_id=job_id, session_id=session_id)
@@ -1724,7 +1762,7 @@ async def generate_image(req: ImageRequest,
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
-        await _track_usage(user, req.model, "image")
+        await _track_usage(user, req.model, "image", job_type="generate_image")
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2338,7 +2376,7 @@ async def whisk_generate(
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
-        await _track_usage(user, req.model, "image")
+        await _track_usage(user, req.model, "image", job_type="whisk")
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2435,10 +2473,12 @@ async def flow_images_only(
     finally:
         IMAGE_API_KEY = original_key
 
-    # one row per generated frame so multi-image storyboards aren't under-billed
+    # one job for the request + one usage row per generated frame (no under-billing)
+    _jid = (await db.log_sync_job(user.tenant_id, "flow_image", {"model": req.model})
+            if (user and getattr(user, "tenant_id", None)) else None)
     for _img in images:
         if _img.get("image_b64"):
-            await _track_usage(user, req.model, "image")
+            await _track_usage(user, req.model, "image", job_id=_jid)
     return {"images": images}
 
 
@@ -4855,7 +4895,7 @@ async def script_to_tts(body: dict,
     result = _re.sub(r"\n?```$", "", result, flags=_re.MULTILINE).strip()
 
     paragraphs = [p.strip() for p in result.split("\n\n") if p.strip()]
-    await _track_usage(user, model, "tts", resp=resp)
+    await _track_usage(user, model, "tts", resp=resp, job_type="script_tts")
     return {"ok": True, "transcript": result, "paragraphs": paragraphs, "count": len(paragraphs)}
 
 
@@ -5010,7 +5050,7 @@ async def flow_storyboard(
     # Re-index globally so indexes are continuous 0 .. N-1 across all batches
     scenes = [{"index": i, **s} for i, s in enumerate(scenes_data)]
     # storyboard parsing = one LLM call (per batch); record it so it isn't unbilled
-    await _track_usage(user, req.chat_model, "other")
+    await _track_usage(user, req.chat_model, "other", job_type="flow_storyboard")
 
     # Optionally generate storyboard images in parallel
     if req.generate_images:

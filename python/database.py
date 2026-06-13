@@ -290,6 +290,22 @@ async def save_media_task(tenant_id, user_id, job_type, task_id) -> Optional[str
     except Exception as e:
         log.error("save_media_task: %s", e); raise
 
+async def log_sync_job(tenant_id, job_type, result=None) -> Optional[str]:
+    """Insert an already-'done' jobs row for a SYNCHRONOUS one-shot AI flow
+    (generate_image/whisk/flow_image/flow_storyboard/script_tts) so the jobs table
+    is a complete activity ledger. user_id left NULL (CurrentUser.user_id is a
+    Clerk id, not a users.id UUID). Returns job id or None."""
+    try:
+        jid = await _q_fetchval(
+            """INSERT INTO jobs (tenant_id,job_type,status,progress_message,
+                                 result_payload,started_at,completed_at)
+               VALUES ($1,$2::job_type_enum,'done','Selesai',$3,now(),now())
+               RETURNING id""",
+            _uid(tenant_id), job_type, result or {}, tenant=str(tenant_id))
+        return str(jid) if jid else None
+    except Exception as e:
+        log.error("log_sync_job: %s", e); return None
+
 async def job_tenant_by_task(task_id) -> Optional[str]:
     """Resolve the owning tenant of a veo/sora job by upstream task_id. Uses the
     SECURITY DEFINER fn job_tenant_by_task() (migration 0018), so it is safe to

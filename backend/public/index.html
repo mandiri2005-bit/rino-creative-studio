@@ -717,6 +717,30 @@ async function authHdrFresh(){
 /* Merge auth headers into existing headers object */
 async function mhdr(h={}){return{...h,...(authHdr())};}
 
+/* ── Global auth guard ──────────────────────────────────────────────────────
+   Inject the Clerk token into EVERY same-origin /api/* request that doesn't
+   already carry one, so no AI call reaches the backend unauthenticated (revenue
+   leakage + tenant isolation). Calls that set their own Authorization (e.g.
+   narasi via authHdrFresh) are left untouched. Never throws — fetch always runs. */
+(function(){
+  if (window.__apiAuthGuard) return; window.__apiAuthGuard = true;
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = function(input, init){
+    try{
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      if (url.indexOf("/api/") === 0 || url.indexOf(location.origin + "/api/") === 0){
+        const h = new Headers((init && init.headers) ||
+                              (typeof input === "object" && input && input.headers) || {});
+        if (!h.has("Authorization")){
+          const c = document.cookie.match(/__session=([^;]+)/);
+          if (c){ h.set("Authorization", "Bearer " + c[1]); init = {...(init||{}), headers:h}; }
+        }
+      }
+    }catch(e){ /* never break fetch */ }
+    return _origFetch(input, init);
+  };
+})();
+
 const api={
   health:()=>fetch("/api/health").then(r=>r.json()),
   config:()=>fetch("/api/config").then(r=>r.json()),

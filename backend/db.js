@@ -495,19 +495,38 @@ async function appendMessage(
 async function logUsage(
   tenantId, userId, model, endpoint,
   tokensIn, tokensOut, costUsd,
-  sessionId = null, provider = "gemini"
+  sessionId = null, provider = "gemini", jobId = null
 ) {
   await query(
     `INSERT INTO usage_logs
-         (tenant_id, user_id, session_id, endpoint,
+         (tenant_id, user_id, session_id, job_id, endpoint,
           model_alias, model_upstream, provider,
           tokens_in, tokens_out, cost_usd,
           finish_reason, http_status)
-     VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,'stop',200)`,
-    [tenantId, userId, sessionId, endpoint,
+     VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,'stop',200)`,
+    [tenantId, userId, sessionId, jobId, endpoint,
      model, provider, tokensIn, tokensOut, costUsd],
     tenantId
   );
+}
+
+/**
+ * logSyncJob(tenantId, jobType, result?) → string (job id) | null
+ * Inserts an already-'done' jobs row for a synchronous one-shot AI flow (Node
+ * google-native routes). Mirrors database.py log_sync_job. user_id left NULL.
+ */
+async function logSyncJob(tenantId, jobType, result = {}) {
+  try {
+    const res = await query(
+      `INSERT INTO jobs (tenant_id, job_type, status, progress_message,
+                         result_payload, started_at, completed_at)
+       VALUES ($1, $2::job_type_enum, 'done', 'Selesai', $3::jsonb, now(), now())
+       RETURNING id`,
+      [tenantId, jobType, JSON.stringify(result || {})],
+      tenantId
+    );
+    return res.rows[0]?.id ?? null;
+  } catch (e) { console.error("[logSyncJob]", jobType, e.message); return null; }
 }
 
 // ── Google model cost table ($/M tokens) ─────────────────────────────────────
@@ -560,6 +579,9 @@ export {
 
   // assets (object storage)
   insertAsset,
+
+  // sync-flow job ledger
+  logSyncJob,
 
   // chat sessions + usage
   getOrCreateSession,
