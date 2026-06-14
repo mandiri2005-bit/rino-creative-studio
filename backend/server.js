@@ -27,6 +27,27 @@ import { Webhook } from "svix";
 import { pool } from "./db.js";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
 import * as storage from "./storage.mjs";
+import { randomUUID } from "crypto";
+
+// ── Step 3: Sentry (Node) — error + perf visibility. No-op without SENTRY_DSN_NODE. ──
+let Sentry = null;
+if (process.env.SENTRY_DSN_NODE) {
+  try {
+    Sentry = await import("@sentry/node");
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN_NODE,
+      tracesSampleRate: 0.1,
+      environment: process.env.NODE_ENV || "development",
+      sendDefaultPii: false,
+    });
+    console.log("[sentry] Node SDK initialised");
+  } catch (e) {
+    console.warn("[sentry] Node disabled:", e?.message || e);
+    Sentry = null;
+  }
+} else {
+  console.log("[sentry] Node disabled (no SENTRY_DSN_NODE)");
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT        = process.env.PORT        || 3000;
@@ -292,6 +313,22 @@ app.post(
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
+
+// Step 3: per-request id (cross-service correlation) + Sentry request/tenant tags.
+app.use((req, res, next) => {
+  req.id = String(req.headers["x-request-id"] || "").trim() || randomUUID();
+  res.setHeader("X-Request-Id", req.id);
+  if (Sentry) {
+    try {
+      const scope = Sentry.getCurrentScope?.();
+      if (scope) {
+        scope.setTag("request_id", req.id);
+        try { const t = resolveTenantId(req); if (t) scope.setTag("tenant_id", String(t)); } catch {}
+      }
+    } catch {}
+  }
+  next();
+});
 
 // ── Global API auth guard ───────────────────────────────────────────────────
 // Every /api/* route requires a valid Clerk token EXCEPT the allowlist below.
@@ -2208,6 +2245,13 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
+
+// Step 3: Sentry Express error handler — after all routes, before listen.
+if (Sentry?.setupExpressErrorHandler) {
+  Sentry.setupExpressErrorHandler(app);
+} else if (Sentry) {
+  app.use((err, req, res, next) => { try { Sentry.captureException(err); } catch {} next(err); });
+}
 
 const server = app.listen(PORT,()=>{ console.log(`🎬 Cerita AI Studio :${PORT}`); console.log(`   Gemini: ${GEMINI_KEY?"set ✅":"MISSING ⚠️"}`); console.log(`   Python: ${PYTHON_API}`); });
 // Vault retention: daily sweep + once shortly after boot (tier-based, see cleanup_expired_assets).

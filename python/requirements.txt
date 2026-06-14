@@ -14,3 +14,4 @@ python-jose[cryptography]
 httpx
 redis
 boto3
+sentry-sdk

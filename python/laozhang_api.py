@@ -495,18 +495,84 @@ _req_key = _ReqKeyCompat()
 _deepseek_route: ContextVar[str] = ContextVar("_deepseek_route", default="deepseek")
 
 
+# ---------------------------------------------------------------------------
+# Step 3: Sentry — error + perf visibility. Safe no-op when sentry-sdk is not
+# installed or SENTRY_DSN_PY is unset, so the app boots either way.
+# ---------------------------------------------------------------------------
+import uuid as _uuid
+try:
+    import sentry_sdk as _sentry
+    _HAS_SENTRY = True
+except Exception:
+    _sentry = None
+    _HAS_SENTRY = False
+
+_request_id_ctx: ContextVar[str] = ContextVar("_request_id_ctx", default="")
+
+_SENSITIVE_HEADERS = {"authorization", "cookie", "x-laozhang-api-key",
+                      "x-veo-api-key", "x-sora-api-key"}
+
+
+def _sentry_before_send(event, hint):
+    # Tag with per-request id + tenant (read from contextvars at capture time).
+    try:
+        tags = event.setdefault("tags", {})
+        rid = _request_id_ctx.get()
+        if rid:
+            tags["request_id"] = rid
+        tid = _ctx_tenant_id.get()
+        if tid:
+            tags["tenant_id"] = str(tid)
+    except Exception:
+        pass
+    # Redact sensitive request headers (never ship API keys / cookies to Sentry).
+    try:
+        headers = (event.get("request") or {}).get("headers") or {}
+        for h in list(headers.keys()):
+            if h.lower() in _SENSITIVE_HEADERS:
+                headers[h] = "[redacted]"
+    except Exception:
+        pass
+    return event
+
+
+_SENTRY_DSN_PY = os.getenv("SENTRY_DSN_PY", "").strip()
+if _HAS_SENTRY and _SENTRY_DSN_PY:
+    _sentry.init(
+        dsn=_SENTRY_DSN_PY,
+        traces_sample_rate=0.1,
+        send_default_pii=False,
+        environment=os.getenv("NODE_ENV", "development"),
+        before_send=_sentry_before_send,
+    )
+    print("[sentry] Python SDK initialised (laozhang_api)")
+else:
+    print("[sentry] Python disabled (no SENTRY_DSN_PY or sentry-sdk missing)")
+
+
 @app.middleware("http")
 async def key_override_middleware(request: Request, call_next):
+    # Step 3: per-request id for cross-service correlation + Sentry tagging.
+    rid = request.headers.get("X-Request-Id", "").strip() or _uuid.uuid4().hex
+    rid_token = _request_id_ctx.set(rid)
+    if _HAS_SENTRY and _SENTRY_DSN_PY:
+        try:
+            _sentry.set_tag("request_id", rid)
+        except Exception:
+            pass
     key = request.headers.get("X-LaoZhang-API-Key", "").strip()
     token = _req_key.set(key if key else API_KEY)
     # Take first value only — browser may send duplicate headers merged as "a, a"
     route = request.headers.get("X-DeepSeek-Route", "deepseek").split(",")[0].strip().lower()
     token_route = _deepseek_route.set(route if route in ("deepseek", "laozhang") else "deepseek")
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = rid
+        return response
     finally:
         _req_key.reset(token)
         _deepseek_route.reset(token_route)
+        _request_id_ctx.reset(rid_token)
 
 
 # ---------------------------------------------------------------------------
