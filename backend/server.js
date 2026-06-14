@@ -534,6 +534,11 @@ app.post("/api/chat/google/once", async (req, res) => {
       model, contents: [{ role: "user", parts: [{ text: message }] }], config
     });
     const text = r?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("") || "";
+    try{
+      const _um=r?.usageMetadata||{}, _ti=_um.promptTokenCount||0, _to=_um.candidatesTokenCount||0;
+      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
+      await logUsage(_t,_u,model,"chat",_ti,_to,calcGoogleCost(model,_ti,_to),null,"gemini");
+    }catch(_){}
     res.json({ text: text.trim() });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1498,7 +1503,11 @@ app.post("/api/script/tts/google", async(req,res)=>{
     });
     let text=(result.text||"").trim().replace(/^```[^\n]*\n?/mg,"").replace(/\n?```$/mg,"").trim();
     const paragraphs=text.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
-    await trackUsage(req, model, "tts", "gemini", 1, "script_tts");
+    try{
+      const _um=result?.usageMetadata||{}, _ti=_um.promptTokenCount||0, _to=_um.candidatesTokenCount||0;
+      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
+      await logUsage(_t,_u,model,"chat",_ti,_to,calcGoogleCost(model,_ti,_to),null,"gemini");   // text transform → bill as tokens + charge
+    }catch(_){}
     res.json({ok:true,transcript:text,paragraphs,count:paragraphs.length});
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2327,7 +2336,11 @@ app.post("/api/flow/storyboard/google/text", async (req,res) => {
       try { scenes = JSON.parse(m?.[0] || "[]"); } catch { scenes = []; }
     }
     if (!Array.isArray(scenes)) scenes = [];
-    await trackUsage(req, chat_model, "other", "gemini", 1, "flow_storyboard");
+    try{
+      const _um=resp?.usageMetadata||{}, _ti=_um.promptTokenCount||0, _to=_um.candidatesTokenCount||0;
+      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
+      await logUsage(_t,_u,chat_model,"chat",_ti,_to,calcGoogleCost(chat_model,_ti,_to),null,"gemini");   // scene-split text → bill tokens + charge
+    }catch(_){}
     res.json({ scenes, style, scene_count: scenes.length });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
