@@ -5560,6 +5560,11 @@ function App(){
     }catch(e){}
     return ()=>window.removeEventListener("billing:insufficient",onLow);
   },[]);
+
+  // Billing section stays mounted (display:none toggle), so tell it + the balance
+  // pill to re-fetch whenever the Billing page is opened — otherwise the hero
+  // shows a stale balance (e.g. 0) while the pill polled a newer value.
+  useEffect(()=>{ if(page==="billing") window.dispatchEvent(new Event("billing:refresh")); },[page]);
   const[showSettings,setShowSettings]=useState(false);
   const[collapsed,setCollapsed]=useState(false);
   const[toast,setToast]=useState(null);

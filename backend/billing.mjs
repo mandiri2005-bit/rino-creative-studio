@@ -138,17 +138,34 @@ export async function createPortalSession({ tenantId }) {
   return session.url;
 }
 
+// Monthly free/tier allowance (mirrors python credit_catalog.TIER_MONTHLY_CREDITS).
+const TIER_CREDITS = { free: 100, starter: 2500, pro: 9000, enterprise: 31200 };
+
+// Lazily seed a tenant's tier allowance on first balance read, exactly like the
+// Python side (credits._ensure_cached). op_id 'signup_grant' is shared with
+// Python so it's idempotent — whichever path touches the balance first seeds it,
+// the other is a no-op. Without this, the billing page showed 0 for a fresh user
+// until a Python (chat) op happened to seed it → the 0-vs-99 desync.
+async function seedIfEmpty(tenantId, plan) {
+  const r = await query(`SELECT 1 FROM credit_balances WHERE tenant_id=$1`, [tenantId], tenantId);
+  if (r.rows.length) return;
+  await creditTenant(tenantId, TIER_CREDITS[plan] ?? TIER_CREDITS.free, "signup_grant",
+    "signup_grant", { metadata: { seeded_by: "billing_status" } });
+}
+
 // ── Public: billing status for the UI (balance + plan + catalog) ──────────────
 export async function getBillingStatus(tenantId) {
-  const [bal, sub, tenant] = await Promise.all([
-    query(`SELECT balance FROM credit_balances WHERE tenant_id=$1`, [tenantId], tenantId),
+  const [sub, tenant] = await Promise.all([
     query(`SELECT plan,status,current_period_end FROM subscriptions
              WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 1`, [tenantId], tenantId),
     query(`SELECT plan FROM tenants WHERE id=$1`, [tenantId], tenantId),
   ]);
+  const plan = sub.rows[0]?.plan || tenant.rows[0]?.plan || "free";
+  await seedIfEmpty(tenantId, plan);
+  const bal = await query(`SELECT balance FROM credit_balances WHERE tenant_id=$1`, [tenantId], tenantId);
   return {
     balance: Number(bal.rows[0]?.balance ?? 0),
-    plan: sub.rows[0]?.plan || tenant.rows[0]?.plan || "free",
+    plan,
     status: sub.rows[0]?.status || "active",
     period_end: sub.rows[0]?.current_period_end || null,
     tiers: TIER_CATALOG.map(({ priceId, ...t }) => ({ ...t, priceId })),
