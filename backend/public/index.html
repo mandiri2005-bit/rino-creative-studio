@@ -4732,6 +4732,11 @@ function BillingSection({settings,showToast}){
     {tiers.length===0&&packs.length===0&&<div style={{...card,color:"var(--td)"}}>
       Belum ada harga Stripe yang dikonfigurasi. Set <code>STRIPE_PRICE_*</code> di environment lalu refresh.
     </div>}
+    <div style={{textAlign:"center",fontSize:12,color:"var(--td)",opacity:.7,paddingTop:6}}>
+      <a href="/terms-id.html" target="_blank" rel="noopener" style={{color:"inherit"}}>Ketentuan</a>
+      {" · "}<a href="/privacy-id.html" target="_blank" rel="noopener" style={{color:"inherit"}}>Privasi</a>
+      {" · "}<a href="/refund-id.html" target="_blank" rel="noopener" style={{color:"inherit"}}>Refund</a>
+    </div>
   </div>;
 }
 
