@@ -328,12 +328,14 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
     """Best-effort usage logging for narasi LLM endpoints — writes to usage_logs
     with endpoint='narasi'. Never raises: cost tracking must not break generation.
     `user_id` MUST be the resolved users.id UUID (not the raw Clerk id).
-    `job_id` MUST be the internal jobs.id UUID (not the external 8-char id)."""
+    `job_id` MUST be the internal jobs.id UUID (not the external 8-char id).
+    Returns the credits this call costs so the caller can settle the job's hold."""
     try:
         usage = getattr(resp, "usage", None)
         tok_in  = int(getattr(usage, "prompt_tokens",     0) or 0) if usage else 0
         tok_out = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
         cost = _calc_cost(model, tok_in, tok_out)
+        cr   = 0 if _byok_active() else catalog.credit_cost("narasi", model, {"tokens_in": tok_in, "tokens_out": tok_out})
         _ml = (model or "").lower()
         if   _ml.startswith("gemini"):            _provider = "gemini"
         elif _ml.startswith("deepseek"):          _provider = "deepseek"
@@ -341,9 +343,12 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
         else:                                     _provider = "laozhang"
         await db.log_usage(tenant_id, user_id, model, "narasi",
                            tok_in, tok_out, cost,
-                           job_id=job_id, session_id=session_id, provider=_provider)
+                           job_id=job_id, session_id=session_id, provider=_provider,
+                           credits=cr)
+        return cr
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("log_usage (narasi) failed (non-fatal): %s", _e)
+        return 0
 
 
 def _provider_for(model: str) -> str:
@@ -431,6 +436,9 @@ from contextlib import asynccontextmanager
 import database as db
 import storage
 import redis_client as rc
+import metering
+import credits as credits_lib
+import credit_catalog as catalog
 from auth_middleware import (get_current_user, get_current_user_optional, CurrentUser,
                              _tenant_id as _ctx_tenant_id, _user_id as _ctx_user_id)
 
@@ -609,6 +617,19 @@ def make_client(model: str = "") -> OpenAI:
             )
         return OpenAI(api_key=key, base_url=BASE_URL)
     return OpenAI(api_key=_req_key.get() or API_KEY, base_url=BASE_URL)
+
+
+def _byok_active() -> bool:
+    """Step 4 BYOK: True when the caller supplied their OWN upstream key via the
+    X-LaoZhang-API-Key header (key_override_middleware put it in _req_key). They
+    pay the provider directly, so the operation costs 0 credits — the platform
+    only ever keeps the flat base fee. Safe inside background tasks: the request
+    ContextVar is copied into asyncio.create_task at spawn time."""
+    try:
+        k = _req_key.get()
+    except Exception:
+        return False
+    return bool(k) and k != API_KEY
 
 
 # ── Review personas (rules) live SERVER-SIDE — never shipped to the client ────
@@ -1226,14 +1247,62 @@ async def chat_once(req: OnceRequest,
         )
         return (r2.choices[0].message.content or "").strip()
 
-    # Try requested model first
-    text = _try_model(req.model)
-    # If still empty and not already fallback model, try gemini-2.5-flash
-    if not text and req.model != FALLBACK_MODEL:
-        print(f"[chat/once] {req.model} returned empty, falling back to {FALLBACK_MODEL}")
-        text = _try_model(FALLBACK_MODEL)
-    await _track_usage(user, req.model, "chat", tok_out=len((text or "").split()))
+    # ── Step 4 metering (only when authenticated; internal/unauth calls skip) ──
+    _charge = None
+    _in_tok = (len(req.message or "") + len(req.system or "")) // 4
+    if user is not None:
+        _uid_resolved = await _resolve_user_uuid(user.tenant_id, user.user_id)
+        _charge = await metering.begin_charge(
+            tenant_id=user.tenant_id, user_id=_uid_resolved, operation="chat",
+            model=req.model, estimate_units={"tokens_in": _in_tok,
+                                             "tokens_out": min(int(req.max_tokens or 800), 16000)},
+            byok=_byok_active())
+    try:
+        # Try requested model first
+        text = _try_model(req.model)
+        # If still empty and not already fallback model, try gemini-2.5-flash
+        if not text and req.model != FALLBACK_MODEL:
+            print(f"[chat/once] {req.model} returned empty, falling back to {FALLBACK_MODEL}")
+            text = _try_model(FALLBACK_MODEL)
+    except Exception:
+        if _charge:
+            await _charge.refund()
+        raise
+    if _charge:
+        _out_tok = len((text or "").split())
+        if text:
+            await _charge.settle({"tokens_in": _in_tok, "tokens_out": _out_tok},
+                                 tok_in=_in_tok, tok_out=_out_tok)
+        else:
+            await _charge.refund()
+    else:
+        await _track_usage(user, req.model, "chat", tok_out=len((text or "").split()))
     return {"text": text}
+
+
+# -- Step 4: cost quote + balance (frontend shows price before confirm) ----
+@app.post("/quote-cost")
+async def quote_cost(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """Credits an operation WOULD cost + the caller's live balance, so the UI can
+    show the price and a top-up prompt before the user confirms.
+    body: {operation, model, units}  (units per credit_catalog.operation_usd)."""
+    operation = (body.get("operation") or "").strip()
+    model     = (body.get("model") or "").strip()
+    units     = body.get("units", 1)
+    try:
+        credits_needed = metering.quote(operation, model, units)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"cannot quote: {e}")
+    balance = await credits_lib.get_balance(user.tenant_id)
+    return {"operation": operation, "model": model, "credits": credits_needed,
+            "balance": balance, "sufficient": balance >= credits_needed}
+
+
+@app.get("/credits/balance")
+async def credits_balance(user: CurrentUser = Depends(get_current_user)):
+    """Live spendable credit balance for the authenticated tenant."""
+    bal = await credits_lib.get_balance(user.tenant_id)
+    return {"balance": bal, "tier": user.tier}
 
 
 # -- Main chat stream ------------------------------------------------------
@@ -1297,6 +1366,20 @@ async def stream_chat(req: ChatRequest,
 
     # Build OpenAI-style history list (role + content only)
     history_msgs = [{"role": r["role"], "content": r["content"]} for r in history]
+
+    # ── Step 4 metering: HOLD an estimate before any upstream spend ─────────
+    # Raises HTTP 402 (insufficient_credits) if the balance can't cover it, so
+    # the client gets a clean error instead of a half-stream. Settled/refunded
+    # in the generator's finally below.
+    _op_id = str(uuid.uuid4())
+    _prompt_chars = len(req.message or "") + len(req.system or "") + \
+        sum(len(m.get("content") or "") for m in history_msgs)
+    _est_units = {"tokens_in": _prompt_chars // 4,
+                  "tokens_out": min(int(req.max_tokens or 800), 16000)}
+    charge = await metering.begin_charge(
+        tenant_id=_TENANT_ID, user_id=_USER_ID, operation="chat",
+        model=req.model, estimate_units=_est_units, op_id=_op_id,
+        byok=_byok_active())
 
     # Local Event bridges the async loop → the sync chat_stream generator.
     # Cross-container cancel state lives in Redis (cancel:{session_id}).
@@ -1367,6 +1450,22 @@ async def stream_chat(req: ChatRequest,
             yield f"data: [ERROR: {e}]\n\n"
         finally:
             await rc.clear_cancel(_session_id)
+            reply = "".join(chunks)
+            tok_in  = int(usage_data.get("input",  0))
+            tok_out = int(usage_data.get("output", 0))
+            if tok_out == 0 and reply:
+                tok_out = len(reply.split())   # cancel path: no [USAGE] chunk arrived
+            # ── Step 4 metering: settle the ACTUAL cost, or refund if nothing ──
+            # produced. A cancelled stream settles the partial output it billed.
+            try:
+                if reply:
+                    await charge.settle({"tokens_in": tok_in, "tokens_out": tok_out},
+                                        session_id=str(_session_id),
+                                        tok_in=tok_in, tok_out=tok_out)
+                else:
+                    await charge.refund()
+            except Exception as _me:
+                print(f"[stream_chat] metering settle/refund error: {_me}", flush=True)
             if not cancelled and chunks:
                 # Persist user turn + assistant reply to PostgreSQL
                 stored_user = req.message
@@ -1376,27 +1475,13 @@ async def stream_chat(req: ChatRequest,
                         + ", ".join(i.get("name", "img") for i in req.images)
                         + "]"
                     )
-                reply = "".join(chunks)
-                tok_in  = int(usage_data.get("input",  0))
-                tok_out = int(usage_data.get("output", 0))
                 cost    = _calc_cost(_model, tok_in, tok_out)
-                # provider must satisfy usage_logs CHECK: laozhang|deepseek|gemini|openai|other
-                _ml = _model.lower()
-                if   _ml.startswith("gemini"):   _provider = "gemini"
-                elif _ml.startswith("deepseek"): _provider = "deepseek"
-                elif _ml.startswith(("gpt", "o3", "o1")): _provider = "openai"
-                else: _provider = "laozhang"
                 try:
                     await db.append_message(
                         _tenant_id, _session_id, "user", stored_user, _model)
                     await db.append_message(
                         _tenant_id, _session_id, "assistant", reply, _model,
                         tokens_in=tok_in, tokens_out=tok_out, cost_usd=cost)
-                    # endpoint must be one of: chat|image|tts|video|embedding|batch|other
-                    await db.log_usage(
-                        _tenant_id, _user_id, _model, "chat",
-                        tok_in, tok_out, cost,
-                        session_id=str(_session_id), provider=_provider)
                     # Live-capture: upsert the session transcript → R2 + assets so the
                     # chat is a downloadable file in the Media Vault. Deterministic
                     # per-session key (matches the backfill key) → idempotent, no dupes.
@@ -4139,7 +4224,27 @@ async def narasi_generate(body: dict,
 
     chapters = body.get("chapters") or []
     topic    = (body.get("topic") or "").strip()
+    model    = (body.get("model") or "gemini-2.5-flash").strip()
     job_id = (body.get("pre_job_id") or str(uuid.uuid4())[:8])[:16]
+
+    # ── Step 4 metering: HOLD an estimate for the whole job up front ────────
+    # Raises HTTP 402 before any chapter is generated if the balance is short;
+    # the background task settles the ACTUAL total (refunding the unused hold)
+    # or refunds entirely on cancel/zero-output. op_id keyed to the job id.
+    _meter_op = None
+    if chapters and not _byok_active():   # BYOK pays upstream directly → no hold
+        _est_units = {
+            "tokens_in":  1500 * len(chapters),
+            "tokens_out": sum(int(c.get("words") or 400) for c in chapters) * 2,
+        }
+        # Unique per generation RUN (not per external job_id): a client retry that
+        # reuses the same pre_job_id must get its own hold + its own durable charge,
+        # never collide with the prior run's op_id (which would skip the durable
+        # charge while still debiting the live cache).
+        _meter_op = f"narasi:{job_id}:{uuid.uuid4().hex[:8]}"
+        await metering.begin_charge(
+            tenant_id=_tenant, user_id=_user, operation="narasi",
+            model=model, estimate_units=_est_units, op_id=_meter_op)
 
     # Create the jobs-table row up front so polling can see it immediately.
     try:
@@ -4149,7 +4254,7 @@ async def narasi_generate(body: dict,
     await rc.set_progress(job_id, "Memulai narasi...")
 
     # Spawn the actual generation on the main loop; return the id immediately.
-    asyncio.create_task(_narasi_generate_impl(body, job_id, _tenant, _user))
+    asyncio.create_task(_narasi_generate_impl(body, job_id, _tenant, _user, _meter_op))
     return {"ok": True, "job_id": job_id, "status": "started"}
 
 
@@ -4178,7 +4283,7 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
         return None
 
 
-async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi_user):
+async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi_user, _meter_op=None):
     model    = (body.get("model")    or "gemini-2.5-flash").strip()
     topic    = (body.get("topic")    or "").strip()
     style    = (body.get("style")    or "storytelling").strip()
@@ -4192,6 +4297,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     tmp_dir.mkdir(parents=True, exist_ok=True)
     client = make_client(model)
     errors = []
+    _meter_actual = 0   # Step 4: credits actually consumed (to settle the hold)
 
     # Cross-container cancel lives in Redis (cancel:narasi_{job_id}).
     # cancel_ev is kept only for the local auto-cancel path below.
@@ -4213,6 +4319,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
         if cancel_ev.is_set() or await rc.is_cancelled(f"narasi_{job_id}"):
             errors.append({"id": "cancelled", "error": "Job cancelled by user"})
             break
+
+        # Step 4: keep the credit hold alive across a long multi-chapter job so its
+        # TTL never lapses mid-flight and strands the unused reservation.
+        if _meter_op:
+            await credits_lib.touch_hold(_narasi_tenant, _meter_op)
 
         chap_id = chapter.get("id", "?")
         chap_title = chapter.get("title", "")
@@ -4344,7 +4455,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             finish = getattr(choice, "finish_reason", "unknown")
             import logging as _log
             _log.warning(f"[narasi] bab {chap_id} finish_reason={finish} words={len(text.split())} model={model}")
-            await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp, job_id=_narasi_job_uuid)
+            _cr_first = (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp, job_id=_narasi_job_uuid) or 0)
             # Task 4 + Tingkat 4: live progress. current = chapters done so far (i+1).
             _msg = f"Menulis bab {i+1}/{len(chapters)}: {chap_title}"[:200]
             await rc.set_progress(job_id, _msg)
@@ -4360,7 +4471,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     max_tokens=safe_max, stream=False
                 )
                 text = (resp2.choices[0].message.content or "").strip()
-                await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid)
+                # Bill ONLY the kept retry. The discarded first attempt is still
+                # logged to usage_logs (COGS visibility) but not charged to the tenant.
+                _meter_actual += (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid) or 0)
+            else:
+                _meter_actual += _cr_first
             _chap_txt = f"## Bab {chap_id}: {chap_title}\n\n{text}\n"
             (tmp_dir / f"{chap_id}.txt").write_text(_chap_txt, encoding="utf-8")
             # ── Step 2: persist chapter text to R2 + assets row (capture) ──
@@ -4424,6 +4539,20 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     # Clean up cross-container cancel flag.
     await rc.clear_cancel(f"narasi_{job_id}")
     cancelled = cancel_ev.is_set()
+
+    # ── Step 4 metering: settle the hold to the ACTUAL credits consumed. A
+    # cancelled / partial run commits only what was produced (refunding the rest);
+    # a run that produced nothing refunds the whole hold. Never raises.
+    if _meter_op:
+        try:
+            if _meter_actual > 0:
+                await credits_lib.commit(_narasi_tenant, _meter_op, _meter_actual,
+                                         user_id=_narasi_user,
+                                         metadata={"op": "narasi", "job_id": job_id})
+            else:
+                await credits_lib.refund(_narasi_tenant, _meter_op)
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("narasi metering settle failed (non-fatal): %s", _e)
 
     # ── Task 4: terminal status to jobs table (best-effort) ──
     try:

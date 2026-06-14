@@ -585,8 +585,9 @@ async def log_usage(
     tenant_id, user_id, model, endpoint, tokens_in, tokens_out, cost_usd,
     *, job_id=None, session_id=None, provider="laozhang",
     model_upstream=None, latency_ms=None, http_status=200,
-    finish_reason="stop") -> None:
-    """`model` → model_alias. Pass model_upstream for resolved name."""
+    finish_reason="stop", credits=0) -> None:
+    """`model` → model_alias. Pass model_upstream for resolved name.
+    `credits` = credits charged by the Step 4 metering layer (0 for BYOK/free)."""
     try:
         # user_id has an FK to users(id). The middleware may hand us a derived
         # UUID that was never inserted — null it out if it doesn't exist, else
@@ -602,12 +603,12 @@ async def log_usage(
             """INSERT INTO usage_logs
                    (tenant_id,user_id,session_id,job_id,
                     endpoint,model_alias,model_upstream,provider,
-                    tokens_in,tokens_out,cost_usd,
+                    tokens_in,tokens_out,cost_usd,credits,
                     finish_reason,latency_ms,http_status)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)""",
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)""",
             _uid(tenant_id), uid, _uid(session_id), _uid(job_id),
             endpoint, model, model_upstream or model, provider,
-            tokens_in, tokens_out, cost_usd,
+            tokens_in, tokens_out, cost_usd, int(credits or 0),
             finish_reason, latency_ms, http_status,
             tenant=str(tenant_id))   # explicit — request ContextVar is gone during SSE finally
     except Exception as e:
@@ -788,15 +789,16 @@ async def get_tenant_context(tenant_id, user_id=None) -> dict:
     try:
         row = await _q_fetchrow(
             """SELECT t.plan AS tier,
-                      COALESCE(s.monthly_token_limit, 100) AS credits
+                      COALESCE(cb.balance, s.monthly_token_limit, 100) AS credits
                  FROM tenants t
-            LEFT JOIN subscriptions s ON s.tenant_id = t.id
+            LEFT JOIN subscriptions   s  ON s.tenant_id  = t.id
+            LEFT JOIN credit_balances cb ON cb.tenant_id = t.id
                 WHERE t.id = $1
                 LIMIT 1""",
             _uid(tenant_id), tenant=str(tenant_id))
         if row:
             return {"tier": row["tier"] or "free",
-                    "credits": row["credits"] or 100,
+                    "credits": int(row["credits"]) if row["credits"] is not None else 100,
                     "laozhang_key": "", "deepseek_key": "", "gemini_key": ""}
     except Exception as e:
         log.warning("get_tenant_context: %s", e)

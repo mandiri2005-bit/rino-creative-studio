@@ -25,6 +25,7 @@ import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
+import * as billing from "./billing.mjs";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
 import * as storage from "./storage.mjs";
 import { randomUUID } from "crypto";
@@ -295,6 +296,36 @@ app.post(
   }
 );
 
+// ── Stripe Webhook — POST /webhooks/stripe ────────────────────────────────────
+// MUST be before express.json — Stripe signature verification needs the RAW body.
+// Idempotent (processed_stripe_events); credits the durable balance on success.
+app.post(
+  "/webhooks/stripe",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    if (!billing.isConfigured() || !billing.WEBHOOK_SECRET) {
+      console.error("[stripe] webhook hit but Stripe not configured");
+      return res.status(500).json({ error: "stripe_not_configured" });
+    }
+    let event;
+    try {
+      event = billing.stripe.webhooks.constructEvent(
+        req.body, req.headers["stripe-signature"], billing.WEBHOOK_SECRET);
+    } catch (err) {
+      console.warn("[stripe] invalid signature:", err.message);
+      return res.status(400).json({ error: "invalid_signature" });
+    }
+    try {
+      const r = await billing.handleStripeEvent(event);
+      console.log(`[stripe] event=${event.type} id=${event.id} ->`, JSON.stringify(r));
+      return res.status(200).json({ received: true, ...r });
+    } catch (e) {
+      console.error(`[stripe] handler error for ${event.type}:`, e.message);
+      return res.status(500).json({ error: "handler_error" });
+    }
+  }
+);
+
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
@@ -323,6 +354,37 @@ const PUBLIC_API = new Set([
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
   return requireAuth(req, res, next);
+});
+
+// ── Step 4: Billing (credits balance, Stripe checkout, customer portal) ───────
+app.get("/api/billing/status", async (req, res) => {
+  try {
+    res.json(await billing.getBillingStatus(resolveTenantId(req)));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/billing/checkout", async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId = await resolveUserId(req, tenantId);
+    const priceId = (req.body || {}).priceId;
+    if (!priceId) return res.status(400).json({ error: "priceId required" });
+    const url = await billing.createCheckoutSession({ tenantId, userId, priceId });
+    res.json({ url });
+  } catch (e) {
+    const code = e.message === "stripe_not_configured" ? 503
+               : e.message === "unknown_price" ? 400 : 500;
+    res.status(code).json({ error: e.message });
+  }
+});
+app.post("/api/billing/portal", async (req, res) => {
+  try {
+    const url = await billing.createPortalSession({ tenantId: resolveTenantId(req) });
+    res.json({ url });
+  } catch (e) {
+    const code = e.message === "stripe_not_configured" ? 503
+               : e.message === "no_customer" ? 400 : 500;
+    res.status(code).json({ error: e.message });
+  }
 });
 app.use("/images", express.static(OUTPUT_DIR, {maxAge:"1h"}));
 app.use("/audio",  express.static(TTS_DIR,    {maxAge:"1h"}));
