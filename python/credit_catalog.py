@@ -43,6 +43,16 @@ from typing import Union
 CREDIT_USD_VALUE = float(os.getenv("CREDIT_USD_VALUE", "0.01"))   # 1 credit = $0.01
 CREDIT_MARGIN    = float(os.getenv("CREDIT_MARGIN",    "1.0"))    # break-even basis
 
+# ── Monthly credit allowance per plan (from the ceritaAI pricing tool) ─────────
+# NOTE: the pricing tool's top tier is "Studio"; the DB `plan` CHECK constraint
+# calls it "enterprise", so the key here is 'enterprise' (display name "Studio").
+TIER_MONTHLY_CREDITS: dict[str, int] = {
+    "free":       100,
+    "starter":    2500,
+    "pro":        9000,
+    "enterprise": 31200,   # "Studio"
+}
+
 # ── Video upstream cost, USD per second of generated video ────────────────────
 # Longest-prefix match wins (e.g. "veo-3.1-fast" before "veo"). Rates mirror the
 # pricing tool: Veo Standard ≈ $0.50/s, Fast ≈ $0.15/s, Sora ≈ $0.50/s, budget

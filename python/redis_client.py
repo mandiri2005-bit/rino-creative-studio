@@ -35,6 +35,12 @@ async def init_redis() -> None:
         log.error("Redis ping failed (progress will fall back to DB): %s", e)
 
 
+def client() -> "aioredis.Redis | None":
+    """The shared async Redis client (or None if init_redis() hasn't run / failed).
+    Used by credits.py for atomic balance ops; never assume non-None."""
+    return _redis
+
+
 async def close_redis() -> None:
     if _redis is not None:
         try:
