@@ -1926,7 +1926,7 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
         files["input_reference"] = (fname, img_bytes, req.ref_image_mime)
 
     try:
-        res = _requests.post(VEO_API_URL, headers=headers, files=files, timeout=180)
+        res = await asyncio.to_thread(_requests.post, VEO_API_URL, headers=headers, files=files, timeout=180)
         res.raise_for_status()
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
@@ -1951,7 +1951,7 @@ async def veo_status(task_id: str, x_veo_api_key: Optional[str] = Header(default
     """Poll Veo task status."""
     headers = _veo_headers(x_veo_api_key)
     try:
-        res = _requests.get(f"{VEO_API_URL}/{task_id}", headers=headers, timeout=60)
+        res = await asyncio.to_thread(_requests.get, f"{VEO_API_URL}/{task_id}", headers=headers, timeout=60)
         res.raise_for_status()
         data = res.json()
         return {
@@ -1980,6 +1980,18 @@ VEO_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Veo_o
 os.makedirs(VEO_OUTPUT_DIR, exist_ok=True)
 
 
+# ── Step 3: blocking file I/O helpers, run via asyncio.to_thread() so large
+#            MP4 reads/writes never stall the event loop. ──
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    with open(path, "wb") as f:
+        f.write(data)
+
+
 @app.get("/veo/stream/{task_id}")
 async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default=None)):
     """
@@ -1988,7 +2000,6 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
     Retries up to 6x if content is still IN_PROGRESS.
     """
     from fastapi.responses import Response as FResponse
-    import time as _time
 
     headers = _veo_headers(x_veo_api_key)
     last_err = None
@@ -1999,16 +2010,16 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
     # Return cached file immediately if already saved
     if os.path.exists(save_path) and os.path.getsize(save_path) > 1000:
         print(f"[veo/stream] ✓ Serving cached: {save_path}")
-        with open(save_path, "rb") as f:
-            return FResponse(
-                content=f.read(),
-                media_type="video/mp4",
-                headers={
-                    "Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
-                    "Cache-Control": "no-store",
-                    "X-Veo-Cached": "true",
-                },
-            )
+        _cached = await asyncio.to_thread(_read_bytes, save_path)
+        return FResponse(
+            content=_cached,
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
+                "Cache-Control": "no-store",
+                "X-Veo-Cached": "true",
+            },
+        )
 
     # ── Step 2: R2 fallback — local disk cache may be gone after a redeploy ──
     try:
@@ -2033,15 +2044,14 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
 
     for attempt in range(6):
         try:
-            res = _requests.get(content_url, headers=headers, timeout=180)
+            res = await asyncio.to_thread(_requests.get, content_url, headers=headers, timeout=180)
             print(f"[veo/stream] attempt={attempt + 1} status={res.status_code} "
                   f"content-type={res.headers.get('content-type', '')} "
                   f"size={len(res.content)} bytes")
 
             if res.status_code == 200 and len(res.content) > 1000:
                 # -- Save to Veo_outputs/ ----------------------------------
-                with open(save_path, "wb") as f:
-                    f.write(res.content)
+                await asyncio.to_thread(_write_bytes, save_path, res.content)
                 size_mb = len(res.content) / 1_048_576
                 print(f"[veo/stream] ✓ Saved {size_mb:.1f} MB -> {save_path}")
 
@@ -2075,7 +2085,7 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
             print(f"[veo/stream] Not ready: {last_err}")
 
             if "IN_PROGRESS" in res.text or "in_progress" in res.text or res.status_code == 404:
-                _time.sleep(12)
+                await asyncio.sleep(12)
             else:
                 raise HTTPException(status_code=res.status_code, detail=res.text[:300])
 
@@ -2084,7 +2094,7 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
         except Exception as e:
             last_err = str(e)
             print(f"[veo/stream] Exception attempt {attempt + 1}: {e}")
-            _time.sleep(12)
+            await asyncio.sleep(12)
 
     raise HTTPException(status_code=503, detail=f"Video not available after retries. Last error: {last_err}")
 
@@ -2137,7 +2147,7 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
     print(f"[sora/submit] model={req.model} size={req.size} seconds={req.seconds}s")
 
     try:
-        res = _requests.post(SORA_API_URL, headers=headers, files=files, timeout=120)
+        res = await asyncio.to_thread(_requests.post, SORA_API_URL, headers=headers, files=files, timeout=120)
         res.raise_for_status()
         data = res.json()
         task_id = data.get("id") or data.get("task_id")
@@ -2163,7 +2173,7 @@ async def sora_status(task_id: str, x_sora_api_key: Optional[str] = Header(defau
     """Poll Sora task status."""
     headers = _sora_headers(x_sora_api_key)
     try:
-        res = _requests.get(f"{SORA_API_URL}/{task_id}", headers=headers, timeout=60)
+        res = await asyncio.to_thread(_requests.get, f"{SORA_API_URL}/{task_id}", headers=headers, timeout=60)
         res.raise_for_status()
         data = res.json()
         return {
@@ -2185,7 +2195,6 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
     Retries on 404/IN_PROGRESS (can lag after status=completed).
     """
     from fastapi.responses import Response as FResponse
-    import time as _time
 
     headers = _sora_headers(x_sora_api_key)
     content_url = f"{SORA_API_URL}/{task_id}/content"
@@ -2195,10 +2204,10 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
     # Serve from cache if already downloaded
     if os.path.exists(save_path) and os.path.getsize(save_path) > 1000:
         print(f"[sora/stream] ✓ Serving cached: {save_path}")
-        with open(save_path, "rb") as f:
-            return FResponse(content=f.read(), media_type="video/mp4",
-                             headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
-                                      "Cache-Control": "no-store", "X-Sora-Cached": "true"})
+        _cached = await asyncio.to_thread(_read_bytes, save_path)
+        return FResponse(content=_cached, media_type="video/mp4",
+                         headers={"Content-Disposition": f'inline; filename="{safe_id[:24]}.mp4"',
+                                  "Cache-Control": "no-store", "X-Sora-Cached": "true"})
 
     # ── Step 2: R2 fallback — local disk cache may be gone after a redeploy ──
     try:
@@ -2219,12 +2228,11 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
 
     for attempt in range(6):
         try:
-            res = _requests.get(content_url, headers=headers, timeout=180)
+            res = await asyncio.to_thread(_requests.get, content_url, headers=headers, timeout=180)
             print(f"[sora/stream] attempt={attempt + 1} status={res.status_code} size={len(res.content)}")
 
             if res.status_code == 200 and len(res.content) > 1000:
-                with open(save_path, "wb") as f:
-                    f.write(res.content)
+                await asyncio.to_thread(_write_bytes, save_path, res.content)
                 size_mb = len(res.content) / 1_048_576
                 print(f"[sora/stream] ✓ Saved {size_mb:.1f} MB -> {save_path}")
                 # ── Step 2: persist to R2 + assets row (tenant resolved by task_id) ──
@@ -2251,7 +2259,7 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
             print(f"[sora/stream] Not ready: {last_err}")
 
             if "IN_PROGRESS" in res.text or "in_progress" in res.text or res.status_code == 404:
-                _time.sleep(12)
+                await asyncio.sleep(12)
             else:
                 raise HTTPException(status_code=res.status_code, detail=res.text[:300])
 
@@ -2260,7 +2268,7 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
         except Exception as e:
             last_err = str(e)
             print(f"[sora/stream] Exception {attempt + 1}: {e}")
-            _time.sleep(12)
+            await asyncio.sleep(12)
 
     raise HTTPException(status_code=503, detail=f"Video not available after retries: {last_err}")
 
