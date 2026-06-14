@@ -30,6 +30,7 @@ import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "
 import * as storage from "./storage.mjs";
 import { randomUUID } from "crypto";
 import * as Sentry from "@sentry/node";
+import { mountVideoRoutes } from "./video/routes.mjs";
 
 // Step 3: Sentry is initialised in instrument.mjs (loaded via `node --import`)
 // so it can auto-instrument http/express before this module runs.
@@ -2367,6 +2368,11 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
+
+// Video assembly engine (Step 6): enqueue-only API surface. The heavy work runs
+// in the separate worker process (backend/video/worker-entry.mjs) — these routes
+// only add BullMQ jobs + read state, so ffmpeg never touches the API event loop.
+mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUserId });
 
 // Step 3: Sentry Express error handler — after all routes, before listen.
 if (SENTRY_ON) {

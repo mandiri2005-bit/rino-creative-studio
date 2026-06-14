@@ -15,6 +15,8 @@ services:
       - DATABASE_POOL_URL_DEV=${DATABASE_POOL_URL_DEV}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - CLERK_JWT_ISSUER=${CLERK_JWT_ISSUER}
+      # ── Step 6: trusted internal auth for the video worker (per-scene metering+RLS). Empty = disabled. ──
+      - INTERNAL_SERVICE_SECRET=${INTERNAL_SERVICE_SECRET:-}
       # ── Step 3: Sentry (error + perf visibility). Empty = disabled. ──────────
       - SENTRY_DSN_PY=${SENTRY_DSN_PY:-}
       - NODE_ENV=${NODE_ENV:-development}
@@ -48,6 +50,7 @@ services:
       - ./python/credits.py:/app/credits.py                  # Step 4: balance primitives
       - ./python/metering.py:/app/metering.py                # Step 4: charge gate
       - ./python/admin_credits.py:/app/admin_credits.py      # Step 4: manual credit admin CLI
+      - ./python/video_segmenter.py:/app/video_segmenter.py  # Step 6: scene segmenter (/video/* routes)
     expose: ["8000"]
 
   # ── MCP File Search (optional — only starts with --profile mcp) ───────────
@@ -126,7 +129,41 @@ services:
       - ./backend/auth.js:/app/auth.js
       - ./backend/db.js:/app/db.js
       - ./backend/billing.mjs:/app/billing.mjs              # Step 4: Stripe billing
+      - ./backend/video:/app/video                          # Step 6: video engine (enqueue-only routes)
     expose: ["3000"]
+
+  # ── Video assembly workers (Step 6): audio · visual · check · stitch (BullMQ) ──
+  # A SEPARATE process from the API so ffmpeg/generation never touch the API event
+  # loop (the Step 3 discipline). Scales independently; share the same Redis + R2.
+  video-worker:
+    build: ./backend
+    restart: unless-stopped
+    depends_on: [redis, python-api]
+    command: ["node", "video/worker-entry.mjs"]
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - PYTHON_API_URL=http://python-api:8000
+      - NODE_ENV=${NODE_ENV:-development}
+      # trusted server-to-server auth so per-scene calls carry tenant context
+      - INTERNAL_SERVICE_SECRET=${INTERNAL_SERVICE_SECRET:-}
+      - VIDEO_TTS_AUDIO_PATH=${VIDEO_TTS_AUDIO_PATH:-/video/tts/scene}
+      - VIDEO_SYNTHETIC=${VIDEO_SYNTHETIC:-}
+      - VIDEO_WIDTH=${VIDEO_WIDTH:-1920}
+      - VIDEO_HEIGHT=${VIDEO_HEIGHT:-1080}
+      - VIDEO_FPS=${VIDEO_FPS:-30}
+      - VIDEO_PRESET=${VIDEO_PRESET:-medium}
+      - VIDEO_AUDIO_CONCURRENCY=${VIDEO_AUDIO_CONCURRENCY:-10}
+      - VIDEO_VISUAL_CONCURRENCY=${VIDEO_VISUAL_CONCURRENCY:-10}
+      - VIDEO_STITCH_CONCURRENCY=${VIDEO_STITCH_CONCURRENCY:-2}
+      # R2 (same bucket) so workers upload scene assets + the final MP4
+      - STORAGE_ENDPOINT=${STORAGE_ENDPOINT:-}
+      - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY:-}
+      - STORAGE_SECRET_KEY=${STORAGE_SECRET_KEY:-}
+      - STORAGE_BUCKET=${STORAGE_BUCKET:-}
+      - STORAGE_REGION=${STORAGE_REGION:-auto}
+    volumes:
+      - ./backend/video:/app/video
+      - ./backend/storage.mjs:/app/storage.mjs
 
   # ── nginx: serve UI + reverse-proxy all /api ─────────────────────────────
   nginx:

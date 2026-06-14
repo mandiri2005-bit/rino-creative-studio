@@ -5,7 +5,7 @@ SSE StreamingResponse endpoints are never touched.
 
 Dependencies: pip install python-jose[cryptography] httpx
 """
-import os, time, logging
+import os, time, logging, hmac
 from dataclasses import dataclass, field
 from contextvars import ContextVar
 from typing import Optional
@@ -138,6 +138,40 @@ class CurrentUser:
     plan:      str
     tier:      str      # alias for plan, used by billing checks
 
+# ── Internal service auth (trusted server-to-server: the video worker) ─────────
+# The video worker has no Clerk JWT. When INTERNAL_SERVICE_SECRET is set AND a
+# request presents the matching X-Internal-Secret header, we trust the supplied
+# X-Internal-Tenant-Id / X-Internal-User-Id and build the same tenant context a
+# real auth would — so per-scene metering + Postgres RLS work for worker calls.
+# This is gated on the env secret (unset → never trusted) and the Python API is
+# internal (behind nginx/Node), never directly reachable from the browser.
+
+def _internal_secret_ok(secret: Optional[str]) -> bool:
+    expected = os.getenv("INTERNAL_SERVICE_SECRET", "")
+    return bool(expected) and bool(secret) and hmac.compare_digest(str(secret), expected)
+
+async def _internal_service_user(tenant_id: str, user_id: str) -> CurrentUser:
+    """Build a trusted CurrentUser for an internal service call. Sets the same
+    ContextVars + TenantContext as get_current_user, so metering + RLS work."""
+    uid = user_id or tenant_id
+    _tenant_id.set(tenant_id)
+    _user_id.set(uid)
+    try:
+        import database as _db
+        ctx_data = await _db.get_tenant_context(tenant_id, uid)
+        ctx = TenantContext(
+            tenant_id=tenant_id, user_id=uid, tier=ctx_data.get("tier", "pro"),
+            credits=ctx_data.get("credits", 100), api_key=ctx_data.get("laozhang_key", ""),
+            deepseek_key=ctx_data.get("deepseek_key", ""), gemini_key=ctx_data.get("gemini_key", ""))
+    except Exception as exc:
+        log.warning("internal_service_user ctx fallback: %s", exc)
+        ctx = TenantContext(
+            tenant_id=tenant_id, user_id=uid, tier="pro", credits=100,
+            api_key=os.getenv("LAOZHANG_API_KEY", ""), deepseek_key=os.getenv("DEEPSEEK_API_KEY", ""),
+            gemini_key=os.getenv("GEMINI_API_KEY", ""))
+    _tenant_ctx.set(ctx)
+    return CurrentUser(tenant_id=tenant_id, user_id=uid, plan=ctx.tier, tier=ctx.tier)
+
 # ── DB helpers (lazy import to avoid circular imports) ─────────────────────────
 
 async def _get_or_provision(tenant_id: str, user_id: str, email: str, plan: str) -> str:
@@ -186,6 +220,9 @@ async def _get_or_provision(tenant_id: str, user_id: str, email: str, plan: str)
 
 async def get_current_user(
     authorization: Optional[str] = Header(default=None),
+    x_internal_secret: Optional[str] = Header(default=None),
+    x_internal_tenant_id: Optional[str] = Header(default=None),
+    x_internal_user_id: Optional[str] = Header(default=None),
 ) -> CurrentUser:
     """
     FastAPI dependency for protected routes.
@@ -197,6 +234,11 @@ async def get_current_user(
         async def stream_chat(req: ChatRequest, user: CurrentUser = Depends(get_current_user)):
             ...
     """
+    # Trusted internal service (the video worker) — bypasses Clerk JWT only when
+    # the env secret matches. See _internal_service_user.
+    if _internal_secret_ok(x_internal_secret) and x_internal_tenant_id:
+        return await _internal_service_user(x_internal_tenant_id, x_internal_user_id or "")
+
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or invalid Authorization header")
 
@@ -265,11 +307,22 @@ async def get_current_user(
 
 async def get_current_user_optional(
     authorization: Optional[str] = Header(default=None),
+    x_internal_secret: Optional[str] = Header(default=None),
+    x_internal_tenant_id: Optional[str] = Header(default=None),
+    x_internal_user_id: Optional[str] = Header(default=None),
 ) -> Optional[CurrentUser]:
     """Like get_current_user but NEVER raises: returns None when the token is
     missing or invalid. Use on endpoints that should capture the tenant when a
     token is present but must stay usable without one (e.g. Veo/Sora submit,
     which historically ran unauthenticated). Sets the same ContextVars on success."""
+    # Internal service (video worker) path — works on optional-auth routes too
+    # (e.g. /generate-image, /veo/submit) so per-scene metering + RLS apply.
+    if _internal_secret_ok(x_internal_secret) and x_internal_tenant_id:
+        try:
+            return await _internal_service_user(x_internal_tenant_id, x_internal_user_id or "")
+        except Exception as exc:
+            log.warning("internal optional auth failed: %s", exc)
+            return None
     if not authorization or not authorization.startswith("Bearer "):
         return None
     try:

@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Video Instant ⚡ · ceritaAI</title>
+<link rel="icon" href="/assets/favicon-32.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  :root{
+    --fd:'Bricolage Grotesque',sans-serif; --fb:'Hanken Grotesk',sans-serif; --fm:'JetBrains Mono',monospace;
+    --bg:#09090f; --sb:#0e0e18; --be:#14141f; --be2:#1c1c2e; --br:#252535; --brs:#1a1a2a;
+    --t:#e8e8f0; --td:#9090a8; --tf:#606070; --ac:#6366f1; --ac2:#8b5cf6;
+    --good:#34d399; --warn:#fbbf24; --bad:#f87171;
+    --as:rgba(99,102,241,.12);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--t);font-family:var(--fb);min-height:100vh;-webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(900px 600px at 80% -10%,rgba(99,102,241,.14),transparent 60%);}
+  /* Clerk overlay */
+  #clerk-loading{position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)}
+  .spin-lg{width:36px;height:36px;border:3px solid rgba(99,102,241,.3);border-top-color:var(--ac);border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #clerk-loading p{font-size:13px;color:rgba(255,255,255,.5)}
+  #clerk-gate{position:fixed;inset:0;z-index:9998;display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:var(--bg)}
+  #clerk-gate p{font-size:13px;color:rgba(255,255,255,.5);max-width:320px;text-align:center}
+  #clerk-gate .gate-btns{display:flex;gap:10px}
+  #clerk-gate .gate-btns button{padding:10px 22px;border:none;border-radius:9px;font-family:var(--fb);font-size:14px;font-weight:600;cursor:pointer}
+  #clerk-gate .gate-btns .pri{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
+  #clerk-gate .gate-btns .sec{background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);border:1px solid rgba(255,255,255,.12)}
+  #clerk-sign-in-modal,#clerk-sign-up-modal{position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)}
+  #clerk-sign-in-modal.open,#clerk-sign-up-modal.open{display:flex}
+
+  /* Top bar */
+  .top{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--br);position:sticky;top:0;background:rgba(9,9,15,.8);backdrop-filter:blur(10px);z-index:50}
+  .brand{display:flex;align-items:center;gap:9px;font-family:var(--fd);font-weight:700;font-size:16px}
+  .brand img{height:24px}
+  .brand .zap{color:var(--ac)}
+  .top-r{display:flex;align-items:center;gap:10px}
+  .lnk{font-family:var(--fm);font-size:11.5px;color:var(--td);text-decoration:none;padding:7px 13px;border:1px solid var(--br);border-radius:8px;transition:.2s}
+  .lnk:hover{color:var(--t);border-color:var(--ac)}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 24px 60px;display:grid;grid-template-columns:minmax(0,420px) 1fr;gap:24px;align-items:start}
+  @media(max-width:900px){ .wrap{grid-template-columns:1fr} }
+
+  .panel{border:1px solid var(--br);border-radius:18px;background:linear-gradient(180deg,rgba(20,20,31,.7),rgba(14,14,24,.7));padding:22px}
+  .panel h2{font-family:var(--fd);font-weight:700;font-size:18px;letter-spacing:-.01em;margin-bottom:3px}
+  .panel .sub{color:var(--td);font-size:12.5px;margin-bottom:18px}
+  .lbl{display:block;font-family:var(--fm);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--td);margin:16px 0 8px}
+  .seg{display:flex;gap:6px;background:var(--bg);border:1px solid var(--br);border-radius:11px;padding:4px}
+  .seg button{flex:1;background:none;border:none;color:var(--td);font-family:var(--fb);font-size:13px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer;transition:.2s}
+  .seg button.on{background:var(--as);color:var(--t)}
+  textarea,select,input{width:100%;background:var(--bg);border:1px solid var(--br);border-radius:11px;color:var(--t);font-family:var(--fb);font-size:14px;padding:11px 13px;transition:.2s}
+  textarea:focus,select:focus,input:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3px var(--as)}
+  textarea{resize:vertical;min-height:88px;line-height:1.5}
+  .pills{display:flex;flex-wrap:wrap;gap:7px}
+  .pill{background:var(--bg);border:1px solid var(--br);color:var(--td);font-family:var(--fm);font-size:12px;padding:7px 12px;border-radius:9px;cursor:pointer;transition:.2s}
+  .pill:hover{border-color:color-mix(in srgb,var(--ac) 50%,var(--br));color:var(--t)}
+  .pill.on{background:linear-gradient(135deg,var(--ac),var(--ac2));border-color:transparent;color:#fff}
+  .row{display:flex;gap:10px}
+  .row>*{flex:1}
+  .chk{display:flex;align-items:center;gap:9px;margin-top:14px;cursor:pointer;font-size:13.5px;color:var(--td)}
+  .chk input{width:auto}
+  .estimate{display:flex;align-items:center;justify-content:space-between;margin-top:18px;padding:13px 15px;border:1px solid var(--br);border-radius:12px;background:var(--bg)}
+  .estimate .e-l{font-size:12px;color:var(--td)}
+  .estimate .e-l b{color:var(--t);font-family:var(--fd);font-size:15px}
+  .estimate .e-cr{font-family:var(--fm);font-size:14px;color:var(--ac)}
+  .estimate .e-cr b{font-size:18px;color:var(--t)}
+  .produce{width:100%;margin-top:18px;padding:14px;border:none;border-radius:12px;background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;font-family:var(--fb);font-weight:700;font-size:15px;cursor:pointer;box-shadow:0 12px 30px -12px var(--ac);transition:.2s}
+  .produce:hover:not(:disabled){transform:translateY(-1px)}
+  .produce:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
+  .err{margin-top:12px;font-size:12.5px;color:var(--bad);background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.25);border-radius:10px;padding:9px 12px;display:none}
+
+  /* Stage */
+  .stage{border:1px solid var(--br);border-radius:18px;background:linear-gradient(180deg,rgba(20,20,31,.5),rgba(14,14,24,.5));min-height:460px;display:flex;flex-direction:column;overflow:hidden}
+  .stage-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--tf);text-align:center;padding:40px}
+  .stage-empty .big{font-size:46px}
+  .stage-empty h3{font-family:var(--fd);font-weight:600;font-size:18px;color:var(--td)}
+  .stage-empty p{font-size:13px;max-width:300px;line-height:1.6}
+  .stage-head{padding:16px 20px;border-bottom:1px solid var(--br);display:flex;align-items:center;justify-content:space-between}
+  .stage-head .st-t{font-family:var(--fd);font-weight:600;font-size:15px}
+  .stage-head .st-s{font-family:var(--fm);font-size:11px;color:var(--td)}
+  .stbadge{font-family:var(--fm);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:4px 9px;border-radius:20px}
+  .stbadge.run{background:var(--as);color:var(--ac)} .stbadge.done{background:rgba(52,211,153,.14);color:var(--good)} .stbadge.fail{background:rgba(248,113,113,.14);color:var(--bad)}
+  .bar-wrap{padding:18px 20px}
+  .bar{height:9px;border-radius:20px;background:var(--bg);border:1px solid var(--br);overflow:hidden}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--ac2));width:0;transition:width .4s}
+  .bar-meta{display:flex;justify-content:space-between;margin-top:9px;font-family:var(--fm);font-size:11px;color:var(--td)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:10px;padding:18px 20px}
+  .scard{border:1px solid var(--br);border-radius:11px;padding:11px;background:var(--bg);min-height:84px;display:flex;flex-direction:column;gap:6px;transition:.2s}
+  .scard.done{border-color:color-mix(in srgb,var(--good) 40%,var(--br))}
+  .scard .sc-top{display:flex;align-items:center;justify-content:space-between}
+  .scard .sc-n{font-family:var(--fm);font-size:10px;color:var(--td)}
+  .scard .sc-kind{font-size:13px}
+  .scard .sc-txt{font-size:11px;color:var(--td);line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .scard .dot{width:7px;height:7px;border-radius:50%;background:var(--tf)}
+  .scard.run .dot{background:var(--ac);animation:pulse 1.2s infinite}
+  .scard.done .dot{background:var(--good)}
+  @keyframes pulse{50%{opacity:.35}}
+  .player{padding:18px 20px}
+  .player video{width:100%;border-radius:12px;background:#000;display:block}
+  .player .p-actions{display:flex;gap:10px;margin-top:14px}
+  .player a.dl{flex:1;text-align:center;padding:11px;border:1px solid var(--ac);border-radius:11px;color:var(--ac);text-decoration:none;font-weight:600;font-size:14px;transition:.2s}
+  .player a.dl:hover{background:var(--as)}
+  .player button.again{flex:1;padding:11px;border:1px solid var(--br);background:none;border-radius:11px;color:var(--td);font-family:var(--fb);font-weight:600;font-size:14px;cursor:pointer}
+  .note{padding:0 20px 18px;font-size:11.5px;color:var(--tf);line-height:1.5}
+</style>
+</head>
+<body>
+<script>window.__CLERK_PK = "pk_test_cHJpbWUtYm9hci00NS5jbGVyay5hY2NvdW50cy5kZXYk"; window.__appReady = true;</script>
+
+<div id="clerk-loading"><div class="spin-lg"></div><p>Memuat Video Instant…</p></div>
+<div id="clerk-gate" style="display:none">
+  <img src="/assets/ceritaai-logo.png" alt="ceritaAI" style="height:110px"/>
+  <p>Masuk untuk membuat video instan.</p>
+  <div class="gate-btns">
+    <button class="pri" onclick="window.__clerkAuth.openSignIn()">Masuk</button>
+    <button class="sec" onclick="window.__clerkAuth.openSignUp()">Buat akun</button>
+  </div>
+</div>
+<div id="clerk-sign-in-modal"><div id="clerk-sign-in-mount"></div></div>
+<div id="clerk-sign-up-modal"><div id="clerk-sign-up-mount"></div></div>
+
+<div id="root" style="visibility:hidden">
+  <div class="top">
+    <div class="brand"><img src="/assets/ceritaai-mark.png" alt="" onerror="this.style.display='none'"/>Video Instant <span class="zap">⚡</span></div>
+    <div class="top-r">
+      <a class="lnk" href="/start.html">← Ganti jalur</a>
+      <a class="lnk" href="/index.html">Studio</a>
+      <button class="lnk" style="background:none;cursor:pointer" onclick="window.__clerkAuth?.signOut()">Keluar</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <!-- ── Compose ── -->
+    <div class="panel">
+      <h2>Bikin video</h2>
+      <div class="sub">Satu topik atau narasimu → satu video jadi.</div>
+
+      <div class="seg" id="modeSeg">
+        <button data-mode="A" class="on">Dari topik</button>
+        <button data-mode="B">Dari narasi</button>
+      </div>
+
+      <div id="modeA">
+        <label class="lbl">Topik</label>
+        <textarea id="topic" placeholder="mis. Sejarah jalur rempah Nusantara dan kapal-kapal pertama yang melintasinya"></textarea>
+        <label class="lbl">Gaya narasi</label>
+        <select id="style">
+          <option value="creative_nonfiction">Creative non-fiction</option>
+          <option value="storytelling">Storytelling</option>
+          <option value="big_history">Big history (Harari)</option>
+          <option value="natgeo">Dokumenter (NatGeo)</option>
+          <option value="bedtime_story">Bedtime story</option>
+          <option value="pov_first_person">POV orang pertama</option>
+        </select>
+      </div>
+
+      <div id="modeB" style="display:none">
+        <label class="lbl">Narasi kamu</label>
+        <textarea id="narration" style="min-height:140px" placeholder="Tempel narasi yang sudah kamu tulis. Tidak akan dipotong — durasi mengikuti panjang aslinya."></textarea>
+      </div>
+
+      <label class="lbl" id="durLbl">Durasi</label>
+      <div class="pills" id="durPills"></div>
+
+      <label class="lbl">Kualitas</label>
+      <div class="pills" id="tierPills">
+        <div class="pill" data-tier="fast">Fast</div>
+        <div class="pill on" data-tier="hd">HD</div>
+        <div class="pill" data-tier="hd_plus">HD+</div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label class="lbl">Mode visual</label>
+          <select id="visualMode">
+            <option value="hybrid">Hybrid (cerdas)</option>
+            <option value="full_clips">Semua klip</option>
+            <option value="full_images">Semua gambar</option>
+          </select>
+        </div>
+        <div id="clipModelWrap">
+          <label class="lbl">Model klip</label>
+          <select id="clipModel">
+            <option value="veo3">Veo (8 dtk)</option>
+            <option value="kling3">Kling (15 dtk)</option>
+          </select>
+        </div>
+      </div>
+
+      <label class="chk"><input type="checkbox" id="captions"/> Bakar caption ke video</label>
+
+      <div class="estimate">
+        <div class="e-l"><b id="estScenes">—</b> scene · <span id="estDur">—</span></div>
+        <div class="e-cr">≈ <b id="estCredits">—</b> kredit</div>
+      </div>
+
+      <button class="produce" id="produceBtn">Buat video ⚡</button>
+      <div class="err" id="err"></div>
+    </div>
+
+    <!-- ── Stage ── -->
+    <div class="stage" id="stage">
+      <div class="stage-empty" id="stageEmpty">
+        <div class="big">🎬</div>
+        <h3>Videomu akan muncul di sini</h3>
+        <p>Pilih topik & durasi, lalu tekan Buat video. Mesin paralel kami merangkai tiap scene sekaligus.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/auth.js"></script>
+<script>
+(function(){
+  "use strict";
+  const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+  const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",captions:false,jobId:null,poll:null};
+
+  async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
+  async function api(path,opts={}){
+    const t=await token();
+    const r=await fetch(path,{...opts,headers:{"Content-Type":"application/json",...(t?{"Authorization":"Bearer "+t}:{}),...(opts.headers||{})}});
+    let data=null; try{ data=await r.json(); }catch{}
+    if(!r.ok){ const e=new Error((data&&(data.error||data.detail))||("HTTP "+r.status)); e.status=r.status; e.data=data; throw e; }
+    return data;
+  }
+
+  // ── duration pills ──
+  const durPills=$("#durPills");
+  DURATIONS.forEach(([lbl,min])=>{
+    const d=document.createElement("div"); d.className="pill"+(min===state.minutes?" on":""); d.textContent=lbl; d.dataset.min=min;
+    d.onclick=()=>{ state.minutes=min; $$("#durPills .pill").forEach(p=>p.classList.toggle("on",+p.dataset.min===min)); refreshEstimate(); };
+    durPills.appendChild(d);
+  });
+
+  // ── segmented mode ──
+  $$("#modeSeg button").forEach(b=>b.onclick=()=>{
+    state.mode=b.dataset.mode; $$("#modeSeg button").forEach(x=>x.classList.toggle("on",x===b));
+    $("#modeA").style.display=state.mode==="A"?"":"none";
+    $("#modeB").style.display=state.mode==="B"?"":"none";
+    $("#durLbl").textContent=state.mode==="A"?"Durasi":"Durasi (≈ dari panjang narasi)";
+    durPills.style.opacity=state.mode==="A"?"1":".5"; durPills.style.pointerEvents=state.mode==="A"?"":"none";
+  });
+
+  $$("#tierPills .pill").forEach(p=>p.onclick=()=>{ state.tier=p.dataset.tier; $$("#tierPills .pill").forEach(x=>x.classList.toggle("on",x===p)); refreshEstimate(); });
+  $("#style").onchange=e=>state.style=e.target.value;
+  $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; };
+  $("#clipModel").onchange=e=>state.clipModel=e.target.value;
+  $("#captions").onchange=e=>state.captions=e.target.checked;
+
+  // ── live estimate via /api/video/params ──
+  let estTimer=null;
+  async function refreshEstimate(){
+    if(state.mode!=="A"){ $("#estScenes").textContent="—"; $("#estDur").textContent="dari narasi"; $("#estCredits").textContent="—"; return; }
+    clearTimeout(estTimer);
+    estTimer=setTimeout(async()=>{
+      try{
+        const p=await api("/api/video/params",{method:"POST",body:JSON.stringify({minutes:state.minutes,tier:state.tier})});
+        $("#estScenes").textContent=p.scene_count;
+        $("#estDur").textContent=DURATIONS.find(d=>d[1]===state.minutes)?.[0]||state.minutes+" mnt";
+        $("#estCredits").textContent=p.credits;
+      }catch(e){ /* leave dashes */ }
+    },150);
+  }
+
+  // ── produce ──
+  const stage=$("#stage"), errBox=$("#err"), btn=$("#produceBtn");
+  function showErr(m){ errBox.textContent=m; errBox.style.display="block"; }
+  function clearErr(){ errBox.style.display="none"; }
+  function setBusy(b){ btn.disabled=b; btn.textContent=b?"Sedang dibuat…":"Buat video ⚡"; }
+
+  $("#produceBtn").onclick=async()=>{
+    clearErr();
+    const topic=$("#topic").value.trim(), narration=$("#narration").value.trim();
+    if(state.mode==="A"&&!topic) return showErr("Isi topiknya dulu.");
+    if(state.mode==="B"&&!narration) return showErr("Tempel narasimu dulu.");
+    setBusy(true);
+    renderStage({status:"segmenting"});
+    try{
+      // 1) segment (+ generate narration for Mode A) + decide visual treatment
+      const seg=await api("/api/video/segment",{method:"POST",body:JSON.stringify({
+        mode:state.mode, topic, text:narration, minutes:state.minutes, style:state.style, tier:state.tier,
+        clip_model:state.clipModel, visual_mode:state.visualMode, clip_ratio:0.3,
+      })});
+      const scenes=seg.scenes||[];
+      if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
+      renderStage({status:"dispatching",scenes});
+      // 2) assemble
+      const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
+        scenes, tier:state.tier, clipModel:state.clipModel, visualMode:state.visualMode, captions:state.captions,
+      })});
+      state.jobId=asm.jobId;
+      pollJob(asm);
+    }catch(e){
+      setBusy(false);
+      if(e.status===402) showErr("Kredit tidak cukup ("+(e.data?.creditsNeeded||"?")+" diperlukan). Top up dulu di Studio.");
+      else showErr(e.message||"Gagal membuat video.");
+      stage.innerHTML='<div class="stage-empty"><div class="big">😕</div><h3>Belum berhasil</h3><p>Coba lagi atau ubah pengaturannya.</p></div>';
+    }
+  };
+
+  function pollJob(asm){
+    clearInterval(state.poll);
+    state.poll=setInterval(async()=>{
+      try{
+        const j=await api("/api/video/assemble/"+state.jobId,{method:"GET"});
+        renderJob(j,asm);
+        if(j.status==="done"||j.status==="failed"){ clearInterval(state.poll); setBusy(false); }
+      }catch(e){ /* transient; keep polling */ }
+    },1500);
+  }
+
+  // ── stage rendering ──
+  function renderStage(s){
+    if(s.status==="segmenting"){
+      stage.innerHTML='<div class="stage-empty"><div class="spin-lg"></div><h3>'+(state.mode==="A"?"Menulis narasi & memotong scene…":"Memotong scene…")+'</h3><p>Sebentar, lagi menyiapkan adegan.</p></div>';
+    }
+  }
+  function badge(status){
+    const map={running:["run","Berjalan"],stitching:["run","Merangkai"],done:["done","Selesai"],failed:["fail","Gagal"],queued:["run","Antre"]};
+    const [c,l]=map[status]||["run",status]; return '<span class="stbadge '+c+'">'+l+'</span>';
+  }
+  function renderJob(j,asm){
+    const scenes=j.scenes||[];
+    const total=scenes.length||asm.sceneCount||0;
+    const doneN=scenes.filter(s=>s.audioStatus==="done"&&(s.visualStatus==="done"||s.visualStatus==="fallback")).length;
+    const useBar=total>10;
+    let head='<div class="stage-head"><div><div class="st-t">'+(j.status==="done"?"Video selesai":"Merangkai video")+'</div>'+
+      '<div class="st-s">'+total+' scene · '+(j.dispatch_mode==="batch"?"batch":"paralel")+'</div></div>'+badge(j.status)+'</div>';
+
+    if(j.status==="done"&&(j.mp4Url||j.mp4Path)){
+      const src=j.mp4Url||"";
+      stage.innerHTML=head+'<div class="player">'+
+        (src?'<video src="'+src+'" controls autoplay playsinline></video>':'<div class="stage-empty" style="min-height:200px"><div class="big">✅</div><h3>Video jadi</h3><p>File tersimpan. URL pratinjau butuh penyimpanan objek (R2) aktif.</p></div>')+
+        '<div class="p-actions">'+(src?'<a class="dl" href="'+src+'" download>Unduh MP4</a>':'')+
+        '<button class="again" onclick="location.reload()">Buat lagi</button></div></div>'+
+        '<div class="note">Durasi ≈ '+(j.durationActual||"?")+' dtk · suara jadi penentu tempo.</div>';
+      return;
+    }
+    if(j.status==="failed"){
+      stage.innerHTML=head+'<div class="stage-empty"><div class="big">😕</div><h3>Gagal merangkai</h3><p>'+(j.error||"Coba lagi.")+'</p></div>';
+      return;
+    }
+    // in progress
+    let body;
+    if(useBar){
+      const pct=total?Math.round(doneN/total*100):0;
+      body='<div class="bar-wrap"><div class="bar"><i style="width:'+pct+'%"></i></div>'+
+        '<div class="bar-meta"><span>scene '+doneN+' dari '+total+'</span><span>'+(j.progress||pct)+'%</span></div></div>';
+    }else{
+      body='<div class="cards">'+scenes.map(s=>{
+        const sdone=s.audioStatus==="done"&&(s.visualStatus==="done"||s.visualStatus==="fallback");
+        const cls=sdone?"done":(s.audioStatus==="done"||s.visualStatus==="done"?"run":"");
+        const kind=(s.visualKind||s.kind)==="clip"?"🎞️":"🖼️";
+        return '<div class="scard '+cls+'"><div class="sc-top"><span class="sc-n">#'+s.number+'</span><span class="dot"></span></div>'+
+          '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+(s.text||"").slice(0,90)+'</div></div>';
+      }).join("")+'</div>';
+    }
+    stage.innerHTML=head+body;
+  }
+
+  // ── handoff from Studio (Flow Storyboard / Script→TTS "Send to Video Instant") ──
+  (function readHandoff(){
+    try{
+      const raw=localStorage.getItem("rc_vi_handoff"); if(!raw) return;
+      localStorage.removeItem("rc_vi_handoff");
+      const h=JSON.parse(raw);
+      if(h&&h.text&&(!h.ts||Date.now()-h.ts<30*60*1000)){
+        state.mode="B";
+        $$("#modeSeg button").forEach(x=>x.classList.toggle("on",x.dataset.mode==="B"));
+        $("#modeA").style.display="none"; $("#modeB").style.display="";
+        $("#durLbl").textContent="Durasi (≈ dari panjang narasi)";
+        durPills.style.opacity=".5"; durPills.style.pointerEvents="none";
+        $("#narration").value=h.text;
+      }
+    }catch{}
+  })();
+
+  // init
+  refreshEstimate();
+  window.addEventListener("clerk:userchange",()=>{ /* token refresh handled per-call */ });
+})();
+</script>
+</body>
+</html>

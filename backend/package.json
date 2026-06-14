@@ -16,6 +16,7 @@
     "@clerk/express": "^2.1.23",
     "@google/genai": "^1.0.0",
     "@sentry/node": "^8.0.0",
+    "bullmq": "^5.78.1",
     "cors": "^2.8.5",
     "drizzle-orm": "^0.45.2",
     "express": "^4.19.2",

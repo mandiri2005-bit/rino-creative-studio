@@ -2232,8 +2232,9 @@ function FlowSection({settings,showToast}){
       </button>
       {Object.values(sceneVeo).some(v=>v?.taskId&&v.status!=="succeeded"&&v.status!=="completed"&&v.status!=="error")&&
         <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={pollAllVeo}>🔄 Poll All</button>}
-      {/* Batch & clear */}
+      {/* Batch, Video Instant & clear */}
       <button className="btn pri" style={{padding:"5px 12px",fontSize:11.5}} onClick={sendToBatch}>{ic.batch} Send to Batch</button>
+      <button className="btn pri" style={{padding:"5px 12px",fontSize:11.5,background:"linear-gradient(135deg,#6366f1,#8b5cf6)"}} title="Kirim narasi ini ke Video Instant untuk dirakit jadi video" onClick={()=>{ if(!script.trim())return showToast("Script kosong — generate dulu","err"); try{localStorage.setItem("rc_vi_handoff",JSON.stringify({mode:"B",text:script,ts:Date.now()}));}catch{} window.location.href="/video-instant.html"; }}>⚡ Send to Video Instant</button>
       <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={()=>{setScenes([]);setSceneVeo({});setSceneImgSel({});setVideoPicked({});idbRef.current?.del("rc_flow_state").catch(()=>{});}}>{ic.trash} Clear</button>
     </div>}
     {scenes.length>0&&<div className="flow-scenes">
@@ -3271,6 +3272,7 @@ function ScriptTtsSection({settings,showToast}){
       <button className="btn pri w lg" style={{marginTop:12}} disabled={busy||!script.trim()} onClick={generate}>
         {busy?<><span className="spin"/> Transforming script…</>:<>{ic.mic} Transform → TTS Script</>}
       </button>
+      <button className="btn pri w" style={{marginTop:8,background:"linear-gradient(135deg,#6366f1,#8b5cf6)"}} disabled={!script.trim()} title="Rakit narasi ini jadi video di Video Instant" onClick={()=>{ if(!script.trim())return showToast("Tulis naskahnya dulu","err"); try{localStorage.setItem("rc_vi_handoff",JSON.stringify({mode:"B",text:script,ts:Date.now()}));}catch{} window.location.href="/video-instant.html"; }}>⚡ Send to Video Instant</button>
     </div>
 
     {/* Output */}

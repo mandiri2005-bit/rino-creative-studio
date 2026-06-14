@@ -5721,6 +5721,234 @@ async def oneshot_fix_result(job_id: str,
 
 
 # ---------------------------------------------------------------------------
+# ===========================================================================
+# Video assembly (Step 6): segmenter + per-scene TTS for the BullMQ engine.
+# The Node worker (backend/video/*) calls these per scene with internal-service
+# auth (X-Internal-Secret) so per-scene metering + Postgres RLS apply. The
+# segmenter logic lives in video_segmenter.py (pure, unit-tested).
+# ===========================================================================
+import video_segmenter as _vseg
+from dataclasses import asdict as _asdict
+
+class VideoParamsReq(BaseModel):
+    minutes: float
+    tier: str = "hd"
+
+class VideoSegmentReq(BaseModel):
+    text: str = ""
+    topic: str = ""                     # Mode A: the subject to generate narration about
+    minutes: Optional[float] = None
+    mode: str = "B"
+    style: str = ""
+    clip_model: str = "veo3"
+    tier: str = "hd"
+    gen_model: str = "deepseek-chat"    # Mode A narration model
+    language: str = "id"
+    visual_mode: Optional[str] = None   # set ('full_clips'|'full_images'|'hybrid') to also run the decide stage
+    clip_ratio: float = 0.3
+
+class VideoDecideReq(BaseModel):
+    scenes: list
+    visual_mode: str = "hybrid"
+    clip_model: str = "veo3"
+    clip_ratio: float = 0.3
+    merit_model: str = "gemini-2.5-flash"
+
+
+def _score_scene_merit(scenes: list, eligible_indices: list, model: str = "gemini-2.5-flash"):
+    """Step 6d cinematic-merit ranker — the proven Flow /chat/once mechanism: a
+    single non-streaming LLM call scores each fit-eligible scene 0-100 for
+    motion-worthiness. Returns a full-length score list (ineligible → 0) or None
+    on any failure, in which case decide_visual_modes uses its heuristic."""
+    if not eligible_indices:
+        return None
+    try:
+        client = make_client(model)
+        lines = [f"{i}: {(scenes[i].get('text') or '')[:240]}" for i in eligible_indices]
+        prompt = (
+            "You are choosing which documentary scenes deserve an animated video clip "
+            "instead of a still image. Higher score = more motion-worthy (visible action, "
+            "movement, a dynamic subject); lower = a reflective/narration-led beat better "
+            "served by a still. Score each 0-100. Return ONLY a JSON object mapping the "
+            'scene index to its score, e.g. {"0": 80, "2": 30}.\n\nScenes:\n' + "\n".join(lines))
+        resp = client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}],
+            temperature=0.2, max_tokens=500)
+        content = (resp.choices[0].message.content or "")
+        m = _re.search(r'\{.*\}', content, _re.DOTALL)
+        if m is None:
+            return None  # no JSON in the reply → fall back to the heuristic
+        data = json.loads(m.group(0))
+        scores = [0.0] * len(scenes)
+        parsed = 0
+        for k, v in data.items():
+            try:
+                scores[int(k)] = float(v)
+                parsed += 1
+            except Exception:
+                pass
+        return scores if parsed else None  # all-unparseable → heuristic, not all-zero
+    except Exception as _e:
+        print(f"[video/decide] merit scoring fell back to heuristic: {_e}")
+        return None
+
+
+async def _decide(scenes: list, visual_mode: str, clip_model: str, clip_ratio: float,
+                  merit_model: str = "gemini-2.5-flash", user=None) -> list:
+    """Run the decide stage, computing /chat/once merit only for hybrid mode. The
+    merit call is a billable LLM op, so it is gated + debited when a tenant is
+    present (mirrors /chat/once); unauthenticated callers never reach here."""
+    merit = None
+    if (visual_mode or "hybrid").lower() == "hybrid":
+        cm = _vseg._normalize_clip_model(clip_model)
+        # eligibility computed the SAME way decide_visual_modes enforces it: always
+        # the fit gate against the chosen model (ignore any stale inbound flag).
+        eligible = [
+            i for i, s in enumerate(scenes)
+            if _vseg.clip_fits(s.get("est_seconds") or _vseg.estimate_seconds(int(s.get("word_count") or 0)), cm)
+        ]
+        if eligible:
+            _byok = _byok_active()
+            est_in = sum(len((scenes[i].get("text") or "")[:240]) for i in eligible) // 4 + 120
+            units = {"tokens_in": est_in, "tokens_out": 500}
+            if user:
+                await metering.gate(user.tenant_id, "chat", merit_model, units, byok=_byok)
+            merit = await asyncio.to_thread(_score_scene_merit, scenes, eligible, merit_model)
+            if user:
+                try:
+                    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+                    await metering.debit(user.tenant_id, _uid, "chat", merit_model, units, byok=_byok, log=True)
+                except Exception as _e:
+                    print(f"[video/decide] merit metering debit failed (non-fatal): {_e}")
+    return _vseg.decide_visual_modes(scenes, visual_mode, clip_model, clip_ratio, merit)
+
+class VideoTtsSceneReq(BaseModel):
+    text: str
+    voice: str = "alloy"
+    model: str = "tts-1"
+    speed: float = 1.0
+    scene_index: int = 0
+
+@app.post("/video/params")
+async def video_params(req: VideoParamsReq):
+    """Duration → scene_count / words / batch / credits. Drives the UI picker."""
+    return _asdict(_vseg.calculate_video_params(req.minutes, req.tier))
+
+@app.post("/video/params/all")
+async def video_params_all():
+    """The full Duration Presets contract table."""
+    return {"presets": _vseg.duration_table()}
+
+@app.post("/video/segment")
+async def video_segment(req: VideoSegmentReq,
+                        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Cut narration into timed scene objects (Mode A: to a target; Mode B:
+    existing text, never truncated). When visual_mode is set, also runs the
+    (metered) decide stage."""
+    if req.minutes is not None and req.minutes > 60:
+        raise HTTPException(400, "minutes must be <= 60")
+    mode = (req.mode or "B").strip().upper()
+
+    if mode == "A":
+        # Mode A: generate documentary narration from a topic to the target length,
+        # then segment it. The LLM call is billable → gated + debited like /chat/once.
+        topic = (req.topic or req.text or "").strip()
+        if not topic:
+            raise HTTPException(400, "topic is required for mode A")
+        if req.minutes is None or req.minutes <= 0:
+            raise HTTPException(400, "minutes is required for mode A")
+        params = _vseg.calculate_video_params(req.minutes, req.tier)
+        prompt = _vseg.build_generation_prompt(topic, params.target_words, req.style, req.language)
+        _byok = _byok_active()
+        if user:
+            await metering.gate(user.tenant_id, "chat", req.gen_model,
+                                {"tokens_in": len(prompt) // 4, "tokens_out": params.target_words * 2}, byok=_byok)
+        try:
+            _client = make_client(req.gen_model)
+            resp = await asyncio.to_thread(lambda: _client.chat.completions.create(
+                model=req.gen_model, messages=[{"role": "user", "content": prompt}],
+                temperature=0.8, max_tokens=min(8000, params.target_words * 3)))
+            narration = (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"narration generation failed: {e}")
+        if not narration:
+            raise HTTPException(502, "narration generation returned empty")
+        if user:
+            try:
+                _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+                _u = getattr(resp, "usage", None)
+                tin = getattr(_u, "prompt_tokens", None) or len(prompt) // 4
+                tout = getattr(_u, "completion_tokens", None) or len(narration) // 4
+                await metering.debit(user.tenant_id, _uid, "chat", req.gen_model,
+                                     {"tokens_in": tin, "tokens_out": tout}, byok=_byok, log=True)
+            except Exception as _e:
+                print(f"[video/segment] narration metering debit failed (non-fatal): {_e}")
+        result = _vseg.segment(narration, mode="A", minutes=req.minutes,
+                               style=req.style, clip_model=req.clip_model, tier=req.tier)
+    else:
+        if not (req.text or "").strip():
+            raise HTTPException(400, "text is required")
+        result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
+                               style=req.style, clip_model=req.clip_model, tier=req.tier)
+
+    out = result.to_dict()
+    if req.visual_mode:   # one-shot: segment + decide the visual treatment
+        out["scenes"] = await _decide(out["scenes"], req.visual_mode, req.clip_model, req.clip_ratio, user=user)
+        out["visual_mode"] = req.visual_mode
+    return out
+
+
+@app.post("/video/decide")
+async def video_decide(req: VideoDecideReq,
+                       user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Step 6d decide stage: assign each scene clip|image by visual_mode. Hybrid
+    runs the (metered) /chat/once merit ranker over fit-eligible scenes;
+    full_clips/full_images are pure routing. Fit-gate + runtime fallback keep
+    clips honest."""
+    if not req.scenes:
+        raise HTTPException(400, "scenes required")
+    if len(req.scenes) > 60:   # bound attacker-sized inputs (max preset ≈ 43 scenes)
+        raise HTTPException(400, "too many scenes (max 60)")
+    if (req.visual_mode or "").lower().replace("-", "_") not in _vseg.VISUAL_MODES:
+        raise HTTPException(400, f"visual_mode must be one of {_vseg.VISUAL_MODES}")
+    decided = await _decide(req.scenes, req.visual_mode, req.clip_model, req.clip_ratio, req.merit_model, user=user)
+    return {"scenes": decided, "visual_mode": req.visual_mode,
+            "clips": sum(1 for s in decided if s.get("kind") == "clip")}
+
+@app.post("/video/tts/scene")
+async def video_tts_scene(req: VideoTtsSceneReq,
+                          user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Single-shot per-scene narration → WAV (base64). Metered per character.
+    Called by the audio worker; the master clock measures real duration via ffprobe."""
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+    synth = text[:4000]   # provider hard cap; meter exactly what we synthesize
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    if user:
+        await metering.gate(user.tenant_id, "tts", req.model, {"chars": len(synth)}, byok=_byok)
+    try:
+        resp = await asyncio.to_thread(
+            _requests.post, "https://api.laozhang.ai/v1/audio/speech",
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={"model": req.model, "voice": req.voice, "input": synth,
+                  "speed": float(req.speed) or 1.0, "response_format": "wav"}, timeout=120)
+        resp.raise_for_status()
+    except _requests.HTTPError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e.response.text)[:300])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    audio_b64 = base64.b64encode(resp.content).decode()
+    if user:
+        try:
+            await metering.debit(user.tenant_id, _uid, "tts", req.model,
+                                 {"chars": len(synth)}, byok=_byok, log=True)
+        except Exception as _e:
+            print(f"[video/tts/scene] metering debit failed (non-fatal): {_e}")
+    return {"audio_b64": audio_b64}
+
+
 if __name__ == "__main__":
     print("Starting LaoZhang FastAPI backend at http://127.0.0.1:8000")
 

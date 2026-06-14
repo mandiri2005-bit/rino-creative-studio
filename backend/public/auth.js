@@ -90,8 +90,8 @@
         // Land on the studio app after auth, not the marketing root "/" (Clerk's
         // default), so users aren't bounced back to the landing page.
         _clerk.mountSignIn($siMount, {
-          forceRedirectUrl: "/index.html", signUpForceRedirectUrl: "/index.html",
-          afterSignInUrl: "/index.html", afterSignUpUrl: "/index.html",
+          forceRedirectUrl: "/start.html", signUpForceRedirectUrl: "/start.html",
+          afterSignInUrl: "/start.html", afterSignUpUrl: "/start.html",
         });
         _siMounted = true;
       }
@@ -101,8 +101,8 @@
       if ($suModal) $suModal.classList.add("open");
       if (!_suMounted && _clerk && $suMount) {
         _clerk.mountSignUp($suMount, {
-          forceRedirectUrl: "/index.html", signInForceRedirectUrl: "/index.html",
-          afterSignUpUrl: "/index.html", afterSignInUrl: "/index.html",
+          forceRedirectUrl: "/start.html", signInForceRedirectUrl: "/start.html",
+          afterSignUpUrl: "/start.html", afterSignInUrl: "/start.html",
         });
         _suMounted = true;
       }

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Pilih jalurmu · ceritaAI</title>
+<link rel="icon" href="/assets/favicon-32.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  :root{
+    --fd:'Bricolage Grotesque',sans-serif; --fb:'Hanken Grotesk',sans-serif; --fm:'JetBrains Mono',monospace;
+    --bg:#09090f; --be:#14141f; --be2:#1c1c2e; --br:#252535; --t:#e8e8f0; --td:#9090a8; --tf:#606070;
+    --ac:#6366f1; --ac2:#8b5cf6;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--t);font-family:var(--fb);min-height:100vh;-webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(900px 600px at 50% -10%,rgba(99,102,241,.18),transparent 60%),
+      radial-gradient(700px 500px at 90% 110%,rgba(139,92,246,.12),transparent 60%);}
+
+  /* ── Clerk overlay (same scaffold auth.js drives) ── */
+  #clerk-loading{position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg)}
+  .spin-lg{width:36px;height:36px;border:3px solid rgba(99,102,241,.3);border-top-color:var(--ac);border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #clerk-loading p{font-size:13px;color:rgba(255,255,255,.5)}
+  #clerk-gate{position:fixed;inset:0;z-index:9998;display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:var(--bg)}
+  #clerk-gate p{font-size:13px;color:rgba(255,255,255,.5);max-width:320px;text-align:center;line-height:1.6}
+  #clerk-gate .gate-btns{display:flex;gap:10px}
+  #clerk-gate .gate-btns button{padding:10px 22px;border:none;border-radius:9px;font-family:var(--fb);font-size:14px;font-weight:600;cursor:pointer;transition:.2s}
+  #clerk-gate .gate-btns .pri{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
+  #clerk-gate .gate-btns .pri:hover{transform:translateY(-1px)}
+  #clerk-gate .gate-btns .sec{background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);border:1px solid rgba(255,255,255,.12)}
+  #clerk-sign-in-modal,#clerk-sign-up-modal{position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)}
+  #clerk-sign-in-modal.open,#clerk-sign-up-modal.open{display:flex}
+
+  /* ── Chooser ── */
+  #root{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 24px}
+  .top{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:18px 26px}
+  .brand{display:flex;align-items:center;gap:10px;font-family:var(--fd);font-weight:700;font-size:17px;letter-spacing:-.01em}
+  .brand img{height:26px;width:auto}
+  .brand b{background:linear-gradient(135deg,var(--ac),var(--ac2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .signout{background:rgba(255,255,255,.05);border:1px solid var(--br);color:var(--td);font-family:var(--fm);font-size:11.5px;padding:7px 13px;border-radius:8px;cursor:pointer;transition:.2s}
+  .signout:hover{color:var(--t);border-color:var(--ac)}
+
+  .lede{text-align:center;margin-bottom:38px;max-width:560px}
+  .eyebrow{font-family:var(--fm);font-size:11.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--ac);margin-bottom:14px}
+  h1{font-family:var(--fd);font-weight:700;font-size:clamp(28px,5vw,44px);line-height:1.05;letter-spacing:-.025em;margin-bottom:12px}
+  .lede p{color:var(--td);font-size:15.5px;line-height:1.6}
+
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:22px;width:100%;max-width:860px}
+  .card{position:relative;border:1px solid var(--br);border-radius:20px;padding:30px 28px 28px;background:linear-gradient(180deg,rgba(28,28,46,.6),rgba(20,20,31,.6));
+    cursor:pointer;transition:transform .25s cubic-bezier(.2,.7,.3,1),border-color .25s,box-shadow .25s;overflow:hidden;text-align:left;display:flex;flex-direction:column;
+    text-decoration:none;color:var(--t)}
+  .card::before{content:"";position:absolute;inset:0;opacity:0;transition:opacity .25s;background:radial-gradient(420px 240px at 50% 0,rgba(99,102,241,.16),transparent 70%)}
+  .card:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--ac) 55%,var(--br));box-shadow:0 24px 60px -28px rgba(99,102,241,.5)}
+  .card:hover::before{opacity:1}
+  .card:focus-visible{outline:2px solid var(--ac);outline-offset:3px}
+  .card.primary{border-color:color-mix(in srgb,var(--ac) 45%,var(--br));background:linear-gradient(180deg,rgba(99,102,241,.14),rgba(20,20,31,.6))}
+  .ic{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;margin-bottom:18px;font-size:24px;
+    background:linear-gradient(135deg,rgba(99,102,241,.22),rgba(139,92,246,.18));border:1px solid color-mix(in srgb,var(--ac) 30%,transparent)}
+  .card.primary .ic{background:linear-gradient(135deg,var(--ac),var(--ac2));box-shadow:0 8px 24px -8px var(--ac)}
+  .tag{position:absolute;top:18px;right:18px;font-family:var(--fm);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;padding:4px 9px;border-radius:20px;background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff}
+  .card h2{font-family:var(--fd);font-weight:700;font-size:23px;letter-spacing:-.01em;margin-bottom:8px}
+  .card .desc{color:var(--td);font-size:14px;line-height:1.55;margin-bottom:18px;flex:1}
+  .feat{list-style:none;display:flex;flex-direction:column;gap:7px;margin-bottom:22px}
+  .feat li{font-size:12.5px;color:#b8b8cc;padding-left:20px;position:relative;font-family:var(--fb)}
+  .feat li::before{content:"→";position:absolute;left:0;color:var(--ac);font-family:var(--fm)}
+  .go{display:inline-flex;align-items:center;gap:8px;font-family:var(--fb);font-weight:600;font-size:14px;color:var(--t)}
+  .card.primary .go{color:#fff}
+  .go .arr{transition:transform .25s}
+  .card:hover .go .arr{transform:translateX(4px)}
+  .foot{margin-top:34px;font-family:var(--fm);font-size:11px;color:var(--tf);letter-spacing:.04em;text-align:center}
+  @media(max-width:720px){ .cards{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<!-- Clerk publishable key (same instance as the studio app) -->
+<script>window.__CLERK_PK = "pk_test_cHJpbWUtYm9hci00NS5jbGVyay5hY2NvdW50cy5kZXYk"; window.__appReady = true;</script>
+
+<div id="clerk-loading"><div class="spin-lg"></div><p>Memuat ceritaAI…</p></div>
+<div id="clerk-gate" style="display:none">
+  <img src="/assets/ceritaai-logo.png" alt="ceritaAI" style="height:110px;width:auto"/>
+  <p>Masuk untuk memilih cara kamu berkarya.</p>
+  <div class="gate-btns">
+    <button class="pri" onclick="window.__clerkAuth.openSignIn()">Masuk</button>
+    <button class="sec" onclick="window.__clerkAuth.openSignUp()">Buat akun</button>
+  </div>
+</div>
+<div id="clerk-sign-in-modal"><div id="clerk-sign-in-mount"></div></div>
+<div id="clerk-sign-up-modal"><div id="clerk-sign-up-mount"></div></div>
+
+<div id="root" style="visibility:hidden">
+  <div class="top">
+    <div class="brand"><img src="/assets/ceritaai-mark.png" alt="" onerror="this.style.display='none'"/>cerita<b>AI</b></div>
+    <button class="signout" onclick="window.__clerkAuth?.signOut()">Keluar</button>
+  </div>
+
+  <div class="lede">
+    <div class="eyebrow">Selamat datang</div>
+    <h1>Mau berkarya dengan cara apa?</h1>
+    <p>Dua jalur menuju cerita yang sama — pilih kecepatan satu klik, atau kendali penuh di setiap langkah.</p>
+  </div>
+
+  <div class="cards">
+    <a class="card primary" href="/video-instant.html" aria-label="Video Instant">
+      <span class="tag">Tercepat</span>
+      <div class="ic">⚡</div>
+      <h2>Video Instant</h2>
+      <div class="desc">Satu topik masuk, satu video jadi keluar. Mesin paralel kami menulis narasi, memilih visual, dan merangkainya jadi MP4 — otomatis.</div>
+      <ul class="feat">
+        <li>Pilih durasi 30 detik–15 menit</li>
+        <li>Klip & gambar dipilih cerdas (hybrid)</li>
+        <li>Suara jadi penentu tempo, caption opsional</li>
+      </ul>
+      <span class="go">Mulai bikin video <span class="arr">→</span></span>
+    </a>
+
+    <a class="card" href="/index.html" aria-label="Studio">
+      <div class="ic">🎬</div>
+      <h2>Studio</h2>
+      <div class="desc">Kendali penuh atas tiap langkah. Garap narasi, suara, gambar, storyboard, dan video satu per satu — persis seperti yang kamu mau.</div>
+      <ul class="feat">
+        <li>Narasi multi-gaya + RAG Nusantara</li>
+        <li>TTS, Imagen/Flux, Veo/Sora, Flow Storyboard</li>
+        <li>Ekspor & atur setiap detail sendiri</li>
+      </ul>
+      <span class="go">Buka Studio <span class="arr">→</span></span>
+    </a>
+  </div>
+
+  <div class="foot">Bisa ganti jalur kapan saja — keduanya pakai akun & kredit yang sama.</div>
+</div>
+
+<script src="/auth.js"></script>
+</body>
+</html>

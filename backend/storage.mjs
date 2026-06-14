@@ -17,6 +17,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   DeleteObjectCommand,
+  PutBucketLifecycleConfigurationCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -56,6 +57,33 @@ export function buildKey(tenantId, jobId, assetType, filename) {
   const safe = String(filename).replace(/^\/+/, "");
   const job = jobId ? String(jobId) : "_";
   return `tenants/${tenantId}/jobs/${job}/${assetType}/${safe}`;
+}
+
+// Final video-assembly MP4s live under a dedicated top-level `videos/` prefix so
+// a single bucket lifecycle rule (ensureVideoLifecycle) can auto-expire them —
+// the tenants/{id}/jobs/{id}/... scheme isn't one literal prefix. (Step 6f)
+export function videoKey(tenantId, jobId) {
+  return `videos/${tenantId}/${jobId}.mp4`;
+}
+
+// One-time (idempotent) bucket lifecycle: auto-delete everything under `videos/`
+// after N days. Long videos are large (~675 MB at 15 min HD+), so the deliverable
+// is ephemeral — "available for 7 days, download to keep". Best-effort; some
+// S3-compatibles need lifecycle enabled at the account level.
+export async function ensureVideoLifecycle(days = Number(process.env.VIDEO_R2_TTL_DAYS || 7)) {
+  if (!isConfigured()) return false;
+  await client().send(new PutBucketLifecycleConfigurationCommand({
+    Bucket: BUCKET,
+    LifecycleConfiguration: {
+      Rules: [{
+        ID: "video-instant-ttl",
+        Status: "Enabled",
+        Filter: { Prefix: "videos/" },
+        Expiration: { Days: Math.max(1, days) },
+      }],
+    },
+  }));
+  return true;
 }
 
 // ── Core ─────────────────────────────────────────────────────────────────────
