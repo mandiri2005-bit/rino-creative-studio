@@ -47,6 +47,7 @@ services:
       - ./python/credit_catalog.py:/app/credit_catalog.py    # Step 4: metering
       - ./python/credits.py:/app/credits.py                  # Step 4: balance primitives
       - ./python/metering.py:/app/metering.py                # Step 4: charge gate
+      - ./python/admin_credits.py:/app/admin_credits.py      # Step 4: manual credit admin CLI
     expose: ["8000"]
 
   # ── MCP File Search (optional — only starts with --profile mcp) ───────────
