@@ -28,6 +28,11 @@ services:
       - STORAGE_BUCKET=${STORAGE_BUCKET:-}
       - STORAGE_REGION=${STORAGE_REGION:-auto}
       - STORAGE_PUBLIC_URL=${STORAGE_PUBLIC_URL:-}
+      # ── Step 4: credit metering. METERING_ENABLED=false disables the gate. ──
+      - METERING_ENABLED=${METERING_ENABLED:-true}
+      - CREDIT_USD_VALUE=${CREDIT_USD_VALUE:-0.01}
+      - CREDIT_MARGIN=${CREDIT_MARGIN:-1.0}
+      - BILLING_TOPUP_URL=${BILLING_TOPUP_URL:-/index.html#billing}
     volumes:
       # S3/R2 will replace veo & sora outputs (WS3) — mounts removed
       - ./data/narasi_temp:/app/data/narasi_temp
@@ -90,6 +95,24 @@ services:
       - STORAGE_BUCKET=${STORAGE_BUCKET:-}
       - STORAGE_REGION=${STORAGE_REGION:-auto}
       - STORAGE_PUBLIC_URL=${STORAGE_PUBLIC_URL:-}
+      # ── Step 4: Stripe billing + credit metering. Empty = gate off / Stripe disabled. ──
+      - METERING_ENABLED=${METERING_ENABLED:-true}
+      - CREDIT_USD_VALUE=${CREDIT_USD_VALUE:-0.01}
+      - CREDIT_MARGIN=${CREDIT_MARGIN:-1.0}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - STRIPE_PRICE_STARTER=${STRIPE_PRICE_STARTER:-}
+      - STRIPE_PRICE_PRO=${STRIPE_PRICE_PRO:-}
+      - STRIPE_PRICE_STUDIO=${STRIPE_PRICE_STUDIO:-}
+      - STRIPE_PRICE_PACK_SMALL=${STRIPE_PRICE_PACK_SMALL:-}
+      - STRIPE_PRICE_PACK_MEDIUM=${STRIPE_PRICE_PACK_MEDIUM:-}
+      - STRIPE_PRICE_PACK_LARGE=${STRIPE_PRICE_PACK_LARGE:-}
+      - STRIPE_PACK_SMALL_CREDITS=${STRIPE_PACK_SMALL_CREDITS:-1000}
+      - STRIPE_PACK_MEDIUM_CREDITS=${STRIPE_PACK_MEDIUM_CREDITS:-5000}
+      - STRIPE_PACK_LARGE_CREDITS=${STRIPE_PACK_LARGE_CREDITS:-15000}
+      - STRIPE_CHECKOUT_SUCCESS_URL=${STRIPE_CHECKOUT_SUCCESS_URL:-}
+      - STRIPE_CHECKOUT_CANCEL_URL=${STRIPE_CHECKOUT_CANCEL_URL:-}
+      - STRIPE_PORTAL_RETURN_URL=${STRIPE_PORTAL_RETURN_URL:-}
     volumes:
       # S3/R2 will replace batch, tts & imgs outputs (WS3) — mounts removed
       - /Users/rino/Documents/ProjectQ/moat:/app/moat
@@ -100,6 +123,7 @@ services:
       - ./backend/storage.mjs:/app/storage.mjs
       - ./backend/auth.js:/app/auth.js
       - ./backend/db.js:/app/db.js
+      - ./backend/billing.mjs:/app/billing.mjs              # Step 4: Stripe billing
     expose: ["3000"]
 
   # ── nginx: serve UI + reverse-proxy all /api ─────────────────────────────
