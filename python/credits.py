@@ -247,14 +247,19 @@ async def grant(tenant_id: str, amount: int, *, reason: str, op_id: Optional[str
     and mirror into the live Redis balance only when newly applied. Returns the
     new live balance."""
     amount = int(amount)
-    applied, dbal = await _credit_apply(tenant_id, amount, reason, op_id=op_id,
-                                        user_id=user_id, metadata=metadata)
     cl = rc.client()
+    # Seed the live cache from the PRE-grant durable balance first, so the INCRBY
+    # below isn't double-counted against a cache that already includes the grant.
     if cl is not None:
         try:
             await _ensure_cached(tenant_id)
-            if applied:
-                await cl.incrby(_bal_key(tenant_id), amount)
+        except Exception as e:
+            log.warning("grant pre-seed redis(%s): %s", op_id, e)
+    applied, dbal = await _credit_apply(tenant_id, amount, reason, op_id=op_id,
+                                        user_id=user_id, metadata=metadata)
+    if cl is not None and applied:
+        try:
+            await cl.incrby(_bal_key(tenant_id), amount)
         except Exception as e:
             log.warning("grant redis(%s): %s", op_id, e)
     return await get_balance(tenant_id)
