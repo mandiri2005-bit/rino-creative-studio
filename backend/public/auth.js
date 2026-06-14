@@ -86,12 +86,26 @@
     openSignIn() {
       closeAllModals();
       if ($siModal) $siModal.classList.add("open");
-      if (!_siMounted && _clerk && $siMount) { _clerk.mountSignIn($siMount); _siMounted = true; }
+      if (!_siMounted && _clerk && $siMount) {
+        // Land on the studio app after auth, not the marketing root "/" (Clerk's
+        // default), so users aren't bounced back to the landing page.
+        _clerk.mountSignIn($siMount, {
+          forceRedirectUrl: "/index.html", signUpForceRedirectUrl: "/index.html",
+          afterSignInUrl: "/index.html", afterSignUpUrl: "/index.html",
+        });
+        _siMounted = true;
+      }
     },
     openSignUp() {
       closeAllModals();
       if ($suModal) $suModal.classList.add("open");
-      if (!_suMounted && _clerk && $suMount) { _clerk.mountSignUp($suMount); _suMounted = true; }
+      if (!_suMounted && _clerk && $suMount) {
+        _clerk.mountSignUp($suMount, {
+          forceRedirectUrl: "/index.html", signInForceRedirectUrl: "/index.html",
+          afterSignUpUrl: "/index.html", afterSignInUrl: "/index.html",
+        });
+        _suMounted = true;
+      }
     },
     async signOut() {
       if (!_clerk) return;

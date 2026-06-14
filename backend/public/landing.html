@@ -782,9 +782,9 @@ footer{border-top:1px solid var(--b-sub);padding:46px 0 60px;margin-top:96px;pos
       <a href="#models" data-en="Models">Model</a>
       <a href="#pricing" data-en="Pricing">Harga</a>
       <a href="index.html" data-en="Studio app">Aplikasi studio</a>
-      <a href="/terms-id.html" data-en="Terms">Ketentuan</a>
-      <a href="/privacy-id.html" data-en="Privacy">Privasi</a>
-      <a href="/refund-id.html" data-en="Refund">Refund</a>
+      <a href="/terms-id.html" data-legal="terms" data-en="Terms">Ketentuan</a>
+      <a href="/privacy-id.html" data-legal="privacy" data-en="Privacy">Privasi</a>
+      <a href="/refund-id.html" data-legal="refund" data-en="Refund">Refund</a>
     </div>
   </div>
 </footer>
@@ -836,6 +836,11 @@ function setLang(lang){
   const lid=document.getElementById('lang-id'),len=document.getElementById('lang-en');
   lid.classList.toggle('on',lang==='id');len.classList.toggle('on',lang==='en');
   lid.setAttribute('aria-pressed',lang==='id');len.setAttribute('aria-pressed',lang==='en');
+  // Legal links follow the chosen language (EN → /terms.html, ID → /terms-id.html)
+  document.querySelectorAll('[data-legal]').forEach(a=>{
+    const base=a.dataset.legal;
+    a.href = lang==='en' ? '/'+base+'.html' : '/'+base+'-id.html';
+  });
   try{localStorage.setItem('ceritaai-lang',lang)}catch(e){}
 }
 try{const saved=localStorage.getItem('ceritaai-lang');if(saved==='en')setLang('en');}catch(e){}
