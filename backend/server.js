@@ -1322,6 +1322,13 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
           );
         }
       }
+      // Step 4: charge the google-path narasi generation (sum per-chapter tokens)
+      try{
+        const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
+        const _tin=persistChapters.reduce((s,c)=>s+(c.tokens_in||0),0);
+        const _tout=persistChapters.reduce((s,c)=>s+(c.tokens_out||0),0);
+        if(_tin||_tout) await logUsage(_t,_u,model,"narasi",_tin,_tout,calcGoogleCost(model,_tin,_tout),null,"gemini");
+      }catch(e){ console.warn("[narasi-google] usage charge failed:",e.message); }
       // Step 1.2: persist to Postgres via Python (database.py = source of truth)
       try{
         const _pr=await fetch(`${PYTHON_API}/narasi/persist`,{
@@ -1348,6 +1355,12 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
     }
 
     const result=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:prompt}]}],config:{maxOutputTokens:maxTok}});
+    // Step 4: charge the google-path outline/brief/chapter call
+    try{
+      const _um=result?.usageMetadata||{}, _tin=_um.promptTokenCount||0, _tout=_um.candidatesTokenCount||0;
+      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
+      await logUsage(_t,_u,model,"narasi",_tin,_tout,calcGoogleCost(model,_tin,_tout),null,"gemini");
+    }catch(e){ console.warn("[narasi-google] outline usage failed:",e.message); }
     let text=(result.text||"").trim().replace(/^```(?:json)?\s*/mg,"").replace(/\n?```\s*$/mg,"").trim();
 
     if(action==="brief") return res.json({ok:true,brief:text});
@@ -1793,7 +1806,7 @@ async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,spee
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
-  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, 0, null, "laozhang"); }
+  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, (transcriptBody||"").length/1000*0.10, null, "laozhang"); }
   catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 
@@ -1845,7 +1858,7 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
-  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, 0, null, "gemini"); }
+  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, (transcriptBody||"").length/1000*0.10, null, "gemini"); }
   catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 app.get("/api/tts/jobs", requireAuth, async(req,res)=>{

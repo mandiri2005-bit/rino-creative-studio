@@ -13,6 +13,13 @@
 import { Pool }    from "pg";
 import { drizzle }  from "drizzle-orm/node-postgres";
 import { sql }      from "drizzle-orm";
+import { redis }    from "./redis.js";   // Step 4: mirror credit debits into the live balance cache
+
+// Step 4 credit economics (mirror python credit_catalog; env-overridable)
+const _CREDIT_USD    = Number(process.env.CREDIT_USD_VALUE || 0.01);
+const _CREDIT_MARGIN = Number(process.env.CREDIT_MARGIN || 1.0);
+const _METERING_ON   = String(process.env.METERING_ENABLED ?? "true").toLowerCase() !== "false";
+function _usdToCredits(usd){ return usd > 0 ? Math.max(1, Math.ceil(usd * _CREDIT_MARGIN / _CREDIT_USD)) : 0; }
 
 // ── Pool URL selection (mirrors database.py logic) ───────────────────────────
 
@@ -529,17 +536,36 @@ async function logUsage(
   tokensIn, tokensOut, costUsd,
   sessionId = null, provider = "gemini", jobId = null
 ) {
+  // Step 4: this is the choke point for every DIRECT Node (google-native) paid
+  // call, so charge credits here too — not just write a usage row. Python-proxied
+  // routes are metered Python-side and never reach this function, so no double-charge.
+  const credits = _METERING_ON ? _usdToCredits(costUsd) : 0;
   await query(
     `INSERT INTO usage_logs
          (tenant_id, user_id, session_id, job_id, endpoint,
           model_alias, model_upstream, provider,
-          tokens_in, tokens_out, cost_usd,
+          tokens_in, tokens_out, cost_usd, credits,
           finish_reason, http_status)
-     VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,'stop',200)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,'stop',200)`,
     [tenantId, userId, sessionId, jobId, endpoint,
-     model, provider, tokensIn, tokensOut, costUsd],
+     model, provider, tokensIn, tokensOut, costUsd, credits],
     tenantId
   );
+  if (credits > 0) {
+    try {
+      // durable debit (idempotent op_id) + mirror into the Redis live balance if cached
+      await query(
+        `SELECT credit_apply($1,$2,$3,'charge',$4,'{}'::jsonb)`,
+        [tenantId, userId, -credits,
+         `usage:${endpoint}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`],
+        tenantId);
+      try {
+        await redis.eval(
+          "if redis.call('EXISTS',KEYS[1])==1 then return redis.call('DECRBY',KEYS[1],ARGV[1]) else return -1 end",
+          1, `bal:${tenantId}:credits`, String(credits));
+      } catch (_) { /* redis optional */ }
+    } catch (e) { console.error("[logUsage debit]", e.message); }
+  }
 }
 
 /**
