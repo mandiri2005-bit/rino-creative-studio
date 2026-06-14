@@ -4826,12 +4826,18 @@ function MediaVaultSection({settings,showToast}){
     try{
       const category=tab==="uploads"?"uploads":cat;
       const r=await fetch("/api/assets?category="+encodeURIComponent(category)+"&limit=120",{headers:await authHdrFresh()});
+      if(!r.ok) return;   // 401 before auth ready / 5xx — keep current items, don't blank the grid
       const d=await r.json();
       setItems(Array.isArray(d.assets)?d.assets:[]);
-    }catch(e){ if(showToast)showToast("Gagal memuat Media Vault: "+e.message,"err"); setItems([]); }
+    }catch(e){ /* transient (auth not ready / offline) — keep what we have */ }
     finally{ setLoading(false); }
   },[tab,cat]);
-  useEffect(()=>{ load(); },[load]);
+  useEffect(()=>{
+    load();
+    const h=()=>load();
+    window.addEventListener("clerk:userchange",h);   // (re)load once auth is ready
+    return ()=>window.removeEventListener("clerk:userchange",h);
+  },[load]);
 
   const needle=q.trim().toLowerCase();
   const shown=needle
