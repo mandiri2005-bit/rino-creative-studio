@@ -315,6 +315,8 @@ select.inp{cursor:pointer;appearance:none;background-image:linear-gradient(45deg
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(3px);z-index:100;display:flex;justify-content:flex-end}
 .panel{width:min(440px,100%);height:100%;background:var(--bg);border-left:1px solid var(--br);display:flex;flex-direction:column;animation:slide .26s cubic-bezier(.5,.1,.2,1);box-shadow:-20px 0 60px -20px rgba(0,0,0,.6)}
 @keyframes slide{from{transform:translateX(40px);opacity:0}to{transform:none;opacity:1}}
+@keyframes balflash{0%,100%{color:#ff4d4f;border-color:#ff4d4f}50%{color:#ff9a9a;border-color:#ff9a9a}}
+.bal-flash{animation:balflash .5s steps(1,end) 0s 10!important;color:#ff4d4f!important;font-weight:800!important;border-color:#ff4d4f!important}
 .panel-hdr{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--br)}
 .panel-hdr h2{font-family:var(--fd);font-weight:700;font-size:16px;display:flex;align-items:center;gap:8px}
 .panel-hdr h2 svg{color:var(--ac)}.panel-body{padding:20px;overflow-y:auto;display:flex;flex-direction:column;gap:20px}
@@ -1804,9 +1806,15 @@ function FlowSection({settings,showToast}){
     `VISUAL PROMPT:\n${s.description||""}\n\n`+
     `CAMERA:\n${typeof s.camera==="object"?Object.values(s.camera).filter(Boolean).join("; "):s.camera||""}\n\n`+
     `SFX / AUDIO:\n${typeof s.audio==="object"?Object.values(s.audio).filter(Boolean).join("; "):s.audio||""}\n`;
-  const exportPromptsJson=()=>dlBlob(
-    JSON.stringify(scenes.map((s,i)=>({scene:sceneNo(s,i),title:s.title,duration:s.duration||8,start_kalimat:s.start_kalimat||"",description:s.description,camera:s.camera,sfx:s.audio})),null,2),
-    "application/json","storyboard-prompts.json");
+  const exportPromptsPdf=()=>exportDoc("pdf",
+    scenes.map((s,i)=>{
+      const cam=typeof s.camera==="object"?Object.values(s.camera).filter(Boolean).join("; "):(s.camera||"");
+      const sfx=typeof s.audio==="object"?Object.values(s.audio).filter(Boolean).join("; "):(s.audio||"");
+      return `## Scene ${sceneNo(s,i)}: ${s.title||""}\n\n**Duration:** ${s.duration||8}s\n\n`+
+        (s.start_kalimat?`**Script reference:** ${s.start_kalimat}\n\n`:"")+
+        `**Visual prompt:** ${s.description||""}\n\n**Camera:** ${cam}\n\n**SFX / Audio:** ${sfx}`;
+    }).join("\n\n---\n\n"),
+    "storyboard-prompts","Storyboard Prompts",showToast);
   const exportPromptsTxt=()=>dlBlob(
     scenes.map((s,i)=>sceneToText(s,i)).join("\n"+"─".repeat(40)+"\n\n"),
     "text/plain","storyboard-prompts.txt");
@@ -2117,11 +2125,7 @@ function FlowSection({settings,showToast}){
         setVideoPicked({});
       }
       showToast(newScenes.length+" scenes generated","ok");
-      // ── Auto-download prompts after generation ──
-      try{
-        const promptTxt=newScenes.map((s,i)=>sceneToText(s,i)).join("\n"+"─".repeat(40)+"\n\n");
-        dlBlob(promptTxt,"text/plain","storyboard-prompts.txt");
-      }catch(e2){console.warn("[Flow] Auto-download prompts failed:",e2);}
+      // (auto-download removed — use the Prompts .txt / .pdf buttons to export)
     }catch(e){
       console.error("[Flow] Error:", e);
       showToast(e.message||"Failed","err");
@@ -2213,7 +2217,7 @@ function FlowSection({settings,showToast}){
       <span style={{fontSize:13,fontWeight:700,color:"var(--t)"}}>{scenes.length} scenes</span>
       <div style={{flex:1}}/>
       <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={exportPromptsTxt}>{ic.dload} Prompts .txt</button>
-      <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={exportPromptsJson}>{ic.dload} Prompts .json</button>
+      <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={exportPromptsPdf}>{ic.dload} Prompts .pdf</button>
       {/* Image controls */}
       {scenes.some(s=>s.image_b64)&&<button className="btn sec" style={{padding:"5px 12px",fontSize:11.5}} onClick={downloadAllImages}>{ic.dload} All Images .zip</button>}
       <button className="btn sec" style={{padding:"5px 12px",fontSize:11.5,display:"flex",alignItems:"center",gap:5}}
@@ -4643,12 +4647,24 @@ function NarasiReviewSection({settings,showToast}){
 /* ── Step 4: credit balance pill (header) ─────────────────────────────────── */
 function BalancePill({onClick}){
   const [bal,setBal]=useState(null);
+  const [flash,setFlash]=useState(false);
+  const prev=useRef(null);
+  const flashT=useRef(null);
   const load=async()=>{
     try{
       const r=await fetch("/api/billing/status",{headers:await authHdrFresh()});
       if(!r.ok) return;
       const d=await r.json();
-      if(typeof d.balance==="number") setBal(d.balance);
+      if(typeof d.balance==="number"){
+        // Credits spent → flash the pill bold red for ~5s (no redirect needed)
+        if(prev.current!==null && d.balance < prev.current){
+          setFlash(true);
+          clearTimeout(flashT.current);
+          flashT.current=setTimeout(()=>setFlash(false),5000);
+        }
+        prev.current=d.balance;
+        setBal(d.balance);
+      }
     }catch(e){}
   };
   useEffect(()=>{
@@ -4657,9 +4673,9 @@ function BalancePill({onClick}){
     window.addEventListener("billing:refresh",h);
     window.addEventListener("clerk:userchange",h);   // refetch as soon as auth is ready
     const t=setInterval(load,60000);
-    return ()=>{ window.removeEventListener("billing:refresh",h); window.removeEventListener("clerk:userchange",h); clearInterval(t); };
+    return ()=>{ window.removeEventListener("billing:refresh",h); window.removeEventListener("clerk:userchange",h); clearInterval(t); clearTimeout(flashT.current); };
   },[]);
-  return <button className="btn sec" style={{padding:"6px 11px",fontSize:12,fontWeight:700,letterSpacing:".01em"}}
+  return <button className={"btn sec"+(flash?" bal-flash":"")} style={{padding:"6px 11px",fontSize:12,fontWeight:700,letterSpacing:".01em"}}
     title="Saldo kredit — klik untuk top-up" onClick={onClick}>◆ {bal===null?"…":bal.toLocaleString()}</button>;
 }
 
