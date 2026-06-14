@@ -413,6 +413,28 @@ app.post("/api/admin/grant", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── In-app user feedback → feedback table (tenant + user captured from auth) ──
+app.post("/api/feedback", async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId = await resolveUserId(req, tenantId);
+    const body = String((req.body || {}).body || "").trim();
+    if (!body) return res.status(400).json({ error: "feedback body required" });
+    let userName = null, email = String((req.body || {}).email || "").trim() || null;
+    try {
+      if (userId) {
+        const u = await query("SELECT display_name, email FROM users WHERE id=$1", [userId], tenantId);
+        userName = u.rows[0]?.display_name || null;
+        if (!email) email = u.rows[0]?.email || null;
+      }
+    } catch {}
+    await query(
+      "INSERT INTO feedback (tenant_id, user_id, user_name, email, body) VALUES ($1,$2,$3,$4,$5)",
+      [tenantId, userId, userName, email, body.slice(0, 5000)], tenantId);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.use("/images", express.static(OUTPUT_DIR, {maxAge:"1h"}));
 app.use("/audio",  express.static(TTS_DIR,    {maxAge:"1h"}));
 app.use("/imgs",   express.static(IMG_DIR,    {maxAge:"1h"}));
