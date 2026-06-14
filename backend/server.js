@@ -28,26 +28,11 @@ import { pool } from "./db.js";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
 import * as storage from "./storage.mjs";
 import { randomUUID } from "crypto";
+import * as Sentry from "@sentry/node";
 
-// ── Step 3: Sentry (Node) — error + perf visibility. No-op without SENTRY_DSN_NODE. ──
-let Sentry = null;
-if (process.env.SENTRY_DSN_NODE) {
-  try {
-    Sentry = await import("@sentry/node");
-    Sentry.init({
-      dsn: process.env.SENTRY_DSN_NODE,
-      tracesSampleRate: 0.1,
-      environment: process.env.NODE_ENV || "development",
-      sendDefaultPii: false,
-    });
-    console.log("[sentry] Node SDK initialised");
-  } catch (e) {
-    console.warn("[sentry] Node disabled:", e?.message || e);
-    Sentry = null;
-  }
-} else {
-  console.log("[sentry] Node disabled (no SENTRY_DSN_NODE)");
-}
+// Step 3: Sentry is initialised in instrument.mjs (loaded via `node --import`)
+// so it can auto-instrument http/express before this module runs.
+const SENTRY_ON = !!process.env.SENTRY_DSN_NODE;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT        = process.env.PORT        || 3000;
@@ -318,7 +303,7 @@ app.use(clerkMiddleware()); // Clerk — must be after body-parser, before prote
 app.use((req, res, next) => {
   req.id = String(req.headers["x-request-id"] || "").trim() || randomUUID();
   res.setHeader("X-Request-Id", req.id);
-  if (Sentry) {
+  if (SENTRY_ON) {
     try {
       const scope = Sentry.getCurrentScope?.();
       if (scope) {
@@ -2247,10 +2232,8 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
 });
 
 // Step 3: Sentry Express error handler — after all routes, before listen.
-if (Sentry?.setupExpressErrorHandler) {
+if (SENTRY_ON) {
   Sentry.setupExpressErrorHandler(app);
-} else if (Sentry) {
-  app.use((err, req, res, next) => { try { Sentry.captureException(err); } catch {} next(err); });
 }
 
 const server = app.listen(PORT,()=>{ console.log(`🎬 Cerita AI Studio :${PORT}`); console.log(`   Gemini: ${GEMINI_KEY?"set ✅":"MISSING ⚠️"}`); console.log(`   Python: ${PYTHON_API}`); });

@@ -11,4 +11,5 @@ COPY *.js *.mjs ./
 RUN mkdir -p data narasi_temp output tts-output img-output
 
 EXPOSE 3000
-CMD ["node", "server.js"]
+# Step 3: --import loads Sentry (instrument.mjs) before the app for ESM instrumentation.
+CMD ["node", "--import", "./instrument.mjs", "server.js"]

@@ -4,8 +4,8 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node --import ./instrument.mjs server.js",
+    "dev": "node --watch --import ./instrument.mjs server.js",
     "test": "node --test ../tests/node/helpers.test.mjs",
     "test:routes": "node --test ../tests/node/routes.test.mjs",
     "test:all": "node --test ../tests/node/helpers.test.mjs && node --test ../tests/node/routes.test.mjs"

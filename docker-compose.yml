@@ -93,6 +93,7 @@ services:
       - ./data/narasi_temp:/app/narasi_temp
       - ./data/output:/app/output
       - ./backend/server.js:/app/server.js
+      - ./backend/instrument.mjs:/app/instrument.mjs
       - ./backend/storage.mjs:/app/storage.mjs
       - ./backend/auth.js:/app/auth.js
       - ./backend/db.js:/app/db.js
