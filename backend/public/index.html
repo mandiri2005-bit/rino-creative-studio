@@ -728,10 +728,20 @@ async function mhdr(h={}){return{...h,...(authHdr())};}
 (function(){
   if (window.__apiAuthGuard) return; window.__apiAuthGuard = true;
   const _origFetch = window.fetch.bind(window);
+  // Step 4: auto-refresh the credit balance shortly after any paid POST completes
+  // (image/video/narasi/flow/tts/etc.) — debounced so bursts collapse to one refresh.
+  let _balTimer = null;
+  function _scheduleBalRefresh(){
+    try{ clearTimeout(_balTimer); _balTimer = setTimeout(function(){
+      window.dispatchEvent(new Event("billing:refresh")); }, 1500); }catch(e){}
+  }
   window.fetch = function(input, init){
+    let isApi = false, method = "GET", url = "";
     try{
-      const url = typeof input === "string" ? input : (input && input.url) || "";
-      if (url.indexOf("/api/") === 0 || url.indexOf(location.origin + "/api/") === 0){
+      url = typeof input === "string" ? input : (input && input.url) || "";
+      isApi = (url.indexOf("/api/") === 0 || url.indexOf(location.origin + "/api/") === 0);
+      method = ((init && init.method) || (typeof input === "object" && input && input.method) || "GET").toUpperCase();
+      if (isApi){
         const h = new Headers((init && init.headers) ||
                               (typeof input === "object" && input && input.headers) || {});
         if (!h.has("Authorization")){
@@ -740,12 +750,18 @@ async function mhdr(h={}){return{...h,...(authHdr())};}
         }
       }
     }catch(e){ /* never break fetch */ }
-    // Step 4: surface a 402 (out of credits) so the UI can prompt a top-up.
     return _origFetch(input, init).then(function(r){
-      try{ if(r && r.status===402){ window.dispatchEvent(new CustomEvent("billing:insufficient")); } }catch(e){}
+      try{
+        if (r && r.status === 402){ window.dispatchEvent(new CustomEvent("billing:insufficient")); }
+        // Any successful paid mutation → refresh balance (skip billing reads to avoid a loop)
+        else if (r && r.ok && isApi && method === "POST" && url.indexOf("/api/billing/") < 0){
+          _scheduleBalRefresh();
+        }
+      }catch(e){}
       return r;
     });
   };
+  window.__scheduleBalRefresh = _scheduleBalRefresh;   // for SSE/stream completions
 })();
 
 const api={
@@ -1055,6 +1071,7 @@ function ChatSection({settings,showToast}){
       setSessionCost(p=>p+reqCost);
     }catch(e){if(e.name!=="AbortError")updateLast(sid,{content:"[Error: "+e.message+"]"});}
     setStreaming(false);abortRef.current=null;
+    try{ window.__scheduleBalRefresh && window.__scheduleBalRefresh(); }catch(_){}  // refresh credit balance after stream + server-side charge
   };
 
   const stopStream=()=>{abortRef.current?.abort();setStreaming(false);};
