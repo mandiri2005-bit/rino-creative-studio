@@ -54,7 +54,7 @@ export function isConfigured() { return !!stripe; }
 const _INCR_IF_PRESENT =
   "if redis.call('EXISTS',KEYS[1])==1 then return redis.call('INCRBY',KEYS[1],ARGV[1]) else return -1 end";
 
-async function creditTenant(tenantId, amount, reason, opId, { userId = null, metadata = {} } = {}) {
+export async function creditTenant(tenantId, amount, reason, opId, { userId = null, metadata = {} } = {}) {
   const res = await query(
     `SELECT applied, balance FROM credit_apply($1,$2,$3,$4,$5,$6::jsonb)`,
     [tenantId, userId, Math.trunc(amount), reason, opId, JSON.stringify(metadata)],

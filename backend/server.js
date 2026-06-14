@@ -350,6 +350,7 @@ app.use((req, res, next) => {
 // Every /api/* route requires a valid Clerk token EXCEPT the allowlist below.
 const PUBLIC_API = new Set([
   "/api/health",
+  "/api/admin/grant",   // gated by X-Admin-Secret (not Clerk) — see handler below
 ]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
@@ -386,6 +387,32 @@ app.post("/api/billing/portal", async (req, res) => {
     res.status(code).json({ error: e.message });
   }
 });
+// ── Step 4: manual credit grant (no Stripe at bootstrap) ──────────────────────
+// Runs in the live env, so creditTenant updates durable + Redis consistently.
+// DISABLED until ADMIN_API_SECRET is set; then gate is the X-Admin-Secret header.
+//   curl -X POST $URL/api/admin/grant -H "X-Admin-Secret: $SECRET" \
+//        -H "Content-Type: application/json" \
+//        -d '{"email":"user@example.com","credits":5000}'
+const ADMIN_SECRET = process.env.ADMIN_API_SECRET || "";
+app.post("/api/admin/grant", async (req, res) => {
+  if (!ADMIN_SECRET) return res.status(503).json({ error: "admin grant disabled — set ADMIN_API_SECRET" });
+  if ((req.headers["x-admin-secret"] || "") !== ADMIN_SECRET) return res.status(403).json({ error: "forbidden" });
+  try {
+    const b = req.body || {};
+    const credits = parseInt(b.credits, 10);
+    if (!credits) return res.status(400).json({ error: "credits required (non-zero integer)" });
+    let tenantId = b.tenant_id || null;
+    if (!tenantId && b.email) {
+      const r = await pool.query("SELECT tenant_id_by_email($1) AS t", [b.email]);   // SECURITY DEFINER
+      tenantId = r.rows[0]?.t || null;
+    }
+    if (!tenantId) return res.status(404).json({ error: "tenant not found (pass tenant_id or a known email)" });
+    const reason = ["admin_adjust", "topup", "monthly_grant"].includes(b.reason) ? b.reason : "admin_adjust";
+    const out = await billing.creditTenant(tenantId, credits, reason, b.op_id || null, { metadata: { source: "admin_api" } });
+    res.json({ tenant_id: tenantId, credits_added: credits, applied: out.applied, balance: out.balance });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.use("/images", express.static(OUTPUT_DIR, {maxAge:"1h"}));
 app.use("/audio",  express.static(TTS_DIR,    {maxAge:"1h"}));
 app.use("/imgs",   express.static(IMG_DIR,    {maxAge:"1h"}));
