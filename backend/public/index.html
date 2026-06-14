@@ -5399,6 +5399,7 @@ function NarasiSection({settings,showToast}){
       <button className="btn pri w lg" style={{marginTop:12}} disabled={outlineBusy||!topic.trim()} onClick={()=>generateOutline(false)}>
         {outlineBusy&&stage==="input"?<><span className="spin"/> Membuat outline…</>:<>📋 Generate Outline</>}
       </button>
+      {!topic.trim()&&<p style={{marginTop:8,fontSize:12.5,color:"var(--td)",textAlign:"center"}}>Isi <b>Judul / Tema</b> dulu untuk mengaktifkan tombol.</p>}
     </div>
 
     {/* Outline stage */}

@@ -148,3 +148,50 @@ async def begin_charge(*, tenant_id: str, user_id: Optional[str], operation: str
 def quote(operation: str, model: str, units: Union[int, float, dict]) -> int:
     """Credits an operation WOULD cost — for the pre-confirm cost display."""
     return _cat.credit_cost(operation, model, units)
+
+
+# ── Lightweight gate+debit for sync ops (pre-check 402, charge on success) ─────
+# Simpler than a hold for one-shot ops: block up front if the tenant can't afford
+# the estimate, run the op, then debit the actual on success. A failed op debits
+# nothing (we only charge after success), so no refund path is needed.
+async def gate(tenant_id: str, operation: str, model: str,
+               units: Union[int, float, dict], *, byok: bool = False) -> int:
+    """Raise HTTP 402 if the tenant can't cover the estimated cost. Returns the
+    estimate. No-op for BYOK / disabled metering / unauthenticated (no tenant)."""
+    if byok or not METERING_ENABLED or not tenant_id:
+        return 0
+    est = _cat.credit_cost(operation, model, units)
+    if est <= 0:
+        return 0
+    bal = await _credits.get_balance(tenant_id)
+    if bal < est:
+        raise insufficient_credits(est, bal)
+    return est
+
+
+async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: str,
+                units: Union[int, float, dict], *, byok: bool = False, log: bool = True,
+                session_id=None, job_id=None, tok_in: int = 0, tok_out: int = 0,
+                provider: Optional[str] = None) -> int:
+    """Post-hoc charge for a completed op. With log=True also writes a usage_logs
+    row carrying the credits; set log=False when the caller already logs the usage
+    row itself (e.g. image flows via _capture_image_flow) to avoid a duplicate.
+    Returns credits charged (0 for BYOK / unauthenticated / disabled)."""
+    if not tenant_id or not METERING_ENABLED:
+        return 0
+    credits = 0 if byok else _cat.credit_cost(operation, model, units)
+    if credits:
+        try:
+            await _credits.charge(tenant_id, credits, op_id=str(uuid.uuid4()),
+                                  user_id=user_id, metadata={"op": operation, "model": model})
+        except Exception as e:
+            log.warning("debit(%s) failed: %s", operation, e)
+    if log:
+        try:
+            usd = _cat.operation_usd(operation, model, units)
+            await _db.log_usage(tenant_id, user_id, model, _OP_ENDPOINT.get(operation, "other"),
+                                int(tok_in), int(tok_out), usd, session_id=session_id, job_id=job_id,
+                                provider=provider or _provider_for(model), credits=credits)
+        except Exception as e:
+            log.warning("debit(%s) log failed: %s", operation, e)
+    return credits

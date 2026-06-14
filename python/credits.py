@@ -219,6 +219,26 @@ async def touch_hold(tenant_id: str, op_id: str, ttl: int = _HOLD_TTL) -> None:
         log.warning("touch_hold(%s) failed: %s", op_id, e)
 
 
+async def charge(tenant_id: str, amount: int, op_id: str, *,
+                 user_id: Optional[str] = None, metadata: Optional[dict] = None) -> int:
+    """Post-hoc debit for a COMPLETED op (no prior hold). Durable −amount + Redis
+    DECRBY when the cache exists. Idempotent on op_id. Use this for sync ops that
+    are gated by a pre-flight balance check instead of a hold. amount<=0 is a no-op."""
+    amount = int(amount)
+    if amount <= 0:
+        return await get_balance(tenant_id)
+    cl = rc.client()
+    if cl is not None:
+        try:
+            await _ensure_cached(tenant_id)
+            await cl.decrby(_bal_key(tenant_id), amount)
+        except Exception as e:
+            log.warning("charge redis(%s): %s", op_id, e)
+    await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
+                        user_id=user_id, metadata=metadata)
+    return await get_balance(tenant_id)
+
+
 async def commit(tenant_id: str, op_id: str, actual: int, *,
                  user_id: Optional[str] = None, metadata: Optional[dict] = None) -> int:
     """Finalise a held op at its ACTUAL cost: refund the unused hold to the live

@@ -324,12 +324,15 @@ def _calc_image_cost(model: str, count: int = 1) -> float:
     return round(price * max(0, int(count)), 6)
 
 
-async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, session_id=None):
+async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, session_id=None, charge=False):
     """Best-effort usage logging for narasi LLM endpoints — writes to usage_logs
     with endpoint='narasi'. Never raises: cost tracking must not break generation.
     `user_id` MUST be the resolved users.id UUID (not the raw Clerk id).
     `job_id` MUST be the internal jobs.id UUID (not the external 8-char id).
-    Returns the credits this call costs so the caller can settle the job's hold."""
+    Returns the credits this call costs so the caller can settle the job's hold.
+    charge=True ALSO debits the balance now (for one-shot narasi LLM endpoints that
+    don't go through a hold — outline/review/oneshot); the per-chapter /narasi/generate
+    path keeps charge=False and commits the summed total against its hold instead."""
     try:
         usage = getattr(resp, "usage", None)
         tok_in  = int(getattr(usage, "prompt_tokens",     0) or 0) if usage else 0
@@ -341,6 +344,12 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
         elif _ml.startswith("deepseek"):          _provider = "deepseek"
         elif _ml.startswith(("gpt", "o3", "o1")): _provider = "openai"
         else:                                     _provider = "laozhang"
+        if charge and cr:
+            try:
+                await credits_lib.charge(tenant_id, cr, op_id=str(uuid.uuid4()),
+                                         user_id=user_id, metadata={"op": "narasi", "model": model})
+            except Exception as _ce:
+                import logging as _lg; _lg.getLogger("narasi").warning("narasi charge failed: %s", _ce)
         await db.log_usage(tenant_id, user_id, model, "narasi",
                            tok_in, tok_out, cost,
                            job_id=job_id, session_id=session_id, provider=_provider,
@@ -1966,6 +1975,12 @@ async def generate_image(req: ImageRequest,
     if not cfg:
         raise HTTPException(400, f"Unknown image model: {req.model}")
 
+    # Step 4: credit gate — 1 image unit. 402 up front if the tenant can't afford it.
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    if user:
+        await metering.gate(user.tenant_id, "image", req.model, {"count": 1}, byok=_byok)
+
     # Always use IMAGE_API_KEY from env (LAOZHANG_IMAGE_API_KEY)
     key = IMAGE_API_KEY
 
@@ -1996,6 +2011,8 @@ async def generate_image(req: ImageRequest,
             raise HTTPException(400, f"Unknown API type: {api}")
 
         await _capture_image_flow(user, req.model, "generate_image", [b64])
+        if user:
+            await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1}, byok=_byok, log=False)
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2058,6 +2075,13 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
     preset = req.preset or VEO_PRESETS["1080p_landscape"]
     headers = _veo_headers(x_veo_api_key)
 
+    # Step 4: credit gate — video billed per second, known up front. 402 before submit.
+    _secs = int(preset.get("seconds") or 8)
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    if user:
+        await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
+
     fields = {
         "model": req.model,
         "prompt": req.prompt,
@@ -2091,8 +2115,8 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
         if user and task_id:
             try:
                 _jid = await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id)
-                await db.log_usage(user.tenant_id, None, req.model, "video",
-                                   0, 0, 0.0, job_id=_jid, provider="laozhang")
+                await metering.debit(user.tenant_id, _uid, "video", req.model,
+                                     {"seconds": _secs}, byok=_byok, job_id=_jid, log=True)
             except Exception as _e:
                 print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -2284,6 +2308,13 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
     """Submit a Sora 2 text-to-video or image-to-video task."""
     headers = _sora_headers(x_sora_api_key)
 
+    # Step 4: credit gate — video billed per second, known up front. 402 before submit.
+    _secs = int(req.seconds or 8)
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    if user:
+        await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
+
     form_data = {
         "model": req.model,
         "prompt": req.prompt,
@@ -2313,8 +2344,8 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
         if user and task_id:
             try:
                 _jid = await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id)
-                await db.log_usage(user.tenant_id, None, req.model, "video",
-                                   0, 0, 0.0, job_id=_jid, provider="laozhang")
+                await metering.debit(user.tenant_id, _uid, "video", req.model,
+                                     {"seconds": _secs}, byok=_byok, job_id=_jid, log=True)
             except Exception as _e:
                 print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -2590,6 +2621,12 @@ async def whisk_generate(
     if not cfg:
         raise HTTPException(400, f"Unknown image model: {req.model}")
 
+    # Step 4: credit gate — 1 image unit
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    if user:
+        await metering.gate(user.tenant_id, "image", req.model, {"count": 1}, byok=_byok)
+
     # Always use IMAGE_API_KEY from env
     key = IMAGE_API_KEY
     ref_b64 = req.effective_subject_b64() if cfg["api"] == "openai-image" and req.effective_subject_b64() else ""
@@ -2618,6 +2655,8 @@ async def whisk_generate(
             raise HTTPException(400, f"Unknown API type: {api}")
 
         await _capture_image_flow(user, req.model, "whisk", [b64])
+        if user:
+            await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1}, byok=_byok, log=False)
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2660,6 +2699,12 @@ async def flow_images_only(
         raise HTTPException(400, f"Unknown image model: {req.model}. Available: {list(IMAGE_MODELS.keys())}")
     if not req.scenes:
         raise HTTPException(400, "scenes required")
+
+    # Step 4: credit gate — one image per scene (402 up front for the whole batch)
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    if user:
+        await metering.gate(user.tenant_id, "image", req.model, {"count": len(req.scenes)}, byok=_byok)
 
     global IMAGE_API_KEY
     effective_key = IMAGE_API_KEY or x_image_api_key
@@ -2717,6 +2762,9 @@ async def flow_images_only(
     # one job + persist each frame to R2/assets + one usage row per frame
     await _capture_image_flow(user, req.model, "flow_image",
                               [im.get("image_b64") for im in images])
+    if user:
+        _n = sum(1 for im in images if im.get("image_b64"))
+        await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": _n}, byok=_byok, log=False)
     return {"images": images}
 
 
@@ -4079,7 +4127,7 @@ async def _narasi_outline_impl(body: dict):
         )
         resp = client.chat.completions.create(model=model, messages=[{"role": "user", "content": user}],
                                               max_tokens=1000, stream=False)
-        await _log_narasi_usage(_ou_tenant, _ou_user, model, resp)
+        await _log_narasi_usage(_ou_tenant, _ou_user, model, resp, charge=True)
         return {"ok": True, "brief": resp.choices[0].message.content.strip()}
 
     if revise_instruction and current_outline:
@@ -4818,7 +4866,7 @@ async def narasi_review(body: dict, user: CurrentUser = Depends(get_current_user
         try:
             _rtenant = user.tenant_id
             _ruser = await _resolve_user_uuid(user.tenant_id, user.user_id)
-            await _log_narasi_usage(_rtenant, _ruser, model, resp)
+            await _log_narasi_usage(_rtenant, _ruser, model, resp, charge=True)
             await db.save_moat_session(
                 _rtenant, _ruser, (body.get("topic") or "editorial_review"), "editorial_review",
                 {"rag_used": False, "sources": None, "passages": None,
@@ -4945,6 +4993,15 @@ async def script_to_tts(body: dict,
         raise HTTPException(400, "script is required")
 
     client = make_client(model)
+
+    # Step 4: credit gate. NOTE the local `user` is reused as the prompt string
+    # below, so capture the CurrentUser now. Billed as chat tokens (text transform).
+    _cu = user
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(_cu.tenant_id, _cu.user_id) if _cu else None
+    if _cu:
+        await metering.gate(_cu.tenant_id, "chat", model,
+                            {"tokens_in": len(script_text) // 4, "tokens_out": 32000}, byok=_byok)
 
 
     system = (
@@ -5198,7 +5255,12 @@ async def script_to_tts(body: dict,
     result = _re.sub(r"\n?```$", "", result, flags=_re.MULTILINE).strip()
 
     paragraphs = [p.strip() for p in result.split("\n\n") if p.strip()]
-    await _track_usage(user, model, "tts", resp=resp, job_type="script_tts")
+    if _cu:
+        _ti = int(getattr(getattr(resp, "usage", None), "prompt_tokens", 0) or 0)
+        _to = int(getattr(getattr(resp, "usage", None), "completion_tokens", 0) or 0)
+        await metering.debit(_cu.tenant_id, _uid, "chat", model,
+                             {"tokens_in": _ti, "tokens_out": _to}, byok=_byok,
+                             tok_in=_ti, tok_out=_to, log=True)
     return {"ok": True, "transcript": result, "paragraphs": paragraphs, "count": len(paragraphs)}
 
 
@@ -5220,6 +5282,8 @@ async def flow_storyboard(
     )
 
     client = make_client(req.chat_model)
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
 
     # ── Auto scene count: ask AI how many scenes this script warrants ──
     if req.auto_scene_count or req.scene_count == 0:
@@ -5241,6 +5305,11 @@ async def flow_storyboard(
             total = 12  # safe fallback
     else:
         total = max(1, int(req.scene_count))
+
+    # Step 4: credit gate for the storyboard TEXT generation (billed as chat tokens).
+    if user:
+        await metering.gate(user.tenant_id, "chat", req.chat_model,
+                            {"tokens_in": len(req.script) // 4, "tokens_out": total * 300}, byok=_byok)
 
     def _gen_batch(count: int, offset: int):
         """Generate `count` scenes (positions offset+1 .. offset+count of `total`)
@@ -5352,13 +5421,22 @@ async def flow_storyboard(
 
     # Re-index globally so indexes are continuous 0 .. N-1 across all batches
     scenes = [{"index": i, **s} for i, s in enumerate(scenes_data)]
-    # storyboard parsing = one LLM call (per batch); record it so it isn't unbilled
-    await _track_usage(user, req.chat_model, "other", job_type="flow_storyboard")
+    # Step 4: charge the storyboard TEXT generation (billed as chat tokens, estimated
+    # from scene count since the per-batch token sums aren't threaded back out).
+    if user:
+        await metering.debit(user.tenant_id, _uid, "chat", req.chat_model,
+                             {"tokens_in": len(req.script) // 4, "tokens_out": total * 300},
+                             byok=_byok, log=True)
+    else:
+        await _track_usage(user, req.chat_model, "other", job_type="flow_storyboard")
 
     # Optionally generate storyboard images in parallel
     if req.generate_images:
         cfg = IMAGE_MODELS.get(req.model)
         if cfg:
+            # Step 4: credit gate — one image per scene
+            if user:
+                await metering.gate(user.tenant_id, "image", req.model, {"count": len(scenes)}, byok=_byok)
             global IMAGE_API_KEY
             # Use IMAGE_API_KEY from env (LAOZHANG_IMAGE_API_KEY) -- most reliable
             # x_image_api_key from header is secondary fallback
@@ -5426,6 +5504,11 @@ async def flow_storyboard(
                             scenes[i]["image_b64"] = fut.result(timeout=0) if fut in done else ""
                         except Exception:
                             scenes[i]["image_b64"] = ""
+                # Step 4: charge for the storyboard images actually produced
+                if user:
+                    _n = sum(1 for s in scenes if s.get("image_b64"))
+                    await metering.debit(user.tenant_id, _uid, "image", req.model,
+                                         {"count": _n}, byok=_byok, log=True)
             finally:
                 pass  # key no longer mutated globally — nothing to restore
 
@@ -5563,7 +5646,7 @@ async def oneshot_fix_submit(body: dict,
             out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
             finish  = getattr(resp.choices[0], "finish_reason", "unknown")
             print(f"[oneshot-fix] model={resolved} finish={finish} in={in_tok} out={out_tok} max={ceiling} temp={temperature}", flush=True)
-            await _log_narasi_usage(_TENANT_ID, _USER_ID, model, resp, job_id=job_id)
+            await _log_narasi_usage(_TENANT_ID, _USER_ID, model, resp, job_id=job_id, charge=True)
             # Step 1.5: capture the AI fix (One-Shot Fix / VO Optimize) as a
             # correction pair (input -> fixed) — same moat signal as a human edit.
             try:
