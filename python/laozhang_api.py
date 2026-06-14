@@ -538,14 +538,19 @@ def _sentry_before_send(event, hint):
 
 _SENTRY_DSN_PY = os.getenv("SENTRY_DSN_PY", "").strip()
 if _HAS_SENTRY and _SENTRY_DSN_PY:
-    _sentry.init(
-        dsn=_SENTRY_DSN_PY,
-        traces_sample_rate=0.1,
-        send_default_pii=False,
-        environment=os.getenv("NODE_ENV", "development"),
-        before_send=_sentry_before_send,
-    )
-    print("[sentry] Python SDK initialised (laozhang_api)")
+    try:
+        _sentry.init(
+            dsn=_SENTRY_DSN_PY,
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+            environment=os.getenv("NODE_ENV", "development"),
+            before_send=_sentry_before_send,
+        )
+        print("[sentry] Python SDK initialised (laozhang_api)")
+    except Exception as _e:
+        # A malformed DSN (e.g. an .env typo) must never take down the API.
+        _SENTRY_DSN_PY = ""
+        print(f"[sentry] Python init failed — disabled (check SENTRY_DSN_PY): {_e}")
 else:
     print("[sentry] Python disabled (no SENTRY_DSN_PY or sentry-sdk missing)")
 
