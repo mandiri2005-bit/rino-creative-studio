@@ -4237,7 +4237,11 @@ async def narasi_generate(body: dict,
             "tokens_in":  1500 * len(chapters),
             "tokens_out": sum(int(c.get("words") or 400) for c in chapters) * 2,
         }
-        _meter_op = f"narasi:{job_id}"
+        # Unique per generation RUN (not per external job_id): a client retry that
+        # reuses the same pre_job_id must get its own hold + its own durable charge,
+        # never collide with the prior run's op_id (which would skip the durable
+        # charge while still debiting the live cache).
+        _meter_op = f"narasi:{job_id}:{uuid.uuid4().hex[:8]}"
         await metering.begin_charge(
             tenant_id=_tenant, user_id=_user, operation="narasi",
             model=model, estimate_units=_est_units, op_id=_meter_op)
@@ -4315,6 +4319,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
         if cancel_ev.is_set() or await rc.is_cancelled(f"narasi_{job_id}"):
             errors.append({"id": "cancelled", "error": "Job cancelled by user"})
             break
+
+        # Step 4: keep the credit hold alive across a long multi-chapter job so its
+        # TTL never lapses mid-flight and strands the unused reservation.
+        if _meter_op:
+            await credits_lib.touch_hold(_narasi_tenant, _meter_op)
 
         chap_id = chapter.get("id", "?")
         chap_title = chapter.get("title", "")
@@ -4446,7 +4455,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             finish = getattr(choice, "finish_reason", "unknown")
             import logging as _log
             _log.warning(f"[narasi] bab {chap_id} finish_reason={finish} words={len(text.split())} model={model}")
-            _meter_actual += (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp, job_id=_narasi_job_uuid) or 0)
+            _cr_first = (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp, job_id=_narasi_job_uuid) or 0)
             # Task 4 + Tingkat 4: live progress. current = chapters done so far (i+1).
             _msg = f"Menulis bab {i+1}/{len(chapters)}: {chap_title}"[:200]
             await rc.set_progress(job_id, _msg)
@@ -4462,7 +4471,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     max_tokens=safe_max, stream=False
                 )
                 text = (resp2.choices[0].message.content or "").strip()
+                # Bill ONLY the kept retry. The discarded first attempt is still
+                # logged to usage_logs (COGS visibility) but not charged to the tenant.
                 _meter_actual += (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid) or 0)
+            else:
+                _meter_actual += _cr_first
             _chap_txt = f"## Bab {chap_id}: {chap_title}\n\n{text}\n"
             (tmp_dir / f"{chap_id}.txt").write_text(_chap_txt, encoding="utf-8")
             # ── Step 2: persist chapter text to R2 + assets row (capture) ──

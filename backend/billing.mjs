@@ -68,6 +68,15 @@ async function creditTenant(tenantId, amount, reason, opId, { userId = null, met
   return row;   // { applied, balance }
 }
 
+// Stripe basil/dahlia (SDK v22) moved current_period_* OFF the Subscription and
+// ONTO each SubscriptionItem. Read from the item, fall back to the old shape.
+export function subPeriodStart(sub) {
+  return sub?.items?.data?.[0]?.current_period_start ?? sub?.current_period_start ?? 0;
+}
+export function subPeriodEnd(sub) {
+  return sub?.items?.data?.[0]?.current_period_end ?? sub?.current_period_end ?? 0;
+}
+
 // ── Subscription mirror (plan + period) into the subscriptions table ──────────
 async function upsertSubscription(tenantId, sub, plan) {
   const priceId = sub.items?.data?.[0]?.price?.id || "";
@@ -82,7 +91,7 @@ async function upsertSubscription(tenantId, sub, plan) {
         current_period_start=EXCLUDED.current_period_start,
         current_period_end=EXCLUDED.current_period_end, updated_at=now()`,
     [tenantId, String(sub.customer), String(sub.id), priceId, String(productId),
-     plan, sub.status || "active", sub.current_period_start || 0, sub.current_period_end || 0],
+     plan, sub.status || "active", subPeriodStart(sub), subPeriodEnd(sub)],
     tenantId,
   );
   // keep tenants.plan in sync (drives tier-based features/retention)
@@ -180,7 +189,7 @@ export async function handleStripeEvent(event) {
         if (credits > 0) {
           // idempotent per billing period — renewals grant again via invoice.paid
           await creditTenant(tenantId, credits, "monthly_grant",
-            `monthly_grant:${sub.id}:${sub.current_period_end}`,
+            `monthly_grant:${sub.id}:${subPeriodEnd(sub)}`,
             { userId, metadata: { plan, sub: sub.id } });
         }
       }
@@ -201,7 +210,7 @@ export async function handleStripeEvent(event) {
     const credits = SUB_BY_PRICE[sub.items?.data?.[0]?.price?.id]?.credits || 0;
     if (credits > 0) {
       await creditTenant(tenantId, credits, "monthly_grant",
-        `monthly_grant:${sub.id}:${sub.current_period_end}`,
+        `monthly_grant:${sub.id}:${subPeriodEnd(sub)}`,
         { metadata: { plan, sub: sub.id, renewal: true } });
     }
     return { handled: true };

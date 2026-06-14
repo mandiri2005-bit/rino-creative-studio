@@ -58,7 +58,9 @@ def _hold_key(tenant_id: str, op_id: str) -> str:
     return f"hold:{tenant_id}:{op_id}"
 
 
-_HOLD_TTL = 3600          # a reservation auto-releases after 1h if never settled
+_HOLD_TTL = 21600         # a reservation auto-releases after 6h if never settled.
+                          # Long enough to outlive any realistic narasi job; the job
+                          # also refreshes it per chapter via touch_hold().
 
 # ── Atomic Lua ────────────────────────────────────────────────────────────────
 # Return codes use sentinels < 0 so any real balance (>= 0) is unambiguous.
@@ -202,6 +204,19 @@ async def hold(tenant_id: str, amount: int, op_id: str) -> int:
     if res == -1:
         raise InsufficientCredits(amount, await get_balance(tenant_id))
     return res
+
+
+async def touch_hold(tenant_id: str, op_id: str, ttl: int = _HOLD_TTL) -> None:
+    """Refresh a hold's TTL so a long-running op (e.g. a multi-chapter narasi job)
+    never lets its reservation expire mid-flight and strand the unused credits.
+    No-op if the hold is already gone."""
+    cl = rc.client()
+    if cl is None:
+        return
+    try:
+        await cl.expire(_hold_key(tenant_id, op_id), ttl)   # 0 if key absent — safe
+    except Exception as e:
+        log.warning("touch_hold(%s) failed: %s", op_id, e)
 
 
 async def commit(tenant_id: str, op_id: str, actual: int, *,
