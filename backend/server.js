@@ -2387,3 +2387,30 @@ setTimeout(runAssetRetention, 60*1000);
 server.timeout = 660000;          // 11 min — must be > storyboard AbortController (10 min)
 server.keepAliveTimeout = 660000;
 server.headersTimeout = 661000;
+
+// ── Step 6: optionally run the BullMQ video workers IN THIS process ──────────
+// When a dedicated video-worker service isn't available (e.g. a single-service
+// deploy), set VIDEO_INPROCESS_WORKER=1 to run audio/visual/check/stitch here.
+// ffmpeg/generation then run in the API container — fine for small/low-traffic
+// deploys; split to a separate process (VIDEO_ROLE=worker) when scale demands.
+if (process.env.VIDEO_INPROCESS_WORKER === "1") {
+  (async () => {
+    try {
+      const { markVideoWorker } = await import("./video/runtime.mjs");
+      const { startWorkers, makeDeps } = await import("./video/workers.mjs");
+      const { httpGenerationClient } = await import("./video/generationClient.mjs");
+      if (!process.env.INTERNAL_SERVICE_SECRET) {
+        console.warn("[video] in-process workers WITHOUT INTERNAL_SERVICE_SECRET — per-scene calls will be unmetered + no RLS");
+      }
+      markVideoWorker();   // lift the ffmpeg guard for this process
+      startWorkers(makeDeps({ generationClient: httpGenerationClient() }));
+      console.log("[video] in-process BullMQ workers started (VIDEO_INPROCESS_WORKER=1)");
+      try {
+        const storage = await import("./storage.mjs");
+        if (storage.isConfigured?.()) storage.ensureVideoLifecycle().catch(() => {});
+      } catch {}
+    } catch (e) {
+      console.error("[video] in-process worker start failed:", e?.message || e);
+    }
+  })();
+}
