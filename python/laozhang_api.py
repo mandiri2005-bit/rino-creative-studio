@@ -335,7 +335,7 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
         tok_in  = int(getattr(usage, "prompt_tokens",     0) or 0) if usage else 0
         tok_out = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
         cost = _calc_cost(model, tok_in, tok_out)
-        cr   = catalog.credit_cost("narasi", model, {"tokens_in": tok_in, "tokens_out": tok_out})
+        cr   = 0 if _byok_active() else catalog.credit_cost("narasi", model, {"tokens_in": tok_in, "tokens_out": tok_out})
         _ml = (model or "").lower()
         if   _ml.startswith("gemini"):            _provider = "gemini"
         elif _ml.startswith("deepseek"):          _provider = "deepseek"
@@ -617,6 +617,19 @@ def make_client(model: str = "") -> OpenAI:
             )
         return OpenAI(api_key=key, base_url=BASE_URL)
     return OpenAI(api_key=_req_key.get() or API_KEY, base_url=BASE_URL)
+
+
+def _byok_active() -> bool:
+    """Step 4 BYOK: True when the caller supplied their OWN upstream key via the
+    X-LaoZhang-API-Key header (key_override_middleware put it in _req_key). They
+    pay the provider directly, so the operation costs 0 credits — the platform
+    only ever keeps the flat base fee. Safe inside background tasks: the request
+    ContextVar is copied into asyncio.create_task at spawn time."""
+    try:
+        k = _req_key.get()
+    except Exception:
+        return False
+    return bool(k) and k != API_KEY
 
 
 # ── Review personas (rules) live SERVER-SIDE — never shipped to the client ────
@@ -1242,7 +1255,8 @@ async def chat_once(req: OnceRequest,
         _charge = await metering.begin_charge(
             tenant_id=user.tenant_id, user_id=_uid_resolved, operation="chat",
             model=req.model, estimate_units={"tokens_in": _in_tok,
-                                             "tokens_out": min(int(req.max_tokens or 800), 16000)})
+                                             "tokens_out": min(int(req.max_tokens or 800), 16000)},
+            byok=_byok_active())
     try:
         # Try requested model first
         text = _try_model(req.model)
@@ -1364,7 +1378,8 @@ async def stream_chat(req: ChatRequest,
                   "tokens_out": min(int(req.max_tokens or 800), 16000)}
     charge = await metering.begin_charge(
         tenant_id=_TENANT_ID, user_id=_USER_ID, operation="chat",
-        model=req.model, estimate_units=_est_units, op_id=_op_id)
+        model=req.model, estimate_units=_est_units, op_id=_op_id,
+        byok=_byok_active())
 
     # Local Event bridges the async loop → the sync chat_stream generator.
     # Cross-container cancel state lives in Redis (cancel:{session_id}).
@@ -4217,7 +4232,7 @@ async def narasi_generate(body: dict,
     # the background task settles the ACTUAL total (refunding the unused hold)
     # or refunds entirely on cancel/zero-output. op_id keyed to the job id.
     _meter_op = None
-    if chapters:
+    if chapters and not _byok_active():   # BYOK pays upstream directly → no hold
         _est_units = {
             "tokens_in":  1500 * len(chapters),
             "tokens_out": sum(int(c.get("words") or 400) for c in chapters) * 2,
