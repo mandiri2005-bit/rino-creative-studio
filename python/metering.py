@@ -33,6 +33,9 @@ import database as _db
 log = logging.getLogger("metering")
 
 TOPUP_URL = os.getenv("BILLING_TOPUP_URL", "/billing")
+# Kill-switch: set METERING_ENABLED=false to disable the credit gate entirely
+# (no holds, no 402, no charges) — usage is still logged. Useful in dev.
+METERING_ENABLED = os.getenv("METERING_ENABLED", "true").lower() not in ("false", "0", "no")
 
 # operation → usage_logs.endpoint (CHECK: chat|image|tts|video|embedding|batch|narasi|other)
 _OP_ENDPOINT = {
@@ -125,7 +128,9 @@ async def begin_charge(*, tenant_id: str, user_id: Optional[str], operation: str
     """HOLD the estimated credits for an operation. Raises HTTP 402 if the balance
     can't cover the estimate. BYOK / zero-cost ops hold nothing."""
     op_id = op_id or str(uuid.uuid4())
-    if byok:
+    if byok or not METERING_ENABLED:
+        # BYOK pays upstream directly; disabled gate holds nothing. Either way the
+        # op still runs and settle() logs a credits=0 usage row.
         return Charge(tenant_id=tenant_id, user_id=user_id, op_id=op_id,
                       operation=operation, model=model, held=0, byok=True)
     est = _cat.credit_cost(operation, model, estimate_units)
