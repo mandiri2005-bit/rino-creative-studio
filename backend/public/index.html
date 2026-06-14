@@ -696,6 +696,7 @@ const NAV=[
   {id:"narasi", icon:ic.lay,   label:"Narasi AI",     group:"Tools"},
   {id:"narasireview", icon:ic.review, label:"Narasi Review", group:"Tools"},
   {id:"mediavault", icon:ic.img2, label:"Media Vault", group:"Tools"},
+  {id:"billing", icon:ic.gear, label:"Billing", group:"Account"},
 ];
 
 /* Auth header helper — injects Bearer token if Clerk is ready */
@@ -738,7 +739,11 @@ async function mhdr(h={}){return{...h,...(authHdr())};}
         }
       }
     }catch(e){ /* never break fetch */ }
-    return _origFetch(input, init);
+    // Step 4: surface a 402 (out of credits) so the UI can prompt a top-up.
+    return _origFetch(input, init).then(function(r){
+      try{ if(r && r.status===402){ window.dispatchEvent(new CustomEvent("billing:insufficient")); } }catch(e){}
+      return r;
+    });
   };
 })();
 
@@ -4617,6 +4622,119 @@ function NarasiReviewSection({settings,showToast}){
 // ── END NARASI REVIEW SECTION ─────────────────────────────────────────────────
 
 // ── MEDIA VAULT — durable gallery of generated + uploaded assets (R2/assets) ───
+/* ── Step 4: credit balance pill (header) ─────────────────────────────────── */
+function BalancePill({onClick}){
+  const [bal,setBal]=useState(null);
+  const load=async()=>{
+    try{
+      const r=await fetch("/api/billing/status",{headers:await authHdrFresh()});
+      if(!r.ok) return;
+      const d=await r.json();
+      if(typeof d.balance==="number") setBal(d.balance);
+    }catch(e){}
+  };
+  useEffect(()=>{
+    load();
+    const h=()=>load();
+    window.addEventListener("billing:refresh",h);
+    const t=setInterval(load,60000);
+    return ()=>{ window.removeEventListener("billing:refresh",h); clearInterval(t); };
+  },[]);
+  return <button className="btn sec" style={{padding:"6px 11px",fontSize:12,fontWeight:700,letterSpacing:".01em"}}
+    title="Saldo kredit — klik untuk top-up" onClick={onClick}>◆ {bal===null?"…":bal.toLocaleString()}</button>;
+}
+
+/* ── Step 4: billing & credits page ───────────────────────────────────────── */
+function BillingSection({settings,showToast}){
+  const [st,setSt]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [busy,setBusy]=useState("");
+  const load=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const r=await fetch("/api/billing/status",{headers:await authHdrFresh()});
+      const d=await r.json();
+      setSt(d);
+    }catch(e){ if(showToast)showToast("Gagal memuat billing: "+e.message,"err"); }
+    finally{ setLoading(false); }
+  },[]);
+  useEffect(()=>{
+    load();
+    const h=()=>load();
+    window.addEventListener("billing:refresh",h);
+    return ()=>window.removeEventListener("billing:refresh",h);
+  },[load]);
+  const checkout=async(priceId)=>{
+    setBusy(priceId);
+    try{
+      const r=await fetch("/api/billing/checkout",{method:"POST",
+        headers:{...(await authHdrFresh()),"Content-Type":"application/json"},
+        body:JSON.stringify({priceId})});
+      const d=await r.json().catch(()=>({}));
+      if(r.status===503){ if(showToast)showToast("Stripe belum dikonfigurasi","err"); return; }
+      if(!r.ok||!d.url) throw new Error(d.error||("HTTP "+r.status));
+      window.location.href=d.url;
+    }catch(e){ if(showToast)showToast("Checkout gagal: "+e.message,"err"); }
+    finally{ setBusy(""); }
+  };
+  const portal=async()=>{
+    setBusy("portal");
+    try{
+      const r=await fetch("/api/billing/portal",{method:"POST",
+        headers:{...(await authHdrFresh()),"Content-Type":"application/json"}});
+      const d=await r.json().catch(()=>({}));
+      if(r.status===400){ if(showToast)showToast("Belum ada langganan aktif","err"); return; }
+      if(r.status===503){ if(showToast)showToast("Stripe belum dikonfigurasi","err"); return; }
+      if(!r.ok||!d.url) throw new Error(d.error||("HTTP "+r.status));
+      window.location.href=d.url;
+    }catch(e){ if(showToast)showToast("Portal gagal: "+e.message,"err"); }
+    finally{ setBusy(""); }
+  };
+  const card={border:"1px solid var(--br)",borderRadius:14,padding:"20px 22px",background:"var(--be)"};
+  if(loading&&!st) return <div style={{padding:24,color:"var(--td)"}}>Memuat…</div>;
+  const tiers=(st&&st.tiers)||[];
+  const packs=(st&&st.packs)||[];
+  return <div style={{maxWidth:920,margin:"0 auto",display:"flex",flexDirection:"column",gap:20,width:"100%"}}>
+    <div style={{...card,display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
+      <div>
+        <div style={{fontSize:12,letterSpacing:".08em",textTransform:"uppercase",color:"var(--td)",opacity:.7}}>Saldo kredit</div>
+        <div style={{fontSize:40,fontWeight:800,lineHeight:1.1}}>{st?Number(st.balance).toLocaleString():"—"}</div>
+        <div style={{fontSize:13,color:"var(--td)"}}>Paket: <b style={{textTransform:"capitalize"}}>{st?st.plan:"free"}</b>{st&&st.period_end?(" · perpanjang "+new Date(st.period_end).toLocaleDateString()):""}</div>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button className="btn sec" onClick={load}>Refresh</button>
+        <button className="btn sec" onClick={portal} disabled={busy==="portal"}>Kelola langganan</button>
+      </div>
+    </div>
+    {st&&!st.configured&&<div className="badge fail" style={{alignSelf:"flex-start"}}>Stripe belum dikonfigurasi — checkout nonaktif</div>}
+    {tiers.length>0&&<div>
+      <h3 style={{margin:"4px 0 12px"}}>Paket langganan</h3>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14}}>
+        {tiers.map(t=><div key={t.key} style={card}>
+          <div style={{fontSize:18,fontWeight:700}}>{t.name}</div>
+          <div style={{fontSize:13,color:"var(--td)",margin:"6px 0 14px"}}>{Number(t.credits).toLocaleString()} kredit / bulan</div>
+          <button className="btn" style={{width:"100%"}} disabled={busy===t.priceId||(st&&st.plan===t.plan)}
+            onClick={()=>checkout(t.priceId)}>{(st&&st.plan===t.plan)?"Paket aktif":(busy===t.priceId?"…":"Upgrade")}</button>
+        </div>)}
+      </div>
+    </div>}
+    {packs.length>0&&<div>
+      <h3 style={{margin:"4px 0 12px"}}>Top-up kredit</h3>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:14}}>
+        {packs.map(p=><div key={p.key} style={card}>
+          <div style={{fontSize:16,fontWeight:700}}>{p.name}</div>
+          <div style={{fontSize:13,color:"var(--td)",margin:"6px 0 14px"}}>+{Number(p.credits).toLocaleString()} kredit</div>
+          <button className="btn sec" style={{width:"100%"}} disabled={busy===p.priceId}
+            onClick={()=>checkout(p.priceId)}>{busy===p.priceId?"…":"Beli"}</button>
+        </div>)}
+      </div>
+    </div>}
+    {tiers.length===0&&packs.length===0&&<div style={{...card,color:"var(--td)"}}>
+      Belum ada harga Stripe yang dikonfigurasi. Set <code>STRIPE_PRICE_*</code> di environment lalu refresh.
+    </div>}
+  </div>;
+}
+
 function MediaVaultSection({settings,showToast}){
   const [tab,setTab]=useState("generated");   // "generated" | "uploads"
   const [cat,setCat]=useState("all");         // category within Generated
@@ -5351,8 +5469,8 @@ function NarasiSection({settings,showToast}){
     </div>}
   </div>;
 }
-const PAGE_TITLES={chat:"Chat",image:"Image Generation",veo:"Veo · AI Video",sora:"Sora · AI Video",whisk:"Whisk · Image Remixing",flow:"Flow Storyboard",batch:"Batch Images",tts:"Text to Speech",imagen:"Imagen",mcp:"MCP File Search",scripttts:"Script → TTS",narasi:"Narasi AI",narasireview:"Narasi Review"};
-const PAGE_ICONS={chat:ic.chat,image:ic.image,veo:ic.video,sora:ic.sora,whisk:ic.whisk,flow:ic.flow,batch:ic.batch,tts:ic.mic,imagen:ic.img2,mcp:ic.folder,scripttts:ic.mic,narasi:ic.lay};
+const PAGE_TITLES={chat:"Chat",image:"Image Generation",veo:"Veo · AI Video",sora:"Sora · AI Video",whisk:"Whisk · Image Remixing",flow:"Flow Storyboard",batch:"Batch Images",tts:"Text to Speech",imagen:"Imagen",mcp:"MCP File Search",scripttts:"Script → TTS",narasi:"Narasi AI",narasireview:"Narasi Review",mediavault:"Media Vault",billing:"Billing & Credits"};
+const PAGE_ICONS={chat:ic.chat,image:ic.image,veo:ic.video,sora:ic.sora,whisk:ic.whisk,flow:ic.flow,batch:ic.batch,tts:ic.mic,imagen:ic.img2,mcp:ic.folder,scripttts:ic.mic,narasi:ic.lay,mediavault:ic.img2,billing:ic.gear};
 
 
 /* ── ClerkUserButton — header user pill with dropdown ────────────────── */
@@ -5420,6 +5538,23 @@ function App(){
   const[theme,setTheme]=useState(()=>localStorage.getItem("rc_theme")||"dark");
   const[page,setPage]=useState("chat");
   const guardNav=(id)=>{ if(id!=="narasi"&&window.__rcsNarasiUnrated&&!window.confirm("Narasi belum kamu beri rating ⭐. Pindah halaman tanpa menilai?"))return; setPage(id); };
+
+  // Step 4: out-of-credits (402) → jump to Billing; handle Stripe checkout return.
+  useEffect(()=>{
+    const onLow=()=>{ setPage("billing"); if(showToast)showToast("Kredit habis — silakan top-up","err"); };
+    window.addEventListener("billing:insufficient",onLow);
+    try{
+      const p=new URLSearchParams(window.location.search);
+      if(p.get("billing")==="success"){
+        if(showToast)showToast("Pembayaran diterima — kredit segera masuk","ok");
+        window.dispatchEvent(new Event("billing:refresh"));
+        setPage("billing");
+        const u=new URL(window.location.href); u.searchParams.delete("billing");
+        window.history.replaceState({},"",u);
+      }
+    }catch(e){}
+    return ()=>window.removeEventListener("billing:insufficient",onLow);
+  },[]);
   const[showSettings,setShowSettings]=useState(false);
   const[collapsed,setCollapsed]=useState(false);
   const[toast,setToast]=useState(null);
@@ -5463,6 +5598,7 @@ function App(){
       <div style={{display:page==="narasi"  ?""  :"none"}}><NarasiSection    settings={sectionSettings} showToast={showToast}/></div>
       <div style={{display:page==="narasireview"?"":"none"}}><NarasiReviewSection settings={sectionSettings} showToast={showToast}/></div>
       <div style={{display:page==="mediavault"?"":"none"}}><MediaVaultSection settings={sectionSettings} showToast={showToast}/></div>
+      <div style={{display:page==="billing"?"":"none"}}><BillingSection settings={sectionSettings} showToast={showToast}/></div>
     </>
   );
 
@@ -5498,6 +5634,7 @@ function App(){
         <div className="page-title">{PAGE_ICONS[page]}{PAGE_TITLES[page]}</div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {!hasKey&&<span className="badge fail">No GEMINI_API_KEY</span>}
+          <BalancePill onClick={()=>setPage("billing")}/>
           <button className="btn sec" style={{padding:"6px 10px",fontSize:12}} title="Refresh page" onClick={()=>{if(page==="narasi"){localStorage.removeItem("rc_nar_outline");localStorage.removeItem("rc_nar_outline_text");localStorage.removeItem("rc_nar_result");}window.location.reload();}}>{ic.refresh}</button>
           <button className="btn sec" style={{padding:"6px 10px",fontSize:12}} onClick={()=>setShowSettings(true)}>{ic.gear}</button>
           <ClerkUserButton/>
