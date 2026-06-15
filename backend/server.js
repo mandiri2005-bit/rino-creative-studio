@@ -28,6 +28,7 @@ import { pool } from "./db.js";
 import * as billing from "./billing.mjs";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
 import * as storage from "./storage.mjs";
+import { isGoogleVeo, googleVeoSubmit, googleVeoStatus, googleVeoResult, getGoogleVeoJob, markGoogleVeoR2 } from "./googleVeo.mjs";
 import { randomUUID } from "crypto";
 import * as Sentry from "@sentry/node";
 import { mountVideoRoutes } from "./video/routes.mjs";
@@ -1430,9 +1431,32 @@ app.post("/api/flow/images/lz",          (req,res)=>pyProxy(req,res,"/flow/image
 // ══════════════════════════════════════════════════════════════════════════════
 // VEO  (proxy → Python)
 // ══════════════════════════════════════════════════════════════════════════════
-app.post("/api/veo/submit",       (req,res)=>pyProxy(req,res,"/veo/submit"));
-app.get ("/api/veo/status/:id",   (req,res)=>pyProxy(req,res,`/veo/status/${req.params.id}`));
+// ── Veo: DEFAULT Google (Gemini); a LaoZhang key (X-Veo-API-Key) overrides ────
+app.post("/api/veo/submit", async (req,res)=>{
+  const lzKey = (req.headers["x-veo-api-key"]||"").trim();
+  if (lzKey) return pyProxy(req,res,"/veo/submit");            // LaoZhang override
+  try {                                                        // default: Google
+    const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
+    const b = req.body || {};
+    const aspect = (b.preset && typeof b.preset==="object" && b.preset.aspectRatio) || b.aspect || "16:9";
+    res.json(await googleVeoSubmit({
+      prompt:b.prompt, model:b.model, refB64:b.ref_image_b64, refMime:b.ref_image_mime,
+      negativePrompt:b.negative_prompt, aspectRatio:aspect, googleKey:(b.google_api_key||"").trim(),
+      tenantId, userId }));
+  } catch(e){
+    const noKey = e.code==="no_google_key";
+    res.status(noKey?400:502).json({ error: noKey
+      ? "No Google API key — set GEMINI_API_KEY on the server, or enter a LaoZhang key to use LaoZhang Veo"
+      : "Google Veo: "+String(e.message||e).slice(0,300) });
+  }
+});
+app.get("/api/veo/status/:id", async (req,res)=>{
+  if (!isGoogleVeo(req.params.id)) return pyProxy(req,res,`/veo/status/${req.params.id}`);
+  res.json(await googleVeoStatus(req.params.id));
+});
 app.get ("/api/veo/download/:id", async(req,res)=>{
+  if (isGoogleVeo(req.params.id)) return veoServeGoogle(req,res,true);
   try{
     const LZ_KEY = process.env.LAOZHANG_IMAGE_API_KEY || process.env.LAOZHANG_API_KEY || "";
     const r = await fetch(`https://api.laozhang.ai/v1/videos/${req.params.id}/content`,
@@ -1446,6 +1470,7 @@ app.get ("/api/veo/download/:id", async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get ("/api/veo/stream/:id", async(req,res)=>{
+  if (isGoogleVeo(req.params.id)) return veoServeGoogle(req,res,false);
   try{
     const headers={}; if(req.headers["x-veo-api-key"]) headers["X-Veo-API-Key"]=req.headers["x-veo-api-key"];
     const pyRes=await fetch(`${PYTHON_API}/veo/stream/${req.params.id}`,{headers});
@@ -1454,6 +1479,35 @@ app.get ("/api/veo/stream/:id", async(req,res)=>{
     res.end(Buffer.from(await pyRes.arrayBuffer()));
   }catch(e){if(!res.writableEnded)res.status(500).json({error:e.message});}
 });
+// Serve a finished Google Veo video — from R2 if already captured, else fetch it
+// from Google and persist once (moat: modality=video + source_prompt).
+async function veoServeGoogle(req,res,asDownload){
+  const taskId = req.params.id;
+  const sendBytes = (bytes)=>{
+    res.setHeader("Content-Type","video/mp4");
+    res.setHeader("Cache-Control","no-store");
+    if (asDownload) res.setHeader("Content-Disposition",`attachment; filename="veo-${taskId.slice(-8)}.mp4"`);
+    res.setHeader("Content-Length", bytes.length);
+    res.end(bytes);
+  };
+  const job = getGoogleVeoJob(taskId);
+  if (job && job.r2Key && storage.isConfigured()){
+    try{ return sendBytes(await storage.downloadBytes(job.r2Key)); }catch(_){ /* fall through to re-fetch */ }
+  }
+  try{
+    const r = await googleVeoResult(taskId);
+    if (!r.done) return res.status(202).json({ status:"processing" });
+    if (job && !job.r2Key && job.tenantId){
+      try{
+        const a = await persistAsset({ tenantId:job.tenantId, userId:job.userId||null,
+          assetType:"video", sourceJobType:"veo", filename:`${taskId}.mp4`,
+          buffer:r.bytes, contentType:"video/mp4", metadata:{ provider:"google", prompt:job.prompt } });
+        if (a) markGoogleVeoR2(taskId, a.key);
+      }catch(e){ console.warn("[googleVeo] persist failed (non-fatal):", String(e.message||e).slice(0,120)); }
+    }
+    sendBytes(r.bytes);
+  }catch(e){ if(!res.writableEnded) res.status(502).json({ error:"Google Veo: "+String(e.message||e).slice(0,300) }); }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SORA  (proxy → Python)

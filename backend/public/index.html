@@ -1504,7 +1504,7 @@ function VeoSection({settings,showToast}){
   const[refMime,setRefMime]=useState("image/jpeg");
   const[tasks,setTasks]=useState([]);
   const[busy,setBusy]=useState(false);
-  const key=settings.laozhangKey||settings.veoKey||"";
+  const key=settings.veoKey||"";  // Veo defaults to Google; only the dedicated Veo override routes to LaoZhang
 
   const setRef=f=>{const r=new FileReader();r.onload=e=>{setRefMime(f.type||"image/jpeg");setRefB64(e.target.result.split(",")[1]);};r.readAsDataURL(f);};
 
@@ -1916,7 +1916,7 @@ function FlowSection({settings,showToast}){
     const mime=hasImg?((scene.image_b64.match(/^data:(image\/[a-z]+);base64,/i)?.[1])||"image/png"):"image/png";
     setSceneVeo(p=>({...p,[idx]:{status:attempt?"retrying":"queued",taskId:null,model:veoModel,mode:hasImg?"i2v":"t2v",attempt}}));
     try{
-      const resp=await fetch("/api/veo/submit",{method:"POST",headers:{"Content-Type":"application/json","X-Veo-API-Key":veoKey||""},
+      const resp=await fetch("/api/veo/submit",{method:"POST",headers:{"Content-Type":"application/json","X-Veo-API-Key":(settings.veoKey||"")},
         body:JSON.stringify({
           prompt:scene.description+(scene.camera?" Camera: "+scene.camera:"")+(scene.audio?" Audio: "+scene.audio:""),
           model:veoModel,
@@ -3073,7 +3073,7 @@ function SettingsPanel({settings,setSettings,onClose}){
         </div>
         <div>
           <div className="lbl">{ic.key} LaoZhang API key <span style={{fontSize:10,background:"var(--as)",color:"var(--ac)",padding:"2px 7px",borderRadius:999,marginLeft:6}}>all tools</span></div>
-          <input className="inp mono" type="password" placeholder="sk-... applies to Chat · Image · Veo · Sora · Whisk · Flow" value={settings.laozhangKey||""} onChange={e=>{const k=e.target.value;setSettings(s=>({...s,laozhangKey:k}));settings.setLaozhangKey(k);settings.setImageKey(k);settings.setVeoKey(k);settings.setSoraKey(k);}}/>
+          <input className="inp mono" type="password" placeholder="sk-... applies to Chat · Image · Sora · Whisk · Flow (Veo defaults to Google)" value={settings.laozhangKey||""} onChange={e=>{const k=e.target.value;setSettings(s=>({...s,laozhangKey:k}));settings.setLaozhangKey(k);settings.setImageKey(k);settings.setSoraKey(k);}}/>
           <p className="hint">Sent as header on every request. Overrides server .env key. Stored in browser only.</p>
         </div>
         <div>
