@@ -264,6 +264,21 @@
         </optgroup>
       </select>
 
+      <label class="lbl">Model gambar</label>
+      <select id="imageModel">
+        <option value="nano-banana-hd">Nano Banana HD ★ (16:9)</option>
+        <option value="nano-banana">Nano Banana (1:1)</option>
+        <option value="nano-banana-2-hd">Nano Banana 2 HD (16:9)</option>
+        <option value="nano-banana-2">Nano Banana 2 (1:1)</option>
+        <option value="nano-banana-pro">Nano Banana Pro</option>
+        <option value="nano-banana-pro-hd">Nano Banana Pro HD (multi-rasio)</option>
+        <option value="gpt-image-2">GPT-Image-2</option>
+        <option value="flux-kontext-max">Flux Kontext Max</option>
+        <option value="flux-kontext-pro">Flux Kontext Pro</option>
+        <option value="seedream-4-0">SeeDream 4.0</option>
+        <option value="seedream-4-5">SeeDream 4.5</option>
+      </select>
+
       <label class="lbl">Rasio</label>
       <div class="pills" id="arPills">
         <div class="pill on" data-ar="16:9">16:9 · Lanskap</div>
@@ -379,7 +394,7 @@
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",jobId:null,poll:null};
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -412,6 +427,7 @@
   $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; refreshEstimate(); };
   $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
   $("#visualStyle").onchange=e=>state.visualStyle=e.target.value;
+  $("#imageModel").onchange=e=>state.imageModel=e.target.value;
   $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
   $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
   $("#captionFont").onchange=e=>state.captionFont=e.target.value;
@@ -426,7 +442,7 @@
     clearTimeout(estTimer);
     estTimer=setTimeout(async()=>{
       try{
-        const p=await api("/api/video/params",{method:"POST",body:JSON.stringify({minutes:state.minutes,tier:state.tier,visual_mode:state.visualMode,clip_model:state.clipModel})});
+        const p=await api("/api/video/params",{method:"POST",body:JSON.stringify({minutes:state.minutes,tier:state.tier,visual_mode:state.visualMode,clip_model:state.clipModel,image_model:state.imageModel})});
         $("#estScenes").textContent=p.scene_count;
         $("#estDur").textContent=DURATIONS.find(d=>d[1]===state.minutes)?.[0]||state.minutes+" mnt";
         $("#estCredits").textContent=p.credits;
@@ -466,6 +482,7 @@
       const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
         scenes, tier:state.tier, clipModel:state.clipModel, visualMode:state.visualMode, captions:state.captions,
         ttsModel:state.ttsModel, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
+        imageModel:state.imageModel,
       })});
       state.jobId=asm.jobId;
       pollJob(asm);
