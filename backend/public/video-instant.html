@@ -41,8 +41,11 @@
   .bc{display:block;width:44px;height:44px;margin:0 auto 16px}
   .bc img{width:100%;height:100%;object-fit:contain;animation:breathe 1.8s ease-in-out infinite;transform-origin:center}
   @keyframes breathe{0%,100%{transform:scale(.92);opacity:.55}50%{transform:scale(1);opacity:1}}
-  .cancel-btn{margin-top:16px;background:transparent;border:1px solid var(--br);color:var(--td);border-radius:10px;padding:9px 18px;cursor:pointer;font-size:13px;transition:.15s}
+  .cancel-btn{background:transparent;border:1px solid var(--br);color:var(--td);border-radius:10px;padding:9px 22px;cursor:pointer;font-size:13px;transition:.15s}
   .cancel-btn:hover{color:var(--t);border-color:var(--ac)}
+  .prog-status{display:flex;align-items:center;justify-content:center;gap:11px;color:var(--td);font-family:var(--fm);font-size:12.5px;padding:18px 20px 4px}
+  .prog-status .bc{width:30px;height:30px;margin:0}
+  .prog-actions{display:flex;justify-content:center;padding:10px 20px 22px}
   .adv{margin-top:6px}
   .adv summary{cursor:pointer;color:var(--td);font-size:13px;font-family:var(--fm);padding:6px 0;list-style:none}
   .adv summary::-webkit-details-marker{display:none}
@@ -549,7 +552,8 @@
           '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+(s.text||"").slice(0,90)+'</div></div>';
       }).join("")+'</div>';
     }
-    stage.innerHTML=head+CLOADER+body+'<button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button>';
+    const status='<div class="prog-status">'+CLOADER+'<span>Merangkai '+total+' scene · '+doneN+'/'+total+' siap…</span></div>';
+    stage.innerHTML=head+status+body+'<div class="prog-actions"><button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button></div>';
   }
 
   // ── handoff from Studio (Flow Storyboard / Script→TTS "Send to Video Instant") ──
