@@ -19,6 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Worker, Queue } from "bullmq";
 import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QUEUE, CONCURRENCY, makeConnection } from "./connection.mjs";
@@ -64,7 +65,11 @@ async function maybeUpload(jobId, tenantId, assetType, localPath) {
 }
 
 async function resolveLocal(jobId, tmpDir, key, path, fallbackName) {
-  if (path) return path; // local already
+  // Only trust the stored local path if the file is ACTUALLY there. With more than
+  // one video-worker replica a scene's asset is written on whichever replica picked
+  // up that job, so the replica running the stitch may not have it on disk — fall
+  // back to re-downloading from R2 (the shared copy maybeUpload pushed).
+  if (path && existsSync(path)) return path;
   const s = await storage();
   if (s && key) {
     const { writeFile } = await import("node:fs/promises");
@@ -72,7 +77,10 @@ async function resolveLocal(jobId, tmpDir, key, path, fallbackName) {
     await writeFile(out, await s.downloadBytes(key));
     return out;
   }
-  throw new Error(`no asset for ${fallbackName}`);
+  throw new Error(
+    `no asset for ${fallbackName}: local '${path || "?"}' missing and ` +
+    (key ? "R2 download failed" : "no R2 key — set object storage on the video-worker OR run a single replica")
+  );
 }
 
 // ── processors (exported for unit/integration testing) ──
