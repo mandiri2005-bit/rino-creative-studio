@@ -297,9 +297,110 @@ export function runFfmpeg(args, { onProgress, cwd } = {}) {
   });
 }
 
-/** Stitch scenes into outPath and return the measured result. */
+// One-line SRT for a single scene clip (the caption shows for the whole clip).
+function sceneSrt(text, dur) {
+  const t = (s) => {
+    const ms = Math.max(0, Math.round(s * 1000));
+    const hh = String(Math.floor(ms / 3600000)).padStart(2, "0");
+    const mm = String(Math.floor((ms % 3600000) / 60000)).padStart(2, "0");
+    const ss = String(Math.floor((ms % 60000) / 1000)).padStart(2, "0");
+    return `${hh}:${mm}:${ss},${String(ms % 1000).padStart(3, "0")}`;
+  };
+  return `1\n${t(0)} --> ${t(Math.max(0.2, dur - 0.05))}\n${(text || "").trim()}\n`;
+}
+
+/**
+ * ffmpeg argv to render ONE scene to a self-contained, uniformly-encoded clip
+ * (image → Ken Burns, clip → trim/freeze-pad; audio trimmed/padded to the master
+ * clock). first/last scenes carry the opening fade-in / closing fade-to-black.
+ * These clips are byte-concatenable (-c copy), which is how long videos avoid the
+ * single giant filter graph that OOMs the worker.
+ */
+export function buildSceneClipArgs(scene, idx, outPath, opts = {}) {
+  const o = { ...VIDEO_DEFAULTS, ...opts };
+  const W = o.width, H = o.height, FPS = o.fps;
+  const dur = Math.max(0.2, Number(scene.duration) || 0.2);
+  const frames = Math.max(1, Math.round(dur * FPS));
+  const args = ["-y"];
+  if (scene.kind === "image") args.push("-loop", "1", "-t", String(dur), "-i", scene.visualPath);
+  else args.push("-i", scene.visualPath);
+  args.push("-i", scene.audioPath);
+
+  const fit = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}`;
+  const box = `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2`;
+  let vf;
+  if (scene.kind === "image") {
+    const move = scene.move || KEN_BURNS_MOVES[idx % KEN_BURNS_MOVES.length];
+    vf = `[0:v]${fit},${kenBurnsExpr(move, frames, W, H, FPS)},trim=0:${dur},setpts=PTS-STARTPTS,setsar=1,format=yuv420p`;
+  } else {
+    vf = `[0:v]${box},fps=${FPS},trim=0:${dur},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${dur},trim=0:${dur},setsar=1,format=yuv420p`;
+  }
+  if (opts.srt) vf += `,subtitles=${opts.srt}${opts.captionFont ? `:force_style='Fontname=${opts.captionFont}'` : ""}`;
+  const fd = Math.min(Number(o.fadeDuration ?? 0), dur / 2.2);
+  if (opts.isFirst && fd > 0.05) vf += `,fade=t=in:st=0:d=${fd.toFixed(3)}`;
+  if (opts.isLast && fd > 0.05) vf += `,fade=t=out:st=${(dur - fd).toFixed(3)}:d=${fd.toFixed(3)}`;
+  vf += "[v]";
+
+  let af = `[1:a]atrim=0:${dur},asetpts=PTS-STARTPTS,apad=whole_dur=${dur},atrim=0:${dur},aformat=sample_rates=48000:channel_layouts=stereo`;
+  if (opts.isFirst && fd > 0.05) af += `,afade=t=in:st=0:d=${fd.toFixed(3)}`;
+  if (opts.isLast && fd > 0.05) af += `,afade=t=out:st=${(dur - fd).toFixed(3)}:d=${fd.toFixed(3)}`;
+  af += "[a]";
+
+  args.push(
+    "-filter_complex", `${vf};${af}`, "-map", "[v]", "-map", "[a]",
+    "-r", String(FPS), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", o.preset || "medium",
+    "-crf", String(o.crf || 20), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+    "-video_track_timescale", "90000", "-movflags", "+faststart", outPath
+  );
+  return args;
+}
+
+/**
+ * Render each scene to its own clip, then byte-concat them (concat demuxer, -c
+ * copy). Each per-scene render is a small, bounded filter graph, so this scales to
+ * arbitrarily long videos (100+ scenes) where the single-pass xfade graph OOMs.
+ * Trade-off: hard cuts between scenes (no crossfade) — the per-scene audio gap +
+ * the open/close fades keep transitions clean.
+ */
+export async function stitchPerScene(scenes, outPath, opts = {}) {
+  const { writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const cwd = opts.cwd || ".";
+  const wantCaps = opts.captions && (await hasSubtitlesFilter());
+  const clipPaths = [];
+  for (let i = 0; i < scenes.length; i++) {
+    const clip = join(cwd, `scene_${i}.mp4`);
+    let srt = null;
+    if (wantCaps && (scenes[i].text || "").trim()) {
+      srt = `scene_${i}.srt`;
+      await writeFile(join(cwd, srt), sceneSrt(scenes[i].text, scenes[i].duration), "utf8");
+    }
+    const args = buildSceneClipArgs(scenes[i], i, clip, {
+      ...opts, srt, isFirst: i === 0, isLast: i === scenes.length - 1,
+    });
+    await runFfmpeg(args, { cwd, onProgress: opts.onProgress });
+    clipPaths.push(clip);
+  }
+  // concat list — paths are relative to cwd; single-quote-escape just in case
+  const list = join(cwd, "concat.txt");
+  await writeFile(list, clipPaths.map((c) => `file '${c.split("/").pop().replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
+  await runFfmpeg(
+    ["-y", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "-movflags", "+faststart", outPath],
+    { cwd }
+  );
+  const duration = await ffprobeDuration(outPath);
+  return { path: outPath, duration, sceneCount: scenes.length };
+}
+
+/** Stitch scenes into outPath and return the measured result. Long videos go
+ * through the per-scene render+concat path (scales); short ones keep the
+ * single-pass xfade (smooth crossfades). */
 export async function stitch(scenes, outPath, opts = {}) {
   if (!scenes?.length) throw new Error("stitch: no scenes");
+  const singlePassMax = Number(opts.singlePassMax ?? process.env.VIDEO_SINGLEPASS_MAX ?? 8);
+  if (scenes.length > singlePassMax) {
+    return stitchPerScene(scenes, outPath, opts);
+  }
   const args = buildStitchArgs(scenes, outPath, opts);
   await runFfmpeg(args, opts);
   const duration = await ffprobeDuration(outPath);

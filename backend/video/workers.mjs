@@ -219,6 +219,7 @@ export async function stitchProcessor(job, deps) {
       scenes.push({
         kind: s.visualKind || "image",
         duration: (Number(s.durationActual) || Number(s.estSeconds) || 2) + sceneGap,
+        text: s?.text || "",   // per-scene caption (long-video render path)
         visualPath: await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
           `vis_${i}.${s.visualKind === "clip" ? "mp4" : "png"}`),
         audioPath: await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`),
@@ -233,7 +234,8 @@ export async function stitchProcessor(job, deps) {
       const xfade = Number(process.env.VIDEO_XFADE || 0.5);
       const srt = buildSrt(scenesRaw.map((s) => s?.text || ""), scenes.map((s) => s.duration), xfade);
       await writeFile(join(tmpDir, "captions.srt"), srt, "utf8");
-      stitchOpts.srt = "captions.srt";
+      stitchOpts.srt = "captions.srt";       // single-pass path (≤ threshold scenes)
+      stitchOpts.captions = true;            // per-scene path builds its own per-scene SRTs
       if (meta.captionFont) stitchOpts.captionFont = meta.captionFont;
     } else if (meta.captions) {
       console.warn(`[stitch ${jobId}] captions requested but ffmpeg has no 'subtitles' filter (no libass) — rendering without burn-in`);
