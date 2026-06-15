@@ -806,7 +806,7 @@ const api={
   models:()=>fetch("/api/models").then(r=>r.json()),
   imageModels:()=>fetch("/api/image-models").then(r=>r.json()),
   generateImage:(b,key)=>fetch("/api/generate-image",{method:"POST",headers:{"Content-Type":"application/json","X-Image-API-Key":key||""},body:JSON.stringify(b)}).then(r=>r.json()),
-  veoSubmit:(b,key)=>fetch("/api/veo/submit",{method:"POST",headers:{"Content-Type":"application/json","X-Veo-API-Key":key||""},body:JSON.stringify(b)}).then(r=>r.json()),
+  veoSubmit:async(b,key)=>{const resp=await fetch("/api/veo/submit",{method:"POST",headers:{"Content-Type":"application/json","X-Veo-API-Key":key||""},body:JSON.stringify(b)});let r={};try{r=await resp.json();}catch{}if(!resp.ok&&!r.error)r.error=(typeof r.detail==="string"?r.detail:(r.detail?JSON.stringify(r.detail):""))||r.message||("HTTP "+resp.status);return r;},
   veoStatus:(id,key)=>fetch(`/api/veo/status/${id}`,{headers:{"X-Veo-API-Key":key||""}}).then(r=>r.json()),
   soraSubmit:(b,key)=>fetch("/api/sora/submit",{method:"POST",headers:{"Content-Type":"application/json","X-Sora-API-Key":key||""},body:JSON.stringify(b)}).then(r=>r.json()),
   soraStatus:(id,key)=>fetch(`/api/sora/status/${id}`,{headers:{"X-Sora-API-Key":key||""}}).then(r=>r.json()),

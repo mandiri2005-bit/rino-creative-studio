@@ -2152,6 +2152,7 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
     if not isinstance(preset, dict):     # None / unknown key → pick a sane default by aspect
         preset = VEO_PRESETS["1080p_portrait" if req.aspect == "9:16" else "1080p_landscape"]
     headers = _veo_headers(x_veo_api_key)
+    print(f"[veo/submit] model={req.model} key={'override' if x_veo_api_key else 'server-image'} url={VEO_API_URL}")
 
     # Step 4: credit gate — video billed per second, known up front. 402 before submit.
     _secs = int(preset.get("seconds") or 8)
@@ -2200,8 +2201,11 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
                 print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        _body = (e.response.text or "")[:600]
+        print(f"[veo/submit] UPSTREAM {e.response.status_code}: {_body}")
+        raise HTTPException(status_code=e.response.status_code, detail=_body or "veo upstream error")
     except Exception as e:
+        print(f"[veo/submit] ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
