@@ -74,11 +74,33 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
         tier: b.tier || "hd", clipModel: b.clipModel || "veo3",
         visualMode: b.visualMode || "hybrid", captions: !!b.captions,
         voice: b.voice, imageModel: b.imageModel,
+        ttsModel: b.ttsModel, language: b.language,
       }, deps());
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {
       res.status(e.status || 500).json({ error: e.message, creditsNeeded: e.creditsNeeded });
     }
+  });
+
+  // Cancel a running job: mark it terminal (in-flight workers skip on next check)
+  // and refund what it consumed so far. Uses the caller's own auth for the refund.
+  app.post("/api/video/assemble/:jobId/cancel", auth, async (req, res) => {
+    const jobId = req.params.jobId;
+    const meta = await store.getMeta(jobId);
+    if (!meta) return res.status(404).json({ error: "job not found" });
+    if (!["done", "failed", "canceled"].includes(meta.status)) {
+      await store.setStatus(jobId, "canceled", { error: "canceled by user" });
+    }
+    let refunded = null;
+    try {
+      const r = await fetch(`${PYTHON_API}/video/credits/refund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(req.headers.authorization && { Authorization: req.headers.authorization }) },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+      if (r.ok) refunded = (await r.json()).refunded;
+    } catch { /* best effort */ }
+    res.json({ ok: true, status: "canceled", refunded });
   });
 
   app.get("/api/video/assemble/:jobId", auth, async (req, res) => {

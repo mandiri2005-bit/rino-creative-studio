@@ -2358,6 +2358,7 @@ class SoraSubmitRequest(BaseModel):
 
 @app.post("/sora/submit")
 async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = Header(default=None),
+                      x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
                       user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Sora 2 text-to-video or image-to-video task."""
     headers = _sora_headers(x_sora_api_key)
@@ -2399,7 +2400,8 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
             try:
                 _jid = await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id)
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
-                                     {"seconds": _secs}, byok=_byok, job_id=_jid, log=True)
+                                     {"seconds": _secs}, byok=_byok, job_id=_jid,
+                                     video_job=x_video_job, log=True)
             except Exception as _e:
                 print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -5807,6 +5809,7 @@ class VideoSegmentReq(BaseModel):
     language: str = "id"
     visual_mode: Optional[str] = None   # set ('full_clips'|'full_images'|'hybrid') to also run the decide stage
     clip_ratio: float = 0.3
+    visual_style: str = ""              # art style suffix (caricature|comic|cinematic|…) for every scene prompt
 
 class VideoDecideReq(BaseModel):
     scenes: list
@@ -5995,13 +5998,13 @@ async def video_segment(req: VideoSegmentReq,
                 print(f"[video/segment] narration metering debit failed (non-fatal): {_e}")
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
-                               visual_mode=req.visual_mode or "hybrid")
+                               visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style)
     else:
         if not (req.text or "").strip():
             raise HTTPException(400, "text is required")
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
-                               visual_mode=req.visual_mode or "hybrid")
+                               visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style)
 
     out = result.to_dict()
     if req.visual_mode:   # one-shot: segment + decide the visual treatment

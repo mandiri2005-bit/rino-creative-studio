@@ -84,9 +84,15 @@ export function syntheticGenerationClient(opts = {}) {
 const VEO_DONE = new Set(["succeed", "succeeded", "success", "completed", "complete", "done", "finished", "ready"]);
 const VEO_FAIL = new Set(["failed", "error", "canceled", "cancelled"]);
 
-// Map the segmenter/decide model alias → the real upstream model id the Veo
-// endpoint expects. The bare alias ("veo3"/"kling3") is rejected by the provider.
-const CLIP_MODEL_IDS = { veo3: "veo-3.1-generate-preview", kling3: "kling-v1.6" };
+// Map the segmenter/decide model alias → the real upstream model id the provider
+// expects. The bare alias is rejected by the provider. Veo variants + Kling go
+// through the /veo/* routes; Sora through the parallel /sora/* routes.
+const CLIP_MODEL_IDS = {
+  veo3: "veo-3.1-generate-preview", veo3_fast: "veo-3.1-fast", veo3_pro: "veo-3.1",
+  kling3: "kling-v1.6", sora: "sora-2",
+};
+// which /{provider}/{submit,status,stream} route family an alias uses
+function clipProvider(alias) { return String(alias || "").toLowerCase().startsWith("sora") ? "sora" : "veo"; }
 
 export function httpGenerationClient(opts = {}) {
   const PYTHON_API = opts.pythonApi || process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
@@ -127,7 +133,7 @@ export function httpGenerationClient(opts = {}) {
       const r = await fetch(`${PYTHON_API}${ttsAudioPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(scene) },
-        body: JSON.stringify({ text: scene.text, voice: scene.voice, scene_index: scene.sceneIndex }),
+        body: JSON.stringify({ text: scene.text, voice: scene.voice, model: scene.ttsModel || undefined, scene_index: scene.sceneIndex }),
       });
       if (!r.ok) throw new Error(`tts ${r.status}: ${(await r.text()).slice(0, 200)}`);
       const data = await r.json();
@@ -154,34 +160,35 @@ export function httpGenerationClient(opts = {}) {
         else throw new Error("image response had no image_b64/url");
         return { path: out, kind: "image" };
       }
-      // clip: submit → poll status → pull the MP4 from /veo/stream (the real
-      // contract: the bytes come from /veo/stream/{id}, NOT a status field).
+      // clip: submit → poll status → pull the MP4 from /{provider}/stream (the real
+      // contract: the bytes come from the stream route, NOT a status field).
       const out = join(tmpDir, `clip_${scene.sceneIndex}.mp4`);
-      // the worker sends the chosen model alias (veo3/kling3) — translate to the
-      // real upstream id; never pass the bare alias (the provider rejects it).
+      // the worker sends the chosen model alias (veo3/veo3_fast/sora/kling3) →
+      // translate to the real upstream id + pick the /veo or /sora route family.
       const modelId = CLIP_MODEL_IDS[scene.clipModel] || scene.clipModelId || "veo-3.1-generate-preview";
-      const submit = await fetch(`${PYTHON_API}/veo/submit`, {
+      const prov = clipProvider(scene.clipModel);
+      const submit = await fetch(`${PYTHON_API}/${prov}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...h },
         body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId }),
       });
-      if (!submit.ok) throw new Error(`veo submit ${submit.status}`);
+      if (!submit.ok) throw new Error(`${prov} submit ${submit.status}`);
       const { task_id } = await submit.json();
-      if (!task_id) throw new Error("veo submit returned no task_id");
+      if (!task_id) throw new Error(`${prov} submit returned no task_id`);
       const deadline = Date.now() + clipTimeoutMs;
       // poll loop runs INSIDE the visual worker (separate process) → never blocks the API loop
       for (;;) {
-        if (Date.now() > deadline) throw new Error("veo timeout");
+        if (Date.now() > deadline) throw new Error(`${prov} timeout`);
         await new Promise((s) => setTimeout(s, 5000));
-        const st = await fetch(`${PYTHON_API}/veo/status/${task_id}`, { headers: h });
+        const st = await fetch(`${PYTHON_API}/${prov}/status/${task_id}`, { headers: h });
         if (!st.ok) continue;
         const sd = await st.json();
         const status = String(sd.status || "").toLowerCase();
-        if (VEO_FAIL.has(status)) throw new Error(`veo ${status}`);
+        if (VEO_FAIL.has(status)) throw new Error(`${prov} ${status}`);
         if (VEO_DONE.has(status) || Number(sd.progress) >= 100) break;
       }
-      // /veo/stream returns the MP4 bytes directly (and self-retries if still encoding)
-      await getBytes(`${PYTHON_API}/veo/stream/${task_id}`, h, out);
+      // /{provider}/stream returns the MP4 bytes directly (and self-retries if still encoding)
+      await getBytes(`${PYTHON_API}/${prov}/stream/${task_id}`, h, out);
       return { path: out, kind: "clip" };
     },
 

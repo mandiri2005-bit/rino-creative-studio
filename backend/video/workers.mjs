@@ -88,7 +88,8 @@ export async function audioProcessor(job, deps) {
     await mkdir(tmpDir, { recursive: true });
     const a = await deps.generationClient.synthesizeAudio(
       { jobId, sceneIndex, text: scene.text, estSeconds: Number(scene.estSeconds),
-        voice: meta.voice || undefined, tenantId: meta.tenantId, userId: meta.userId }, tmpDir);
+        voice: meta.voice || undefined, ttsModel: meta.ttsModel || undefined,
+        tenantId: meta.tenantId, userId: meta.userId }, tmpDir);
     const duration = (await ffprobeDuration(a.path)) || a.durationSeconds || Number(scene.estSeconds) || 0;
     const up = await maybeUpload(jobId, meta.tenantId, "audio", a.path);
     await deps.store.setSceneFields(jobId, sceneIndex, {

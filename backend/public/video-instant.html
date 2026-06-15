@@ -37,6 +37,16 @@
   .brand{display:flex;align-items:center;gap:9px;font-family:var(--fd);font-weight:700;font-size:16px}
   .brand img{height:24px}
   .brand .zap{color:var(--ac)}
+  .credit-pill{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-family:var(--fm);font-size:13px;color:var(--ac);background:rgba(124,92,255,.12);border:1px solid rgba(124,92,255,.3);border-radius:999px;padding:5px 12px}
+  .bc{display:block;width:64px;height:64px;margin:0 auto 16px}
+  .bc svg{width:100%;height:100%;animation:breathe 1.6s ease-in-out infinite;transform-origin:center}
+  @keyframes breathe{0%,100%{transform:scale(.8);opacity:.5}50%{transform:scale(1.05);opacity:1}}
+  .cancel-btn{margin-top:16px;background:transparent;border:1px solid var(--br);color:var(--td);border-radius:10px;padding:9px 18px;cursor:pointer;font-size:13px;transition:.15s}
+  .cancel-btn:hover{color:var(--t);border-color:var(--ac)}
+  .adv{margin-top:6px}
+  .adv summary{cursor:pointer;color:var(--td);font-size:13px;font-family:var(--fm);padding:6px 0;list-style:none}
+  .adv summary::-webkit-details-marker{display:none}
+  .adv summary:before{content:"⚙ ";opacity:.7}
   .top-r{display:flex;align-items:center;gap:10px}
   .lnk{font-family:var(--fm);font-size:11.5px;color:var(--td);text-decoration:none;padding:7px 13px;border:1px solid var(--br);border-radius:8px;transition:.2s}
   .lnk:hover{color:var(--t);border-color:var(--ac)}
@@ -126,6 +136,7 @@
   <div class="top">
     <div class="brand"><img src="/assets/ceritaai-mark.png" alt="" onerror="this.style.display='none'"/>Video Instant <span class="zap">⚡</span></div>
     <div class="top-r">
+      <span class="credit-pill" id="creditPill" title="Sisa kredit" style="display:none">⬡ <b id="creditVal">—</b></span>
       <a class="lnk" href="/start.html">← Ganti jalur</a>
       <a class="lnk" href="/index.html">Studio</a>
       <button class="lnk" style="background:none;cursor:pointer" onclick="window.__clerkAuth?.signOut()">Keluar</button>
@@ -167,9 +178,9 @@
 
       <label class="lbl">Kualitas</label>
       <div class="pills" id="tierPills">
-        <div class="pill" data-tier="fast">Fast</div>
-        <div class="pill on" data-tier="hd">HD</div>
-        <div class="pill" data-tier="hd_plus">HD+</div>
+        <div class="pill" data-tier="fast">Fast · 720p</div>
+        <div class="pill on" data-tier="hd">HD · 1080p</div>
+        <div class="pill" data-tier="hd_plus">HD+ · 4K</div>
       </div>
 
       <div class="row">
@@ -184,13 +195,95 @@
         <div id="clipModelWrap">
           <label class="lbl">Model klip</label>
           <select id="clipModel">
-            <option value="veo3">Veo (8 dtk)</option>
+            <optgroup label="Veo">
+              <option value="veo3_fast">Veo Fast (8 dtk · murah)</option>
+              <option value="veo3" selected>Veo Standard (8 dtk)</option>
+              <option value="veo3_pro">Veo Quality (8 dtk · tajam)</option>
+            </optgroup>
+            <option value="sora">Sora (8 dtk)</option>
             <option value="kling3">Kling (15 dtk)</option>
           </select>
         </div>
       </div>
 
+      <label class="lbl">Gaya visual</label>
+      <select id="visualStyle">
+        <option value="">Default (bawaan model)</option>
+        <optgroup label="Realistik">
+          <option value="cinematic">Cinematic</option>
+          <option value="photorealistic">Photorealistic</option>
+          <option value="noir">Film noir</option>
+        </optgroup>
+        <optgroup label="Ilustrasi">
+          <option value="caricature">Caricature / karikatur</option>
+          <option value="comic">Comic book</option>
+          <option value="manga">Manga</option>
+          <option value="anime">Anime</option>
+          <option value="storybook">Storybook anak</option>
+          <option value="pop_art">Pop art</option>
+          <option value="flat_vector">Flat vector</option>
+          <option value="line_art">Line art</option>
+          <option value="pencil_sketch">Pensil sketsa</option>
+          <option value="charcoal">Charcoal / arang</option>
+        </optgroup>
+        <optgroup label="Lukisan">
+          <option value="watercolor">Cat air</option>
+          <option value="oil_painting">Cat minyak</option>
+          <option value="gouache">Gouache</option>
+          <option value="impressionist">Impresionis</option>
+          <option value="ukiyo_e">Ukiyo-e</option>
+          <option value="fantasy_art">Fantasy art</option>
+        </optgroup>
+        <optgroup label="3D / Digital">
+          <option value="3d_render">3D render</option>
+          <option value="pixar">3D animasi (Pixar-style)</option>
+          <option value="claymation">Claymation</option>
+          <option value="low_poly">Low poly</option>
+          <option value="pixel_art">Pixel art</option>
+          <option value="isometric">Isometrik</option>
+          <option value="papercut">Papercut</option>
+        </optgroup>
+        <optgroup label="Tema">
+          <option value="cyberpunk">Cyberpunk</option>
+          <option value="steampunk">Steampunk</option>
+          <option value="vaporwave">Vaporwave</option>
+          <option value="minimalist">Minimalis</option>
+        </optgroup>
+      </select>
+
       <label class="chk"><input type="checkbox" id="captions"/> Bakar caption ke video</label>
+
+      <details class="adv">
+        <summary>Lanjutan — bahasa, model</summary>
+        <div class="row">
+          <div>
+            <label class="lbl">Bahasa output</label>
+            <select id="langSel">
+              <option value="id">Indonesia</option>
+              <option value="jv">Jawa</option>
+              <option value="su">Sunda</option>
+              <option value="min">Minang</option>
+              <option value="ban">Bali</option>
+              <option value="ms">Melayu</option>
+              <option value="en">English</option>
+              <option value="ar">Arab</option>
+            </select>
+          </div>
+          <div>
+            <label class="lbl">Model narasi</label>
+            <select id="llmSel">
+              <option value="deepseek-chat">DeepSeek (default)</option>
+              <option value="gpt-4o-mini">GPT-4o mini</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+            </select>
+          </div>
+        </div>
+        <label class="lbl">Model suara (TTS)</label>
+        <select id="ttsSel">
+          <option value="tts-1">OpenAI TTS-1 (default)</option>
+          <option value="tts-1-hd">OpenAI TTS-1 HD</option>
+        </select>
+      </details>
 
       <div class="estimate">
         <div class="e-l"><b id="estScenes">—</b> scene · <span id="estDur">—</span></div>
@@ -218,7 +311,7 @@
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",captions:false,jobId:null,poll:null};
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -248,9 +341,13 @@
 
   $$("#tierPills .pill").forEach(p=>p.onclick=()=>{ state.tier=p.dataset.tier; $$("#tierPills .pill").forEach(x=>x.classList.toggle("on",x===p)); refreshEstimate(); });
   $("#style").onchange=e=>state.style=e.target.value;
-  $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; };
-  $("#clipModel").onchange=e=>state.clipModel=e.target.value;
+  $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; refreshEstimate(); };
+  $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
+  $("#visualStyle").onchange=e=>state.visualStyle=e.target.value;
   $("#captions").onchange=e=>state.captions=e.target.checked;
+  $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
+  $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
+  $("#ttsSel")&&($("#ttsSel").onchange=e=>state.ttsModel=e.target.value);
 
   // ── live estimate via /api/video/params ──
   let estTimer=null;
@@ -287,6 +384,7 @@
       const seg=await api("/api/video/segment",{method:"POST",body:JSON.stringify({
         mode:state.mode, topic, text:narration, minutes:state.minutes, style:state.style, tier:state.tier,
         clip_model:state.clipModel, visual_mode:state.visualMode, clip_ratio:0.3,
+        visual_style:state.visualStyle, language:state.language, gen_model:state.genModel,
       })});
       const scenes=seg.scenes||[];
       if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
@@ -294,6 +392,7 @@
       // 2) assemble
       const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
         scenes, tier:state.tier, clipModel:state.clipModel, visualMode:state.visualMode, captions:state.captions,
+        ttsModel:state.ttsModel, language:state.language,
       })});
       state.jobId=asm.jobId;
       pollJob(asm);
@@ -311,16 +410,35 @@
       try{
         const j=await api("/api/video/assemble/"+state.jobId,{method:"GET"});
         renderJob(j,asm);
-        if(j.status==="done"||j.status==="failed"){ clearInterval(state.poll); setBusy(false); }
+        if(j.status==="done"||j.status==="failed"||j.status==="canceled"){ clearInterval(state.poll); setBusy(false); refreshCredits(); }
       }catch(e){ /* transient; keep polling */ }
     },1500);
   }
 
   // ── stage rendering ──
+  // breathing ceritaAI "C" loader (grows/shrinks like the Claude prompt loader)
+  const CLOADER='<div class="bc"><svg viewBox="0 0 100 100"><defs><linearGradient id="cg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs><path d="M73 27a33 33 0 1 0 0 46" fill="none" stroke="url(#cg)" stroke-width="13" stroke-linecap="round"/></svg></div>';
+
+  async function refreshCredits(){
+    try{
+      const b=await api("/api/billing/status",{method:"GET"});
+      const c=b.credits ?? b.balance ?? b.credits_balance ?? b.creditsBalance;
+      if(c!=null){ $("#creditVal").textContent=Number(c).toLocaleString("id-ID"); $("#creditPill").style.display=""; }
+    }catch(e){ /* not signed in / no billing — leave hidden */ }
+  }
+  async function cancelJob(){
+    if(!state.jobId) return;
+    clearInterval(state.poll);
+    try{ await api("/api/video/assemble/"+state.jobId+"/cancel",{method:"POST"}); }catch(e){}
+    setBusy(false); refreshCredits();
+    $("#stage").innerHTML='<div class="stage-empty"><div class="big">⏹️</div><h3>Dibatalkan</h3><p>Job dihentikan. Kredit yang belum terpakai dikembalikan.</p></div>';
+  }
+  window.__cancelVideo=cancelJob;
+
   function renderStage(s){
-    if(s.status==="segmenting"){
-      stage.innerHTML='<div class="stage-empty"><div class="spin-lg"></div><h3>'+(state.mode==="A"?"Menulis narasi & memotong scene…":"Memotong scene…")+'</h3><p>Sebentar, lagi menyiapkan adegan.</p></div>';
-    }
+    const msg = s.status==="dispatching" ? "Merangkai tiap scene…"
+      : (state.mode==="A" ? "Menulis narasi & memotong scene…" : "Memotong scene…");
+    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>'+msg+'</h3><p>Sebentar, mesin paralel kami sedang bekerja.</p></div>';
   }
   function badge(status){
     const map={running:["run","Berjalan"],stitching:["run","Merangkai"],done:["done","Selesai"],failed:["fail","Gagal"],queued:["run","Antre"]};
@@ -362,7 +480,7 @@
           '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+(s.text||"").slice(0,90)+'</div></div>';
       }).join("")+'</div>';
     }
-    stage.innerHTML=head+body;
+    stage.innerHTML=head+CLOADER+body+'<button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button>';
   }
 
   // ── handoff from Studio (Flow Storyboard / Script→TTS "Send to Video Instant") ──
@@ -384,7 +502,9 @@
 
   // init
   refreshEstimate();
-  window.addEventListener("clerk:userchange",()=>{ /* token refresh handled per-call */ });
+  refreshCredits();
+  setTimeout(refreshCredits, 1500); // again once Clerk auth settles
+  window.addEventListener("clerk:userchange",()=>{ refreshCredits(); });
 })();
 </script>
 </body>

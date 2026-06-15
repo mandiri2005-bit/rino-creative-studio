@@ -632,10 +632,48 @@ def _heuristic_action(text: str) -> str:
     return ""
 
 
-def build_visual_prompt(text: str, style: str = "", position: str = "middle") -> str:
+# Visual ART STYLE → a render-style suffix appended to every scene's image/clip
+# prompt. Distinct from `style` (the NARRATION tone via STYLE_TONE). The empty/
+# unknown key leaves the prompt as-is (the model's default look).
+VISUAL_STYLE: dict[str, str] = {
+    "cinematic":      "cinematic film still, dramatic lighting, shallow depth of field, color-graded, 35mm",
+    "photorealistic": "photorealistic, ultra-detailed, natural lighting, high dynamic range",
+    "caricature":     "caricature illustration, exaggerated playful features, bold lines, vibrant",
+    "comic":          "comic book art, bold ink outlines, halftone shading, dynamic",
+    "manga":          "black-and-white manga style, screentones, expressive linework",
+    "anime":          "anime style, cel shading, vivid colors, expressive, studio-quality",
+    "watercolor":     "watercolor painting, soft washes, bleeding pigments, paper texture",
+    "oil_painting":   "oil painting, visible brushstrokes, rich impasto, classical lighting",
+    "gouache":        "gouache illustration, matte opaque colors, flat painterly shapes",
+    "charcoal":       "charcoal sketch, smudged shading, dramatic monochrome, hand-drawn",
+    "pencil_sketch":  "detailed pencil sketch, fine hatching, graphite, hand-drawn",
+    "line_art":       "clean line art, single-weight outlines, minimal, flat",
+    "3d_render":      "3D render, octane, soft global illumination, subsurface scattering, detailed",
+    "pixar":          "stylized 3D animation, soft rounded forms, warm cinematic light, family-film",
+    "claymation":     "claymation, handmade clay texture, stop-motion, tactile",
+    "low_poly":       "low-poly 3D, faceted geometry, flat-shaded, minimal palette",
+    "pixel_art":      "pixel art, 16-bit, crisp dithering, limited palette",
+    "isometric":      "isometric illustration, clean vector, soft shadows, 2.5D",
+    "flat_vector":    "flat vector illustration, bold shapes, minimal gradients, modern",
+    "pop_art":        "pop art, Ben-Day dots, bold saturated colors, high contrast",
+    "noir":           "film noir, high-contrast black and white, dramatic shadows, moody",
+    "cyberpunk":      "cyberpunk, neon-lit, rain-slick streets, holographic, high-tech dystopia",
+    "steampunk":      "steampunk, brass and gears, Victorian, warm sepia, intricate machinery",
+    "vaporwave":      "vaporwave, pastel neon, retro 80s, glitch, dreamy",
+    "ukiyo_e":        "ukiyo-e woodblock print, flat color, bold outlines, Japanese classical",
+    "impressionist":  "impressionist painting, loose dappled brushwork, luminous color",
+    "storybook":      "children's storybook illustration, whimsical, soft warm palette, hand-painted",
+    "papercut":       "layered papercut art, soft drop shadows, tactile cut-paper depth",
+    "fantasy_art":    "epic fantasy concept art, dramatic, painterly, rich detail",
+    "minimalist":     "minimalist, negative space, simple shapes, restrained palette",
+}
+
+
+def build_visual_prompt(text: str, style: str = "", position: str = "middle",
+                        visual_style: str = "") -> str:
     """Compose a cinematography prompt: subject + action + setting, coloured by
-    the narration style's tone and the scene's position framing, capped for the
-    image/clip API."""
+    the narration style's tone and the scene's position framing, then an optional
+    ART-STYLE suffix (caricature/comic/cinematic/…). Capped for the image/clip API."""
     ents = _extract_entities(text)
     tone = STYLE_TONE.get(_normalize_style(style), DEFAULT_TONE)
     framing = _POSITION_FRAMING.get(position, _POSITION_FRAMING["middle"])
@@ -647,8 +685,11 @@ def build_visual_prompt(text: str, style: str = "", position: str = "middle") ->
         # nothing extracted (very short / abstract line) → summarise the opening
         core = " ".join(text.split()[:8])
 
-    prompt = f"{core} — {framing}, {tone}"
-    return _cap_prompt(prompt)
+    # art style goes right after the core so the cap (which trims from the end)
+    # never drops it — the look matters more than the tail framing words.
+    vstyle = VISUAL_STYLE.get(_normalize_style(visual_style)) if visual_style else None
+    head = f"{core}, {vstyle}" if vstyle else core
+    return _cap_prompt(f"{head} — {framing}, {tone}")
 
 
 def _cap_prompt(prompt: str) -> str:
@@ -669,6 +710,17 @@ def _position_for(index: int, count: int) -> str:
     return "middle"
 
 
+# Output-language code → the name the narration model is told to write in. Covers
+# major Indonesian regional languages (the product's "Suara Lokal" moat) + a few
+# globals. Unknown codes default to Bahasa Indonesia.
+LANGUAGE_NAMES: dict[str, str] = {
+    "id": "Bahasa Indonesia", "jv": "Bahasa Jawa (Javanese)", "su": "Bahasa Sunda (Sundanese)",
+    "min": "Bahasa Minang", "ban": "Bahasa Bali (Balinese)", "bug": "Bahasa Bugis",
+    "btk": "Bahasa Batak", "ms": "Bahasa Melayu", "en": "English", "ar": "Arabic",
+    "zh": "Chinese (Mandarin)", "ja": "Japanese", "ko": "Korean",
+}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Mode A — generation prompt (the caller runs the LLM; the segmenter stays pure)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -678,7 +730,7 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
     on `topic`. The caller feeds this to the existing narration generator
     (which layers STYLE_RULES on top); the returned text is then passed to
     `segment()`. Kept here so the word-count target lives with the formula."""
-    lang = "Bahasa Indonesia" if (language or "id").lower().startswith("id") else "English"
+    lang = LANGUAGE_NAMES.get((language or "id").strip().lower(), "Bahasa Indonesia")
     style_clause = f" in the '{style}' style" if style else ""
     return (
         f"Write documentary voiceover narration{style_clause} about: {topic}.\n"
@@ -694,7 +746,8 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
 # ══════════════════════════════════════════════════════════════════════════════
 def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
             style: str = "", clip_model: str = DEFAULT_CLIP_MODEL,
-            tier: str = "hd", visual_mode: str = "full_images") -> SegmentResult:
+            tier: str = "hd", visual_mode: str = "full_images",
+            visual_style: str = "") -> SegmentResult:
     """Cut narration into timed scene objects.
 
     Mode A: pass the freshly generated narration and the `minutes` it targeted;
@@ -728,7 +781,7 @@ def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
                 f"(~{actual_minutes:.1f} min) → {params.scene_count} scenes. "
                 f"Not truncated.")
 
-    scenes = _build_scenes(text, params.scene_count, style, clip_model)
+    scenes = _build_scenes(text, params.scene_count, style, clip_model, visual_style)
     # a scene partition can yield fewer groups than asked only when the text has
     # fewer sentences/words than scenes — keep params honest if so.
     if scenes and len(scenes) != params.scene_count:
@@ -751,7 +804,7 @@ def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
 
 
 def _build_scenes(text: str, scene_count: int, style: str,
-                  clip_model: str) -> list[Scene]:
+                  clip_model: str, visual_style: str = "") -> list[Scene]:
     if not text:
         return []
     sentences = _split_sentences(text)
@@ -773,7 +826,7 @@ def _build_scenes(text: str, scene_count: int, style: str,
             word_count=wc,
             est_seconds=est_s,
             position=position,
-            visual_prompt=build_visual_prompt(chunk, style, position),
+            visual_prompt=build_visual_prompt(chunk, style, position, visual_style),
             clip_eligible=clip_fits(est_s, clip_model),
             suggested_clip_seconds=suggested_clip_length(est_s, clip_model),
         ))
