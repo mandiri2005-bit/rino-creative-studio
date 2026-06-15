@@ -150,7 +150,7 @@ export function httpGenerationClient(opts = {}) {
         const r = await fetch(`${PYTHON_API}/generate-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...h },
-          body: JSON.stringify({ model: scene.imageModel || "nano-banana-hd", prompt: scene.visualPrompt }),
+          body: JSON.stringify({ model: scene.imageModel || "nano-banana-hd", prompt: scene.visualPrompt, aspect_ratio: scene.aspectRatio || "16:9" }),
         });
         if (!r.ok) throw new Error(`image ${r.status}: ${(await r.text()).slice(0, 150)}`);
         const data = await r.json();
@@ -170,7 +170,7 @@ export function httpGenerationClient(opts = {}) {
       const submit = await fetch(`${PYTHON_API}/${prov}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...h },
-        body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId }),
+        body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId, aspect: scene.aspectRatio || "16:9" }),
       });
       if (!submit.ok) throw new Error(`${prov} submit ${submit.status}`);
       const { task_id } = await submit.json();

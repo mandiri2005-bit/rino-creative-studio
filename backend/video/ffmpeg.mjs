@@ -26,6 +26,7 @@ export const VIDEO_DEFAULTS = Object.freeze({
   height: Number(process.env.VIDEO_HEIGHT || 1080),
   xfade: Number(process.env.VIDEO_XFADE || 0.5),       // crossfade seconds between scenes
   transition: process.env.VIDEO_TRANSITION || "fade",  // any xfade transition name
+  fadeDuration: Number(process.env.VIDEO_FADE || 0.8), // fade-in at start + fade-to-black at end (0 disables)
   preset: process.env.VIDEO_PRESET || "medium",
   crf: Number(process.env.VIDEO_CRF || 20),
 });
@@ -182,6 +183,16 @@ export function buildFilterComplex(scenes, opts = {}) {
   if (o.srt) {
     parts.push(`[${vlabel}]subtitles=${o.srt}[vsub]`);
     vlabel = "vsub";
+  }
+
+  // ── fade in from black at the start + fade to black at the end (applied last,
+  // after captions, so the titles fade too). Timed off the master-clock total. ──
+  const fd = Math.min(Number(o.fadeDuration ?? 0), total / 2.2);
+  if (fd > 0.05) {
+    const outStart = (total - fd).toFixed(3);
+    parts.push(`[${vlabel}]fade=t=in:st=0:d=${fd.toFixed(3)},fade=t=out:st=${outStart}:d=${fd.toFixed(3)}[vfade]`);
+    parts.push(`[${alabel}]afade=t=in:st=0:d=${fd.toFixed(3)},afade=t=out:st=${outStart}:d=${fd.toFixed(3)}[afade]`);
+    vlabel = "vfade"; alabel = "afade";
   }
 
   return { filter: parts.join(";"), vlabel, alabel, total };

@@ -2114,6 +2114,7 @@ class VeoSubmitRequest(BaseModel):
     prompt: str
     model: str = "veo-3.1-generate-preview"
     preset: dict = None  # VEO_PRESETS value dict
+    aspect: str = "16:9"  # "16:9" (landscape) | "9:16" (portrait) — picks the preset
     negative_prompt: str = "blurry, watermark, distorted, low quality"
     seed: str = ""
     ref_image_b64: str = ""  # base64-encoded reference image
@@ -2125,7 +2126,7 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
                      x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Veo 3.1 image-to-video or text-to-video task."""
-    preset = req.preset or VEO_PRESETS["1080p_landscape"]
+    preset = req.preset or VEO_PRESETS["1080p_portrait" if req.aspect == "9:16" else "1080p_landscape"]
     headers = _veo_headers(x_veo_api_key)
 
     # Step 4: credit gate — video billed per second, known up front. 402 before submit.
@@ -2352,6 +2353,7 @@ class SoraSubmitRequest(BaseModel):
     model: str = "sora-2"  # sora-2 | sora-2-pro
     size: str = "1280x720"  # see docs for valid combos
     seconds: str = "8"  # "4" | "8" | "12"
+    aspect: str = ""  # "9:16" → portrait size override (applied in the endpoint)
     ref_image_b64: str = ""
     ref_image_mime: str = "image/jpeg"
 
@@ -2370,10 +2372,11 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
     if user:
         await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
 
+    _size = "720x1280" if req.aspect == "9:16" else req.size
     form_data = {
         "model": req.model,
         "prompt": req.prompt,
-        "size": req.size,
+        "size": _size,
         "seconds": req.seconds,
     }
 

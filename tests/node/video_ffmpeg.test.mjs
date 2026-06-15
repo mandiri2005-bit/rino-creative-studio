@@ -38,7 +38,7 @@ describe("buildFilterComplex", () => {
     { kind: "image", duration: 2.5 },
   ];
   it("labels every scene's v/a and exposes final vout/aout", () => {
-    const { filter, vlabel, alabel, total } = buildFilterComplex(scenes, { width: 1280, height: 720, fps: 30 });
+    const { filter, vlabel, alabel, total } = buildFilterComplex(scenes, { width: 1280, height: 720, fps: 30, fadeDuration: 0 });
     assert.equal(vlabel, "vout");
     assert.equal(alabel, "aout");
     assert.equal(total, 8.5);
@@ -58,7 +58,7 @@ describe("buildFilterComplex", () => {
     assert.match(filter, /tpad=stop_mode=clone/);
   });
   it("single scene → no crossfade, labels v0/a0", () => {
-    const r = buildFilterComplex([{ kind: "image", duration: 5 }]);
+    const r = buildFilterComplex([{ kind: "image", duration: 5 }], { fadeDuration: 0 });
     assert.equal(r.vlabel, "v0");
     assert.equal(r.alabel, "a0");
     assert.doesNotMatch(r.filter, /xfade=/);
@@ -81,7 +81,7 @@ describe("buildStitchArgs", () => {
     { kind: "image", duration: 3, visualPath: "/t/img0.png", audioPath: "/t/a0.wav" },
     { kind: "clip", duration: 4, visualPath: "/t/clip1.mp4", audioPath: "/t/a1.wav" },
   ];
-  const args = buildStitchArgs(scenes, "/t/out.mp4");
+  const args = buildStitchArgs(scenes, "/t/out.mp4", { fadeDuration: 0 });
   it("loops image inputs but not clip inputs", () => {
     const s = args.join(" ");
     assert.match(s, /-loop 1 -t 3 -i \/t\/img0\.png/);
@@ -128,15 +128,23 @@ describe("captions (Step 6e) — built from the known script + measured timing",
   it("buildFilterComplex adds a subtitles pass and remaps the video label", () => {
     const r = buildFilterComplex(
       [{ kind: "image", duration: 3 }, { kind: "image", duration: 3 }],
-      { srt: "captions.srt" }
+      { srt: "captions.srt", fadeDuration: 0 }
     );
     assert.equal(r.vlabel, "vsub");
     assert.match(r.filter, /subtitles=captions\.srt/);
   });
   it("no subtitles pass when captions are off", () => {
-    const r = buildFilterComplex([{ kind: "image", duration: 3 }, { kind: "image", duration: 3 }]);
+    const r = buildFilterComplex([{ kind: "image", duration: 3 }, { kind: "image", duration: 3 }], { fadeDuration: 0 });
     assert.equal(r.vlabel, "vout");
     assert.doesNotMatch(r.filter, /subtitles=/);
+  });
+  it("fade: in from black at start + out to black at end, remaps v/a labels", () => {
+    const r = buildFilterComplex([{ kind: "image", duration: 3 }, { kind: "image", duration: 3 }], { fadeDuration: 0.8 });
+    assert.equal(r.vlabel, "vfade");
+    assert.equal(r.alabel, "afade");
+    assert.match(r.filter, /fade=t=in:st=0/);
+    assert.match(r.filter, /fade=t=out:st=/);
+    assert.match(r.filter, /afade=t=out:st=/);
   });
 });
 

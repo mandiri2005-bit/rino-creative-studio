@@ -251,6 +251,12 @@
         </optgroup>
       </select>
 
+      <label class="lbl">Rasio</label>
+      <div class="pills" id="arPills">
+        <div class="pill on" data-ar="16:9">16:9 · Lanskap</div>
+        <div class="pill" data-ar="9:16">9:16 · Potret</div>
+      </div>
+
       <label class="chk"><input type="checkbox" id="captions"/> Bakar caption ke video</label>
 
       <details class="adv">
@@ -311,7 +317,7 @@
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,jobId:null,poll:null};
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -344,6 +350,7 @@
   $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; refreshEstimate(); };
   $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
   $("#visualStyle").onchange=e=>state.visualStyle=e.target.value;
+  $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
   $("#captions").onchange=e=>state.captions=e.target.checked;
   $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
   $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
@@ -360,8 +367,10 @@
         $("#estScenes").textContent=p.scene_count;
         $("#estDur").textContent=DURATIONS.find(d=>d[1]===state.minutes)?.[0]||state.minutes+" mnt";
         $("#estCredits").textContent=p.credits;
-        // clips (Veo) cost far more than images — surface the spread so the number never surprises
-        $("#estRange").textContent=(p.credits_min!=null&&p.credits_max!=null&&p.credits_min!==p.credits_max)?`(${p.credits_min}–${p.credits_max})`:"";
+        // a range only makes sense for hybrid (the clip/image split is uncertain);
+        // full_clips / full_images are a single deterministic number.
+        const showRange = state.visualMode==="hybrid" && p.credits_min!=null && p.credits_max!=null && p.credits_min!==p.credits_max;
+        $("#estRange").textContent = showRange ? `(gambar ${p.credits_min} ↔ klip ${p.credits_max})` : "";
       }catch(e){ /* leave dashes */ }
     },150);
   }
@@ -392,7 +401,7 @@
       // 2) assemble
       const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
         scenes, tier:state.tier, clipModel:state.clipModel, visualMode:state.visualMode, captions:state.captions,
-        ttsModel:state.ttsModel, language:state.language,
+        ttsModel:state.ttsModel, language:state.language, aspectRatio:state.aspectRatio,
       })});
       state.jobId=asm.jobId;
       pollJob(asm);

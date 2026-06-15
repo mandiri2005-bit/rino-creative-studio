@@ -151,7 +151,7 @@ export async function visualProcessor(job, deps) {
     const base = {
       jobId, sceneIndex, kind: scene.kind, visualPrompt: scene.visualPrompt,
       estSeconds: Number(scene.estSeconds), clipModel: meta.clipModel,
-      imageModel: meta.imageModel || undefined,
+      imageModel: meta.imageModel || undefined, aspectRatio: meta.aspectRatio || "16:9",
       tenantId: meta.tenantId, userId: meta.userId,
     };
     let v;
@@ -214,6 +214,7 @@ export async function stitchProcessor(job, deps) {
     }
     const outPath = join(tmpDir, "out.mp4");
     const stitchOpts = { cwd: tmpDir };
+    if (meta.aspectRatio === "9:16") { stitchOpts.width = 1080; stitchOpts.height = 1920; } // portrait
     if (meta.captions && (await hasSubtitlesFilter())) {
       // Step 6e: burn captions from the KNOWN script + measured timing (no ASR).
       const { writeFile } = await import("node:fs/promises");
