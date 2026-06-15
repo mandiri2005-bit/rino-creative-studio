@@ -1504,7 +1504,7 @@ function VeoSection({settings,showToast}){
   const[refMime,setRefMime]=useState("image/jpeg");
   const[tasks,setTasks]=useState([]);
   const[busy,setBusy]=useState(false);
-  const key=settings.veoKey||"";  // Veo defaults to Google; only the dedicated Veo override routes to LaoZhang
+  const key=settings.laozhangKey||settings.veoKey||"";  // LaoZhang key (global or Veo override) → LaoZhang; empty → Google
 
   const setRef=f=>{const r=new FileReader();r.onload=e=>{setRefMime(f.type||"image/jpeg");setRefB64(e.target.result.split(",")[1]);};r.readAsDataURL(f);};
 
@@ -3074,7 +3074,7 @@ function SettingsPanel({settings,setSettings,onClose}){
         </div>
         <div>
           <div className="lbl">{ic.key} LaoZhang API key <span style={{fontSize:10,background:"var(--as)",color:"var(--ac)",padding:"2px 7px",borderRadius:999,marginLeft:6}}>all tools</span></div>
-          <input className="inp mono" type="password" placeholder="sk-... applies to Chat · Image · Sora · Whisk · Flow (Veo defaults to Google)" value={settings.laozhangKey||""} onChange={e=>{const k=e.target.value;setSettings(s=>({...s,laozhangKey:k}));settings.setLaozhangKey(k);settings.setImageKey(k);settings.setSoraKey(k);}}/>
+          <input className="inp mono" type="password" placeholder="sk-... applies to Chat · Image · Veo · Sora · Whisk · Flow" value={settings.laozhangKey||""} onChange={e=>{const k=e.target.value;setSettings(s=>({...s,laozhangKey:k}));settings.setLaozhangKey(k);settings.setImageKey(k);settings.setVeoKey(k);settings.setSoraKey(k);}}/>
           <p className="hint">Sent as header on every request. Overrides server .env key. Stored in browser only.</p>
         </div>
         <div>
