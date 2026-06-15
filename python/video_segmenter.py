@@ -84,8 +84,8 @@ IMAGE_SCENE_SECONDS = 8         # full_images pacing: ~one fresh image every 8s
 MIN_SCENES = 2                  # a video is at least two scenes (so there's a cut)
 BATCH_SIZE = 10                 # full-parallel <= BATCH_SIZE scenes, batched above
 PROGRESS_CARD_LIMIT = 10        # scene cards <= this many scenes, progress bar above
-MAX_VISUAL_PROMPT_CHARS = 240   # cap the cinematography prompt for the image API
-MAX_VISUAL_PROMPT_WORDS = 40
+MAX_VISUAL_PROMPT_CHARS = 460   # cap the cinematography prompt for the image API
+MAX_VISUAL_PROMPT_WORDS = 75    # room for the per-video art-direction brief + scene
 
 # Per-scene planning credits by quality tier (the up-front estimate; real metering
 # is credit_catalog at dispatch). Keys match the duration-preset table columns.
@@ -676,10 +676,11 @@ VISUAL_STYLE: dict[str, str] = {
 
 
 def build_visual_prompt(text: str, style: str = "", position: str = "middle",
-                        visual_style: str = "") -> str:
-    """Compose a cinematography prompt: subject + action + setting, coloured by
-    the narration style's tone and the scene's position framing, then an optional
-    ART-STYLE suffix (caricature/comic/cinematic/…). Capped for the image/clip API."""
+                        visual_style: str = "", context: str = "") -> str:
+    """Compose a cinematography prompt: an optional per-video art-direction brief
+    (`context` — setting/era/people, shared by every scene for consistency), then
+    subject + action + setting, an optional ART-STYLE suffix, plus the narration
+    tone and position framing. Capped for the image/clip API."""
     ents = _extract_entities(text)
     tone = STYLE_TONE.get(_normalize_style(style), DEFAULT_TONE)
     framing = _POSITION_FRAMING.get(position, _POSITION_FRAMING["middle"])
@@ -691,11 +692,19 @@ def build_visual_prompt(text: str, style: str = "", position: str = "middle",
         # nothing extracted (very short / abstract line) → summarise the opening
         core = " ".join(text.split()[:8])
 
-    # art style goes right after the core so the cap (which trims from the end)
-    # never drops it — the look matters more than the tail framing words.
+    # The brief LEADS (so every scene shares the same world — place, era, the
+    # ethnicity & dress of people, architecture); then the scene-specific subject;
+    # then the art style. The cap trims from the end (framing/tone) first, so the
+    # brief and the look survive — this is what keeps a Sriwijaya story from
+    # rendering European faces.
     vstyle = VISUAL_STYLE.get(_normalize_style(visual_style)) if visual_style else None
-    head = f"{core}, {vstyle}" if vstyle else core
-    return _cap_prompt(f"{head} — {framing}, {tone}")
+    parts = []
+    if context and context.strip():
+        parts.append(context.strip().rstrip(". "))
+    parts.append(core)
+    if vstyle:
+        parts.append(vstyle)
+    return _cap_prompt(f"{', '.join(parts)} — {framing}, {tone}")
 
 
 def _cap_prompt(prompt: str) -> str:
@@ -753,7 +762,7 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
 def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
             style: str = "", clip_model: str = DEFAULT_CLIP_MODEL,
             tier: str = "hd", visual_mode: str = "",
-            visual_style: str = "") -> SegmentResult:
+            visual_style: str = "", scene_context: str = "") -> SegmentResult:
     """Cut narration into timed scene objects.
 
     Mode A: pass the freshly generated narration and the `minutes` it targeted;
@@ -787,7 +796,7 @@ def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
                 f"(~{actual_minutes:.1f} min) → {params.scene_count} scenes. "
                 f"Not truncated.")
 
-    scenes = _build_scenes(text, params.scene_count, style, clip_model, visual_style)
+    scenes = _build_scenes(text, params.scene_count, style, clip_model, visual_style, scene_context)
     # a scene partition can yield fewer groups than asked only when the text has
     # fewer sentences/words than scenes — keep params honest if so.
     if scenes and len(scenes) != params.scene_count:
@@ -810,7 +819,7 @@ def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
 
 
 def _build_scenes(text: str, scene_count: int, style: str,
-                  clip_model: str, visual_style: str = "") -> list[Scene]:
+                  clip_model: str, visual_style: str = "", scene_context: str = "") -> list[Scene]:
     if not text:
         return []
     sentences = _split_sentences(text)
@@ -832,7 +841,7 @@ def _build_scenes(text: str, scene_count: int, style: str,
             word_count=wc,
             est_seconds=est_s,
             position=position,
-            visual_prompt=build_visual_prompt(chunk, style, position, visual_style),
+            visual_prompt=build_visual_prompt(chunk, style, position, visual_style, scene_context),
             clip_eligible=clip_fits(est_s, clip_model),
             suggested_clip_seconds=suggested_clip_length(est_s, clip_model),
         ))

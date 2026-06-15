@@ -5956,6 +5956,45 @@ async def video_params_all():
     """The full Duration Presets contract table."""
     return {"presets": _vseg.duration_table()}
 
+async def _video_visual_brief(content: str, model: str, user, byok: bool) -> str:
+    """One-line art-direction brief shared by EVERY scene image, so the whole video
+    keeps a consistent + culturally accurate look (e.g. a Sriwijaya story doesn't
+    render European faces). Best-effort: returns '' on any failure."""
+    content = (content or "").strip()
+    if not content:
+        return ""
+    prompt = (
+        "You are the art director for an AI image generator making a video. From the "
+        "narration below, write ONE line (max 28 words) of visual art direction that "
+        "EVERY scene image must share so the video stays consistent: the place/setting, "
+        "the era, the ethnicity and clothing of the people, the architecture, and the "
+        "lighting/mood. Be culturally and historically accurate to the subject. Output "
+        "ONLY that line — no preamble, no quotes.\n\nNarration:\n" + content[:1800]
+    )
+    try:
+        cl = make_client(model)
+        mt = min(2000, MODEL_MAX_TOKENS.get(MODELS.get(model, model), DEFAULT_MAX_TOKENS))
+        r = await asyncio.to_thread(lambda: cl.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}],
+            temperature=0.5, max_tokens=mt))
+        lines = [b.strip().strip('"') for b in (r.choices[0].message.content or "").splitlines() if b.strip()]
+        brief = (lines[0] if lines else "")[:320]
+        if user and brief:
+            try:
+                _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+                _u = getattr(r, "usage", None)
+                await metering.debit(user.tenant_id, _uid, "chat", model,
+                                     {"tokens_in": getattr(_u, "prompt_tokens", None) or len(prompt) // 4,
+                                      "tokens_out": getattr(_u, "completion_tokens", None) or 50},
+                                     byok=byok, log=True)
+            except Exception:
+                pass
+        return brief
+    except Exception as _e:
+        print(f"[video/segment] visual brief failed (non-fatal): {_e}")
+        return ""
+
+
 @app.post("/video/segment")
 async def video_segment(req: VideoSegmentReq,
                         user: Optional[CurrentUser] = Depends(get_current_user_optional)):
@@ -6006,15 +6045,19 @@ async def video_segment(req: VideoSegmentReq,
                                      {"tokens_in": tin, "tokens_out": tout}, byok=_byok, log=True)
             except Exception as _e:
                 print(f"[video/segment] narration metering debit failed (non-fatal): {_e}")
+        _brief = await _video_visual_brief(narration, req.gen_model, user, _byok)
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
-                               visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style)
+                               visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
+                               scene_context=_brief)
     else:
         if not (req.text or "").strip():
             raise HTTPException(400, "text is required")
+        _brief = await _video_visual_brief(req.text, req.gen_model, user, _byok_active())
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
-                               visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style)
+                               visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
+                               scene_context=_brief)
 
     out = result.to_dict()
     if req.visual_mode:   # one-shot: segment + decide the visual treatment
