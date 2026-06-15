@@ -104,6 +104,27 @@ export async function audioProcessor(job, deps) {
   }
 }
 
+// Diverse-provider image fallbacks: if the chosen model's provider is flaky or
+// content-blocks the prompt, a DIFFERENT provider usually succeeds — so a failed
+// scene still gets a REAL image instead of a placeholder. Ordered across providers
+// (Gemini → Flux → Seedream).
+const IMAGE_FALLBACK_MODELS = ["nano-banana", "flux-kontext-pro", "seedream-4-0"];
+
+async function imageWithAltModels(deps, base, tmpDir, cause) {
+  const tried = base.imageModel || "nano-banana-hd";
+  for (const model of IMAGE_FALLBACK_MODELS) {
+    if (model === tried) continue;
+    try {
+      const v = await deps.generationClient.generateVisual({ ...base, kind: "image", imageModel: model }, tmpDir);
+      v.kind = "image";
+      v.fellBack = true;
+      v.fallbackReason = `alt-image:${model} (after ${cause?.message || "fail"})`;
+      return v;
+    } catch { /* try the next provider */ }
+  }
+  return null;
+}
+
 // Last-resort visual: a local placeholder card so a scene with no real image
 // still completes (visualStatus="fallback"). If the client can't make one (an
 // old mock), preserve the original behaviour and let the failure propagate.
@@ -136,22 +157,22 @@ export async function visualProcessor(job, deps) {
     try {
       v = await deps.generationClient.generateVisual(base, tmpDir);
     } catch (primaryErr) {
-      // Tier 1 — a failed CLIP retries as a real image (stretches to any length).
+      let cause = primaryErr;
+      // Tier 1 — a failed CLIP retries as a real image on its default model.
       if (scene.kind === "clip") {
         try {
           v = await deps.generationClient.generateVisual({ ...base, kind: "image" }, tmpDir);
           v.kind = "image";
           v.fellBack = true;
           v.fallbackReason = `clip→image: ${primaryErr.message}`;
-        } catch (imgErr) {
-          // Tier 2 — even the image retry failed: degrade to a placeholder card.
-          v = await placeholderVisual(deps, base, tmpDir, imgErr);
-        }
-      } else {
-        // A scene that was ALREADY an image and failed: degrade to a placeholder
-        // card so one bad generation degrades a single scene, not the whole video.
-        v = await placeholderVisual(deps, base, tmpDir, primaryErr);
+        } catch (imgErr) { cause = imgErr; }
       }
+      // Tier 2 — the default image failed too (or this was already an image). Try
+      // OTHER providers so a flaky/blocked model still yields a REAL image, not a card.
+      if (!v) v = await imageWithAltModels(deps, base, tmpDir, cause);
+      // Tier 3 — genuinely nothing generated: a minimal placeholder so the video
+      // still completes (last resort; the alt-model retries make this very rare).
+      if (!v) v = await placeholderVisual(deps, base, tmpDir, cause);
     }
     const up = await maybeUpload(jobId, meta.tenantId, v.kind === "clip" ? "video" : "images", v.path);
     await deps.store.setSceneFields(jobId, sceneIndex, {

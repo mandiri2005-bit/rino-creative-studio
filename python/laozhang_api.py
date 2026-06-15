@@ -5933,7 +5933,7 @@ async def video_params(req: VideoParamsReq):
     """Duration → scene_count / words / batch / credits. Drives the UI picker.
     `credits` is the HONEST per-asset estimate (Model B); `credits_flat` keeps the
     old tier-flat number for reference."""
-    p = _vseg.calculate_video_params(req.minutes, req.tier)
+    p = _vseg.calculate_video_params(req.minutes, req.tier, req.visual_mode, req.clip_model)
     out = _asdict(p)
     out["credits_flat"] = out.get("credits")
     try:
@@ -5967,7 +5967,7 @@ async def video_segment(req: VideoSegmentReq,
             raise HTTPException(400, "topic is required for mode A")
         if req.minutes is None or req.minutes <= 0:
             raise HTTPException(400, "minutes is required for mode A")
-        params = _vseg.calculate_video_params(req.minutes, req.tier)
+        params = _vseg.calculate_video_params(req.minutes, req.tier, req.visual_mode or "hybrid", req.clip_model)
         prompt = _vseg.build_generation_prompt(topic, params.target_words, req.style, req.language)
         _byok = _byok_active()
         if user:
@@ -5994,12 +5994,14 @@ async def video_segment(req: VideoSegmentReq,
             except Exception as _e:
                 print(f"[video/segment] narration metering debit failed (non-fatal): {_e}")
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
-                               style=req.style, clip_model=req.clip_model, tier=req.tier)
+                               style=req.style, clip_model=req.clip_model, tier=req.tier,
+                               visual_mode=req.visual_mode or "hybrid")
     else:
         if not (req.text or "").strip():
             raise HTTPException(400, "text is required")
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
-                               style=req.style, clip_model=req.clip_model, tier=req.tier)
+                               style=req.style, clip_model=req.clip_model, tier=req.tier,
+                               visual_mode=req.visual_mode or "hybrid")
 
     out = result.to_dict()
     if req.visual_mode:   # one-shot: segment + decide the visual treatment

@@ -283,10 +283,13 @@ def test_decide_full_images():
     assert all(s["suggested_clip_seconds"] is None for s in out)
 
 
-def test_decide_full_clips_respects_fit_gate():
+def test_decide_full_clips_forces_all_clips():
     out = vs.decide_visual_modes(_decide_scenes(), "full_clips", "veo3")
-    # scene 1 (9.2s) exceeds veo3's 6.8s gate → image even in full_clips
-    assert [s["kind"] for s in out] == ["clip", "image", "clip", "clip"]
+    # full_clips is an EXPLICIT user choice → every scene is a clip, even one that
+    # overshoots the fit gate (it gets the longest allowed length; the stitcher
+    # trims/pads to the measured audio). Only hybrid auto-respects the gate.
+    assert [s["kind"] for s in out] == ["clip", "clip", "clip", "clip"]
+    assert all(s["suggested_clip_seconds"] for s in out)
 
 
 def test_decide_hybrid_ratio_one_clips_all_eligible():
@@ -325,7 +328,22 @@ def test_decide_coerces_string_est_seconds_without_crashing():
     # a bad value must fall back to the word-count estimate, never raise (was a 500).
     out = vs.decide_visual_modes(
         [{"word_count": 10, "est_seconds": "4.6"},   # → 4.6s, fits veo3
-         {"word_count": 20, "est_seconds": "bad"},   # → recompute 9.2s, doesn't fit
+         {"word_count": 20, "est_seconds": "bad"},   # → recompute 9.2s, doesn't fit the gate
          {"word_count": 8}],                          # → 3.7s, fits
         "full_clips", "veo3")
-    assert [s["kind"] for s in out] == ["clip", "image", "clip"]
+    # the point is no crash on the bad string; full_clips forces all to clips
+    assert [s["kind"] for s in out] == ["clip", "clip", "clip"]
+
+
+def test_clip_modes_size_scenes_to_fit_clips():
+    # The bug: image-sized scenes (~15s for 30s/2-scene) never fit a Veo clip, so
+    # 'Semua klip' silently produced stills. Clip modes must cut scenes down so
+    # they're clip-eligible; full_images keeps the long, cheap scenes.
+    imgs = vs.calculate_video_params(0.5, "fast", "full_images", "veo3")
+    clips = vs.calculate_video_params(0.5, "fast", "full_clips", "veo3")
+    assert clips.scene_count > imgs.scene_count          # more, shorter scenes for clips
+    assert vs.clip_fits(clips.seconds_per_scene, "veo3")  # and they actually fit a clip
+    assert not vs.clip_fits(imgs.seconds_per_scene, "veo3")
+    # kling3's higher ceiling allows longer scenes than veo3
+    assert vs.words_per_scene_for("full_clips", "kling3") > vs.words_per_scene_for("full_clips", "veo3")
+    assert vs.words_per_scene_for("full_images", "veo3") == vs.WORDS_PER_SCENE

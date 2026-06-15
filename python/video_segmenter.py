@@ -227,10 +227,29 @@ def _normalize_clip_model(model: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # The core formula
 # ══════════════════════════════════════════════════════════════════════════════
-def scene_count_for_words(words: int) -> int:
+def scene_count_for_words(words: int, words_per_scene: int = WORDS_PER_SCENE) -> int:
     """Words → scene count, floored at MIN_SCENES. round() is banker's rounding in
-    Python, but it reproduces every preset row exactly (verified in tests)."""
-    return max(MIN_SCENES, round(max(0, words) / WORDS_PER_SCENE))
+    Python, but it reproduces every preset row exactly (verified in tests).
+    `words_per_scene` is overridden smaller for clip-led videos (see
+    words_per_scene_for) so scenes are short enough to fit a real clip."""
+    wps = max(1, int(words_per_scene or WORDS_PER_SCENE))
+    return max(MIN_SCENES, round(max(0, words) / wps))
+
+
+def words_per_scene_for(visual_mode: str, clip_model: str = DEFAULT_CLIP_MODEL) -> int:
+    """Scene length target in words. Image-led videos use long scenes (fewer,
+    cheaper). Clip-led videos (full_clips / hybrid) MUST cut scenes down to the
+    clip length — otherwise every scene overshoots the model's ~6.8s (Veo) /
+    ~12.7s (Kling) eligibility ceiling and silently degrades to an image, which
+    is exactly why 'Semua klip' was producing stills. Returns words such that a
+    scene's narration fits a real clip with the 0.85 gate's margin."""
+    mode = (visual_mode or "").lower().replace("-", "_")
+    if mode not in ("full_clips", "hybrid"):
+        return WORDS_PER_SCENE
+    cfg = CLIP_MODELS[_normalize_clip_model(clip_model)]
+    ceiling = cfg["max_s"] * cfg["gate"]                      # eligible seconds
+    target = max((a for a in cfg["allowed"] if a <= ceiling), default=min(cfg["allowed"]))
+    return max(6, round(target * WORDS_PER_MINUTE / 60))
 
 
 def tier_credits(scene_count: int) -> dict[str, int]:
@@ -249,15 +268,18 @@ def _batch_plan(scene_count: int, batch_size: int = BATCH_SIZE) -> list[int]:
     return plan
 
 
-def calculate_video_params(minutes: float, tier: str = "hd") -> VideoParams:
+def calculate_video_params(minutes: float, tier: str = "hd",
+                           visual_mode: str = "full_images",
+                           clip_model: str = DEFAULT_CLIP_MODEL) -> VideoParams:
     """The central formula. From a target duration, derive everything downstream
     reads: scene count, words per scene, dispatch mode, batch plan, progress UI,
-    and the planning credit estimate."""
+    and the planning credit estimate. When `visual_mode` wants clips the scenes
+    are sized DOWN to the clip length so they're actually clip-eligible."""
     if minutes is None or minutes <= 0:
         raise ValueError("minutes must be > 0")
     tier = _normalize_tier(tier)
     target_words = round(minutes * WORDS_PER_MINUTE)
-    scene_count = scene_count_for_words(target_words)
+    scene_count = scene_count_for_words(target_words, words_per_scene_for(visual_mode, clip_model))
     words_per_scene = max(1, round(target_words / scene_count))
     seconds_per_scene = round(words_per_scene / WORDS_PER_MINUTE * 60, 2)
     by_tier = tier_credits(scene_count)
@@ -389,8 +411,15 @@ def decide_visual_modes(scenes: list[dict], visual_mode: str = "hybrid",
         return out
 
     if mode == "full_clips":
+        # The user EXPLICITLY asked for all clips — honor it. A scene that slightly
+        # overshoots the fit gate still becomes a clip (request the longest allowed
+        # length; the stitcher trims/pads to the measured audio). The worker's
+        # clip→image fallback covers any that genuinely fail to generate.
+        longest = max(CLIP_MODELS[cm]["allowed"])
         for s in out:
-            s["kind"] = "clip" if s["clip_eligible"] else "image"
+            s["kind"] = "clip"
+            if not s["suggested_clip_seconds"]:
+                s["suggested_clip_seconds"] = longest
         return out
 
     # hybrid: rank the fit-eligible scenes, promote the top share to clips
@@ -665,7 +694,7 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
 # ══════════════════════════════════════════════════════════════════════════════
 def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
             style: str = "", clip_model: str = DEFAULT_CLIP_MODEL,
-            tier: str = "hd") -> SegmentResult:
+            tier: str = "hd", visual_mode: str = "full_images") -> SegmentResult:
     """Cut narration into timed scene objects.
 
     Mode A: pass the freshly generated narration and the `minutes` it targeted;
@@ -682,13 +711,14 @@ def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
     if mode == "A":
         if minutes is None or minutes <= 0:
             raise ValueError("Mode A requires the target `minutes`")
-        params = calculate_video_params(minutes, tier)
+        params = calculate_video_params(minutes, tier, visual_mode, clip_model)
         note = (f"Mode A: targeted {params.target_words} words "
                 f"(~{minutes:.1f} min); generated {actual_words} words.")
     else:
         # Mode B: the existing narration IS the truth. Plan from its real length.
         eff_minutes = actual_minutes if actual_words else (minutes or 0)
-        params = calculate_video_params(max(eff_minutes, 1 / WORDS_PER_MINUTE), tier)
+        params = calculate_video_params(max(eff_minutes, 1 / WORDS_PER_MINUTE), tier,
+                                        visual_mode, clip_model)
         # re-anchor the reported target on the real text, never on a request
         params.target_words = actual_words
         params.minutes = actual_minutes
