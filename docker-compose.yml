@@ -65,6 +65,7 @@ services:
       - ./python/orchestrator:/app/orchestrator              # WS-1/5/6: core + router + strategies
       - ./python/pakem:/app/pakem                            # WS-2/3: single source of truth + assembler
       - ./python/eval:/app/eval                              # WS-9: eval harness + cost dashboard
+      - ./eval:/app/eval_gate                                # RAG roadmap Step 0 eval gate (run with RINO_PIPELINE_DIR=/app/moat/gutenberg)
     expose: ["8000"]
     networks: [default, rino-network]   # default = redis/backend; rino-network = qdrant
 
