@@ -17,6 +17,9 @@
 //   STRIPE_CHECKOUT_SUCCESS_URL / _CANCEL_URL / STRIPE_PORTAL_RETURN_URL
 // ============================================================================
 import Stripe from "stripe";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { query, _uuid5 } from "./db.js";
 import { redis } from "./redis.js";
 
@@ -30,12 +33,41 @@ const URLS = {
   portal:  process.env.STRIPE_PORTAL_RETURN_URL    || "/index.html",
 };
 
+// ── Pricing config (single source of truth shared with python/credit_catalog.py) ─
+// config/pricing.json drives per-tier monthly credits. Precedence: PRICING_CONFIG_JSON
+// env (inline JSON) → file at PRICING_CONFIG_PATH or a candidate path → {}. Any failure
+// falls back to the hardcoded defaults, so behaviour is unchanged without the file.
+const _DEFAULT_TIER_CREDITS = { free: 100, starter: 2500, pro: 9000, enterprise: 31200 };
+function _loadPricing() {
+  const raw = process.env.PRICING_CONFIG_JSON;
+  if (raw) {
+    try { return JSON.parse(raw) || {}; }
+    catch (e) { console.warn("[billing] PRICING_CONFIG_JSON ignored:", e.message); return {}; }
+  }
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    process.env.PRICING_CONFIG_PATH,
+    path.join(here, "..", "config", "pricing.json"),
+    path.join(here, "config", "pricing.json"),
+    "/app/config/pricing.json",
+    path.join(process.cwd(), "config", "pricing.json"),
+  ];
+  for (const p of candidates) {
+    try { if (p && fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8")) || {}; }
+    catch (e) { console.warn(`[billing] pricing.json at ${p} ignored:`, e.message); return {}; }
+  }
+  return {};
+}
+// Monthly free/tier allowance — config-driven, per-key fallback to the defaults.
+// Mirrors python credit_catalog.TIER_MONTHLY_CREDITS (Studio→'enterprise').
+const TIER_CREDITS = { ..._DEFAULT_TIER_CREDITS, ...(_loadPricing().tier_monthly_credits || {}) };
+
 // ── Price catalog (built from env; entries with no price id are dropped) ──────
-// Monthly credit allowances mirror the ceritaAI pricing tool (Studio→'enterprise').
+// Subscription credit allowances come from TIER_CREDITS above (Studio→'enterprise').
 const _subs = [
-  { key: "starter",    name: "Starter", plan: "starter",    credits: 2500,  priceId: process.env.STRIPE_PRICE_STARTER },
-  { key: "pro",        name: "Pro",     plan: "pro",        credits: 9000,  priceId: process.env.STRIPE_PRICE_PRO },
-  { key: "studio",     name: "Studio",  plan: "enterprise", credits: 31200, priceId: process.env.STRIPE_PRICE_STUDIO },
+  { key: "starter",    name: "Starter", plan: "starter",    credits: TIER_CREDITS.starter,    priceId: process.env.STRIPE_PRICE_STARTER },
+  { key: "pro",        name: "Pro",     plan: "pro",        credits: TIER_CREDITS.pro,        priceId: process.env.STRIPE_PRICE_PRO },
+  { key: "studio",     name: "Studio",  plan: "enterprise", credits: TIER_CREDITS.enterprise, priceId: process.env.STRIPE_PRICE_STUDIO },
 ];
 const _packs = [
   { key: "pack_small",  name: "1,000 credits",  credits: Number(process.env.STRIPE_PACK_SMALL_CREDITS  || 1000),  priceId: process.env.STRIPE_PRICE_PACK_SMALL },
@@ -137,9 +169,6 @@ export async function createPortalSession({ tenantId }) {
   });
   return session.url;
 }
-
-// Monthly free/tier allowance (mirrors python credit_catalog.TIER_MONTHLY_CREDITS).
-const TIER_CREDITS = { free: 100, starter: 2500, pro: 9000, enterprise: 31200 };
 
 // Lazily seed a tenant's tier allowance on first balance read, exactly like the
 // Python side (credits._ensure_cached). op_id 'signup_grant' is shared with

@@ -56,6 +56,7 @@ services:
       - ./python/redis_client.py:/app/redis_client.py
       - ./python/review_personas.json:/app/review_personas.json
       - ./python/credit_catalog.py:/app/credit_catalog.py    # Step 4: metering
+      - ./config/pricing.json:/app/config/pricing.json       # shared pricing source of truth
       - ./python/credits.py:/app/credits.py                  # Step 4: balance primitives
       - ./python/metering.py:/app/metering.py                # Step 4: charge gate
       - ./python/admin_credits.py:/app/admin_credits.py      # Step 4: manual credit admin CLI
@@ -145,6 +146,7 @@ services:
       - ./backend/auth.js:/app/auth.js
       - ./backend/db.js:/app/db.js
       - ./backend/billing.mjs:/app/billing.mjs              # Step 4: Stripe billing
+      - ./config/pricing.json:/app/config/pricing.json      # shared pricing source of truth
       - ./backend/video:/app/video                          # Step 6: video engine (enqueue-only routes)
     expose: ["3000"]
 

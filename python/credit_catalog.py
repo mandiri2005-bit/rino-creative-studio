@@ -35,29 +35,31 @@ directly (`python credit_catalog.py`) to print a sample cost table.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
+import sys
 from typing import Union
 
 # ── Tunable economics (env-configurable; defaults match the pricing tool) ──────
 CREDIT_USD_VALUE = float(os.getenv("CREDIT_USD_VALUE", "0.01"))   # 1 credit = $0.01
 CREDIT_MARGIN    = float(os.getenv("CREDIT_MARGIN",    "1.0"))    # break-even basis
 
-# ── Monthly credit allowance per plan (from the ceritaAI pricing tool) ─────────
-# NOTE: the pricing tool's top tier is "Studio"; the DB `plan` CHECK constraint
-# calls it "enterprise", so the key here is 'enterprise' (display name "Studio").
-TIER_MONTHLY_CREDITS: dict[str, int] = {
+# ── Hardcoded defaults ────────────────────────────────────────────────────────
+# These are used verbatim when config/pricing.json is absent or a key is missing,
+# so behaviour is unchanged without the file. The live values below are merged
+# loaded-over-default, per key. NOTE: the pricing tool's top tier is "Studio"; the
+# DB `plan` CHECK constraint calls it "enterprise" (display name "Studio").
+_DEFAULT_TIER_MONTHLY_CREDITS: dict[str, int] = {
     "free":       100,
     "starter":    2500,
     "pro":        9000,
     "enterprise": 31200,   # "Studio"
 }
-
-# ── Video upstream cost, USD per second of generated video ────────────────────
 # Longest-prefix match wins (e.g. "veo-3.1-fast" before "veo"). Rates mirror the
 # pricing tool: Veo Standard ≈ $0.50/s, Fast ≈ $0.15/s, Sora ≈ $0.50/s, budget
 # ≈ $0.05/s. Verify against the live provider before trusting any margin.
-_VIDEO_USD_PER_SEC: dict[str, float] = {
+_DEFAULT_VIDEO_USD_PER_SEC: dict[str, float] = {
     "veo-3.1-fast":   0.15,
     "veo-3-fast":     0.15,
     "veo-fast":       0.15,
@@ -70,11 +72,65 @@ _VIDEO_USD_PER_SEC: dict[str, float] = {
     "wan":            0.05,
     "runway":         0.20,
 }
-_VIDEO_USD_PER_SEC_DEFAULT = 0.50
-_VIDEO_DEFAULT_SECONDS = 8          # a Veo/Sora clip is ~8s when length unknown
+_DEFAULT_VIDEO_USD_PER_SEC_DEFAULT = 0.50
+_DEFAULT_VIDEO_DEFAULT_SECONDS = 8     # a Veo/Sora clip is ~8s when length unknown
+_DEFAULT_TTS_USD_PER_1K_CHARS = 0.10
 
-# ── TTS upstream cost, USD per 1k characters ──────────────────────────────────
-_TTS_USD_PER_1K_CHARS = float(os.getenv("TTS_USD_PER_1K_CHARS", "0.10"))
+
+# ── Pricing config loader ─────────────────────────────────────────────────────
+# config/pricing.json is the single source of truth shared with backend/billing.mjs.
+# Precedence: PRICING_CONFIG_JSON env (inline JSON) → file at PRICING_CONFIG_PATH,
+# else a candidate path → {}. Any failure logs and returns {} so pricing always
+# falls back to the hardcoded defaults above (never crashes on bad config).
+def _load_pricing() -> dict:
+    raw = os.getenv("PRICING_CONFIG_JSON")
+    if raw:
+        try:
+            return json.loads(raw) or {}
+        except Exception as e:                       # malformed inline JSON → defaults
+            print(f"[credit_catalog] PRICING_CONFIG_JSON ignored ({e}); using defaults", file=sys.stderr)
+            return {}
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.getenv("PRICING_CONFIG_PATH"),
+        os.path.join(here, "..", "config", "pricing.json"),
+        os.path.join(here, "config", "pricing.json"),
+        "/app/config/pricing.json",
+        os.path.join(os.getcwd(), "config", "pricing.json"),
+    ]
+    for p in candidates:
+        try:
+            if p and os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as fh:
+                    return json.load(fh) or {}
+        except Exception as e:
+            print(f"[credit_catalog] pricing.json at {p} ignored ({e}); using defaults", file=sys.stderr)
+            return {}
+    return {}
+
+
+_PRICING = _load_pricing()
+
+# ── Monthly credit allowance per plan (config-driven, per-key fallback) ────────
+TIER_MONTHLY_CREDITS: dict[str, int] = {
+    **_DEFAULT_TIER_MONTHLY_CREDITS,
+    **(_PRICING.get("tier_monthly_credits") or {}),
+}
+
+# ── Video upstream cost, USD per second of generated video (config-driven) ─────
+_VIDEO_USD_PER_SEC: dict[str, float] = {
+    **_DEFAULT_VIDEO_USD_PER_SEC,
+    **(_PRICING.get("video_usd_per_sec") or {}),
+}
+_VIDEO_USD_PER_SEC_DEFAULT = float(
+    _PRICING.get("video_usd_per_sec_default", _DEFAULT_VIDEO_USD_PER_SEC_DEFAULT))
+_VIDEO_DEFAULT_SECONDS = int(
+    _PRICING.get("video_default_seconds", _DEFAULT_VIDEO_DEFAULT_SECONDS))
+
+# ── TTS upstream cost, USD per 1k characters (env wins; JSON supplies default) ─
+_TTS_USD_PER_1K_CHARS = float(
+    os.getenv("TTS_USD_PER_1K_CHARS",
+              str(_PRICING.get("tts_usd_per_1k_chars", _DEFAULT_TTS_USD_PER_1K_CHARS))))
 
 # ── Chat estimate heuristics (pre-call holds, real tokens unknown yet) ─────────
 _CHARS_PER_TOKEN = 4                # rough English/Indonesian average

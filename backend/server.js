@@ -396,10 +396,11 @@ app.use((req, res, next) => {
 });
 
 // ── Global API auth guard ───────────────────────────────────────────────────
-// Every /api/* route requires a valid Clerk token EXCEPT the allowlist below.
+// Every /api/* route requires a valid Clerk token EXCEPT the allowlist below and
+// the /api/admin/* family, which is gated by the X-Admin-Secret header (adminGate)
+// instead of Clerk — so the admin console (no Clerk session) can reach them.
 const PUBLIC_API = new Set([
   "/api/health",
-  "/api/admin/grant",   // gated by X-Admin-Secret (not Clerk) — see handler below
   // Project Dalang (WS-7): the pakem style + language catalogs are public,
   // non-sensitive reference data the UI fetches on mount to populate dropdowns.
   "/api/narration/styles",
@@ -407,6 +408,10 @@ const PUBLIC_API = new Set([
 ]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
+  // All /api/admin/* routes enforce X-Admin-Secret in-handler (adminGate); exempt
+  // them from Clerk so they're reachable with the admin secret alone. req.path is
+  // mount-relative here (the leading "/api" is stripped), so match "/admin/".
+  if ((req.path || "").startsWith("/admin/")) return next();
   return requireAuth(req, res, next);
 });
 
@@ -463,6 +468,98 @@ app.post("/api/admin/grant", async (req, res) => {
     const reason = ["admin_adjust", "topup", "monthly_grant"].includes(b.reason) ? b.reason : "admin_adjust";
     const out = await billing.creditTenant(tenantId, credits, reason, b.op_id || null, { metadata: { source: "admin_api" } });
     res.json({ tenant_id: tenantId, credits_added: credits, applied: out.applied, balance: out.balance });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Admin gate (shared by the cross-tenant admin endpoints below) ─────────────
+// Same contract as /api/admin/grant: disabled (503) until ADMIN_API_SECRET is set,
+// then requires a matching X-Admin-Secret header (403 otherwise). Returns true when
+// authorised; on failure it has already written the response.
+function adminGate(req, res) {
+  if (!ADMIN_SECRET) { res.status(503).json({ error: "admin disabled — set ADMIN_API_SECRET" }); return false; }
+  if ((req.headers["x-admin-secret"] || "") !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return false; }
+  return true;
+}
+
+// Edit a tenant's plan and/or active flag. Body: {tenant_id, plan?, is_active?}.
+// Plan changes do NOT grant credits — use /api/admin/grant for that (kept independent).
+const _ADMIN_PLANS = ["free", "starter", "pro", "enterprise"];
+app.patch("/api/admin/tenant", async (req, res) => {
+  if (!adminGate(req, res)) return;
+  try {
+    const b = req.body || {};
+    const tenantId = b.tenant_id || null;
+    if (!tenantId) return res.status(400).json({ error: "tenant_id required" });
+    const plan = b.plan === undefined ? null : b.plan;
+    if (plan !== null && !_ADMIN_PLANS.includes(plan))
+      return res.status(400).json({ error: `plan must be one of ${_ADMIN_PLANS.join(", ")}` });
+    const isActive = b.is_active === undefined ? null : !!b.is_active;
+    if (plan === null && isActive === null)
+      return res.status(400).json({ error: "nothing to update (pass plan and/or is_active)" });
+    const r = await query(
+      `UPDATE tenants SET plan=COALESCE($2,plan), is_active=COALESCE($3,is_active), updated_at=now()
+        WHERE id=$1 RETURNING id, plan, is_active`,
+      [tenantId, plan, isActive], tenantId);
+    if (!r.rows.length) return res.status(404).json({ error: "tenant not found" });
+    res.json({ ok: true, tenant: r.rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Cross-tenant asset delete (DB row + R2 object). Body/query: {tenant_id, key}.
+// Mirrors the user DELETE /api/assets (hard delete), scoped to the given tenant.
+app.delete("/api/admin/assets", async (req, res) => {
+  if (!adminGate(req, res)) return;
+  try {
+    const tenantId = req.body?.tenant_id || req.query.tenant_id || null;
+    const key = req.body?.key || req.query.key || null;
+    if (!tenantId || !key) return res.status(400).json({ error: "tenant_id and key required" });
+    const r = await query("DELETE FROM assets WHERE s3_key=$1 AND tenant_id=$2 RETURNING id", [key, tenantId], tenantId);
+    if (!r.rows.length) return res.status(404).json({ error: "asset not found" });
+    if (storage.isConfigured()) { try { await storage.del(key); } catch (e) { console.error("[admin delete asset] R2:", e.message); } }
+    res.json({ ok: true });
+  } catch (e) { console.error("[DELETE /api/admin/assets]", e.message); res.status(500).json({ error: e.message }); }
+});
+
+// Mark a feedback row handled (or un-handle). Body: {tenant_id, handled?=true}.
+app.patch("/api/admin/feedback/:id", async (req, res) => {
+  if (!adminGate(req, res)) return;
+  try {
+    const tenantId = req.body?.tenant_id || req.query.tenant_id || null;
+    if (!tenantId) return res.status(400).json({ error: "tenant_id required" });
+    const handled = req.body?.handled === undefined ? true : !!req.body.handled;
+    const r = await query(
+      `UPDATE feedback SET handled=$2, handled_at=CASE WHEN $2 THEN now() ELSE NULL END
+        WHERE id=$1 RETURNING id, handled`,
+      [req.params.id, handled], tenantId);
+    if (!r.rows.length) return res.status(404).json({ error: "feedback not found" });
+    res.json({ ok: true, feedback: r.rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Cross-tenant job cancel. Body: {tenant_id}. Durable DB status + best-effort signal
+// to any active worker (live store + in-memory cancel flags). No balance writes —
+// credit holds are released by the worker's own cancel path or expire via TTL.
+app.post("/api/admin/jobs/:id/cancel", async (req, res) => {
+  if (!adminGate(req, res)) return;
+  try {
+    const jobId = req.params.id;
+    const tenantId = req.body?.tenant_id || req.query.tenant_id || null;
+    if (!tenantId) return res.status(400).json({ error: "tenant_id required" });
+    const live = await getLiveJob(jobId).catch(() => null);   // active worker?
+    const newStatus = live ? "cancelling" : "cancelled";
+    const r = await query(
+      `UPDATE jobs SET status=$3::job_status_enum, updated_at=now()
+        WHERE id=$1 AND tenant_id=$2 AND status IN ('queued','processing','running')
+        RETURNING id, job_type, status`,
+      [jobId, tenantId, newStatus], tenantId);
+    if (!r.rows.length) return res.status(404).json({ error: "job not found or not cancellable" });
+    if (live) {   // signal a same-process worker to stop promptly
+      try { await updateLiveJob(jobId, (j) => { j.status = "cancelling"; return j; }); } catch {}
+      googleCancelFlags.set(jobId, true);
+      ttsCancelFlags.set(jobId, true);
+      setTimeout(() => { googleCancelFlags.delete(jobId); ttsCancelFlags.delete(jobId); }, 60000);
+    }
+    res.json({ ok: true, job: r.rows[0] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1979,7 +2076,11 @@ async function runAssetRetention() {
     return keys.length;
   } catch (e) { console.error("[retention]", e.message); return -1; }
 }
-app.post("/api/admin/cleanup-assets", requireAuth, async (req, res) => {
+// Admin-gated: this runs a destructive cross-tenant retention sweep, so it must
+// NOT be reachable by an ordinary authenticated user. The daily/boot sweep calls
+// runAssetRetention() directly (see below), so it is unaffected by this gate.
+app.post("/api/admin/cleanup-assets", async (req, res) => {
+  if (!adminGate(req, res)) return;
   try { const n = await runAssetRetention(); res.json({ ok: n >= 0, removed: Math.max(0, n) }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
