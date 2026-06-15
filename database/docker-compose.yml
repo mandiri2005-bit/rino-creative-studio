@@ -16,7 +16,7 @@ services:
       # S3/R2 will replace veo & sora outputs (WS3) — mounts removed
       - ./data/narasi_temp:/app/data/narasi_temp
       - ./python/laozhang_api.py:/app/laozhang_api.py
-      - /Users/rino/Documents/ProjectQ/moat:/app/moat
+      - ./data/moat:/app/moat   # v3.6 moat in-repo (no ProjectQ)
       - hf-cache:/root/.cache/huggingface          # ← persist embedding model
     expose: ["8000"]
 
@@ -56,7 +56,7 @@ services:
       - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
     volumes:
       # S3/R2 will replace batch, tts & imgs outputs (WS3) — mounts removed
-      - /Users/rino/Documents/ProjectQ/moat:/app/moat
+      - ./data/moat:/app/moat   # v3.6 moat in-repo (no ProjectQ)
       - ./data/narasi_temp:/app/narasi_temp
       - ./data/output:/app/output
       - ./backend/server.js:/app/server.js

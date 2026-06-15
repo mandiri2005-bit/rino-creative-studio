@@ -135,7 +135,7 @@ services:
       - STRIPE_PORTAL_RETURN_URL=${STRIPE_PORTAL_RETURN_URL:-}
     volumes:
       # S3/R2 will replace batch, tts & imgs outputs (WS3) — mounts removed
-      - /Users/rino/Documents/ProjectQ/moat:/app/moat
+      - ./data/moat:/app/moat                               # v3.6 moat in-repo (no ProjectQ)
       - ./data/narasi_temp:/app/narasi_temp
       - ./data/output:/app/output
       - ./backend/server.js:/app/server.js
