@@ -5982,19 +5982,16 @@ async def video_segment(req: VideoSegmentReq,
                                 {"tokens_in": len(prompt) // 4, "tokens_out": params.target_words * 2}, byok=_byok)
         try:
             _client = make_client(req.gen_model)
-            # Reasoning models (Gemini 2.5/3, DeepSeek R1, Claude thinking) spend output
-            # tokens on internal thinking BEFORE the narration, so a tight max_tokens
-            # truncates the text to a few words → a 2-second video. Give generous
-            # headroom (billing is per real token used, so a high cap costs nothing extra).
-            def _gen(mt):
-                r = _client.chat.completions.create(
-                    model=req.gen_model, messages=[{"role": "user", "content": prompt}],
-                    temperature=0.8, max_tokens=mt)
-                return (r.choices[0].message.content or "").strip(), r
-            narration, resp = await asyncio.to_thread(_gen, min(8000, max(4000, params.target_words * 3)))
-            # still way under target? a reasoning model ate the budget — retry once at the cap.
-            if params.target_words >= 30 and len(narration.split()) < params.target_words * 0.45:
-                narration, resp = await asyncio.to_thread(_gen, 8000)
+            # max_tokens: the per-model ceiling, exactly like Studio chat
+            # (min(12000, MODEL_MAX_TOKENS[model])). Reasoning models (Gemini 2.5/3,
+            # DeepSeek R1, Claude thinking) spend output tokens THINKING before the
+            # narration; a tight cap truncated the text to a few words → a 2-second
+            # video. Billing is per real token used, so a high cap costs nothing extra.
+            _maxtok = min(12000, MODEL_MAX_TOKENS.get(MODELS.get(req.gen_model, req.gen_model), DEFAULT_MAX_TOKENS))
+            resp = await asyncio.to_thread(lambda: _client.chat.completions.create(
+                model=req.gen_model, messages=[{"role": "user", "content": prompt}],
+                temperature=0.8, max_tokens=_maxtok))
+            narration = (resp.choices[0].message.content or "").strip()
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"narration generation failed: {e}")
         if not narration:

@@ -43,8 +43,9 @@
   @keyframes breathe{0%,100%{transform:scale(.92);opacity:.55}50%{transform:scale(1);opacity:1}}
   .cancel-btn{background:transparent;border:1px solid var(--br);color:var(--td);border-radius:10px;padding:9px 22px;cursor:pointer;font-size:13px;transition:.15s}
   .cancel-btn:hover{color:var(--t);border-color:var(--ac)}
-  .prog-status{display:flex;align-items:center;justify-content:center;gap:11px;color:var(--td);font-family:var(--fm);font-size:12.5px;padding:18px 20px 4px}
-  .prog-status .bc{width:30px;height:30px;margin:0}
+  .head-right{display:flex;align-items:center;gap:9px}
+  .bc-sm{display:inline-flex;width:20px;height:20px}
+  .bc-sm img{width:100%;height:100%;object-fit:contain;animation:breathe 1.8s ease-in-out infinite;transform-origin:center}
   .prog-actions{display:flex;justify-content:center;padding:10px 20px 22px}
   .adv{margin-top:6px}
   .adv summary{cursor:pointer;color:var(--td);font-size:13px;font-family:var(--fm);padding:6px 0;list-style:none}
@@ -521,8 +522,9 @@
     const total=scenes.length||asm.sceneCount||0;
     const doneN=scenes.filter(s=>s.audioStatus==="done"&&(s.visualStatus==="done"||s.visualStatus==="fallback")).length;
     const useBar=total>10;
+    const loadC=(j.status==="running"||j.status==="stitching"||j.status==="queued")?'<span class="bc-sm"><img src="/assets/ceritaai-mark.png" alt="memuat"/></span>':'';
     let head='<div class="stage-head"><div><div class="st-t">'+(j.status==="done"?"Video selesai":"Merangkai video")+'</div>'+
-      '<div class="st-s">'+total+' scene · '+(j.dispatch_mode==="batch"?"batch":"paralel")+'</div></div>'+badge(j.status)+'</div>';
+      '<div class="st-s">'+total+' scene · '+(j.dispatch_mode==="batch"?"batch":"paralel")+'</div></div><div class="head-right">'+loadC+badge(j.status)+'</div></div>';
 
     if(j.status==="done"&&(j.mp4Url||j.mp4Path)){
       const src=j.mp4Url||"";
@@ -552,8 +554,7 @@
           '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+(s.text||"").slice(0,90)+'</div></div>';
       }).join("")+'</div>';
     }
-    const status='<div class="prog-status">'+CLOADER+'<span>Merangkai '+total+' scene · '+doneN+'/'+total+' siap…</span></div>';
-    stage.innerHTML=head+status+body+'<div class="prog-actions"><button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button></div>';
+    stage.innerHTML=head+body+'<div class="prog-actions"><button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button></div>';
   }
 
   // ── handoff from Studio (Flow Storyboard / Script→TTS "Send to Video Instant") ──
