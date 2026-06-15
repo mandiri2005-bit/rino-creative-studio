@@ -4014,19 +4014,30 @@ FINAL TEST before writing each paragraph:
 
 
 def get_style_rules(style: str, video_mode: bool = False) -> str:
-    style_lower = style.lower()
-    rules = ""
-    for key in STYLE_RULES:
-        if key in style_lower:
-            rules = STYLE_RULES[key]
-            break
-    if not rules:
-        rules = STYLE_RULES.get("creative non-fiction", "")
-    if video_mode:
-        # VIDEO_SCRIPT_MODIFIER now contains full VO delivery engineering rules.
-        # Append AFTER content rules so delivery layer wraps content layer.
-        rules += VIDEO_SCRIPT_MODIFIER
-    return rules
+    """Project Dalang: thin shim over the pakem (ONE source of truth).
+
+    Historically this did a substring match over the now-removed inline
+    STYLE_RULES dict. Style rules now live ONLY in python/pakem. We delegate so
+    every caller — this module, the assembler, and the Node Google path via
+    /narration/prompt — reads the identical canon. The old function NAME is kept
+    so existing call sites keep working. Falls back to the legacy inline dict
+    only if pakem is somehow unimportable (it never should be).
+    """
+    try:
+        from pakem import build_style_block
+        return build_style_block(style, video_mode=video_mode)
+    except Exception:  # pragma: no cover - pakem is in-repo; defensive only
+        style_lower = (style or "").lower()
+        rules = ""
+        for key in STYLE_RULES:
+            if key in style_lower:
+                rules = STYLE_RULES[key]
+                break
+        if not rules:
+            rules = STYLE_RULES.get("creative non-fiction", "")
+        if video_mode:
+            rules += VIDEO_SCRIPT_MODIFIER
+        return rules
 
 
 def get_generation_preamble(video_mode: bool = False) -> str:
@@ -4238,9 +4249,19 @@ _NARASI_LANG_NAMES = {
 
 
 def _resolve_narasi_lang(language: str) -> str:
-    if not language:
-        return "Bahasa Indonesia"
-    return _NARASI_LANG_NAMES.get(language.strip().lower(), language.strip())
+    """Project Dalang: thin shim over the pakem language resolver (ONE source).
+
+    The language table lives ONLY in python/pakem/resolvers.py now; the local
+    _NARASI_LANG_NAMES above is retained as a defensive fallback (and so any
+    external importer of the symbol still resolves), but the canon is pakem.
+    """
+    try:
+        from pakem import resolve_language
+        return resolve_language(language)
+    except Exception:  # pragma: no cover - defensive only
+        if not language:
+            return "Bahasa Indonesia"
+        return _NARASI_LANG_NAMES.get(language.strip().lower(), language.strip())
 
 
 async def _narasi_outline_impl(body: dict):
@@ -4544,8 +4565,10 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
         word_max = int(word_target * 1.1)
         try:
             video_mode = bool(body.get("video_mode", False))
-            style_rules = get_style_rules(style, video_mode)
-            preamble    = get_generation_preamble(video_mode)
+            # Style rules + preamble + language are now injected by the pakem
+            # assembler (compose() below) — the ONE source of truth. We no longer
+            # build them inline here. get_style_rules()/get_generation_preamble()
+            # remain as pakem-backed shims for any other caller.
 
             # RAG: retrieve Gutenberg passages for this chapter's topic
             rag_context_text = ""
@@ -4597,8 +4620,10 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     chap_id, RAG_AVAILABLE,
                 )
 
-            # Build "previously written" context to prevent cross-chapter repetition
-            prev_context = ""
+            # Build "story so far" tail to prevent cross-chapter repetition.
+            # Pass the recent chapters straight to the assembler as prev_tail;
+            # pakem.compose trims it to the model's input budget and frames it.
+            prev_tail = ""
             if previous_chapters:
                 # Include last 2 chapters max to stay within context window
                 recent = previous_chapters[-2:]
@@ -4608,33 +4633,41 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     words = pc["text"].split()
                     snippet = " ".join(words[:300]) + ("…" if len(words) > 300 else "")
                     prev_lines.append(f"[Bab {pc['id']}: {pc['title']}]\n{snippet}")
-                prev_context = (
-                    "PREVIOUSLY WRITTEN CHAPTERS (do NOT repeat ideas, facts, phrases, or metaphors from these):\n"
-                    + "\n\n".join(prev_lines)
-                    + "\n\n"
-                )
+                prev_tail = "\n\n".join(prev_lines)
 
-            user = (
-                    preamble
-                    + (rag_context_text + "\n" if rag_context_text else "")
-                    + prev_context
-                    + f"OUTPUT LANGUAGE: {lang_label}. Write the ENTIRE chapter ONLY in {lang_label}. "
-                      f"Any references/context above may be in another language — do NOT mirror them; "
-                      f"produce the chapter fully in {lang_label}.\n\n"
-                    + f'You are writing Chapter {chap_id} of a {style} narrative titled: "{topic}"\n'
-                    + f"Language: {lang_label}\n\n"
-                    + style_rules + "\n"
-                    + (f"NARRATIVE BRIEF:\n{brief}\n\n" if brief else "")
-                    + (f"FULL OUTLINE:\n{outline}\n\n" if outline else "")
-                    + f"THIS CHAPTER:\n  Title: {chap_title}\n  Summary: {chap_desc}\n"
-                      f"  Target: {word_target} words (range: {word_min}–{word_max})\n\n"
-                    + ("Write EXACTLY {word_target} words (count carefully). ".format(word_target=word_target)
-                       + ("Include [ANCHOR] and [BEAT] markers — these do NOT count toward the word target.\n"
-                          if video_mode else "\n"))
-                    + f"Write ONLY in {lang_label}. "
-                    + "Do NOT include chapter title/number in output.\n"
-                      "Return ONLY the chapter body text. No headings, no markdown, no meta-commentary."
+            # ── Project Dalang (WS-7): assemble the prompt via the pakem assembler,
+            # the ONE source of truth. compose() returns a cache-stable system
+            # prefix (style/factual/language/brief/outline) + a per-chapter user
+            # block (RAG passages + story-so-far + this-chapter scope). This is the
+            # SAME assembler the Node Google path reaches through /narration/prompt,
+            # so Python and Node emit byte-identical structure.
+            from pakem.assembler import compose as _pakem_compose
+            _composed = _pakem_compose(
+                style=style,
+                language=language,
+                mode=("video" if video_mode else "text"),
+                outline=outline,
+                brief=brief,
+                chapter={
+                    "id": chap_id, "title": chap_title, "summary": chap_desc,
+                    "index": i, "total": len(chapters),
+                    "word_target": word_target, "word_min": word_min, "word_max": word_max,
+                },
+                prev_tail=prev_tail,
+                rag_passages=rag_context_text or None,
+                job_id=job_id,
+                model=model,
             )
+            # Provider-ready messages: [system (cacheable), user (variable)].
+            # Strip the Anthropic-style cache hint for non-Claude relays (the
+            # LaoZhang OpenAI-compatible proxy rejects unknown message keys for
+            # OpenAI/Gemini/DeepSeek); keep it for Claude so the prefix caches.
+            _msgs = [dict(m) for m in _composed.messages]
+            if not str(MODELS.get(model, model)).startswith("claude"):
+                for _m in _msgs:
+                    _m.pop("cache_control", None)
+            # `user` retained for moat capture / prompt logging (full assembled prompt).
+            user = _composed.static_prefix + "\n\n" + _composed.dynamic_block
             # Resolve model alias so MODEL_MAX_TOKENS lookup works correctly
             resolved_model = MODELS.get(model, model)
             ceiling = MODEL_MAX_TOKENS.get(resolved_model, DEFAULT_MAX_TOKENS)
@@ -4657,7 +4690,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 safe_max = min(ceiling, max(8000, base_tokens + thinking_overhead))
 
             resp = client.chat.completions.create(
-                model=resolved_model, messages=[{"role": "user", "content": user}],
+                model=resolved_model, messages=_msgs,
                 max_tokens=safe_max, stream=False
             )
             choice = resp.choices[0]
@@ -4678,7 +4711,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             if len(text.split()) < 50:
                 _log.warning(f"[narasi] bab {chap_id} EMPTY -- retrying")
                 resp2 = client.chat.completions.create(
-                    model=resolved_model, messages=[{"role": "user", "content": user}],
+                    model=resolved_model, messages=_msgs,
                     max_tokens=safe_max, stream=False
                 )
                 text = (resp2.choices[0].message.content or "").strip()

@@ -42,10 +42,13 @@ const PYTHON_API  = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 const MCP_API     = process.env.MCP_API_URL    || "http://127.0.0.1:8001";
 const GEMINI_KEY  = process.env.GEMINI_API_KEY || "";
 
-// Maps a language code to a display name; otherwise passes the value through
-// AS-IS so any language/register the LLM supports works (jv, su, fr, "Darija
-// Maroko", "Basa Jawa Krama", …). Mirrors _resolve_narasi_lang in laozhang_api.py.
-const _NARASI_LANG_NAMES = {
+// ── Project Dalang (WS-7): language table is owned by the pakem (ONE source of
+// truth, python/pakem). Node no longer hard-codes the canon; it lazily mirrors
+// it from GET ${PYTHON_API}/narration/languages and refreshes in the background.
+// The seed below is ONLY a cold-start fallback for the first few requests (or if
+// the Python API is briefly unreachable) — it is overwritten by the pakem fetch.
+// Mirrors _resolve_narasi_lang in laozhang_api.py, which itself delegates to pakem.
+let _NARASI_LANG_NAMES = {
   id:"Bahasa Indonesia", en:"English", jv:"Basa Jawa (Javanese)",
   su:"Basa Sunda (Sundanese)", ms:"Bahasa Melayu (Malay)", ban:"Basa Bali (Balinese)",
   min:"Baso Minangkabau", ar:"العربية (Arabic)", zh:"中文 (Chinese)",
@@ -54,11 +57,51 @@ const _NARASI_LANG_NAMES = {
   pt:"Português (Portuguese)", hi:"हिन्दी (Hindi)", th:"ภาษาไทย (Thai)",
   vi:"Tiếng Việt (Vietnamese)", tl:"Tagalog (Filipino)",
 };
+let _pakemLangFetchedAt = 0;
+// Refresh the language mirror from the pakem (best-effort; never throws).
+async function _refreshPakemLanguages(){
+  if(Date.now()-_pakemLangFetchedAt < 5*60*1000) return; // 5-min TTL
+  _pakemLangFetchedAt = Date.now();
+  try{
+    const r = await fetch(`${PYTHON_API}/narration/languages`);
+    if(!r.ok) return;
+    const d = await r.json();
+    if(Array.isArray(d.languages) && d.languages.length){
+      const next = {};
+      for(const it of d.languages){ if(it && it.value) next[it.value] = it.label; }
+      if(Object.keys(next).length) _NARASI_LANG_NAMES = next;
+    }
+  }catch(_e){ /* keep the existing mirror */ }
+}
+// Synchronous resolver over the (pakem-sourced) mirror. Kick a background
+// refresh so the mirror trends toward the canon; resolution itself is sync so
+// every existing call site keeps working unchanged.
 const resolveLang = (lang) => {
+  _refreshPakemLanguages();   // fire-and-forget
   if(!lang) return "Bahasa Indonesia";
   const k = String(lang).trim().toLowerCase();
   return _NARASI_LANG_NAMES[k] || String(lang).trim();
 };
+
+// ── Project Dalang (WS-7): the ONE prompt assembler. Ask the pakem
+// (POST ${PYTHON_API}/narration/prompt) to build the cache-stable {system,user}
+// narration messages from (style, language, mode, outline, brief, chapter,
+// prev_tail, rag_passages). This replaces the inline style-rules + OUTPUT
+// LANGUAGE strings that used to be duplicated here. Returns {system,user,meta}
+// or null on failure so callers can fall back gracefully.
+async function _pakemNarrationPrompt(payload){
+  try{
+    const r = await fetch(`${PYTHON_API}/narration/prompt`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+    });
+    if(!r.ok){ console.warn(`[pakem] /narration/prompt HTTP ${r.status}`); return null; }
+    const d = await r.json();
+    if(!d || typeof d.user!=="string"){ return null; }
+    return d; // {PAKEM_VERSION, system, user, meta}
+  }catch(e){ console.warn("[pakem] /narration/prompt failed:",e.message); return null; }
+}
 
 // ── directories ──────────────────────────────────────────────────────────────
 const DATA_DIR   = path.join(__dirname, "data");
@@ -786,200 +829,14 @@ ${bodyText}`;
 
 // ── Narasi AI — Google native ─────────────────────────────────────────────
 
-// ── Style rules (mirrors laozhang_api.py STYLE_RULES) ─────────────────────
-const NARASI_STYLE_RULES_JS={
-  "creative non-fiction":`STYLE: Creative Non-Fiction
-= Techniques of fiction (concrete scenes, specific POV, sensory detail) applied to REAL FACTS.
-
-STRUCTURE PER CHAPTER:
-1. COLD OPEN — One specific cinematic scene. Specific object, person, moment — NOT abstract.
-   BAD: "Para leluhur membawa harapan ke cakrawala."
-   GOOD: "Di geladak sempit: benih padi dibungkus daun pisang, seekor babi betina bunting diikat di tiang."
-2. UNTOLD STORY — The fact most people don't know. Specific data: %, dates, species names, site names.
-3. SUDUT PANDANG — At least one scene from a specific character's human POV.
-
-FORBIDDEN: "harapan", "keberanian", "gema purba", "kita adalah kelanjutan mereka", "penjelajah tak gentar"
-REQUIRED: Min 2 specific facts with numbers/dates per section. 1 concrete object/sensory detail per paragraph.`,
-
-  "storytelling":`STYLE: Storytelling — Narrative Drama
-= Story-first. Every historical fact must be delivered through SCENE and CHARACTER, not exposition.
-
-STRUCTURE PER CHAPTER:
-1. SCENE OPENER — Drop into the middle of a moment. In medias res. Who, what, where — in the first sentence.
-2. CONFLICT/TENSION — Every chapter needs a problem or stakes.
-3. DIALOGUE — At least 2 lines of spoken dialogue per chapter.
-4. TURN — A moment where something changes: a realization, a surprise, a decision.
-
-FORBIDDEN: Passive summary of events. Telling emotion instead of showing. Generic descriptions.
-REQUIRED: Named or clearly characterized figures. Cause-and-effect within scenes. Physical action.`,
-
-  "bedtime story":`STYLE: Bedtime Story — Gentle, Soothing
-= Warm narrator voice, gentle wonder, age-appropriate vocabulary.
-
-STRUCTURE PER CHAPTER:
-1. SOFT OPENING — Begin with a peaceful image or a gentle question. No drama, no conflict.
-2. SENSE OF WONDER — Each chapter reveals one amazing thing as a gift, not a lesson.
-3. COMFORTING CLOSE — End with warmth. A sense that things turned out okay.
-
-FORBIDDEN: Violence, conflict, darkness. Complex syntax. Academic jargon.
-REQUIRED: Short sentences. Soft vocabulary. Metaphors from nature and everyday life.`,
-
-  "harari":`STYLE: Harari / Jared Diamond — Big History (Sapiens-style)
-= Claim → Evidence → Implication. Zoom from the specific to the cosmic.
-TONE: Interdisciplinary, analytical, slightly provocative, intellectually fair.
-LANGUAGE: English. Topic can be ANY historical/civilizational subject.
-
-STRUCTURE PER CHAPTER:
-1. OPENING — Rotate types. NEVER use "Imagine" as first word more than once per book.
-   TYPE A — Direct reversal of common belief.
-   TYPE B — Specific paradox with named evidence and date.
-   TYPE C — Bold historical verdict a scholar could argue with.
-   TYPE D — Cognitive/evolutionary hook about human nature.
-
-2. EVIDENCE STACK — Min 2 named researchers + dates. Min 2 quantified data points.
-   SCHOLARLY TENSION — mandatory: name one counter-theory or scholarly debate.
-   Acknowledge what is NOT yet known.
-
-3. COMPARATIVE LENS — mandatory, intellectually fair.
-   FORBIDDEN: Claiming one civilization was "smarter" or "braver" than another.
-   REQUIRED: Explain differences through geography, ecology, or resource constraints.
-
-4. IMPLICATION — vary framing every chapter. NEVER repeat "This is the great lesson for all of humanity."
-   End with a bridge: 1–2 sentences opening the next tension.
-
-ADVANCED MECHANICS (all mandatory):
-5. MICRO-TO-MACRO ZOOM — anchor in one microscopic/mundane detail before going cosmic.
-6. SHARED FICTION FRAME — frame human institutions as "imagined realities" or "collective fictions."
-7. SENSORY ANCHOR — translate one data point into a lived, sensory prehistoric human experience.
-8. PUNCHLINE RULE — follow one long complex sentence with a brutal 3–6 word verdict.
-9. HISTORICAL CONTINGENCY — deny the reader the comfort of destiny. Acknowledge the role of chance.
-10. COGNITIVE THREAT — one realization that destabilizes a modern assumption about civilization or progress.
-
-BANNED PHRASES: "Throughout history", "It is important to note", "This suggests that", "In many ways",
-"Scholars have long debated", "Since the dawn of time", "It is worth noting", "One cannot help but wonder"
-
-ANTI-HEDGING: Avoid stacking: "perhaps", "possibly", "arguably", "may have". Use uncertainty only when evidence requires it.
-
-ABSOLUTE FORBIDDEN:
-- "Imagine" as chapter opener more than once in the entire book
-- "This is the great lesson for all of humanity"
-- Passive heroism: "brave/fearless/spirited ancestors"
-- Comfortable unearned conclusions
-
-REQUIRED ONCE PER CHAPTER:
-- One bold claim a scholar could disagree with
-- One named counter-theory bridging two disciplines
-- One quantified data point
-- One fresh implication framing
-- One Micro-to-Macro zoom
-- One Sensory Anchor
-- One Punchline Rule moment
-- One chapter bridge`,
-
-  "pov":`STYLE: POV — First Person Immersive
-= You ARE the historical figure. First person, present tense, immediate sensory experience.
-
-STRUCTURE PER CHAPTER:
-1. IMMEDIATE SENSORY OPENING — First sentence places reader in a body, in a moment.
-2. INNER MONOLOGUE — Thoughts, fears, calculations.
-3. SPECIFIC OBSERVATION — What do I see/hear/smell/touch that reveals historical context?
-4. DECISION OR ACTION — The POV character does or decides something that moves history.
-
-FORBIDDEN: Third person. Omniscient narrator intrusions. Modern sensibility projected onto ancient figure.
-REQUIRED: Present tense throughout. Specific sensory details — not abstract emotions.`,
-
-  "national geographic":`STYLE: National Geographic Documentary
-= Science anchored in beauty. Every fact arrives inside a visual, environmental description.
-
-STRUCTURE PER CHAPTER:
-1. LANDSCAPE SHOT — Open with the physical environment as it looks/feels/smells.
-2. ZOOM TO SUBJECT — From landscape to a specific creature, artifact, or human activity.
-3. SCIENTIFIC EXPLANATION — The "how does this work" in accessible, precise language.
-4. CONSERVATION/SIGNIFICANCE FRAME — Why does this matter today?
-
-FORBIDDEN: Vague wonder without specificity. Human-centric framing that ignores ecology.
-REQUIRED: Species names, geological terms, GPS-level location specificity. Present tense for ongoing phenomena.`,
-
-  "youtube":`STYLE: YouTube — Popular Science
-= Hook in first sentence. Curiosity loops. Reframe what viewer thinks they know.
-
-STRUCTURE PER CHAPTER:
-1. HOOK — First sentence must be a question, surprising fact, or counterintuitive claim.
-2. SETUP THE MYSTERY — What's the weird thing we're about to explain?
-3. EXPLAIN WITH ANALOGY — One modern analogy per complex concept.
-4. PAYOFF + REFRAME — Answer the question, then add what that means for today.
-
-FORBIDDEN: Academic tone. Passive voice. Long blocks without a hook or punchline.
-REQUIRED: Short punchy sentences mixed with longer ones. Direct address. At least one modern analogy.`,
-
-  "journalistic":`STYLE: Journalistic — Long Form
-= Report the past like a journalist covering a breaking story.
-
-STRUCTURE PER CHAPTER:
-1. LEAD — The most important/surprising fact first. Then context.
-2. NUT GRAF — What is this chapter really about? Why does it matter?
-3. SCENE + VOICE — At least one reconstructed scene + one quoted source.
-4. MULTIPLE ANGLES — Show competing interpretations.
-
-FORBIDDEN: Single narrative voice without tension. Unverified claims presented as fact.
-REQUIRED: Attribution language. Present tense for dramatic reconstruction. Specific numbers and sources.`,
-
-  "literary essay":`STYLE: Literary Essay
-= Personal intellectual voice. Digressive. Thinking on the page, not presenting conclusions.
-
-STRUCTURE PER CHAPTER:
-1. PERSONAL/ASSOCIATIVE OPENING — Start with an observation or cultural reference that connects obliquely.
-2. DIGRESSION — Follow one idea sideways before returning to the main thread.
-3. COMPLEXITY — Resist simple conclusions. Show what we don't know. Sit with ambiguity.
-4. RESONANT CLOSE — End not with a conclusion but a lingering image or open question.
-
-FORBIDDEN: Thesis statements. Bullet-point logic. Authoritative declarations.
-REQUIRED: First-person or intimate narrator voice. Cultural references. Sentences that think out loud.`,
-
-  "podcast narrative":`STYLE: Podcast Narrative
-= Written for the ear, not the eye. Conversational, signposted, built on spoken rhythm.
-
-STRUCTURE PER CHAPTER:
-1. CONVERSATIONAL HOOK — Address the listener directly. Short sentence.
-2. SCENE — Tell a short story in present tense, as if recounting to a friend.
-3. EXPLANATION — "And here's what's interesting..." — signpost the insight clearly.
-4. LISTENER TAKEAWAY — End with what this means for the listener's worldview.
-
-FORBIDDEN: Complex nested sentences. Dense data without analogies.
-REQUIRED: Short sentences (max 20 words for key points). Signpost phrases. Rhythm that works read aloud.`,
-
-  "academic popular":`STYLE: Academic Popular (like Sapiens)
-= Big claim → evidence → implication. Accessible language for complex ideas.
-
-STRUCTURE PER CHAPTER:
-1. BOLD OPENING CLAIM — State the argument plainly. No hedging.
-2. EVIDENCE STACK — 3–4 specific data points. Studies, sites, percentages.
-3. THOUGHT EXPERIMENT — "Imagine if..." — use hypothetical to make abstract concrete.
-4. IMPLICATION FOR TODAY — Connect past to present human behavior or society.
-
-FORBIDDEN: Jargon without definition. Evidence without interpretation. Hedging that kills momentum.
-REQUIRED: Footnote-worthy specifics in accessible language. Comparative lens. One thought experiment per chapter.`,
-
-  "cinematic voiceover":`STYLE: Cinematic Voiceover
-= Written for a narrator's voice over moving images. Short. Punchy. Visual. Rhythmic.
-
-STRUCTURE PER CHAPTER:
-1. VISUAL ESTABLISHING LINE — One sentence, one image. What is the camera seeing?
-2. NARRATION IN SHORT BURSTS — 2–4 sentence paragraphs max.
-3. EMOTIONAL BEAT — One moment of human connection. Brief.
-4. TITLE CARD CLOSE — End with a short, quotable line. One sentence. Strikes like a title card.
-
-FORBIDDEN: Long complex sentences. Explanatory exposition. Anything that can't be spoken in one breath.
-REQUIRED: Present tense. Fragments allowed for rhythm. Visual-first, emotion-second.`
-};
-
-function _getStyleRulesJS(style){
-  const sl=style.toLowerCase();
-  for(const key of Object.keys(NARASI_STYLE_RULES_JS)){
-    if(sl.includes(key)) return NARASI_STYLE_RULES_JS[key];
-  }
-  return NARASI_STYLE_RULES_JS["creative non-fiction"];
-}
+// ── Project Dalang (WS-7): style-rule canon REMOVED from Node. ───────────────
+// The ~180-line NARASI_STYLE_RULES_JS object that duplicated laozhang_api.py
+// STYLE_RULES is deleted. Style rules (and OUTPUT LANGUAGE / factual integrity /
+// ordering) now come from the pakem (python/pakem) via POST
+// ${PYTHON_API}/narration/prompt — see _pakemNarrationPrompt + _narasiGoogleHandler.
+// _getStyleRulesJS is kept ONLY as a deprecated no-op shim so any untraced caller
+// degrades gracefully (returns ""); the real rules are injected by the pakem.
+function _getStyleRulesJS(_style){ return ""; }
 
 // ── Anti-drift helpers (mirrors laozhang_api.py) ───────────────────────────
 
@@ -1184,20 +1041,33 @@ const _narasiGoogleHandler=async(req,res)=>{
     } else if(action==="chapter"){
       const c=body.chapter||{};
       // RAG: fetch Gutenberg passages from python-api
-      let ragBlock="";
+      let ragText="";
       if(body.use_rag){
         try{
           const ragResp=await fetch(`${PYTHON_API}/rag/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic:`${body.topic} — ${c.title}`,style,top_k:5})});
           const ragData=await ragResp.json();
-          if(ragData.ok&&ragData.context_text){ragBlock=ragData.context_text+"\n";console.log(`[RAG] Google path: passages=${ragData.passages}`);}
+          if(ragData.ok&&ragData.context_text){ragText=ragData.context_text;console.log(`[RAG] Google path: passages=${ragData.passages}`);}
         }catch(e){console.warn("[RAG] failed:",e.message);}
       }
-      prompt=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; any references/context may be in another language but do NOT mirror them.\n\nYou are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic}"\nLanguage: ${langLabel}\n\n`
-        +ragBlock
-        +_getStyleRulesJS(style)+"\n\n"
-        +(body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:"")
-        +(body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:"")
-        +`THIS CHAPTER:\n  Title: ${c.title}\n  Summary: ${c.description}\n  Target: ${body.word_target} words (range: ${body.word_min}–${body.word_max})\n\nWrite EXACTLY ${body.word_target} words in ${langLabel}. Do NOT include chapter title. Return ONLY the body text.`;
+      // Project Dalang (WS-7): style rules + OUTPUT LANGUAGE + ordering come from
+      // the pakem assembler, not inline strings. Forward {system,user} to Google.
+      const _pk=await _pakemNarrationPrompt({
+        style, language:lang, mode:(body.video_mode?"video":"text"),
+        outline:body.outline||"", brief:body.brief||"",
+        chapter:{id:c.id,title:c.title,summary:c.description||"",
+                 word_target:body.word_target,word_min:body.word_min,word_max:body.word_max},
+        rag_passages:ragText||null, model,
+      });
+      if(_pk){
+        prompt=(_pk.system?_pk.system+"\n\n":"")+_pk.user;
+      } else {
+        // Fallback: pakem unreachable — minimal inline prompt (no style canon).
+        prompt=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}.\n\n`
+          +(ragText?ragText+"\n":"")
+          +(body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:"")
+          +(body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:"")
+          +`THIS CHAPTER:\n  Title: ${c.title}\n  Summary: ${c.description}\n  Target: ${body.word_target} words.\n\nWrite EXACTLY ${body.word_target} words in ${langLabel}. Do NOT include chapter title. Return ONLY the body text.`;
+      }
       maxTok=Math.max(2000,Math.ceil((body.word_max||500)*1.5*1.2));
 
     } else if(body.chapters&&Array.isArray(body.chapters)&&body.chapters.length){
@@ -1223,7 +1093,9 @@ const _narasiGoogleHandler=async(req,res)=>{
         const wt=c.words||400;
         const wmin=Math.floor(wt*0.9),wmax=Math.ceil(wt*1.1);
 
-        const styleRules=_getStyleRulesJS(style);
+        // Anti-drift is a Node-side continuity construct (voice anchoring + drift
+        // signals across chapters). It is NOT part of the pakem canon, so it stays
+        // here and is APPENDED to the pakem-assembled prompt below.
         const antidrift=_buildAntidriftBlock(i,totalChapters,voiceSample,driftSignals,prevOpeners,style);
 
         // Check cancel flag before each chapter
@@ -1231,28 +1103,49 @@ const _narasiGoogleHandler=async(req,res)=>{
           console.warn(`[narasi-google] job ${jobId} cancelled at bab ${c.id}`);
           break;
         }
-        // RAG: fetch Gutenberg passages for this chapter
-        let chRagBlock="";
+        // RAG: fetch Gutenberg passages for this chapter (we still fetch here so we
+        // capture passage_ids for the persist step; the text is handed to the pakem
+        // assembler as rag_passages instead of being inlined).
+        let chRagText="";
         let chPassageIds=[];
         if(body.use_rag){
           try{
             const rr=await fetch(`${PYTHON_API}/rag/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic:`${body.topic||""} — ${c.title}`,style,top_k:5})});
             const rd=await rr.json();
-            if(rd.ok&&rd.context_text){chRagBlock=rd.context_text+"\n";chPassageIds=rd.passage_ids||[];console.log(`[RAG] Google multi-chapter bab=${c.id} passages=${rd.passages}`);}
+            if(rd.ok&&rd.context_text){chRagText=rd.context_text;chPassageIds=rd.passage_ids||[];console.log(`[RAG] Google multi-chapter bab=${c.id} passages=${rd.passages}`);}
           }catch(e){console.warn("[RAG] multi-chapter failed:",e.message);}
         }
-        const cp=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; references/context may be in another language but do NOT mirror them.
+
+        // ── Project Dalang (WS-7): assemble via the pakem (ONE source of truth).
+        // Style rules, OUTPUT LANGUAGE, factual integrity, brief & outline ordering
+        // all come from /narration/prompt. Anti-drift is appended afterward.
+        let cp;
+        const _pk=await _pakemNarrationPrompt({
+          style, language:lang, mode:(body.video_mode?"video":"text"),
+          outline:body.outline||"", brief:body.brief||"",
+          chapter:{id:c.id,title:c.title,summary:c.description||"",
+                   index:i,total:totalChapters,
+                   word_target:wt,word_min:wmin,word_max:wmax},
+          rag_passages:chRagText||null, job_id:jobId, model,
+        });
+        if(_pk){
+          cp=(_pk.system?_pk.system+"\n\n":"")
+            +(antidrift?antidrift+"\n":"")
+            +_pk.user;
+        } else {
+          // Fallback: pakem unreachable — minimal inline prompt (no style canon).
+          cp=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; references/context may be in another language but do NOT mirror them.
 
 You are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic||""}"
 Language: ${langLabel}
 
-${chRagBlock}${styleRules}
-${antidrift}${body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:""}${body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:""}THIS CHAPTER:
+${chRagText?chRagText+"\n":""}${antidrift}${body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:""}${body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:""}THIS CHAPTER:
   Title: ${c.title}
   Summary: ${c.description||""}
   Target: ${wt} words (range: ${wmin}–${wmax})
 
 Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chapter title. Return ONLY body text.`;
+        }
 
         // Token budget scales with THIS chapter's word target (wt). ~2 tokens
         // per word for Latin-script + generous headroom for non-English scripts

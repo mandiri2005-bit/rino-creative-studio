@@ -4995,6 +4995,57 @@ function NarasiSection({settings,showToast}){
   const[narasiRating,setNarasiRating]=useState(0);
   const[doneInfo,setDoneInfo]=useState(null);
 
+  // ── Project Dalang (WS-7): the style + language catalogs come from the pakem
+  // (the ONE source of truth) via GET /narration/styles + /narration/languages.
+  // The hardcoded NARASI_STYLES / NARASI_LANGS arrays above are now only a
+  // cold-start fallback (used until the fetch resolves, or if the API is down).
+  // _pakemStyleKey() normalizes whatever value the picker holds (legacy label or
+  // canonical key) to the pakem canonical key before we send it on.
+  const[pakemStyles,setPakemStyles]=useState(null);   // [{value,label,is_fiction}] | null
+  const[pakemLangs,setPakemLangs]=useState(null);      // [{value,label}] | null
+  const[pakemStyleAlias,setPakemStyleAlias]=useState({}); // norm(label/value) -> canonical key
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      try{
+        const[sr,lr]=await Promise.all([
+          fetch("/narration/styles").then(r=>r.ok?r.json():null).catch(()=>null),
+          fetch("/narration/languages").then(r=>r.ok?r.json():null).catch(()=>null),
+        ]);
+        if(!alive)return;
+        if(sr&&Array.isArray(sr.styles)&&sr.styles.length){
+          setPakemStyles(sr.styles);
+          // Build an alias map so legacy NARASI_STYLES values normalize to the
+          // canonical pakem key (e.g. "Harari/Diamond style" -> "harari").
+          const alias={};
+          for(const s of sr.styles){
+            const k=s.value;
+            alias[String(k).trim().toLowerCase()]=k;
+            if(s.label)alias[String(s.label).trim().toLowerCase()]=k;
+          }
+          setPakemStyleAlias(alias);
+        }
+        if(lr&&Array.isArray(lr.languages)&&lr.languages.length){
+          setPakemLangs(lr.languages);
+        }
+      }catch(_e){/* keep seed fallback */}
+    })();
+    return()=>{alive=false;};
+  },[]);
+  // Normalize a picker style value to the pakem canonical key (falls back to the
+  // raw value, which the server-side pakem resolver also accepts).
+  const _pakemStyleKey=(s)=>{
+    const n=String(s||"").trim().toLowerCase();
+    return pakemStyleAlias[n]||s;
+  };
+  // The arrays actually rendered by the dropdowns: pakem catalog if loaded, else seed.
+  const STYLE_OPTS=(pakemStyles&&pakemStyles.length)
+    ? pakemStyles.map(s=>({value:s.value,label:s.label||s.value}))
+    : NARASI_STYLES;
+  const LANG_OPTS=(pakemLangs&&pakemLangs.length)
+    ? pakemLangs.map(l=>({value:l.value,label:l.label||l.value}))
+    : NARASI_LANGS;
+
   useEffect(()=>{
     localStorage.setItem("rc_nar_mode",apiMode);
     if(!freeModel&&apiMode==="google"&&!chatModel.startsWith("gemini")){
@@ -5157,9 +5208,13 @@ function NarasiSection({settings,showToast}){
     let genErrors=[];
     try{
       setChapProgress(p=>{const n={...p};Object.keys(n).forEach(k=>n[k]="pending");return n;});
+      // WS-7: normalize the picker style to the pakem canonical key before sending
+      // (the server pakem resolver also accepts legacy values, but this keeps the
+      // wire payload aligned with the ONE source of truth).
+      const _style=_pakemStyleKey(style);
       const r=apiMode==="google"
-        ?await api.narasiGenerateGoogle({...extra,model:chatModel,topic,style,language,chapters,brief,outline:outlineText,pre_job_id:preJobId,video_mode:videoMode,use_rag:useRag})
-        :await api.narasiGenerateLz({model:chatModel,topic,style,language,chapters,brief,outline:outlineText,pre_job_id:preJobId,video_mode:videoMode,use_rag:useRag});
+        ?await api.narasiGenerateGoogle({...extra,model:chatModel,topic,style:_style,language,chapters,brief,outline:outlineText,pre_job_id:preJobId,video_mode:videoMode,use_rag:useRag})
+        :await api.narasiGenerateLz({model:chatModel,topic,style:_style,language,chapters,brief,outline:outlineText,pre_job_id:preJobId,video_mode:videoMode,use_rag:useRag});
       if(r.error)throw new Error(r.error);
       jobId=r.job_id||preJobId;
       jobIdRef.current=jobId;
@@ -5387,7 +5442,7 @@ function NarasiSection({settings,showToast}){
             onChange={e=>{const v=e.target.value;setLangMode(v);
               if(v==="other"){setLanguage((langCustom||"").trim()||"id");}
               else{setLanguage(v);}}}>
-            {NARASI_LANGS.map(l=><option key={l.value} value={l.value}>{l.label}</option>)}
+            {LANG_OPTS.map(l=><option key={l.value} value={l.value}>{l.label}</option>)}
             <option value="other">✏️ Lainnya (ketik bahasa…)</option>
           </select>
           {langMode==="other"&&
@@ -5400,7 +5455,7 @@ function NarasiSection({settings,showToast}){
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12,marginBottom:12}}>
         <div><div className="lbl">📖 Gaya narasi</div>
           <select className="inp" value={style} onChange={e=>setStyle(e.target.value)}>
-            {NARASI_STYLES.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
+            {STYLE_OPTS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </div>
         <div><div className="lbl">🎬 Format output</div>
