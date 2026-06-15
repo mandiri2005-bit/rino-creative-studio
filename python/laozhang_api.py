@@ -46,6 +46,14 @@ try:
 except ImportError:
     RAG_AVAILABLE = False
 
+# ── RAG master-roadmap Phase 1: global kill switch (default OFF) ──────────────
+# The eval gate proved standard narration (8.52) currently BEATS RAG (6.52), so
+# RAG ships OFF until the Step 5→6→7 fix makes it win. Folding RAG_ENABLED into
+# RAG_AVAILABLE auto-gates every downstream check (/rag/context, narasi use_rag,
+# generate_rag_narration). Re-enable later with RAG_ENABLED=true (per-env).
+RAG_ENABLED = os.environ.get("RAG_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+RAG_AVAILABLE = RAG_AVAILABLE and RAG_ENABLED
+
 # document parsing
 import io
 

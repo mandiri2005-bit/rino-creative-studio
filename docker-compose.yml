@@ -23,6 +23,10 @@ services:
       # RAG: rank proprietary "rino" source first (rag_narration.py reads this via
       # `os.environ.get(...) or None`, so empty = disabled). Compose pulls it from .env.
       - RAG_PREFER_SOURCE=${RAG_PREFER_SOURCE:-}
+      # RAG master-roadmap Phase 1: global RAG kill switch. Default OFF — RAG
+      # currently underperforms standard (eval gate 8.52 vs 6.52). Re-enable only
+      # after the Step 5→6→7 fix proves RAG ≥ standard.
+      - RAG_ENABLED=${RAG_ENABLED:-false}
       # ── Object storage (Cloudflare R2 / S3-compatible) — Step 2 ───────────
       - STORAGE_ENDPOINT=${STORAGE_ENDPOINT:-}
       - STORAGE_ACCESS_KEY=${STORAGE_ACCESS_KEY:-}

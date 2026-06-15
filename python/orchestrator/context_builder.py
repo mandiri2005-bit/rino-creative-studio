@@ -120,6 +120,13 @@ except Exception as _rag_imp_err:  # noqa: BLE001 - intentional broad fallback
         _rag_imp_err.__class__.__name__,
     )
 
+# RAG master-roadmap Phase 1: global kill switch (default OFF). RAG underperforms
+# standard right now (eval gate 8.52 vs 6.52), so retrieval is skipped until the
+# Step 5→6→7 fix lands. Re-enable per-env with RAG_ENABLED=true.
+_RAG_ENABLED = os.environ.get("RAG_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+if _RAG_OK and not _RAG_ENABLED:
+    log.info("context_builder: RAG importable but DISABLED (RAG_ENABLED=false) — skipping retrieval.")
+
 
 # Legacy/UI style names -> the rag-corpus style key the retriever filters on. Mirrors
 # the intent of laozhang_api._RAG_STYLE_LEGACY / _rag_style: broad genres return None
@@ -471,7 +478,7 @@ async def build_shared_context(
 
     # --- ONE RAG retrieval for the whole job ---
     rag_task: Optional[asyncio.Future] = None
-    if _RAG_OK and _get_narration_context is not None and ctx.topic:
+    if _RAG_OK and _RAG_ENABLED and _get_narration_context is not None and ctx.topic:
         rag_style = _rag_style(style)
         # Per-style retrieval params, mirroring /rag/context: style_filter /
         # structure_filter / min_quality / query_instruction come from style_rag_config
