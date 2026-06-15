@@ -792,6 +792,12 @@ const api={
   narasiChapters:async(jobId)=>fetch(`/api/narasi/chapters/${jobId}`,{headers:(await authHdrFresh())}).then(r=>r.json()),
   narasiRate:async(chapter_id,rating)=>fetch("/api/narasi/rate",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify({chapter_id,rating})}).then(r=>r.json()),
   narasiRateAll:async(job_id,rating)=>fetch("/api/narasi/rate-all",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify({job_id,rating})}).then(r=>r.json()),
+  // ── Project Dalang (WS-8): the unified orchestrator job. POST returns 202 {job_id};
+  //    GET polls {status,done,total,chapters[{no,state}],output}; cancel sets a flag.
+  //    Generation runs through the orchestrator (parallel workers + static/dynamic routing). ──
+  narrationStart:async(b)=>fetch("/api/narration",{method:"POST",headers:{"Content-Type":"application/json",...(await authHdrFresh())},body:JSON.stringify(b)}).then(r=>r.json()),
+  narrationStatus:async(jobId)=>fetch(`/api/narration/${jobId}`,{headers:(await authHdrFresh())}).then(r=>r.json()),
+  narrationCancel:async(jobId)=>fetch(`/api/narration/${jobId}/cancel`,{method:"POST",headers:(await authHdrFresh())}).then(r=>r.json()),
   batchJobs:()=>fetch("/api/jobs").then(r=>r.json()),
   batchSubmit:async b=>fetch("/api/submit",{method:"POST",headers:{...{"Content-Type":"application/json"},...(authHdr())},body:JSON.stringify(b)}).then(r=>r.json()),
   batchStatus:n=>fetch("/api/status?name="+encodeURIComponent(n)).then(r=>r.json()),
@@ -4946,6 +4952,10 @@ function MediaVaultSection({settings,showToast}){
 
 function NarasiSection({settings,showToast}){
   const[apiMode,setApiMode]=useState(()=>localStorage.getItem("rc_nar_mode")||"laozhang");
+  // Project Dalang: which generation engine. "classic" = the sequential per-chapter
+  // path (legacy, stable). "dalang" = the orchestrator job (/api/narration): parallel
+  // workers (≤MAX_WORKERS), static/dynamic routing, RAG-once + optional manager polish.
+  const[engine,setEngine]=useState(()=>localStorage.getItem("rc_nar_engine")||"classic");
   const[chatModel,setChatModel]=useState(()=>localStorage.getItem("rc_nar_model")||"gemini-2.5-flash");
   const[freeModel,setFreeModel]=useState(()=>localStorage.getItem("rc_nar_freemodel")==="true");
   const[googleKey,setGoogleKey]=useState(()=>localStorage.getItem("rc_nar_gkey")||"");
@@ -5138,7 +5148,7 @@ function NarasiSection({settings,showToast}){
     const jid=savedJobId||jobIdRef.current;
     if(jid){
       try{
-        const r=await api.narasiCancel(jid);
+        const r=engine==="dalang"?await api.narrationCancel(jid):await api.narasiCancel(jid);
         if(r&&r.ok===false) throw new Error(r.detail||r.error||"cancel ditolak");
         showToast("Cancel terkirim — bab berjalan selesai dulu","ok");
       }catch(e){
@@ -5212,6 +5222,76 @@ function NarasiSection({settings,showToast}){
       // (the server pakem resolver also accepts legacy values, but this keeps the
       // wire payload aligned with the ONE source of truth).
       const _style=_pakemStyleKey(style);
+
+      // ── Project Dalang engine: drive the orchestrator job (/api/narration).
+      //    Parallel workers (≤MAX_WORKERS), static/dynamic routing, RAG-once + polish.
+      //    The orchestrator assembles the whole book itself → no separate stitch step. ──
+      if(engine==="dalang"){
+        const chapIds=chapters.map(c=>String(c.id));
+        const start=await api.narrationStart({
+          topic, style:_style, language,
+          mode: videoMode?"video":"text",
+          chapters,                       // [{id,title,description,words}] → orchestrator reads title/description/words
+          n_chapters: chapters.length,
+          brief, outline:outlineText,
+          worker_model: chatModel,
+          rag: useRag?"on":"off",   // _Settings expects the string "on"/"off", not a bool
+          pre_job_id: preJobId,
+        });
+        if(start&&start.error) throw new Error(start.error);
+        if(start&&start.detail) throw new Error(typeof start.detail==="string"?start.detail:(start.detail.error||"narration ditolak"));
+        jobId=start.job_id||preJobId;
+        jobIdRef.current=jobId;
+        localStorage.setItem("rc_nar_job_id",jobId);setSavedJobId(jobId);
+
+        let finalOut="";
+        await new Promise((resolve)=>{
+          let polls=0;
+          const iv=setInterval(async()=>{
+            polls++;
+            if(abortRef.current){ clearInterval(iv); resolve(); return; }
+            if(polls>450){ clearInterval(iv); resolve(); return; } // ~15 min safety
+            let sd;
+            try{ sd=await api.narrationStatus(jobId); }catch{ return; }
+            // Light per-chapter checkboxes from the orchestrator's 0-indexed chapter states.
+            if(Array.isArray(sd.chapters)&&sd.chapters.length){
+              setChapProgress(p=>{
+                const n={...p};
+                sd.chapters.forEach((c,idx)=>{
+                  const id=chapIds[idx]; if(!id)return;
+                  n[id]= c.state==="done"?"done": c.state==="failed"?"error":"pending";
+                });
+                return n;
+              });
+            } else {
+              const done=Math.max(0,Math.min(chapIds.length,sd.done||0));
+              setChapProgress(p=>{const n={...p};chapIds.forEach((id,idx)=>{if(idx<done)n[id]="done";});return n;});
+            }
+            if(sd.status==="done"||sd.status==="failed"||sd.status==="cancelled"||sd.status==="error"){
+              clearInterval(iv);
+              if(sd.status==="done") finalOut=sd.output||(sd.result&&sd.result.markdown)||"";
+              else if(sd.status==="cancelled") showToast("Narasi dibatalkan","ok");
+              else showToast("Narasi gagal: "+(sd.error||"unknown"),"err");
+              resolve();
+            }
+          },2000);
+        });
+        if(abortRef.current){ setGenerating(false); return; }
+        // Orchestrator already assembled the book → render directly, no stitch.
+        setNarasi(finalOut);
+        try{ loadChapterRatings(jobId); }catch{}
+        setGenerating(false);
+        jobIdRef.current=null;
+        localStorage.removeItem("rc_nar_job_id");setSavedJobId(null);
+        if(finalOut){
+          const words=finalOut.split(/\s+/).filter(Boolean).length;
+          const filename=`narasi-${topic.slice(0,40).replace(/\s+/g,"-").replace(/[^a-zA-Z0-9-]/g,"")}.md`;
+          setDoneInfo({words,errors:0,filename,markdown:finalOut});
+          showToast(`✅ Selesai (Dalang) — ±${words} kata — ${filename}`,"ok");
+        }
+        return;
+      }
+
       const r=apiMode==="google"
         ?await api.narasiGenerateGoogle({...extra,model:chatModel,topic,style:_style,language,chapters,brief,outline:outlineText,pre_job_id:preJobId,video_mode:videoMode,use_rag:useRag})
         :await api.narasiGenerateLz({model:chatModel,topic,style:_style,language,chapters,brief,outline:outlineText,pre_job_id:preJobId,video_mode:videoMode,use_rag:useRag});
@@ -5409,6 +5489,20 @@ function NarasiSection({settings,showToast}){
 
   return <div>
     <ApiToggle value={apiMode} onChange={setApiMode} keySlot={googleKeySlot}/>
+
+    {/* Project Dalang — generation engine selector */}
+    <div className="card" style={{marginBottom:14,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+      <span style={{fontSize:13,fontWeight:700}}>⚙️ Engine</span>
+      <div style={{display:"flex",gap:6}}>
+        <button className={"btn"+(engine==="classic"?"":" sec")} style={{padding:"6px 12px",fontSize:12,opacity:engine==="classic"?1:0.7}} onClick={()=>{setEngine("classic");localStorage.setItem("rc_nar_engine","classic");}}>📜 Klasik</button>
+        <button className={"btn"+(engine==="dalang"?"":" sec")} style={{padding:"6px 12px",fontSize:12,opacity:engine==="dalang"?1:0.7}} onClick={()=>{setEngine("dalang");localStorage.setItem("rc_nar_engine","dalang");}}>🎭 Dalang ⚡</button>
+      </div>
+      <span style={{fontSize:11,color:"var(--tf)",flex:1,minWidth:220,lineHeight:1.4}}>
+        {engine==="dalang"
+          ? "Orchestrator: bab digarap PARALEL (≤6 worker), routing static/dynamic, RAG sekali + polish manager. Pakai key server (bukan toggle Google/LaoZhang di atas)."
+          : "Klasik: bab digarap berurutan satu per satu (jalur lama, stabil)."}
+      </span>
+    </div>
 
     {pastJobs.length>0&&(
       <div className="card" style={{marginBottom:14,padding:"10px 14px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
