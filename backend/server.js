@@ -743,6 +743,18 @@ app.post("/api/narasi/generate", (req,res)=>pyProxy(req,res,"/narasi/generate"))
 // Authorization + X-LaoZhang-API-Key + X-DeepSeek-Route; the old inline handler
 // dropped Authorization → python 401 "Missing or invalid Authorization header".
 app.post("/api/narasi/review", (req,res)=>pyProxy(req,res,"/narasi/review"));
+// ── WS-8 (Project Dalang) — converged narration job contract ─────────────────
+// ONE job endpoint shared by the Python UI and this Node path. The Node Google
+// handler (/api/narasi/generate/google) keeps its own in-process loop, but new
+// callers (and the unified UI) drive the SAME background job via these proxies:
+//   POST   /api/narration            → 202 {job_id,status:"running",total}
+//   GET    /api/narration/:id        → {status,done,total,chapters,output?}
+//   POST   /api/narration/:id/cancel → {status:"cancel_requested"}
+// pyProxy forwards Authorization (Clerk JWT) + the per-request key headers and
+// preserves the Python status code (so a 402 credit-hold surfaces unchanged).
+app.post("/api/narration",            (req,res)=>pyProxy(req,res,"/narration"));
+app.get ("/api/narration/:id",        (req,res)=>pyProxy(req,res,`/narration/${req.params.id}`));
+app.post("/api/narration/:id/cancel", (req,res)=>pyProxy(req,res,`/narration/${req.params.id}/cancel`));
 // SAVE-EDIT  (proxy → Python) — captures correction pairs for the moat (WS-G Task 5)
 app.post("/api/narasi/save-edit/:jobId", async(req,res)=>{
   try{

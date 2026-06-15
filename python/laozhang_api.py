@@ -6314,6 +6314,23 @@ async def video_credits_refund(req: VideoRefundReq,
     return {"refunded": spent, "job_id": job_id, "balance": bal}
 
 
+# ==================================================================
+# WS-8 (Project Dalang) — converged narration job runtime.
+# narration_api registers POST /narration, GET /narration/{id},
+# POST /narration/{id}/cancel on THIS app. It must be imported AFTER `app`
+# and the reused symbols (_resolve_user_uuid, db, rc, metering, credits) exist,
+# so we do it here at the bottom rather than at the top. Guarded: a failed
+# import (e.g. missing orchestrator deps in some env) must NEVER break the app —
+# the existing routes keep working and only /narration is unavailable.
+# ==================================================================
+try:
+    import narration_api  # noqa: F401  (side-effect: registers /narration routes)
+    _logging.getLogger("narasi").info("WS-8 narration_api routes registered")
+except Exception as _na_err:  # noqa: BLE001
+    _logging.getLogger("narasi").warning(
+        "narration_api not loaded (non-fatal — /narration unavailable): %s", _na_err)
+
+
 if __name__ == "__main__":
     print("Starting LaoZhang FastAPI backend at http://127.0.0.1:8000")
 
