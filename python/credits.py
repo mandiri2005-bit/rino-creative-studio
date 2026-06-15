@@ -173,7 +173,15 @@ async def get_balance(tenant_id: str) -> int:
         try:
             cur = await cl.get(_bal_key(tenant_id))
             if cur is not None:
-                return int(cur)
+                v = int(cur)
+                if v < 0:
+                    # A negative spendable balance means the cache drifted out of sync
+                    # with the durable — e.g. a manual credit_balances edit bypassed the
+                    # cache and later charges decremented it past zero. The durable is the
+                    # source of truth: resync so spend isn't wrongly blocked (402).
+                    log.warning("get_balance(%s): cache=%d < 0 → resync from durable", tenant_id, v)
+                    return await resync_from_durable(tenant_id)
+                return v
         except Exception as e:
             log.warning("get_balance(%s) redis: %s", tenant_id, e)
     return await _ensure_cached(tenant_id)

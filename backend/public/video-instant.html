@@ -407,7 +407,7 @@
       pollJob(asm);
     }catch(e){
       setBusy(false);
-      if(e.status===402) showErr("Kredit tidak cukup ("+(e.data?.creditsNeeded||"?")+" diperlukan). Top up dulu di Studio.");
+      if(e.status===402) showErr("Kredit tidak cukup ("+(e.data?.detail?.needed ?? e.data?.creditsNeeded ?? "?")+" diperlukan). Top up dulu di Studio.");
       else showErr(e.message||"Gagal membuat video.");
       stage.innerHTML='<div class="stage-empty"><div class="big">😕</div><h3>Belum berhasil</h3><p>Coba lagi atau ubah pengaturannya.</p></div>';
     }
