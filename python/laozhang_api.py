@@ -4092,6 +4092,107 @@ async def rag_context(body: dict):
         return {"ok": False, "context_text": "", "sources": [], "passages": 0, "error": str(exc)}
 
 
+# ==================================================================
+# Project Dalang — pakem exposure (WS-3)
+# The pakem package (python/pakem) is the ONE source of truth for narration
+# styles, languages, and prompt assembly. These three endpoints expose it to
+# the Node Google path (backend/server.js) and the frontend picker so they
+# never re-implement style/language tables or prompt ordering. Every response
+# carries PAKEM_VERSION so callers (caches, the picker, eval baselines) can
+# detect a canon change. Auth is OPTIONAL — the style/language catalog is not
+# secret and the picker loads it pre-login, matching the other /narasi reads.
+# ==================================================================
+@app.get("/narration/styles")
+async def narration_styles(
+        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Picker-facing style catalog: [{value, label, is_fiction}], + PAKEM_VERSION.
+
+    `value` is the canonical pakem key (feed it straight back to /narration/prompt
+    as `style`). Mirrors pakem/pakem.json exactly (same builder).
+    """
+    try:
+        from pakem import PAKEM_VERSION
+        from pakem.build_json import styles_catalog
+        return {"PAKEM_VERSION": PAKEM_VERSION, "styles": styles_catalog()}
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
+@app.get("/narration/languages")
+async def narration_languages(
+        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Picker-facing language catalog: [{value, label}], + PAKEM_VERSION.
+
+    `value` is the language code ("id"); `label` is the display name. Mirrors
+    pakem/pakem.json exactly (same builder).
+    """
+    try:
+        from pakem import PAKEM_VERSION
+        from pakem.build_json import languages_catalog
+        return {"PAKEM_VERSION": PAKEM_VERSION, "languages": languages_catalog()}
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
+@app.post("/narration/prompt")
+async def narration_prompt(
+        body: dict,
+        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Assemble the cache-stable {system, user} narration messages via pakem.
+
+    Body (all optional except style/language carry sensible defaults):
+      style        — raw/legacy/canonical style string (resolver-friendly)
+      language     — language code ("id") or label
+      mode         — "video"/"vo"/"voiceover" => VO mode; else plain text
+      outline      — FULL outline: pre-rendered string OR list of chapter dicts (STATIC)
+      brief        — narrative brief (STATIC across chapters)
+      chapter      — the chapter to generate: {id,title,summary,index,total,word_target,...}
+      prev_tail    — "story so far": tail of prior chapters (trimmed to budget)
+      rag_passages — this chapter's retrieved passages: string OR list of dicts
+      job_id, model, mode flags pass straight through to assembler.compose().
+
+    Returns: {PAKEM_VERSION, system, user, meta:{...}} where `system` is the
+    byte-stable cacheable prefix and `user` is the per-chapter variable block —
+    exactly the two messages the Node Google path should send upstream.
+    """
+    try:
+        from pakem import PAKEM_VERSION
+        from pakem.assembler import compose
+
+        composed = compose(
+            style=body.get("style", ""),
+            language=body.get("language", "id"),
+            mode=body.get("mode", "text"),
+            outline=body.get("outline"),
+            brief=body.get("brief", "") or "",
+            chapter=body.get("chapter"),
+            prev_tail=body.get("prev_tail", "") or "",
+            rag_passages=body.get("rag_passages"),
+            job_id=body.get("job_id", "") or "",
+            model=body.get("model"),
+        )
+        return {
+            "PAKEM_VERSION": PAKEM_VERSION,
+            "system": composed.static_prefix,
+            "user": composed.dynamic_block,
+            "meta": {
+                "cache_key":         composed.cache_key,
+                "style_key":         composed.style_key,
+                "language_label":    composed.language_label,
+                "model":             composed.model,
+                "max_tokens":        composed.max_tokens,
+                "prefix_tokens":     composed.prefix_tokens,
+                "dynamic_tokens":    composed.dynamic_tokens,
+                "input_tokens":      composed.input_tokens,
+                "prev_tail_trimmed": composed.prev_tail_trimmed,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
 @app.post("/narasi/outline")
 async def narasi_outline(body: dict,
                          user: CurrentUser = Depends(get_current_user)):

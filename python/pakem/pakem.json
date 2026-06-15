@@ -1,0 +1,157 @@
+{
+  "PAKEM_VERSION": "1.0.0",
+  "styles": [
+    {
+      "value": "creative_nonfiction",
+      "label": "Creative Non-Fiction",
+      "is_fiction": false
+    },
+    {
+      "value": "storytelling",
+      "label": "Storytelling",
+      "is_fiction": false
+    },
+    {
+      "value": "bedtime_story",
+      "label": "Bedtime Story",
+      "is_fiction": false
+    },
+    {
+      "value": "harari",
+      "label": "Harari / Big History",
+      "is_fiction": false
+    },
+    {
+      "value": "pov",
+      "label": "POV — First Person Immersive",
+      "is_fiction": false
+    },
+    {
+      "value": "natgeo",
+      "label": "National Geographic Documentary",
+      "is_fiction": false
+    },
+    {
+      "value": "youtube",
+      "label": "YouTube — Popular Science",
+      "is_fiction": false
+    },
+    {
+      "value": "journalistic",
+      "label": "Journalistic — Long Form",
+      "is_fiction": false
+    },
+    {
+      "value": "literary_essay",
+      "label": "Literary Essay",
+      "is_fiction": false
+    },
+    {
+      "value": "podcast_narrative",
+      "label": "Podcast Narrative",
+      "is_fiction": false
+    },
+    {
+      "value": "academic_popular",
+      "label": "Academic Popular (Sapiens)",
+      "is_fiction": false
+    },
+    {
+      "value": "cinematic_voiceover",
+      "label": "Cinematic Voiceover",
+      "is_fiction": false
+    },
+    {
+      "value": "narrative_nonfiction",
+      "label": "Narrative Non-Fiction (Cinematic History)",
+      "is_fiction": false
+    },
+    {
+      "value": "fiction",
+      "label": "Fiction",
+      "is_fiction": true
+    }
+  ],
+  "languages": [
+    {
+      "value": "id",
+      "label": "Bahasa Indonesia"
+    },
+    {
+      "value": "en",
+      "label": "English"
+    },
+    {
+      "value": "jv",
+      "label": "Basa Jawa (Javanese)"
+    },
+    {
+      "value": "su",
+      "label": "Basa Sunda (Sundanese)"
+    },
+    {
+      "value": "ms",
+      "label": "Bahasa Melayu (Malay)"
+    },
+    {
+      "value": "ban",
+      "label": "Basa Bali (Balinese)"
+    },
+    {
+      "value": "min",
+      "label": "Baso Minangkabau"
+    },
+    {
+      "value": "ar",
+      "label": "العربية (Arabic)"
+    },
+    {
+      "value": "zh",
+      "label": "中文 (Chinese)"
+    },
+    {
+      "value": "ja",
+      "label": "日本語 (Japanese)"
+    },
+    {
+      "value": "ko",
+      "label": "한국어 (Korean)"
+    },
+    {
+      "value": "es",
+      "label": "Español (Spanish)"
+    },
+    {
+      "value": "fr",
+      "label": "Français (French)"
+    },
+    {
+      "value": "de",
+      "label": "Deutsch (German)"
+    },
+    {
+      "value": "nl",
+      "label": "Nederlands (Dutch)"
+    },
+    {
+      "value": "pt",
+      "label": "Português (Portuguese)"
+    },
+    {
+      "value": "hi",
+      "label": "हिन्दी (Hindi)"
+    },
+    {
+      "value": "th",
+      "label": "ภาษาไทย (Thai)"
+    },
+    {
+      "value": "vi",
+      "label": "Tiếng Việt (Vietnamese)"
+    },
+    {
+      "value": "tl",
+      "label": "Tagalog (Filipino)"
+    }
+  ]
+}
