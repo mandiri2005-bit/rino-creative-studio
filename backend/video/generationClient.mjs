@@ -206,7 +206,7 @@ export function httpGenerationClient(opts = {}) {
       const submit = await fetch(`${PYTHON_API}/${prov}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...h },
-        body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId, aspect: scene.aspectRatio || "16:9" }),
+        body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId, aspect: scene.aspectRatio || "16:9", seed: scene.seed ? String(scene.seed) : "" }),
       });
       if (!submit.ok) throw new Error(`${prov} submit ${submit.status}`);
       const { task_id } = await submit.json();
