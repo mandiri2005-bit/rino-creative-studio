@@ -2116,7 +2116,9 @@ VEO_PRESETS = {
 
 
 def _veo_headers(override_key: Optional[str] = None) -> dict:
-    key = IMAGE_API_KEY or API_KEY  # use image key (LAOZHANG_IMAGE_API_KEY) same as working script
+    # Honor the per-request X-Veo-API-Key override first (the user's own LaoZhang
+    # key from the UI); fall back to the server image key, then the chat key.
+    key = override_key or IMAGE_API_KEY or API_KEY
     return {"Authorization": f"Bearer {key}"}
 
 

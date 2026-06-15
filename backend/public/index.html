@@ -1916,7 +1916,7 @@ function FlowSection({settings,showToast}){
     const mime=hasImg?((scene.image_b64.match(/^data:(image\/[a-z]+);base64,/i)?.[1])||"image/png"):"image/png";
     setSceneVeo(p=>({...p,[idx]:{status:attempt?"retrying":"queued",taskId:null,model:veoModel,mode:hasImg?"i2v":"t2v",attempt}}));
     try{
-      const resp=await fetch("/api/veo/submit",{method:"POST",headers:{"Content-Type":"application/json"},
+      const resp=await fetch("/api/veo/submit",{method:"POST",headers:{"Content-Type":"application/json","X-Veo-API-Key":veoKey||""},
         body:JSON.stringify({
           prompt:scene.description+(scene.camera?" Camera: "+scene.camera:"")+(scene.audio?" Audio: "+scene.audio:""),
           model:veoModel,
