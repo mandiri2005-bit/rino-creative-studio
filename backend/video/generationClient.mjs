@@ -75,6 +75,7 @@ export function syntheticGenerationClient(opts = {}) {
     async placeholderImage(scene, tmpDir) {
       return makePlaceholder(tmpDir, scene.sceneIndex, W, H);
     },
+    async refundVideoJob() { return { skipped: "synthetic" }; },
   };
 }
 
@@ -97,14 +98,18 @@ export function httpGenerationClient(opts = {}) {
   // is set it authenticates as the tenant via trusted internal headers (Python
   // accepts these only when the secret matches), so per-scene metering + RLS work.
   function authHeaders(scene) {
+    // X-Video-Job-Id tags every per-scene charge with the assembly job, so a
+    // failed video can refund exactly what it consumed (Python /video/credits/refund).
+    const vj = scene.jobId ? { "X-Video-Job-Id": String(scene.jobId) } : {};
     if (internalSecret) {
       return {
         "X-Internal-Secret": internalSecret,
         "X-Internal-Tenant-Id": scene.tenantId || "",
         "X-Internal-User-Id": scene.userId || scene.tenantId || "",
+        ...vj,
       };
     }
-    return opts.authToken ? { Authorization: `Bearer ${opts.authToken}` } : {};
+    return { ...(opts.authToken ? { Authorization: `Bearer ${opts.authToken}` } : {}), ...vj };
   }
 
   async function getBytes(url, headers, out) {
@@ -184,6 +189,24 @@ export function httpGenerationClient(opts = {}) {
     // (for clips) the clip→image fallback are unavailable, so the video completes.
     async placeholderImage(scene, tmpDir) {
       return makePlaceholder(tmpDir, scene.sceneIndex, opts.width, opts.height);
+    },
+
+    // Refund a FAILED assembly's actual spend. Internal-auth only; idempotent on the
+    // Python side (op_id=video-refund:<job>), so the orchestrator can call it freely.
+    async refundVideoJob(tenantId, jobId) {
+      if (!internalSecret) return { skipped: "no-internal-secret" };
+      const r = await fetch(`${PYTHON_API}/video/credits/refund`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Secret": internalSecret,
+          "X-Internal-Tenant-Id": tenantId || "",
+          "X-Internal-User-Id": tenantId || "",
+        },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+      if (!r.ok) throw new Error(`refund ${r.status}: ${(await r.text()).slice(0, 150)}`);
+      return r.json();
     },
   };
 }

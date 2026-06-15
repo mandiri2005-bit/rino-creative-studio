@@ -87,7 +87,7 @@ export async function audioProcessor(job, deps) {
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
     const a = await deps.generationClient.synthesizeAudio(
-      { sceneIndex, text: scene.text, estSeconds: Number(scene.estSeconds),
+      { jobId, sceneIndex, text: scene.text, estSeconds: Number(scene.estSeconds),
         voice: meta.voice || undefined, tenantId: meta.tenantId, userId: meta.userId }, tmpDir);
     const duration = (await ffprobeDuration(a.path)) || a.durationSeconds || Number(scene.estSeconds) || 0;
     const up = await maybeUpload(jobId, meta.tenantId, "audio", a.path);
@@ -127,7 +127,7 @@ export async function visualProcessor(job, deps) {
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
     const base = {
-      sceneIndex, kind: scene.kind, visualPrompt: scene.visualPrompt,
+      jobId, sceneIndex, kind: scene.kind, visualPrompt: scene.visualPrompt,
       estSeconds: Number(scene.estSeconds), clipModel: meta.clipModel,
       imageModel: meta.imageModel || undefined,
       tenantId: meta.tenantId, userId: meta.userId,
@@ -220,6 +220,7 @@ export async function stitchProcessor(job, deps) {
     return { jobId, duration: result.duration, mp4: up.key || up.path };
   } catch (e) {
     await deps.store.setStatus(jobId, "failed", { error: `stitch: ${e.message}` }).catch(() => {});
+    await deps.credits?.refundJob?.(meta.tenantId, jobId);
     await cleanupJobTmp(jobId).catch(() => {});
     throw e;
   }
@@ -231,7 +232,15 @@ export function makeDeps({ generationClient, queues } = {}) {
     store,
     queues: queues || makeQueues(),
     generationClient,
-    credits: { async precheck() { return true; } }, // pre-check seam (Python meters per scene)
+    credits: {
+      async precheck() { return true; }, // pre-check seam (Python meters per scene)
+      // Refund a failed assembly's actual spend (idempotent on the Python side).
+      // Best-effort: a refund hiccup must never throw inside the fail path.
+      async refundJob(tenantId, jobId) {
+        try { return await generationClient?.refundVideoJob?.(tenantId, jobId); }
+        catch (e) { console.warn(`[video-refund ${jobId}] failed: ${e.message}`); }
+      },
+    },
   };
 }
 

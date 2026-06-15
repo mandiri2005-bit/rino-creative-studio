@@ -1998,6 +1998,7 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
 @app.post("/generate-image")
 async def generate_image(req: ImageRequest,
                          x_image_api_key: str = Header(None, alias="X-Image-API-Key"),
+                         x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
                          user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     cfg = IMAGE_MODELS.get(req.model)
     if not cfg:
@@ -2062,7 +2063,8 @@ async def generate_image(req: ImageRequest,
 
         await _capture_image_flow(user, req.model, "generate_image", [b64])
         if user:
-            await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1}, byok=_byok, log=False)
+            await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
+                                 byok=_byok, video_job=x_video_job, log=False)
         return {
             "image_b64": b64,
             "model": req.model,
@@ -2120,6 +2122,7 @@ class VeoSubmitRequest(BaseModel):
 
 @app.post("/veo/submit")
 async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Header(default=None),
+                     x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Veo 3.1 image-to-video or text-to-video task."""
     preset = req.preset or VEO_PRESETS["1080p_landscape"]
@@ -2166,7 +2169,8 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
             try:
                 _jid = await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id)
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
-                                     {"seconds": _secs}, byok=_byok, job_id=_jid, log=True)
+                                     {"seconds": _secs}, byok=_byok, job_id=_jid,
+                                     video_job=x_video_job, log=True)
             except Exception as _e:
                 print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -5967,6 +5971,7 @@ async def video_decide(req: VideoDecideReq,
 
 @app.post("/video/tts/scene")
 async def video_tts_scene(req: VideoTtsSceneReq,
+                          x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
                           user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Single-shot per-scene narration → WAV (base64). Metered per character.
     Called by the audio worker; the master clock measures real duration via ffprobe."""
@@ -5993,10 +5998,44 @@ async def video_tts_scene(req: VideoTtsSceneReq,
     if user:
         try:
             await metering.debit(user.tenant_id, _uid, "tts", req.model,
-                                 {"chars": len(synth)}, byok=_byok, log=True)
+                                 {"chars": len(synth)}, byok=_byok, video_job=x_video_job, log=True)
         except Exception as _e:
             print(f"[video/tts/scene] metering debit failed (non-fatal): {_e}")
     return {"audio_b64": audio_b64}
+
+
+class VideoRefundReq(BaseModel):
+    job_id: str
+
+
+@app.post("/video/credits/refund")
+async def video_credits_refund(req: VideoRefundReq,
+                               user: CurrentUser = Depends(get_current_user)):
+    """Refund what a FAILED video assembly consumed. Sums every 'charge' ledger row
+    tagged with this video_job for the tenant and grants it back — idempotent per
+    job (op_id=video-refund:<job>). Internal-auth only; the orchestrator calls it on
+    terminal failure. No-op when nothing was charged or the refund already ran."""
+    job_id = (req.job_id or "").strip()
+    if not job_id:
+        raise HTTPException(400, "job_id required")
+    # charges are negative deltas tagged with video_job; -SUM = what to give back
+    spent = await db._q_fetchval(
+        "SELECT COALESCE(-SUM(delta),0) FROM credit_ledger "
+        "WHERE tenant_id=$1 AND reason='charge' AND delta<0 AND metadata->>'video_job'=$2",
+        db._uid(user.tenant_id), job_id, tenant=str(user.tenant_id))
+    spent = int(spent or 0)
+    if spent <= 0:
+        return {"refunded": 0, "job_id": job_id,
+                "balance": await credits_lib.get_balance(user.tenant_id)}
+    try:
+        _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    except Exception:
+        _uid = None
+    # grant() is idempotent on op_id, so a re-fired failure never double-refunds.
+    bal = await credits_lib.grant(user.tenant_id, spent, reason="refund",
+                                  op_id=f"video-refund:{job_id}", user_id=_uid,
+                                  metadata={"video_job": job_id, "kind": "assembly_failed"})
+    return {"refunded": spent, "job_id": job_id, "balance": bal}
 
 
 if __name__ == "__main__":

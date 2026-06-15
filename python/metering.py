@@ -171,7 +171,7 @@ async def gate(tenant_id: str, operation: str, model: str,
 
 async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: str,
                 units: Union[int, float, dict], *, byok: bool = False, log: bool = True,
-                session_id=None, job_id=None, tok_in: int = 0, tok_out: int = 0,
+                session_id=None, job_id=None, video_job=None, tok_in: int = 0, tok_out: int = 0,
                 provider: Optional[str] = None) -> int:
     """Post-hoc charge for a completed op. With log=True also writes a usage_logs
     row carrying the credits; set log=False when the caller already logs the usage
@@ -182,8 +182,14 @@ async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: s
     credits = 0 if byok else _cat.credit_cost(operation, model, units)
     if credits:
         try:
+            # Tag the ledger row with the video-assembly job id (when present) so a
+            # failed assembly can refund exactly what its scenes consumed (see
+            # /video/credits/refund). Distinct from job_id, which is the media-task id.
+            md = {"op": operation, "model": model}
+            if video_job:
+                md["video_job"] = str(video_job)
             await _credits.charge(tenant_id, credits, op_id=str(uuid.uuid4()),
-                                  user_id=user_id, metadata={"op": operation, "model": model})
+                                  user_id=user_id, metadata=md)
         except Exception as e:
             log.warning("debit(%s) failed: %s", operation, e)
     if log:

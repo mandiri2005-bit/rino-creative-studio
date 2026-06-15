@@ -164,6 +164,8 @@ export async function advance(jobId, deps) {
     }
     case "fail": {
       await deps.store.setStatus(jobId, "failed", { error: "a scene failed to generate" });
+      // refund what the partial assembly already consumed (idempotent per job)
+      await deps.credits?.refundJob?.(meta.tenantId, jobId);
       return decision;
     }
     default:
