@@ -1659,6 +1659,7 @@ function VideoCard({task,onPoll,streamUrl,apiKey,apiKeyHeader}){
     <div className="vid-card-body" style={{display:"flex",gap:8,alignItems:"center"}}>
       <button className="btn sec" style={{padding:"7px 12px",fontSize:12}} disabled={polling} onClick={poll}>{polling?<span className="spin"/>:ic.refresh} Refresh</button>
       {isDone&&<button className="btn pri" style={{padding:"7px 12px",fontSize:12}} onClick={doStream}>{ic.video} Watch</button>}
+      {isDone&&<a className="btn sec" href={streamUrl} download={`video-${(task.taskId||"").slice(-8)}.mp4`} style={{padding:"7px 12px",fontSize:12,textDecoration:"none"}}>{ic.dload} Download</a>}
       {task.progress>0&&<span style={{fontSize:11,color:"var(--td)"}}>{task.progress}%</span>}
     </div>
   </div>;

@@ -225,7 +225,7 @@ function _sniffImage(buf) {
 }
 // Synchronous image flows (google-native): ONE 'done' job + persist each image to
 // R2/assets (durable + moat capture; were base64-only) + one usage row per image.
-async function captureImageFlow(req, model, jobType, b64list, provider = "gemini") {
+async function captureImageFlow(req, model, jobType, b64list, provider = "gemini", prompts = null) {
   try {
     const tenantId = resolveTenantId(req);
     const userId   = await resolveUserId(req, tenantId);
@@ -235,9 +235,13 @@ async function captureImageFlow(req, model, jobType, b64list, provider = "gemini
     for (let i = 0; i < list.length; i++) {
       const buf = Buffer.from(list[i], "base64");
       const [ct, ext] = _sniffImage(buf);
+      // Capture the generating prompt (string for all, or array aligned by index)
+      // so source_prompt lands on the asset (moat) — was being discarded.
+      const _p = Array.isArray(prompts) ? (prompts[i] || null) : (prompts || null);
       try {
         await persistAsset({ tenantId, userId, jobId, assetType: "image", sourceJobType: jobType,
-          filename: `${jobType}_${i+1}.${ext}`, buffer: buf, contentType: ct, metadata: { model } });
+          filename: `${jobType}_${i+1}.${ext}`, buffer: buf, contentType: ct,
+          metadata: { model, ...(_p ? { prompt: _p } : {}) } });
       } catch (e) { console.error("[captureImageFlow] persist", e.message); }
       await logUsage(tenantId, userId, model || "unknown", "image", 0, 0, cost, null, provider, jobId);
     }
@@ -696,7 +700,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       const okCount = images.filter(x=>x.image_b64).length;
       if (!okCount) throw new Error("Google native returned no images");
       console.log(`[flow/images/native] GOOGLE ok model=${nativeModel} scenes=${scenes.length} images=${okCount}`);
-      await captureImageFlow(req, nativeModel, "flow_image", images.map(im=>im.image_b64));
+      await captureImageFlow(req, nativeModel, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""));
       return res.json({ images, via:"google_native" });
 
     } catch(e) {
@@ -2216,7 +2220,7 @@ app.post("/api/generate-image/google", async (req,res) => {
       config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
     const imgData = resp?.generatedImages?.[0]?.image?.imageBytes;
     if (!imgData) throw new Error("No image returned");
-    await captureImageFlow(req, model, "generate_image", [imgData]);
+    await captureImageFlow(req, model, "generate_image", [imgData], "gemini", prompt);
     res.json({ image_b64: imgData });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -2331,7 +2335,7 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
       return { index:i, image_b64: data||"" };
     }));
     const images = results.map((r,i) => r.status==="fulfilled" ? r.value : { index:i, image_b64:"" });
-    await captureImageFlow(req, model, "flow_image", images.map(im=>im.image_b64));
+    await captureImageFlow(req, model, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""));
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
