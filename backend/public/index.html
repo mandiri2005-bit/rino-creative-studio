@@ -532,7 +532,8 @@ const TTS_LANGUAGES_LZ=[
   {v:"Turkish",   label:"Turkish (Türkçe)"},
 ];
 const IMAGEN_MODELS=["imagen-4.0-ultra-generate-001","imagen-4.0-generate-001","imagen-4.0-fast-generate-001","imagen-3.0-generate-002"];
-const VEO_MODELS=["veo-3.1-fast-generate-preview","veo-3.1-generate-preview"];  // LaoZhang only exposes veo-3.1-*; these also map fine for Google
+const VEO_LZ_MODELS=["veo-3.1-fast-generate-preview","veo-3.1-generate-preview"];   // LaoZhang /v1/videos forward
+const VEO_NATIVE_MODELS=["veo-3.1-generate-preview","veo-3.1-fast-generate-preview","veo-3.1-lite-generate-preview","veo-2.0-generate-001"];   // Google generateVideos (shown as "… - Native")
 const VEO_PRESETS={
   "720p_landscape":{seconds:"8",size:"1280x720",label:"8s · 1280×720 · 16:9"},
   "1080p_landscape":{seconds:"8",size:"1920x1080",label:"8s · 1920×1080 · 16:9"},
@@ -552,7 +553,7 @@ function triggerMediaCapture(kind,taskId){
   _mediaCaptured.add(taskId);
   fetch(`/api/${kind}/stream/${encodeURIComponent(taskId)}`,{cache:"no-store"}).catch(()=>{});
 }
-const SORA_MODELS=["sora-2","sora-2-pro"];
+const SORA_MODELS=["sora-2-character","sora-character"];  // LaoZhang only exposes these sora ids (sora-2/sora-2-pro 404)
 const SORA_SIZES=["1280x720","1920x1080","1080x1920"];
 const ASPECTS=["16:9","1:1","9:16","4:3","3:4","21:9"];
 const RESOLUTIONS=["1920x1080","1280x720","2560x1440","3840x2160","1080x1920"];
@@ -629,10 +630,7 @@ const FLOW_IMAGE_MODELS_GOOGLE=[
   {value:"nano-banana-pro",               label:"Nano Banana Pro (3 Pro, 1:1)",       via:"lz"},
 ];
 const FLOW_LZ_IMG_MODELS=new Set(FLOW_IMAGE_MODELS_GOOGLE.filter(m=>m.via==="lz").map(m=>m.value));
-const VEO_FLOW_MODELS=[
-  {value:"veo-3.1-fast-generate-preview",   label:"Veo 3.1 Fast — LaoZhang $0.3"},
-  {value:"veo-3.1-generate-preview",        label:"Veo 3.1 — LaoZhang $1.2"},
-];  // LaoZhang exposes only veo-3.1-*; the old veo-3/veo-3.0-001/veo-2 ids 404'd on LaoZhang
+// Flow veo models now come from VEO_LZ_MODELS / VEO_NATIVE_MODELS, switched by the apiMode toggle.
 const WHISK_MODELS=[
   {value:"flux-kontext-max",  label:"Flux Kontext Max — best ref-follow"},
   {value:"flux-kontext-pro",  label:"Flux Kontext Pro — fast"},
@@ -1492,6 +1490,7 @@ function ImageSection({settings,showToast}){
 function VeoSection({settings,showToast}){
   const[prompt,setPrompt]=useState("");
   const[model,setModel]=useState("veo-3.1-fast-generate-preview");
+  const[lzModel,setLzModel]=useState(true);   // checkbox: LaoZhang model (off → Google Native)
   const[preset,setPreset]=useState("1080p_landscape");
   const[negative,setNegative]=useState("");
   const[refB64,setRefB64]=useState("");
@@ -1507,7 +1506,9 @@ function VeoSection({settings,showToast}){
     setBusy(true);
     try{
       const p=VEO_PRESETS[preset];
-      const r=await api.veoSubmit({prompt,model,preset,negative_prompt:negative,ref_image_b64:refB64,ref_image_mime:refMime,size:p.size,seconds:p.seconds},key);
+      const _validM=lzModel?VEO_LZ_MODELS:VEO_NATIVE_MODELS, _useModel=_validM.includes(model)?model:_validM[0];
+      const _sendKey=lzModel?key:"";   // lzModel off → no LaoZhang key → server routes to Google Native
+      const r=await api.veoSubmit({prompt,model:_useModel,preset,negative_prompt:negative,ref_image_b64:refB64,ref_image_mime:refMime,size:p.size,seconds:p.seconds},_sendKey);
       if(r.error)throw new Error(r.error);
       setTasks(prev=>[{taskId:r.task_id,status:r.status||"queued",label:prompt.slice(0,40),preset:p.label},...prev]);
       showToast("Video task submitted","ok");
@@ -1529,7 +1530,11 @@ function VeoSection({settings,showToast}){
     <div>
       <div className="card">
         <div className="lbl">{ic.video} Model</div>
-        <select className="inp" value={model} onChange={e=>setModel(e.target.value)}>{VEO_MODELS.map(m=><option key={m}>{m}</option>)}</select>
+        <select className="inp" value={model} onChange={e=>setModel(e.target.value)}>{(lzModel?VEO_LZ_MODELS:VEO_NATIVE_MODELS).map(m=><option key={m} value={m}>{lzModel?m:m+" - Native"}</option>)}</select>
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11.5,marginTop:8,color:"var(--td)",cursor:"pointer"}}>
+          <input type="checkbox" checked={lzModel} onChange={e=>{const c=e.target.checked;setLzModel(c);setModel((c?VEO_LZ_MODELS:VEO_NATIVE_MODELS)[0]);}}/>
+          LaoZhang model{lzModel?"":" · off → Google Native"}
+        </label>
       </div>
       <div className="card">
         <div className="lbl">Preset</div>
@@ -1569,7 +1574,7 @@ function VeoSection({settings,showToast}){
 /* ─── SORA SECTION ─── */
 function SoraSection({settings,showToast}){
   const[prompt,setPrompt]=useState("");
-  const[model,setModel]=useState("sora-2");
+  const[model,setModel]=useState("sora-2-character");
   const[size,setSize]=useState("1920x1080");
   const[seconds,setSeconds]=useState("8");
   const[refB64,setRefB64]=useState("");
@@ -1910,11 +1915,12 @@ function FlowSection({settings,showToast}){
     const b64=hasImg?scene.image_b64.replace(/^data:image\/[a-z]+;base64,/i,""):"";
     const mime=hasImg?((scene.image_b64.match(/^data:(image\/[a-z]+);base64,/i)?.[1])||"image/png"):"image/png";
     setSceneVeo(p=>({...p,[idx]:{status:attempt?"retrying":"queued",taskId:null,model:veoModel,mode:hasImg?"i2v":"t2v",attempt}}));
+    const _vm=apiMode==="laozhang"?VEO_LZ_MODELS:VEO_NATIVE_MODELS, _veoModel=_vm.includes(veoModel)?veoModel:_vm[0];
     try{
       const resp=await fetch("/api/veo/submit",{method:"POST",headers:{"Content-Type":"application/json","X-Veo-API-Key":(apiMode==="laozhang"?(settings.laozhangKey||settings.veoKey||""):"")},
         body:JSON.stringify({
           prompt:scene.description+(scene.camera?" Camera: "+scene.camera:"")+(scene.audio?" Audio: "+scene.audio:""),
-          model:veoModel,
+          model:_veoModel,
           ref_image_b64:b64,
           ref_image_mime:mime
         })});
@@ -2206,7 +2212,7 @@ function FlowSection({settings,showToast}){
         <div>
           <div className="lbl">{ic.video} Video Model <span style={{fontSize:9.5,background:"var(--sus)",color:"var(--su)",padding:"1px 6px",borderRadius:4,marginLeft:4}}>per scene</span></div>
           <select className="inp" value={veoModel} onChange={e=>setVeoModel(e.target.value)}>
-            {VEO_FLOW_MODELS.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}
+            {(apiMode==="laozhang"?VEO_LZ_MODELS:VEO_NATIVE_MODELS).map(m=><option key={m} value={m}>{apiMode==="laozhang"?m:m+" - Native"}</option>)}
           </select>
         </div>
       </div>

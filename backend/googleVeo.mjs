@@ -29,8 +29,14 @@ export function getGoogleVeoJob(taskId) {
 }
 
 // Map the frontend veo model id → a current Gemini API Veo model id.
-// Veo 3.0 on the Gemini API uses the -001 suffix; 3.1 uses -preview.
+// Pass a valid Gemini Veo id straight through (the frontend's "- Native" options
+// send these directly); otherwise best-guess map a legacy id.
+const _GOOGLE_VEO = new Set([
+  "veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview",
+  "veo-2.0-generate-001", "veo-3.0-generate-001", "veo-3.0-fast-generate-001",
+]);
 function mapModel(m) {
+  if (_GOOGLE_VEO.has(m)) return m;
   const x = String(m || "").toLowerCase();
   if (x.includes("3.1")) return x.includes("fast") ? "veo-3.1-fast-generate-preview" : "veo-3.1-generate-preview";
   if (x.includes("fast")) return "veo-3.0-fast-generate-001";
