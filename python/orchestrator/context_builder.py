@@ -493,15 +493,27 @@ async def build_shared_context(
                 pass
 
         async def _retrieve() -> dict:
-            return await _get_narration_context(
-                topic=ctx.topic,
-                style=cfg["style_filter"],
-                structure=cfg["structure_filter"],
-                min_quality=cfg["min_quality"],
-                top_k=top_k,
-                query_instruction=cfg["query_instruction"],
-                prefer_source=os.environ.get("RAG_PREFER_SOURCE") or None,
-            )
+            # The deployed get_narration_context signature varies across moat
+            # versions (some lack structure / query_instruction / prefer_source).
+            # Pass ONLY the kwargs it actually accepts, so a richer-than-available
+            # call never raises TypeError and silently disables RAG.
+            candidate = {
+                "topic": ctx.topic,
+                "style": cfg["style_filter"],
+                "structure": cfg["structure_filter"],
+                "min_quality": cfg["min_quality"],
+                "top_k": top_k,
+                "query_instruction": cfg["query_instruction"],
+                "prefer_source": os.environ.get("RAG_PREFER_SOURCE") or None,
+            }
+            try:
+                import inspect
+                accepted = set(inspect.signature(_get_narration_context).parameters)
+                candidate = {k: v for k, v in candidate.items() if k in accepted}
+            except (TypeError, ValueError):  # signature not introspectable → drop the optional extras
+                candidate.pop("query_instruction", None)
+                candidate.pop("prefer_source", None)
+            return await _get_narration_context(**candidate)
 
         rag_task = asyncio.ensure_future(_retrieve())
 

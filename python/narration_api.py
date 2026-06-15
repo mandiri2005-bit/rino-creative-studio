@@ -249,7 +249,7 @@ class _UsageSink:
             await db.log_usage(
                 self.tenant_id, self.user_id, t.model, "narasi",
                 int(t.tokens_in or 0), int(t.tokens_out or 0), float(t.cost_usd or 0.0),
-                job_id=self.job_uuid, provider=None,
+                job_id=self.job_uuid, provider="laozhang",  # NOT NULL — orchestrator routes via the laozhang client
                 latency_ms=int(t.latency_ms or 0),
                 finish_reason=t.finish_reason or ("error" if not t.ok else "stop"),
                 http_status=200 if t.ok else 502, credits=0)
