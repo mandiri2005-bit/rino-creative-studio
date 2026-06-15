@@ -4,14 +4,14 @@
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Cerita AI Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,900&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
 <style>
-:root{--fd:'Bricolage Grotesque',sans-serif;--fb:'Hanken Grotesk',sans-serif;--fm:'JetBrains Mono',monospace}
+:root{--fd:'Bricolage Grotesque',sans-serif;--fb:'Hanken Grotesk',sans-serif;--fm:'JetBrains Mono',monospace;--fs:'Fraunces',Georgia,serif}
 *{box-sizing:border-box;margin:0;padding:0}html,body{height:100%;overflow:hidden}
 body{font-family:var(--fb);-webkit-font-smoothing:antialiased}
 .dark{--bg:#09090f;--sb:#0e0e18;--be:#14141f;--be2:#1c1c2e;--bi:#0e0e18;--br:#252535;--brs:#1a1a2a;
@@ -58,6 +58,13 @@ body{font-family:var(--fb);-webkit-font-smoothing:antialiased}
   backdrop-filter:blur(10px);position:sticky;top:0;z-index:20}
 .page-title{font-family:var(--fd);font-weight:700;font-size:18px;display:flex;align-items:center;gap:10px}
 .page-title svg{color:var(--ac)}
+/* Step 5b — per-tool masthead (kicker + title + dek) */
+.masthead{display:flex;align-items:flex-start;gap:13px;min-width:0}
+.masthead .mh-icon{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:9px;background:var(--be);border:1px solid var(--br);color:var(--ac);flex:none;margin-top:1px}
+.masthead .mh-icon svg{width:18px;height:18px}
+.mh-kicker{font-family:var(--fm);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--ac);line-height:1}
+.mh-title{font-family:var(--fd);font-weight:700;font-size:19px;line-height:1.1;letter-spacing:-.01em;color:var(--t);margin-top:3px}
+.mh-dek{font-size:12px;color:var(--td);margin-top:3px;max-width:560px;line-height:1.45}
 .main-body{flex:1;overflow-y:auto;padding:22px}
 
 /* ── SHARED COMPONENTS ── */
@@ -86,6 +93,13 @@ select.inp{cursor:pointer;appearance:none;background-image:linear-gradient(45deg
 .btn.lg{padding:13px 22px;font-size:14px}
 .spin{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp .7s linear infinite;flex:none}
 @keyframes sp{to{transform:rotate(360deg)}}
+/* Step 5b — skeleton loading states + reduced-motion */
+.skeleton{position:relative;overflow:hidden;background:var(--be2);border-radius:8px}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.07),transparent);animation:shimmer 1.4s ease-in-out infinite}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+.sk-img{width:100%;height:320px;border-radius:12px}
+.sk-line{height:11px;margin:9px 0;border-radius:6px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}}
 .badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:3px 8px;border-radius:999px}
 .badge.pend{background:var(--was);color:var(--wa)}.badge.run{background:var(--as);color:var(--ac)}
 .badge.ok{background:var(--sus);color:var(--su)}.badge.fail{background:var(--das);color:var(--da)}
@@ -122,6 +136,12 @@ select.inp{cursor:pointer;appearance:none;background-image:linear-gradient(45deg
 .msg-bubble{max-width:75%;padding:11px 14px;border-radius:14px;font-size:13.5px;line-height:1.6}
 .msg.user .msg-bubble{background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;border-radius:14px 14px 4px 14px}
 .msg.assistant .msg-bubble{background:var(--be);border:1px solid var(--br);border-radius:14px 14px 14px 4px}
+/* Step 5b — editorial serif + drop cap on generated text panels */
+.editorial{font-family:var(--fs);font-size:14.5px;line-height:1.9;letter-spacing:.004em}
+.editorial.dropcap::first-letter{font-family:var(--fs);font-weight:600;font-size:3.1em;line-height:.84;float:left;margin:5px 9px 0 0;color:var(--ac)}
+.msg.assistant .msg-bubble.markdown{font-family:var(--fs);font-size:14px;line-height:1.78}
+.msg.assistant .msg-bubble.markdown>p:first-of-type::first-letter{font-family:var(--fs);font-weight:600;font-size:2.5em;line-height:.82;float:left;margin:3px 8px 0 0;color:var(--ac)}
+.msg.assistant .msg-bubble.markdown code,.msg.assistant .msg-bubble.markdown pre,.msg.assistant .msg-bubble.markdown pre *{font-family:var(--fm)}
 
 /* ── Styling Markdown untuk Chat Bubble ── */
 .msg-bubble.markdown h1, .msg-bubble.markdown h2, .msg-bubble.markdown h3, 
@@ -258,7 +278,7 @@ select.inp{cursor:pointer;appearance:none;background-image:linear-gradient(45deg
 .scene-img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:var(--be2)}
 .scene-body{padding:12px}
 .scene-title{font-weight:700;font-size:13.5px;margin-bottom:6px}
-.scene-desc{font-size:12px;color:var(--td);line-height:1.5;margin-bottom:8px}
+.scene-desc{font-family:var(--fs);font-size:12.5px;color:var(--td);line-height:1.55;margin-bottom:8px}
 .scene-meta{display:flex;gap:8px;flex-wrap:wrap}
 .scene-tag{font-size:10.5px;background:var(--be2);border:1px solid var(--br);padding:2px 8px;border-radius:5px;color:var(--td)}
 
@@ -1452,7 +1472,7 @@ function ImageSection({settings,showToast}){
       </div>
       <div className="img-result">
         {!result&&!busy&&<div className="img-empty">{ic.image}<div style={{marginTop:8,fontSize:13,color:"var(--td)"}}>Your image will appear here</div></div>}
-        {busy&&<div style={{textAlign:"center",color:"var(--td)"}}><span className="spin" style={{width:32,height:32,borderWidth:3,margin:"0 auto 12px",display:"block"}}/><div>Generating…</div></div>}
+        {busy&&<div style={{width:"100%"}}><div className="skeleton sk-img"/><div style={{textAlign:"center",fontSize:12,color:"var(--td)",marginTop:10}}>Generating…</div></div>}
         {result&&(result.startsWith("http")?<img src={result} alt="generated" style={{maxWidth:"100%",maxHeight:600}}/>:<img src={`data:image/jpeg;base64,${result}`} alt="generated" style={{maxWidth:"100%",maxHeight:600}}/>)}
         {result&&<a className="adl" style={{position:"absolute",top:10,right:10}} href={result.startsWith("http")?result:`data:image/jpeg;base64,${result}`} download="generated.jpg">{ic.dl}</a>}
       </div>
@@ -1702,7 +1722,7 @@ function WhiskSection({settings,showToast}){
       <button className="btn pri w lg" disabled={busy} onClick={remix}>{busy?<><span className="spin"/> Remixing…</>:<>{ic.whisk} Remix</>}</button>
       <div className="whisk-result">
         {!result&&!busy&&<div style={{color:"var(--tf)",textAlign:"center",padding:40}}>{ic.whisk}<div style={{marginTop:8,fontSize:12}}>Remixed image appears here</div></div>}
-        {busy&&<span className="spin" style={{width:32,height:32,borderWidth:3}}/>}
+        {busy&&<div className="skeleton sk-img" style={{height:280}}/>}
         {result&&(result.startsWith("http")?<img src={result} alt="whisk result" style={{maxWidth:"100%",maxHeight:500}}/>:<img src={`data:image/jpeg;base64,${result}`} alt="whisk result" style={{maxWidth:"100%",maxHeight:500}}/>)}
       </div>
     </div>
@@ -5754,7 +5774,7 @@ function NarasiSection({settings,showToast}){
         </div>
         <div className="card">
           <div className="lbl">📄 Narasi final — edit langsung</div>
-          <textarea className="inp ta mono" rows={32} value={narasi} onChange={e=>setNarasi(e.target.value)} style={{fontSize:12.5,lineHeight:1.8}}/>
+          <textarea className="inp ta editorial" rows={32} value={narasi} onChange={e=>setNarasi(e.target.value)} style={{fontSize:14.5,lineHeight:1.9}}/>
         </div>
         {chapRatings.length>0&&(
           <div id="narasi-rating-card" className="card" style={{marginTop:14,border:"1px solid "+(narasiRating?"var(--brs)":"var(--wa)")}}>
@@ -5775,6 +5795,9 @@ function NarasiSection({settings,showToast}){
 }
 const PAGE_TITLES={chat:"Chat",image:"Image Generation",veo:"Veo · AI Video",sora:"Sora · AI Video",whisk:"Whisk · Image Remixing",flow:"Flow Storyboard",batch:"Batch Images",tts:"Text to Speech",imagen:"Imagen",mcp:"MCP File Search",scripttts:"Script → TTS",narasi:"Narasi AI",narasireview:"Narasi Review",mediavault:"Media Vault",billing:"Billing & Credits",feedback:"Feedback"};
 const PAGE_ICONS={chat:ic.chat,image:ic.image,veo:ic.video,sora:ic.sora,whisk:ic.whisk,flow:ic.flow,batch:ic.batch,tts:ic.mic,imagen:ic.img2,mcp:ic.folder,scripttts:ic.mic,narasi:ic.lay,mediavault:ic.img2,billing:ic.gear,feedback:ic.review};
+// Step 5b — masthead kicker (category) + dek (one-line description) per tool
+const PAGE_KICKER={chat:"Percakapan",image:"Visual",veo:"Video",sora:"Video",whisk:"Visual",flow:"Storyboard",batch:"Visual",tts:"Suara",imagen:"Visual",mcp:"Riset",scripttts:"Suara",narasi:"Naskah",narasireview:"Naskah",mediavault:"Arsip",billing:"Akun",feedback:"Masukan"};
+const PAGE_DESC={chat:"Ngobrol dengan model untuk riset, draf, dan brainstorm.",image:"Hasilkan gambar dari teks dengan model pilihanmu.",veo:"Teks atau gambar jadi klip sinematik lewat Veo 3.1.",sora:"Klip video dari prompt dengan Sora 2.",whisk:"Remix subjek, gaya, dan latar jadi gambar baru.",flow:"Pecah skrip jadi adegan bergambar siap produksi.",batch:"Banyak gambar sekaligus dari satu batch prompt.",tts:"Ubah naskah jadi suara natural — termasuk Suara Lokal.",imagen:"Render gambar resolusi tinggi dengan Imagen.",mcp:"Cari dan kutip dokumenmu sendiri secara semantik.",scripttts:"Naskah panjang langsung jadi audio per segmen.",narasi:"Narasi panjang bergaya Indonesia, ditulis utuh.",narasireview:"Tinjau dan rapikan narasi bab demi bab.",mediavault:"Semua aset hasil generate, tersimpan aman.",billing:"Kelola kredit, paket, dan riwayat pemakaian.",feedback:"Ceritakan apa yang kurang — kami dengarkan."};
 
 
 /* ── ClerkUserButton — header user pill with dropdown ────────────────── */
@@ -5945,7 +5968,14 @@ function App(){
     {/* MAIN */}
     <div className="main">
       <div className="main-hdr">
-        <div className="page-title">{PAGE_ICONS[page]}{PAGE_TITLES[page]}</div>
+        <div className="masthead">
+          <div className="mh-icon">{PAGE_ICONS[page]}</div>
+          <div style={{minWidth:0}}>
+            <div className="mh-kicker">{PAGE_KICKER[page]||"Studio"}</div>
+            <div className="mh-title">{PAGE_TITLES[page]}</div>
+            {PAGE_DESC[page]&&<div className="mh-dek">{PAGE_DESC[page]}</div>}
+          </div>
+        </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {!hasKey&&<span className="badge fail">No GEMINI_API_KEY</span>}
           <BalancePill onClick={()=>setPage("billing")}/>
