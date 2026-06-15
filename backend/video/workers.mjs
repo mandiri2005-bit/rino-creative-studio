@@ -201,12 +201,16 @@ export async function stitchProcessor(job, deps) {
   try {
     await mkdir(tmpDir, { recursive: true });
     const scenesRaw = await deps.store.getScenes(jobId, meta.sceneCount);
+    // A breath between scenes: pad each scene with trailing silence so narrations
+    // don't run back-to-back (the acrossfade used to OVERLAP them → "mepet"). The
+    // visual holds (image Ken Burns / clip freeze-pad) through the pause.
+    const sceneGap = Math.max(0, Number(process.env.VIDEO_SCENE_GAP || 0.8));
     const scenes = [];
     for (let i = 0; i < scenesRaw.length; i++) {
       const s = scenesRaw[i];
       scenes.push({
         kind: s.visualKind || "image",
-        duration: Number(s.durationActual) || Number(s.estSeconds) || 2,
+        duration: (Number(s.durationActual) || Number(s.estSeconds) || 2) + sceneGap,
         visualPath: await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
           `vis_${i}.${s.visualKind === "clip" ? "mp4" : "png"}`),
         audioPath: await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`),
