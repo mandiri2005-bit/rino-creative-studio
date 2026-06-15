@@ -12,7 +12,7 @@ import json
 import time
 import threading
 from contextvars import ContextVar
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 from openai import OpenAI
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header, Request, Depends
@@ -2131,7 +2131,7 @@ def _veo_metadata(preset: dict) -> str:
 class VeoSubmitRequest(BaseModel):
     prompt: str
     model: str = "veo-3.1-generate-preview"
-    preset: dict = None  # VEO_PRESETS value dict
+    preset: Any = None  # VEO_PRESETS key (str, e.g. "720p_landscape") or a value dict
     aspect: str = "16:9"  # "16:9" (landscape) | "9:16" (portrait) — picks the preset
     negative_prompt: str = "blurry, watermark, distorted, low quality"
     seed: str = ""
@@ -2144,7 +2144,11 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
                      x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Veo 3.1 image-to-video or text-to-video task."""
-    preset = req.preset or VEO_PRESETS["1080p_portrait" if req.aspect == "9:16" else "1080p_landscape"]
+    preset = req.preset
+    if isinstance(preset, str):          # frontend sends the VEO_PRESETS key, not the dict
+        preset = VEO_PRESETS.get(preset)
+    if not isinstance(preset, dict):     # None / unknown key → pick a sane default by aspect
+        preset = VEO_PRESETS["1080p_portrait" if req.aspect == "9:16" else "1080p_landscape"]
     headers = _veo_headers(x_veo_api_key)
 
     # Step 4: credit gate — video billed per second, known up front. 402 before submit.
