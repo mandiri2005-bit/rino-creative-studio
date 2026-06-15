@@ -1,0 +1,24 @@
+{
+  "case_id": "harari_id_chapters",
+  "ok": true,
+  "scenario": "A",
+  "strategy": "narrate_chapters",
+  "rag_used": true,
+  "settings": {"orch_mode": "auto", "polish": "light", "max_workers": 6, "rag_on": true},
+  "model": "gemini-2.5-flash",
+  "manager_model": "claude-sonnet-4-6",
+  "telemetry": [
+    {"model": "gemini-2.5-flash", "role": "worker", "tokens_in": 1200, "tokens_out": 320, "cost_usd": 0.000372},
+    {"model": "gemini-2.5-flash", "role": "worker", "tokens_in": 1250, "tokens_out": 330, "cost_usd": 0.0003855},
+    {"model": "gemini-2.5-flash", "role": "worker", "tokens_in": 1280, "tokens_out": 340, "cost_usd": 0.000396},
+    {"model": "claude-sonnet-4-6", "role": "manager", "tokens_in": 1500, "tokens_out": 700, "cost_usd": 0.0150}
+  ],
+  "chapters": [
+    {"no": 1, "id": 1, "title": "Sebelum gandum", "ok": true,
+     "content": "Di tepi lembah, segenggam biji gandum liar bergoyang tertiup angin. Para pemburu-pengumpul memungutnya, lalu pergi. Mereka belum tahu bahwa benih kecil ini akan menumbuhkan ladang, dan ladang akan menumbuhkan kota. Menurut sebagian arkeolog, pertanian dimulai sekitar 12.000 tahun yang lalu di Bulan Sabit Subur [VERIFY: situs spesifik tertua]. Tubuh kita masih dirancang untuk mengejar, bukan mencangkul."},
+    {"no": 2, "id": 2, "title": "Jebakan gandum", "ok": true,
+     "content": "Gandum tidak menjinakkan dirinya; ia menjinakkan kita. Untuk merawat ladang, manusia menetap, membungkuk, dan mengulang gerak yang sama setiap musim. Surplus gandum menumpuk di lumbung pertama [VERIFY: kapasitas lumbung]. Yang dahulu bebas berpindah kini terikat pada sepetak tanah. Itulah jebakan yang tak terlihat: lebih banyak makanan, lebih banyak mulut, lebih sedikit kebebasan."},
+    {"no": 3, "id": 3, "title": "Kota pertama", "ok": true,
+     "content": "Ketika lumbung penuh, lahir pula yang menjaganya. Surplus gandum melahirkan hierarki: imam, prajurit, raja. Manusia mengikat diri pada mitos bersama — bahwa sang raja berbicara atas nama langit. Kota pertama tumbuh di sekitar ladang, dindingnya menahan musuh dan menahan kita di dalam. Dari segenggam benih di bab pertama, kini berdiri menara dan takhta."}
+  ]
+}

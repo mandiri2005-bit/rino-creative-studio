@@ -1,0 +1,141 @@
+# =============================================================================
+# Project Dalang — Golden narration eval cases (WS-9)
+# =============================================================================
+# A small, hand-curated set of {topic, style, language, expectations} cases that
+# exercise the orchestrator across fiction/non-fiction, languages, and styles.
+#
+# Each case is scored on THREE dimensions by eval/run.py:
+#   * coherence   — cross-chapter continuity (shared names/entities recur, no
+#                   contradictory facts, chapters don't restart from scratch).
+#   * factuality  — claims are grounded: [VERIFY:] placeholders are used instead
+#                   of invented specifics, and any canonical_facts that MUST hold
+#                   actually appear (and forbidden / contradicted facts do not).
+#   * style       — the shipped style block's REQUIRED cues appear and FORBIDDEN
+#                   phrases are avoided (heuristic, not an LLM judge).
+#
+# The harness reads this file with PyYAML when available; if PyYAML is missing
+# (e.g. the host 3.14 venv) a tiny built-in parser in eval/run.py understands
+# this restricted subset (lists of mappings, scalars, and inline [a, b] lists).
+# Keep the format simple: 2-space indent, "- key: value" list items, and inline
+# flow lists for the *_contains / forbidden arrays.
+# -----------------------------------------------------------------------------
+
+meta:
+  version: "1.0.0"
+  description: "Dalang golden narration cases — coherence / factuality / style."
+  notes: "Live runs hit the orchestrator; --dry scores fixtures under eval/fixtures."
+
+cases:
+  # --- 1. Non-fiction, Indonesian, chaptered (scenario A explicit chapters) ---
+  - id: harari_id_chapters
+    topic: "Revolusi Pertanian dan lahirnya kota pertama"
+    style: harari
+    language: id
+    mode: text
+    fiction: false
+    chapters:
+      - title: "Sebelum gandum"
+        summary: "Hidup pemburu-pengumpul sebelum domestikasi tanaman."
+        word_target: 220
+      - title: "Jebakan gandum"
+        summary: "Bagaimana domestikasi mengikat manusia pada ladang."
+        word_target: 220
+      - title: "Kota pertama"
+        summary: "Surplus pangan, hierarki, dan mitos bersama."
+        word_target: 220
+    expectations:
+      # Entities expected to recur across chapters (coherence continuity check).
+      recurring_entities: ["gandum", "ladang"]
+      # Specifics the model must NOT invent unless grounded — should appear as
+      # [VERIFY: ...] placeholders rather than confident fabrications.
+      verify_expected: true
+      # Style cues the shipped 'harari' block requires (substring, case-insens.).
+      style_contains: ["[VERIFY"]
+      # Phrases the 'harari' style explicitly bans.
+      style_forbidden: ["throughout history", "it is important to note"]
+      # Facts that, if stated, must be consistent (no contradiction across book).
+      canonical_facts:
+        - "Pertanian dimulai sekitar 12.000 tahun yang lalu."
+      # Plainly-false statements that must NOT appear anywhere.
+      forbidden_facts:
+        - "Pertanian dimulai 200 tahun yang lalu."
+
+  # --- 2. Non-fiction, English, topic-only -> book (scenario B) --------------
+  - id: natgeo_en_topic
+    topic: "How coral reefs build themselves"
+    style: national geographic
+    language: en
+    mode: text
+    fiction: false
+    n_chapters: 3
+    words_per_chapter: 200
+    expectations:
+      recurring_entities: ["coral", "reef"]
+      verify_expected: true
+      style_contains: ["coral"]
+      style_forbidden: []
+      canonical_facts:
+        - "Coral reefs are built by tiny animals called polyps."
+      forbidden_facts:
+        - "Coral reefs are made of plastic."
+
+  # --- 3. Fiction, Indonesian, chaptered — RAG should be skipped ------------
+  - id: storytelling_id_fiction
+    topic: "Penjaga mercusuar terakhir di pulau yang menghilang"
+    style: storytelling
+    language: id
+    mode: text
+    fiction: true
+    chapters:
+      - title: "Cahaya yang memudar"
+        summary: "Mercusuar menyala untuk kapal yang tak pernah datang."
+        word_target: 180
+      - title: "Air yang naik"
+        summary: "Pulau perlahan tenggelam; penjaga menolak pergi."
+        word_target: 180
+    expectations:
+      recurring_entities: ["mercusuar", "penjaga"]
+      # Fiction: invented specifics are allowed, so [VERIFY:] is NOT required.
+      verify_expected: false
+      style_contains: []
+      style_forbidden: []
+      canonical_facts: []
+      forbidden_facts: []
+
+  # --- 4. Non-fiction, English, single short piece (scenario E) -------------
+  - id: youtube_en_single
+    topic: "Why the sky is blue"
+    style: youtube
+    language: en
+    mode: text
+    fiction: false
+    single: true
+    word_target: 160
+    expectations:
+      recurring_entities: ["light"]
+      verify_expected: false
+      style_contains: ["light"]
+      style_forbidden: []
+      canonical_facts:
+        - "Blue light scatters more than red light in the atmosphere."
+      forbidden_facts:
+        - "The sky is blue because it reflects the ocean."
+
+  # --- 5. Non-fiction, Bahasa Jawa, video mode (Suara Lokal moat) -----------
+  - id: cinematic_jv_video
+    topic: "Sejarah Candi Borobudur"
+    style: cinematic voiceover
+    language: jv
+    mode: video
+    fiction: false
+    n_chapters: 2
+    words_per_chapter: 150
+    expectations:
+      recurring_entities: ["Borobudur", "candi"]
+      verify_expected: true
+      style_contains: ["Borobudur"]
+      style_forbidden: []
+      canonical_facts:
+        - "Borobudur ana ing Magelang, Jawa Tengah."
+      forbidden_facts:
+        - "Borobudur ana ing Bali."

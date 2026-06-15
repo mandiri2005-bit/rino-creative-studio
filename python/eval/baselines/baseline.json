@@ -1,0 +1,19 @@
+{
+  "pakem_version": "1.0.0",
+  "config": {},
+  "config_label": "default",
+  "mode": "dry",
+  "aggregate": {
+    "coherence": 0.987,
+    "factuality": 0.82,
+    "style": 1.0,
+    "overall": 0.9357
+  },
+  "cases": {
+    "harari_id_chapters": 0.9783,
+    "natgeo_en_topic": 0.9,
+    "storytelling_id_fiction": 1.0,
+    "youtube_en_single": 0.9,
+    "cinematic_jv_video": 0.9
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "case_id": "storytelling_id_fiction",
+  "ok": true,
+  "scenario": "A",
+  "strategy": "narrate_chapters",
+  "rag_used": false,
+  "settings": {"orch_mode": "auto", "polish": "light", "max_workers": 6, "rag_on": true},
+  "model": "gemini-2.5-flash",
+  "manager_model": "claude-sonnet-4-6",
+  "telemetry": [
+    {"model": "gemini-2.5-flash", "role": "worker", "tokens_in": 900, "tokens_out": 260, "cost_usd": 0.000291},
+    {"model": "gemini-2.5-flash", "role": "worker", "tokens_in": 950, "tokens_out": 270, "cost_usd": 0.0003045}
+  ],
+  "chapters": [
+    {"no": 1, "id": 1, "title": "Cahaya yang memudar", "ok": true,
+     "content": "Pak Darto memutar tuas, dan cahaya mercusuar menyapu laut yang kosong. \"Malam ini pun tak ada kapal,\" gumamnya. Sang penjaga telah menyalakan lampu itu setiap malam selama empat puluh tahun, untuk kapal-kapal yang berhenti datang. Ombak menampar batu karang, dan ia menghitungnya seperti menghitung tahun-tahun yang hilang."},
+    {"no": 2, "id": 2, "title": "Air yang naik", "ok": true,
+     "content": "Air pasang merayap lebih tinggi setiap purnama. Pulau kecil itu menyusut, dan orang-orang telah lama pergi. Tetapi Pak Darto, sang penjaga, menolak meninggalkan mercusuar. \"Selama lampu ini menyala, pulau ini masih ada,\" katanya pada burung camar terakhir. Ia menaiki tangga sekali lagi, dan cahaya kembali menyapu kegelapan."}
+  ]
+}
