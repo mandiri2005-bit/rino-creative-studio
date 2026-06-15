@@ -194,7 +194,7 @@
       <tr><td><b>D/E</b></td><td>Goal mentah tanpa struktur bab</td><td>dynamic <code>plan_subtasks</code> → synthesize</td><td>N subtask (AI nentuin)</td></tr>
     </tbody>
   </table>
-  <div class="callout"><b>Narasi UI selalu masuk skenario A</b> (selalu ada outline) → static, 1 worker per bab, ikut outline-mu. Skenario dynamic (B/D) cuma kepicu kalau request-nya goal mentah — dan UI narasi nggak pernah ke situ kecuali kamu paksa <code>orch_mode=dynamic</code>.</div>
+  <div class="callout"><b>Narasi UI selalu masuk skenario A</b> (selalu ada outline) → static, 1 worker per bab, ikut outline-mu. <b>orch_mode praktis TIDAK berefek di sini:</b> auto/static/dynamic semua tetap scenario A selama ada outline — router: <code>dynamic + ada bab → tetap A</code> (“a real chapter list is still best served as a chaptered book”). Mode dynamic/static cuma menggigit untuk request <b>topik/goal mentah tanpa bab</b>, yang tidak pernah dikirim flow narasi.</div>
 </div></section>
 
 <!-- WORKERS -->
@@ -260,7 +260,7 @@ user blocks DISTINCT  : <span class="s">True</span>   <span class="c"># fokus + 
       <tr><td><b>🎩 Model Manager</b> <span class="tag t-def">Dalang</span></td><td>“sama dgn worker” / katalog</td><td>sama dgn worker</td><td>Model <b>polish</b> akhir. Penentu <b>kualitas</b> jahitan + sebagian besar biaya. Pisah dari worker.</td></tr>
       <tr><td><b>👥 Worker paralel</b> <span class="tag t-def">Dalang</span></td><td>slider 1–10</td><td><code>6</code></td><td><code>MAX_WORKERS</code> — berapa bab barengan. Naik = cepat (banyak bab), risiko rate-limit.</td></tr>
       <tr><td><b>✨ Polish</b> <span class="tag t-def">Dalang</span></td><td>none / light / heavy</td><td><code>light</code></td><td>Intensitas manager. <code>none</code> = tanpa manager (termurah). Detail di bawah.</td></tr>
-      <tr><td><b>🧭 Mode</b> <span class="tag t-def">Dalang</span></td><td>auto / static / dynamic</td><td><code>auto</code></td><td><code>auto/static</code> = ikut outline. <code>dynamic</code> = AI nyusun ulang struktur sendiri.</td></tr>
+      <tr><td><b>🧭 Mode</b> <span class="tag t-def">Dalang</span></td><td>auto / static / dynamic</td><td><code>auto</code></td><td>Strategi routing. <b>Untuk narasi (selalu ada outline) TIDAK berefek</b> — semua tetap scenario A. Hanya menggigit untuk request topik/goal mentah tanpa bab.</td></tr>
       <tr><td><b>🔍 Gutenberg RAG</b></td><td>On / Off</td><td>Off</td><td>Perkaya narasi dgn referensi korpus. <span class="tag t-warn">dev: nonaktif</span> (infra embedder belum siap) → RAG On buang ~27 dtk percuma.</td></tr>
       <tr><td><b>🌐 Bahasa output</b></td><td>20 bahasa + bebas-ketik</td><td>id</td><td>Termasuk Basa Jawa, Sunda, Bali, atau ketik bebas (“bahasa anak jaksel”).</td></tr>
       <tr><td><b>📖 Gaya narasi</b></td><td>14 gaya pakem</td><td>storytelling</td><td>Harari, Creative Non-Fiction, POV, Bedtime, dll — dari pakem.</td></tr>

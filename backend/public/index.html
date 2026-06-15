@@ -5555,12 +5555,12 @@ function NarasiSection({settings,showToast}){
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:13,fontWeight:700}}>🧭 Mode</span>
           <select className="inp" style={{minWidth:190}} value={orchMode} onChange={e=>{setOrchMode(e.target.value);localStorage.setItem("rc_nar_orchmode",e.target.value);}}>
-            <option value="auto">auto — ikut outline (default)</option>
-            <option value="static">static — paksa ikut outline</option>
-            <option value="dynamic">dynamic — AI nyusun ulang</option>
+            <option value="auto">auto — pilih otomatis (default)</option>
+            <option value="static">static — paksa jalur static</option>
+            <option value="dynamic">dynamic — dekomposisi AI (butuh tanpa-outline)</option>
           </select>
         </div>
-        <span style={{fontSize:11,color:"var(--tf)",flex:1,minWidth:160,lineHeight:1.4}}>Polish=none matiin manager total (picker Manager jadi nggak kepakai). Mode=dynamic bikin AI ngabaikan outline-mu & nyusun struktur bab sendiri.</span>
+        <span style={{fontSize:11,color:"var(--tf)",flex:1,minWidth:160,lineHeight:1.4}}>Polish=none matiin manager total (picker Manager jadi nggak kepakai). Mode: narasi <b>selalu</b> punya outline → praktis selalu jalur <b>static</b> (1 worker/bab); dynamic cuma ngefek kalau generate dari topik mentah tanpa outline.</span>
       </div>
     )}
 
