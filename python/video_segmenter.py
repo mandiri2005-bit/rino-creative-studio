@@ -84,8 +84,8 @@ IMAGE_SCENE_SECONDS = 8         # full_images pacing: ~one fresh image every 8s
 MIN_SCENES = 2                  # a video is at least two scenes (so there's a cut)
 BATCH_SIZE = 10                 # full-parallel <= BATCH_SIZE scenes, batched above
 PROGRESS_CARD_LIMIT = 10        # scene cards <= this many scenes, progress bar above
-MAX_VISUAL_PROMPT_CHARS = 460   # cap the cinematography prompt for the image API
-MAX_VISUAL_PROMPT_WORDS = 75    # room for the per-video art-direction brief + scene
+MAX_VISUAL_PROMPT_CHARS = 560   # cap the cinematography prompt for the image API
+MAX_VISUAL_PROMPT_WORDS = 90    # room for the per-video art-direction brief + scene
 
 # Per-scene planning credits by quality tier (the up-front estimate; real metering
 # is credit_catalog at dispatch). Keys match the duration-preset table columns.

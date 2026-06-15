@@ -221,12 +221,9 @@ export function buildStitchArgs(scenes, outPath, opts = {}) {
   });
   const { filter, vlabel, alabel } = buildFilterComplex(scenes, o);
   args.push(
-    // Single-threaded filtering + a deep mux queue: a long video has many scenes
-    // → a huge filter graph (zoompan + xfade per scene), and on a memory/CPU-capped
-    // container the multi-threaded filter framework throws "Resource temporarily
-    // unavailable / Failed to inject frame into filter network". One filter thread
-    // trades speed for the headroom to finish.
-    "-filter_complex_threads", "1",
+    // This single-pass xfade graph is only used for SHORT videos now (≤ the stitch()
+    // threshold) — small enough that the multi-threaded filter framework is safe and
+    // fast. Long videos take the per-scene render path instead.
     "-filter_complex", filter,
     "-map", `[${vlabel}]`, "-map", `[${alabel}]`,
     "-r", String(o.fps),
@@ -367,8 +364,9 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
   const { join } = await import("node:path");
   const cwd = opts.cwd || ".";
   const wantCaps = opts.captions && (await hasSubtitlesFilter());
-  const clipPaths = [];
-  for (let i = 0; i < scenes.length; i++) {
+  const clipPaths = new Array(scenes.length);
+
+  async function renderScene(i) {
     const clip = join(cwd, `scene_${i}.mp4`);
     let srt = null;
     if (wantCaps && (scenes[i].text || "").trim()) {
@@ -378,9 +376,18 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
     const args = buildSceneClipArgs(scenes[i], i, clip, {
       ...opts, srt, isFirst: i === 0, isLast: i === scenes.length - 1,
     });
-    await runFfmpeg(args, { cwd, onProgress: opts.onProgress });
-    clipPaths.push(clip);
+    await runFfmpeg(args, { cwd });
+    clipPaths[i] = clip;
   }
+
+  // Render the scene clips CONCURRENTLY (each is a tiny graph) — N workers pull from
+  // a shared index, so a long video isn't rendered one-slow-clip-at-a-time.
+  const conc = Math.max(1, Number(opts.renderConcurrency ?? process.env.VIDEO_RENDER_CONCURRENCY ?? 4));
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(conc, scenes.length) }, async () => {
+    while (next < scenes.length) await renderScene(next++);
+  }));
+
   // concat list — paths are relative to cwd; single-quote-escape just in case
   const list = join(cwd, "concat.txt");
   await writeFile(list, clipPaths.map((c) => `file '${c.split("/").pop().replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
@@ -397,7 +404,7 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
  * single-pass xfade (smooth crossfades). */
 export async function stitch(scenes, outPath, opts = {}) {
   if (!scenes?.length) throw new Error("stitch: no scenes");
-  const singlePassMax = Number(opts.singlePassMax ?? process.env.VIDEO_SINGLEPASS_MAX ?? 8);
+  const singlePassMax = Number(opts.singlePassMax ?? process.env.VIDEO_SINGLEPASS_MAX ?? 4);
   if (scenes.length > singlePassMax) {
     return stitchPerScene(scenes, outPath, opts);
   }

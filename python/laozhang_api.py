@@ -1843,19 +1843,19 @@ def _generate_chat_image(prompt: str, model: str, aspect_ratio: str,
 
 def _generate_google(prompt: str, model: str, aspect_ratio: str,
                      image_size: str, ref_b64: str = "",
-                     key: str | None = None) -> str:
+                     key: str | None = None, seed: int = 0) -> str:
     """/v1beta/models/{model}:generateContent -- Nano Banana 2/Pro HD mode."""
     url = f"{GOOGLE_IMAGE_BASE}/{model}:generateContent"
     parts: list = [{"text": prompt}]
     if ref_b64:
         parts.append({"inline_data": {"mime_type": "image/png", "data": ref_b64}})
-    payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "responseModalities": ["IMAGE"],
-            "imageConfig": {"aspectRatio": aspect_ratio, "imageSize": image_size},
-        },
+    gen_cfg = {
+        "responseModalities": ["IMAGE"],
+        "imageConfig": {"aspectRatio": aspect_ratio, "imageSize": image_size},
     }
+    if seed:
+        gen_cfg["seed"] = int(seed)   # same seed across a video's scenes → steadier look
+    payload = {"contents": [{"parts": parts}], "generationConfig": gen_cfg}
     r = _requests.post(url, headers=_img_headers(key), json=payload, timeout=180)
     r.raise_for_status()
     body = r.json()
@@ -1879,7 +1879,7 @@ def _generate_openai_image(prompt: str, model: str, aspect_ratio: str,
                            extra_params: dict | None = None,
                            size_map_vip: dict | None = None,
                            returns_url: bool = False,
-                           key: str | None = None) -> str:
+                           key: str | None = None, seed: int = 0) -> str:
     """/v1/images/generations -- Flux, GPT-Image-1, GPT-Image-2, Seedream."""
     # Standard aspect-ratio -> pixel size map
     std_size_map = {
@@ -1901,6 +1901,8 @@ def _generate_openai_image(prompt: str, model: str, aspect_ratio: str,
         payload["size"] = std_size_map.get(aspect_ratio, "1024x1024")
 
     payload["response_format"] = "url" if returns_url else "b64_json"
+    if seed:
+        payload["seed"] = int(seed)   # consistent seed across a video's scenes
 
     if extra_params:
         payload.update(extra_params)
@@ -1938,6 +1940,7 @@ class ImageRequest(BaseModel):
     aspect_ratio: str = "1:1"
     image_size: str = "1K"
     ref_image: str = ""
+    seed: int = 0   # >0 → reproducible noise (video scenes pass one per job for a steadier character)
 
     @validator("model")
     def valid_model(cls, v):
@@ -2028,14 +2031,14 @@ async def generate_image(req: ImageRequest,
                                             req.ref_image, returns_url=False, key=key)
             elif api == "google":
                 return _generate_google(req.prompt, mdl, req.aspect_ratio,
-                                        req.image_size, req.ref_image, key=key)
+                                        req.image_size, req.ref_image, key=key, seed=req.seed)
             elif api == "seedream":
                 return _generate_seedream(req.prompt, mdl, req.ref_image)
             elif api in ("openai-image", "openai-image-url"):
                 return _generate_openai_image(
                     req.prompt, mdl, req.aspect_ratio, req.image_size,
                     req.ref_image, extra_params=ep, size_map_vip=smap,
-                    returns_url=(api == "openai-image-url"), key=key,
+                    returns_url=(api == "openai-image-url"), key=key, seed=req.seed,
                 )
             else:
                 raise HTTPException(400, f"Unknown API type: {api}")
@@ -5965,11 +5968,14 @@ async def _video_visual_brief(content: str, model: str, user, byok: bool) -> str
         return ""
     prompt = (
         "You are the art director for an AI image generator making a video. From the "
-        "narration below, write ONE line (max 28 words) of visual art direction that "
-        "EVERY scene image must share so the video stays consistent: the place/setting, "
-        "the era, the ethnicity and clothing of the people, the architecture, and the "
-        "lighting/mood. Be culturally and historically accurate to the subject. Output "
-        "ONLY that line — no preamble, no quotes.\n\nNarration:\n" + content[:1800]
+        "narration below, write a SHORT visual style guide (max 40 words, ONE paragraph, "
+        "no line breaks) that EVERY scene image must follow so the video stays consistent:\n"
+        "- place/setting, era, architecture, lighting and mood;\n"
+        "- the ethnicity, clothing and overall look of the people;\n"
+        "- if ONE main character recurs, give them a single FIXED appearance (age, face, "
+        "hair, signature clothing) so they look identical in every scene.\n"
+        "Be culturally and historically accurate to the subject. Output ONLY the guide — "
+        "no preamble, no quotes, no line breaks.\n\nNarration:\n" + content[:1800]
     )
     try:
         cl = make_client(model)
@@ -5977,8 +5983,9 @@ async def _video_visual_brief(content: str, model: str, user, byok: bool) -> str
         r = await asyncio.to_thread(lambda: cl.chat.completions.create(
             model=model, messages=[{"role": "user", "content": prompt}],
             temperature=0.5, max_tokens=mt))
-        lines = [b.strip().strip('"') for b in (r.choices[0].message.content or "").splitlines() if b.strip()]
-        brief = (lines[0] if lines else "")[:320]
+        # join into one line (the model may still emit bullets) and strip list markers
+        raw = (r.choices[0].message.content or "")
+        brief = " ".join(b.strip().strip('"').lstrip("-•* ") for b in raw.splitlines() if b.strip())[:400]
         if user and brief:
             try:
                 _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)

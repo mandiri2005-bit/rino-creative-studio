@@ -28,6 +28,15 @@ import { ffprobeDuration, stitch, buildSrt, hasSubtitlesFilter } from "./ffmpeg.
 import { advance } from "./orchestrator.mjs";
 import { rm } from "node:fs/promises";
 
+// Deterministic positive seed from the job id — the SAME seed for every scene of a
+// video, so image models that honour `seed` keep the look (and any recurring
+// character) steadier across scenes. FNV-1a → 1..2e9.
+export function hashSeed(s) {
+  let h = 2166136261;
+  for (let i = 0; i < String(s).length; i++) { h ^= String(s).charCodeAt(i); h = Math.imul(h, 16777619); }
+  return ((h >>> 0) % 2000000000) + 1;
+}
+
 export function jobTmpDir(jobId) {
   return join(tmpdir(), "rcs-video", String(jobId));
 }
@@ -160,6 +169,7 @@ export async function visualProcessor(job, deps) {
       jobId, sceneIndex, kind: scene.kind, visualPrompt: scene.visualPrompt,
       estSeconds: Number(scene.estSeconds), clipModel: meta.clipModel,
       imageModel: meta.imageModel || undefined, aspectRatio: meta.aspectRatio || "16:9",
+      seed: hashSeed(jobId),   // same seed for all scenes of this video → steadier look
       tenantId: meta.tenantId, userId: meta.userId,
     };
     let v;
