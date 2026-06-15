@@ -518,40 +518,6 @@ async def _polish_reduce(
             f"edited book in {language}, no notes or preamble."
         )
         role = "merge"
-    elif mode == "critique":
-        # Step 8.4 — self-critique → rewrite. First the manager DIAGNOSES the whole
-        # piece (unpaid setups, cross-chapter repetition, tone/tense drift, weak seams,
-        # flabby prose); then it rewrites addressing every point. Two manager calls
-        # (pricier than light/heavy) — opt-in for high-value runs.
-        critique_instr = (
-            "You are a ruthless developmental editor reading a FINISHED multi-chapter "
-            f"narration about \"{topic}\" as ONE work. Produce a SHORT, specific critique "
-            "(bullet list, max 8 points) of its biggest flaws as a whole — NOT "
-            "chapter-by-chapter praise. Hunt for: (a) promises/questions planted early "
-            "but never paid off; (b) cross-chapter repetition or re-introductions; "
-            "(c) tone/voice/tense drift between sections; (d) weak seams / abrupt "
-            "transitions; (e) flabby or generic prose. Name the specific spot for each. "
-            "Do NOT rewrite — only diagnose. If it is already excellent, say so in one "
-            "line. Output ONLY the critique."
-        )
-        crit = await synthesize(
-            critique_instr,
-            [{"ok": True, "output": book, "model": manager_model}],
-            role="polish", model=manager_model, timeout=timeout,
-            telemetry_sink=telemetry_sink, task_id="critique:diagnose",
-        )
-        critique_text = (crit.get("output") or "").strip() if crit.get("ok") else ""
-        instruction = (
-            "You are the editor-in-chief doing a FINAL rewrite of a multi-chapter "
-            f"narration about \"{topic}\". Apply the critique below — fix EVERY issue it "
-            "raises — while PRESERVING every concrete fact, name, date, number and quote "
-            "exactly, keeping every `## Bab N: ...` heading line exactly as given, and "
-            "keeping the whole piece ONE seamless flow. Pay off any setups the critique "
-            "flags as unpaid. Do NOT shorten the book or invent new facts.\n\nCRITIQUE:\n"
-            + (critique_text or "(none returned — do a careful seam + repetition pass)")
-            + f"\n\nReturn ONLY the rewritten book in {language}, no notes or preamble."
-        )
-        role = "merge"
     else:  # "light" (default) and any unknown value
         instruction = (
             "You are the editor-in-chief doing a LIGHT final pass of a multi-chapter "
