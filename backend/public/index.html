@@ -539,6 +539,19 @@ const VEO_PRESETS={
   "1080p_portrait":{seconds:"8",size:"1080x1920",label:"8s · 1080×1920 · 9:16"},
   "4k_landscape":{seconds:"8",size:"3840x2160",label:"8s · 3840×2160 · 4K"},
 };
+// ── Veo/Sora lazy-capture trigger ──────────────────────────────────────────
+// Veo/Sora assets persist only inside /api/{kind}/stream (lazy). Status polls
+// (and the Flow scene) never stream, so a finished video was never written to
+// R2/assets/Media Vault until the user clicked Watch/Download. Fire the stream
+// once on completion to run the proven server-side capture — idempotent (serves
+// from cache/R2 after the first persist); the response body is intentionally ignored.
+const _mediaCaptured=new Set();
+const _isVideoDone=s=>s==="succeeded"||s==="completed"||s==="done";
+function triggerMediaCapture(kind,taskId){
+  if(!taskId||_mediaCaptured.has(taskId))return;
+  _mediaCaptured.add(taskId);
+  fetch(`/api/${kind}/stream/${encodeURIComponent(taskId)}`,{cache:"no-store"}).catch(()=>{});
+}
 const SORA_MODELS=["sora-2","sora-2-pro"];
 const SORA_SIZES=["1280x720","1920x1080","1080x1920"];
 const ASPECTS=["16:9","1:1","9:16","4:3","3:4","21:9"];
@@ -1513,6 +1526,7 @@ function VeoSection({settings,showToast}){
       const r=await api.veoStatus(taskId,key);
       const status=r.status||r.state||"unknown";
       setTasks(prev=>prev.map((t,idx)=>idx===i?{...t,status,progress:r.progress||0}:t));
+      if(_isVideoDone(status))triggerMediaCapture("veo",taskId);
       return status;
     }catch(e){return "error";}
   };
@@ -1585,7 +1599,7 @@ function SoraSection({settings,showToast}){
   };
 
   const pollTask=async(taskId,i)=>{
-    try{const r=await api.soraStatus(taskId,key);const status=r.status||"unknown";setTasks(prev=>prev.map((t,idx)=>idx===i?{...t,status,progress:r.progress||0}:t));return status;}catch{return "error";}
+    try{const r=await api.soraStatus(taskId,key);const status=r.status||"unknown";setTasks(prev=>prev.map((t,idx)=>idx===i?{...t,status,progress:r.progress||0}:t));if(_isVideoDone(status))triggerMediaCapture("sora",taskId);return status;}catch{return "error";}
   };
 
   return <div className="vid-layout">
@@ -1932,7 +1946,9 @@ function FlowSection({settings,showToast}){
   const pollSceneVeo=async(idx,taskId)=>{
     try{
       const r=await fetch("/api/veo/status/"+taskId).then(x=>x.json());
-      setSceneVeo(p=>({...p,[idx]:{...p[idx],status:r.status||r.state||"unknown"}}));
+      const st=r.status||r.state||"unknown";
+      setSceneVeo(p=>({...p,[idx]:{...p[idx],status:st}}));
+      if(_isVideoDone(st))triggerMediaCapture("veo",taskId);
     }catch{}
   };
 
