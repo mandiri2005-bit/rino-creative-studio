@@ -221,12 +221,19 @@ export function buildStitchArgs(scenes, outPath, opts = {}) {
   });
   const { filter, vlabel, alabel } = buildFilterComplex(scenes, o);
   args.push(
+    // Single-threaded filtering + a deep mux queue: a long video has many scenes
+    // → a huge filter graph (zoompan + xfade per scene), and on a memory/CPU-capped
+    // container the multi-threaded filter framework throws "Resource temporarily
+    // unavailable / Failed to inject frame into filter network". One filter thread
+    // trades speed for the headroom to finish.
+    "-filter_complex_threads", "1",
     "-filter_complex", filter,
     "-map", `[${vlabel}]`, "-map", `[${alabel}]`,
     "-r", String(o.fps),
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", o.preset || "medium",
     "-crf", String(o.crf || 20),
     "-c:a", "aac", "-b:a", "192k",
+    "-max_muxing_queue_size", "9999",
     "-movflags", "+faststart",
     "-shortest",
     outPath
