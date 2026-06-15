@@ -194,7 +194,7 @@
 
       <div class="estimate">
         <div class="e-l"><b id="estScenes">—</b> scene · <span id="estDur">—</span></div>
-        <div class="e-cr">≈ <b id="estCredits">—</b> kredit</div>
+        <div class="e-cr">≈ <b id="estCredits">—</b> kredit<span id="estRange" style="color:var(--td);font-size:12px;margin-left:4px"></span></div>
       </div>
 
       <button class="produce" id="produceBtn">Buat video ⚡</button>
@@ -259,10 +259,12 @@
     clearTimeout(estTimer);
     estTimer=setTimeout(async()=>{
       try{
-        const p=await api("/api/video/params",{method:"POST",body:JSON.stringify({minutes:state.minutes,tier:state.tier})});
+        const p=await api("/api/video/params",{method:"POST",body:JSON.stringify({minutes:state.minutes,tier:state.tier,visual_mode:state.visualMode,clip_model:state.clipModel})});
         $("#estScenes").textContent=p.scene_count;
         $("#estDur").textContent=DURATIONS.find(d=>d[1]===state.minutes)?.[0]||state.minutes+" mnt";
         $("#estCredits").textContent=p.credits;
+        // clips (Veo) cost far more than images — surface the spread so the number never surprises
+        $("#estRange").textContent=(p.credits_min!=null&&p.credits_max!=null&&p.credits_min!==p.credits_max)?`(${p.credits_min}–${p.credits_max})`:"";
       }catch(e){ /* leave dashes */ }
     },150);
   }

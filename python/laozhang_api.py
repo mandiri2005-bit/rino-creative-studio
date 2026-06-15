@@ -5787,6 +5787,13 @@ from dataclasses import asdict as _asdict
 class VideoParamsReq(BaseModel):
     minutes: float
     tier: str = "hd"
+    # Visual config so the credit estimate reflects the ACTUAL per-asset cost
+    # (Model B): clips (Veo, ~$0.50/s) cost far more than images. Defaults match
+    # the engine + UI defaults.
+    visual_mode: str = "hybrid"
+    clip_model: str = "veo3"
+    image_model: str = "nano-banana-hd"
+    clip_ratio: float = 0.3
 
 class VideoSegmentReq(BaseModel):
     text: str = ""
@@ -5883,10 +5890,59 @@ class VideoTtsSceneReq(BaseModel):
     speed: float = 1.0
     scene_index: int = 0
 
+def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
+                           image_model="nano-banana-hd", clip_ratio=0.3) -> dict:
+    """Honest per-asset credit estimate (Model B), priced with the SAME catalog the
+    charges use (metering.quote == credit_cost). TTS scales with the word target;
+    visuals split into clips (expensive) vs images per the chosen mode. Returns the
+    point estimate plus an all-images floor / all-clips ceiling so the UI can show
+    a range — the real cost lands inside it once the decide stage runs."""
+    sc = int(p.scene_count)
+    total_chars = int(p.target_words * 6.5)                 # ~6.5 chars/word incl. spaces (id)
+    tts = metering.quote("tts", "tts-1", {"chars": total_chars})   # rate is flat across tts models
+    image_each = metering.quote("image", image_model, {"count": 1})
+    clip_secs = min(8, max(1, round(p.seconds_per_scene)))
+    clip_each = metering.quote("video", clip_model, {"seconds": clip_secs})
+    vm = (visual_mode or "hybrid").lower()
+    fits = _vseg.clip_fits(p.seconds_per_scene, clip_model)
+    if vm in ("full_clips", "all_clips", "clips"):
+        n_clip = sc
+    elif vm in ("full_images", "all_images", "images"):
+        n_clip = 0
+    else:  # hybrid: clips only when a scene actually fits one, capped at clip_ratio
+        n_clip = round(sc * max(0.0, min(1.0, float(clip_ratio)))) if fits else 0
+    n_img = sc - n_clip
+    point = tts + n_clip * clip_each + n_img * image_each
+    floor = tts + sc * image_each                           # all-images
+    # only quote an all-clips ceiling when clips are actually on the table (they
+    # fit the scene length, or the user forced full_clips) — otherwise a scary
+    # ceiling that can never happen just confuses the picker.
+    clips_possible = fits or vm in ("full_clips", "all_clips", "clips")
+    ceil_ = tts + sc * clip_each if clips_possible else point
+    return {
+        "credits": point,
+        "credits_min": min(floor, point),
+        "credits_max": max(ceil_, point),
+        "credits_breakdown": {"tts": tts, "image_each": image_each, "clip_each": clip_each,
+                              "clips": n_clip, "images": n_img},
+    }
+
+
 @app.post("/video/params")
 async def video_params(req: VideoParamsReq):
-    """Duration → scene_count / words / batch / credits. Drives the UI picker."""
-    return _asdict(_vseg.calculate_video_params(req.minutes, req.tier))
+    """Duration → scene_count / words / batch / credits. Drives the UI picker.
+    `credits` is the HONEST per-asset estimate (Model B); `credits_flat` keeps the
+    old tier-flat number for reference."""
+    p = _vseg.calculate_video_params(req.minutes, req.tier)
+    out = _asdict(p)
+    out["credits_flat"] = out.get("credits")
+    try:
+        out.update(_video_credit_estimate(
+            p, visual_mode=req.visual_mode, clip_model=req.clip_model,
+            image_model=req.image_model, clip_ratio=req.clip_ratio))
+    except Exception as _e:
+        print(f"[video/params] honest estimate failed (non-fatal, using flat): {_e}")
+    return out
 
 @app.post("/video/params/all")
 async def video_params_all():
