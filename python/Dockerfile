@@ -24,8 +24,14 @@ RUN pip install --no-cache-dir \
     asyncpg \
     python-dotenv
 
-# Copy top-level .py files (laozhang_api.py etc.) + server-side data (review personas)
+# Copy top-level .py files (laozhang_api.py, narration_api.py etc.) + server-side data
 COPY *.py ./
+# Project Dalang packages — subdirectories are NOT matched by `COPY *.py`, so they
+# must be copied explicitly or the orchestrator/pakem engine is missing at runtime
+# (narration_api import fails → /narration routes silently unavailable).
+COPY orchestrator/ ./orchestrator/
+COPY pakem/ ./pakem/
+COPY eval/ ./eval/
 COPY review_personas.json ./
 
 COPY requirements.txt .

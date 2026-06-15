@@ -51,6 +51,11 @@ services:
       - ./python/metering.py:/app/metering.py                # Step 4: charge gate
       - ./python/admin_credits.py:/app/admin_credits.py      # Step 4: manual credit admin CLI
       - ./python/video_segmenter.py:/app/video_segmenter.py  # Step 6: scene segmenter (/video/* routes)
+      # ── Project Dalang: orchestration engine (live-mounted for dev; baked in image for prod) ──
+      - ./python/narration_api.py:/app/narration_api.py      # WS-8: /narration job runtime
+      - ./python/orchestrator:/app/orchestrator              # WS-1/5/6: core + router + strategies
+      - ./python/pakem:/app/pakem                            # WS-2/3: single source of truth + assembler
+      - ./python/eval:/app/eval                              # WS-9: eval harness + cost dashboard
     expose: ["8000"]
 
   # ── MCP File Search (optional — only starts with --profile mcp) ───────────

@@ -5009,8 +5009,8 @@ function NarasiSection({settings,showToast}){
     (async()=>{
       try{
         const[sr,lr]=await Promise.all([
-          fetch("/narration/styles").then(r=>r.ok?r.json():null).catch(()=>null),
-          fetch("/narration/languages").then(r=>r.ok?r.json():null).catch(()=>null),
+          fetch("/api/narration/styles").then(r=>r.ok?r.json():null).catch(()=>null),
+          fetch("/api/narration/languages").then(r=>r.ok?r.json():null).catch(()=>null),
         ]);
         if(!alive)return;
         if(sr&&Array.isArray(sr.styles)&&sr.styles.length){

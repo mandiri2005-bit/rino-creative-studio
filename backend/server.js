@@ -395,6 +395,10 @@ app.use((req, res, next) => {
 const PUBLIC_API = new Set([
   "/api/health",
   "/api/admin/grant",   // gated by X-Admin-Secret (not Clerk) — see handler below
+  // Project Dalang (WS-7): the pakem style + language catalogs are public,
+  // non-sensitive reference data the UI fetches on mount to populate dropdowns.
+  "/api/narration/styles",
+  "/api/narration/languages",
 ]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
@@ -752,6 +756,10 @@ app.post("/api/narasi/review", (req,res)=>pyProxy(req,res,"/narasi/review"));
 //   POST   /api/narration/:id/cancel → {status:"cancel_requested"}
 // pyProxy forwards Authorization (Clerk JWT) + the per-request key headers and
 // preserves the Python status code (so a 402 credit-hold surfaces unchanged).
+// Public pakem catalogs (allowlisted above) — MUST precede the `:id` route so
+// Express matches these literals before treating "styles"/"languages" as a job id.
+app.get ("/api/narration/styles",     (req,res)=>pyProxy(req,res,"/narration/styles"));
+app.get ("/api/narration/languages",  (req,res)=>pyProxy(req,res,"/narration/languages"));
 app.post("/api/narration",            (req,res)=>pyProxy(req,res,"/narration"));
 app.get ("/api/narration/:id",        (req,res)=>pyProxy(req,res,`/narration/${req.params.id}`));
 app.post("/api/narration/:id/cancel", (req,res)=>pyProxy(req,res,`/narration/${req.params.id}/cancel`));
