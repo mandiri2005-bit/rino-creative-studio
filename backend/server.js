@@ -1713,7 +1713,7 @@ async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,spee
       fs.writeFileSync(path.join(TTS_DIR,filename),wav);
       const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
       job.files.push(_f);
-      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice}});
+      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:inputText}});
            if(a){_f.key=a.key;_f.assetId=a.id;} }
       catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
       log(`✅ ${filename}`);
@@ -1764,7 +1764,7 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
         fs.writeFileSync(path.join(TTS_DIR,filename),wav);
         const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
         job.files.push(_f);
-        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice}});
+        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:line}});
              if(a){_f.key=a.key;_f.assetId=a.id;} }
         catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
         log(`✅ ${filename}`);
@@ -1984,7 +1984,7 @@ async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPr
         fs.writeFileSync(path.join(IMG_DIR,filename),resized);
         const _f={file:filename,url:`/imgs/${encodeURIComponent(filename)}`};
         job.files.push(_f);
-        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"image",sourceJobType:"imagen",filename,buffer:resized,contentType:"image/jpeg",metadata:{model,width:w,height:h}});
+        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"image",sourceJobType:"imagen",filename,buffer:resized,contentType:"image/jpeg",metadata:{model,width:w,height:h,prompt:prompts[i]}});
              if(a){_f.key=a.key;_f.assetId=a.id;} }
         catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
         log(`✅ ${filename}`);

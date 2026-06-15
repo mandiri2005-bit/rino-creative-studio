@@ -239,39 +239,54 @@ async def create_job(tenant_id, user_id, job_type, file_name=None) -> str:
     except Exception as e:
         log.error("create_job: %s", e); raise
 
+# asset_type → modality (text|image|video|audio). document/archive/other → None.
+_ASSET_MODALITY = {"image": "image", "video": "video", "audio": "audio"}
+
 async def insert_asset(tenant_id, *, bucket, s3_key, content_type, size_bytes,
                        asset_type, user_id=None, job_id=None,
                        source_job_type=None, original_filename=None,
-                       metadata=None) -> Optional[str]:
+                       metadata=None, modality=None, source_prompt=None) -> Optional[str]:
     """Record one object-storage file in `assets` (storage metadata + moat capture).
     Idempotent on (bucket, s3_key). Mirrors db.js insertAsset.
       asset_type     ∈ video|audio|image|document|archive|other   (required)
       source_job_type∈ batch_image|tts|imagen|veo|sora | None      (job_type_enum)
+    Step 1 (moat): `modality` is auto-derived from asset_type when not given, and
+    `source_prompt` is the generating prompt (falls back to metadata['prompt']) —
+    both let one query span narration + image + video signal.
     Tenant is passed explicitly (callers may run as background tasks with no ctx)."""
     try:
+        md = metadata or {}
+        modality = modality or _ASSET_MODALITY.get(asset_type)
+        if source_prompt is None:
+            source_prompt = md.get("prompt")
         aid = await _q_fetchval(
             """INSERT INTO assets
                    (tenant_id,user_id,job_id,bucket,s3_key,original_filename,
-                    content_type,size_bytes,asset_type,source_job_type,metadata)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11)
+                    content_type,size_bytes,asset_type,source_job_type,metadata,
+                    modality,source_prompt)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11,$12,$13)
                ON CONFLICT (bucket,s3_key) DO UPDATE SET
                    size_bytes=EXCLUDED.size_bytes,
                    content_type=EXCLUDED.content_type,
+                   modality=COALESCE(EXCLUDED.modality, assets.modality),
+                   source_prompt=COALESCE(EXCLUDED.source_prompt, assets.source_prompt),
                    updated_at=now()
                RETURNING id""",
             _uid(tenant_id), _uid(user_id), _uid(job_id), bucket, s3_key,
             original_filename, content_type, int(size_bytes), asset_type,
-            source_job_type, metadata or {},
+            source_job_type, md, modality, source_prompt,
             tenant=str(tenant_id))
         return str(aid) if aid else None
     except Exception as e:
         log.error("insert_asset: %s", e); raise
 
-async def save_media_task(tenant_id, user_id, job_type, task_id) -> Optional[str]:
+async def save_media_task(tenant_id, user_id, job_type, task_id, prompt=None) -> Optional[str]:
     """Create a veo/sora job row recording the upstream provider task_id in
     result_payload, so the UNauthenticated /stream endpoint can later resolve the
-    owning tenant via job_tenant_by_task(). user_id is stored only if it's a real
-    users.id UUID, else NULL (CurrentUser.user_id is a Clerk id, not a UUID)."""
+    owning tenant via job_tenant_by_task(). The generating `prompt` is stored too
+    (Step 1 moat) so the captured video asset can keep the prompt that made it.
+    user_id is stored only if it's a real users.id UUID, else NULL (CurrentUser.user_id
+    is a Clerk id, not a UUID)."""
     try:
         uid = None
         try:
@@ -282,9 +297,9 @@ async def save_media_task(tenant_id, user_id, job_type, task_id) -> Optional[str
             """INSERT INTO jobs (tenant_id,user_id,job_type,status,
                                  progress_message,result_payload,started_at)
                VALUES ($1,$2,$3::job_type_enum,'processing','Submitted',
-                       jsonb_build_object('task_id',$4::text),now())
+                       jsonb_build_object('task_id',$4::text,'prompt',$5::text),now())
                RETURNING id""",
-            _uid(tenant_id), uid, job_type, task_id,
+            _uid(tenant_id), uid, job_type, task_id, prompt,
             tenant=str(tenant_id))
         return str(jid) if jid else None
     except Exception as e:
@@ -343,6 +358,18 @@ async def media_job_id_by_task(tenant_id, task_id) -> Optional[str]:
         return str(jid) if jid else None
     except Exception as e:
         log.error("media_job_id_by_task: %s", e); return None
+
+async def media_prompt_by_task(tenant_id, task_id) -> Optional[str]:
+    """The generating prompt recorded for a veo/sora job (or None), so the
+    captured video asset can keep the prompt that produced it (Step 1 moat)."""
+    try:
+        return await _q_fetchval(
+            """SELECT result_payload->>'prompt' FROM jobs
+                WHERE result_payload->>'task_id'=$1 AND job_type IN ('veo','sora')
+                ORDER BY created_at DESC LIMIT 1""",
+            str(task_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.error("media_prompt_by_task: %s", e); return None
 
 async def complete_media_task(tenant_id, task_id) -> None:
     """Mark a veo/sora job 'done' once its video has been saved (from /stream).
@@ -710,8 +737,9 @@ async def save_moat_session(tenant_id, user_id, topic, style, rag_result: dict,
         sid = await _q_fetchval(
             """INSERT INTO moat_sessions
                  (tenant_id,user_id,topic,style,rag_used,sources,passages,
-                  prompt_used,generated_narration,model,tokens_in,tokens_out,cost_usd)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id""",
+                  prompt_used,generated_narration,model,tokens_in,tokens_out,cost_usd,
+                  modality)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'text') RETURNING id""",
             _uid(tenant_id), _uid(user_id), topic, style,
             bool(rag_result.get("rag_used")),
             json.dumps(rag_result.get("sources")),
@@ -740,8 +768,8 @@ async def save_correction_pair(moat_session_id, tenant_id, user_id,
             """INSERT INTO correction_pairs
                  (moat_session_id,tenant_id,user_id,original_text,corrected_text,
                   edit_distance,edit_ratio,quality_tier,style_label,topic,
-                  duration_minutes,language)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *""",
+                  duration_minutes,language,modality)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'text') RETURNING *""",
             _uid(moat_session_id), _uid(tenant_id), _uid(user_id),
             original_text, corrected_text, dist, ratio, tier,
             style_label, topic, duration_minutes, language,

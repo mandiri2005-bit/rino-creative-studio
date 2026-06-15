@@ -420,11 +420,14 @@ def _sniff_image(data: bytes):
     return "image/png", "png"
 
 
-async def _capture_image_flow(user, model, job_type, images_b64):
+async def _capture_image_flow(user, model, job_type, images_b64, prompts=None):
     """Synchronous image flows (generate-image / whisk / flow-images): create ONE
     'done' jobs row, persist each generated image to R2 + assets (so it's durable
     and captured for the moat — these used to be base64-only, ephemeral), and log
-    one usage_logs row per image, all linked to the job. No tenant → usage warns."""
+    one usage_logs row per image, all linked to the job. No tenant → usage warns.
+    `prompts` is the generating prompt(s) — a single str (same for every image) or
+    a list aligned to images_b64 by index — captured as the asset's source_prompt
+    (Step 1 moat; previously discarded)."""
     tid = getattr(user, "tenant_id", None) if user else None
     if not tid:
         for b in images_b64:
@@ -438,10 +441,14 @@ async def _capture_image_flow(user, model, job_type, images_b64):
         try:
             data = base64.b64decode(b64)
             ct, ext = _sniff_image(data)
+            _p = (prompts[i] if i < len(prompts) else None) if isinstance(prompts, (list, tuple)) else prompts
+            _md = {"model": model, "kind": job_type}
+            if _p:
+                _md["prompt"] = _p
             await _persist_asset(tid, asset_type="image", source_job_type=job_type,
                                  filename=f"{job_type}_{i+1}.{ext}", data=data,
                                  content_type=ct, job_id=jid,
-                                 metadata={"model": model, "kind": job_type})
+                                 metadata=_md, source_prompt=(_p or None))
         except Exception as _e:
             import logging as _lg; _lg.getLogger("usage").warning("[capture] %s: %s", job_type, _e)
         await _track_usage(user, model, "image", job_id=jid)
@@ -2072,7 +2079,7 @@ async def generate_image(req: ImageRequest,
         if b64 is None:
             raise last_exc or HTTPException(502, "image generation failed after retries")
 
-        await _capture_image_flow(user, req.model, "generate_image", [b64])
+        await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt)
         if user:
             await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
                                  byok=_byok, video_job=x_video_job, log=False)
@@ -2179,7 +2186,7 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
         #            tracked even though /stream is unauthenticated ──
         if user and task_id:
             try:
-                _jid = await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id)
+                _jid = await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id, prompt=req.prompt)
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
                                      {"seconds": _secs}, byok=_byok, job_id=_jid,
                                      video_job=x_video_job, log=True)
@@ -2306,11 +2313,14 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
                     _tid = await db.job_tenant_by_task(task_id)
                     if _tid:
                         _jid = await db.media_job_id_by_task(_tid, task_id)
+                        _vp  = await db.media_prompt_by_task(_tid, task_id)
                         await _persist_asset(
                             _tid, asset_type="video", source_job_type="veo",
                             filename=f"{safe_id}.mp4", data=res.content,
                             content_type="video/mp4", job_id=_jid, user_id=None,
-                            metadata={"task_id": task_id, "kind": "veo"})
+                            source_prompt=_vp,
+                            metadata={"task_id": task_id, "kind": "veo",
+                                      **({"prompt": _vp} if _vp else {})})
                         await db.complete_media_task(_tid, task_id)
                     else:
                         print(f"[veo/stream] no tenant for task {task_id} — R2 capture skipped")
@@ -2412,7 +2422,7 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
         #            tracked even though /stream is unauthenticated ──
         if user and task_id:
             try:
-                _jid = await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id)
+                _jid = await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id, prompt=req.prompt)
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
                                      {"seconds": _secs}, byok=_byok, job_id=_jid,
                                      video_job=x_video_job, log=True)
@@ -2497,11 +2507,14 @@ async def sora_stream(task_id: str, x_sora_api_key: Optional[str] = Header(defau
                     _tid = await db.job_tenant_by_task(task_id)
                     if _tid:
                         _jid = await db.media_job_id_by_task(_tid, task_id)
+                        _vp  = await db.media_prompt_by_task(_tid, task_id)
                         await _persist_asset(
                             _tid, asset_type="video", source_job_type="sora",
                             filename=f"{safe_id}.mp4", data=res.content,
                             content_type="video/mp4", job_id=_jid, user_id=None,
-                            metadata={"task_id": task_id, "kind": "sora"})
+                            source_prompt=_vp,
+                            metadata={"task_id": task_id, "kind": "sora",
+                                      **({"prompt": _vp} if _vp else {})})
                         await db.complete_media_task(_tid, task_id)
                     else:
                         print(f"[sora/stream] no tenant for task {task_id} — R2 capture skipped")
@@ -2724,7 +2737,7 @@ async def whisk_generate(
         else:
             raise HTTPException(400, f"Unknown API type: {api}")
 
-        await _capture_image_flow(user, req.model, "whisk", [b64])
+        await _capture_image_flow(user, req.model, "whisk", [b64], prompts=combined_prompt)
         if user:
             await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1}, byok=_byok, log=False)
         return {
@@ -2831,7 +2844,9 @@ async def flow_images_only(
 
     # one job + persist each frame to R2/assets + one usage row per frame
     await _capture_image_flow(user, req.model, "flow_image",
-                              [im.get("image_b64") for im in images])
+                              [im.get("image_b64") for im in images],
+                              prompts=[(s.get("description") or "") if isinstance(s, dict) else ""
+                                       for s in req.scenes])
     if user:
         _n = sum(1 for im in images if im.get("image_b64"))
         await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": _n}, byok=_byok, log=False)
@@ -4500,7 +4515,7 @@ async def narasi_generate(body: dict,
 
 async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
                          content_type, source_job_type=None, job_id=None,
-                         user_id=None, metadata=None):
+                         user_id=None, metadata=None, source_prompt=None):
     """Step 2: upload bytes to R2 + record an `assets` row (R2 = source of truth,
     disk = cache). Non-fatal: logs and returns None on any storage error so
     generation never breaks. Mirrors persistAsset() in server.js.
@@ -4517,7 +4532,7 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
             content_type=content_type, size_bytes=len(data),
             asset_type=asset_type, source_job_type=source_job_type,
             user_id=user_id, job_id=job_id, original_filename=filename,
-            metadata=metadata or {})
+            metadata=metadata or {}, source_prompt=source_prompt)
     except Exception as e:
         _log.warning("[persist_asset] %s failed (non-fatal): %s", filename, e)
         return None

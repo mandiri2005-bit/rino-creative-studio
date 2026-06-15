@@ -405,25 +405,36 @@ async function patchJobPayload(jobId, patch) {
  *   assetType      ∈ video|audio|image|document|archive|other   (required)
  *   sourceJobType  ∈ batch_image|tts|imagen|veo|sora | null      (job_type_enum)
  */
+// asset_type → modality (text|image|video|audio). document/archive/other → null.
+const ASSET_MODALITY = { image: "image", video: "video", audio: "audio" };
+
 async function insertAsset({
   tenantId, userId = null, jobId = null,
   bucket, s3Key, originalFilename = null,
   contentType, sizeBytes = 0, assetType,
-  sourceJobType = null, metadata = {},
+  sourceJobType = null, metadata = {}, modality = null, sourcePrompt = null,
 } = {}) {
+  // Step 1 (moat): modality auto-derives from asset_type; source_prompt falls back
+  // to metadata.prompt — both let one query span narration + image + video signal.
+  const md = metadata || {};
+  const _modality = modality || ASSET_MODALITY[assetType] || null;
+  const _prompt   = sourcePrompt != null ? sourcePrompt : (md.prompt ?? md.text ?? null);
   const res = await query(
     `INSERT INTO assets
          (tenant_id, user_id, job_id, bucket, s3_key, original_filename,
-          content_type, size_bytes, asset_type, source_job_type, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11::jsonb)
+          content_type, size_bytes, asset_type, source_job_type, metadata,
+          modality, source_prompt)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11::jsonb,$12,$13)
      ON CONFLICT (bucket, s3_key) DO UPDATE SET
-         size_bytes   = EXCLUDED.size_bytes,
-         content_type = EXCLUDED.content_type,
-         updated_at   = now()
+         size_bytes    = EXCLUDED.size_bytes,
+         content_type  = EXCLUDED.content_type,
+         modality      = COALESCE(EXCLUDED.modality, assets.modality),
+         source_prompt = COALESCE(EXCLUDED.source_prompt, assets.source_prompt),
+         updated_at    = now()
      RETURNING id`,
     [tenantId, userId, jobId, bucket, s3Key, originalFilename,
      contentType, sizeBytes, assetType, sourceJobType,
-     JSON.stringify(metadata || {})],
+     JSON.stringify(md), _modality, _prompt],
     tenantId
   );
   return res.rows[0]?.id ?? null;
