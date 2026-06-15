@@ -501,7 +501,11 @@ async def _finalize(job_id: str, job_uuid: Optional[str], tenant_id: str, *,
 
 async def _settle(meter_op: Optional[str], tenant_id: str, user_id: Optional[str],
                   model: str, job_uuid: Optional[str], sink: _UsageSink) -> None:
-    """Settle the credit hold at the ACTUAL accumulated token total."""
+    """Settle the credit hold at the ACTUAL blended cost. The sink accumulates the
+    real per-call cost across every model used (workers AND a possibly different,
+    pricier manager), so we settle from that true USD — NOT by re-pricing the whole
+    token total at the single worker `model` (which undercharges when the manager
+    model is more expensive)."""
     if not meter_op:
         return
     try:
@@ -510,7 +514,8 @@ async def _settle(meter_op: Optional[str], tenant_id: str, user_id: Optional[str
             operation="narasi", model=model, held=0)
         await charge.settle(
             {"tokens_in": sink.tokens_in, "tokens_out": sink.tokens_out},
-            job_id=job_uuid, tok_in=sink.tokens_in, tok_out=sink.tokens_out)
+            job_id=job_uuid, tok_in=sink.tokens_in, tok_out=sink.tokens_out,
+            usd=sink.cost_usd)
     except Exception as e:  # noqa: BLE001
         log.warning("settle hold(%s) failed (non-fatal): %s", meter_op, e)
 

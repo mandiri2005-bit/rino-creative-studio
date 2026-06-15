@@ -84,14 +84,26 @@ class Charge:
     async def settle(self, units: Union[int, float, dict], *,
                      session_id=None, job_id=None,
                      tok_in: int = 0, tok_out: int = 0,
-                     provider: Optional[str] = None) -> int:
-        """Finalise at ACTUAL cost. Returns credits actually charged."""
+                     provider: Optional[str] = None,
+                     usd: Optional[float] = None) -> int:
+        """Finalise at ACTUAL cost. Returns credits actually charged.
+
+        `usd`: the REAL upstream cost the caller already accumulated. Pass it for
+        multi-model runs (e.g. a narration where cheap workers + an expensive
+        manager use different-priced models) — credits are then derived from the
+        true blended cost via usd_to_credits, instead of mis-pricing the whole
+        token total at this Charge's single `model`. When omitted, behaviour is
+        unchanged: price `units` at `self.model`."""
         if self._done:
             return 0
         self._done = True
         actual = 0
+        # Effective USD: caller-supplied real cost when given, else the
+        # single-model estimate from the token total.
+        eff_usd = float(usd) if usd is not None else _cat.operation_usd(self.operation, self.model, units)
         if not self.byok:
-            actual = _cat.credit_cost(self.operation, self.model, units)
+            actual = (_cat.usd_to_credits(eff_usd) if usd is not None
+                      else _cat.credit_cost(self.operation, self.model, units))
             try:
                 await _credits.commit(self.tenant_id, self.op_id, actual,
                                       user_id=self.user_id,
@@ -100,9 +112,8 @@ class Charge:
                 log.warning("settle commit(%s) failed: %s", self.op_id, e)
         # Always record the usage row (credits=0 for BYOK) so nothing is invisible.
         try:
-            usd = _cat.operation_usd(self.operation, self.model, units)
             await _db.log_usage(self.tenant_id, self.user_id, self.model,
-                                self.endpoint, int(tok_in), int(tok_out), usd,
+                                self.endpoint, int(tok_in), int(tok_out), eff_usd,
                                 session_id=session_id, job_id=job_id,
                                 provider=provider or _provider_for(self.model),
                                 credits=actual)
