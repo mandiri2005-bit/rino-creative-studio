@@ -6047,18 +6047,28 @@ async def video_tts_scene(req: VideoTtsSceneReq,
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
         await metering.gate(user.tenant_id, "tts", req.model, {"chars": len(synth)}, byok=_byok)
-    try:
-        resp = await asyncio.to_thread(
-            _requests.post, "https://api.laozhang.ai/v1/audio/speech",
+    def _speak(model):
+        r = _requests.post(
+            "https://api.laozhang.ai/v1/audio/speech",
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={"model": req.model, "voice": req.voice, "input": synth,
+            json={"model": model, "voice": req.voice, "input": synth,
                   "speed": float(req.speed) or 1.0, "response_format": "wav"}, timeout=120)
-        resp.raise_for_status()
-    except _requests.HTTPError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=str(e.response.text)[:300])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    audio_b64 = base64.b64encode(resp.content).decode()
+        r.raise_for_status()
+        return r.content
+    try:
+        content = await asyncio.to_thread(_speak, req.model)
+    except Exception as e1:
+        # the chosen model (e.g. a Gemini TTS variant the OpenAI-compatible
+        # /v1/audio/speech route may not serve) failed — fall back to tts-1 so one
+        # voice choice never fails the whole video (audio has no other safety net).
+        if (req.model or "tts-1") != "tts-1":
+            try:
+                content = await asyncio.to_thread(_speak, "tts-1")
+            except Exception as e2:
+                raise HTTPException(502, f"tts failed (model + tts-1 fallback): {str(e2)[:200]}")
+        else:
+            raise HTTPException(502, f"tts failed: {str(e1)[:200]}")
+    audio_b64 = base64.b64encode(content).decode()
     if user:
         try:
             await metering.debit(user.tenant_id, _uid, "tts", req.model,

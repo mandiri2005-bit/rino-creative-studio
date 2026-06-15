@@ -279,15 +279,48 @@
             <label class="lbl">Model narasi</label>
             <select id="llmSel">
               <option value="deepseek-chat">DeepSeek (default)</option>
-              <option value="gpt-4o-mini">GPT-4o mini</option>
-              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+              <optgroup label="Gemini">
+                <option value="gemini-3-flash">Gemini 3 Flash</option>
+                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+              </optgroup>
+              <optgroup label="Claude">
+                <option value="claude-opus-4-7">Claude Opus 4.7</option>
+                <option value="claude-opus-4-7-thinking">Claude Opus 4.7 (thinking)</option>
+                <option value="claude-opus-4-6">Claude Opus 4.6</option>
+                <option value="claude-sonnet">Claude Sonnet</option>
+              </optgroup>
+              <optgroup label="GPT">
+                <option value="gpt-4o">GPT-4o</option>
+                <option value="gpt-4o-mini">GPT-4o mini</option>
+                <option value="gpt-5-nano">GPT-5 nano</option>
+              </optgroup>
+              <optgroup label="DeepSeek">
+                <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+                <option value="deepseek-v3-0324">DeepSeek V3 (0324)</option>
+                <option value="deepseek-r1">DeepSeek R1</option>
+              </optgroup>
+              <optgroup label="Lainnya">
+                <option value="grok-4">Grok 4</option>
+                <option value="grok-4-fast">Grok 4 Fast</option>
+                <option value="qwen-max">Qwen Max</option>
+                <option value="glm">GLM 4.5 Flash</option>
+              </optgroup>
             </select>
           </div>
         </div>
         <label class="lbl">Model suara (TTS)</label>
         <select id="ttsSel">
-          <option value="tts-1">OpenAI TTS-1 (default)</option>
-          <option value="tts-1-hd">OpenAI TTS-1 HD</option>
+          <optgroup label="OpenAI">
+            <option value="tts-1">TTS-1 (default, cepat)</option>
+            <option value="tts-1-hd">TTS-1 HD (kualitas lebih)</option>
+          </optgroup>
+          <optgroup label="Google (Gemini)">
+            <option value="gemini-2.5-flash-preview-tts">Gemini 2.5 Flash TTS</option>
+            <option value="gemini-2.5-pro-preview-tts">Gemini 2.5 Pro TTS</option>
+            <option value="gemini-3.1-flash-tts-preview">Gemini 3.1 Flash TTS</option>
+          </optgroup>
         </select>
       </details>
 

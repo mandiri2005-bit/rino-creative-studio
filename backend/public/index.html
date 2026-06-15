@@ -5715,6 +5715,10 @@ function App(){
         {!collapsed&&<div className="sb-title">Cerita AI<span>Studio</span></div>}
       </div>
       <div className="sb-nav">
+        <a className="navbtn" href="/video-instant.html" title="Video Instant — satu topik, satu video jadi"
+           style={{color:'var(--ac)',fontWeight:600,margin:'2px 8px 10px',border:'1px solid var(--ac)',borderRadius:'9px'}}>
+          <span style={{fontSize:'15px'}}>⚡</span>{!collapsed&&<span>Video Instant</span>}
+        </a>
         {navGroups.map(group=><div className="nav-group" key={group}>
           {!collapsed&&<div className="nav-label">{group}</div>}
           {NAV.filter(n=>n.group===group).map(n=><button key={n.id} className={"navbtn "+(page===n.id?"on":"")} onClick={()=>guardNav(n.id)} title={n.label}>
