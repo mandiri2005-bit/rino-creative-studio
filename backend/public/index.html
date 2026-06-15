@@ -532,7 +532,7 @@ const TTS_LANGUAGES_LZ=[
   {v:"Turkish",   label:"Turkish (Türkçe)"},
 ];
 const IMAGEN_MODELS=["imagen-4.0-ultra-generate-001","imagen-4.0-generate-001","imagen-4.0-fast-generate-001","imagen-3.0-generate-002"];
-const VEO_MODELS=["veo-3-generate-preview","veo-3-fast-generate-preview","veo-3.1-fast-generate-preview"];
+const VEO_MODELS=["veo-3.1-fast-generate-preview","veo-3.1-generate-preview"];  // LaoZhang only exposes veo-3.1-*; these also map fine for Google
 const VEO_PRESETS={
   "720p_landscape":{seconds:"8",size:"1280x720",label:"8s · 1280×720 · 16:9"},
   "1080p_landscape":{seconds:"8",size:"1920x1080",label:"8s · 1920×1080 · 16:9"},
@@ -630,15 +630,9 @@ const FLOW_IMAGE_MODELS_GOOGLE=[
 ];
 const FLOW_LZ_IMG_MODELS=new Set(FLOW_IMAGE_MODELS_GOOGLE.filter(m=>m.via==="lz").map(m=>m.value));
 const VEO_FLOW_MODELS=[
-  {value:"veo-3.1-generate-preview",        label:"Veo 3.1 — $3.2|LaoZhang $1.2"},
-  {value:"veo-3.1-fast-generate-preview",   label:"Veo 3.1 Fast $1.2|LaoZhang $0.3"},
-  {value:"veo-3.1-fast-generate-preview",   label:"Veo 3.1 Lite $0.64"},
-  {value:"veo-3-fast-generate-preview",     label:"Veo 3 Fast"},
-  {value:"veo-3-generate-preview",          label:"Veo 3"},
-  {value:"veo-2.0-generate-001",            label:"Veo 2 $2.8"},
-  {value:"veo-3.0-generate-001",            label:"Veo 3 LaoZhang $3.2"},
-  {value:"veo-3.0-fast-generate-001",       label:"Veo 3 Fast LaoZhang $1.2"},
-];
+  {value:"veo-3.1-fast-generate-preview",   label:"Veo 3.1 Fast — LaoZhang $0.3"},
+  {value:"veo-3.1-generate-preview",        label:"Veo 3.1 — LaoZhang $1.2"},
+];  // LaoZhang exposes only veo-3.1-*; the old veo-3/veo-3.0-001/veo-2 ids 404'd on LaoZhang
 const WHISK_MODELS=[
   {value:"flux-kontext-max",  label:"Flux Kontext Max — best ref-follow"},
   {value:"flux-kontext-pro",  label:"Flux Kontext Pro — fast"},
@@ -1497,7 +1491,7 @@ function ImageSection({settings,showToast}){
 /* ─── VEO SECTION ─── */
 function VeoSection({settings,showToast}){
   const[prompt,setPrompt]=useState("");
-  const[model,setModel]=useState("veo-3-generate-preview");
+  const[model,setModel]=useState("veo-3.1-fast-generate-preview");
   const[preset,setPreset]=useState("1080p_landscape");
   const[negative,setNegative]=useState("");
   const[refB64,setRefB64]=useState("");
