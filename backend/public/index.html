@@ -4956,6 +4956,10 @@ function NarasiSection({settings,showToast}){
   // path (legacy, stable). "dalang" = the orchestrator job (/api/narration): parallel
   // workers (≤MAX_WORKERS), static/dynamic routing, RAG-once + optional manager polish.
   const[engine,setEngine]=useState(()=>localStorage.getItem("rc_nar_engine")||"classic");
+  // Dalang only: the MANAGER (polish/synthesize) model. "" = follow the worker
+  // (the "AI Model" pick) so one choice applies everywhere; override to a stronger
+  // model (e.g. claude-sonnet) for a better final polish.
+  const[managerModel,setManagerModel]=useState(()=>localStorage.getItem("rc_nar_manager")||"");
   const[chatModel,setChatModel]=useState(()=>localStorage.getItem("rc_nar_model")||"gemini-2.5-flash");
   const[freeModel,setFreeModel]=useState(()=>localStorage.getItem("rc_nar_freemodel")==="true");
   const[googleKey,setGoogleKey]=useState(()=>localStorage.getItem("rc_nar_gkey")||"");
@@ -5235,6 +5239,7 @@ function NarasiSection({settings,showToast}){
           n_chapters: chapters.length,
           brief, outline:outlineText,
           worker_model: chatModel,
+          manager_model: managerModel || chatModel,   // "" → follow the worker pick (no surprise Claude)
           rag: useRag?"on":"off",   // _Settings expects the string "on"/"off", not a bool
           pre_job_id: preJobId,
         });
@@ -5503,6 +5508,17 @@ function NarasiSection({settings,showToast}){
           : "Klasik: bab digarap berurutan satu per satu (jalur lama, stabil)."}
       </span>
     </div>
+
+    {engine==="dalang"&&(
+      <div className="card" style={{marginBottom:14,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <span style={{fontSize:13,fontWeight:700}}>🎩 Model Manager</span>
+        <select className="inp" style={{flex:1,minWidth:200,maxWidth:380}} value={managerModel} onChange={e=>{setManagerModel(e.target.value);localStorage.setItem("rc_nar_manager",e.target.value);}}>
+          <option value="">✨ Sama dengan worker (AI Model)</option>
+          {freeModelGroups.map(t=><optgroup key={t.tier} label={t.tier}>{t.models.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}</optgroup>)}
+        </select>
+        <span style={{fontSize:11,color:"var(--tf)",flex:1,minWidth:180,lineHeight:1.4}}>Model buat polish/synthesize gabungan di akhir (jalan 1× setelah semua bab). Default ikut worker — ganti ke model kuat (mis. claude-sonnet) kalau mau poles lebih bagus.</span>
+      </div>
+    )}
 
     {pastJobs.length>0&&(
       <div className="card" style={{marginBottom:14,padding:"10px 14px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
