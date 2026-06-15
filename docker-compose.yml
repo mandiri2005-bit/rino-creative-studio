@@ -9,7 +9,9 @@ services:
       - LAOZHANG_IMAGE_API_KEY=${LAOZHANG_IMAGE_API_KEY:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - MCP_API_URL=http://mcp:8001
-      - QDRANT_URL=http://172.17.0.2:6333
+      # RAG deep-fix Step 0.5: qdrant lives on the external rino-network (leftover
+      # from an old compose); reach it by service alias, not the dead bridge IP.
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
       - DATABASE_URL=${DATABASE_URL}
       - DATABASE_POOL_URL=${DATABASE_POOL_URL}
       - DATABASE_POOL_URL_DEV=${DATABASE_POOL_URL_DEV}
@@ -44,7 +46,10 @@ services:
       - ./data/narasi_temp:/app/data/narasi_temp
       - ./python/laozhang_api.py:/app/laozhang_api.py
       - ./python/storage.py:/app/storage.py
-      - /Users/rino/Documents/ProjectQ/moat:/app/moat
+      # RAG deep-fix Step 0.5: use the v3.6 moat in-repo (qwen3-0.6b + MODELS
+      # registry + COLLECTION=gutenberg_passages_v2_qwen3-0.6b, matching live
+      # Qdrant), NOT the stale ProjectQ copy (bge-m3, wrong collection name).
+      - ./data/moat:/app/moat
       - hf-cache:/root/.cache/huggingface          # ← persist embedding model
       - ./python/auth_middleware.py:/app/auth_middleware.py
       - ./python/database.py:/app/database.py
@@ -61,6 +66,7 @@ services:
       - ./python/pakem:/app/pakem                            # WS-2/3: single source of truth + assembler
       - ./python/eval:/app/eval                              # WS-9: eval harness + cost dashboard
     expose: ["8000"]
+    networks: [default, rino-network]   # default = redis/backend; rino-network = qdrant
 
   # ── MCP File Search (optional — only starts with --profile mcp) ───────────
   mcp:
@@ -199,3 +205,10 @@ services:
 # ── Named volumes ──────────────────────────────────────────────────────────
 volumes:
   hf-cache:                                         # survives container rebuilds
+
+# ── Networks ────────────────────────────────────────────────────────────────
+networks:
+  default:        # the compose-default bridge (redis, backend, video-worker, nginx)
+  rino-network:   # external: where the leftover qdrant container lives (RAG)
+    external: true
+    name: rino-creative-studio_rino-network
