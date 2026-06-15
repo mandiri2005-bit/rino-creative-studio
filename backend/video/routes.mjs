@@ -75,6 +75,7 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
         visualMode: b.visualMode || "hybrid", captions: !!b.captions,
         voice: b.voice, imageModel: b.imageModel,
         ttsModel: b.ttsModel, language: b.language, aspectRatio: b.aspectRatio,
+        captionFont: b.captionFont,
       }, deps());
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {

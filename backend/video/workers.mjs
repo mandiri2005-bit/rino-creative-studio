@@ -222,10 +222,22 @@ export async function stitchProcessor(job, deps) {
       const srt = buildSrt(scenesRaw.map((s) => s?.text || ""), scenes.map((s) => s.duration), xfade);
       await writeFile(join(tmpDir, "captions.srt"), srt, "utf8");
       stitchOpts.srt = "captions.srt";
+      if (meta.captionFont) stitchOpts.captionFont = meta.captionFont;
     } else if (meta.captions) {
       console.warn(`[stitch ${jobId}] captions requested but ffmpeg has no 'subtitles' filter (no libass) — rendering without burn-in`);
     }
-    const result = await stitch(scenes, outPath, stitchOpts);
+    let result;
+    try {
+      result = await stitch(scenes, outPath, stitchOpts);
+    } catch (e) {
+      // a font / force_style issue must never fail the whole video — retry once
+      // without the custom font so captions just render in the default face.
+      if (stitchOpts.captionFont) {
+        console.warn(`[stitch ${jobId}] retrying without captionFont after: ${e.message}`);
+        delete stitchOpts.captionFont;
+        result = await stitch(scenes, outPath, stitchOpts);
+      } else throw e;
+    }
     // upload the final MP4 under the lifecycle-managed `videos/` prefix (Step 6f)
     let up = { path: outPath, key: null };
     const s = await storage();

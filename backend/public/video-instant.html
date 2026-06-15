@@ -47,6 +47,14 @@
   .adv summary{cursor:pointer;color:var(--td);font-size:13px;font-family:var(--fm);padding:6px 0;list-style:none}
   .adv summary::-webkit-details-marker{display:none}
   .adv summary:before{content:"⚙ ";opacity:.7}
+  .tp-ov{position:fixed;inset:0;background:#06060c;z-index:9999;display:none;flex-direction:column}
+  .tp-ov.on{display:flex}
+  .tp-scroll{flex:1;overflow:hidden;position:relative}
+  .tp-text{position:absolute;left:0;right:0;padding:0 8vw;font-family:var(--fd);font-size:clamp(26px,4.6vw,60px);line-height:1.55;color:#fff;text-align:center;white-space:pre-wrap}
+  .tp-bar{display:flex;align-items:center;gap:18px;justify-content:center;padding:16px;border-top:1px solid var(--br);flex-wrap:wrap}
+  .tp-bar button{background:var(--bg);border:1px solid var(--br);color:var(--t);border-radius:10px;padding:9px 18px;cursor:pointer;font-size:14px}
+  .tp-bar button:hover{border-color:var(--ac)}
+  .tp-bar label{color:var(--td);font-size:12px;display:flex;align-items:center;gap:8px}
   .top-r{display:flex;align-items:center;gap:10px}
   .lnk{font-family:var(--fm);font-size:11.5px;color:var(--td);text-decoration:none;padding:7px 13px;border:1px solid var(--br);border-radius:8px;transition:.2s}
   .lnk:hover{color:var(--t);border-color:var(--ac)}
@@ -137,6 +145,7 @@
     <div class="brand"><img src="/assets/ceritaai-mark.png" alt="" onerror="this.style.display='none'"/>Video Instant <span class="zap">⚡</span></div>
     <div class="top-r">
       <span class="credit-pill" id="creditPill" title="Sisa kredit" style="display:none">⬡ <b id="creditVal">—</b></span>
+      <button class="lnk" style="background:none;cursor:pointer" onclick="window.__tpOpen&&window.__tpOpen()">📜 Teleprompter</button>
       <a class="lnk" href="/start.html">← Ganti jalur</a>
       <a class="lnk" href="/index.html">Studio</a>
       <button class="lnk" style="background:none;cursor:pointer" onclick="window.__clerkAuth?.signOut()">Keluar</button>
@@ -258,6 +267,13 @@
       </div>
 
       <label class="chk"><input type="checkbox" id="captions"/> Bakar caption ke video</label>
+      <select id="captionFont" style="display:none;margin-top:8px">
+        <option value="">Font caption: default</option>
+        <option value="DejaVu Sans">DejaVu Sans</option>
+        <option value="Liberation Sans">Liberation Sans</option>
+        <option value="Liberation Serif">Liberation Serif (serif)</option>
+        <option value="Noto Sans">Noto Sans</option>
+      </select>
 
       <details class="adv">
         <summary>Lanjutan — bahasa, model</summary>
@@ -344,13 +360,22 @@
   </div>
 </div>
 
+<div class="tp-ov" id="tpOverlay">
+  <div class="tp-scroll"><div class="tp-text" id="tpText"></div></div>
+  <div class="tp-bar">
+    <button id="tpPlay" onclick="window.__tpToggle()">⏸ Jeda</button>
+    <label>Kecepatan <input type="range" id="tpSpeed" min="10" max="140" value="45"></label>
+    <label>Ukuran <input type="range" id="tpSize" min="24" max="80" value="46"></label>
+    <button onclick="window.__tpClose()">✕ Tutup</button>
+  </div>
+</div>
 <script src="/auth.js"></script>
 <script>
 (function(){
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,jobId:null,poll:null};
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -384,7 +409,8 @@
   $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
   $("#visualStyle").onchange=e=>state.visualStyle=e.target.value;
   $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
-  $("#captions").onchange=e=>state.captions=e.target.checked;
+  $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
+  $("#captionFont").onchange=e=>state.captionFont=e.target.value;
   $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
   $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
   $("#ttsSel")&&($("#ttsSel").onchange=e=>state.ttsModel=e.target.value);
@@ -430,11 +456,12 @@
       })});
       const scenes=seg.scenes||[];
       if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
+      state.narrationText=scenes.map(s=>s.text||"").join("  ");   // for the teleprompter
       renderStage({status:"dispatching",scenes});
       // 2) assemble
       const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
         scenes, tier:state.tier, clipModel:state.clipModel, visualMode:state.visualMode, captions:state.captions,
-        ttsModel:state.ttsModel, language:state.language, aspectRatio:state.aspectRatio,
+        ttsModel:state.ttsModel, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
       })});
       state.jobId=asm.jobId;
       pollJob(asm);
@@ -543,6 +570,27 @@
   })();
 
   // init
+  // ── teleprompter ──
+  let tpRAF=null, tpY=0, tpPlaying=true, tpSpeed=45;
+  function tpStart(text){
+    const el=$("#tpText");
+    el.textContent=text;
+    $("#tpOverlay").classList.add("on");
+    tpY=window.innerHeight*0.75; tpPlaying=true; $("#tpPlay").textContent="⏸ Jeda";
+    el.style.transform="translateY("+tpY+"px)";
+    cancelAnimationFrame(tpRAF); let last=null;
+    function step(ts){ if(last===null)last=ts; const dt=(ts-last)/1000; last=ts;
+      if(tpPlaying){ tpY-=tpSpeed*dt; el.style.transform="translateY("+tpY+"px)"; } tpRAF=requestAnimationFrame(step); }
+    tpRAF=requestAnimationFrame(step);
+  }
+  window.__tpOpen=()=>{ const t=(state.narrationText||$("#narration").value.trim()||"").trim()
+      || "Belum ada narasi. Buat video dulu (mode 'Dari topik'), atau tempel narasimu di 'Dari narasi'."; tpStart(t); };
+  window.__tpToggle=()=>{ tpPlaying=!tpPlaying; $("#tpPlay").textContent=tpPlaying?"⏸ Jeda":"▶ Main"; };
+  window.__tpClose=()=>{ $("#tpOverlay").classList.remove("on"); cancelAnimationFrame(tpRAF); tpRAF=null; };
+  $("#tpSpeed").oninput=e=>tpSpeed=Number(e.target.value);
+  $("#tpSize").oninput=e=>$("#tpText").style.fontSize=e.target.value+"px";
+  window.addEventListener("keydown",e=>{ if(e.key==="Escape") window.__tpClose(); });
+
   refreshEstimate();
   refreshCredits();
   setTimeout(refreshCredits, 1500); // again once Clerk auth settles

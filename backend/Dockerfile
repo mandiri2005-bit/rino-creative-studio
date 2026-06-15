@@ -4,6 +4,7 @@ WORKDIR /app
 # ffmpeg/ffprobe for the Step 6 video stitch worker (used by the video-worker
 # service; harmless in the API image, which never invokes it — guarded).
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    fonts-dejavu-core fonts-liberation fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies

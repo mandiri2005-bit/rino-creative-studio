@@ -181,7 +181,11 @@ export function buildFilterComplex(scenes, opts = {}) {
   // No force_style here: commas in a style string break filter_complex parsing —
   // libass renders the SRT with safe defaults (white, bottom-centre). ──
   if (o.srt) {
-    parts.push(`[${vlabel}]subtitles=${o.srt}[vsub]`);
+    // optional caption font — a SINGLE force_style field (no comma) so it can't
+    // break the comma-separated filtergraph; the worker retries without it on any
+    // failure. The font must exist in the render container (installed in Dockerfile).
+    const style = o.captionFont ? `:force_style='Fontname=${o.captionFont}'` : "";
+    parts.push(`[${vlabel}]subtitles=${o.srt}${style}[vsub]`);
     vlabel = "vsub";
   }
 
