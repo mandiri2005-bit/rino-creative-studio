@@ -38,9 +38,9 @@
   .brand img{height:24px}
   .brand .zap{color:var(--ac)}
   .credit-pill{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-family:var(--fm);font-size:13px;color:var(--ac);background:rgba(124,92,255,.12);border:1px solid rgba(124,92,255,.3);border-radius:999px;padding:5px 12px}
-  .bc{display:block;width:64px;height:64px;margin:0 auto 16px}
-  .bc svg{width:100%;height:100%;animation:breathe 1.6s ease-in-out infinite;transform-origin:center}
-  @keyframes breathe{0%,100%{transform:scale(.8);opacity:.5}50%{transform:scale(1.05);opacity:1}}
+  .bc{display:block;width:44px;height:44px;margin:0 auto 16px}
+  .bc img{width:100%;height:100%;object-fit:contain;animation:breathe 1.8s ease-in-out infinite;transform-origin:center}
+  @keyframes breathe{0%,100%{transform:scale(.92);opacity:.55}50%{transform:scale(1);opacity:1}}
   .cancel-btn{margin-top:16px;background:transparent;border:1px solid var(--br);color:var(--td);border-radius:10px;padding:9px 18px;cursor:pointer;font-size:13px;transition:.15s}
   .cancel-btn:hover{color:var(--t);border-color:var(--ac)}
   .adv{margin-top:6px}
@@ -486,7 +486,7 @@
 
   // ── stage rendering ──
   // breathing ceritaAI "C" loader (grows/shrinks like the Claude prompt loader)
-  const CLOADER='<div class="bc"><svg viewBox="0 0 100 100"><defs><linearGradient id="cg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs><path d="M73 27a33 33 0 1 0 0 46" fill="none" stroke="url(#cg)" stroke-width="13" stroke-linecap="round"/></svg></div>';
+  const CLOADER='<div class="bc"><img src="/assets/ceritaai-mark.png" alt="memuat"/></div>';
 
   async function refreshCredits(){
     try{

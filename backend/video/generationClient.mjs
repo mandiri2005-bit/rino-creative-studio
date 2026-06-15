@@ -79,6 +79,28 @@ export function syntheticGenerationClient(opts = {}) {
   };
 }
 
+// Gemini TTS via Google's GenAI SDK — the OpenAI-compatible /v1/audio/speech route
+// doesn't serve Gemini voices, so the worker (Node) generates them directly, the
+// exact path the Studio uses. Returns a WAV Buffer. Throws if no key / no audio so
+// the caller can fall back to the OpenAI path.
+async function geminiTts(text, voice, model) {
+  if (!process.env.GEMINI_API_KEY) throw new Error("no GEMINI_API_KEY");
+  const { GoogleGenAI } = await import("@google/genai");
+  const { convertToWav } = await import("../utils.mjs");
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const resp = await ai.models.generateContent({
+    model,
+    contents: [{ role: "user", parts: [{ text: String(text || "") }] }],
+    config: {
+      temperature: 1.0, responseModalities: ["AUDIO"],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || "Enceladus" } } },
+    },
+  });
+  const inline = resp?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+  if (!inline?.data) throw new Error("gemini tts returned no audio");
+  return convertToWav(Buffer.from(inline.data, "base64"), inline.mimeType || "audio/L16;rate=24000");
+}
+
 // ── HTTP (live Python backend) ────────────────────────────────────────────────
 // Terminal Veo status strings (lowercased) seen across the upstream provider.
 const VEO_DONE = new Set(["succeed", "succeeded", "success", "completed", "complete", "done", "finished", "ready"]);
@@ -130,10 +152,24 @@ export function httpGenerationClient(opts = {}) {
     // (configurable via VIDEO_TTS_AUDIO_PATH) → { audio_b64 } | { audio_url }.
     async synthesizeAudio(scene, tmpDir) {
       const out = join(tmpDir, `audio_${scene.sceneIndex}.wav`);
+      const model = scene.ttsModel || "";
+      // Gemini TTS: generate in-worker via Google's SDK, then meter the chars in
+      // Python (audio bytes never leave the worker). Any failure → OpenAI path below.
+      if (/gemini/i.test(model) && /tts/i.test(model) && process.env.GEMINI_API_KEY) {
+        try {
+          await writeFile(out, await geminiTts(scene.text, scene.voice, model));
+          await fetch(`${PYTHON_API}${ttsAudioPath}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders(scene) },
+            body: JSON.stringify({ text: scene.text, model, meter_only: true, scene_index: scene.sceneIndex }),
+          }).catch(() => {});  // best-effort metering; never fail the scene on it
+          return { path: out };
+        } catch { /* fall through to the OpenAI-compatible path */ }
+      }
       const r = await fetch(`${PYTHON_API}${ttsAudioPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(scene) },
-        body: JSON.stringify({ text: scene.text, voice: scene.voice, model: scene.ttsModel || undefined, scene_index: scene.sceneIndex }),
+        body: JSON.stringify({ text: scene.text, voice: scene.voice, model: model || undefined, scene_index: scene.sceneIndex }),
       });
       if (!r.ok) throw new Error(`tts ${r.status}: ${(await r.text()).slice(0, 200)}`);
       const data = await r.json();

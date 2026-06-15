@@ -80,6 +80,7 @@ from typing import Optional
 # ══════════════════════════════════════════════════════════════════════════════
 WORDS_PER_MINUTE = 130          # documentary narration pace
 WORDS_PER_SCENE = 45            # scene_count = round(target_words / WORDS_PER_SCENE)
+IMAGE_SCENE_SECONDS = 8         # full_images pacing: ~one fresh image every 8s
 MIN_SCENES = 2                  # a video is at least two scenes (so there's a cut)
 BATCH_SIZE = 10                 # full-parallel <= BATCH_SIZE scenes, batched above
 PROGRESS_CARD_LIMIT = 10        # scene cards <= this many scenes, progress bar above
@@ -244,12 +245,17 @@ def words_per_scene_for(visual_mode: str, clip_model: str = DEFAULT_CLIP_MODEL) 
     is exactly why 'Semua klip' was producing stills. Returns words such that a
     scene's narration fits a real clip with the 0.85 gate's margin."""
     mode = (visual_mode or "").lower().replace("-", "_")
-    if mode not in ("full_clips", "hybrid"):
-        return WORDS_PER_SCENE
-    cfg = CLIP_MODELS[_normalize_clip_model(clip_model)]
-    ceiling = cfg["max_s"] * cfg["gate"]                      # eligible seconds
-    target = max((a for a in cfg["allowed"] if a <= ceiling), default=min(cfg["allowed"]))
-    return max(6, round(target * WORDS_PER_MINUTE / 60))
+    if mode in ("full_clips", "hybrid"):
+        cfg = CLIP_MODELS[_normalize_clip_model(clip_model)]
+        ceiling = cfg["max_s"] * cfg["gate"]                  # eligible seconds
+        target = max((a for a in cfg["allowed"] if a <= ceiling), default=min(cfg["allowed"]))
+        return max(6, round(target * WORDS_PER_MINUTE / 60))
+    if mode == "full_images":
+        # ~8s per image → a fresh visual every few seconds, not a 2-image / 15s-each
+        # slideshow for a 30s video. Still well above a clip's ceiling, so images
+        # never qualify as clips by accident.
+        return max(8, round(IMAGE_SCENE_SECONDS * WORDS_PER_MINUTE / 60))
+    return WORDS_PER_SCENE  # legacy default (preset table / unspecified mode)
 
 
 def tier_credits(scene_count: int) -> dict[str, int]:
@@ -269,7 +275,7 @@ def _batch_plan(scene_count: int, batch_size: int = BATCH_SIZE) -> list[int]:
 
 
 def calculate_video_params(minutes: float, tier: str = "hd",
-                           visual_mode: str = "full_images",
+                           visual_mode: str = "",
                            clip_model: str = DEFAULT_CLIP_MODEL) -> VideoParams:
     """The central formula. From a target duration, derive everything downstream
     reads: scene count, words per scene, dispatch mode, batch plan, progress UI,
@@ -746,7 +752,7 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
 # ══════════════════════════════════════════════════════════════════════════════
 def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
             style: str = "", clip_model: str = DEFAULT_CLIP_MODEL,
-            tier: str = "hd", visual_mode: str = "full_images",
+            tier: str = "hd", visual_mode: str = "",
             visual_style: str = "") -> SegmentResult:
     """Cut narration into timed scene objects.
 

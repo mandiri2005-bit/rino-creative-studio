@@ -236,14 +236,28 @@ async def charge(tenant_id: str, amount: int, op_id: str, *,
     if amount <= 0:
         return await get_balance(tenant_id)
     cl = rc.client()
+    newbal = None
     if cl is not None:
         try:
             await _ensure_cached(tenant_id)
-            await cl.decrby(_bal_key(tenant_id), amount)
+            newbal = await cl.decrby(_bal_key(tenant_id), amount)
         except Exception as e:
             log.warning("charge redis(%s): %s", op_id, e)
-    await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
-                        user_id=user_id, metadata=metadata)
+    _applied, dbal = await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
+                                         user_id=user_id, metadata=metadata)
+    # ROOT-CAUSE GUARD for the "negative cache" bug: a post-hoc debit must never
+    # leave the live cache below zero. The cache only goes negative when it had
+    # already drifted BELOW the durable — e.g. someone hand-edited credit_balances
+    # (which _ensure_cached's SET-NX won't overwrite), so the cache kept its old low
+    # value while charges decremented it past 0. The durable is the source of truth,
+    # so reconcile the cache to it; the next gate then sees the real balance instead
+    # of a spurious "insufficient credits". (get_balance also self-heals on read.)
+    if cl is not None and newbal is not None and newbal < 0:
+        log.warning("charge(%s): cache went to %d → reconcile to durable %d", op_id, newbal, dbal)
+        try:
+            await cl.set(_bal_key(tenant_id), max(0, int(dbal)))
+        except Exception as e:
+            log.warning("charge reconcile(%s): %s", op_id, e)
     return await get_balance(tenant_id)
 
 

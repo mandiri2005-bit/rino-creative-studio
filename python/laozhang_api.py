@@ -5895,6 +5895,7 @@ class VideoTtsSceneReq(BaseModel):
     model: str = "tts-1"
     speed: float = 1.0
     scene_index: int = 0
+    meter_only: bool = False   # worker generated Gemini TTS itself → just gate+debit here
 
 def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
                            image_model="nano-banana-hd", clip_ratio=0.3) -> dict:
@@ -6047,6 +6048,16 @@ async def video_tts_scene(req: VideoTtsSceneReq,
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
         await metering.gate(user.tenant_id, "tts", req.model, {"chars": len(synth)}, byok=_byok)
+    if req.meter_only:
+        # the worker already produced the audio (Gemini TTS via the Node SDK) — only
+        # record the charge here, tagged with the video job for refunds.
+        if user:
+            try:
+                await metering.debit(user.tenant_id, _uid, "tts", req.model,
+                                     {"chars": len(synth)}, byok=_byok, video_job=x_video_job, log=True)
+            except Exception as _e:
+                print(f"[video/tts/scene] meter_only debit failed (non-fatal): {_e}")
+        return {"metered": True}
     def _speak(model):
         r = _requests.post(
             "https://api.laozhang.ai/v1/audio/speech",

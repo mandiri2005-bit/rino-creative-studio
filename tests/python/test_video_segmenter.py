@@ -346,4 +346,7 @@ def test_clip_modes_size_scenes_to_fit_clips():
     assert not vs.clip_fits(imgs.seconds_per_scene, "veo3")
     # kling3's higher ceiling allows longer scenes than veo3
     assert vs.words_per_scene_for("full_clips", "kling3") > vs.words_per_scene_for("full_clips", "veo3")
-    assert vs.words_per_scene_for("full_images", "veo3") == vs.WORDS_PER_SCENE
+    # full_images packs more, shorter scenes than the legacy default (more images);
+    # the unspecified/legacy mode keeps the documented WORDS_PER_SCENE preset table.
+    assert vs.words_per_scene_for("full_images", "veo3") < vs.WORDS_PER_SCENE
+    assert vs.words_per_scene_for("", "veo3") == vs.WORDS_PER_SCENE
