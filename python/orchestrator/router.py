@@ -110,7 +110,7 @@ class _Settings:
         self.orch_mode = _resolve_setting(
             req, "orch_mode", "ORCH_MODE", "auto", {"auto", "static", "dynamic"})
         self.polish = _resolve_setting(
-            req, "polish", "POLISH", "light", {"none", "light", "heavy"})
+            req, "polish", "POLISH", "light", {"none", "light", "heavy", "critique"})
         self.max_workers = _resolve_max_workers(req)
         self.rag_on = _resolve_setting(req, "rag", "RAG", "on", {"on", "off"}) == "on"
 
