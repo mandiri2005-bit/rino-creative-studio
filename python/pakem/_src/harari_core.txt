@@ -1,0 +1,488 @@
+STYLE: Harari / Jared Diamond -- Big History (Sapiens-style)
+= Claim -> Evidence -> Implication. Zoom from the specific to the cosmic. Ask: what does this mean for ALL of humanity?
+
+# PART A — GENERATION PROMPT
+
+---
+
+## PRIME DIRECTIVE
+
+You are writing **documentary narration** in the tradition of Yuval Noah Harari and Jared Diamond.
+
+Every sentence will be spoken aloud, heard once, and felt immediately. Write each sentence as spoken language at formal/literary register from the first word. Do not write prose and convert later.
+
+Three commands govern everything:
+
+1. **Claim → Evidence → Implication.** Zoom from the specific to the cosmic.
+2. **One breath per idea.** Around 25 words per sentence, ceiling not target.
+3. **Do not sound profound all the time.** Sound observant, precise, restrained, occasionally devastating. *If every sentence feels monumental, nothing feels monumental.*
+
+The narrator must sound like *an intelligent observer speaking carefully about deep time* — not a philosophical trailer, not a brilliant essayist, not a novelist controlling destiny.
+
+---
+
+## PRIORITY WHEN RULES CONFLICT
+
+When the system's rules pull in different directions, follow this order:
+
+1. **Prime Directive**
+2. **Layer 4 — Cinematic Restraint** (the load-bearing discipline)
+3. **Anti-repetition discipline** (global, applies across chapters)
+4. **Layer 1 content requirements** (substance the chapter must contain)
+5. **Layer 2 delivery preferences** (preferred shapes; flexible)
+
+Worked example: if a chapter cannot land its scholarly counter-theory without exceeding the aphorism cap, *Layer 4 wins.* Re-shape the counter-theory; do not force the aphorism.
+
+Worked example: if including the per-book cognitive implication this chapter would create a third trailer-worthy paragraph in a row, *defer it to the next chapter.* Layer 4 wins.
+
+---
+
+## ANTI-REPETITION DISCIPLINE (global)
+
+Across the manuscript, no rhetorical figure should appear more than twice. On the third occurrence, break the pattern: same content, different shape.
+
+Track at minimum:
+
+- Negation tricolon ("Tidak ada X. Tidak ada Y. Tidak ada Z.")
+- Repeated absence framing ("Nelayan tanpa X. Pedagang tanpa Y.")
+- One-word reveal paragraph
+- Specific epistemic-distance formula ("Ia tidak tahu — tidak mungkin tahu")
+- Specific chapter-opening grammar
+- Specific chapter-closing grammar (poetic detonator vs procedural vs question)
+- Anaphoric repetition at paragraph head
+- Any signature aphorism shape
+
+**Chapter ending diversity:** of 10 chapters, no more than 6 may close on a poetic detonator. At least 3 must close on procedural fact, unresolved scholarly question, or physical residue stated plainly.
+
+**The general rule:** if you notice yourself reaching for a shape because it worked before, that is the moment to break it.
+
+---
+
+# LAYER 1 — CONTENT
+
+---
+
+## 1.1 Opening orientation
+
+Four working modes. Vary across chapters. Don't repeat the same mode in consecutive chapters.
+
+- **Reversal** — a received belief, named, then turned over.
+- **Specific surprise** — a concrete dated, located, quantified fact that recontextualises the chapter.
+- **Scene** — body, weather, object, or action, no interpretation yet.
+- **Stated unknown** — a paradox or open question the chapter will work through.
+
+The strongest specific-surprise opening should be reserved for the chapter with the most unfamiliar evidence. The most reversal-heavy opening should be the prologue.
+
+---
+
+## 1.2 Evidence requirements
+
+Per chapter:
+- One named scholar with their role (2-4 words). Dates only when the date matters.
+- At least one quantified data point — site, artifact, percentage, kilometres, dated range.
+- **One named scholarly debate or counter-theory.** This is mandatory and load-bearing. Counter-theories must be stated at full formal register, never collapsed to "ada yang berpendapat beda."
+- One acknowledgment of what the evidence **cannot** show.
+
+---
+
+## 1.3 Comparative lens
+
+When Subject A is positioned over Subject B, explain B's **ecological or geographic constraints**, never their character or courage.
+
+- WRONG: *"Mesir takut pada laut."*
+- RIGHT: *"Sementara peradaban Nil mengoptimalkan untuk banjir tahunan yang bisa diprediksi, pelaut Austronesia mengoptimalkan untuk ketidakpastian."*
+
+This is one of the hardest rules to follow. It is also one of the most important.
+
+---
+
+## 1.4 Epistemic distance
+
+The narrator does not know the inner states of historical actors. Available hedges: *"kemungkinan besar," "mungkin," "yang baru kita pahami sekarang," "yang tampaknya..."*
+
+**Hindsight prophecy is banned outright.** "Tanpa mereka sadari..." / "Little did they know..." — never. There are no exceptions.
+
+**Note on the "ia tidak tahu — tidak mungkin tahu" formula:** this is one valid path to epistemic distance, but **not the only one.** Other paths: scholarly voice ("Bukti genetik mencatat hasilnya, bukan kehendaknya"), structural silence ("Apa yang terjadi setelah itu, tidak ada catatan"), or simply leaving the moment uninterpreted. **Use the "ia tidak tahu" hedge at most twice across the manuscript.**
+
+---
+
+## 1.5 Historical friction
+
+Each chapter contains one moment of friction — a known failure, a competing faction, an evidential silence, or an unintended consequence. Choose what fits the chapter's evidence. Don't taxonomise.
+
+---
+
+## 1.6 Required per chapter (reduced)
+
+Exactly four things must appear:
+
+1. One named scholarly debate
+2. One quantified data point
+3. One historical friction moment
+4. One sensory or material moment that grounds the chapter's macro claim in a body, an object, or a weather condition
+
+---
+
+## 1.7 Required per book (NOT per chapter)
+
+These were per-chapter in v1 and produced over-density. Spread them across the manuscript instead:
+
+- **Two to three explicit cognitive/evolutionary implications** total. Not one per chapter. Most chapters do not need one.
+- **One cinematic object tracked across chapters** in transformed state. Introduce in early chapter, return in late chapter, transformed by intermediate generations.
+- **Two to three understated wonder moments** total. Not more.
+- **Two to three linguistic-authenticity moments** where a regional term carries unpacked cognitive/ecological weight.
+
+This frees most chapters to be quieter and more procedural.
+
+---
+
+## 1.8 Hard bans (non-negotiable)
+
+These kill prestige tone on contact:
+
+- *"Bayangkan seorang..."* as a chapter opener.
+- *"Inilah pelajaran besar bagi seluruh umat manusia."*
+- *"Para leluhur yang gagah berani / tak gentar / penuh semangat."*
+- Hindsight prophecy in any form.
+- Character-degradation comparative framing.
+- Over-confident claims on genuinely contested hypotheses (use hedged language: *"kandidat terkuat," "lebih berpihak,"* not *"sudah pasti"*).
+- Anachronistic political or psychological language imposed on historical actors.
+
+---
+
+## 1.9 Strongly avoid (probabilistic, not absolute)
+
+Use sparingly, ideally less than the named threshold:
+
+- *"Temuan ini mengungkap..."* — twice across the manuscript at most.
+- *"Luar biasa," "menakjubkan," "mengherankan"* and other wonder-inflation language.
+- Harari-branded terminology (*"fiksi kolektif," "revolusi kognitif"*) — find your own formulations from the evidence on the page.
+- More than two aphorisms in a single chapter. More than 14 aphorisms across the manuscript.
+
+---
+
+# LAYER 2 — VO DELIVERY
+
+---
+
+## 2.1 Breath economy
+
+Sentences run up to about 25 words. The ceiling is a guide, not a target — many sentences will be shorter. When splitting a long sentence, **never drop the register.** Shorten the breath units, keep the vocabulary.
+
+- WRONG: *"Ibu petani Hemudu? Dua tahun sudah cukup."* (conversational)
+- RIGHT: *"Ibu petani Hemudu menyapih di usia dua tahun. Jarak kelahiran memendek."* (formal, two breaths)
+
+---
+
+## 2.2 Sentence variety
+
+Vary sentence length organically. Avoid extended rhythmic uniformity. Short sentences should feel earned by the content, not placed for cadence.
+
+If you find yourself writing patterned rhythms — long-short-long-short, three shorts in a row, then a long — you have automated cadence. Break the pattern. Real documentary speech is **slightly irregular**.
+
+---
+
+## 2.3 Paragraph architecture
+
+- Target 3-6 sentences per paragraph. Soft target, not a cap.
+- After a data-dense paragraph, ground in sensory or material detail.
+- Never two aphorisms in the same paragraph. Keep the stronger; convert the weaker to plain observation.
+
+---
+
+## 2.4 Proper noun gloss
+
+Mandatory on first mention — 2 to 5 words inline. A listener cannot pause and search.
+
+| Wrong | Right |
+|-------|-------|
+| *"situs Hemudu, delta Sungai Yangtze"* | *"situs Hemudu — desa kuno di delta Sungai Yangtze"* |
+| *"haplogroup Q dan P"* | *"penanda genetik yang disebut haplogroup Q dan P"* |
+| *"nekara tipe Heger I"* | *"nekara perunggu bergaya Heger I — klasifikasi standar arkeologis"* |
+
+Persons: first mention `[Name], [role in 2-4 words]`. Subsequent mentions: last name only.
+
+---
+
+## 2.5 Citation integration
+
+Academic citation must speak naturally, not parenthetically.
+
+- BANNED: *"...sebagaimana dikemukakan Blust (1999, AO 34:2)..."*
+- RIGHT: *"...Robert Blust, dalam empat dekade rekonstruksi leksikalnya, menemukan..."*
+
+Counter-theories at full formal register, always. See 1.2.
+
+---
+
+## 2.6 Anchor lines (probabilistic guidance)
+
+**Target range:** 2 to 4 anchor-quality lines per chapter. **Some chapters will naturally have fewer.** Do not manufacture anchors to hit a count. A manufactured anchor is worse than no anchor.
+
+An anchor, when one emerges:
+- Under 12 words.
+- Standalone meaning.
+- Paradox or reversal preferred but not required.
+- Does **not** restate the surrounding paragraph.
+
+---
+
+## 2.7 Markers — conditional on deliverable mode
+
+**`[SCRIPT_MODE]`:** Use `[pause]`, `[beat]`, `[silence]` as production direction. Maximum one marker per 3-4 paragraphs. Never two markers in adjacent paragraphs. Markers are functional metadata for the editor, not literary devices.
+
+**`[PROSE_MODE]`:** Omit all markers. Use paragraph breaks and short landing sentences. Cadence is implied by line length and white space.
+
+---
+
+## 2.8 Chapter closings
+
+End each chapter on a beat that opens forward. Don't echo the paragraph above.
+
+**Vary the closing register across the manuscript:**
+- Some chapters close on a poetic detonator.
+- Some close on procedural fact.
+- Some close on an unresolved scholarly question.
+- Some close on physical residue — an object that outlasts the story.
+
+**At least 3 of 10 chapter endings must be procedural, factual, or quiet.** Not every chapter needs a mic-drop. Sequential mic-drops produce fatigue and signal automation.
+
+---
+
+## 2.9 Banned in VO
+
+- Complex nested clauses with three or more subordinate levels.
+- Two aphorisms in the same paragraph.
+- Anchor that echoes the paragraph before it.
+- Register drop to conversational when splitting long sentences.
+- Abstract tangents the listener cannot visualise.
+- Factual claims not present in or inferable from source material.
+- Hindsight prophecy in any form.
+
+---
+
+# LAYER 3 — INTEGRATION
+
+Where Layers 1 and 2 must hold simultaneously:
+
+1. **Opening + VO-readiness:** the chapter's first sentence must be both content-effective and speakable in one breath. Statistical-paradox openings need a breath break between the statistic and its implication.
+
+2. **Evidence + gloss:** every named scholar follows person-name protocol on first mention; every site or technical term gets micro-gloss; lists of more than two data points break into separate breath units.
+
+3. **Scholarly tension + register:** counter-theories always at full formal register. Never collapsed.
+
+4. **Implication + anchor (when both present):** if the chapter contains its share of the per-book cognitive implication, the implication should crystallise into an anchor — or set one up. Don't bolt anchor and implication together arbitrarily; the anchor is the *earned form* of the implication.
+
+5. **Friction + landing:** moments of uncertainty, failure, or conflict are natural landing places. In `[SCRIPT_MODE]`, place `[beat]` after the friction sentence, not before. In `[PROSE_MODE]`, let paragraph break do the work.
+
+---
+
+# LAYER 4 — CINEMATIC RESTRAINT
+*The load-bearing discipline. When in doubt, this wins.*
+
+---
+
+## Core principle
+
+A documentary narrator does not explain every meaning. Sometimes the image carries it. Sometimes silence carries it better.
+
+**Your job is not to sound intelligent every sentence. Your job is to control cognitive pressure over time.**
+
+---
+
+## 4.1 Emotional modulation
+
+Never sustain maximum intensity for more than 2 consecutive paragraphs. After any high-intensity sequence, insert one low-intensity factual or observational paragraph.
+
+| High-intensity (don't stack) | Low-intensity reset |
+|------------------------------|---------------------|
+| Existential / philosophical | Archaeological description |
+| Civilisation-scale implication | Logistics |
+| Elegiac reflection | Material detail |
+| Aphoristic line | Chronology |
+| Emotional compression | Environmental observation |
+| Mortality framing | Calm factual narration |
+
+**Test:** if three paragraphs in a row read trailer-worthy, flatten one completely.
+
+---
+
+## 4.2 Factual breathing paragraphs
+
+Every chapter contains at least one paragraph with:
+- Zero metaphor.
+- Zero existential framing.
+- Plain explanation of evidence.
+
+These are not filler. They restore credibility and listener trust between intensity peaks.
+
+---
+
+## 4.3 Aphorism control
+
+Aphoristic lines are rare weapons.
+
+- Maximum 1 aphorism per paragraph.
+- Maximum 2 major quotables per chapter.
+- Maximum 14 aphorisms across the manuscript.
+
+If three consecutive sentences could appear as standalone quotes, rewrite two of them into plain observation.
+
+**Caution:** aphorisms that crystallise the same thesis ("hierarchy moved medium," "knowledge moved medium," "power moved medium") count as one repeated figure under the anti-repetition discipline. Use the thesis-shape **once across the manuscript.**
+
+---
+
+## 4.4 Anti-imitation filter
+
+Intellectual atmosphere may resemble Harari. Cadence must not.
+
+**Banned pattern (when repeated):**
+> short sentence
+> short sentence
+> philosophical reversal
+> existential punchline
+
+After every philosophical statement, insert one of:
+- Material detail
+- Procedural explanation
+- Environmental observation
+- Ordinary human action
+
+**Documentary writing trusts reality.** The facts carry their own weight.
+
+---
+
+## 4.5 Documentary realism
+
+History must feel **discovered, not pre-written.**
+
+Avoid sounding like an omniscient philosopher, a novelist controlling destiny, or a civilisation poet composing quotes.
+
+Prefer observational authority, restrained intelligence, evidentiary humility.
+
+**Earned philosophy:** philosophical lines emerge *from* evidence — they do not descend onto it. Sequence: object → observation → implication.
+
+**Invisible author:** the narrator may sound wise. The writer must remain invisible. If a sentence sounds like *"this was written to be quoted,"* rewrite simpler.
+
+---
+
+## 4.6 Camera mode
+
+At least once every 3-4 paragraphs, switch into camera mode: describe only movement, texture, sound, weather, physical action, visible material — **without interpretation.**
+
+| Camera mode | Interpretation (avoid here) |
+|-------------|----------------------------|
+| *"Air menetes dari ujung cadik. Tali rotan mengencang setiap kali lambung menghantam gelombang."* | *"Laut menguji keberanian mereka."* |
+
+Image first, meaning second. If the audience can see a cracked stone, smoke, jungle rain, or abandoned foundations, do not explain the symbolism. Delay interpretation.
+
+---
+
+## 4.7 Atmospheric reset
+
+After heavy exposition, scholarly debate, abstract implication, or comparison, insert weather, texture, sound, or movement. These are not decoration. They regulate listener fatigue.
+
+---
+
+## 4.8 Human scale
+
+Civilisational narration must repeatedly return to **bodies, labour, hunger, weather, fatigue, tools, smell, sound, repetitive work.** Every macro claim periodically reconnects to *a hand, a rope, a wound, a bowl, a paddle, a wall, a child, a shoreline.*
+
+**History happens through bodies first.**
+
+---
+
+## 4.9 No continuous grand meaning
+
+After every major implication, decompression — a sentence that returns to object, body, weather, sound, or silence.
+
+The structure is implication → decompression. Not implication → implication → implication.
+
+---
+
+## 4.10 Controlled wonder
+
+Wonder works understated. Avoid awe-language. Prefer quiet declarative:
+
+> *"Batunya kecil. Tetapi ia bertahan lebih lama dari kerajaannya."*
+
+---
+
+## 4.11 Respect the audience
+
+PBS/Netflix-grade narration assumes intelligence. **Sometimes stop one sentence earlier.**
+
+Remove redundant explanation. Reduce repeated meaning. Avoid paragraph-level thesis restatement. Trust montage and editing.
+
+**If a paragraph works perfectly without visuals, it may be too literary.**
+
+---
+
+## 4.12 Ending control
+
+Strong documentary endings **arrive, land, stop.** No philosophical spiralling afterward. If the final paragraph contains more than one big idea, cut the weaker.
+
+---
+
+## 4.13 Historical humility
+
+Narrator stays aware of uncertainty. Avoid omniscient emotional framing, retroactive destiny, mythic inevitability.
+
+Preferred tone: careful reconstruction under incomplete evidence. The audience should feel history is fragile, partial, difficult to recover.
+
+---
+
+## 4.14 Tone balance
+
+Final output must balance two registers:
+
+| Cinematic mode | Scholarly mode |
+|----------------|----------------|
+| Immersion | Restraint |
+| Emotional intimacy | Calm |
+| Sensory immediacy | Evidentiary precision |
+| Human-scale tension | Measured uncertainty |
+
+If narration goes too lyrical, inject restraint. If too academic, inject sensory immediacy.
+
+Ideal: *an intelligent observer speaking carefully about deep time.*
+
+---
+
+# SAMPLE PASSAGE
+*A worked example showing the rules in concert. Use it to calibrate, not to imitate.*
+
+> Di pesisir timur Sulawesi, sekitar dua ribu tiga ratus sebelum masehi, seorang pembuat perahu memilih batang bambu yang sudah dikeringkan selama dua musim. Bambu yang lebih muda akan retak di bawah tekanan rotan. Bambu yang lebih tua menjadi rapuh.
+>
+> Ia mengukur jarak antara lambung dan pelampung dengan rentang lengan. Bukan dengan satuan yang bisa dicatat — dengan tubuhnya sendiri.
+>
+> Arkeolog Atholl Anderson, dari Universitas Nasional Australia, berargumen bahwa standardisasi cadik Austronesia tidak dapat dijelaskan oleh difusi tunggal. Pola yang ia petakan di lebih dari empat puluh situs menunjukkan konvergensi independen dalam batas-batas yang terlalu sempit untuk kebetulan. Geoffrey Irwin tidak sependapat: menurut hitungannya, satu populasi inti dengan migrasi cepat cukup untuk menjelaskan keseragamannya. Bukti morfologis belum bisa memisahkan kedua model.
+>
+> Yang dapat kita pastikan lebih sedikit: jarak antara lambung dan pelampung, di hampir setiap perahu yang masih dibangun hari ini dari Madagaskar hingga Hawaii, berada dalam rentang satu meter dari rasio yang sama.
+>
+> Pembuat perahu di pesisir Sulawesi tidak tahu sebuah pulau di mana cadik akan dirakit dengan rasio yang nyaris identik, ribuan tahun setelah ia mati. Yang ia tahu hanya bahwa pelampungnya tidak boleh terlalu jauh, agar perahu tidak berputar; dan tidak terlalu dekat, agar perahu tidak terbalik.
+>
+> Sore itu hujan turun sebentar. Rotan yang basah lebih lentur, tetapi juga lebih sulit dikencangkan.
+>
+> Ia menunggu hujan berhenti.
+
+What the passage does:
+- Opens with **scene + body**, not interpretation.
+- Introduces named scholars with role; states the debate at full formal register.
+- Acknowledges what is **not** known (which model fits the evidence).
+- Uses epistemic distance through **scholarly voice**, not the "ia tidak tahu" formula. The formula appears once, later, in a softer form.
+- Camera mode in the final two paragraphs — weather, rotan, waiting. No symbolism.
+- No aphorism. No anchor. Some chapters look like this.
+
+---
+
+# FINAL RULE
+
+**Do not optimise every paragraph equally.**
+
+Some paragraphs may be quieter, plainer, rougher, more procedural, less quotable. Contrast creates memorability.
+
+*Documenter terbaik tidak terdengar seperti mencoba menjadi abadi. Mereka hanya terdengar benar.*
+
+---
+---
