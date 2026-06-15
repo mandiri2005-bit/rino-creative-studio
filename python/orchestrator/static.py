@@ -427,7 +427,14 @@ async def narrate_chapters(
         })
 
     n_ok = sum(1 for c in chapter_records if c["ok"])
-    book = "\n\n".join(c["content"] for c in chapter_records)
+    # Assemble WITH a per-chapter heading so the result is classified per-bab while
+    # the manager polish keeps the prose flowing. Heading uses the outline title
+    # (1-based by position); chapters with no title get a bare "## Bab N".
+    def _chapter_md(c: dict[str, Any]) -> str:
+        title = (c.get("title") or "").strip()
+        head = f"## Bab {int(c.get('no', 0)) + 1}" + (f": {title}" if title else "")
+        return f"{head}\n\n{(c.get('content') or '').strip()}"
+    book = "\n\n".join(_chapter_md(c) for c in chapter_records)
 
     # 3) REDUCE — optional manager polish over the assembled book.
     polished_book, did_polish = await _polish_reduce(
@@ -503,8 +510,11 @@ async def _polish_reduce(
             f"narrative about \"{topic}\". Reconcile any contradictions, remove "
             "cross-chapter repetition and re-introductions, tighten flabby passages, "
             "and hold ONE consistent voice and tense for the whole book. PRESERVE "
-            "every concrete fact, name, date, number and quote exactly. Keep the "
-            "chapter boundaries (one blank line between chapters). Return ONLY the "
+            "every concrete fact, name, date, number and quote exactly. Keep every "
+            "`## Bab N: ...` heading line exactly as given — do not remove, rename, "
+            "renumber or move them. Between and within those sections, make the "
+            "narration read as ONE seamless, continuous flow: smooth every transition "
+            "so nothing reads as an abrupt break. Return ONLY the "
             f"edited book in {language}, no notes or preamble."
         )
         role = "merge"
@@ -514,9 +524,11 @@ async def _polish_reduce(
             f"narrative about \"{topic}\". ONLY smooth the seams between chapters, "
             "remove obvious cross-chapter repetition, and keep the register "
             "consistent. Do NOT rewrite content, do NOT change any fact, name, date "
-            "or number, do NOT shorten the book. Keep the chapter boundaries (one "
-            f"blank line between chapters). Return ONLY the lightly-edited book in "
-            f"{language}."
+            "or number, do NOT shorten the book. Keep every `## Bab N: ...` heading "
+            "line exactly as given (do not remove, rename, renumber or move them). "
+            "Make the narration flow as ONE seamless, uninterrupted piece — smooth "
+            "the transitions between sections so nothing reads as an abrupt break. "
+            f"Return ONLY the lightly-edited book in {language}."
         )
         role = "polish"
 
