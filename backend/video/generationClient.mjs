@@ -32,6 +32,18 @@ function run(bin, args) {
   });
 }
 
+// A last-resort, on-brand still. When real image generation is unavailable (a
+// flaky upstream 500, a content block, an exhausted clip→image fallback), the
+// scene degrades to a dark card instead of failing — the burnt caption + Ken
+// Burns still render over it, so ONE bad generation never kills the whole video.
+// Pure ffmpeg/lavfi: no API, no keys, always available wherever the stitch runs.
+async function makePlaceholder(tmpDir, sceneIndex, W = 1280, H = 720) {
+  const out = join(tmpDir, `img_${sceneIndex}.png`);
+  await run(FFMPEG, ["-v", "error", "-y", "-f", "lavfi", "-i",
+    `color=c=0x14142a:s=${W}x${H}`, "-frames:v", "1", out]);
+  return { path: out, kind: "image", placeholder: true };
+}
+
 // ── Synthetic (no API keys) ───────────────────────────────────────────────────
 export function syntheticGenerationClient(opts = {}) {
   const W = opts.width || 1280, H = opts.height || 720, fps = opts.fps || 30;
@@ -59,6 +71,9 @@ export function syntheticGenerationClient(opts = {}) {
       await run(FFMPEG, ["-v", "error", "-y", "-f", "lavfi", "-i",
         `color=c=${color}:s=${W}x${H}`, "-frames:v", "1", out]);
       return { path: out, kind: "image" };
+    },
+    async placeholderImage(scene, tmpDir) {
+      return makePlaceholder(tmpDir, scene.sceneIndex, W, H);
     },
   };
 }
@@ -163,6 +178,12 @@ export function httpGenerationClient(opts = {}) {
       // /veo/stream returns the MP4 bytes directly (and self-retries if still encoding)
       await getBytes(`${PYTHON_API}/veo/stream/${task_id}`, h, out);
       return { path: out, kind: "clip" };
+    },
+
+    // Last-resort local still — the worker calls this when both the real image and
+    // (for clips) the clip→image fallback are unavailable, so the video completes.
+    async placeholderImage(scene, tmpDir) {
+      return makePlaceholder(tmpDir, scene.sceneIndex, opts.width, opts.height);
     },
   };
 }

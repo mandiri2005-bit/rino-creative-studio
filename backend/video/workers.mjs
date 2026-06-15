@@ -104,6 +104,18 @@ export async function audioProcessor(job, deps) {
   }
 }
 
+// Last-resort visual: a local placeholder card so a scene with no real image
+// still completes (visualStatus="fallback"). If the client can't make one (an
+// old mock), preserve the original behaviour and let the failure propagate.
+async function placeholderVisual(deps, base, tmpDir, cause) {
+  if (typeof deps.generationClient.placeholderImage !== "function") throw cause;
+  const v = await deps.generationClient.placeholderImage(base, tmpDir);
+  v.kind = "image";
+  v.fellBack = true;
+  v.fallbackReason = `placeholder: ${cause.message}`;
+  return v;
+}
+
 export async function visualProcessor(job, deps) {
   const { jobId, sceneIndex } = job.data;
   try {
@@ -123,19 +135,30 @@ export async function visualProcessor(job, deps) {
     let v;
     try {
       v = await deps.generationClient.generateVisual(base, tmpDir);
-    } catch (clipErr) {
+    } catch (primaryErr) {
+      // Tier 1 — a failed CLIP retries as a real image (stretches to any length).
       if (scene.kind === "clip") {
-        // graceful fallback: a failed clip becomes an image (stretches to any length)
-        v = await deps.generationClient.generateVisual({ ...base, kind: "image" }, tmpDir);
-        v.kind = "image";
-        v.fellBack = true;
-      } else throw clipErr;
+        try {
+          v = await deps.generationClient.generateVisual({ ...base, kind: "image" }, tmpDir);
+          v.kind = "image";
+          v.fellBack = true;
+          v.fallbackReason = `clip→image: ${primaryErr.message}`;
+        } catch (imgErr) {
+          // Tier 2 — even the image retry failed: degrade to a placeholder card.
+          v = await placeholderVisual(deps, base, tmpDir, imgErr);
+        }
+      } else {
+        // A scene that was ALREADY an image and failed: degrade to a placeholder
+        // card so one bad generation degrades a single scene, not the whole video.
+        v = await placeholderVisual(deps, base, tmpDir, primaryErr);
+      }
     }
     const up = await maybeUpload(jobId, meta.tenantId, v.kind === "clip" ? "video" : "images", v.path);
     await deps.store.setSceneFields(jobId, sceneIndex, {
       visualStatus: v.fellBack ? "fallback" : "done", visualPath: up.path, visualKey: up.key, visualKind: v.kind,
+      ...(v.fellBack && v.fallbackReason ? { visualError: v.fallbackReason } : {}),
     });
-    return { sceneIndex };
+    return { sceneIndex, ...(v.fellBack ? { fellBack: true } : {}) };
   } catch (e) {
     await deps.store.setSceneFields(jobId, sceneIndex, { visualStatus: "failed", visualError: e.message }).catch(() => {});
     return { sceneIndex, failed: e.message };

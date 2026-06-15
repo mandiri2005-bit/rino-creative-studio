@@ -1815,7 +1815,14 @@ def _generate_chat_image(prompt: str, model: str, aspect_ratio: str,
     r = _requests.post(f"{IMAGE_URL}/chat/completions",
                        headers=_img_headers(key), json=payload, timeout=180)
     r.raise_for_status()
-    body = r.json()["choices"][0]["message"]["content"]
+    _j = r.json()
+    try:
+        body = _j["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        # malformed/blocked upstream response (choices null/empty) — clean 502, not a raw 500
+        raise HTTPException(502, f"image provider returned no choices (chat): {str(_j)[:250]}")
+    if not body:
+        raise HTTPException(502, f"image provider returned empty content (chat): {str(_j)[:250]}")
 
     if returns_url:
         m = re.search(r'!\[.*?\]\((https?://[^)]+)\)', body)
@@ -1851,7 +1858,20 @@ def _generate_google(prompt: str, model: str, aspect_ratio: str,
     }
     r = _requests.post(url, headers=_img_headers(key), json=payload, timeout=180)
     r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+    body = r.json()
+    # Gemini returns no image when the prompt trips a safety/recitation block:
+    # candidates/parts come back null or empty. Don't blind-subscript (that throws
+    # a raw "'NoneType' object is not subscriptable" 500) — raise a clean, retryable
+    # 502 the caller can fall back on.
+    try:
+        for part in (body.get("candidates") or [{}])[0].get("content", {}).get("parts") or []:
+            data = (part.get("inlineData") or part.get("inline_data") or {}).get("data")
+            if data:
+                return data
+    except (KeyError, IndexError, TypeError, AttributeError):
+        pass
+    reason = ((body.get("candidates") or [{}])[0] or {}).get("finishReason") if isinstance(body, dict) else None
+    raise HTTPException(502, f"image provider returned no image (google{', '+str(reason) if reason else ''}): {str(body)[:250]}")
 
 
 def _generate_openai_image(prompt: str, model: str, aspect_ratio: str,
@@ -1888,7 +1908,11 @@ def _generate_openai_image(prompt: str, model: str, aspect_ratio: str,
     r = _requests.post(f"{IMAGE_URL}/images/generations",
                        headers=_img_headers(key), json=payload, timeout=180)
     r.raise_for_status()
-    item = r.json()["data"][0]
+    _j = r.json()
+    try:
+        item = _j["data"][0]
+    except (KeyError, IndexError, TypeError):
+        raise HTTPException(502, f"image provider returned no data (openai): {str(_j)[:250]}")
 
     if returns_url:
         img_r = _requests.get(item["url"], timeout=60)
@@ -1961,7 +1985,11 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
     r = _requests.post(f"{IMAGE_URL}/images/generations",
                        headers=_img_headers(IMAGE_API_KEY), json=payload, timeout=180)
     r.raise_for_status()
-    image_url = r.json()["data"][0]["url"]
+    _j = r.json()
+    try:
+        image_url = _j["data"][0]["url"]
+    except (KeyError, IndexError, TypeError):
+        raise HTTPException(502, f"image provider returned no data (seedream): {str(_j)[:250]}")
     img_r = _requests.get(image_url, timeout=60)
     img_r.raise_for_status()
     return _b64.b64encode(img_r.content).decode()
@@ -1990,25 +2018,47 @@ async def generate_image(req: ImageRequest,
         ep = cfg.get("extra_params") or {}
         smap = cfg.get("size_map_vip")
 
-        if api == "chat-image-url":
-            b64 = _generate_chat_image(req.prompt, mdl, req.aspect_ratio,
-                                       req.ref_image, returns_url=True, key=key)
-        elif api == "chat-image-b64":
-            b64 = _generate_chat_image(req.prompt, mdl, req.aspect_ratio,
-                                       req.ref_image, returns_url=False, key=key)
-        elif api == "google":
-            b64 = _generate_google(req.prompt, mdl, req.aspect_ratio,
-                                   req.image_size, req.ref_image, key=key)
-        elif api == "seedream":
-            b64 = _generate_seedream(req.prompt, mdl, req.ref_image)
-        elif api in ("openai-image", "openai-image-url"):
-            b64 = _generate_openai_image(
-                req.prompt, mdl, req.aspect_ratio, req.image_size,
-                req.ref_image, extra_params=ep, size_map_vip=smap,
-                returns_url=(api == "openai-image-url"), key=key,
-            )
-        else:
-            raise HTTPException(400, f"Unknown API type: {api}")
+        def _dispatch():
+            if api == "chat-image-url":
+                return _generate_chat_image(req.prompt, mdl, req.aspect_ratio,
+                                            req.ref_image, returns_url=True, key=key)
+            elif api == "chat-image-b64":
+                return _generate_chat_image(req.prompt, mdl, req.aspect_ratio,
+                                            req.ref_image, returns_url=False, key=key)
+            elif api == "google":
+                return _generate_google(req.prompt, mdl, req.aspect_ratio,
+                                        req.image_size, req.ref_image, key=key)
+            elif api == "seedream":
+                return _generate_seedream(req.prompt, mdl, req.ref_image)
+            elif api in ("openai-image", "openai-image-url"):
+                return _generate_openai_image(
+                    req.prompt, mdl, req.aspect_ratio, req.image_size,
+                    req.ref_image, extra_params=ep, size_map_vip=smap,
+                    returns_url=(api == "openai-image-url"), key=key,
+                )
+            else:
+                raise HTTPException(400, f"Unknown API type: {api}")
+
+        # Flaky upstream (a transient 5xx, a SAFETY/recitation block that clears on
+        # a reword-free re-try) is common — attempt up to 3x with light backoff
+        # before surfacing the error. The video worker degrades the scene to a
+        # placeholder on a hard failure, but a retry usually avoids that entirely.
+        b64 = None
+        last_exc = None
+        for _attempt in range(3):
+            try:
+                b64 = _dispatch()
+                break
+            except HTTPException as he:
+                last_exc = he
+                if he.status_code in (400, 401, 402, 403):
+                    raise  # not transient — bad request / auth / quota
+                await asyncio.sleep(0.6 * (_attempt + 1))
+            except _requests.RequestException as rexc:
+                last_exc = HTTPException(502, f"image upstream error: {str(rexc)[:200]}")
+                await asyncio.sleep(0.6 * (_attempt + 1))
+        if b64 is None:
+            raise last_exc or HTTPException(502, "image generation failed after retries")
 
         await _capture_image_flow(user, req.model, "generate_image", [b64])
         if user:
