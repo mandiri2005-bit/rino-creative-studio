@@ -1508,7 +1508,7 @@ function VeoSection({settings,showToast}){
       const p=VEO_PRESETS[preset];
       const _validM=lzModel?VEO_LZ_MODELS:VEO_NATIVE_MODELS, _useModel=_validM.includes(model)?model:_validM[0];
       const _sendKey=lzModel?key:"";   // lzModel off → no LaoZhang key → server routes to Google Native
-      const r=await api.veoSubmit({prompt,model:_useModel,preset,negative_prompt:negative,ref_image_b64:refB64,ref_image_mime:refMime,size:p.size,seconds:p.seconds},_sendKey);
+      const r=await api.veoSubmit({prompt,model:_useModel,preset,negative_prompt:negative,ref_image_b64:refB64,ref_image_mime:refMime,size:p.size,seconds:p.seconds,provider:lzModel?"laozhang":"google"},_sendKey);
       if(r.error)throw new Error(r.error);
       setTasks(prev=>[{taskId:r.task_id,status:r.status||"queued",label:prompt.slice(0,40),preset:p.label},...prev]);
       showToast("Video task submitted","ok");
@@ -1921,6 +1921,7 @@ function FlowSection({settings,showToast}){
         body:JSON.stringify({
           prompt:scene.description+(scene.camera?" Camera: "+scene.camera:"")+(scene.audio?" Audio: "+scene.audio:""),
           model:_veoModel,
+          provider:apiMode==="laozhang"?"laozhang":"google",
           ref_image_b64:b64,
           ref_image_mime:mime
         })});

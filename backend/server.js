@@ -1437,21 +1437,30 @@ app.post("/api/flow/images/lz",          (req,res)=>pyProxy(req,res,"/flow/image
 // ══════════════════════════════════════════════════════════════════════════════
 // ── Veo: DEFAULT Google (Gemini); a LaoZhang key (X-Veo-API-Key) overrides ────
 app.post("/api/veo/submit", async (req,res)=>{
+  // Provider is chosen EXPLICITLY by the UI (main-Veo "LaoZhang model" checkbox /
+  // Flow apiMode toggle) via body.provider — NOT inferred from key presence.
+  // Legacy fallback: a LaoZhang key present → LaoZhang, else Google.
+  const provider = String(req.body?.provider||"").toLowerCase();
   const lzKey = (req.headers["x-veo-api-key"]||"").trim();
-  if (lzKey) return pyProxy(req,res,"/veo/submit");            // LaoZhang override
-  try {                                                        // default: Google
+  const goLaoZhang = provider==="laozhang" || (provider!=="google" && !!lzKey);
+  if (goLaoZhang) return pyProxy(req,res,"/veo/submit");       // LaoZhang (Python meters it as provider=laozhang)
+  try {                                                        // Google
     const tenantId = resolveTenantId(req);
     const userId   = await resolveUserId(req, tenantId);
     const b = req.body || {};
     const aspect = (b.preset && typeof b.preset==="object" && b.preset.aspectRatio) || b.aspect || "16:9";
-    res.json(await googleVeoSubmit({
+    const out = await googleVeoSubmit({
       prompt:b.prompt, model:b.model, refB64:b.ref_image_b64, refMime:b.ref_image_mime,
       negativePrompt:b.negative_prompt, aspectRatio:aspect, googleKey:(b.google_api_key||"").trim(),
-      tenantId, userId }));
+      tenantId, userId });
+    // usage row with the CORRECT provider (google) — was mislabeled laozhang.
+    // cost 0 for now (no Google Veo price wired) → 0 credits charged.
+    try { await logUsage(tenantId, userId, b.model||"veo", "video", 0, 0, 0, null, "google", null); } catch(_){}
+    res.json(out);
   } catch(e){
     const noKey = e.code==="no_google_key";
     res.status(noKey?400:502).json({ error: noKey
-      ? "No Google API key — set GEMINI_API_KEY on the server, or enter a LaoZhang key to use LaoZhang Veo"
+      ? "No Google API key — set GEMINI_API_KEY on the server, or pick a LaoZhang model"
       : "Google Veo: "+String(e.message||e).slice(0,300) });
   }
 });
