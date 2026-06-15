@@ -186,7 +186,7 @@ export function httpGenerationClient(opts = {}) {
         const r = await fetch(`${PYTHON_API}/generate-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...h },
-          body: JSON.stringify({ model: scene.imageModel || "nano-banana-hd", prompt: scene.visualPrompt, aspect_ratio: scene.aspectRatio || "16:9", seed: scene.seed || 0 }),
+          body: JSON.stringify({ model: scene.imageModel || "nano-banana-hd", prompt: scene.visualPrompt, aspect_ratio: scene.aspectRatio || "16:9", seed: scene.seed || 0, ref_image: scene.refImage || "" }),
         });
         if (!r.ok) throw new Error(`image ${r.status}: ${(await r.text()).slice(0, 150)}`);
         const data = await r.json();

@@ -94,6 +94,7 @@ export async function startAssembly(ctx, deps) {
     jobId, tenantId, userId, scenes, tier = "hd",
     clipModel = "veo3", visualMode = "hybrid", captions = false,
     voice, imageModel, ttsModel, language, aspectRatio = "16:9", captionFont,
+    anchorKey, anchorB64,
   } = ctx;
   if (!jobId) throw new Error("startAssembly: jobId required");
   if (!scenes?.length) throw new Error("startAssembly: scenes required");
@@ -118,6 +119,7 @@ export async function startAssembly(ctx, deps) {
     voice: voice || "", imageModel: imageModel || "",
     ttsModel: ttsModel || "", language: language || "", aspectRatio,
     captionFont: captionFont || "",
+    anchorKey: anchorKey || "", anchorB64: anchorB64 || "",
     sceneCount: scenes.length, batchSize: 10, batchPlan,
     status: "running", progress: 0, creditsEstimate: creditsNeeded,
     scenes,

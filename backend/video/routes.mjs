@@ -47,6 +47,29 @@ function genJobId() {
   return `vid_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Generate the per-video reference anchor from the art-direction brief. Stored in R2
+// (workers download it once) or returned inline when R2 isn't configured. Metered to
+// the caller via their Authorization header.
+async function generateAnchorImage(brief, imageModel, aspectRatio, authHeader, tenantId, jobId) {
+  const prompt = (`${brief}. A clean, well-lit reference image of the main character and ` +
+    `setting — the canonical look every scene must match. Single clear subject, neutral composition.`).slice(0, 560);
+  const r = await fetch(`${PYTHON_API}/generate-image`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(authHeader && { Authorization: authHeader }) },
+    body: JSON.stringify({ model: imageModel || "nano-banana-hd", prompt, aspect_ratio: aspectRatio || "16:9" }),
+  });
+  if (!r.ok) throw new Error(`generate-image ${r.status}: ${(await r.text()).slice(0, 120)}`);
+  const data = await r.json();
+  const b64 = data.image_b64 || data.b64 || data.data?.[0]?.b64_json;
+  if (!b64) throw new Error("no image in anchor response");
+  if (storage.isConfigured?.()) {
+    const key = storage.buildKey(tenantId, jobId, "anchor", "anchor.png");
+    await storage.uploadBytes(key, Buffer.from(b64, "base64"), "image/png");
+    return { key };
+  }
+  return { b64 };
+}
+
 /**
  * Mount the routes. Pass the host app's auth middleware + tenant/user resolvers
  * (from server.js) so the engine inherits the same identity model.
@@ -69,13 +92,24 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
       // resolveUserId needs the tenant to scope the lookup + RLS context — every
       // other caller passes it; omitting it returns null for real Clerk users.
       const userId = resolveUserId ? await resolveUserId(req, tenantId) : (b.userId || tenantId);
+      const jobId = genJobId();
+      // Reference-image consistency: generate ONE anchor from the brief up front, so
+      // every scene (rendered in PARALLEL) can use it as ref_image — the anchor is
+      // ready before the fan-out, so parallelism is preserved.
+      let anchorKey = null, anchorB64 = null;
+      if (b.refMode && (b.brief || "").trim()) {
+        try {
+          const a = await generateAnchorImage(b.brief, b.imageModel, b.aspectRatio, req.headers.authorization, tenantId, jobId);
+          anchorKey = a.key; anchorB64 = a.b64;
+        } catch (e) { console.warn(`[anchor ${jobId}] failed (non-fatal): ${e.message}`); }
+      }
       const result = await startAssembly({
-        jobId: genJobId(), tenantId, userId, scenes,
+        jobId, tenantId, userId, scenes,
         tier: b.tier || "hd", clipModel: b.clipModel || "veo3",
         visualMode: b.visualMode || "hybrid", captions: !!b.captions,
         voice: b.voice, imageModel: b.imageModel,
         ttsModel: b.ttsModel, language: b.language, aspectRatio: b.aspectRatio,
-        captionFont: b.captionFont,
+        captionFont: b.captionFont, anchorKey, anchorB64,
       }, deps());
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {

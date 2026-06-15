@@ -294,6 +294,8 @@
         <option value="Noto Sans">Noto Sans</option>
       </select>
 
+      <label class="chk"><input type="checkbox" id="refMode"/> Karakter konsisten (reference image)</label>
+
       <details class="adv">
         <summary>Lanjutan — bahasa, model</summary>
         <div class="row">
@@ -394,7 +396,7 @@
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",jobId:null,poll:null};
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -431,6 +433,7 @@
   $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
   $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
   $("#captionFont").onchange=e=>state.captionFont=e.target.value;
+  $("#refMode").onchange=e=>state.refMode=e.target.checked;
   $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
   $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
   $("#ttsSel")&&($("#ttsSel").onchange=e=>state.ttsModel=e.target.value);
@@ -477,12 +480,13 @@
       const scenes=seg.scenes||[];
       if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
       state.narrationText=scenes.map(s=>s.text||"").join("  ");   // for the teleprompter
+      state.brief=seg.brief||"";   // art-direction brief → reference anchor (when refMode)
       renderStage({status:"dispatching",scenes});
       // 2) assemble
       const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
         scenes, tier:state.tier, clipModel:state.clipModel, visualMode:state.visualMode, captions:state.captions,
         ttsModel:state.ttsModel, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
-        imageModel:state.imageModel,
+        imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
       })});
       state.jobId=asm.jobId;
       pollJob(asm);

@@ -6067,6 +6067,7 @@ async def video_segment(req: VideoSegmentReq,
                                scene_context=_brief)
 
     out = result.to_dict()
+    out["brief"] = _brief   # the art-direction brief → the UI builds a reference anchor from it
     if req.visual_mode:   # one-shot: segment + decide the visual treatment
         out["scenes"] = await _decide(out["scenes"], req.visual_mode, req.clip_model, req.clip_ratio, user=user)
         out["visual_mode"] = req.visual_mode

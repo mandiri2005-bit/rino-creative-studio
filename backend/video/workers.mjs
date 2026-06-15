@@ -122,6 +122,35 @@ export async function audioProcessor(job, deps) {
   }
 }
 
+// The per-video reference anchor (base64), resolved once per job and cached. It
+// comes inline in meta (no R2) or is downloaded from meta.anchorKey. Each scene
+// passes it as ref_image so every image shares the anchor's character/look.
+const _anchorCache = new Map(); // jobId -> base64 | null
+async function resolveAnchor(jobId, tmpDir, meta) {
+  if (_anchorCache.has(jobId)) return _anchorCache.get(jobId);
+  let b64 = null;
+  try {
+    if (meta.anchorB64) {
+      b64 = meta.anchorB64;
+    } else if (meta.anchorKey) {
+      const local = join(tmpDir, "anchor.png");
+      if (!existsSync(local)) {
+        const s = await storage();
+        if (s) {
+          const { writeFile } = await import("node:fs/promises");
+          await writeFile(local, await s.downloadBytes(meta.anchorKey));
+        }
+      }
+      if (existsSync(local)) {
+        const { readFile } = await import("node:fs/promises");
+        b64 = (await readFile(local)).toString("base64");
+      }
+    }
+  } catch (e) { console.warn(`[anchor ${jobId}] resolve failed: ${e.message}`); }
+  _anchorCache.set(jobId, b64);
+  return b64;
+}
+
 // Diverse-provider image fallbacks: if the chosen model's provider is flaky or
 // content-blocks the prompt, a DIFFERENT provider usually succeeds — so a failed
 // scene still gets a REAL image instead of a placeholder. Ordered across providers
@@ -165,11 +194,13 @@ export async function visualProcessor(job, deps) {
     if (scene.visualStatus === "done" || scene.visualStatus === "fallback") return { skipped: "already-done" };
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
+    const refImage = await resolveAnchor(jobId, tmpDir, meta);  // per-video reference (or null)
     const base = {
       jobId, sceneIndex, kind: scene.kind, visualPrompt: scene.visualPrompt,
       estSeconds: Number(scene.estSeconds), clipModel: meta.clipModel,
       imageModel: meta.imageModel || undefined, aspectRatio: meta.aspectRatio || "16:9",
       seed: hashSeed(jobId),   // same seed for all scenes of this video → steadier look
+      refImage: refImage || undefined,   // anchor → ref_image on image gen (consistent character)
       tenantId: meta.tenantId, userId: meta.userId,
     };
     let v;
