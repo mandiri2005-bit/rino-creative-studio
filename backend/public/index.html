@@ -4960,6 +4960,9 @@ function NarasiSection({settings,showToast}){
   // (the "AI Model" pick) so one choice applies everywhere; override to a stronger
   // model (e.g. claude-sonnet) for a better final polish.
   const[managerModel,setManagerModel]=useState(()=>localStorage.getItem("rc_nar_manager")||"");
+  // Dalang only: how many bab-workers run concurrently (the orchestrator semaphore
+  // cap). Higher = faster for many chapters, but risks upstream rate-limits. Default 6.
+  const[maxWorkers,setMaxWorkers]=useState(()=>Math.min(10,Math.max(1,Number(localStorage.getItem("rc_nar_maxworkers")||6))));
   const[chatModel,setChatModel]=useState(()=>localStorage.getItem("rc_nar_model")||"gemini-2.5-flash");
   const[freeModel,setFreeModel]=useState(()=>localStorage.getItem("rc_nar_freemodel")==="true");
   const[googleKey,setGoogleKey]=useState(()=>localStorage.getItem("rc_nar_gkey")||"");
@@ -5240,6 +5243,7 @@ function NarasiSection({settings,showToast}){
           brief, outline:outlineText,
           worker_model: chatModel,
           manager_model: managerModel || chatModel,   // "" → follow the worker pick (no surprise Claude)
+          max_workers: maxWorkers,                     // orchestrator semaphore cap (parallel bab)
           rag: useRag?"on":"off",   // _Settings expects the string "on"/"off", not a bool
           pre_job_id: preJobId,
         });
@@ -5517,6 +5521,17 @@ function NarasiSection({settings,showToast}){
           {freeModelGroups.map(t=><optgroup key={t.tier} label={t.tier}>{t.models.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}</optgroup>)}
         </select>
         <span style={{fontSize:11,color:"var(--tf)",flex:1,minWidth:180,lineHeight:1.4}}>Model buat polish/synthesize gabungan di akhir (jalan 1× setelah semua bab). Default ikut worker — ganti ke model kuat (mis. claude-sonnet) kalau mau poles lebih bagus.</span>
+      </div>
+    )}
+
+    {engine==="dalang"&&(
+      <div className="card" style={{marginBottom:14,padding:"10px 14px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <span style={{fontSize:13,fontWeight:700}}>👥 Worker paralel</span>
+        <input type="range" min={1} max={10} step={1} value={maxWorkers}
+          onChange={e=>{const v=Number(e.target.value);setMaxWorkers(v);localStorage.setItem("rc_nar_maxworkers",String(v));}}
+          style={{flex:1,minWidth:140,maxWidth:280,accentColor:"var(--ac2)",cursor:"pointer"}}/>
+        <span style={{fontSize:15,fontWeight:800,minWidth:26,textAlign:"center",color:"var(--ac2)"}}>{maxWorkers}</span>
+        <span style={{fontSize:11,color:"var(--tf)",flex:1,minWidth:180,lineHeight:1.4}}>Berapa bab digarap barengan (cap semaphore). Makin tinggi = makin cepat buat banyak bab, tapi risiko kena rate-limit upstream. Default 6.</span>
       </div>
     )}
 
