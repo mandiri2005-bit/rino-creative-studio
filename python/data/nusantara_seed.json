@@ -2313,5 +2313,45 @@
       "mitologi",
       "islam"
     ]
+  },
+  {
+    "id": "perempuan-wanita-cewek-indonesia",
+    "category": "orang",
+    "subject": "Perempuan Indonesia",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "Perempuan Indonesia autentik: fitur wajah Asia Tenggara/Nusantara asli (BUKAN default wajah Barat atau Korea); kulit beragam — sawo matang hangat, kuning langsat, hingga kecoklatan; rambut hitam atau coklat tua, lurus atau bergelombang; mata coklat, alis natural, tulang pipi lembut, senyum ramah hangat; riasan tipis natural; keragaman etnis Nusantara (Jawa, Sunda, Minang, Batak, Bugis, Bali, Papua, dll.); kecantikan natural dan membumi",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "perempuan",
+      "wanita",
+      "cewek",
+      "cantik",
+      "indonesia",
+      "orang",
+      "wajah"
+    ]
+  },
+  {
+    "id": "laki-pria-cowok-indonesia",
+    "category": "orang",
+    "subject": "Laki-laki Indonesia",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "Laki-laki Indonesia autentik: fitur wajah Asia Tenggara/Nusantara asli (BUKAN default wajah Barat); kulit sawo matang hangat sampai kuning langsat, rambut hitam lurus atau sedikit bergelombang, kadang berkumis/berjanggut tipis; ekspresi ramah membumi; beragam etnis Nusantara (Jawa, Sunda, Batak, Minang, Bugis, Papua, dll.); tampilan natural khas orang Indonesia",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "laki-laki",
+      "pria",
+      "cowok",
+      "ganteng",
+      "indonesia",
+      "orang",
+      "wajah"
+    ]
   }
 ]
