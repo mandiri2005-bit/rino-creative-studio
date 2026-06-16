@@ -1,0 +1,45 @@
+name: Google Cloud AI Workflow
+
+on:
+  push:
+    branches: [ "main" ] # Berjalan setiap kali Anda push ke branch main
+
+jobs:
+  run-ai-task:
+    runs-on: ubuntu-latest
+
+    # PERMISSIONS INI WAJIB UNTUK WORKLOAD IDENTITY
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - name: Checkout Repository
+      uses: 'actions/checkout@v4'
+
+    # 1. AUTENTIKASI KE GOOGLE CLOUD
+    - id: 'auth'
+      name: 'Authenticate to Google Cloud'
+      uses: 'google-github-actions/auth@v2'
+      with:
+        # Ganti [NAMA_PROVIDER] dengan ID Provider yang Anda buat (tadi Anda tulis "git")
+        workload_identity_provider: 'projects/668827416965/locations/global/workloadIdentityPools/culun-git-pool/providers/git'
+        # Ganti dengan email Service Account Anda
+        service_account: 'culun2014@project-7cfa445c-bf78-4f37-bf5.iam.gserviceaccount.com'
+
+    # 2. SETUP GCLOUD SDK
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v2'
+
+    # 3. TES TTS (TEXT-TO-SPEECH)
+    - name: 'Test Text-to-Speech API'
+      run: |
+        # Perintah ini akan melist suara yang tersedia sebagai bukti koneksi sukses
+        gcloud ml tts voices list --limit=5
+
+    # 4. (OPSIONAL) JALANKAN SCRIPT PYTHON UNTUK GENERATE IMAGE/TTS
+    - name: 'Run Python Script'
+      run: |
+        pip install google-cloud-text-to-speech google-cloud-aiplatform
+        # Jika Anda punya file script.py untuk generate Nano Banana, jalankan di sini:
+        # python script.py
