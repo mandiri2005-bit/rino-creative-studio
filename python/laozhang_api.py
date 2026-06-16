@@ -6476,19 +6476,34 @@ async def generate_image_vertex(req: VertexImageRequest):
             resp = client.models.generate_content(
                 model=req.model,
                 contents=prompt,
-                config=_gtypes.GenerateContentConfig(response_modalities=["IMAGE"]),
+                config=_gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
             )
             img_bytes = None
+            text_out = []
             for cand in (resp.candidates or []):
                 for part in (getattr(cand.content, "parts", None) or []):
                     inline = getattr(part, "inline_data", None)
                     if inline and getattr(inline, "data", None):
                         img_bytes = inline.data
                         break
+                    if getattr(part, "text", None):
+                        text_out.append(part.text)
                 if img_bytes:
                     break
             if not img_bytes:
-                raise HTTPException(502, f"{req.model} returned no image (check availability in project/location {GCP_LOCATION})")
+                # Model responded but no image part — surface WHY (no secrets, just model output).
+                try:
+                    fr = str(resp.candidates[0].finish_reason) if resp.candidates else "no-candidates"
+                except Exception:
+                    fr = "unknown"
+                pf = ""
+                try:
+                    if getattr(resp, "prompt_feedback", None):
+                        pf = f" prompt_feedback={resp.prompt_feedback}"
+                except Exception:
+                    pass
+                snippet = (" ".join(text_out))[:200]
+                raise HTTPException(502, f"{req.model} returned no image @ {GCP_LOCATION} — finish_reason={fr}{pf}; text={snippet!r}")
             return {"image_b64": base64.b64encode(img_bytes).decode(), "model": req.model}
         except HTTPException:
             raise
