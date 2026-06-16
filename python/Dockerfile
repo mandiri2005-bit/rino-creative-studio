@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir \
     asyncpg \
     python-dotenv
 
-# Copy top-level .py files (laozhang_api.py, narration_api.py etc.) + server-side data
+# Copy top-level .py files (laozhang_api.py, narration_api.py etc.)
 COPY *.py ./
 # Project Dalang packages — subdirectories are NOT matched by `COPY *.py`, so they
 # must be copied explicitly or the orchestrator/pakem engine is missing at runtime
@@ -33,6 +33,10 @@ COPY orchestrator/ ./orchestrator/
 COPY pakem/ ./pakem/
 COPY eval/ ./eval/
 COPY review_personas.json ./
+# Nusantara Corpus seed + ref images. NOT matched by `COPY *.py`, so without this
+# data/nusantara_seed.json is absent at runtime → _load_seed() empty → BM25 retrieval
+# returns nothing (the corpus silently does nothing on the BM25 path).
+COPY data/ ./data/
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

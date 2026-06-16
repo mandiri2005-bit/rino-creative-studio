@@ -506,5 +506,43 @@
       "jawa",
       "nasional"
     ]
+  },
+  {
+    "id": "monas",
+    "category": "arsitektur",
+    "subject": "Monas (Monumen Nasional)",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Monas (Monumen Nasional), ikon Jakarta Pusat di tengah Lapangan/Taman Merdeka; tugu marmer putih menjulang sekitar 132 meter, batang berbentuk persegi meruncing ke atas (melambangkan lingga-yoni); PUNCAKNYA WAJIB berupa lidah api/obor berlapis lembaran emas asli yang berkilau keemasan — bukan spire abu-abu polos; pelataran cawan persegi lebar di dasar dengan museum di bawahnya; dikelilingi taman hijau luas, air mancur, dan langit kota; menjulang jelas terlihat dari kejauhan di atas kota Jakarta",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "arsitektur",
+      "monumen",
+      "tugu",
+      "jakarta",
+      "ikon",
+      "nasional"
+    ]
+  },
+  {
+    "id": "ondel-ondel",
+    "category": "budaya",
+    "subject": "Ondel-ondel",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Ondel-ondel, boneka raksasa khas Betawi (Jakarta), tinggi sekitar 2,5 meter; rangka anyaman bambu yang dipikul dan ditarikan oleh orang di dalamnya; tampil SEPASANG — laki-laki bertopeng wajah MERAH dengan kumis dan ekspresi gagah, perempuan bertopeng wajah PUTIH yang anggun; hiasan kepala 'kembang kelapa' warna-warni menjuntai seperti rumbai; mengenakan pakaian adat Betawi berwarna cerah; biasa diarak di hajatan dan pesta rakyat diiringi musik tanjidor atau gambus",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "budaya",
+      "betawi",
+      "jakarta",
+      "boneka",
+      "ikon",
+      "pertunjukan"
+    ]
   }
 ]
