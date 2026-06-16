@@ -6473,10 +6473,22 @@ async def generate_image_vertex(req: VertexImageRequest):
                 location=GCP_LOCATION,
                 credentials=_gcp_creds,
             )
+            # Aspect ratio: gemini-*-image honors image_config.aspect_ratio on newer
+            # SDKs; older ones lack ImageConfig → bias via a prompt hint instead.
+            _ar = (req.aspect_ratio or "1:1").strip()
+            try:
+                _gen_cfg = _gtypes.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                    image_config=_gtypes.ImageConfig(aspect_ratio=_ar),
+                )
+            except Exception:
+                _gen_cfg = _gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
+                if _ar and _ar != "1:1":
+                    prompt = f"{prompt}\n\nComposition: full-frame {_ar} aspect ratio."
             resp = client.models.generate_content(
                 model=req.model,
                 contents=prompt,
-                config=_gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+                config=_gen_cfg,
             )
             img_bytes = None
             text_out = []

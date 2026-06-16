@@ -544,5 +544,43 @@
       "ikon",
       "pertunjukan"
     ]
+  },
+  {
+    "id": "grab",
+    "category": "jalanan",
+    "subject": "Ojek Online Grab",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "Pengemudi ojek online Grab Indonesia; jaket dan helm HIJAU TERANG khas Grab dengan logo Grab putih; mengendarai sepeda motor matic; sering memakai masker, menunggu orderan sambil melihat HP; fenomena ojek online modern (2015+) di kota-kota Indonesia; BERBEDA dari ojek pangkalan tradisional — ini aplikasi, seragam korporat hijau",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jalanan",
+      "transportasi",
+      "ojek online",
+      "grab",
+      "jakarta",
+      "modern"
+    ]
+  },
+  {
+    "id": "gojek",
+    "category": "jalanan",
+    "subject": "Ojek Online Gojek",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "Pengemudi ojek online Gojek Indonesia; jaket HIJAU TUA khas Gojek dengan aksen dan logo Gojek, helm hijau; mengendarai sepeda motor matic, kadang membawa tas/box pengantaran GoFood di belakang; fenomena ojek online modern di kota Indonesia; ikon transportasi urban masa kini; BERBEDA dari ojek pangkalan — seragam korporat hijau, berbasis aplikasi",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jalanan",
+      "transportasi",
+      "ojek online",
+      "gojek",
+      "jakarta",
+      "modern"
+    ]
   }
 ]
