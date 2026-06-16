@@ -45,32 +45,71 @@ def _seed_by_id() -> dict[str, dict]:
     return {ex["id"]: ex for ex in _load_seed()}
 
 
-# ── BM25-lite fallback ───────────────────────────────────────────────────
+# ── BM25-lite fallback (IDF-weighted + relative gate) ─────────────────────
+# Plain term-overlap let corpus-common words ("tukang", "jakarta") drag
+# irrelevant exemplars in. IDF down-weights common tokens so the *discriminative*
+# subject words (somay, jamu, ondel, monas) decide the match; a relative gate
+# then keeps only exemplars close to the best hit — so a 1-subject prompt returns
+# 1 and a 5-subject prompt returns 5, without relying on a magic top_k.
+_GATE_FRAC = 0.45   # keep candidates scoring >= 45% of the best hit
+_MIN_SCORE = 1.35   # absolute floor: a real subject match clears this (single-word
+                    # subjects score ~1.6+), but a generic/off-domain prompt matching
+                    # only a stray common word does not — so it injects nothing rather
+                    # than dumping loosely-related entries. Tuned for the current seed
+                    # size; the Qdrant ANN path (semantic) supersedes BM25 when active.
+
 def _tok(text: str) -> list[str]:
     return [t for t in re.findall(r"[a-z0-9]+", text.lower())
             if t not in _STOP and len(t) > 1]
 
-def _bm25(qt: list[str], doc: str) -> float:
-    dt = Counter(_tok(doc))
-    return sum(math.log(1 + dt[t]) for t in set(qt) if t in dt)
+@lru_cache(maxsize=1)
+def _corpus_docs() -> tuple:
+    """(exemplar, tokenized-doc) per seed entry. Subject counted twice = light boost."""
+    out = []
+    for ex in _load_seed():
+        doc = " ".join(filter(None, [
+            ex.get("subject", ""), ex.get("subject", ""),
+            ex.get("category", ""), ex.get("region", ""),
+            ex.get("visual_facts", ""), " ".join(ex.get("tags", [])),
+        ]))
+        out.append((ex, tuple(_tok(doc))))
+    return tuple(out)
+
+@lru_cache(maxsize=1)
+def _idf() -> dict:
+    docs = _corpus_docs()
+    n = len(docs) or 1
+    df = Counter()
+    for _, toks in docs:
+        for t in set(toks):
+            df[t] += 1
+    return {t: max(0.05, math.log(1 + (n - d + 0.5) / (d + 0.5))) for t, d in df.items()}
+
+def _score(qt: set, toks: tuple, idf: dict) -> float:
+    dt = Counter(toks)
+    s = 0.0
+    for t in qt:
+        tf = dt.get(t, 0)
+        if tf:
+            s += idf.get(t, 0.3) * (tf / (tf + 1.5))   # tf saturation
+    return s
 
 def _bm25_retrieve(query: str, top_k: int) -> list[dict]:
-    seed = _load_seed()
-    qt = _tok(query)
+    qt = set(_tok(query))
     if not qt:
         return []
-    scored = []
-    for ex in seed:
-        doc = " ".join(filter(None, [
-            ex.get("subject",""), ex.get("category",""),
-            ex.get("region",""), ex.get("visual_facts",""),
-            " ".join(ex.get("tags", []))
-        ]))
-        s = _bm25(qt, doc)
-        if s > 0:
-            scored.append((s, ex))
+    idf = _idf()
+    scored = [(s, ex) for ex, toks in _corpus_docs()
+              if (s := _score(qt, toks, idf)) > 0]
+    if not scored:
+        return []
     scored.sort(key=lambda x: -x[0])
-    return [ex for _, ex in scored[:top_k]]
+    top = scored[0][0]
+    if top < _MIN_SCORE:
+        return []                                   # no discriminative match → skip corpus
+    cut = max(_GATE_FRAC * top, _MIN_SCORE)
+    gated = [ex for s, ex in scored if s >= cut]
+    return gated[:top_k]
 
 
 # ── Gemini embedding ─────────────────────────────────────────────────────
@@ -111,8 +150,11 @@ def _qdrant_retrieve(query: str, top_k: int, api_key: str, qdrant_url: str,
         if not results:
             return []
         seed_idx = _seed_by_id()
+        top = results[0].get("score") or 0.0          # results are score-desc
         hits = []
         for pt in results:
+            if top > 0 and (pt.get("score") or 0.0) < _GATE_FRAC * top:
+                continue                                # same relative gate as BM25
             eid = pt.get("payload", {}).get("exemplar_id")
             if eid and eid in seed_idx:
                 hits.append(seed_idx[eid])
@@ -123,12 +165,14 @@ def _qdrant_retrieve(query: str, top_k: int, api_key: str, qdrant_url: str,
 
 
 # ── public retrieve ──────────────────────────────────────────────────────
-def retrieve(query: str, top_k: int = 2,
+def retrieve(query: str, top_k: int = 8,
              gemini_api_key: str | None = None,
              qdrant_url: str | None = None,
              qdrant_api_key: str | None = None) -> list[dict]:
     """
-    Return top-k exemplars. Tries Qdrant ANN first if configured, falls back to BM25.
+    Return matching exemplars (capped at top_k). Tries Qdrant ANN first if
+    configured, falls back to BM25. A relative score gate trims weak matches, so
+    the count adapts to the prompt (1 subject → ~1 hit, 5 subjects → ~5).
     """
     if gemini_api_key and qdrant_url:
         hits = _qdrant_retrieve(query, top_k, gemini_api_key, qdrant_url, qdrant_api_key or "")
@@ -166,7 +210,7 @@ def enhance_prompt(
     gemini_api_key: str | None = None,
     qdrant_url: str | None = None,
     qdrant_api_key: str | None = None,
-    top_k: int = 2,
+    top_k: int = 8,
 ) -> tuple[str, list[dict], str | None]:
     """
     Retrieve exemplars → build enhanced image prompt → load ref image.
