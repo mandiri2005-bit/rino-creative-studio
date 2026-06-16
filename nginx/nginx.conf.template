@@ -14,9 +14,9 @@ http {
     server_name _;
     root /usr/share/nginx/html; index index.html;
 
-    # index.html must always revalidate so deploys show up without a hard refresh
-    # (all app JS is inline in index.html — no hashed bundles to cache-bust).
+    # index.html files must always revalidate so deploys show up without a hard refresh
     location = /index.html { add_header Cache-Control "no-cache"; }
+    location = /app/index.html { add_header Cache-Control "no-cache"; }
 
     # public marketing landing (ceritaAI) is the site root; studio app stays at /index.html
     location = / { add_header Cache-Control "no-cache"; try_files /landing.html =404; }
