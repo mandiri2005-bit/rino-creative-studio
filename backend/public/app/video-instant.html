@@ -166,6 +166,22 @@ input:focus,textarea:focus,select:focus{
 *::-webkit-scrollbar{ width:9px;height:9px } *::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.12);border-radius:999px;border:2px solid transparent;background-clip:content-box }
 </style>
 
+<style>
+/* Dropdowns — match the admin console */
+select{
+  -webkit-appearance:none!important; appearance:none!important;
+  font-family:var(--fb)!important; font-size:14px; color:var(--t)!important; cursor:pointer;
+  background-color:rgba(0,0,0,.28)!important;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239aa6c4' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>")!important;
+  background-repeat:no-repeat!important; background-position:right 12px center!important; padding-right:34px!important;
+  border:1px solid var(--br)!important; border-radius:10px!important;
+  transition:border-color .15s ease, box-shadow .15s ease;
+}
+select:hover{ border-color:rgba(255,255,255,.18)!important; }
+select:focus{ outline:none!important; border-color:rgba(139,92,246,.55)!important; box-shadow:0 0 0 3px rgba(139,92,246,.16)!important; }
+select option{ background:#111019!important; color:var(--t)!important; }
+</style>
+
 </head>
 <body>
 <script>window.__CLERK_PK = "pk_test_cHJpbWUtYm9hci00NS5jbGVyay5hY2NvdW50cy5kZXYk"; window.__appReady = true;</script>
