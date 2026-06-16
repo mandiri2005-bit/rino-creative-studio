@@ -86,8 +86,11 @@ IMAGE_API_KEY = os.environ.get("LAOZHANG_IMAGE_API_KEY", API_KEY)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_DIRECT_MODELS = {"deepseek-v4-pro", "deepseek-r1"}
 
-# Direct Google key for Nusantara corpus text-enhance (optional — falls back to inline inject)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Direct Google key for Nusantara corpus text-enhance + Qdrant embedding
+GEMINI_API_KEY   = os.environ.get("GEMINI_API_KEY", "")
+# Qdrant cloud cluster for nusantara_visual_v1 (separate from legacy local qdrant:6333)
+QDRANT_CLOUD_URL = os.environ.get("QDRANT_CLOUD_URL", "")
+QDRANT_CLOUD_KEY = os.environ.get("QDRANT_CLOUD_KEY", "")
 
 BASE_URL = "https://api.laozhang.ai/v1"
 MCP_API_URL = os.environ.get("MCP_API_URL", "http://127.0.0.1:8001")  # mcp_files.py sidecar
@@ -1664,11 +1667,18 @@ async def generate_image(req: ImageRequest,
     # Always use IMAGE_API_KEY from env (LAOZHANG_IMAGE_API_KEY)
     key = IMAGE_API_KEY
 
-    # Nusantara corpus: enrich prompt with authentic visual_facts before image gen
+    # Nusantara corpus: enrich prompt + optionally supply ref image for conditioning
+    _nc_ref_b64: str | None = None
     if req.nusantara_corpus:
-        req.prompt, _nc_hits = _nc.enhance_prompt(
-            req.prompt, gemini_api_key=GEMINI_API_KEY or None
+        req.prompt, _nc_hits, _nc_ref_b64 = _nc.enhance_prompt(
+            req.prompt,
+            gemini_api_key=GEMINI_API_KEY or None,
+            qdrant_url=QDRANT_CLOUD_URL or None,
+            qdrant_api_key=QDRANT_CLOUD_KEY or None,
         )
+        # Use corpus ref image for conditioning only when caller provided none
+        if _nc_ref_b64 and not req.ref_image:
+            req.ref_image = _nc_ref_b64
 
     try:
         api = cfg["api"]

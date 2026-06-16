@@ -1,25 +1,39 @@
 """
-Nusantara Visual Corpus — Phase 1
-Seed-based BM25-lite retrieval + visual_facts injection for image prompt enhancement.
+Nusantara Visual Corpus
+Retrieval-enhanced image prompt engineering for Indonesian (Nusantara) cultural content.
 
-Phase 1: JSON seed file (python/data/nusantara_seed.json), text similarity only.
-Phase 2: Qdrant collection nusantara_visual_v1 with dense embeddings.
+Retrieval hierarchy (in order of preference):
+  1. Qdrant ANN (QDRANT_URL + GEMINI_API_KEY set) — dense semantic search
+  2. BM25-lite fallback from JSON seed                — always available
+
+Usage in /generate-image handler:
+  enhanced_prompt, hits, ref_b64 = _nc.enhance_prompt(prompt, gemini_api_key=GEMINI_API_KEY)
+  if not req.ref_image and ref_b64:
+      req.ref_image = ref_b64
 """
-import os, json, re, math, logging
+import os, json, re, math, base64, io, logging
 from pathlib import Path
 from collections import Counter
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
-_SEED_PATH = Path(__file__).parent / "data" / "nusantara_seed.json"
+# ── paths ────────────────────────────────────────────────────────────────
+_DATA_DIR   = Path(__file__).parent / "data"
+_SEED_PATH  = _DATA_DIR / "nusantara_seed.json"
+_REFS_DIR   = _DATA_DIR / "refs"
+
+# ── external URLs ────────────────────────────────────────────────────────
+_GEMINI_BASE    = "https://generativelanguage.googleapis.com/v1beta/models"
+_TEXT_MODEL     = "gemini-2.5-flash"
+_EMBED_MODEL    = "gemini-embedding-001"   # 3072d
+_COLLECTION     = "nusantara_visual_v1"
+
 _STOP = {"yang","dan","di","ke","dari","untuk","ini","itu","atau","dengan","ada","pada","juga",
          "the","a","an","of","in","on","at","to","for","is","are","and","or","with"}
 
-_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-_TEXT_MODEL = "gemini-2.5-flash"
 
-
+# ── seed loader ──────────────────────────────────────────────────────────
 @lru_cache(maxsize=1)
 def _load_seed() -> list[dict]:
     if not _SEED_PATH.exists():
@@ -27,19 +41,20 @@ def _load_seed() -> list[dict]:
         return []
     return json.loads(_SEED_PATH.read_text())
 
+def _seed_by_id() -> dict[str, dict]:
+    return {ex["id"]: ex for ex in _load_seed()}
 
+
+# ── BM25-lite fallback ───────────────────────────────────────────────────
 def _tok(text: str) -> list[str]:
     return [t for t in re.findall(r"[a-z0-9]+", text.lower())
             if t not in _STOP and len(t) > 1]
-
 
 def _bm25(qt: list[str], doc: str) -> float:
     dt = Counter(_tok(doc))
     return sum(math.log(1 + dt[t]) for t in set(qt) if t in dt)
 
-
-def retrieve(query: str, top_k: int = 2) -> list[dict]:
-    """Return top-k exemplars by BM25-lite score. Returns [] if no match."""
+def _bm25_retrieve(query: str, top_k: int) -> list[dict]:
     seed = _load_seed()
     qt = _tok(query)
     if not qt:
@@ -58,20 +73,119 @@ def retrieve(query: str, top_k: int = 2) -> list[dict]:
     return [ex for _, ex in scored[:top_k]]
 
 
-def enhance_prompt(prompt: str, gemini_api_key: str | None = None, top_k: int = 2) -> tuple[str, list[dict]]:
-    """
-    Retrieve exemplars and return an enhanced prompt.
+# ── Gemini embedding ─────────────────────────────────────────────────────
+def _gg_embed(text: str, api_key: str, task: str = "RETRIEVAL_QUERY") -> list[float] | None:
+    import requests as _req
+    body = {"content": {"parts": [{"text": text}]}, "taskType": task}
+    h = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    try:
+        r = _req.post(f"{_GEMINI_BASE}/{_EMBED_MODEL}:embedContent",
+                      headers=h, json=body, timeout=20)
+        if r.ok:
+            return r.json()["embedding"]["values"]
+        logger.warning("embed %s: %s", r.status_code, r.text[:60])
+    except Exception as e:
+        logger.warning("embed err: %s", e)
+    return None
 
-    Two paths:
-    - If gemini_api_key is provided: use Gemini text model to craft a rich image prompt
-      (same as standalone phase1.py — best quality).
-    - If not: append visual_facts inline to prompt (fallback, still useful).
 
-    Returns (enhanced_prompt, hits).
+# ── Qdrant ANN retrieval ─────────────────────────────────────────────────
+def _qdrant_retrieve(query: str, top_k: int, api_key: str, qdrant_url: str,
+                     qdrant_api_key: str) -> list[dict] | None:
+    """Returns list of exemplar dicts or None on failure (triggers BM25 fallback)."""
+    import requests as _req
+    vec = _gg_embed(query, api_key)
+    if not vec:
+        return None
+    body = {"vector": vec, "limit": top_k, "with_payload": True}
+    h = {"Content-Type": "application/json"}
+    if qdrant_api_key:
+        h["api-key"] = qdrant_api_key
+    try:
+        r = _req.post(f"{qdrant_url.rstrip('/')}/collections/{_COLLECTION}/points/search",
+                      headers=h, json=body, timeout=10)
+        if not r.ok:
+            logger.warning("qdrant search %s: %s", r.status_code, r.text[:80])
+            return None
+        results = r.json().get("result", [])
+        if not results:
+            return []
+        seed_idx = _seed_by_id()
+        hits = []
+        for pt in results:
+            eid = pt.get("payload", {}).get("exemplar_id")
+            if eid and eid in seed_idx:
+                hits.append(seed_idx[eid])
+        return hits
+    except Exception as e:
+        logger.warning("qdrant retrieve err: %s", e)
+        return None
+
+
+# ── public retrieve ──────────────────────────────────────────────────────
+def retrieve(query: str, top_k: int = 2,
+             gemini_api_key: str | None = None,
+             qdrant_url: str | None = None,
+             qdrant_api_key: str | None = None) -> list[dict]:
     """
-    hits = retrieve(prompt, top_k=top_k)
+    Return top-k exemplars. Tries Qdrant ANN first if configured, falls back to BM25.
+    """
+    if gemini_api_key and qdrant_url:
+        hits = _qdrant_retrieve(query, top_k, gemini_api_key, qdrant_url, qdrant_api_key or "")
+        if hits is not None:
+            logger.info("nusantara_corpus: qdrant %d hits for %r", len(hits), query[:40])
+            return hits
+        logger.info("nusantara_corpus: qdrant failed, falling back to BM25")
+
+    hits = _bm25_retrieve(query, top_k)
+    logger.info("nusantara_corpus: bm25 %d hits for %r", len(hits), query[:40])
+    return hits
+
+
+# ── ref image (image-conditioning) ───────────────────────────────────────
+def load_ref_b64(exemplar_id: str, max_px: int = 512) -> str | None:
+    """Load and return base64-encoded JPEG thumbnail for image-conditioning."""
+    ref_path = _REFS_DIR / f"{exemplar_id}.jpg"
+    if not ref_path.exists():
+        return None
+    try:
+        from PIL import Image
+        im = Image.open(ref_path).convert("RGB")
+        im.thumbnail((max_px, max_px))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        logger.warning("load_ref_b64 %s: %s", exemplar_id, e)
+    return None
+
+
+# ── prompt enhancement ────────────────────────────────────────────────────
+def enhance_prompt(
+    prompt: str,
+    gemini_api_key: str | None = None,
+    qdrant_url: str | None = None,
+    qdrant_api_key: str | None = None,
+    top_k: int = 2,
+) -> tuple[str, list[dict], str | None]:
+    """
+    Retrieve exemplars → build enhanced image prompt → load ref image.
+
+    Returns (enhanced_prompt, hits, ref_b64_or_None).
+    - enhanced_prompt: richer prompt with Nusantara visual facts injected.
+    - hits: matched exemplar dicts (empty list if no match).
+    - ref_b64: base64 JPEG for image-conditioning (None if no ref thumbnail).
+
+    Enhancement path:
+      - With gemini_api_key: Gemini text model crafts a full rich prompt (best quality).
+      - Without: visual_facts appended inline (useful fallback).
+    """
+    hits = retrieve(prompt, top_k=top_k,
+                    gemini_api_key=gemini_api_key,
+                    qdrant_url=qdrant_url,
+                    qdrant_api_key=qdrant_api_key)
     if not hits:
-        return prompt, []
+        return prompt, [], None
 
     facts_block = "\n".join(f"- {h['subject']}: {h['visual_facts']}" for h in hits)
 
@@ -80,13 +194,18 @@ def enhance_prompt(prompt: str, gemini_api_key: str | None = None, top_k: int = 
     else:
         enhanced = f"{prompt}\n\n[Nusantara visual ref: {facts_block}]"
 
-    logger.info("nusantara_corpus: %d hits for %r → %d→%d chars",
-                len(hits), prompt[:40], len(prompt), len(enhanced))
-    return enhanced, hits
+    # Load ref image from top hit for image-conditioning
+    ref_b64 = load_ref_b64(hits[0]["id"])
+
+    logger.info("nusantara_corpus: %d hits, ref=%s, %d→%d chars",
+                len(hits), hits[0]["id"] if ref_b64 else "none",
+                len(prompt), len(enhanced))
+    return enhanced, hits, ref_b64
 
 
+# ── Gemini text enhance ───────────────────────────────────────────────────
 def _gg_enhance(prompt: str, facts_block: str, api_key: str) -> str:
-    """Call Gemini text model DIRECTLY (generativelanguage.googleapis.com) to write image prompt."""
+    """Call Gemini text model DIRECTLY to write a rich image prompt."""
     import requests as _req
     sys_prompt = (
         "Kamu adalah expert text-to-image prompt engineer untuk budaya visual Indonesia (Nusantara). "
@@ -99,8 +218,7 @@ def _gg_enhance(prompt: str, facts_block: str, api_key: str) -> str:
         "contents": [{"parts": [{"text": user}]}],
         "systemInstruction": {"parts": [{"text": sys_prompt}]},
         "generationConfig": {
-            "maxOutputTokens": 2000,
-            "temperature": 0.4,
+            "maxOutputTokens": 2000, "temperature": 0.4,
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
@@ -114,7 +232,6 @@ def _gg_enhance(prompt: str, facts_block: str, api_key: str) -> str:
             if t:
                 return t
         elif r.status_code == 400:
-            # Retry without thinkingConfig (older model versions)
             body["generationConfig"].pop("thinkingConfig", None)
             r2 = _req.post(f"{_GEMINI_BASE}/{_TEXT_MODEL}:generateContent",
                            headers=headers, json=body, timeout=60)
@@ -123,9 +240,7 @@ def _gg_enhance(prompt: str, facts_block: str, api_key: str) -> str:
                 t = "".join(p.get("text", "") for p in parts).strip()
                 if t:
                     return t
-        logger.warning("nusantara_corpus gg_enhance failed: %s %s", r.status_code, r.text[:80])
+        logger.warning("gg_enhance failed: %s %s", r.status_code, r.text[:80])
     except Exception as e:
-        logger.warning("nusantara_corpus gg_enhance error: %s", e)
-
-    # Fallback: inline injection
+        logger.warning("gg_enhance error: %s", e)
     return f"{prompt}\n\n[Nusantara visual ref: {facts_block}]"

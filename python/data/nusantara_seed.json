@@ -8,8 +8,14 @@
     "visual_facts": "Semar punakawan, wayang kulit flat 2D perforated leather puppet, TIDAK 3D; squat rotund body, very large round buttocks, pudgy index finger pointing upward, white face, melancholic half-smile, clown-god of wisdom; traditional batik cloth, gold prada ornament; black silhouette with gold detail on dark background for shadow puppet effect",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/semar_c3_wayangpop.png",
-    "tags": ["punakawan", "wayang", "kulit", "jawa", "pewayangan"]
+    "ref_image_path": "refs/semar.jpg",
+    "tags": [
+      "punakawan",
+      "wayang",
+      "kulit",
+      "jawa",
+      "pewayangan"
+    ]
   },
   {
     "id": "gareng",
@@ -20,8 +26,14 @@
     "visual_facts": "Gareng punakawan, wayang kulit flat 2D leather puppet; small crossed squinting eyes, bulbous nose, wide grin; club foot (kaki ciker), bent/deformed arm raised; comical son of Semar; wears batik cloth with gold prada; small stocky frame, darker complexion; traditional side-profile view",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/gareng_pop.png",
-    "tags": ["punakawan", "wayang", "kulit", "jawa", "pewayangan"]
+    "ref_image_path": "refs/gareng.jpg",
+    "tags": [
+      "punakawan",
+      "wayang",
+      "kulit",
+      "jawa",
+      "pewayangan"
+    ]
   },
   {
     "id": "petruk",
@@ -32,8 +44,14 @@
     "visual_facts": "Petruk punakawan, wayang kulit flat 2D perforated leather puppet; very long pointed nose (hidung mancung panjang), tall lanky body, wide grin showing teeth; distinctive top-knot (gelung) hair; comical son of Semar; elegant yet clownish; intricate batik sarong, gold prada trim; side-profile stylized pose",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/petruk_pop.png",
-    "tags": ["punakawan", "wayang", "kulit", "jawa", "pewayangan"]
+    "ref_image_path": "refs/petruk.jpg",
+    "tags": [
+      "punakawan",
+      "wayang",
+      "kulit",
+      "jawa",
+      "pewayangan"
+    ]
   },
   {
     "id": "bagong",
@@ -44,8 +62,14 @@
     "visual_facts": "Bagong punakawan, wayang kulit flat 2D puppet; round chubby face, wide bulging eyes, open mouth, very stocky short body; youngest and most childlike of the punakawan; rounded proportions contrast with Petruk's lankiness; batik cloth, gold accessories; always depicted full-face or near-frontal (unique among punakawan)",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/bagong_pop.png",
-    "tags": ["punakawan", "wayang", "kulit", "jawa", "pewayangan"]
+    "ref_image_path": "refs/bagong.jpg",
+    "tags": [
+      "punakawan",
+      "wayang",
+      "kulit",
+      "jawa",
+      "pewayangan"
+    ]
   },
   {
     "id": "gajah-mada",
@@ -56,8 +80,13 @@
     "visual_facts": "Gajah Mada, Mahapatih Majapahit abad ke-14; wajah jowly (dagu berlapis, pipi berisi) sesuai arca terakota Trowulan, BUKAN wajah warrior langsing Hollywood; tubuh besar tegap berisi, bahu lebar; mahkota/ikat kepala emas, armor kerajaan Jawa-Hindu, kain batik bermotif parang/kawung; ekspresi tegas berwibawa; postur komando",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/gajahmada_v2.png",
-    "tags": ["sejarah", "majapahit", "pahlawan", "jawa"]
+    "ref_image_path": "refs/gajah-mada.jpg",
+    "tags": [
+      "sejarah",
+      "majapahit",
+      "pahlawan",
+      "jawa"
+    ]
   },
   {
     "id": "ojek",
@@ -68,8 +97,13 @@
     "visual_facts": "Ojek, tukang ojek (motorcycle taxi) Indonesia; motor Honda Vario/Beat berwarna standar, helm full-face, jaket ojek online (hijau Gojek atau oranye/biru), sandal jepit; tunggu di pinggir jalan trotoar; bisa ada ponsel di holder setang; wajah ramah, pose duduk santai di motor",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/ojek_pop.png",
-    "tags": ["jalanan", "transportasi", "urban", "jakarta"]
+    "ref_image_path": "refs/ojek.jpg",
+    "tags": [
+      "jalanan",
+      "transportasi",
+      "urban",
+      "jakarta"
+    ]
   },
   {
     "id": "becak",
@@ -80,8 +114,13 @@
     "visual_facts": "Becak Jawa: konfigurasi pengemudi di BELAKANG, penumpang di DEPAN (berbeda dengan becak Betawi/Sumatera); tiga roda, atap kanopi warna-warni, dekorasi lukisan; pengemudi mendayung sambil duduk tinggi di belakang; jalan pelan di gang kampung; warna cerah merah/biru/kuning",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/becak_pop.png",
-    "tags": ["jalanan", "transportasi", "becak", "jawa"]
+    "ref_image_path": "refs/becak.jpg",
+    "tags": [
+      "jalanan",
+      "transportasi",
+      "becak",
+      "jawa"
+    ]
   },
   {
     "id": "bemo",
@@ -92,8 +131,13 @@
     "visual_facts": "Bemo Jakarta: angkutan roda tiga bermesin (Daihatsu Midget/Piaggio Ape basis), bodi biru-oranye atau warna daerah, bangku penumpang di bak belakang terbuka, atap pendek, kenalpot berisik; era 1960s-90s Jakarta; driver di depan setir tiga roda; ikon transportasi lama Jakarta yang nyaris punah",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/bemo_pop.png",
-    "tags": ["jalanan", "transportasi", "jakarta", "vintage"]
+    "ref_image_path": "refs/bemo.jpg",
+    "tags": [
+      "jalanan",
+      "transportasi",
+      "jakarta",
+      "vintage"
+    ]
   },
   {
     "id": "angkot",
@@ -104,8 +148,12 @@
     "visual_facts": "Angkot (angkutan kota) Indonesia: minibus Colt L300 atau Isuzu Elf dimodifikasi; livery warna-warni garis dan nomor trayek; pintu geser selalu terbuka, penumpang berdesakan di bangku panjang kiri-kanan; stiker-stiker di jendela dan bodi; sopir dan kernet muda; penumpang berdiri menggantung di pintu",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/angkot_pop.png",
-    "tags": ["jalanan", "transportasi", "urban"]
+    "ref_image_path": "refs/angkot.jpg",
+    "tags": [
+      "jalanan",
+      "transportasi",
+      "urban"
+    ]
   },
   {
     "id": "transjakarta",
@@ -116,8 +164,13 @@
     "visual_facts": "Bus TransJakarta BRT Jakarta: bus besar merah-putih livery resmi TransJakarta, articulasi (gandeng) untuk koridor ramai; beroperasi di busway jalur khusus; halte dengan palang pintu otomatis; AC internal, modern; logo TransJakarta merah putih; penumpang tertib antri di halte elevated",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/transjakarta_pop.png",
-    "tags": ["jalanan", "transportasi", "jakarta", "modern"]
+    "ref_image_path": "refs/transjakarta.jpg",
+    "tags": [
+      "jalanan",
+      "transportasi",
+      "jakarta",
+      "modern"
+    ]
   },
   {
     "id": "tukang-bakso",
@@ -128,8 +181,13 @@
     "visual_facts": "Tukang bakso: pedagang bakso keliling dorong gerobak putih dengan kaca display, termos sup panas, mangkuk merah-biru, bakso bulat dalam panci; bel atau ketukan bakul kayu saat keliling kampung; pakai apron putih, topi, sepatu boots; aroma kaldu sapi mengepul; gerobak penuh topping (mie, bihun, tahu, pangsit)",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/bakso_pop.png",
-    "tags": ["kuliner", "pedagang", "jalanan", "jawa"]
+    "ref_image_path": "refs/tukang-bakso.jpg",
+    "tags": [
+      "kuliner",
+      "pedagang",
+      "jalanan",
+      "jawa"
+    ]
   },
   {
     "id": "tukang-nasgor",
@@ -140,8 +198,13 @@
     "visual_facts": "Tukang nasi goreng malam hari: pedagang gerobak besi hitam, wajan besar di atas kompor minyak drum; api biru terang, asap arang; bahan di pinggir gerobak (telur, sayur, kecap, sambal, kerupuk); mangkuk aluminium; biasanya beroperasi malam hari, lampu terang gerobak; tangan terampil mengaduk cepat di wajan",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/nasgor_pop.png",
-    "tags": ["kuliner", "pedagang", "jalanan", "malam"]
+    "ref_image_path": "refs/tukang-nasgor.jpg",
+    "tags": [
+      "kuliner",
+      "pedagang",
+      "jalanan",
+      "malam"
+    ]
   },
   {
     "id": "tukang-sate",
@@ -152,8 +215,12 @@
     "visual_facts": "Tukang sate: pedagang sate di gerobak/lapak, arang membara merah-oranye, asap beraroma; kipas bambu (kipas sate) untuk hembus arang; tusuk sate bambu berderet di atas panggangan; saus kacang coklat kental dalam mangkuk, lontong, kecap manis; biasanya sate ayam atau kambing; apron kotor arang",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/sate_pop.png",
-    "tags": ["kuliner", "pedagang", "jalanan"]
+    "ref_image_path": "refs/tukang-sate.jpg",
+    "tags": [
+      "kuliner",
+      "pedagang",
+      "jalanan"
+    ]
   },
   {
     "id": "kerak-telor",
@@ -164,8 +231,13 @@
     "visual_facts": "Kerak telor: makanan khas Betawi Jakarta; pedagang pakai wajan besi bundar besar di atas arang; campuran nasi ketan, telur bebek/ayam, ebi (udang kering), kelapa sangrai, bawang goreng, rempah; dimasak terbalik (wajan dibalik ke arah arang); pedagang biasanya berpakaian Betawi (baju koko + sarung); Monas/Kemayoran background",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/keraktelor_pop.png",
-    "tags": ["kuliner", "pedagang", "betawi", "jakarta"]
+    "ref_image_path": "refs/kerak-telor.jpg",
+    "tags": [
+      "kuliner",
+      "pedagang",
+      "betawi",
+      "jakarta"
+    ]
   },
   {
     "id": "warteg",
@@ -176,8 +248,13 @@
     "visual_facts": "Warteg (Warung Tegal): warung makan sederhana; etalase kaca persegi panjang berisi 15-20 pilihan lauk (rendang, ayam goreng, tempe orek, sayur lodeh, ikan asin, tahu); nasi putih diambil sendiri; ibu/bapak penjual berbaju celemek; tulisan menu di papan; harga miring; pelanggan buruh dan mahasiswa; meja panjang kursi kayu",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/warteg_pop.png",
-    "tags": ["kuliner", "warung", "tegal", "jawa"]
+    "ref_image_path": "refs/warteg.jpg",
+    "tags": [
+      "kuliner",
+      "warung",
+      "tegal",
+      "jawa"
+    ]
   },
   {
     "id": "asongan",
@@ -188,8 +265,13 @@
     "visual_facts": "Pedagang asongan di angkutan umum / stasiun kereta: jual koran, minuman sachet, permen, snack; tas/keranjang besar digantung di bahu atau kepala; lari-lari di antara penumpang kereta yang akan berangkat; pakaian sederhana, sandal; berteriak menawarkan dagangan; anak-anak kadang ikut berjualan",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/asongan_pop.png",
-    "tags": ["pedagang", "jalanan", "kereta", "urban"]
+    "ref_image_path": "refs/asongan.jpg",
+    "tags": [
+      "pedagang",
+      "jalanan",
+      "kereta",
+      "urban"
+    ]
   },
   {
     "id": "pos-ronda",
@@ -200,8 +282,13 @@
     "visual_facts": "Pos ronda / siskamling: pos jaga keamanan kampung malam hari; gubuk bambu/kayu atap seng, lampu neon/petromax; kentongan kayu besar (alat pukul tanda bahaya), drum minyak, kursi bambu; bapak-bapak warga ronda pakai sarung dan kaos, main kartu atau ngobrol; lingkungan perumahan malam, suasana guyub kampung",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
-    "ref_image_path": "/Users/rino/Claude/p0-visual/posronda_pop.png",
-    "tags": ["kehidupan", "kampung", "malam", "tradisi"]
+    "ref_image_path": "refs/pos-ronda.jpg",
+    "tags": [
+      "kehidupan",
+      "kampung",
+      "malam",
+      "tradisi"
+    ]
   },
   {
     "id": "rumah-gadang",
@@ -213,7 +300,12 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["arsitektur", "minangkabau", "sumatera", "adat"]
+    "tags": [
+      "arsitektur",
+      "minangkabau",
+      "sumatera",
+      "adat"
+    ]
   },
   {
     "id": "songket-minang",
@@ -225,7 +317,13 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["tekstil", "songket", "minangkabau", "tenun", "emas"]
+    "tags": [
+      "tekstil",
+      "songket",
+      "minangkabau",
+      "tenun",
+      "emas"
+    ]
   },
   {
     "id": "batik-parang",
@@ -237,7 +335,14 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["tekstil", "batik", "jawa", "solo", "yogya", "keraton"]
+    "tags": [
+      "tekstil",
+      "batik",
+      "jawa",
+      "solo",
+      "yogya",
+      "keraton"
+    ]
   },
   {
     "id": "ikat-sumba",
@@ -249,7 +354,13 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["tekstil", "ikat", "sumba", "ntt", "tenun"]
+    "tags": [
+      "tekstil",
+      "ikat",
+      "sumba",
+      "ntt",
+      "tenun"
+    ]
   },
   {
     "id": "wayang-golek",
@@ -261,7 +372,13 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["wayang", "golek", "sunda", "jawa barat", "kayu"]
+    "tags": [
+      "wayang",
+      "golek",
+      "sunda",
+      "jawa barat",
+      "kayu"
+    ]
   },
   {
     "id": "batik-megamendung",
@@ -273,7 +390,12 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["tekstil", "batik", "cirebon", "jawa"]
+    "tags": [
+      "tekstil",
+      "batik",
+      "cirebon",
+      "jawa"
+    ]
   },
   {
     "id": "kain-ulos",
@@ -285,7 +407,13 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["tekstil", "ulos", "batak", "sumatera utara", "tenun"]
+    "tags": [
+      "tekstil",
+      "ulos",
+      "batak",
+      "sumatera utara",
+      "tenun"
+    ]
   },
   {
     "id": "borobudur",
@@ -297,7 +425,14 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["arsitektur", "candi", "buddha", "jawa", "magelang", "warisan dunia"]
+    "tags": [
+      "arsitektur",
+      "candi",
+      "buddha",
+      "jawa",
+      "magelang",
+      "warisan dunia"
+    ]
   },
   {
     "id": "prambanan",
@@ -309,7 +444,14 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["arsitektur", "candi", "hindu", "yogyakarta", "jawa", "warisan dunia"]
+    "tags": [
+      "arsitektur",
+      "candi",
+      "hindu",
+      "yogyakarta",
+      "jawa",
+      "warisan dunia"
+    ]
   },
   {
     "id": "mesjid-jawa",
@@ -321,7 +463,13 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["arsitektur", "masjid", "jawa", "islam", "tradisional"]
+    "tags": [
+      "arsitektur",
+      "masjid",
+      "jawa",
+      "islam",
+      "tradisional"
+    ]
   },
   {
     "id": "baju-adat-jawa",
@@ -333,7 +481,13 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["busana", "pernikahan", "adat", "jawa", "kebaya"]
+    "tags": [
+      "busana",
+      "pernikahan",
+      "adat",
+      "jawa",
+      "kebaya"
+    ]
   },
   {
     "id": "kebaya-kartini",
@@ -345,6 +499,12 @@
     "style_label": "realistic",
     "rights_class": "curated",
     "ref_image_path": null,
-    "tags": ["busana", "kebaya", "kartini", "jawa", "nasional"]
+    "tags": [
+      "busana",
+      "kebaya",
+      "kartini",
+      "jawa",
+      "nasional"
+    ]
   }
 ]
