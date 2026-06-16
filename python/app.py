@@ -1657,6 +1657,20 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
     return _b64.b64encode(img_r.content).decode()
 
 
+class EnhancePromptRequest(BaseModel):
+    prompt: str
+
+@app.post("/enhance-prompt")
+async def enhance_prompt_endpoint(req: EnhancePromptRequest):
+    enhanced, hits, ref_b64 = _nc.enhance_prompt(
+        req.prompt,
+        gemini_api_key=GEMINI_API_KEY or None,
+        qdrant_url=QDRANT_CLOUD_URL or None,
+        qdrant_api_key=QDRANT_CLOUD_KEY or None,
+    )
+    return {"enhanced_prompt": enhanced, "ref_b64": ref_b64 or "", "hits": len(hits)}
+
+
 @app.post("/generate-image")
 async def generate_image(req: ImageRequest,
                          x_image_api_key: str = Header(None, alias="X-Image-API-Key")):
