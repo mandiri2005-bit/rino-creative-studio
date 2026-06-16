@@ -86,6 +86,9 @@ IMAGE_API_KEY = os.environ.get("LAOZHANG_IMAGE_API_KEY", API_KEY)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_DIRECT_MODELS = {"deepseek-v4-pro", "deepseek-r1"}
 
+# Direct Google key for Nusantara corpus text-enhance (optional — falls back to inline inject)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
 BASE_URL = "https://api.laozhang.ai/v1"
 MCP_API_URL = os.environ.get("MCP_API_URL", "http://127.0.0.1:8001")  # mcp_files.py sidecar
 IMAGE_URL = "https://api.laozhang.ai/v1"
@@ -322,6 +325,7 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
 from contextlib import asynccontextmanager
 import database as db
 import redis_client as rc
+import nusantara_corpus as _nc
 from auth_middleware import (get_current_user, CurrentUser,
                              _tenant_id as _ctx_tenant_id, _user_id as _ctx_user_id)
 
@@ -1596,6 +1600,7 @@ class ImageRequest(BaseModel):
     aspect_ratio: str = "1:1"
     image_size: str = "1K"
     ref_image: str = ""
+    nusantara_corpus: bool = False
 
     @validator("model")
     def valid_model(cls, v):
@@ -1658,6 +1663,12 @@ async def generate_image(req: ImageRequest,
 
     # Always use IMAGE_API_KEY from env (LAOZHANG_IMAGE_API_KEY)
     key = IMAGE_API_KEY
+
+    # Nusantara corpus: enrich prompt with authentic visual_facts before image gen
+    if req.nusantara_corpus:
+        req.prompt, _nc_hits = _nc.enhance_prompt(
+            req.prompt, gemini_api_key=GEMINI_API_KEY or None
+        )
 
     try:
         api = cfg["api"]
