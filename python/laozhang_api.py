@@ -144,6 +144,23 @@ def _is_gemini_image_model(m: str) -> bool:
     """Nano Banana lineup (gemini-*-image) goes via the Gemini API, NOT ImageGenerationModel."""
     m = (m or "").lower()
     return m.startswith("gemini-") and "image" in m
+
+def _vertex_diag() -> str:
+    """Explain why _ensure_vertex() failed — NEVER leaks values, only var NAMES / import errors."""
+    missing = [n for n, v in (
+        ("GCP_PROJECT_ID", GCP_PROJECT_ID),
+        ("GCP_REFRESH_TOKEN", GCP_REFRESH_TOKEN),
+        ("GCP_CLIENT_ID", GCP_CLIENT_ID),
+        ("GCP_CLIENT_SECRET", GCP_CLIENT_SECRET),
+    ) if not v]
+    if missing:
+        return f"missing/empty env var(s) on the Python service: {', '.join(missing)}"
+    try:
+        from google.oauth2.credentials import Credentials as _C  # noqa: F401
+        import vertexai as _v  # noqa: F401
+    except Exception as e:
+        return f"all 4 env vars present, but package import failed (rebuild Python with vertexai/google-auth): {e!r}"
+    return "all 4 env vars present and packages import OK, but vertexai.init() failed — check that the refresh token/project are valid"
 GOOGLE_IMAGE_BASE = "https://api.laozhang.ai/v1beta/models"
 
 # -- Best balance -- reliable + affordable --------------------------------
@@ -6440,7 +6457,7 @@ def _corpus_enhance(prompt: str):
 @app.post("/generate-image/vertex")
 async def generate_image_vertex(req: VertexImageRequest):
     if not _ensure_vertex():
-        raise HTTPException(503, "Vertex AI not configured — set GCP_PROJECT_ID, GCP_REFRESH_TOKEN, GCP_CLIENT_ID, GCP_CLIENT_SECRET")
+        raise HTTPException(503, f"Vertex AI not configured — {_vertex_diag()}")
     prompt = req.prompt
     if req.nusantara_corpus:
         prompt, _, _ = _corpus_enhance(prompt)
