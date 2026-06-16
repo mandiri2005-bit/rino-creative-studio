@@ -8,6 +8,8 @@ python-docx
 openpyxl
 python-multipart
 google-genai
+google-cloud-aiplatform[preview]
+google-auth
 asyncpg
 python-dotenv
 python-jose[cryptography]

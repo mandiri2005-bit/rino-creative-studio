@@ -2319,29 +2319,17 @@ const GOOGLE_IMG_MODELS = ["imagen-4.0-fast-generate-001","imagen-4.0-generate-0
 
 app.post("/api/generate-image/google", async (req,res) => {
   try {
-    let { prompt, model="imagen-4.0-fast-generate-001", aspect_ratio="16:9", google_api_key="", nusantara_corpus=false } = req.body || {};
-    const effectiveKey = google_api_key.trim() || GEMINI_KEY;
-    if (!effectiveKey) return res.status(400).json({ error:"No Gemini API key — set GEMINI_API_KEY in .env or enter a key in the UI" });
+    const { prompt, model="imagegeneration@006", aspect_ratio="16:9", nusantara_corpus=false } = req.body || {};
     if (!prompt) return res.status(400).json({ error:"prompt required" });
-    // Nusantara corpus enhancement (Python pre-step)
-    let ref_b64 = "";
-    if (nusantara_corpus) {
-      try {
-        const enh = await fetch(`${PYTHON_API}/enhance-prompt`, {method:"POST",
-          headers:{"Content-Type":"application/json"}, body:JSON.stringify({prompt})}).then(r=>r.json());
-        if (enh.enhanced_prompt) prompt = enh.enhanced_prompt;
-        if (enh.ref_b64) ref_b64 = enh.ref_b64;
-      } catch(e) { console.warn("[nusantara_corpus] enhance failed, using original prompt:", e.message); }
-    }
-    console.log(`[generate-image/google] key=${google_api_key.trim()?"CLIENT("+google_api_key.trim().slice(-6)+")":"SERVER_ENV"} model=${model} corpus=${nusantara_corpus}`);
-    const imgAI = mkAI(effectiveKey);
-    const mdl = model.startsWith("models/") ? model : `models/${model}`;
-    const resp = await imgAI.models.generateImages({ model:mdl, prompt,
-      config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
-    const imgData = resp?.generatedImages?.[0]?.image?.imageBytes;
-    if (!imgData) throw new Error("No image returned");
-    await captureImageFlow(req, model, "generate_image", [imgData], "gemini", prompt);
-    res.json({ image_b64: imgData, ref_b64 });
+    console.log(`[generate-image/google→vertex] model=${model} corpus=${nusantara_corpus}`);
+    const r = await fetch(`${PYTHON_API}/generate-image/vertex`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ prompt, model, aspect_ratio, nusantara_corpus }),
+    });
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json(data);
+    if (data.image_b64) await captureImageFlow(req, model, "generate_image", [data.image_b64], "vertex", prompt);
+    res.json(data);
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 

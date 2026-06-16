@@ -97,6 +97,40 @@ MCP_API_URL = os.environ.get("MCP_API_URL", "http://127.0.0.1:8001")  # mcp_file
 IMAGE_URL = "https://api.laozhang.ai/v1"
 GOOGLE_IMAGE_BASE = "https://api.laozhang.ai/v1beta/models"
 
+# ── Vertex AI / OAuth credentials (no API key) ───────────────────────────────
+GCP_PROJECT_ID     = os.environ.get("GCP_PROJECT_ID", "")
+GCP_REFRESH_TOKEN  = os.environ.get("GCP_REFRESH_TOKEN", "")
+GCP_CLIENT_ID      = os.environ.get("GCP_CLIENT_ID", "")
+GCP_CLIENT_SECRET  = os.environ.get("GCP_CLIENT_SECRET", "")
+
+_vertex_ready = False
+
+def _ensure_vertex():
+    global _vertex_ready
+    if _vertex_ready:
+        return True
+    if not all([GCP_PROJECT_ID, GCP_REFRESH_TOKEN, GCP_CLIENT_ID, GCP_CLIENT_SECRET]):
+        return False
+    try:
+        from google.oauth2.credentials import Credentials as _GCreds
+        import vertexai as _vertexai
+        _creds = _GCreds(
+            token=None,
+            refresh_token=GCP_REFRESH_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GCP_CLIENT_ID,
+            client_secret=GCP_CLIENT_SECRET,
+        )
+        _vertexai.init(project=GCP_PROJECT_ID, credentials=_creds)
+        _vertex_ready = True
+        return True
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Vertex AI init failed: {e}")
+        return False
+
+_ensure_vertex()
+
 # -- Best balance -- reliable + affordable --------------------------------
 # -- Power ---------------------------------------------------------------
 # -- Ultra-cheap -- high volume / simple tasks ----------------------------
@@ -1655,6 +1689,41 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
     img_r = _requests.get(image_url, timeout=60)
     img_r.raise_for_status()
     return _b64.b64encode(img_r.content).decode()
+
+
+class VertexImageRequest(BaseModel):
+    prompt: str
+    model: str = "imagegeneration@006"
+    aspect_ratio: str = "1:1"
+    nusantara_corpus: bool = False
+
+@app.post("/generate-image/vertex")
+async def generate_image_vertex(req: VertexImageRequest):
+    if not _ensure_vertex():
+        raise HTTPException(503, "Vertex AI not configured — set GCP_PROJECT_ID, GCP_REFRESH_TOKEN, GCP_CLIENT_ID, GCP_CLIENT_SECRET")
+    prompt = req.prompt
+    if req.nusantara_corpus:
+        prompt, _, _ = _nc.enhance_prompt(
+            prompt,
+            gemini_api_key=GEMINI_API_KEY or None,
+            qdrant_url=QDRANT_CLOUD_URL or None,
+            qdrant_api_key=QDRANT_CLOUD_KEY or None,
+        )
+    try:
+        from vertexai.preview.vision_models import ImageGenerationModel as _IGen
+        import io as _io
+        mdl = _IGen.from_pretrained(req.model)
+        images = mdl.generate_images(
+            prompt=prompt,
+            number_of_images=1,
+            aspect_ratio=req.aspect_ratio,
+        )
+        buf = _io.BytesIO()
+        images[0]._pil_image.save(buf, format="JPEG", quality=92)
+        b64 = _b64.b64encode(buf.getvalue()).decode()
+        return {"image_b64": b64, "model": req.model}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 class EnhancePromptRequest(BaseModel):
