@@ -45,18 +45,20 @@ def _seed_by_id() -> dict[str, dict]:
     return {ex["id"]: ex for ex in _load_seed()}
 
 
-# ── BM25-lite fallback (IDF-weighted + relative gate) ─────────────────────
-# Plain term-overlap let corpus-common words ("tukang", "jakarta") drag
-# irrelevant exemplars in. IDF down-weights common tokens so the *discriminative*
-# subject words (somay, jamu, ondel, monas) decide the match; a relative gate
-# then keeps only exemplars close to the best hit — so a 1-subject prompt returns
-# 1 and a 5-subject prompt returns 5, without relying on a magic top_k.
-_GATE_FRAC = 0.45   # keep candidates scoring >= 45% of the best hit
-_MIN_SCORE = 1.35   # absolute floor: a real subject match clears this (single-word
-                    # subjects score ~1.6+), but a generic/off-domain prompt matching
-                    # only a stray common word does not — so it injects nothing rather
-                    # than dumping loosely-related entries. Tuned for the current seed
-                    # size; the Qdrant ANN path (semantic) supersedes BM25 when active.
+# ── BM25-lite fallback (name-weighted, IDF, median-gated) ─────────────────
+# Two signals decide a match: (1) a query word hitting an entry's NAME/subject
+# (strong) vs only its description (weak), and (2) IDF, so common words ("candi",
+# "gunung", "tukang", "jakarta") can't carry a match alone. An entry qualifies
+# only if some query token hits its NAME with above-median specificity — so
+# "borobudur saat sunrise" returns Borobudur (not Bromo, which merely has
+# "sunrise" in its facts), "monas dan gedung sate" keeps BOTH, and a generic/
+# off-domain prompt returns nothing. Scale-stable: the bar is the corpus's own
+# median IDF, not a magic constant. Qdrant ANN (semantic) supersedes this.
+_NAME_W = 2.2       # weight: query token matching the entry's name/subject
+_BODY_W = 0.5       # weight: query token matching only the description/tags
+_GATE_FRAC = 0.3    # among name-matched qualifiers, keep those scoring >= 30% of the
+                    # best — loose on purpose: a subject explicitly named in the prompt
+                    # must not be dropped just because another subject matched more words
 
 def _tok(text: str) -> list[str]:
     return [t for t in re.findall(r"[a-z0-9]+", text.lower())
@@ -64,15 +66,15 @@ def _tok(text: str) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _corpus_docs() -> tuple:
-    """(exemplar, tokenized-doc) per seed entry. Subject counted twice = light boost."""
+    """(exemplar, name-token frozenset, body-token tuple) per seed entry."""
     out = []
     for ex in _load_seed():
-        doc = " ".join(filter(None, [
-            ex.get("subject", ""), ex.get("subject", ""),
+        name = ex.get("subject", "") + " " + ex.get("id", "").replace("-", " ")
+        body = " ".join(filter(None, [
             ex.get("category", ""), ex.get("region", ""),
             ex.get("visual_facts", ""), " ".join(ex.get("tags", [])),
         ]))
-        out.append((ex, tuple(_tok(doc))))
+        out.append((ex, frozenset(_tok(name)), tuple(_tok(body))))
     return tuple(out)
 
 @lru_cache(maxsize=1)
@@ -80,18 +82,19 @@ def _idf() -> dict:
     docs = _corpus_docs()
     n = len(docs) or 1
     df = Counter()
-    for _, toks in docs:
-        for t in set(toks):
+    for _, name, body in docs:
+        for t in set(name) | set(body):
             df[t] += 1
-    return {t: max(0.05, math.log(1 + (n - d + 0.5) / (d + 0.5))) for t, d in df.items()}
+    return {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
 
-def _score(qt: set, toks: tuple, idf: dict) -> float:
-    dt = Counter(toks)
+def _score(qt: set, name: frozenset, body: tuple, idf: dict) -> float:
+    bc = Counter(body)
     s = 0.0
     for t in qt:
-        tf = dt.get(t, 0)
-        if tf:
-            s += idf.get(t, 0.3) * (tf / (tf + 1.5))   # tf saturation
+        if t in name:
+            s += _NAME_W * idf.get(t, 1.0)
+        elif t in bc:
+            s += _BODY_W * idf.get(t, 0.3) * (bc[t] / (bc[t] + 1.5))
     return s
 
 def _bm25_retrieve(query: str, top_k: int) -> list[dict]:
@@ -99,17 +102,18 @@ def _bm25_retrieve(query: str, top_k: int) -> list[dict]:
     if not qt:
         return []
     idf = _idf()
-    scored = [(s, ex) for ex, toks in _corpus_docs()
-              if (s := _score(qt, toks, idf)) > 0]
-    if not scored:
+    cands = []
+    for ex, name, body in _corpus_docs():
+        # qualify only if a query token hits this entry's NAME/subject — a match
+        # on description words alone (e.g. "sunrise" in Bromo's facts) doesn't count,
+        # so off-domain & purely-descriptive prompts inject nothing
+        if any(t in name for t in qt):
+            cands.append((_score(qt, name, body, idf), ex))
+    if not cands:
         return []
-    scored.sort(key=lambda x: -x[0])
-    top = scored[0][0]
-    if top < _MIN_SCORE:
-        return []                                   # no discriminative match → skip corpus
-    cut = max(_GATE_FRAC * top, _MIN_SCORE)
-    gated = [ex for s, ex in scored if s >= cut]
-    return gated[:top_k]
+    cands.sort(key=lambda x: -x[0])
+    top = cands[0][0]
+    return [ex for s, ex in cands if s >= _GATE_FRAC * top][:top_k]
 
 
 # ── Gemini embedding ─────────────────────────────────────────────────────

@@ -634,5 +634,839 @@
       "kemiskinan",
       "urban"
     ]
+  },
+  {
+    "id": "tugu-jogja",
+    "category": "monumen",
+    "subject": "Tugu Yogyakarta (Pal Putih)",
+    "region": "Yogyakarta",
+    "lang": "id",
+    "visual_facts": "Tugu Yogyakarta (Tugu Pal Putih); tonggak/monumen PUTIH ramping di tengah persimpangan jalan Jogja; badan silinder putih berornamen, PUNCAK bulat keemasan (golong-gilig); pagar bundar di dasar, lalu lintas dan wisatawan berfoto; ikon kota Yogyakarta",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tugu",
+      "jogja",
+      "yogyakarta",
+      "monumen",
+      "ikon"
+    ]
+  },
+  {
+    "id": "gedung-sate",
+    "category": "arsitektur",
+    "subject": "Gedung Sate",
+    "region": "Bandung",
+    "lang": "id",
+    "visual_facts": "Gedung Sate, Bandung; gedung pemerintahan art-deco kolonial warna putih-krem; CIRI KHAS ornamen TUSUK SATE di puncak menara tengah (enam tusukan); atap perpaduan Eropa-Asia, jendela lengkung, taman depan luas; ikon Jawa Barat",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "gedung sate",
+      "bandung",
+      "kolonial",
+      "ikon",
+      "jawa barat"
+    ]
+  },
+  {
+    "id": "lawang-sewu",
+    "category": "arsitektur",
+    "subject": "Lawang Sewu",
+    "region": "Semarang",
+    "lang": "id",
+    "visual_facts": "Lawang Sewu ('seribu pintu'), Semarang; bangunan kolonial Belanda besar dua lantai dengan SANGAT BANYAK pintu dan jendela lengkung tinggi; koridor lengkung panjang, kaca patri; warna putih-coklat bata, kesan megah klasik; bekas kantor kereta api",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "lawang sewu",
+      "semarang",
+      "kolonial",
+      "heritage"
+    ]
+  },
+  {
+    "id": "istana-merdeka",
+    "category": "arsitektur",
+    "subject": "Istana Merdeka",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Istana Merdeka, Jakarta; istana kepresidenan neoklasik PUTIH; deretan TIANG/PILAR putih besar di serambi depan, atap rendah, halaman rumput luas dengan tiang bendera; resmi dan berwibawa",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "istana merdeka",
+      "jakarta",
+      "kepresidenan",
+      "kolonial"
+    ]
+  },
+  {
+    "id": "masjid-istiqlal",
+    "category": "arsitektur",
+    "subject": "Masjid Istiqlal",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Masjid Istiqlal, Jakarta; masjid terbesar Asia Tenggara; KUBAH besar berlapis baja stainless dan satu MENARA tinggi ramping; arsitektur modernis, banyak tiang, interior marmer putih luas dengan ornamen geometris; bersebelahan dengan Katedral",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "istiqlal",
+      "masjid",
+      "jakarta",
+      "kubah",
+      "modern"
+    ]
+  },
+  {
+    "id": "katedral-jakarta",
+    "category": "arsitektur",
+    "subject": "Gereja Katedral Jakarta",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Gereja Katedral Jakarta; gereja Katolik NEO-GOTIK; dua MENARA kembar lancip tinggi dari besi, fasad ornamen gotik, jendela mawar (rosette), lengkungan runcing; bersebelahan dengan Masjid Istiqlal (simbol toleransi)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "katedral",
+      "gereja",
+      "jakarta",
+      "gotik"
+    ]
+  },
+  {
+    "id": "tanah-lot",
+    "category": "arsitektur",
+    "subject": "Pura Tanah Lot",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Pura Tanah Lot, Bali; pura di atas BATU KARANG besar di tengah laut, terpisah dari daratan saat pasang; atap MERU bertingkat hitam ijuk; ombak menghantam karang, siluet saat SUNSET keemasan; ikon Bali",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tanah lot",
+      "bali",
+      "pura",
+      "laut",
+      "sunset"
+    ]
+  },
+  {
+    "id": "pura-besakih",
+    "category": "arsitektur",
+    "subject": "Pura Besakih",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Pura Besakih, 'pura induk' terbesar di Bali di lereng Gunung Agung; kompleks banyak pura bertingkat dengan tangga batu, deretan MERU atap ijuk hitam bertingkat-tingkat, gapura candi bentar terbelah; latar gunung, suasana sakral",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "besakih",
+      "bali",
+      "pura",
+      "gunung agung"
+    ]
+  },
+  {
+    "id": "ulun-danu-beratan",
+    "category": "arsitektur",
+    "subject": "Pura Ulun Danu Beratan",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Pura Ulun Danu Beratan, Bedugul Bali; pura di tepi DANAU Beratan, tampak mengapung saat air tinggi; MERU atap ijuk hitam bertingkat (11 & 3) terpantul di air tenang; latar pegunungan berkabut sejuk; ikon uang Rp50.000",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ulun danu",
+      "beratan",
+      "bedugul",
+      "bali",
+      "danau",
+      "pura"
+    ]
+  },
+  {
+    "id": "gwk",
+    "category": "monumen",
+    "subject": "Garuda Wisnu Kencana (GWK)",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Patung Garuda Wisnu Kencana (GWK), Bali; PATUNG raksasa Dewa Wisnu menunggangi burung Garuda, perunggu-tembaga, salah satu tertinggi di dunia (~120m); berdiri di atas kompleks tebing kapur dengan plaza dan pilar batu; megah, terlihat dari jauh",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "gwk",
+      "garuda wisnu kencana",
+      "bali",
+      "patung"
+    ]
+  },
+  {
+    "id": "uluwatu",
+    "category": "arsitektur",
+    "subject": "Pura Luhur Uluwatu",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Pura Luhur Uluwatu, Bali; pura di ujung TEBING KARANG curam tinggi di atas Samudra Hindia; gapura batu dan patung, monyet ekor panjang berkeliaran; pemandangan laut biru luas dan sunset; pertunjukan tari Kecak",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "uluwatu",
+      "bali",
+      "pura",
+      "tebing",
+      "laut"
+    ]
+  },
+  {
+    "id": "danau-toba",
+    "category": "alam",
+    "subject": "Danau Toba",
+    "region": "Sumatera Utara",
+    "lang": "id",
+    "visual_facts": "Danau Toba, Sumatera Utara; DANAU vulkanik raksasa (kaldera) terbesar di Asia Tenggara, air biru luas dikelilingi perbukitan hijau; di tengahnya Pulau Samosir; rumah adat Batak atap melengkung di tepian; udara sejuk, kabut pegunungan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "danau toba",
+      "sumatera utara",
+      "danau",
+      "batak"
+    ]
+  },
+  {
+    "id": "pulau-samosir",
+    "category": "alam",
+    "subject": "Pulau Samosir",
+    "region": "Sumatera Utara",
+    "lang": "id",
+    "visual_facts": "Pulau Samosir di tengah Danau Toba; pulau besar berbukit hijau, kampung Batak Toba; RUMAH ADAT Batak (rumah Bolon) atap melengkung seperti perahu, ukiran gorga merah-hitam-putih; dikelilingi air danau biru",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "samosir",
+      "danau toba",
+      "batak",
+      "sumatera utara"
+    ]
+  },
+  {
+    "id": "jam-gadang",
+    "category": "arsitektur",
+    "subject": "Jam Gadang",
+    "region": "Bukittinggi",
+    "lang": "id",
+    "visual_facts": "Jam Gadang, Bukittinggi Sumatera Barat; MENARA JAM besar putih; CIRI KHAS atap GONJONG Minangkabau (runcing melengkung seperti tanduk kerbau); empat muka jam besar; taman dan tangga di sekeliling; ikon kota",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jam gadang",
+      "bukittinggi",
+      "sumatera barat",
+      "minangkabau",
+      "menara jam"
+    ]
+  },
+  {
+    "id": "istana-pagaruyung",
+    "category": "arsitektur",
+    "subject": "Istana Pagaruyung",
+    "region": "Sumatera Barat",
+    "lang": "id",
+    "visual_facts": "Istana Pagaruyung, Batusangkar; istana adat Minangkabau (Rumah Gadang besar) kayu; ATAP GONJONG runcing melengkung banyak puncak seperti tanduk kerbau; dinding kayu berukir penuh motif Minang warna emas-merah; bertiang, berkolong",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pagaruyung",
+      "minangkabau",
+      "rumah gadang",
+      "sumatera barat",
+      "gonjong"
+    ]
+  },
+  {
+    "id": "baiturrahman",
+    "category": "arsitektur",
+    "subject": "Masjid Raya Baiturrahman",
+    "region": "Banda Aceh",
+    "lang": "id",
+    "visual_facts": "Masjid Raya Baiturrahman, Banda Aceh; masjid putih megah; KUBAH HITAM besar berkilau dan kubah kecil, menara putih tinggi; halaman dengan KOLAM dan payung-payung besar (seperti Madinah); arsitektur Mughal-kolonial, simbol ketahanan pasca-tsunami",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "baiturrahman",
+      "aceh",
+      "masjid",
+      "kubah"
+    ]
+  },
+  {
+    "id": "jembatan-ampera",
+    "category": "arsitektur",
+    "subject": "Jembatan Ampera",
+    "region": "Palembang",
+    "lang": "id",
+    "visual_facts": "Jembatan Ampera, Palembang; JEMBATAN ikonik melintang Sungai Musi; dua MENARA tinggi kembar, badan jembatan dicat MERAH; lampu menyala malam terpantul di sungai; perahu dan kapal di bawahnya",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ampera",
+      "palembang",
+      "jembatan",
+      "sungai musi",
+      "merah"
+    ]
+  },
+  {
+    "id": "tugu-khatulistiwa",
+    "category": "monumen",
+    "subject": "Tugu Khatulistiwa",
+    "region": "Pontianak",
+    "lang": "id",
+    "visual_facts": "Tugu Khatulistiwa, Pontianak; monumen penanda garis KHATULISTIWA (equator); empat tiang menyangga lingkaran dan PANAH penunjuk arah serta tulisan garis equator; ada kubah penutup; ikon kota yang dilintasi garis 0 derajat",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tugu khatulistiwa",
+      "pontianak",
+      "equator",
+      "kalimantan barat"
+    ]
+  },
+  {
+    "id": "tmii",
+    "category": "budaya",
+    "subject": "Taman Mini Indonesia Indah (TMII)",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Taman Mini Indonesia Indah (TMII), Jakarta; taman budaya luas berisi RUMAH ADAT dari seluruh provinsi; DANAU dengan miniatur kepulauan Nusantara; anjungan daerah, kereta gantung, paviliun; suasana rekreasi budaya",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tmii",
+      "taman mini",
+      "jakarta",
+      "budaya",
+      "rumah adat"
+    ]
+  },
+  {
+    "id": "kota-tua-jakarta",
+    "category": "arsitektur",
+    "subject": "Kota Tua Jakarta",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Kota Tua Jakarta (Batavia lama); alun-alun Fatahillah dengan bangunan KOLONIAL Belanda tua putih-krem (Museum Fatahillah berjendela hijau); jalan berbatu, SEPEDA ONTEL warna-warni sewaan dengan topi, wisatawan; suasana tempo dulu",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kota tua",
+      "batavia",
+      "jakarta",
+      "kolonial",
+      "fatahillah"
+    ]
+  },
+  {
+    "id": "suramadu",
+    "category": "arsitektur",
+    "subject": "Jembatan Suramadu",
+    "region": "Surabaya-Madura",
+    "lang": "id",
+    "visual_facts": "Jembatan Suramadu, penghubung Surabaya-Madura; JEMBATAN cable-stayed terpanjang di Indonesia; dua menara tinggi dengan KABEL baja menyebar seperti kipas; membentang panjang di atas Selat Madura; lampu malam",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suramadu",
+      "surabaya",
+      "madura",
+      "jembatan",
+      "cable-stayed"
+    ]
+  },
+  {
+    "id": "tugu-pahlawan",
+    "category": "monumen",
+    "subject": "Tugu Pahlawan",
+    "region": "Surabaya",
+    "lang": "id",
+    "visual_facts": "Tugu Pahlawan, Surabaya; MONUMEN obelisk tinggi menjulang berbentuk paku terbalik beralur (lengkung vertikal); berdiri di tengah taman/lapangan; simbol perjuangan 10 November; berwibawa",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tugu pahlawan",
+      "surabaya",
+      "monumen",
+      "obelisk"
+    ]
+  },
+  {
+    "id": "house-of-sampoerna",
+    "category": "arsitektur",
+    "subject": "House of Sampoerna",
+    "region": "Surabaya",
+    "lang": "id",
+    "visual_facts": "House of Sampoerna, Surabaya; bangunan KOLONIAL Belanda putih megah dengan deretan PILAR besar di fasad depan (gaya neoklasik); bekas pabrik rokok kini museum; halaman rapi",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "house of sampoerna",
+      "surabaya",
+      "kolonial",
+      "museum"
+    ]
+  },
+  {
+    "id": "gunung-bromo",
+    "category": "alam",
+    "subject": "Gunung Bromo",
+    "region": "Jawa Timur",
+    "lang": "id",
+    "visual_facts": "Gunung Bromo, Jawa Timur; gunung berapi dengan KAWAH berasap di tengah LAUTAN PASIR luas (kaldera Tengger); Pura Luhur Poten kecil di tengah pasir; latar Gunung Semeru mengepul; SUNRISE keemasan berkabut, siluet pegunungan, penunggang kuda",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "bromo",
+      "jawa timur",
+      "gunung",
+      "kawah",
+      "sunrise"
+    ]
+  },
+  {
+    "id": "kawah-ijen",
+    "category": "alam",
+    "subject": "Kawah Ijen",
+    "region": "Jawa Timur",
+    "lang": "id",
+    "visual_facts": "Kawah Ijen, Banyuwangi; danau KAWAH HIJAU TOSCA asam belerang; fenomena BLUE FIRE (api biru) belerang malam hari; penambang belerang memikul keranjang kuning; asap belerang, dinding kawah curam",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ijen",
+      "banyuwangi",
+      "kawah",
+      "blue fire",
+      "belerang"
+    ]
+  },
+  {
+    "id": "gunung-rinjani",
+    "category": "alam",
+    "subject": "Gunung Rinjani",
+    "region": "Lombok",
+    "lang": "id",
+    "visual_facts": "Gunung Rinjani, Lombok; gunung berapi tinggi; di kaldera ada DANAU Segara Anak biru bulan sabit dengan anak gunung (Gunung Baru) di tengahnya; padang sabana, jalur pendakian, lautan awan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "rinjani",
+      "lombok",
+      "gunung",
+      "segara anak",
+      "danau"
+    ]
+  },
+  {
+    "id": "gunung-merapi",
+    "category": "alam",
+    "subject": "Gunung Merapi",
+    "region": "Jateng-DIY",
+    "lang": "id",
+    "visual_facts": "Gunung Merapi, perbatasan Jateng-DIY; gunung berapi paling aktif, KERUCUT simetris dengan puncak BERASAP mengepul; lereng dengan desa dan sawah; kadang awan panas; latar matahari terbit",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "merapi",
+      "gunung",
+      "jawa tengah",
+      "yogyakarta",
+      "vulkanik"
+    ]
+  },
+  {
+    "id": "raja-ampat",
+    "category": "alam",
+    "subject": "Raja Ampat",
+    "region": "Papua Barat Daya",
+    "lang": "id",
+    "visual_facts": "Raja Ampat, Papua Barat Daya; gugusan PULAU KARST hijau berbentuk jamur/kerucut menyembul dari LAUT biru-toska jernih; pemandangan dari atas (Piaynemo) deretan pulau kecil; terumbu karang, air sangat bening; surga bawah laut",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "raja ampat",
+      "papua",
+      "pulau",
+      "karst",
+      "laut"
+    ]
+  },
+  {
+    "id": "tn-komodo",
+    "category": "alam",
+    "subject": "Taman Nasional Komodo",
+    "region": "Nusa Tenggara Timur",
+    "lang": "id",
+    "visual_facts": "Taman Nasional Komodo, NTT; gugusan pulau berbukit SABANA cokelat keemasan; PANTAI PINK (pasir merah muda); laut biru jernih; habitat KOMODO; pemandangan teluk dan pulau berlapis dari ketinggian (Pulau Padar)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "taman nasional komodo",
+      "ntt",
+      "padar",
+      "pantai pink",
+      "sabana"
+    ]
+  },
+  {
+    "id": "pulau-komodo",
+    "category": "alam",
+    "subject": "Pulau Komodo",
+    "region": "Nusa Tenggara Timur",
+    "lang": "id",
+    "visual_facts": "Pulau Komodo, NTT; habitat asli KOMODO — kadal/biawak raksasa terbesar dunia, berkulit sisik abu-abu, lidah bercabang; bukit sabana kering kecokelatan, pohon lontar, pantai; ranger penjaga bertongkat",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "komodo",
+      "pulau komodo",
+      "ntt",
+      "kadal",
+      "biawak"
+    ]
+  },
+  {
+    "id": "labuan-bajo",
+    "category": "alam",
+    "subject": "Labuan Bajo",
+    "region": "Flores",
+    "lang": "id",
+    "visual_facts": "Labuan Bajo, Flores NTT; kota pelabuhan gerbang Komodo; TELUK dengan banyak KAPAL PHINISI/wisata berlabuh, perbukitan, SUNSET keemasan di atas laut dan pulau-pulau; dermaga, kafe tepi laut",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "labuan bajo",
+      "flores",
+      "ntt",
+      "pelabuhan",
+      "phinisi"
+    ]
+  },
+  {
+    "id": "danau-kelimutu",
+    "category": "alam",
+    "subject": "Danau Kelimutu",
+    "region": "Flores",
+    "lang": "id",
+    "visual_facts": "Danau Kelimutu, Flores NTT; TIGA DANAU KAWAH di puncak gunung dengan WARNA berbeda-beda (biru toska, hijau, merah/hitam) yang bisa berubah; dinding kawah curam gelap; kabut pagi; fenomena geologi unik",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kelimutu",
+      "flores",
+      "ntt",
+      "danau kawah",
+      "tiga warna"
+    ]
+  },
+  {
+    "id": "bunaken",
+    "category": "alam",
+    "subject": "Taman Laut Bunaken",
+    "region": "Sulawesi Utara",
+    "lang": "id",
+    "visual_facts": "Taman Laut Bunaken, Sulawesi Utara; surga SNORKELING/DIVING; air laut biru jernih, TERUMBU KARANG warna-warni dan ikan tropis, dinding karang vertikal (drop-off); pulau hijau berpantai; perahu di permukaan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "bunaken",
+      "sulawesi utara",
+      "laut",
+      "terumbu karang",
+      "diving"
+    ]
+  },
+  {
+    "id": "tana-toraja",
+    "category": "budaya",
+    "subject": "Tana Toraja",
+    "region": "Sulawesi Selatan",
+    "lang": "id",
+    "visual_facts": "Tana Toraja, Sulawesi Selatan; RUMAH ADAT Tongkonan beratap melengkung tinggi seperti perahu/tanduk, berjajar, ukiran merah-hitam-kuning; lumbung padi; tebing dengan KUBURAN batu dan patung Tau-tau; sawah hijau berundak, pegunungan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "toraja",
+      "sulawesi selatan",
+      "tongkonan",
+      "rumah adat"
+    ]
+  },
+  {
+    "id": "fort-rotterdam",
+    "category": "arsitektur",
+    "subject": "Benteng Fort Rotterdam",
+    "region": "Makassar",
+    "lang": "id",
+    "visual_facts": "Benteng Fort Rotterdam, Makassar; BENTENG kolonial Belanda dari batu, denah seperti PENYU dari atas; tembok benteng tebal, bangunan dalam bergaya Eropa beratap merah, meriam tua; rumput hijau",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "fort rotterdam",
+      "makassar",
+      "benteng",
+      "kolonial"
+    ]
+  },
+  {
+    "id": "pantai-losari",
+    "category": "alam",
+    "subject": "Pantai Losari",
+    "region": "Makassar",
+    "lang": "id",
+    "visual_facts": "Pantai Losari, Makassar; PROMENADE/anjungan tepi laut kota dengan tulisan landmark besar; tempat melihat SUNSET ke laut; pisang epe dijual, ramai warga; laut dan langit jingga keemasan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "losari",
+      "makassar",
+      "pantai",
+      "anjungan",
+      "sunset"
+    ]
+  },
+  {
+    "id": "kepulauan-derawan",
+    "category": "alam",
+    "subject": "Kepulauan Derawan",
+    "region": "Kalimantan Timur",
+    "lang": "id",
+    "visual_facts": "Kepulauan Derawan, Kalimantan Timur; pulau tropis dengan air laut JERNIH biru-hijau; PENYU berenang dekat dermaga, cottage kayu di atas air; pasir putih, pohon kelapa; danau ubur-ubur di dekatnya",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "derawan",
+      "kalimantan timur",
+      "pulau",
+      "penyu",
+      "laut"
+    ]
+  },
+  {
+    "id": "pantai-kuta",
+    "category": "alam",
+    "subject": "Pantai Kuta",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Pantai Kuta, Bali; PANTAI pasir kecokelatan panjang dan ramai; OMBAK bagus untuk surfing, banyak peselancar; SUNSET terkenal; payung dan kursi pantai, wisatawan; deretan kafe dan hotel",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kuta",
+      "bali",
+      "pantai",
+      "surfing",
+      "sunset"
+    ]
+  },
+  {
+    "id": "nusa-penida",
+    "category": "alam",
+    "subject": "Nusa Penida",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Nusa Penida, Bali; TEBING KARST dramatis di atas laut biru jernih; ikon Kelingking Beach berbentuk seperti kepala dinosaurus/T-Rex dengan pantai pasir putih di bawah tebing; air toska, ombak putih",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "nusa penida",
+      "bali",
+      "tebing",
+      "kelingking",
+      "laut"
+    ]
+  },
+  {
+    "id": "gili-trawangan",
+    "category": "alam",
+    "subject": "Gili Trawangan",
+    "region": "Lombok",
+    "lang": "id",
+    "visual_facts": "Gili Trawangan, Lombok; pulau kecil tropis TANPA kendaraan bermotor (hanya CIDOMO/delman dan sepeda); pantai pasir putih, air laut jernih toska, ayunan di laut; sunset, bar tepi pantai, snorkeling penyu",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "gili trawangan",
+      "lombok",
+      "pulau",
+      "pantai",
+      "cidomo"
+    ]
+  },
+  {
+    "id": "keraton-jogja",
+    "category": "budaya",
+    "subject": "Keraton Yogyakarta",
+    "region": "Yogyakarta",
+    "lang": "id",
+    "visual_facts": "Keraton Yogyakarta; istana Kesultanan Jawa; bangunan JOGLO/limasan terbuka, tiang kayu (saka) berukir, lantai marmer; abdi dalem berpakaian adat Jawa dan blangkon; halaman berpasir, pohon beringin; nuansa klasik Jawa",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "keraton",
+      "yogyakarta",
+      "jawa",
+      "kesultanan",
+      "joglo"
+    ]
+  },
+  {
+    "id": "taman-sari",
+    "category": "budaya",
+    "subject": "Taman Sari Yogyakarta",
+    "region": "Yogyakarta",
+    "lang": "id",
+    "visual_facts": "Taman Sari, Yogyakarta; bekas taman air Keraton; KOLAM pemandian air biru-hijau dikelilingi tembok kuning-putih dan menara bilik; lorong bawah tanah dan masjid bawah tanah melingkar (Sumur Gumuling) dengan tangga bersilang; arsitektur Jawa-Portugis",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "taman sari",
+      "yogyakarta",
+      "keraton",
+      "kolam",
+      "heritage"
+    ]
+  },
+  {
+    "id": "candi-mendut",
+    "category": "arsitektur",
+    "subject": "Candi Mendut",
+    "region": "Magelang",
+    "lang": "id",
+    "visual_facts": "Candi Mendut, Magelang (dekat Borobudur); candi BUDDHA batu andesit abu-abu bertubuh kekar, atap bertingkat berstupa; di dalam ARCA Buddha besar duduk di KURSI (kaki menjuntai, bukan bersila) diapit dua Bodhisattva; relief dinding; pohon rindang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "candi mendut",
+      "magelang",
+      "buddha",
+      "candi",
+      "jawa tengah"
+    ]
+  },
+  {
+    "id": "candi-sewu",
+    "category": "arsitektur",
+    "subject": "Candi Sewu",
+    "region": "Jawa Tengah",
+    "lang": "id",
+    "visual_facts": "Candi Sewu, dekat Prambanan; kompleks candi BUDDHA besar (terbesar kedua setelah Borobudur); candi induk dikelilingi RATUSAN candi perwara kecil berjajar; batu andesit abu-abu, arca penjaga Dwarapala raksasa di gerbang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "candi sewu",
+      "prambanan",
+      "buddha",
+      "jawa tengah",
+      "candi"
+    ]
+  },
+  {
+    "id": "goa-gajah",
+    "category": "arsitektur",
+    "subject": "Goa Gajah",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Goa Gajah, Bali; situs purbakala; MULUT GUA berukir wajah raksasa menyeramkan sebagai pintu masuk gua pertapaan; di depan kolam petirtaan dengan ARCA bidadari pancuran air; batu berlumut, pepohonan rindang tropis",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "goa gajah",
+      "bali",
+      "gua",
+      "purbakala",
+      "petirtaan"
+    ]
+  },
+  {
+    "id": "trowulan",
+    "category": "arsitektur",
+    "subject": "Situs Trowulan (Majapahit)",
+    "region": "Jawa Timur",
+    "lang": "id",
+    "visual_facts": "Situs Trowulan, Mojokerto; bekas ibu kota Kerajaan MAJAPAHIT; reruntuhan BATA MERAH — gapura Bajang Ratu (tinggi beratap), Candi Tikus (petirtaan bertingkat), kolam Segaran; arca dan artefak kuno; rumput hijau",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "trowulan",
+      "majapahit",
+      "mojokerto",
+      "jawa timur",
+      "bata merah"
+    ]
+  },
+  {
+    "id": "tirta-empul",
+    "category": "arsitektur",
+    "subject": "Pura Tirta Empul",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Pura Tirta Empul, Tampaksiring Bali; pura PEMANDIAN suci; deretan PANCURAN air dari batu mengisi kolam jernih tempat umat melukat (penyucian) berkain dan udeng; gapura, kolam ikan, ukiran batu berlumut, suasana sakral hijau",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tirta empul",
+      "bali",
+      "pura",
+      "melukat",
+      "pemandian"
+    ]
   }
 ]
