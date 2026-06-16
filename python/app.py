@@ -103,10 +103,13 @@ GCP_REFRESH_TOKEN  = os.environ.get("GCP_REFRESH_TOKEN", "")
 GCP_CLIENT_ID      = os.environ.get("GCP_CLIENT_ID", "")
 GCP_CLIENT_SECRET  = os.environ.get("GCP_CLIENT_SECRET", "")
 
+GCP_LOCATION       = os.environ.get("GCP_LOCATION", "global")
+
 _vertex_ready = False
+_gcp_creds = None  # OAuth Credentials, reused by both Imagen (vertexai) and Gemini (google.genai) paths
 
 def _ensure_vertex():
-    global _vertex_ready
+    global _vertex_ready, _gcp_creds
     if _vertex_ready:
         return True
     if not all([GCP_PROJECT_ID, GCP_REFRESH_TOKEN, GCP_CLIENT_ID, GCP_CLIENT_SECRET]):
@@ -122,12 +125,18 @@ def _ensure_vertex():
             client_secret=GCP_CLIENT_SECRET,
         )
         _vertexai.init(project=GCP_PROJECT_ID, credentials=_creds)
+        _gcp_creds = _creds
         _vertex_ready = True
         return True
     except Exception as e:
         import warnings
         warnings.warn(f"Vertex AI init failed: {e}")
         return False
+
+def _is_gemini_image_model(m: str) -> bool:
+    """Nano Banana lineup (gemini-*-image) goes through the Gemini API, NOT ImageGenerationModel."""
+    m = (m or "").lower()
+    return m.startswith("gemini-") and "image" in m
 
 _ensure_vertex()
 
@@ -1709,6 +1718,41 @@ async def generate_image_vertex(req: VertexImageRequest):
             qdrant_url=QDRANT_CLOUD_URL or None,
             qdrant_api_key=QDRANT_CLOUD_KEY or None,
         )
+    # ── Nano Banana (gemini-*-image) → Gemini API on Vertex, not ImageGenerationModel ──
+    if _is_gemini_image_model(req.model):
+        try:
+            from google import genai as _genai
+            from google.genai import types as _gtypes
+            client = _genai.Client(
+                vertexai=True,
+                project=GCP_PROJECT_ID,
+                location=GCP_LOCATION,
+                credentials=_gcp_creds,
+            )
+            resp = client.models.generate_content(
+                model=req.model,
+                contents=prompt,
+                config=_gtypes.GenerateContentConfig(response_modalities=["IMAGE"]),
+            )
+            img_bytes = None
+            for cand in (resp.candidates or []):
+                for part in (getattr(cand.content, "parts", None) or []):
+                    inline = getattr(part, "inline_data", None)
+                    if inline and getattr(inline, "data", None):
+                        img_bytes = inline.data
+                        break
+                if img_bytes:
+                    break
+            if not img_bytes:
+                raise HTTPException(502, f"{req.model} returned no image (check model availability in project/location {GCP_LOCATION})")
+            b64 = _b64.b64encode(img_bytes).decode()
+            return {"image_b64": b64, "model": req.model}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    # ── Imagen (imagegeneration@*, imagen-*) → ImageGenerationModel ──
     try:
         from vertexai.preview.vision_models import ImageGenerationModel as _IGen
         import io as _io
