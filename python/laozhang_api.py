@@ -97,6 +97,53 @@ DEEPSEEK_DIRECT_MODELS = {"deepseek-v4-pro", "deepseek-r1"}
 BASE_URL = "https://api.laozhang.ai/v1"
 MCP_API_URL = os.environ.get("MCP_API_URL", "http://127.0.0.1:8001")  # mcp_files.py sidecar
 IMAGE_URL = "https://api.laozhang.ai/v1"
+
+# ── Vertex AI / OAuth (Google-native image gen — no API key) ─────────────────
+# NOTE: this is the file uvicorn actually serves (python/railway.json →
+# `uvicorn laozhang_api:app`). The Vertex routes live HERE, not in app.py.
+GCP_PROJECT_ID    = os.environ.get("GCP_PROJECT_ID", "")
+GCP_REFRESH_TOKEN = os.environ.get("GCP_REFRESH_TOKEN", "")
+GCP_CLIENT_ID     = os.environ.get("GCP_CLIENT_ID", "")
+GCP_CLIENT_SECRET = os.environ.get("GCP_CLIENT_SECRET", "")
+GCP_LOCATION      = os.environ.get("GCP_LOCATION", "global")
+# Nusantara corpus retrieval keys (prompt enhancement before image gen).
+GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
+QDRANT_CLOUD_URL  = os.environ.get("QDRANT_CLOUD_URL", "")
+QDRANT_CLOUD_KEY  = os.environ.get("QDRANT_CLOUD_KEY", "")
+
+_vertex_ready = False
+_gcp_creds = None  # OAuth Credentials, reused by Imagen (vertexai) + Gemini (google.genai)
+
+def _ensure_vertex():
+    """Lazy init — called at request time, never at import (keeps app boot safe)."""
+    global _vertex_ready, _gcp_creds
+    if _vertex_ready:
+        return True
+    if not all([GCP_PROJECT_ID, GCP_REFRESH_TOKEN, GCP_CLIENT_ID, GCP_CLIENT_SECRET]):
+        return False
+    try:
+        from google.oauth2.credentials import Credentials as _GCreds
+        import vertexai as _vertexai
+        _creds = _GCreds(
+            token=None,
+            refresh_token=GCP_REFRESH_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GCP_CLIENT_ID,
+            client_secret=GCP_CLIENT_SECRET,
+        )
+        _vertexai.init(project=GCP_PROJECT_ID, credentials=_creds)
+        _gcp_creds = _creds
+        _vertex_ready = True
+        return True
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Vertex AI init failed: {e}")
+        return False
+
+def _is_gemini_image_model(m: str) -> bool:
+    """Nano Banana lineup (gemini-*-image) goes via the Gemini API, NOT ImageGenerationModel."""
+    m = (m or "").lower()
+    return m.startswith("gemini-") and "image" in m
 GOOGLE_IMAGE_BASE = "https://api.laozhang.ai/v1beta/models"
 
 # -- Best balance -- reliable + affordable --------------------------------
@@ -6362,6 +6409,95 @@ try:
 except Exception as _na_err:  # noqa: BLE001
     _logging.getLogger("narasi").warning(
         "narration_api not loaded (non-fatal — /narration unavailable): %s", _na_err)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VERTEX AI IMAGE GEN  (OAuth, no API key) — served from THIS app (laozhang_api)
+#   gemini-*-image (Nano Banana)  → google.genai on Vertex
+#   imagen-* / imagegeneration@*  → vertexai ImageGenerationModel
+# ══════════════════════════════════════════════════════════════════════════════
+class VertexImageRequest(BaseModel):
+    prompt: str
+    model: str = "gemini-2.5-flash-image"
+    aspect_ratio: str = "1:1"
+    nusantara_corpus: bool = False
+
+def _corpus_enhance(prompt: str):
+    """Best-effort Nusantara enhancement; never raises (image gen must not break)."""
+    try:
+        import nusantara_corpus as _nc
+        return _nc.enhance_prompt(
+            prompt,
+            gemini_api_key=GEMINI_API_KEY or None,
+            qdrant_url=QDRANT_CLOUD_URL or None,
+            qdrant_api_key=QDRANT_CLOUD_KEY or None,
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(f"corpus enhance skipped: {e}")
+        return prompt, [], None
+
+@app.post("/generate-image/vertex")
+async def generate_image_vertex(req: VertexImageRequest):
+    if not _ensure_vertex():
+        raise HTTPException(503, "Vertex AI not configured — set GCP_PROJECT_ID, GCP_REFRESH_TOKEN, GCP_CLIENT_ID, GCP_CLIENT_SECRET")
+    prompt = req.prompt
+    if req.nusantara_corpus:
+        prompt, _, _ = _corpus_enhance(prompt)
+
+    # ── Nano Banana (gemini-*-image) → Gemini API on Vertex ──
+    if _is_gemini_image_model(req.model):
+        try:
+            from google import genai as _genai
+            from google.genai import types as _gtypes
+            client = _genai.Client(
+                vertexai=True,
+                project=GCP_PROJECT_ID,
+                location=GCP_LOCATION,
+                credentials=_gcp_creds,
+            )
+            resp = client.models.generate_content(
+                model=req.model,
+                contents=prompt,
+                config=_gtypes.GenerateContentConfig(response_modalities=["IMAGE"]),
+            )
+            img_bytes = None
+            for cand in (resp.candidates or []):
+                for part in (getattr(cand.content, "parts", None) or []):
+                    inline = getattr(part, "inline_data", None)
+                    if inline and getattr(inline, "data", None):
+                        img_bytes = inline.data
+                        break
+                if img_bytes:
+                    break
+            if not img_bytes:
+                raise HTTPException(502, f"{req.model} returned no image (check availability in project/location {GCP_LOCATION})")
+            return {"image_b64": base64.b64encode(img_bytes).decode(), "model": req.model}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    # ── Imagen (imagegeneration@*, imagen-*) → ImageGenerationModel ──
+    try:
+        from vertexai.preview.vision_models import ImageGenerationModel as _IGen
+        import io as _io
+        mdl = _IGen.from_pretrained(req.model)
+        images = mdl.generate_images(prompt=prompt, number_of_images=1, aspect_ratio=req.aspect_ratio)
+        buf = _io.BytesIO()
+        images[0]._pil_image.save(buf, format="JPEG", quality=92)
+        return {"image_b64": base64.b64encode(buf.getvalue()).decode(), "model": req.model}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class EnhancePromptRequest(BaseModel):
+    prompt: str
+
+@app.post("/enhance-prompt")
+async def enhance_prompt_endpoint(req: EnhancePromptRequest):
+    enhanced, hits, ref_b64 = _corpus_enhance(req.prompt)
+    return {"enhanced_prompt": enhanced, "ref_b64": ref_b64 or "", "hits": len(hits)}
 
 
 if __name__ == "__main__":
