@@ -32,6 +32,15 @@ _COLLECTION     = "nusantara_visual_v1"
 _STOP = {"yang","dan","di","ke","dari","untuk","ini","itu","atau","dengan","ada","pada","juga",
          "the","a","an","of","in","on","at","to","for","is","are","and","or","with"}
 
+# Scene/category words that appear in subject NAMES but are never the subject itself
+# (the specific word beside them is). They must NOT qualify an entry on their own,
+# else "prewedding di sawah" matches the sawah-ghost and "pura bali" matches every
+# temple. A prompt still qualifies an entry via its distinctive word (bromo, kuta,
+# besakih, bakso, kuntilanak, ...).
+_GENERIC = {"tukang","hantu","setan","orang","pura","candi","tugu","masjid","gereja",
+            "jembatan","gunung","danau","pantai","pulau","taman","rumah","kota","jalan",
+            "sawah","gedung","istana","benteng","kepulauan","makhluk","kain"}
+
 
 # ── seed loader ──────────────────────────────────────────────────────────
 @lru_cache(maxsize=1)
@@ -104,10 +113,11 @@ def _bm25_retrieve(query: str, top_k: int) -> list[dict]:
     idf = _idf()
     cands = []
     for ex, name, body in _corpus_docs():
-        # qualify only if a query token hits this entry's NAME/subject — a match
-        # on description words alone (e.g. "sunrise" in Bromo's facts) doesn't count,
+        # qualify only if a query token hits this entry's NAME/subject (excluding
+        # generic scene words) — a match on description words alone (e.g. "sunrise"
+        # in Bromo's facts) or a generic word alone ("sawah", "pura") doesn't count,
         # so off-domain & purely-descriptive prompts inject nothing
-        if any(t in name for t in qt):
+        if any(t in name and t not in _GENERIC for t in qt):
             cands.append((_score(qt, name, body, idf), ex))
     if not cands:
         return []

@@ -1468,5 +1468,850 @@
       "melukat",
       "pemandian"
     ]
+  },
+  {
+    "id": "kuntilanak",
+    "category": "makhluk",
+    "subject": "Kuntilanak",
+    "region": "Jawa/Indonesia",
+    "lang": "id",
+    "visual_facts": "Kuntilanak, hantu perempuan Indonesia; wanita berambut hitam PANJANG menutupi wajah, GAUN PUTIH panjang lusuh, wajah pucat pasi bermata cekung, kuku panjang; melayang dan tertawa cekikikan; diasosiasikan pohon dan bau bunga kamboja/melati; latar malam gelap",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu",
+      "kuntilanak",
+      "jawa",
+      "horror"
+    ]
+  },
+  {
+    "id": "pocong",
+    "category": "makhluk",
+    "subject": "Pocong",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "Pocong, hantu Indonesia; MAYAT terbungkus KAIN KAFAN putih dari kepala sampai kaki, diikat tali pocong di ujung kepala; wajah pucat terlihat di celah kain; BERGERAK MELOMPAT karena kaki terikat; latar kuburan malam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu",
+      "pocong",
+      "kafan",
+      "horror"
+    ]
+  },
+  {
+    "id": "genderuwo",
+    "category": "makhluk",
+    "subject": "Genderuwo",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Genderuwo, makhluk halus Jawa; humanoid RAKSASA berBULU LEBAT hitam-coklat seperti kera besar, tubuh kekar, mata MERAH menyala, taring; tinggal di pohon besar/bangunan tua; sangat kuat dan menyeramkan",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "genderuwo",
+      "raksasa",
+      "jawa",
+      "horror"
+    ]
+  },
+  {
+    "id": "tuyul",
+    "category": "makhluk",
+    "subject": "Tuyul",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Tuyul, makhluk pencuri uang; ANAK KECIL GUNDUL (botak), kulit abu-abu pucat, telanjang/bercawat, kepala agak besar, mata polos; gesit mencuri uang; sosok mungil",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tuyul",
+      "makhluk",
+      "jawa",
+      "pesugihan"
+    ]
+  },
+  {
+    "id": "sundel-bolong",
+    "category": "makhluk",
+    "subject": "Sundel Bolong",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Sundel Bolong, hantu perempuan Jawa; wanita berambut hitam SANGAT PANJANG, gaun putih; CIRI KHAS LUBANG menganga di PUNGGUNG (bolong) kadang tertutup rambut; pucat, melayang; malam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu",
+      "sundel bolong",
+      "jawa",
+      "horror"
+    ]
+  },
+  {
+    "id": "wewe-gombel",
+    "category": "makhluk",
+    "subject": "Wewe Gombel",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Wewe Gombel, hantu nenek; WANITA TUA seram, rambut panjang acak-acakan, PAYUDARA panjang menjuntai, kulit keriput gelap; konon menculik anak terlantar; menyeramkan",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu",
+      "wewe gombel",
+      "nenek",
+      "jawa"
+    ]
+  },
+  {
+    "id": "suster-ngesot",
+    "category": "makhluk",
+    "subject": "Suster Ngesot",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "Suster Ngesot, hantu rumah sakit; SUSTER berseragam putih lusuh berlumur DARAH, rambut menutupi wajah; MERANGKAK/menyeret tubuh (ngesot) di lantai koridor RS; lorong rumah sakit remang",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu",
+      "suster",
+      "rumah sakit",
+      "horror"
+    ]
+  },
+  {
+    "id": "hantu-jeruk-purut",
+    "category": "makhluk",
+    "subject": "Hantu Jeruk Purut",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Hantu Jeruk Purut, hantu Jakarta; sosok TANPA KEPALA berjubah hitam yang MENJINJING KEPALANYA SENDIRI, ditemani anjing; diasosiasikan pemakaman Jeruk Purut; malam berkabut",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu",
+      "jeruk purut",
+      "jakarta",
+      "horror"
+    ]
+  },
+  {
+    "id": "si-manis-ancol",
+    "category": "makhluk",
+    "subject": "Si Manis Jembatan Ancol",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Si Manis Jembatan Ancol, hantu perempuan; wanita CANTIK berkebaya, rambut panjang, anggun namun pucat; muncul di jembatan kawasan Ancol Jakarta malam hari",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu",
+      "ancol",
+      "jakarta",
+      "kebaya"
+    ]
+  },
+  {
+    "id": "babi-ngepet",
+    "category": "makhluk",
+    "subject": "Babi Ngepet",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Babi Ngepet, siluman pesugihan; BABI HUTAN HITAM besar (jelmaan manusia pelaku pesugihan) pencuri kekayaan, mata kemerahan; latar gelap kampung; lilin penanda di rumah",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "siluman",
+      "babi ngepet",
+      "pesugihan",
+      "jawa"
+    ]
+  },
+  {
+    "id": "jenglot",
+    "category": "makhluk",
+    "subject": "Jenglot",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Jenglot, makhluk mungil; HUMANOID KECIL (10-20cm) seperti mumi kering, RAMBUT dan KUKU sangat panjang, wajah seram bertaring; konon penghisap darah; dipajang dalam kotak kaca",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jenglot",
+      "makhluk",
+      "mistis"
+    ]
+  },
+  {
+    "id": "banaspati",
+    "category": "makhluk",
+    "subject": "Banaspati",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Banaspati, makhluk api Jawa; BOLA API / kepala berapi melayang di kegelapan, menyala merah-jingga; konon bergerak posisi TERBALIK; muncul malam di tempat sepi",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "banaspati",
+      "api",
+      "jawa",
+      "horror"
+    ]
+  },
+  {
+    "id": "buto-ijo",
+    "category": "makhluk",
+    "subject": "Buto Ijo",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Buto Ijo, raksasa hijau; RAKSASA berkulit HIJAU besar kekar, taring, mata melotot, rambut gimbal, bercawat; antagonis cerita rakyat Timun Mas; rakus menyeramkan",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "raksasa",
+      "buto ijo",
+      "hijau",
+      "jawa"
+    ]
+  },
+  {
+    "id": "mak-lampir",
+    "category": "makhluk",
+    "subject": "Mak Lampir",
+    "region": "Sumatra",
+    "lang": "id",
+    "visual_facts": "Mak Lampir, nenek sihir; WANITA TUA penyihir wajah seram keriput, rambut putih panjang acak, gigi tonggos, tertawa melengking; jubah lusuh; legenda Sumatra/Gunung Merapi",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "penyihir",
+      "mak lampir",
+      "nenek",
+      "sumatra"
+    ]
+  },
+  {
+    "id": "nyi-roro-kidul",
+    "category": "makhluk",
+    "subject": "Nyi Roro Kidul",
+    "region": "Pantai Selatan Jawa",
+    "lang": "id",
+    "visual_facts": "Nyi Roro Kidul, Ratu Pantai Selatan; ratu gaib cantik anggun berwibawa, busana dan selendang HIJAU, mahkota; diasosiasikan laut selatan Jawa dan ombak besar; aura keramat agung",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "nyi roro kidul",
+      "ratu pantai selatan",
+      "hijau",
+      "mistis"
+    ]
+  },
+  {
+    "id": "nyi-blorong",
+    "category": "makhluk",
+    "subject": "Nyi Blorong",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Nyi Blorong, ratu siluman ULAR; wanita cantik bertubuh bagian bawah ULAR bersisik KEEMASAN berkilau; diasosiasikan pesugihan kekayaan; aura magis",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "nyi blorong",
+      "siluman ular",
+      "pesugihan"
+    ]
+  },
+  {
+    "id": "calon-arang",
+    "category": "makhluk",
+    "subject": "Calon Arang",
+    "region": "Jawa/Bali",
+    "lang": "id",
+    "visual_facts": "Calon Arang, janda penyihir legendaris; wanita tua penyihir hitam berambut panjang acak, ekspresi murka, menebar wabah/teluh; aura gelap; berkait Leak dan Rangda",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "calon arang",
+      "penyihir",
+      "jawa",
+      "bali"
+    ]
+  },
+  {
+    "id": "batara-kala",
+    "category": "makhluk",
+    "subject": "Batara Kala",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Batara Kala, dewa RAKSASA waktu dan kehancuran (Jawa-Hindu); raksasa bertaring besar, mata melotot, wajah Kala seperti di gerbang candi; gelap dan agung; penguasa bencana",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "batara kala",
+      "raksasa",
+      "dewa",
+      "jawa"
+    ]
+  },
+  {
+    "id": "leak",
+    "category": "makhluk",
+    "subject": "Leak",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Leak (Bali), penyihir penjelma; wujud KEPALA terbang dengan ORGAN/usus menjuntai dan LIDAH api panjang, mata melotot, taring; muncul malam di kuburan Bali; ilmu hitam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "leak",
+      "bali",
+      "penyihir",
+      "horror"
+    ]
+  },
+  {
+    "id": "rangda",
+    "category": "makhluk",
+    "subject": "Rangda",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Rangda (Bali), ratu iblis; penyihir wanita seram, RAMBUT putih panjang awut-awutan, MATA melotot, TARING dan LIDAH panjang menjulur ke dada, payudara menjuntai, kain poleng; topeng sakral; lawan Barong",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "rangda",
+      "bali",
+      "iblis",
+      "topeng"
+    ]
+  },
+  {
+    "id": "barong",
+    "category": "makhluk",
+    "subject": "Barong",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Barong (Bali), makhluk pelindung; seperti SINGA mitologis berbulu lebat putih-keemasan, topeng besar bermata melotot, taring, hiasan cermin dan ukiran emas warna-warni; dimainkan dua penari; lambang kebaikan",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "barong",
+      "bali",
+      "topeng",
+      "pelindung"
+    ]
+  },
+  {
+    "id": "celuluk",
+    "category": "makhluk",
+    "subject": "Celuluk",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Celuluk (Bali), pengikut Rangda; sosok GUNDUL kepala besar, wajah seram bertaring, mata melotot, mulut lebar menyeringai, payudara menjuntai; abdi ilmu hitam; topeng Bali",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "celuluk",
+      "bali",
+      "topeng",
+      "horror"
+    ]
+  },
+  {
+    "id": "tonya",
+    "category": "makhluk",
+    "subject": "Tonya",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Tonya (Bali), makhluk halus penunggu pohon besar/sungai/tempat angker; wujud samar bisa berubah, kadang manusia pendek gelap; usil; suasana mistis hijau",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tonya",
+      "bali",
+      "makhluk halus"
+    ]
+  },
+  {
+    "id": "buta-kala",
+    "category": "makhluk",
+    "subject": "Bhuta Kala",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Bhuta Kala (Bali), raksasa/iblis; RAKSASA bertaring, mata melotot, perwujudannya jadi OGOH-OGOH besar saat Nyepi; warna gelap merah-hitam, ekspresi garang; simbol sifat buruk",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "bhuta kala",
+      "ogoh-ogoh",
+      "bali",
+      "raksasa"
+    ]
+  },
+  {
+    "id": "palasik",
+    "category": "makhluk",
+    "subject": "Palasik",
+    "region": "Minangkabau",
+    "lang": "id",
+    "visual_facts": "Palasik (Minangkabau), makhluk pemangsa bayi; manusia berilmu hitam, kadang berupa KEPALA terbang dengan organ menjuntai; menyeramkan; latar malam Minang",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "palasik",
+      "minangkabau",
+      "ilmu hitam",
+      "horror"
+    ]
+  },
+  {
+    "id": "begu-ganjang",
+    "category": "makhluk",
+    "subject": "Begu Ganjang",
+    "region": "Batak/Sumut",
+    "lang": "id",
+    "visual_facts": "Begu Ganjang (Batak), hantu TINGGI; HANTU SANGAT TINGGI menjulang (ganjang), kurus hitam samar, makin dilihat makin tinggi; peliharaan ilmu hitam; malam pedesaan Batak",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "begu ganjang",
+      "batak",
+      "hantu tinggi",
+      "horror"
+    ]
+  },
+  {
+    "id": "orang-bunian",
+    "category": "makhluk",
+    "subject": "Orang Bunian",
+    "region": "Sumatra",
+    "lang": "id",
+    "visual_facts": "Orang Bunian (Sumatra), bangsa halus hutan; manusia HALUS CANTIK/tampan hidup di hutan-gunung alam gaib paralel, berpakaian adat, samar elok; hutan berkabut",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "orang bunian",
+      "sumatra",
+      "makhluk halus",
+      "hutan"
+    ]
+  },
+  {
+    "id": "orang-pendek",
+    "category": "makhluk",
+    "subject": "Orang Pendek",
+    "region": "Sumatra",
+    "lang": "id",
+    "visual_facts": "Orang Pendek (Sumatra), kriptid; HUMANOID PENDEK (~1m) mirip kera-manusia berbulu, berjalan tegak, kuat; legenda hutan Kerinci; misterius",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "orang pendek",
+      "kriptid",
+      "sumatra",
+      "kerinci"
+    ]
+  },
+  {
+    "id": "hantu-raya",
+    "category": "makhluk",
+    "subject": "Hantu Raya",
+    "region": "Melayu",
+    "lang": "id",
+    "visual_facts": "Hantu Raya (Melayu), roh peliharaan besar; hantu BESAR kuat berwujud BAYANGAN HITAM gelap menyerupai manusia raksasa; khadam bomoh; sangat kuat menyeramkan",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hantu raya",
+      "melayu",
+      "bayangan",
+      "horror"
+    ]
+  },
+  {
+    "id": "penanggalan",
+    "category": "makhluk",
+    "subject": "Penanggalan",
+    "region": "Melayu",
+    "lang": "id",
+    "visual_facts": "Penanggalan (Melayu), hantu kepala terbang; KEPALA wanita terlepas dari tubuh, melayang dengan ORGAN/USUS dan lambung menjuntai berkilau; penghisap darah; terbang malam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "penanggalan",
+      "melayu",
+      "kepala terbang",
+      "horror"
+    ]
+  },
+  {
+    "id": "langsuir",
+    "category": "makhluk",
+    "subject": "Langsuir",
+    "region": "Melayu",
+    "lang": "id",
+    "visual_facts": "Langsuir (Melayu), hantu wanita vampir; wanita cantik berambut SANGAT PANJANG hitam, kuku panjang, gaun putih/hijau, bisa terbang; penghisap darah; melolong",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "langsuir",
+      "melayu",
+      "vampir",
+      "horror"
+    ]
+  },
+  {
+    "id": "pelesit",
+    "category": "makhluk",
+    "subject": "Pelesit",
+    "region": "Melayu",
+    "lang": "id",
+    "visual_facts": "Pelesit (Melayu), roh peliharaan; berwujud BELALANG/jangkrik kecil atau roh kecil; suruhan penyihir yang masuk tubuh korban; mungil gaib",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pelesit",
+      "melayu",
+      "roh",
+      "belalang"
+    ]
+  },
+  {
+    "id": "polong",
+    "category": "makhluk",
+    "subject": "Polong",
+    "region": "Melayu",
+    "lang": "id",
+    "visual_facts": "Polong (Melayu), roh kecil dari darah; makhluk halus SANGAT KECIL tak kasat mata dari darah dalam botol; peliharaan pengganggu; sering bersama Pelesit",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "polong",
+      "melayu",
+      "roh kecil"
+    ]
+  },
+  {
+    "id": "kuyang",
+    "category": "makhluk",
+    "subject": "Kuyang",
+    "region": "Kalimantan",
+    "lang": "id",
+    "visual_facts": "Kuyang (Kalimantan), penyihir kepala terbang; KEPALA wanita penyihir terbang malam dengan ORGAN/usus menjuntai, badan ditinggal, cahaya merah; penghisap darah; ilmu hitam Dayak",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kuyang",
+      "kalimantan",
+      "kepala terbang",
+      "horror"
+    ]
+  },
+  {
+    "id": "antu-banyu",
+    "category": "makhluk",
+    "subject": "Antu Banyu",
+    "region": "Kalimantan",
+    "lang": "id",
+    "visual_facts": "Antu Banyu (Kalimantan), hantu air; roh penghuni SUNGAI yang menyeret korban tenggelam; wujud samar gelap di air, mata menyala; sungai keruh malam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "antu banyu",
+      "kalimantan",
+      "hantu air",
+      "sungai"
+    ]
+  },
+  {
+    "id": "parakang",
+    "category": "makhluk",
+    "subject": "Parakang",
+    "region": "Sulsel",
+    "lang": "id",
+    "visual_facts": "Parakang (Sulawesi Selatan), penjelma; manusia berilmu hitam yang BERUBAH wujud jadi binatang (babi/kucing/ayam) atau benda untuk memangsa; mata menyala; malam kampung Bugis-Makassar",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "parakang",
+      "sulawesi",
+      "penjelma",
+      "horror"
+    ]
+  },
+  {
+    "id": "poppo",
+    "category": "makhluk",
+    "subject": "Poppo",
+    "region": "Sulawesi",
+    "lang": "id",
+    "visual_facts": "Poppo (Sulawesi), penyihir terbang; wanita penyihir TERBANG malam hari kadang dengan cahaya/api, memangsa korban; ilmu hitam; siluet melayang di langit malam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "poppo",
+      "sulawesi",
+      "penyihir terbang",
+      "horror"
+    ]
+  },
+  {
+    "id": "ebu-gogo",
+    "category": "makhluk",
+    "subject": "Ebu Gogo",
+    "region": "Flores/NTT",
+    "lang": "id",
+    "visual_facts": "Ebu Gogo (Flores), kriptid humanoid; makhluk KECIL berbulu mirip manusia purba/hobbit, berjalan tegak, rakus, bergumam; legenda gua Flores; primitif misterius",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ebu gogo",
+      "flores",
+      "kriptid",
+      "ntt"
+    ]
+  },
+  {
+    "id": "lampor",
+    "category": "makhluk",
+    "subject": "Lampor",
+    "region": "Pantai Selatan Jawa",
+    "lang": "id",
+    "visual_facts": "Lampor (Jawa), pasukan gaib; ROMBONGAN makhluk halus lewat di langit/jalan malam dengan gemuruh dan obor, iring-iringan Ratu Pantai Selatan; siluet pasukan melayang; mencekam",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "lampor",
+      "pasukan gaib",
+      "jawa",
+      "horror"
+    ]
+  },
+  {
+    "id": "memedi-sawah",
+    "category": "makhluk",
+    "subject": "Memedi Sawah",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Memedi Sawah (Jawa), hantu sawah; sosok penunggu SAWAH menyerupai ORANG-ORANGAN/sosok samar di tengah padang padi, menakuti petani; sawah senja berkabut",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "memedi sawah",
+      "jawa",
+      "hantu",
+      "sawah"
+    ]
+  },
+  {
+    "id": "jrangkong",
+    "category": "makhluk",
+    "subject": "Jrangkong",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Jrangkong (Jawa), hantu kerangka; KERANGKA/TENGKORAK manusia hidup yang berjalan, tulang-belulang putih bergerak; menyeramkan; latar gelap",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jrangkong",
+      "kerangka",
+      "jawa",
+      "horror"
+    ]
+  },
+  {
+    "id": "wedon",
+    "category": "makhluk",
+    "subject": "Wedon",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Wedon (Jawa), hantu berkain putih; sosok berselubung KAIN PUTIH menutupi seluruh tubuh seperti hantu seprai klasik, melayang samar; menakut-nakuti malam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "wedon",
+      "jawa",
+      "kain putih",
+      "horror"
+    ]
+  },
+  {
+    "id": "lelembut",
+    "category": "makhluk",
+    "subject": "Lelembut",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Lelembut (Jawa), makhluk halus; roh halus tak kasat mata yang bisa merasuki manusia (kesurupan); wujud samar bayangan/kabut gelap; suasana mistis",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "lelembut",
+      "jawa",
+      "makhluk halus",
+      "kesurupan"
+    ]
+  },
+  {
+    "id": "onggo-inggi",
+    "category": "makhluk",
+    "subject": "Onggo-inggi",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Onggo-inggi (Jawa), makhluk halus penggoda; roh yang menumpang/menakuti manusia ketakutan, wujud samar gelap; muncul saat seseorang takut; siluet kabur",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "onggo-inggi",
+      "jawa",
+      "makhluk halus"
+    ]
+  },
+  {
+    "id": "kemamang",
+    "category": "makhluk",
+    "subject": "Kemamang",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Kemamang, makhluk kepala api; KEPALA RAKSASA bermulut menganga mengeluarkan API, melayang di kegelapan; menyeramkan; cahaya api malam gelap",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kemamang",
+      "api",
+      "raksasa",
+      "horror"
+    ]
+  },
+  {
+    "id": "setan-gundul",
+    "category": "makhluk",
+    "subject": "Setan Gundul",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Setan Gundul, hantu botak; sosok pendek GUNDUL (kepala botak mengkilap), wajah menyeringai jahil seram, mata melotot; muncul mengganggu malam",
+    "style_label": "horror cinematic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "setan gundul",
+      "hantu",
+      "botak",
+      "horror"
+    ]
+  },
+  {
+    "id": "mambang",
+    "category": "makhluk",
+    "subject": "Mambang",
+    "region": "Melayu",
+    "lang": "id",
+    "visual_facts": "Mambang (Melayu), roh halus; roh penunggu diasosiasikan warna SENJA dan cahaya kuning-merah; wujud samar elok atau menyeramkan; suasana magis senja",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "mambang",
+      "melayu",
+      "roh",
+      "senja"
+    ]
+  },
+  {
+    "id": "garuda",
+    "category": "makhluk",
+    "subject": "Garuda",
+    "region": "Nusantara",
+    "lang": "id",
+    "visual_facts": "Garuda (mitologi), burung dewata; burung ELANG RAKSASA gagah, sayap lebar terbentang, bulu KEEMASAN, paruh dan cakar tajam, kadang berbadan setengah manusia; tunggangan Dewa Wisnu; lambang kejayaan; megah",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "garuda",
+      "mitologi",
+      "burung",
+      "nusantara"
+    ]
+  },
+  {
+    "id": "naga",
+    "category": "makhluk",
+    "subject": "Naga",
+    "region": "Nusantara",
+    "lang": "id",
+    "visual_facts": "Naga (mitologi Nusantara), ular raksasa; NAGA besar bersisik berkilau bertubuh panjang melingkar, kadang bermahkota dan berjanggut, penjaga mata air/harta; ramping seperti ular besar (BUKAN naga Eropa bersayap); anggun sakti",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "naga",
+      "mitologi",
+      "ular",
+      "nusantara"
+    ]
+  },
+  {
+    "id": "jin",
+    "category": "makhluk",
+    "subject": "Jin",
+    "region": "Nusantara",
+    "lang": "id",
+    "visual_facts": "Jin, makhluk gaib (Islam) dari API tak berasap; wujud berubah-ubah, sering digambarkan sosok ASAP/bayangan humanoid besar bermata menyala, atau keluar dari botol/lampu; gaib dan kuat",
+    "style_label": "mythological art",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jin",
+      "gaib",
+      "mitologi",
+      "islam"
+    ]
   }
 ]
