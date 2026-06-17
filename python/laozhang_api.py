@@ -6652,6 +6652,28 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest):
     return {"enhanced_prompt": enhanced, "ref_b64": ref_b64 or "", "hits": len(hits)}
 
 
+@app.get("/corpus/status")
+async def corpus_status():
+    """Read-only: corpus + Qdrant state (point count, hash sync, flags). No secret."""
+    import nusantara_corpus as _nc
+    cur = _nc.seed_hash()
+    out = {
+        "seed_entries": len(_nc._load_seed()),
+        "seed_hash": cur[:12],
+        "use_qdrant": CORPUS_USE_QDRANT,
+        "auto_reembed": CORPUS_AUTO_REEMBED,
+        "qdrant_url_set": bool(QDRANT_CLOUD_URL),
+        "vertex_ready": _ensure_vertex(),
+        "active_path": "qdrant" if CORPUS_USE_QDRANT else "bm25",
+    }
+    if QDRANT_CLOUD_URL:
+        out["qdrant_points"] = _nc.qdrant_count(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+        stored = _nc._qmeta_get(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+        out["qdrant_seed_hash"] = (stored or "")[:12]
+        out["in_sync"] = bool(stored and stored == cur and out["qdrant_points"] == out["seed_entries"])
+    return out
+
+
 @app.post("/corpus/reembed")
 async def corpus_reembed(x_reembed_secret: str = Header(None, alias="X-Reembed-Secret")):
     """Admin: (re)build the Qdrant collection from the seed using OAuth embeddings

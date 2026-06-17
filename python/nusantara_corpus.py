@@ -209,6 +209,20 @@ def _qmeta_get(qdrant_url: str, qdrant_api_key: str) -> str | None:
         pass
     return None
 
+def qdrant_count(qdrant_url: str, qdrant_api_key: str) -> int | None:
+    """Point count of the main collection (None if collection missing / unreachable)."""
+    import requests as _req
+    h = {"Content-Type": "application/json"}
+    if qdrant_api_key:
+        h["api-key"] = qdrant_api_key
+    try:
+        r = _req.get(f"{qdrant_url.rstrip('/')}/collections/{_COLLECTION}", headers=h, timeout=10)
+        if r.ok:
+            return r.json().get("result", {}).get("points_count")
+    except Exception:
+        pass
+    return None
+
 def _qmeta_set(qdrant_url: str, qdrant_api_key: str, value: str) -> None:
     import requests as _req
     base = qdrant_url.rstrip("/")

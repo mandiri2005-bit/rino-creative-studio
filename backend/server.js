@@ -2351,6 +2351,12 @@ app.post("/api/corpus/reembed", async (req,res) => {
     res.status(r.status).json(data);
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
+app.get("/api/corpus/status", async (_req,res) => {
+  try {
+    const r = await fetch(`${PYTHON_API}/corpus/status`);
+    res.status(r.status).json(await r.json());
+  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
+});
 
 // ── Google-native Whisk (Gemini multimodal → image generation) ───────────────
 app.post("/api/whisk/google", async (req,res) => {
