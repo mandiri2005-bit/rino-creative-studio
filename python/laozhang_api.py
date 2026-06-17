@@ -2275,6 +2275,7 @@ class VeoSubmitRequest(BaseModel):
     seed: str = ""
     ref_image_b64: str = ""  # base64-encoded reference image
     ref_image_mime: str = "image/jpeg"
+    nusantara_corpus: bool = False
 
 
 @app.post("/veo/submit")
@@ -2297,9 +2298,17 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
     if user:
         await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
 
+    # Nusantara corpus: enrich the TEXT prompt before Veo (best-effort, never breaks gen).
+    _prompt = req.prompt
+    if req.nusantara_corpus:
+        try:
+            _prompt, _, _ = _corpus_enhance(_prompt)
+        except Exception:
+            _prompt = req.prompt
+
     fields = {
         "model": req.model,
-        "prompt": req.prompt,
+        "prompt": _prompt,
         "seconds": preset["seconds"],
         "duration": preset["seconds"],
         "size": preset["size"],
@@ -2523,6 +2532,7 @@ class SoraSubmitRequest(BaseModel):
     aspect: str = ""  # "9:16" → portrait size override (applied in the endpoint)
     ref_image_b64: str = ""
     ref_image_mime: str = "image/jpeg"
+    nusantara_corpus: bool = False
 
 
 @app.post("/sora/submit")
@@ -2539,10 +2549,18 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
     if user:
         await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
 
+    # Nusantara corpus: enrich the TEXT prompt before Sora (best-effort, never breaks gen).
+    _prompt = req.prompt
+    if req.nusantara_corpus:
+        try:
+            _prompt, _, _ = _corpus_enhance(_prompt)
+        except Exception:
+            _prompt = req.prompt
+
     _size = "720x1280" if req.aspect == "9:16" else req.size
     form_data = {
         "model": req.model,
-        "prompt": req.prompt,
+        "prompt": _prompt,
         "size": _size,
         "seconds": req.seconds,
     }
@@ -2719,6 +2737,7 @@ class WhiskRequest(BaseModel):
     model: str = "flux-kontext-max"
     aspect_ratio: str = "1:1"
     image_size: str = "1K"
+    nusantara_corpus: bool = False
 
     def effective_subject_b64(self):  return self.subject_b64 or self.subject_image_b64
 
@@ -2771,6 +2790,7 @@ class FlowStoryboardRequest(BaseModel):
     generate_images: bool = False
     image_style: str = ""  # visual render style (e.g. "Studio Ghibli", "Rembrandt painting")
     auto_scene_count: bool = False  # True = AI decides how many scenes
+    nusantara_corpus: bool = False  # enrich per-scene image prompts with Nusantara facts
 
 
 # Max scenes generated per single AI text call. Higher scene counts are split
@@ -2846,6 +2866,13 @@ async def whisk_generate(
 
     combined_prompt = ", ".join(parts)
 
+    # Nusantara corpus: enrich the combined prompt before image gen (best-effort).
+    if req.nusantara_corpus:
+        try:
+            combined_prompt, _, _ = _corpus_enhance(combined_prompt)
+        except Exception:
+            pass
+
     cfg = IMAGE_MODELS.get(req.model)
     if not cfg:
         raise HTTPException(400, f"Unknown image model: {req.model}")
@@ -2912,6 +2939,7 @@ class FlowImagesRequest(BaseModel):
     model: str = "nano-banana-hd"
     aspect_ratio: str = "16:9"
     image_style: str = ""
+    nusantara_corpus: bool = False
 
 
 @app.post("/flow/images")
@@ -2951,6 +2979,11 @@ async def flow_images_only(
                 f"Camera: {scene.get('camera', '')}."
                 f"{style_suffix} Cinematic still frame."
             )
+            if req.nusantara_corpus:
+                try:
+                    prompt, _, _ = _corpus_enhance(prompt)
+                except Exception:
+                    pass
             try:
                 api = cfg["api"]
                 mdl = cfg["model"]
@@ -5818,6 +5851,11 @@ async def flow_storyboard(
                         f"Camera: {scene.get('camera', '')}."
                         f"{style_suffix} Cinematic still frame."
                     )
+                    if req.nusantara_corpus:
+                        try:
+                            prompt, _, _ = _corpus_enhance(prompt)
+                        except Exception:
+                            pass
                     try:
                         api = cfg["api"]
                         mdl = cfg["model"]

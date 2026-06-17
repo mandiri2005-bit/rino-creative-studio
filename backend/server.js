@@ -752,7 +752,7 @@ const NANO_TO_GOOGLE_MODEL = {
 
 // ── Flow images: Google native first, fallback LaoZhang on quota ─────────────
 app.post("/api/flow/images/native", async (req, res) => {
-  const { scenes=[], model="nano-banana-hd", aspect_ratio="16:9", image_style="", google_api_key="" } = req.body || {};
+  const { scenes=[], model="nano-banana-hd", aspect_ratio="16:9", image_style="", google_api_key="", nusantara_corpus=false } = req.body || {};
   if (!scenes.length) return res.status(400).json({ error:"scenes required" });
 
   const effectiveGoogleKey = google_api_key.trim() || GEMINI_KEY;
@@ -767,7 +767,8 @@ app.post("/api/flow/images/native", async (req, res) => {
 
       // Direct fetch — more reliable than SDK for image-gen models
       const results = await Promise.allSettled(scenes.map(async (s, i) => {
-        const prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
+        let prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
+        prompt = await corpusEnhance(prompt, nusantara_corpus);
         const fetchResp = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${nativeModel}:generateContent?key=${effectiveGoogleKey}`,
           { method:"POST", headers:{"Content-Type":"application/json"},
@@ -812,7 +813,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       method:"POST",
       headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey,
                ...(req.headers.authorization ? {authorization: req.headers.authorization} : {})},
-      body: JSON.stringify({ scenes, model, aspect_ratio, image_style }),
+      body: JSON.stringify({ scenes, model, aspect_ratio, image_style, nusantara_corpus }),
     });
     const data = await r.json();
     console.log(`[flow/images/native] LAOZHANG fallback model=${model} scenes=${scenes.length}`);
@@ -1704,9 +1705,14 @@ app.post("/api/submit", requireAuth, async(req,res)=>{
     const userId   = await resolveUserId(req, tenantId);
     const {settings={},jobs=[]}=req.body||{};
     if(!jobs.length) return res.status(400).json({error:"No jobs"});
+    // Nusantara corpus: enrich each job prompt before building the batch JSONL (best-effort).
+    let jobsToSubmit = jobs;
+    if (settings.nusantara_corpus) {
+      jobsToSubmit = await Promise.all(jobs.map(async j => ({ ...j, prompt: await corpusEnhance(j.prompt, true) })));
+    }
     const model=settings.modelId||"gemini-3-pro-image-preview";
     const stamp=Date.now(),jsonlPath=path.join(TMP_DIR,`batch-${stamp}.jsonl`);
-    fs.writeFileSync(jsonlPath,buildJsonl(settings,jobs));
+    fs.writeFileSync(jsonlPath,buildJsonl(settings,jobsToSubmit));
     const uploaded=await ai.files.upload({file:jsonlPath,config:{mimeType:"jsonl",displayName:"image-batch-requests"}});
     const batch=await ai.batches.create({model,src:uploaded.name,config:{displayName:settings.displayName||"image-generation-batch"}});
     const mapping=jobs.map((j,i)=>({key:`image-${i+1}`,output:(j.output||`image-${i+1}`).trim()}));
@@ -2358,6 +2364,36 @@ app.get("/api/corpus/status", async (_req,res) => {
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 
+// ── Corpus enhance proxy: enrich any prompt with Nusantara cultural facts ─────
+// Mirrors Python /enhance-prompt. Used by the frontend (video/whisk/etc.) AND by
+// Node-side surfaces via the corpusEnhance() helper below.
+app.post("/api/enhance-prompt", async (req,res) => {
+  try {
+    const { prompt } = req.body || {};
+    if (!prompt || !String(prompt).trim()) return res.status(400).json({ error:"prompt required" });
+    const r = await fetch(`${PYTHON_API}/enhance-prompt`, {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    res.status(r.status).json(await r.json());
+  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
+});
+
+// Best-effort Nusantara corpus enhance for any prompt (Node-side). NEVER throws —
+// on any failure it returns the original prompt so generation is never broken.
+async function corpusEnhance(prompt, enabled) {
+  if (!enabled || !prompt || !String(prompt).trim()) return prompt;
+  try {
+    const r = await fetch(`${PYTHON_API}/enhance-prompt`, {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!r.ok) return prompt;
+    const d = await r.json();
+    return (d && d.enhanced_prompt) || prompt;
+  } catch { return prompt; }
+}
+
 // ── Google-native Whisk (Gemini multimodal → image generation) ───────────────
 app.post("/api/whisk/google", async (req,res) => {
   if (!ai) return res.status(400).json({ error:"No GEMINI_API_KEY in .env" });
@@ -2365,7 +2401,7 @@ app.post("/api/whisk/google", async (req,res) => {
     const { subject_image_b64, subject_description="", subject_image_mime="image/jpeg",
             scene_image_b64,   scene_description="",   scene_image_mime="image/jpeg",
             style_image_b64,   style_description="",   style_image_mime="image/jpeg",
-            aspect_ratio="1:1" } = req.body || {};
+            aspect_ratio="1:1", nusantara_corpus=false } = req.body || {};
 
     // Build multimodal parts
     const parts = [];
@@ -2376,6 +2412,11 @@ app.post("/api/whisk/google", async (req,res) => {
     if (style_image_b64)   { parts.push({ inlineData:{ data:style_image_b64,   mimeType:style_image_mime   } }); }
     if (style_description.trim())   { parts.push({ text:`Style: ${style_description}` }); }
     if (!parts.length) return res.status(400).json({ error:"At least one slot required" });
+    if (nusantara_corpus) {
+      const _combined = [subject_description, scene_description, style_description].filter(s=>s&&s.trim()).join(", ");
+      const _enh = await corpusEnhance(_combined, true);
+      if (_enh && _enh !== _combined) parts.push({ text:`Cultural authenticity reference (Nusantara): ${_enh}` });
+    }
     parts.push({ text:`Create a single creative image that blends the subject, scene, and style above. Aspect ratio: ${aspect_ratio}. Return the image only.` });
 
     const resp = await ai.models.generateContent({
@@ -2450,16 +2491,17 @@ app.post("/api/flow/storyboard/google/text", async (req,res) => {
 
 app.post("/api/flow/storyboard/google", async (req,res) => {
   try {
-    const { scenes=[], aspect_ratio="16:9", model="imagen-4.0-fast-generate-001", image_style="", google_api_key="" } = req.body || {};
+    const { scenes=[], aspect_ratio="16:9", model="imagen-4.0-fast-generate-001", image_style="", google_api_key="", nusantara_corpus=false } = req.body || {};
     const effectiveKey = google_api_key.trim() || GEMINI_KEY;
     if (!effectiveKey) return res.status(400).json({ error:"No Gemini API key — set GEMINI_API_KEY in .env or enter a key in the UI" });
     if (!scenes.length) return res.status(400).json({ error:"scenes required" });
-    console.log(`[flow/images] key=${google_api_key.trim()?"CLIENT("+google_api_key.trim().slice(-6)+")":"SERVER_ENV"} model=${model} scenes=${scenes.length}`);
+    console.log(`[flow/images] key=${google_api_key.trim()?"CLIENT("+google_api_key.trim().slice(-6)+")":"SERVER_ENV"} model=${model} scenes=${scenes.length} corpus=${nusantara_corpus}`);
     const flowImgAI = mkAI(effectiveKey);
     const mdl = model.startsWith("models/") ? model : `models/${model}`;
     const styleSuffix = image_style ? ` ${image_style} style.` : "";
     const results = await Promise.allSettled(scenes.map(async (s,i) => {
-      const prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
+      let prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
+      prompt = await corpusEnhance(prompt, nusantara_corpus);
       const resp = await flowImgAI.models.generateImages({ model:mdl, prompt,
         config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
       const data = resp?.generatedImages?.[0]?.image?.imageBytes;
