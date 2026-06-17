@@ -6745,13 +6745,16 @@ async def faq_ask(req: FaqAskRequest, user: Optional[CurrentUser] = Depends(get_
         import warnings; warnings.warn(f"faq llm failed: {e}")
     if not answer:
         answer = _FAQ_FALLBACK
-    # Tenant-scoped usage log (best-effort, no gate — help is always available).
+    # FREE for the user — the help bot must NEVER cost user credits. Log with credits=0 so
+    # the Gemini cost is tracked for the business (admin absorbs it), NOT deducted from the
+    # user's balance. endpoint="faq" so these rows are easy to total separately.
     try:
         if user:
             _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
-            await metering.debit(user.tenant_id, _uid, "chat", "gemini-2.5-flash",
-                                 {"tokens_in": len(prompt) // 4, "tokens_out": max(1, len(answer) // 4)},
-                                 byok=_byok_active(), log=True)
+            _tin = len(prompt) // 4; _tout = max(1, len(answer) // 4)
+            _usd = round((_tin * 0.075 + _tout * 0.30) / 1_000_000, 6)   # Gemini 2.5 Flash estimate
+            await db.log_usage(user.tenant_id, _uid, "gemini-2.5-flash", "faq",
+                               _tin, _tout, _usd, provider="vertex", credits=0)
     except Exception as _e:
         import warnings; warnings.warn(f"faq usage log failed: {_e}")
     return {"answer": answer,

@@ -3,203 +3,266 @@
     "id": "umum-apa-itu",
     "topic": "Umum",
     "q": "Apa itu ceritaAI?",
-    "keywords": "apa itu ceritai ceritaai aplikasi tentang overview platform studio kreatif",
-    "a": "ceritaAI adalah studio kreatif AI untuk membuat GAMBAR dan VIDEO bernuansa Indonesia. Fitur utamanya: Image Generation (bikin gambar dari teks), Video Instant (skrip jadi video lengkap dengan narasi otomatis), Veo & Sora (text/image-to-video), Flow (storyboard skrip jadi rangkaian scene), Whisk (gabung subjek+latar+gaya jadi 1 gambar), dan Batch Images (banyak gambar sekaligus). Keunggulan khasnya: Nusantara Corpus — referensi visual budaya Indonesia (rumah adat, makhluk gaib, tarian, baju adat, kuliner, kendaraan, suasana) yang bikin hasil otentik, bukan tebakan generik."
+    "keywords": "apa itu ceritai ceritaai aplikasi tentang overview platform studio kreatif fungsi",
+    "a": "ceritaAI adalah studio kreatif AI serba-bisa bernuansa Indonesia. Fitur lengkapnya: Chat (asisten AI), Image Generation & Imagen (gambar dari teks), Veo & Sora (text/image-to-video), Whisk (remix gambar), Flow (storyboard skrip), Batch Images (gambar massal), Video Instant (skrip jadi video lengkap otomatis), Narasi AI (tulis narasi panjang), Narasi Review (audit narasi), TTS & Script→TTS (teks jadi suara, termasuk Suara Lokal), MCP File Search (cari dokumenmu), Media Vault (arsip aset), Billing (kredit). Keunggulan khasnya: Nusantara Corpus — referensi visual budaya Indonesia yang bikin hasil otentik."
+  },
+  {
+    "id": "umum-daftar-fitur",
+    "topic": "Umum",
+    "q": "Fitur apa saja yang ada di ceritaAI? Daftar lengkap menu.",
+    "keywords": "daftar fitur menu navigasi semua list apa saja ada navbar sidebar",
+    "a": "Menu ceritaAI (di sidebar): AI → Chat, Image Gen. Video → Veo, Sora. Creative → Whisk, Flow. Google → Batch Images, TTS, Imagen. Tools → MCP Files, Script→TTS, Narasi AI, Narasi Review, Media Vault. Account → Billing, Feedback. Plus halaman terpisah Video Instant (skrip jadi video lengkap). Tiap fitur punya halamannya sendiri; klik di sidebar untuk pindah."
   },
   {
     "id": "umum-mulai",
     "topic": "Umum",
     "q": "Cara mulai / dari mana mulai pakai ceritaAI?",
-    "keywords": "mulai start awal pertama kali pemula cara memulai login",
-    "a": "1) Login dulu lewat akun (klik nama akun di pojok kanan atas). 2) Pilih fitur dari menu navigasi: paling gampang mulai dari Image Generation (ketik prompt, klik Generate Image). 3) Untuk video cepat, pakai Video Instant (tinggal masukin skrip). 4) Centang 🇮🇩 Nusantara Corpus kalau bikin konten bertema Indonesia biar hasilnya otentik. Setiap generate memakai kredit — saldo kredit terlihat di pojok kanan atas."
+    "keywords": "mulai start awal pertama kali pemula cara memulai login newbie",
+    "a": "1) Login lewat akun (pojok kanan atas). 2) Pilih fitur dari sidebar — paling gampang mulai dari Image Generation (ketik prompt → Generate). 3) Untuk video cepat, pakai Video Instant (masukin skrip). 4) Untuk tulisan/narasi, pakai Narasi AI. 5) Centang 🇮🇩 Nusantara Corpus kalau bertema Indonesia. Saldo kredit ada di pojok kanan atas; tombol ☎ di sebelahnya untuk bantuan (FAQ ini)."
+  },
+  {
+    "id": "chat-cara-pakai",
+    "topic": "Chat",
+    "q": "Cara pakai fitur Chat?",
+    "keywords": "chat ngobrol percakapan asisten ai brainstorm riset draf model thinking tools",
+    "a": "Chat adalah asisten AI untuk riset, draf, dan brainstorm. Cara: pilih model (Gemini, Claude, DeepSeek, dll), ketik pesan, kirim. Fitur tambahan: pilih API mode (LaoZhang/Google), atur Thinking level (untuk model reasoning), nyalakan 'tools' agar model bisa mencari di file MCP-mu, dan upload file sebagai konteks. Percakapan disimpan per-sesi; biaya per-sesi terlihat. Cocok untuk nyusun ide sebelum bikin gambar/video."
   },
   {
     "id": "image-cara-pakai",
     "topic": "Image Generation",
     "q": "Cara pakai Image Generation / bikin gambar dari teks?",
     "keywords": "image generation gambar generate buat foto bikin gambar prompt teks text to image",
-    "a": "Di halaman Image Generation: 1) Ketik deskripsi gambar di kotak Prompt. 2) Pilih model (Nano Banana / Gemini 2.5 Flash Image). 3) Atur Aspect (16:9, 1:1, 9:16) & Size (1K/2K). 4) Opsional: pilih Gaya visual (Cinematic, dll), pakai Template (Ide Cepat), atau upload Reference image untuk image-conditioning. 5) Centang 🇮🇩 Nusantara Corpus kalau bertema Indonesia. 6) Klik Generate Image. Hasil muncul di bawah, bisa di-download. Tiap generate memakai kredit."
+    "a": "Di halaman Image Generation: 1) Ketik deskripsi di kotak Prompt. 2) Pilih model (Nano Banana / Gemini 2.5 Flash Image). 3) Atur Aspect (16:9, 1:1, 9:16) & Size (1K/2K). 4) Opsional: pilih Gaya visual, pakai Template (Ide Cepat), atau upload Reference image. 5) Centang 🇮🇩 Nusantara Corpus kalau bertema Indonesia. 6) Klik Generate Image. Hasil bisa di-download; tiap generate memakai kredit."
   },
   {
     "id": "image-model",
     "topic": "Image Generation",
     "q": "Model gambar apa yang dipakai / Nano Banana itu apa?",
-    "keywords": "model gambar nano banana imagen gemini image vertex pilihan model image",
-    "a": "Model utama image gen adalah seri Nano Banana (Gemini 2.5 Flash Image) via Google Vertex (OAuth). Ini menghasilkan gambar berkualitas tinggi. Imagen lama sudah tidak dipakai. Ada juga jalur LaoZhang API (toggle di atas) untuk model alternatif (Flux, dll). Untuk konten Indonesia, Nano Banana + Nusantara Corpus memberi hasil paling otentik."
+    "keywords": "model gambar nano banana imagen gemini image vertex pilihan",
+    "a": "Model utama image gen = seri Nano Banana (Gemini 2.5 Flash Image) via Google Vertex (OAuth), hasil berkualitas tinggi. Ada juga jalur LaoZhang (toggle di atas) untuk model alternatif (Flux, dll). Untuk konten Indonesia, Nano Banana + Nusantara Corpus paling otentik."
   },
   {
     "id": "image-reference",
     "topic": "Image Generation",
     "q": "Apa fungsi Reference image / image-conditioning?",
-    "keywords": "reference image upload foto referensi image conditioning wajah subjek pertahankan",
-    "a": "Reference image dipakai untuk image-conditioning: model meniru subjek/wajah/komposisi dari foto yang kamu upload, lalu menggabungkannya dengan prompt. Cocok untuk mempertahankan wajah/objek tertentu. Drop atau klik area 'Reference image' untuk upload. Kalau Nusantara Corpus aktif dan kamu TIDAK upload referensi, corpus bisa menambahkan referensi visual budaya otomatis."
+    "keywords": "reference image upload foto referensi conditioning wajah subjek pertahankan",
+    "a": "Reference image dipakai untuk image-conditioning: model meniru subjek/wajah/komposisi dari foto yang kamu upload, digabung dengan prompt. Cocok untuk mempertahankan wajah/objek tertentu. Kalau Nusantara Corpus aktif dan kamu tidak upload referensi, corpus bisa menambahkan referensi visual budaya otomatis."
   },
   {
-    "id": "image-template",
-    "topic": "Image Generation",
-    "q": "Apa itu Template / Ide Cepat?",
-    "keywords": "template ide cepat preset prompt jadi contoh gaya visual",
-    "a": "Template (Ide Cepat) adalah kumpulan prompt siap-pakai untuk hasil cepat — tinggal pilih, prompt otomatis terisi, lalu Generate. Ada juga 'Gaya visual' (Cinematic, dll) yang menyuntikkan gaya render ke prompt-mu tanpa kamu tulis manual."
-  },
-  {
-    "id": "corpus-apa-itu",
-    "topic": "Nusantara Corpus",
-    "q": "Apa itu Nusantara Corpus dan kapan harus dinyalakan?",
-    "keywords": "nusantara corpus apa itu checkbox bendera indonesia budaya otentik fungsi kapan",
-    "a": "Nusantara Corpus adalah basis referensi visual budaya Indonesia (600+ entri: rumah adat, makhluk gaib seperti pocong/kuntilanak, tarian, baju adat, kuliner, kendaraan legendaris, dan suasana sehari-hari). Saat dicentang (🇮🇩), prompt-mu diperkaya otomatis dengan fakta visual otentik sebelum dikirim ke model — jadi 'pocong' tidak jadi mumi/setan bule, 'bajaj' tidak jadi tuk-tuk India, 'rumah gadang' atapnya gonjong yang benar. Nyalakan saat membuat konten bertema Indonesia. Untuk konten non-Indonesia, boleh dimatikan."
-  },
-  {
-    "id": "corpus-cara-nyalain",
-    "topic": "Nusantara Corpus",
-    "q": "Cara menyalakan Nusantara Corpus?",
-    "keywords": "cara nyalain aktifkan centang checkbox nusantara corpus toggle enable",
-    "a": "Centang kotak 🇮🇩 Nusantara Corpus di panel kiri (Image Generation) atau di tiap fitur (Veo, Sora, Whisk, Batch, Flow, Video Instant). Default-nya OFF. Sekali dicentang, prompt diperkaya otomatis. Tidak menambah biaya kredit — corpus gratis, hanya memperkaya prompt."
-  },
-  {
-    "id": "corpus-beda-on-off",
-    "topic": "Nusantara Corpus",
-    "q": "Apa bedanya kalau Nusantara Corpus ON vs OFF?",
-    "keywords": "beda perbedaan corpus on off nyala mati hasil kualitas",
-    "a": "OFF: model menebak pakai stereotип global terdekat — pocong jadi mumi/setan bule, bajaj jadi tuk-tuk India, kuntilanak jadi hantu Jepang (Sadako). ON: corpus mengunci detail otentik Indonesia (kain kafan pocong dengan simpul tali, bajaj oranye roda-tiga berkubah, kuntilanak kebaya/daster putih). Untuk subjek khas Indonesia, ON sangat disarankan."
-  },
-  {
-    "id": "video-instant-apa",
-    "topic": "Video Instant",
-    "q": "Apa itu Video Instant dan cara pakainya?",
-    "keywords": "video instant cara pakai skrip narasi otomatis cepat bikin video lengkap",
-    "a": "Video Instant membuat video lengkap secara otomatis dari sebuah skrip: skrip dipecah jadi beberapa scene, tiap scene dibuat gambar lalu klip video, ditambah narasi suara (TTS), caption/teks, dan disatukan jadi satu video jadi. Cara pakai: masuk halaman Video Instant, masukkan skrip/ide, atur pilihan (bahasa output, model TTS, model narasi, model klip, aspek rasio, font caption), centang 🇮🇩 Nusantara Corpus kalau bertema Indonesia, lalu jalankan. Cocok untuk bikin video cerita tanpa ribet per-scene."
-  },
-  {
-    "id": "video-instant-pilihan",
-    "topic": "Video Instant",
-    "q": "Pilihan apa saja yang ada di Video Instant (TTS, bahasa, caption)?",
-    "keywords": "video instant pilihan opsi tts bahasa caption font teleprompter model narasi suara",
-    "a": "Video Instant punya: pemilih Bahasa output, model TTS (suara narasi — termasuk Google TTS), model LLM narasi, pemilih model klip video (Veo ×3 / Sora) + label kualitas/resolusi, aspek rasio (16:9 / 9:16), pemilih font caption + teleprompter, dan opsi fade-to-black di akhir. Saldo kredit + tombol cancel tersedia saat proses berjalan."
+    "id": "imagen-apa",
+    "topic": "Imagen",
+    "q": "Apa itu halaman Imagen dan bedanya dengan Image Generation?",
+    "keywords": "imagen resolusi tinggi high res gambar google beda image generation",
+    "a": "Imagen adalah jalur render gambar resolusi tinggi dari Google. Halaman Image Generation utama memakai Nano Banana; halaman Imagen khusus untuk output beresolusi tinggi via model Imagen. Pilih Imagen kalau butuh detail/resolusi ekstra. (Untuk kebanyakan kebutuhan, Image Generation + Nano Banana sudah cukup.)"
   },
   {
     "id": "veo-cara-pakai",
     "topic": "Veo",
     "q": "Cara pakai Veo (video dari teks/gambar)?",
-    "keywords": "veo video generation text to video image to video model preset reference negative",
-    "a": "Veo membuat video dari teks (text-to-video) atau dari gambar referensi (image-to-video). Cara: 1) Tulis prompt video. 2) Pilih model (Veo 3.1, dst) — centang 'LaoZhang model' untuk jalur LaoZhang atau matikan untuk Google Native. 3) Pilih Preset (resolusi/durasi/orientasi). 4) Opsional: upload Reference image (jadi image-to-video), isi Negative prompt, dan isi kotak 🔊 Audio. 5) Centang 🇮🇩 Nusantara Corpus untuk konten Indonesia. 6) Generate Video. Video diproses asinkron; hasil muncul setelah selesai."
+    "keywords": "veo video text to video image to video model preset reference negative audio",
+    "a": "Veo membuat video dari teks atau dari gambar referensi. Cara: 1) Tulis prompt. 2) Pilih model (Veo 3.1, dst) — centang 'LaoZhang model' atau matikan untuk Google Native. 3) Pilih Preset (resolusi/durasi/orientasi). 4) Opsional: upload Reference image (image-to-video), isi Negative prompt, isi kotak 🔊 Audio. 5) Centang 🇮🇩 Nusantara Corpus. 6) Generate. Video diproses asinkron."
   },
   {
     "id": "veo-audio",
     "topic": "Veo",
-    "q": "Cara mengatur audio/suara di Veo (dan Sora)?",
-    "keywords": "audio suara veo sora dialog sfx musik ambient kotak audio cara atur suara video",
-    "a": "Veo 3.1 dan Sora punya audio bawaan (dialog, efek suara, ambient, musik) yang sinkron dengan video. Isi kotak 🔊 Audio (terpisah dari prompt) untuk mengarahkannya. Contoh: 'mesin bajaj put-put-put, jangkrik malam, tawa lirih \"hihihi\", scoring horor'. Dialog tulis dalam kutip. Karena kotak Audio di-append SETELAH Nusantara Corpus, cue audio aman dari rephrase corpus."
+    "q": "Cara mengatur audio/suara di Veo dan Sora?",
+    "keywords": "audio suara veo sora dialog sfx musik ambient kotak audio atur suara video",
+    "a": "Veo 3.1 & Sora punya audio bawaan (dialog, efek suara, ambient, musik) sinkron dengan video. Isi kotak 🔊 Audio (terpisah dari prompt) untuk mengarahkannya, mis: 'mesin bajaj put-put-put, jangkrik malam, tawa lirih \"hihihi\", scoring horor'. Dialog tulis dalam kutip. Kotak Audio di-append SETELAH Nusantara Corpus, jadi cue audio aman dari rephrase."
   },
   {
     "id": "sora-cara-pakai",
     "topic": "Sora",
     "q": "Cara pakai Sora?",
-    "keywords": "sora video model size duration durasi reference audio corpus cara pakai",
-    "a": "Sora membuat video dari teks atau gambar. Cara: tulis prompt, pilih model Sora, pilih Size & Duration (4/8/12 detik), opsional upload Reference image dan isi kotak 🔊 Audio, centang 🇮🇩 Nusantara Corpus untuk konten Indonesia, lalu Generate. Sama seperti Veo, prosesnya asinkron."
-  },
-  {
-    "id": "flow-cara-pakai",
-    "topic": "Flow",
-    "q": "Cara pakai Flow / Storyboard?",
-    "keywords": "flow storyboard skrip scene adegan gambar video per scene rangkaian cerita",
-    "a": "Flow mengubah skrip jadi storyboard berisi beberapa scene. Cara: 1) Tulis/tempel skrip. 2) Atur jumlah scene (atau Auto), gaya, model gambar & model klip. 3) Centang 'Generate storyboard images' untuk langsung buat gambar tiap scene, dan 🇮🇩 Nusantara Corpus untuk konten Indonesia. 4) Jalankan — tiap scene dapat deskripsi + gambar. 5) Kamu bisa regen gambar per-scene, submit video per-scene (Veo), atau generate semua sekaligus. Cocok untuk cerita panjang yang butuh kontrol per-adegan."
+    "keywords": "sora video model size duration durasi reference audio corpus",
+    "a": "Sora membuat video dari teks/gambar. Tulis prompt, pilih model Sora, pilih Size & Duration (4/8/12 detik), opsional Reference image + kotak 🔊 Audio, centang 🇮🇩 Nusantara Corpus, lalu Generate. Prosesnya asinkron seperti Veo."
   },
   {
     "id": "whisk-cara-pakai",
     "topic": "Whisk",
     "q": "Cara pakai Whisk?",
     "keywords": "whisk remix subjek scene style gabung tiga slot gambar campur",
-    "a": "Whisk menggabungkan 3 slot — Subject (siapa/apa), Scene (latar), dan Style (gaya) — menjadi satu gambar baru. Tiap slot bisa diisi gambar (upload) atau teks deskripsi. Pilih model & aspek, centang 🇮🇩 Corpus untuk nuansa Indonesia, lalu klik Remix. Hasil gabungan muncul di kanan."
+    "a": "Whisk menggabungkan 3 slot — Subject (siapa/apa), Scene (latar), Style (gaya) — jadi satu gambar. Tiap slot diisi gambar (upload) atau teks. Pilih model & aspek, centang 🇮🇩 Corpus, lalu Remix."
+  },
+  {
+    "id": "flow-cara-pakai",
+    "topic": "Flow",
+    "q": "Cara pakai Flow / Storyboard?",
+    "keywords": "flow storyboard skrip scene adegan gambar video per scene rangkaian",
+    "a": "Flow mengubah skrip jadi storyboard beberapa scene. Tulis/tempel skrip, atur jumlah scene (atau Auto), model gambar & klip, centang 'Generate storyboard images' + 🇮🇩 Nusantara Corpus, jalankan. Tiap scene dapat deskripsi + gambar. Kamu bisa regen per-scene, submit video per-scene, atau generate semua sekaligus. Cocok untuk cerita panjang dengan kontrol per-adegan."
   },
   {
     "id": "batch-cara-pakai",
     "topic": "Batch Images",
     "q": "Cara pakai Batch Images (banyak gambar sekaligus)?",
     "keywords": "batch images banyak gambar sekaligus job submit antrian massal multiple",
-    "a": "Batch Images membuat banyak gambar sekaligus. Cara: tambahkan beberapa job (tiap job punya nama file + prompt), atur model/aspek/size, centang 🇮🇩 Corpus bila perlu, lalu Submit Batch. Proses berjalan di latar; cek status & Retrieve hasilnya di bagian bawah. Cocok untuk produksi gambar dalam jumlah banyak."
+    "a": "Batch Images membuat banyak gambar sekaligus. Tambahkan beberapa job (nama file + prompt), atur model/aspek/size, centang 🇮🇩 Corpus bila perlu, lalu Submit Batch. Proses di latar; cek status & Retrieve hasil di bawah."
   },
   {
-    "id": "tts-apa",
-    "topic": "TTS / Narasi",
-    "q": "Apa itu TTS / narasi suara dan model apa saja?",
-    "keywords": "tts text to speech narasi suara voice google tts model suara audio bicara",
-    "a": "TTS (Text-to-Speech) mengubah teks narasi jadi suara. Dipakai di Video Instant untuk narasi otomatis. Tersedia beberapa model suara termasuk Google TTS (via Google OAuth) dan pilihan lain. Pilih model TTS + bahasa output di Video Instant. Audio narasi disatukan dengan video."
+    "id": "video-instant-apa",
+    "topic": "Video Instant",
+    "q": "Apa itu Video Instant dan cara pakainya?",
+    "keywords": "video instant cara pakai skrip narasi otomatis cepat bikin video lengkap",
+    "a": "Video Instant membuat video lengkap otomatis dari skrip: skrip dipecah jadi scene, tiap scene dibuat gambar lalu klip, ditambah narasi suara (TTS), caption, dan disatukan jadi video jadi. Cara: buka Video Instant, masukkan topik/narasi, atur durasi, kualitas, mode visual, model klip & gambar, bahasa, model suara (TTS), font caption. Centang 🇮🇩 Nusantara Corpus untuk nuansa Indonesia. Jalankan — biar sistem yang merangkai."
+  },
+  {
+    "id": "video-instant-pilihan",
+    "topic": "Video Instant",
+    "q": "Pilihan apa saja di Video Instant (mode visual, TTS, caption)?",
+    "keywords": "video instant pilihan opsi mode visual tts caption font teleprompter durasi kualitas",
+    "a": "Video Instant punya: Durasi, Kualitas (tier), Mode visual (full clips / full images / hybrid), Model klip (Veo/Sora) + Rasio, Gaya visual, Model gambar, opsi 'Bakar caption ke video', 'Karakter konsisten (reference image)', 🇮🇩 Nusantara Corpus, dan di bagian Lanjutan: Bahasa output, Model narasi, Model suara (TTS). Saldo kredit + tombol cancel tersedia saat berjalan; ada teleprompter untuk membaca narasi."
+  },
+  {
+    "id": "narasi-apa",
+    "topic": "Narasi AI",
+    "q": "Apa itu Narasi AI dan cara pakainya?",
+    "keywords": "narasi ai naskah tulis cerita panjang storytelling indonesia orkestrasi worker dalang",
+    "a": "Narasi AI menulis narasi/naskah panjang bergaya Indonesia secara utuh (untuk video, audiobook, konten cerita). Cara: masukkan topik/outline, pilih API mode (LaoZhang/Google) & model (mis. Gemini 2.5 Flash). Pilih Engine: 'classic' (satu LLM menulis) atau mode orkestrasi (manager + beberapa worker menulis paralel — atur Max workers 1-10 & Manager model untuk naskah sangat panjang). Atur Polish mode (light/…) untuk perapian. Hasilnya narasi lengkap yang bisa langsung dipakai di Video Instant atau Script→TTS. Generate dimeter sesuai token."
+  },
+  {
+    "id": "narasi-engine",
+    "topic": "Narasi AI",
+    "q": "Apa beda engine classic vs orkestrasi di Narasi AI? Max workers itu apa?",
+    "keywords": "narasi engine classic orkestrasi orchestration manager worker max workers paralel polish mode",
+    "a": "Classic: satu model menulis seluruh narasi (cepat, untuk naskah pendek-menengah). Orkestrasi: sebuah 'manager' model membagi naskah jadi bagian, lalu beberapa 'worker' menulisnya PARALEL (Max workers = jumlah worker, 1-10) — cocok untuk narasi sangat panjang agar tidak terpotong & lebih cepat. Polish mode (light/…) menentukan seberapa dalam perapian akhir. Pilih orkestrasi kalau butuh narasi puluhan menit yang konsisten."
+  },
+  {
+    "id": "narasireview-apa",
+    "topic": "Narasi Review",
+    "q": "Apa itu Narasi Review dan cara pakainya?",
+    "keywords": "narasi review audit tinjau rapikan naskah bab evaluasi rekomendasi perbaiki upload narasi",
+    "a": "Narasi Review menelaah narasi yang sudah ada dan merapikannya bab demi bab. Cara: upload (atau tempel/drag) file narasimu, pilih model penelaah (mis. Claude Opus thinking — kuat untuk kritik) & gaya (storytelling, dll), lalu jalankan. Sistem memberi tinjauan + rekomendasi perbaikan, dan bisa menghasilkan versi yang sudah dirapikan. Cocok untuk audit naskah panjang sebelum diproduksi jadi suara/video."
+  },
+  {
+    "id": "scripttts-apa",
+    "topic": "Script → TTS",
+    "q": "Apa itu Script → TTS dan bedanya dengan TTS biasa?",
+    "keywords": "script tts naskah transkrip transcript audio per segmen tag transform naskah jadi suara",
+    "a": "Script → TTS mengubah naskah panjang jadi audio per-segmen. Bedanya: naskahmu dulu di-transform jadi 'transcript' bertanda (tag jeda, penekanan, intonasi) oleh model chat, baru disintesis jadi suara — hasilnya lebih natural & rapi untuk naskah panjang. Cara: tempel naskah, pilih model chat untuk transform, hasilkan transcript, lalu sintesis ke audio. Untuk teks pendek/langsung, pakai halaman TTS biasa."
+  },
+  {
+    "id": "tts-cara-pakai",
+    "topic": "TTS",
+    "q": "Cara pakai TTS (Text to Speech) dan pilihan suaranya?",
+    "keywords": "tts text to speech suara voice google gemini model voice speed bahasa audiobook narasi",
+    "a": "TTS mengubah teks jadi suara natural. Cara: pilih API mode (Google/LaoZhang), model TTS (mis. Gemini TTS), Voice (mis. Enceladus, dll), atur Speed, Language (auto/spesifik), lalu generate. Mode Audiobook: untuk teks panjang, dipecah jadi bagian dengan jeda (silence) antar bagian. Hasil audio tersimpan di Media Vault. Dimeter per-karakter."
+  },
+  {
+    "id": "tts-suara-lokal",
+    "topic": "TTS",
+    "q": "Apa itu Suara Lokal?",
+    "keywords": "suara lokal voice indonesia daerah natural khas lokal moat tts",
+    "a": "Suara Lokal adalah pilihan suara TTS bernuansa Indonesia/lokal — keunggulan khas ceritaAI agar narasi terdengar natural dan 'Indonesia banget', bukan aksen asing. Pilih di pemilih Voice pada halaman TTS atau Video Instant saat membuat narasi suara."
+  },
+  {
+    "id": "mcp-apa",
+    "topic": "MCP File Search",
+    "q": "Apa itu MCP File Search dan cara pakainya?",
+    "keywords": "mcp file search dokumen cari kutip semantik keyword folder index riset srt skrip",
+    "a": "MCP File Search membuat dokumenmu sendiri bisa dicari & dikutip oleh AI. Cara: tambahkan folder/file (mis. dokumen riset, SRT, skrip), sistem mengindeksnya, lalu cari dengan mode Keyword atau Semantic. Hasil pencarian bisa dipakai sebagai konteks di Chat (nyalakan 'tools'). Cocok untuk riset berbasis dokumen pribadi tanpa mengirim semuanya manual."
+  },
+  {
+    "id": "corpus-apa-itu",
+    "topic": "Nusantara Corpus",
+    "q": "Apa itu Nusantara Corpus dan kapan harus dinyalakan?",
+    "keywords": "nusantara corpus apa itu checkbox bendera indonesia budaya otentik fungsi kapan",
+    "a": "Nusantara Corpus adalah basis referensi visual budaya Indonesia (600+ entri: rumah adat, makhluk gaib seperti pocong/kuntilanak, tarian, baju adat, kuliner, kendaraan legendaris, suasana sehari-hari). Saat dicentang (🇮🇩), prompt diperkaya otomatis dengan fakta visual otentik sebelum dikirim ke model — pocong tidak jadi mumi, bajaj tidak jadi tuk-tuk India, rumah gadang atapnya benar. Nyalakan untuk konten bertema Indonesia. Gratis, tidak menambah biaya."
+  },
+  {
+    "id": "corpus-cara-nyalain",
+    "topic": "Nusantara Corpus",
+    "q": "Cara menyalakan Nusantara Corpus dan di fitur mana saja ada?",
+    "keywords": "cara nyalain aktifkan centang checkbox nusantara corpus toggle enable fitur mana",
+    "a": "Centang kotak 🇮🇩 Nusantara Corpus di fitur: Image Generation, Whisk, Batch, Veo, Sora, Flow, dan Video Instant. Default OFF. Sekali dicentang, prompt diperkaya otomatis. Gratis (tidak menambah kredit)."
+  },
+  {
+    "id": "corpus-beda-on-off",
+    "topic": "Nusantara Corpus",
+    "q": "Apa bedanya kalau Nusantara Corpus ON vs OFF?",
+    "keywords": "beda perbedaan corpus on off nyala mati hasil kualitas",
+    "a": "OFF: model menebak pakai stereotип global — pocong jadi mumi/setan bule, bajaj jadi tuk-tuk India, kuntilanak jadi hantu Jepang. ON: corpus mengunci detail otentik Indonesia (kain kafan pocong dengan simpul tali, bajaj oranye roda-tiga, kuntilanak kebaya/daster putih). Untuk subjek khas Indonesia, ON sangat disarankan."
   },
   {
     "id": "kredit-apa",
     "topic": "Kredit & Billing",
     "q": "Apa itu kredit dan kenapa kena charge?",
-    "keywords": "kredit credit biaya charge bayar saldo billing harga berapa potong",
-    "a": "Setiap generate (gambar, video, TTS) memakai kredit sesuai jenis & model. Saldo kredit terlihat di pojok kanan atas. Sebelum generate, sistem mengecek saldo (gate) — kalau tidak cukup, muncul error 402 (Insufficient credits). Setelah berhasil, kredit dipotong sesuai biaya operasi. Nusantara Corpus TIDAK menambah biaya."
+    "keywords": "kredit credit biaya charge bayar saldo billing harga berapa potong pemakaian",
+    "a": "Setiap generate (gambar, video, narasi, TTS) memakai kredit sesuai jenis & model. Saldo ada di pojok kanan atas. Sebelum generate, sistem cek saldo (gate) — kalau kurang, muncul 402 (Insufficient credits). Setelah berhasil, kredit dipotong sesuai biaya. Nusantara Corpus TIDAK menambah biaya. Bertanya ke asisten bantuan (☎) juga GRATIS — tidak memotong kredit."
   },
   {
     "id": "kredit-topup",
     "topic": "Kredit & Billing",
     "q": "Cara top-up / menambah kredit?",
-    "keywords": "top up topup tambah kredit beli isi saldo kekurangan habis 402",
-    "a": "Saat ini top-up kredit dilakukan lewat admin. Kalau saldo habis (error 402 Insufficient credits), hubungi support untuk penambahan kredit. Pembayaran mandiri (Stripe) sedang disiapkan."
+    "keywords": "top up topup tambah kredit beli isi saldo kekurangan habis 402 billing",
+    "a": "Buka halaman Billing untuk melihat saldo, paket, dan riwayat pemakaian. Saat ini penambahan kredit dilakukan lewat admin — kalau saldo habis (402), hubungi support untuk top-up. Pembayaran mandiri sedang disiapkan."
   },
   {
     "id": "kredit-402",
     "topic": "Troubleshooting",
     "q": "Kenapa muncul error 402 / Insufficient credits?",
     "keywords": "402 insufficient credits saldo habis tidak cukup error gagal kredit kurang",
-    "a": "Error 402 (Insufficient credits) berarti saldo kredit tidak cukup untuk operasi yang diminta. Solusi: kurangi jumlah/durasi output, atau hubungi support untuk top-up kredit. Sistem sengaja mengecek saldo sebelum generate agar tidak ada operasi yang 'bakar' tanpa tercatat."
+    "a": "402 (Insufficient credits) berarti saldo tidak cukup untuk operasi itu. Solusi: kurangi jumlah/durasi output, atau hubungi support untuk top-up. Sistem mengecek saldo sebelum generate agar tidak ada operasi yang tidak tercatat."
   },
   {
     "id": "apikey-toggle",
     "topic": "API & Key",
     "q": "Apa beda Google API dan LaoZhang API? Perlu masukin API key sendiri?",
     "keywords": "google api laozhang api key kunci byok bring your own key toggle override",
-    "a": "Toggle Google API / LaoZhang API di atas memilih penyedia model. Google API memakai model Google (Nano Banana via Vertex OAuth) — biasanya pakai key server, kamu tidak perlu isi apa-apa. LaoZhang API memakai jalur LaoZhang untuk model alternatif. Kolom 'Image API key' / key opsional adalah BYOK (Bring Your Own Key) — isi hanya kalau ingin override key server dengan key-mu sendiri."
+    "a": "Toggle Google/LaoZhang memilih penyedia model. Google API = model Google (Nano Banana via Vertex OAuth), pakai key server (kamu tidak perlu isi). LaoZhang = jalur alternatif untuk model lain. Kolom 'API key' opsional = BYOK (Bring Your Own Key) — isi hanya kalau ingin override key server dengan key-mu sendiri."
   },
   {
     "id": "vault-apa",
     "topic": "Media Vault",
-    "q": "Di mana hasil gambar/video tersimpan? Apa itu Media Vault?",
-    "keywords": "media vault simpan hasil aset asset penyimpanan download hapus delete histori",
-    "a": "Hasil yang dibuat tersimpan di Media Vault (penyimpanan aset). Di sana kamu bisa melihat, men-download, atau menghapus aset. Ada checkbox per-aset untuk hapus dan tombol 'Hapus terpilih' / 'Pilih semua di tab ini'. Aset terikat ke akun-mu (tenant isolation) — pengguna lain tidak bisa melihat aset-mu."
+    "q": "Di mana hasil tersimpan? Apa itu Media Vault?",
+    "keywords": "media vault simpan hasil aset asset penyimpanan download hapus delete histori arsip",
+    "a": "Semua hasil generate (gambar, video, audio) tersimpan di Media Vault. Di sana kamu bisa lihat, download, atau hapus aset (ada checkbox per-aset + 'Hapus terpilih' / 'Pilih semua di tab ini'). Aset terikat ke akunmu (terisolasi) — pengguna lain tidak bisa melihatnya."
+  },
+  {
+    "id": "feedback-apa",
+    "topic": "Feedback",
+    "q": "Cara kasih masukan / feedback ke tim ceritaAI?",
+    "keywords": "feedback masukan saran keluhan lapor bug kirim tim ceritaai kritik",
+    "a": "Buka halaman Feedback di menu Account, tulis masukan/keluhan/saran kamu, lalu kirim. Tim ceritaAI membaca untuk memperbaiki produk. Untuk masalah teknis mendesak (akun, kredit, bug), bisa juga hubungi support langsung."
   },
   {
     "id": "trouble-no-image",
     "topic": "Troubleshooting",
     "q": "Kenapa gambar gagal / 'returned no image'?",
     "keywords": "gagal no image error tidak keluar gambar kosong returned no image coba lagi",
-    "a": "Penyebab umum: model menolak prompt, jaringan, atau model sibuk. Solusi: coba Generate lagi, ubah/sederhanakan prompt, ganti model, atau (untuk Whisk/Flow) coba mode LaoZhang. Kalau pakai key sendiri (BYOK), pastikan key valid. Kalau terus gagal, hubungi support dengan menyebut prompt + model yang dipakai."
+    "a": "Penyebab umum: model menolak prompt, jaringan, atau model sibuk. Solusi: Generate lagi, sederhanakan prompt, ganti model, atau (Whisk/Flow) coba mode LaoZhang. Kalau pakai key sendiri, pastikan valid. Kalau terus gagal, hubungi support dengan menyebut prompt + model."
   },
   {
     "id": "trouble-hasil-salah",
     "topic": "Troubleshooting",
     "q": "Hasil tidak sesuai / subjek Indonesia terlihat salah (mis. pocong jadi mumi)?",
     "keywords": "hasil salah tidak otentik pocong mumi bajaj salah kuntilanak generik tidak sesuai",
-    "a": "Pastikan 🇮🇩 Nusantara Corpus DICENTANG — tanpa corpus, model menebak pakai stereotип global. Selain itu, hindari kata yang membingungkan model (mis. untuk pocong, jangan tulis 'wajah tertutup kain' karena malah jadi ninja — pocong wajahnya terbuka). Untuk subjek yang sangat spesifik, upload Reference image untuk image-conditioning agar bentuknya akurat."
+    "a": "Pastikan 🇮🇩 Nusantara Corpus DICENTANG — tanpa corpus, model menebak pakai stereotип global. Hindari kata yang membingungkan (mis. untuk pocong jangan tulis 'wajah tertutup kain' → malah jadi ninja; pocong wajahnya terbuka). Untuk subjek sangat spesifik, upload Reference image agar bentuknya akurat."
   },
   {
     "id": "video-lama",
     "topic": "Troubleshooting",
     "q": "Kenapa video lama / masih diproses?",
     "keywords": "video lama lambat proses loading status queued progress menunggu berapa lama",
-    "a": "Pembuatan video (Veo/Sora/Video Instant) berjalan asinkron dan butuh waktu lebih lama dari gambar (puluhan detik hingga beberapa menit, tergantung durasi & model). Status akan ter-update otomatis; biarkan tab terbuka. Untuk video panjang/banyak scene (Flow/Video Instant) wajar lebih lama."
+    "a": "Pembuatan video (Veo/Sora/Video Instant) asinkron dan butuh puluhan detik hingga beberapa menit (tergantung durasi & model). Status ter-update otomatis; biarkan tab terbuka. Video panjang/banyak scene wajar lebih lama."
   },
   {
     "id": "aspek-rasio",
     "topic": "Umum",
     "q": "Cara mengatur orientasi/aspek rasio (landscape vs potret)?",
     "keywords": "aspek rasio aspect ratio 16:9 9:16 1:1 landscape potret portrait orientasi ukuran",
-    "a": "Pilih Aspect di panel: 16:9 (landscape/lebar), 9:16 (potret/vertikal untuk reels/story), atau 1:1 (kotak). Untuk video, aspek diterapkan ke gambar, klip, dan hasil stitch. Pilih 9:16 untuk konten media sosial vertikal."
+    "a": "Pilih Aspect: 16:9 (landscape), 9:16 (potret/vertikal untuk reels/story), atau 1:1 (kotak). Untuk video, aspek diterapkan ke gambar, klip, dan hasil akhir. Pilih 9:16 untuk media sosial vertikal."
   },
   {
     "id": "akun-login",
     "topic": "Akun",
     "q": "Cara login / masalah akun?",
     "keywords": "login akun masuk sign in clerk daftar register tidak bisa masuk",
-    "a": "Login lewat tombol akun di pojok kanan atas (memakai Clerk). Tiap akun punya saldo kredit & aset sendiri (terisolasi dari pengguna lain). Kalau ada masalah login atau tidak melihat aset/kredit, coba refresh halaman; bila tetap bermasalah hubungi support."
+    "a": "Login lewat tombol akun di pojok kanan atas. Tiap akun punya saldo kredit & aset sendiri (terisolasi). Kalau tidak melihat aset/kredit, refresh halaman; bila tetap bermasalah hubungi support."
   },
   {
     "id": "support-kontak",
     "topic": "Support",
     "q": "Cara menghubungi support / bantuan lebih lanjut?",
     "keywords": "support kontak bantuan hubungi cs customer service tanya admin email",
-    "a": "Untuk hal yang tidak terjawab di sini (top-up kredit, masalah akun, bug, atau pertanyaan yang asisten ini tidak tahu jawabannya), hubungi support ceritaAI melalui kanal kontak resmi (email/akun support). Sebutkan detail: fitur yang dipakai, prompt/model, dan pesan error bila ada."
+    "a": "Untuk hal yang tidak terjawab di sini (top-up kredit, masalah akun, bug), hubungi support ceritaAI lewat kanal kontak resmi atau halaman Feedback. Sebutkan detail: fitur yang dipakai, prompt/model, dan pesan error bila ada."
   }
 ]
