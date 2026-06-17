@@ -110,6 +110,10 @@ GCP_LOCATION      = os.environ.get("GCP_LOCATION", "global")
 GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 QDRANT_CLOUD_URL  = os.environ.get("QDRANT_CLOUD_URL", "")
 QDRANT_CLOUD_KEY  = os.environ.get("QDRANT_CLOUD_KEY", "")
+# Qdrant ANN kill-switch: OFF by default so BM25 stays the path until the corpus
+# has been re-embedded into Qdrant. Flip to true AFTER running /corpus/reembed.
+CORPUS_USE_QDRANT = os.environ.get("CORPUS_USE_QDRANT", "").strip().lower() in ("1", "true", "yes", "on")
+CORPUS_REEMBED_SECRET = os.environ.get("CORPUS_REEMBED_SECRET", "")
 
 _vertex_ready = False
 _gcp_creds = None  # OAuth Credentials, reused by Imagen (vertexai) + Gemini (google.genai)
@@ -144,6 +148,38 @@ def _is_gemini_image_model(m: str) -> bool:
     """Nano Banana lineup (gemini-*-image) goes via the Gemini API, NOT ImageGenerationModel."""
     m = (m or "").lower()
     return m.startswith("gemini-") and "image" in m
+
+_genai_vertex_client = None
+def _genai_client():
+    """Cached google.genai client on Vertex (OAuth). None if Vertex not configured."""
+    global _genai_vertex_client
+    if _genai_vertex_client is not None:
+        return _genai_vertex_client
+    if not _ensure_vertex():
+        return None
+    from google import genai as _genai
+    _genai_vertex_client = _genai.Client(
+        vertexai=True, project=GCP_PROJECT_ID, location=GCP_LOCATION, credentials=_gcp_creds,
+    )
+    return _genai_vertex_client
+
+def _vertex_embed(text: str, task: str = "RETRIEVAL_QUERY"):
+    """Embed text via Vertex gemini-embedding-001 (3072d) using OAuth — no GEMINI key.
+    Returns a list[float] or None. Used by corpus ANN retrieval + /corpus/reembed."""
+    client = _genai_client()
+    if not client:
+        return None
+    try:
+        from google.genai import types as _gt
+        resp = client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=text,
+            config=_gt.EmbedContentConfig(task_type=task, output_dimensionality=3072),
+        )
+        return list(resp.embeddings[0].values)
+    except Exception as e:
+        import warnings; warnings.warn(f"vertex embed failed: {e}")
+        return None
 
 def _vertex_diag() -> str:
     """Explain why _ensure_vertex() failed — NEVER leaks values, only var NAMES / import errors."""
@@ -6450,6 +6486,7 @@ def _corpus_enhance(prompt: str):
             gemini_api_key=GEMINI_API_KEY or None,
             qdrant_url=QDRANT_CLOUD_URL or None,
             qdrant_api_key=QDRANT_CLOUD_KEY or None,
+            embed_fn=(_vertex_embed if CORPUS_USE_QDRANT else None),
         )
     except Exception as e:
         import warnings
@@ -6562,6 +6599,28 @@ class EnhancePromptRequest(BaseModel):
 async def enhance_prompt_endpoint(req: EnhancePromptRequest):
     enhanced, hits, ref_b64 = _corpus_enhance(req.prompt)
     return {"enhanced_prompt": enhanced, "ref_b64": ref_b64 or "", "hits": len(hits)}
+
+
+@app.post("/corpus/reembed")
+async def corpus_reembed(x_reembed_secret: str = Header(None, alias="X-Reembed-Secret")):
+    """Admin: (re)build the Qdrant collection from the seed using OAuth embeddings
+    (no GEMINI key). Secret-gated. After it succeeds, set CORPUS_USE_QDRANT=true."""
+    if not CORPUS_REEMBED_SECRET:
+        raise HTTPException(503, "Set CORPUS_REEMBED_SECRET env on the Python service first")
+    if x_reembed_secret != CORPUS_REEMBED_SECRET:
+        raise HTTPException(401, "bad or missing X-Reembed-Secret")
+    if not QDRANT_CLOUD_URL:
+        raise HTTPException(503, "QDRANT_CLOUD_URL not set")
+    if not _ensure_vertex():
+        raise HTTPException(503, f"Vertex/OAuth not ready — {_vertex_diag()}")
+    # sanity: embed one probe so we fail fast with a clear message
+    if _vertex_embed("uji embedding") is None:
+        raise HTTPException(502, "embedding via OAuth returned nothing — check gemini-embedding-001 access on Vertex")
+    import nusantara_corpus as _nc
+    result = _nc.reembed(_vertex_embed, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+    if not result.get("ok"):
+        raise HTTPException(500, f"reembed failed: {result.get('error')}")
+    return {**result, "note": "now set CORPUS_USE_QDRANT=true and redeploy to switch queries to Qdrant ANN"}
 
 
 if __name__ == "__main__":

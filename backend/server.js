@@ -2335,6 +2335,19 @@ app.post("/api/generate-image/google", async (req,res) => {
 
 app.get("/api/generate-image/google/models", (_,res) => res.json(GOOGLE_IMG_MODELS));
 
+// ── Admin: re-embed the Nusantara corpus into Qdrant (OAuth, no GEMINI key) ───
+// Behind Clerk auth (the /api guard) + the X-Reembed-Secret the Python service checks.
+app.post("/api/corpus/reembed", async (req,res) => {
+  try {
+    const r = await fetch(`${PYTHON_API}/corpus/reembed`, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "X-Reembed-Secret": req.get("X-Reembed-Secret") || "" },
+    });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
+});
+
 // ── Google-native Whisk (Gemini multimodal → image generation) ───────────────
 app.post("/api/whisk/google", async (req,res) => {
   if (!ai) return res.status(400).json({ error:"No GEMINI_API_KEY in .env" });

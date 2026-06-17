@@ -144,11 +144,14 @@ def _gg_embed(text: str, api_key: str, task: str = "RETRIEVAL_QUERY") -> list[fl
 
 
 # ── Qdrant ANN retrieval ─────────────────────────────────────────────────
-def _qdrant_retrieve(query: str, top_k: int, api_key: str, qdrant_url: str,
-                     qdrant_api_key: str) -> list[dict] | None:
-    """Returns list of exemplar dicts or None on failure (triggers BM25 fallback)."""
+_QDRANT_MIN = 0.55   # absolute cosine floor — drop semantically-unrelated hits
+
+def _qdrant_retrieve(query: str, top_k: int, api_key, qdrant_url: str,
+                     qdrant_api_key: str, embed_fn=None) -> list[dict] | None:
+    """Returns list of exemplar dicts or None on failure (triggers BM25 fallback).
+    embed_fn (OAuth Vertex) is preferred over the GEMINI-key _gg_embed when given."""
     import requests as _req
-    vec = _gg_embed(query, api_key)
+    vec = embed_fn(query) if embed_fn else _gg_embed(query, api_key)
     if not vec:
         return None
     body = {"vector": vec, "limit": top_k, "with_payload": True}
@@ -157,7 +160,7 @@ def _qdrant_retrieve(query: str, top_k: int, api_key: str, qdrant_url: str,
         h["api-key"] = qdrant_api_key
     try:
         r = _req.post(f"{qdrant_url.rstrip('/')}/collections/{_COLLECTION}/points/search",
-                      headers=h, json=body, timeout=10)
+                      headers=h, json=body, timeout=15)
         if not r.ok:
             logger.warning("qdrant search %s: %s", r.status_code, r.text[:80])
             return None
@@ -165,11 +168,12 @@ def _qdrant_retrieve(query: str, top_k: int, api_key: str, qdrant_url: str,
         if not results:
             return []
         seed_idx = _seed_by_id()
-        top = results[0].get("score") or 0.0          # results are score-desc
+        top = results[0].get("score") or 0.0
+        cut = max(_QDRANT_MIN, _GATE_FRAC * top)    # absolute floor + relative gate
         hits = []
         for pt in results:
-            if top > 0 and (pt.get("score") or 0.0) < _GATE_FRAC * top:
-                continue                                # same relative gate as BM25
+            if (pt.get("score") or 0.0) < cut:
+                continue
             eid = pt.get("payload", {}).get("exemplar_id")
             if eid and eid in seed_idx:
                 hits.append(seed_idx[eid])
@@ -179,18 +183,61 @@ def _qdrant_retrieve(query: str, top_k: int, api_key: str, qdrant_url: str,
         return None
 
 
+# ── Re-embed: (re)build the Qdrant collection from the seed via embed_fn ──────
+def reembed(embed_fn, qdrant_url: str, qdrant_api_key: str, dim: int = 3072) -> dict:
+    """Embed every seed entry with embed_fn (OAuth Vertex) and rebuild the Qdrant
+    collection. Returns a summary dict. Never used at request time — admin only."""
+    import requests as _req
+    seed = _load_seed()
+    if not seed:
+        return {"ok": False, "error": "seed empty / not found", "indexed": 0, "total": 0}
+    base = qdrant_url.rstrip("/")
+    h = {"Content-Type": "application/json"}
+    if qdrant_api_key:
+        h["api-key"] = qdrant_api_key
+    # recreate collection (drop then create) so dim/old vectors can't linger
+    try:
+        _req.delete(f"{base}/collections/{_COLLECTION}", headers=h, timeout=30)
+        rc = _req.put(f"{base}/collections/{_COLLECTION}", headers=h,
+                      json={"vectors": {"size": dim, "distance": "Cosine"}}, timeout=30)
+        if not rc.ok:
+            return {"ok": False, "error": f"create collection {rc.status_code}: {rc.text[:120]}", "indexed": 0, "total": len(seed)}
+    except Exception as e:
+        return {"ok": False, "error": f"qdrant unreachable: {e}", "indexed": 0, "total": len(seed)}
+    points, failed = [], []
+    for i, ex in enumerate(seed):
+        text = f"{ex.get('subject','')}. {ex.get('visual_facts','')}. {' '.join(ex.get('tags', []))}"
+        vec = embed_fn(text, task="RETRIEVAL_DOCUMENT")
+        if not vec:
+            failed.append(ex["id"]); continue
+        points.append({"id": i, "vector": vec, "payload": {"exemplar_id": ex["id"]}})
+    # upsert in batches
+    for b in range(0, len(points), 50):
+        try:
+            ru = _req.put(f"{base}/collections/{_COLLECTION}/points", headers=h,
+                          json={"points": points[b:b + 50]}, timeout=60)
+            if not ru.ok:
+                return {"ok": False, "error": f"upsert {ru.status_code}: {ru.text[:120]}",
+                        "indexed": b, "total": len(seed), "failed_embed": failed}
+        except Exception as e:
+            return {"ok": False, "error": f"upsert err: {e}", "indexed": b, "total": len(seed)}
+    return {"ok": True, "indexed": len(points), "total": len(seed),
+            "failed_embed": failed, "collection": _COLLECTION, "dim": dim}
+
+
 # ── public retrieve ──────────────────────────────────────────────────────
 def retrieve(query: str, top_k: int = 8,
              gemini_api_key: str | None = None,
              qdrant_url: str | None = None,
-             qdrant_api_key: str | None = None) -> list[dict]:
+             qdrant_api_key: str | None = None,
+             embed_fn=None) -> list[dict]:
     """
-    Return matching exemplars (capped at top_k). Tries Qdrant ANN first if
-    configured, falls back to BM25. A relative score gate trims weak matches, so
-    the count adapts to the prompt (1 subject → ~1 hit, 5 subjects → ~5).
+    Return matching exemplars (capped at top_k). Tries Qdrant ANN (semantic) when a
+    query embedder is available — embed_fn (OAuth Vertex) preferred over the GEMINI
+    key — then falls back to BM25 (lexical name-match) if Qdrant is unavailable.
     """
-    if gemini_api_key and qdrant_url:
-        hits = _qdrant_retrieve(query, top_k, gemini_api_key, qdrant_url, qdrant_api_key or "")
+    if qdrant_url and (embed_fn or gemini_api_key):
+        hits = _qdrant_retrieve(query, top_k, gemini_api_key, qdrant_url, qdrant_api_key or "", embed_fn)
         if hits is not None:
             logger.info("nusantara_corpus: qdrant %d hits for %r", len(hits), query[:40])
             return hits
@@ -226,6 +273,7 @@ def enhance_prompt(
     qdrant_url: str | None = None,
     qdrant_api_key: str | None = None,
     top_k: int = 8,
+    embed_fn=None,
 ) -> tuple[str, list[dict], str | None]:
     """
     Retrieve exemplars → build enhanced image prompt → load ref image.
@@ -242,7 +290,8 @@ def enhance_prompt(
     hits = retrieve(prompt, top_k=top_k,
                     gemini_api_key=gemini_api_key,
                     qdrant_url=qdrant_url,
-                    qdrant_api_key=qdrant_api_key)
+                    qdrant_api_key=qdrant_api_key,
+                    embed_fn=embed_fn)
     if not hits:
         return prompt, [], None
 
