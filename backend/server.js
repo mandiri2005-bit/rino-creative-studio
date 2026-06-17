@@ -713,6 +713,30 @@ app.post("/api/chat/agentic", async (req,res) => {
   } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
 });
 
+// ── CHAT v2 (model registry + per-model provider failover; Python chat_router) ──
+app.get("/api/chat/models", async(req,res)=>{ try{ res.json(await(await fetch(`${PYTHON_API}/chat/models`)).json()); }catch(e){ res.status(500).json({error:e.message}); } });
+
+app.post("/api/chat/v2", async (req,res) => {
+  res.setHeader("Content-Type","text/event-stream");
+  res.setHeader("Cache-Control","no-cache");
+  res.setHeader("Connection","keep-alive");
+  try {
+    const lzkv = req.headers["x-laozhang-api-key"] || "";
+    const _authv = req.headers["authorization"] || "";
+    const pyRes = await fetch(`${PYTHON_API}/chat/v2/stream`, {
+      method:"POST", headers:{"Content-Type":"application/json",...(lzkv&&{"X-LaoZhang-API-Key":lzkv}),...(_authv&&{"Authorization":_authv})},
+      body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
+        model:req.body.model||"gemini-2.5-flash", system:req.body.system||"You are a helpful assistant.",
+        temperature:req.body.temperature||0.9, max_tokens:req.body.max_tokens||8192,
+        images:Array.isArray(req.body.images)?req.body.images:[] }),
+    });
+    const reader = pyRes.body.getReader();
+    req.on("close",()=>reader.cancel());
+    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
+    if(!res.writableEnded) res.end();
+  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
+});
+
 app.post("/api/cancel/:id",  async(req,res)=>{ try{const _hc={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/cancel/${req.params.id}`,{method:"POST",headers:_hc})).json());}catch(e){res.status(500).json({error:e.message});} });
 app.get ("/api/history/:id", async(req,res)=>{ try{const _hh={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/history/${req.params.id}`,{headers:_hh})).json());}catch(e){res.status(500).json({error:e.message});} });
 app.post("/api/save",        async(req,res)=>{ try{const _hs={"Content-Type":"application/json",...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/save`,{method:"POST",headers:_hs,body:JSON.stringify(req.body)})).json());}catch(e){res.status(500).json({error:e.message});} });

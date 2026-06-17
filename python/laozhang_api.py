@@ -1697,6 +1697,109 @@ async def stream_chat(req: ChatRequest,
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CHAT v2 — single model registry + per-model provider failover (chat_router.py).
+# Parallel to /chat/stream above; the legacy endpoint is untouched until cutover.
+# ══════════════════════════════════════════════════════════════════════════════
+@app.get("/chat/models")
+async def list_chat_models_v2():
+    """Single source of truth for the v2 chat dropdown (parallel to the legacy
+    /models which returns flat MODELS keys). Frontend fetches this →
+    {models:[{id,display,tier,badge,vision,tools}]}. Cost/provider stay internal."""
+    import chat_router
+    return {"models": chat_router.list_models()}
+
+
+@app.post("/chat/v2/stream")
+async def stream_chat_v2(req: ChatRequest,
+                         user: CurrentUser = Depends(get_current_user)):
+    """Chat via chat_router.dispatch_chat: user picks a MODEL, the dispatcher walks
+    that model's provider chain with per-attempt credit hold/settle/refund and
+    failover. Reuses the legacy endpoint's auth/session/history/persist/SSE shell;
+    metering + failover live inside dispatch_chat."""
+    import chat_router
+    _TENANT_ID = user.tenant_id
+    _USER_ID   = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    _session_id = _to_uuid(req.session_id)
+    try:
+        await db.get_or_create_session(
+            _TENANT_ID, _USER_ID, _session_id, req.model, req.system,
+            temperature=req.temperature, max_tokens=req.max_tokens,
+            use_tools=req.use_tools, mcp_paths=req.mcp_paths)
+        history = await db.get_session_history(_TENANT_ID, _session_id)
+    except Exception as db_err:
+        print(f"[stream_chat_v2] DB session error: {db_err}", flush=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    history_msgs = [{"role": r["role"], "content": r["content"]} for r in history]
+
+    async def _cancelled() -> bool:
+        try:
+            return await rc.is_cancelled(_session_id)
+        except Exception:
+            return False
+
+    async def generate():
+        chunks: list[str] = []
+        cancelled = False
+        usage_data: dict = {}
+        try:
+            async for chunk in chat_router.dispatch_chat(
+                    tenant_id=_TENANT_ID, user_id=_USER_ID, model_id=req.model,
+                    system=req.system or "", history=history_msgs, prompt=req.message,
+                    temperature=req.temperature, max_tokens=req.max_tokens,
+                    images=req.images or [], op_base=f"chat:{_session_id}",
+                    byok=_byok_active(), cancel_check=_cancelled):
+                if chunk == "[CANCELLED]":
+                    cancelled = True
+                    yield "data: [CANCELLED]\n\n"
+                    return
+                if chunk == "[RESTART]":
+                    chunks.clear()                       # mid-stream failover: drop partial
+                    yield "data: [RESTART]\n\n"
+                    continue
+                if chunk.startswith("[ERROR"):
+                    yield f"data: {chunk}\n\n"
+                    return
+                if chunk == "[DONE]":
+                    continue                             # finally emits the single [DONE]
+                if chunk.startswith("[USAGE:"):
+                    try:
+                        usage_data.update(json.loads(chunk[7:].rstrip("]")))
+                    except Exception:
+                        pass
+                    yield f"data: {chunk}\n\n"
+                    continue
+                chunks.append(chunk)
+                encoded = chunk.replace("\\", "\\\\").replace("\n", "\\n")
+                yield f"data: {encoded}\n\n"
+        except Exception as e:
+            yield f"data: [ERROR: {e}]\n\n"
+        finally:
+            await rc.clear_cancel(_session_id)
+            reply = "".join(chunks)
+            tok_in  = int(usage_data.get("input",  0))
+            tok_out = int(usage_data.get("output", 0))
+            # metering already settled per-attempt inside dispatch_chat; here we
+            # only persist the transcript (R2 Media-Vault capture added at cutover).
+            if not cancelled and reply:
+                stored_user = req.message + (
+                    f"\n\n[Attached {len(req.images)} image(s)]" if req.images else "")
+                cost = _calc_cost(req.model, tok_in, tok_out)
+                try:
+                    await db.append_message(_TENANT_ID, _session_id, "user", stored_user, req.model)
+                    await db.append_message(_TENANT_ID, _session_id, "assistant", reply, req.model,
+                                            tokens_in=tok_in, tokens_out=tok_out, cost_usd=cost)
+                except Exception as db_err:
+                    print(f"[stream_chat_v2] DB append error: {db_err}", flush=True)
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/history/{session_id}")
 async def get_history(session_id: str,
                       user: CurrentUser = Depends(get_current_user)):
