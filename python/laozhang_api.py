@@ -187,23 +187,24 @@ def _vertex_embed(text: str, task: str = "RETRIEVAL_QUERY"):
 def _auto_reembed_if_changed():
     """Background: re-index Qdrant only if the seed hash differs from what's stored.
     Cheap no-op when unchanged. Gated by CORPUS_AUTO_REEMBED."""
+    _log = _logging.getLogger("corpus")
     if not (CORPUS_AUTO_REEMBED and QDRANT_CLOUD_URL):
         return
-    import warnings
     if not _ensure_vertex():
-        warnings.warn("auto-reembed skipped: Vertex/OAuth not ready")
+        _log.warning("auto-reembed SKIPPED: Vertex/OAuth not ready (%s)", _vertex_diag())
         return
     try:
         import nusantara_corpus as _nc
         cur = _nc.seed_hash()
         stored = _nc._qmeta_get(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
         if cur and cur == stored:
-            return                                       # already in sync — nothing to do
-        warnings.warn(f"auto-reembed: seed changed ({stored} -> {cur[:8]}), re-indexing…")
+            _log.info("auto-reembed: Qdrant already in sync (hash %s) — nothing to do", cur[:8])
+            return
+        _log.warning("auto-reembed: seed changed (%s -> %s), re-indexing 233 via OAuth…", stored, cur[:8])
         res = _nc.reembed(_vertex_embed, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
-        warnings.warn(f"auto-reembed result: {res}")
+        _log.warning("auto-reembed RESULT: %s", res)
     except Exception as e:
-        warnings.warn(f"auto-reembed failed: {e}")
+        _log.warning("auto-reembed FAILED: %s", e)
 
 def _start_auto_reembed():
     if not CORPUS_AUTO_REEMBED:
