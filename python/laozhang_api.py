@@ -6529,9 +6529,17 @@ def _corpus_enhance(prompt: str):
         return prompt, [], None
 
 @app.post("/generate-image/vertex")
-async def generate_image_vertex(req: VertexImageRequest):
+async def generate_image_vertex(req: VertexImageRequest,
+                                user: Optional[CurrentUser] = Depends(get_current_user_optional),
+                                x_video_job: str = Header(None, alias="X-Video-Job-Id")):
     if not _ensure_vertex():
         raise HTTPException(503, f"Vertex AI not configured — {_vertex_diag()}")
+    # Credit gate — same metering as the LaoZhang /generate-image path (1 image unit).
+    # 402 up front if the tenant can't afford it; debit + usage logged after success.
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    if user:
+        await metering.gate(user.tenant_id, "image", req.model, {"count": 1}, byok=_byok)
     prompt = req.prompt
     if req.nusantara_corpus:
         prompt, _, _ = _corpus_enhance(prompt)
@@ -6608,23 +6616,31 @@ async def generate_image_vertex(req: VertexImageRequest):
                     pass
                 snippet = (" ".join(text_out))[:200]
                 raise HTTPException(502, f"{req.model} returned no image @ {GCP_LOCATION} — finish_reason={fr}{pf}; text={snippet!r}")
-            return {"image_b64": base64.b64encode(img_bytes).decode(), "model": req.model}
+            b64 = base64.b64encode(img_bytes).decode()
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(500, str(e))
 
     # ── Imagen (imagegeneration@*, imagen-*) → ImageGenerationModel ──
-    try:
-        from vertexai.preview.vision_models import ImageGenerationModel as _IGen
-        import io as _io
-        mdl = _IGen.from_pretrained(req.model)
-        images = mdl.generate_images(prompt=prompt, number_of_images=1, aspect_ratio=req.aspect_ratio)
-        buf = _io.BytesIO()
-        images[0]._pil_image.save(buf, format="JPEG", quality=92)
-        return {"image_b64": base64.b64encode(buf.getvalue()).decode(), "model": req.model}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    else:
+        try:
+            from vertexai.preview.vision_models import ImageGenerationModel as _IGen
+            import io as _io
+            mdl = _IGen.from_pretrained(req.model)
+            images = mdl.generate_images(prompt=prompt, number_of_images=1, aspect_ratio=req.aspect_ratio)
+            buf = _io.BytesIO()
+            images[0]._pil_image.save(buf, format="JPEG", quality=92)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    # ── Capture asset (tenant-isolated) + meter credits/usage — like /generate-image ──
+    await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt)
+    if user:
+        await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
+                             byok=_byok, video_job=x_video_job, log=False)
+    return {"image_b64": b64, "model": req.model}
 
 
 class EnhancePromptRequest(BaseModel):

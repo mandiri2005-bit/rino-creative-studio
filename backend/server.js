@@ -2322,14 +2322,18 @@ app.post("/api/generate-image/google", async (req,res) => {
     const { prompt, model="imagegeneration@006", aspect_ratio="16:9", nusantara_corpus=false, ref_image_b64, ref_image_mime } = req.body || {};
     if (!prompt) return res.status(400).json({ error:"prompt required" });
     console.log(`[generate-image/google→vertex] model=${model} corpus=${nusantara_corpus} ref=${ref_image_b64?"yes":"no"}`);
+    // Forward Clerk auth so Python resolves the tenant → credit gate + usage metering
+    // (revenue: Vertex gen must be billed like the LaoZhang path, not free). Python now
+    // also captures the asset (tenant-isolated), so no captureImageFlow here.
+    const _h = { "Content-Type":"application/json" };
+    if (req.headers["authorization"]) _h["Authorization"] = req.headers["authorization"];
+    if (req.headers["x-video-job-id"]) _h["X-Video-Job-Id"] = req.headers["x-video-job-id"];
     const r = await fetch(`${PYTHON_API}/generate-image/vertex`, {
-      method:"POST", headers:{"Content-Type":"application/json"},
+      method:"POST", headers:_h,
       body: JSON.stringify({ prompt, model, aspect_ratio, nusantara_corpus, ...(ref_image_b64 && { ref_image_b64, ref_image_mime: ref_image_mime || "image/jpeg" }) }),
     });
     const data = await r.json();
-    if (!r.ok) return res.status(r.status).json(data);
-    if (data.image_b64) await captureImageFlow(req, model, "generate_image", [data.image_b64], "vertex", prompt);
-    res.json(data);
+    return res.status(r.status).json(data);
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 
