@@ -108,18 +108,22 @@
       }
     },
     async signOut() {
-      if (!_clerk) return;
+      // No Clerk (auth disabled) → just go to the landing page.
+      if (!_clerk) { window.location.href = "/"; return; }
       try {
-        // Update UI immediately (optimistic) — don't wait for Clerk's server round-trip.
         _currentUser = null;
         notifyUserChange();
-        showGate();
-        _clerk.signOut();   // fire-and-forget; runs in background
         ["rc_lzkey","rc_imgkey","rc_veokey","rc_sorakey","rc_ds_route",
          "rc_nar_outline","rc_nar_outline_text","rc_nar_result"]
           .forEach(k => localStorage.removeItem(k));
-        showGate();
-      } catch (e) { console.error("[auth] signOut:", e); }
+        // Redirect to the marketing landing page ("/" → landing.html) after sign-out
+        // instead of showing the in-app auth gate (looked like being stuck on the
+        // sign-in screen). Clerk clears the session, then navigates.
+        await _clerk.signOut({ redirectUrl: "/" });
+      } catch (e) {
+        console.error("[auth] signOut:", e);
+        window.location.href = "/";   // hard fallback so the user still leaves the app
+      }
     },
     get currentUser() { return _currentUser; },
     get clerk()       { return _clerk; },
