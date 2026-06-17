@@ -94,7 +94,7 @@
     "subject": "Tukang Ojek",
     "region": "Indonesia",
     "lang": "id",
-    "visual_facts": "Ojek, tukang ojek (motorcycle taxi) Indonesia; motor Honda Vario/Beat berwarna standar, helm full-face, jaket ojek online (hijau Gojek atau oranye/biru), sandal jepit; tunggu di pinggir jalan trotoar; bisa ada ponsel di holder setang; wajah ramah, pose duduk santai di motor",
+    "visual_facts": "TUKANG OJEK (PANGKALAN KONVENSIONAL). Kategori: Profesi transportasi informal; Visual Utama: Pangkalan: 5–20 motor parkir berjajar di tepi jalan atau di bawah pohon · Tukang ojek: duduk-duduk di motor, nongkrong, berbaring di motor sambil scrolling HP; helm tua tergantung di motor · Ekspresi santai; terkadang bermain kartu atau gaple di tanah; Detail Khas: Saat ada calon penumpang: semua langsung berdiri: \"Ojek? Ojek?\" · Tawar-menawar harga dulu: \"Kemana? Dua puluh ribu ya?\". Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
     "ref_image_path": "refs/ojek.jpg",
@@ -6784,6 +6784,1540 @@
       "kendaraan",
       "moge",
       "parade"
+    ]
+  },
+  {
+    "id": "pasar-tradisional",
+    "category": "suasana",
+    "subject": "Pasar Tradisional (Los Basah)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PASAR TRADISIONAL (LOS BASAH). Kategori: Ruang dagang tradisional; Visual Utama: Bangunan semi-permanen beratap seng; kolom beton kusam; lantai beton atau ubin terakota merah yang selalu basah — air menggenang di sudut-sudut; selokan kecil mengalir campuran air cucian sayur, ikan, dan darah ayam · Los sayur: tumpukan sayuran hijau menggunung di meja kayu rendah; bayam, kangkung, kacang panjang, tomat, cabai — semuanya basah dan segar · Los daging: meja kayu tebal berlapis plastik merah; potongan daging/ayam digantung di kail besi; tetesan darah merah di plastik · Los ikan: ikan segar berbaring di atas es batu mencair; air es mengalir ke lantai; aroma amis kuat; Detail Khas: Lampu neon atau bohlam kuning per kios; banyak berkedip-kedip · Ibu-ibu penjual duduk di kursi plastik kecil atau bangku kayu rendah · Tas kresek hitam menggantung di kawat di tiap kios · Timbangan gantung besi tua + timbangan duduk analog · Uang kertas lusuh dilipat-lipat; disimpan di dalam BH atau kantong plastik · \"Ayo Bu, murah ini! Tomat seribu tiga!\" — teriakan penjual. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pasar",
+      "tradisional"
+    ]
+  },
+  {
+    "id": "warung-pojok-warung-kelontong-kampung",
+    "category": "suasana",
+    "subject": "Warung Pojok / Warung Kelontong Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "WARUNG POJOK / WARUNG KELONTONG KAMPUNG. Kategori: Toko serba ada mikro; Visual Utama: Ruang mungil di sudut rumah atau bangunan kecil; terkadang hanya jendela dimodifikasi menjadi etalase · Rak kayu berlapis dari lantai ke langit-langit: · Bawah: botol Aqua, Teh Botol, Fanta · Tengah: bungkus Indomie bertumpuk rapi · Atas: deterjen Rinso, sabun Lifebuoy berbaris · Etalase kaca di depan: rokok ketengan, permen, cokelat, korek api · Stoples kaca besar berisi biskuit, permen, kerupuk kiloan · Kulkas kecil atau blong es untuk minuman dingin; Detail Khas: ROKOK KETENGAN — dijual per batang (unik Indonesia); tertata dalam wadah · Bon (utang) ditulis di buku kecil lusuh dengan bolpen biru · Ibu penjual sambil nonton sinetron di TV kecil di belakang rak · Anak-anak datang bawa uang receh: \"Beli permen 500, sama es 1000\". Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "warung",
+      "pojok"
+    ]
+  },
+  {
+    "id": "toko-kelontong-tionghoa",
+    "category": "suasana",
+    "subject": "Toko Kelontong Tionghoa (Sembako)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TOKO KELONTONG TIONGHOA (SEMBAKO). Kategori: Toko sembako skala menengah; Visual Utama: Toko sempit tapi tinggi (plafon 4–5 m); rak kayu berlapis hingga langit- langit; tangga lipat untuk mengambil barang di atas · Karung-karung beras berbagai merek berdiri berjajar di depan toko · Di pojok: foto leluhur/sembahyang; hio dan kembang; kertas merah aksara Tionghoa di pintu masuk; Detail Khas: Timbangan neraca besi tua untuk menimbang gula, tepung, kopi · Struk manual dengan kertas karbon rangkap dua · Kalender bergambar anak bayi Tionghoa di dinding. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "toko",
+      "kelontong"
+    ]
+  },
+  {
+    "id": "pasar-malam",
+    "category": "suasana",
+    "subject": "Pasar Malam (Malam Hari)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PASAR MALAM (MALAM HARI). Kategori: Event pasar & hiburan malam; Visual Utama: Area terbuka berubah menjadi kota kecil di malam hari; ratusan lampu warna-warni berkelip dari wahana dan kios · Wahana: komidi putar belampu, kora-kora mini, odong-odong, bianglala kecil — semua menyala terang di kegelapan malam · Kios makanan: sate berasap, martabak beruap, es doger berkilap · Kios mainan: balon mengambang warna-warni; pistol plastik; boneka · Genset menderu di sudut; kabel listrik tebal di tanah · Asap sate dan gorengan bercampur mengepul ke langit malam. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pasar",
+      "malam"
+    ]
+  },
+  {
+    "id": "warung-kopi-kedai-kopi-tradisional",
+    "category": "suasana",
+    "subject": "Warung Kopi / Kedai Kopi Tradisional",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "WARUNG KOPI / KEDAI KOPI TRADISIONAL. Kategori: Tempat nongkrong tradisional; Visual Utama: Ruang kecil; meja-meja kayu rendah + bangku panjang tanpa sandaran; lantai ubin; dinding cat lusuh · Kopi tubruk: cangkir kecil berisi kopi hitam pekat dengan endapan di dasar · Stoples kaca berisi kopi bubuk hitam kasar; gula pasir; SKM kaleng merah · Bapak-bapak duduk berjam-jam; bermain catur atau kartu remi · Koran harian dilipat di meja untuk dibaca bersama · Asbak penuh puntung rokok; asap mengapung di langit-langit rendah. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "warung",
+      "kopi"
+    ]
+  },
+  {
+    "id": "kantin-sekolah",
+    "category": "suasana",
+    "subject": "Kantin Sekolah",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KANTIN SEKOLAH. Kategori: Ruang makan sekolah; Visual Utama: Bangunan semi-terbuka; atap seng; lantai beton; meja + kursi kayu panjang · Kios-kios kecil berjejer: mie goreng, bakso, jajanan, snack plastik (Taro, Chitato), minuman sachet (Pop Ice, Nutrisari), es lilin/es potong · Anak-anak berseragam putih-merah/putih-biru berebut antri saat istirahat · Uang jajan receh (logam 200, 500, 1000) di genggaman tangan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kantin",
+      "sekolah"
+    ]
+  },
+  {
+    "id": "terminal-bus-tradisional",
+    "category": "suasana",
+    "subject": "Terminal Bus Tradisional",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TERMINAL BUS TRADISIONAL. Kategori: Infrastruktur transportasi; Visual Utama: Lapangan aspal luas; deretan bus berbagai warna; asap knalpot diesel mengambang · Penumpang, porter (calo), pedagang asongan, kernet — bercampur baur · Calo: langsung menyerbu penumpang turun: \"Mau kemana Pak? Sini sini!\" · Kernet berteriak di pintu bus terbuka: \"Bogor! Bogor! Berangkat!\" · Papan trayek di kaca depan bus: tulisan manual spidol tebal. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "terminal",
+      "bus"
+    ]
+  },
+  {
+    "id": "toko-buku-bekas",
+    "category": "suasana",
+    "subject": "Toko Buku Bekas (Kwitang / Blok M)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TOKO BUKU BEKAS (KWITANG / BLOK M). Kategori: Toko buku tradisional; Visual Utama: Kios sempit; buku ditumpuk menggunung tanpa sistem apapun · Debu tipis melapisi buku lama; cover kusam kekuningan · Novel stensilan, buku pelajaran SD, komik Wiro Sableng/Si Buta dari Goa Hantu, majalah Bobo bekas, kamus tebal — semua bercampur · Harga ditulis spidol langsung di sampul buku; Detail Khas: Pembeli harus 'menyelam' mencari buku sendiri · Aroma buku tua yang khas — vanila dan kertas menguning. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "toko",
+      "buku"
+    ]
+  },
+  {
+    "id": "apotek-toko-obat-tradisional",
+    "category": "suasana",
+    "subject": "Apotek / Toko Obat Tradisional",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "APOTEK / TOKO OBAT TRADISIONAL. Kategori: Toko kesehatan; Visual Utama: Etalase kaca: kotak Bodrex merah-kuning, Promag, Antangin, Tolak Angin sachet hijau kecil, Bintangin · Di pojok: display jamu Sido Muncul kotak hijau, Jamu Nyonya Meneer, berbagai jamu sachet · Apoteker berjas putih di belakang kaca pembatas; Detail Khas: \"Obat flu yang bagus apa ya?\" — konsultasi medis informal di apotek. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "apotek",
+      "toko"
+    ]
+  },
+  {
+    "id": "tambal-ban-pinggir-jalan",
+    "category": "suasana",
+    "subject": "Tambal Ban Pinggir Jalan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TAMBAL BAN PINGGIR JALAN. Kategori: Bengkel jalanan; Visual Utama: Kios/tenda di pinggir jalan; atap terpal/seng condong miring · Kompresor kecil menderu di sudut; selang panjang melingkar di tanah · Ember plastik berisi AIR — untuk cari kebocoran teknik bubble (ban dicelup, gelembung menunjukkan letak bocor) · Ban-ban bekas berbagai ukuran di rak; velg motor bersandar di dinding · Peralatan: tang, obeng, kunci roda, lem vulkanisir kuning, tambalan karet · Lantai tanah/semen ternoda oli hitam permanen; kaleng oli bekas; Detail Khas: Tangan montir hitam berminyak; kaos + celana karet seadanya · Kalender motor atau foto artis menempel di dinding keropos. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tambal",
+      "ban"
+    ]
+  },
+  {
+    "id": "salon-potong-rambut-tradisional",
+    "category": "suasana",
+    "subject": "Salon Potong Rambut Tradisional",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SALON POTONG RAMBUT TRADISIONAL. Kategori: Jasa perawatan; Visual Utama: Ruang kecil (2×3 m); 1–3 kursi salon berlengan chrome; cermin besar menutupi seluruh dinding depan; lampu neon terang · Di cermin: stiker model potongan rambut dari majalah — foto artis Indonesia dan Korea yang sudah memudar · Meja di bawah cermin: sisir-sisir tertancap di cairan biru steril; gunting + clipper baris rapi; bedak tabur putih; minyak rambut Brylcreem · Foto Presiden + Wakil Presiden di dinding, wajib; Garuda Pancasila; Detail Khas: Bapak-bapak antri sambil duduk di bangku kayu panjang · Majalah model rambut setengah lusuh untuk dipilih pelanggan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "salon",
+      "potong"
+    ]
+  },
+  {
+    "id": "tukang-tambal-kasur",
+    "category": "suasana",
+    "subject": "Tukang Tambal Kasur",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TUKANG TAMBAL KASUR. Kategori: Jasa kerajinan; Visual Utama: Halaman/pinggir jalan; kasur-kasur terbuka dijemur; kapuk diurai di tikar · Alat utama: busur besar (bambu + dawai) untuk menguraikan kapuk · Kapuk beterbangan seperti salju putih di sekitar tukang; Detail Khas: Bunyi busur dipetik: byung byung byung — suara paling khas. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tukang",
+      "tambal"
+    ]
+  },
+  {
+    "id": "toko-peralatan-rumah-tangga",
+    "category": "suasana",
+    "subject": "Toko Peralatan Rumah Tangga",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TOKO PERALATAN RUMAH TANGGA. Kategori: Toko perabot; Visual Utama: Tampak luar: ember plastik warna-warni (merah, kuning, biru) digantung berlapis dari langit-langit sampai lantai; sapu, pel, kemoceng di luar · Dalam: wajan, panci, penggorengan, setrika, rice cooker, kompor gas; Detail Khas: Bau plastik baru yang khas dari ember dan peralatan plastik. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "toko",
+      "peralatan"
+    ]
+  },
+  {
+    "id": "rental-ps-warnet",
+    "category": "suasana",
+    "subject": "Rental Ps / Warnet (Era Lawas 1999–2010)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "RENTAL PS / WARNET (ERA LAWAS 1999–2010). Kategori: Hiburan digital era 2000an; Visual Utama: Ruang gelap; bilik-bilik kecil kayu lapis; monitor CRT besar (tabung); keyboard dan mouse berdebu; kursi plastik murah · Poster game: Counter-Strike, Ragnarok, GTA · Jam di dinding; papan harga: Rp 3.000/jam; Detail Khas: Aroma: ruangan panas + debu + mi instan cup · Suara: tembakan CS + musik Ragnarok + ketikan keyboard keras · Anak-anak SMA sampai larut malam; orang tua tidak tahu BAGIAN 2 — ARSITEKTUR & RUANG KAMPUNG (16–30). Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "rental",
+      "ps"
+    ]
+  },
+  {
+    "id": "gang-sempit-jakarta-gang-buntu",
+    "category": "suasana",
+    "subject": "Gang Sempit Jakarta / Gang Buntu",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GANG SEMPIT JAKARTA / GANG BUNTU. Kategori: Ruang urban; Visual Utama: Lorong sempit 1–1.5 m; diapit dinding rumah berdempetan; lantai semen atau keramik; atap terkadang 'tertutup' oleh sambungan dua rumah di atas · Dinding kiri-kanan: cat berbeda tiap rumah (biru, kuning, merah, hijau) · Kabel listrik + internet berlari tidak beraturan di atas kepala — bersilang-silang seperti jaring laba-laba hitam · Bougainvillea merah-pink melilit pagar kawat; pot bunga plastik di tepi · Pintu-pintu rumah berhadapan jarak 1 meter; privasi hampir nol; Detail Khas: Motor parkir di dalam gang; susah lewat jika ada dua motor bersamaan · Anak-anak bermain bola plastik — satu-satunya tempat bermain. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "gang",
+      "sempit"
+    ]
+  },
+  {
+    "id": "jemuran-baju-di-gang-sempit",
+    "category": "suasana",
+    "subject": "Jemuran Baju Di Gang Sempit",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "JEMURAN BAJU DI GANG SEMPIT. Kategori: Detail kehidupan kampung; Visual Utama: Tali jemuran (nilon atau kawat) terbentang dari jendela ke jendela, MELINTASI gang sempit — di atas kepala pejalan kaki · Baju warna-warni bergantung berjajar: kaos, kemeja batik, seragam sekolah putih-merah, gamis, sarung kotak-kotak, handuk motif bunga · Jepitan baju (clip) warna-warni menjepit tiap baju; beberapa jepitan plastik patah digantikan karet gelang; Detail Khas: Saat hujan: panik mengambil jemuran; bunyi tergesa-gesa · Aroma pewangi (Molto atau Downy) saat melewati jemuran. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "jemuran",
+      "di"
+    ]
+  },
+  {
+    "id": "pos-kamling-gardu-ronda",
+    "category": "suasana",
+    "subject": "Pos Kamling / Gardu Ronda",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "POS KAMLING / GARDU RONDA. Kategori: Fasilitas keamanan kampung; Visual Utama: Bangunan kecil (1.5×1.5 m) di ujung gang; bentuk gubuk kecil; dinding triplek atau bata; papan \"POS KAMLING RW.05\" · Di dalam: bangku kayu panjang; buku catatan tamu logbook; senter besar; kentongan bambu di sudut · Lampu 5–10 watt menerangi area sekitar; Detail Khas: KENTONGAN — tabung bambu besar; dipukul kayu: bunyi duk-duk-duk kencang · Jadwal ronda ditempel di dinding: nama warga bergiliran per malam · Bapak-bapak ronda: sarung, jaket, kopi dan rokok; ngobrol jam 22.00+. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pos",
+      "kamling"
+    ]
+  },
+  {
+    "id": "sumur-timba-pompa-tangan",
+    "category": "suasana",
+    "subject": "Sumur Timba & Pompa Tangan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SUMUR TIMBA & POMPA TANGAN. Kategori: Fasilitas air kampung Visual Utama (Sumur Timba): · Mulut sumur: lingkaran bata/beton setinggi pinggang; Ø 80–100 cm · Timba ember dengan tali tambang melalui katrol; tali basah dan lumutan · Air sumur: hitam gelap di kedalaman; pantulan langit dari atas · Area sekitar sumur: selalu basah dan berlumut hijau; ember sabun, sabun batangan, sikat gigi, sabun cuci tergeletak Visual Utama (Pompa Tangan): · Pompa besi merah/biru; handel panjang dipompa naik-turun · Air keluar dingin dan segar saat handel dipompa · Area semen di sekitar pompa selalu basah; Detail Khas: Warga mandi dan mencuci di area sumur (MCK terbuka) · Rambut masih basah, berbaju dalam, celana pendek — jalan dari sumur ke rumah. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "sumur",
+      "timba"
+    ]
+  },
+  {
+    "id": "mck-umum-toilet-umum-kampung",
+    "category": "suasana",
+    "subject": "Mck Umum / Toilet Umum Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MCK UMUM / TOILET UMUM KAMPUNG. Kategori: Fasilitas sanitasi; Visual Utama: Bangunan memanjang dari bata/batako; beberapa bilik terpisah; atap seng · Pintu kayu pendek (tidak sampai langit-langit) atau tirai kain · Di luar: antrian ember dan gayung warna-warni; tanda \"WC Umum - Rp 1.000\"; Detail Khas: Antrian pagi hari: ibu-ibu berbaju tidur; bapak-bapak bersarung · Ember berderet menandakan antrian informal. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "mck",
+      "umum"
+    ]
+  },
+  {
+    "id": "rumah-kontrakan-petak",
+    "category": "suasana",
+    "subject": "Rumah Kontrakan Petak",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "RUMAH KONTRAKAN PETAK. Kategori: Tempat tinggal urban; Visual Utama: Deretan pintu identik berjarak 2–3 meter; tiap unit: lebar 3–4 m, dalam 5–6 m; satu lantai atau dua lantai · Cat dinding seragam (tapi banyak memudar, mengelupas); nomor unit kecil · Di depan tiap unit: tumpukan sepatu; pot bunga kecil; motor parkir · Jemuran baju di depan; kabel ekstensi menjulur dari dalam; Detail Khas: Tembok tipis: suara tetangga terdengar jelas · Penghuni beragam: buruh pabrik, mahasiswa, pedagang. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kontrakan",
+      "petak"
+    ]
+  },
+  {
+    "id": "mural-gang-tembok-kampung",
+    "category": "suasana",
+    "subject": "Mural Gang / Tembok Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MURAL GANG / TEMBOK KAMPUNG. Kategori: Seni jalanan; Visual Utama: Tembok panjang di sepanjang gang; dipenuhi lukisan cat tembok warna-warni · Tema: wayang, batik, flora tropis, tokoh pahlawan, pemandangan gunung, wajah warga sekitar · Teks motivasi: \"Kebersihan Sebagian dari Iman\" · \"Dilarang Kencing Di Sini\"; Detail Khas: Sering ada foto lurah atau RT di salah satu panel · Tanggal pengerjaan + nama seniman/komunitas di sudut. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "mural",
+      "gang"
+    ]
+  },
+  {
+    "id": "tiang-listrik-dan-kabel-semrawut",
+    "category": "suasana",
+    "subject": "Tiang Listrik Dan Kabel Semrawut",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TIANG LISTRIK DAN KABEL SEMRAWUT. Kategori: Infrastruktur ikonik; Visual Utama: Tiang listrik beton/kayu; di bagian atas: PULUHAN kabel menggantung sekaligus — kabel PLN + internet/TV kabel + telepon; bersilang-silang tidak teratur seperti spaghetti raksasa · Di persimpangan: efek jaring laba-laba raksasa di atas kepala · Beberapa kabel sudah putus, menggantung menjuntai hampir ke jalan · Stiker jasa internet + iklan + nomor telepon menempel di batang tiang; Detail Khas: Salah satu visual paling khas Indonesia yang tidak ada di negara maju · Menjadi objek foto traveler asing yang sangat terkesan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tiang",
+      "listrik"
+    ]
+  },
+  {
+    "id": "lapangan-rt-rw",
+    "category": "suasana",
+    "subject": "Lapangan Rt / Rw (Lapangan Kampung)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "LAPANGAN RT / RW (LAPANGAN KAMPUNG). Kategori: Ruang publik kampung; Visual Utama: Tanah lapang berukuran setengah hingga satu lapangan sepak bola; tanah merah berbatu atau semen; rumput jarang di pinggir · Gawang besi kecil atau dari bambu di dua sisi; ring basket sedikit miring · Lampu sorot besar di sudut (sering 1–2 dari 4 yang menyala) · Sore hari: anak-anak main bola; remaja main basket; bapak-bapak di pinggir. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "lapangan",
+      "rt"
+    ]
+  },
+  {
+    "id": "gapura-kampung-gang",
+    "category": "suasana",
+    "subject": "Gapura Kampung / Gang",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GAPURA KAMPUNG / GANG. Kategori: Penanda wilayah; Visual Utama: Gapura beton atau besi di pintu masuk gang; lebar 3–4 m; tinggi 2.5–4 m · Tulisan besar: \"RT.03 / RW.05 KELURAHAN MENTENG\" atau nama gang · Menjelang 17 Agustus: bendera merah-putih kecil berjajar di tali; lampu kelap-kelip; umbul-umbul · Spanduk pengumuman (hajatan, kematian, pengumuman RT) ditempel di gapura; Detail Khas: SETIAP gang di Indonesia punya gapura — marker teritorial kampung. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "gapura",
+      "kampung"
+    ]
+  },
+  {
+    "id": "rumah-dengan-teras-kampung",
+    "category": "suasana",
+    "subject": "Rumah Dengan Teras (Beranda) Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "RUMAH DENGAN TERAS (BERANDA) KAMPUNG. Kategori: Arsitektur rumah; Visual Utama: Teras depan 2×2 m terbuka atau semi-terbuka dengan terali besi · Kursi plastik hijau atau merah; pot bunga terakota berisi lidah mertua, melati, atau kembang sepatu; sapu lidi bersandar di dinding · Sore hari: hampir semua teras berpenghuni; nonton jalan orang lewat; Detail Khas: Teras = ruang sosial paling penting di kampung Indonesia · Siapa pun boleh duduk di teras tetangga — norma keramahan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "dengan",
+      "teras"
+    ]
+  },
+  {
+    "id": "got-selokan-kampung",
+    "category": "suasana",
+    "subject": "Got / Selokan Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GOT / SELOKAN KAMPUNG. Kategori: Infrastruktur drainase; Visual Utama: Saluran drainase terbuka di sisi jalan; lebar 20–50 cm; dalam 10–30 cm · Air mengalir cokelat atau kehitaman; musim kemarau: kering berlumpur · Jembatan kecil dari beton menutupi got di depan tiap rumah; Detail Khas: Anak-anak bermain di dekat got; memasukkan batu atau mainan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "got",
+      "selokan"
+    ]
+  },
+  {
+    "id": "kantor-kelurahan-balai-rw",
+    "category": "suasana",
+    "subject": "Kantor Kelurahan / Balai Rw",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KANTOR KELURAHAN / BALAI RW. Kategori: Fasilitas pemerintahan lokal; Visual Utama: Bangunan sederhana 1 lantai; tiang bendera merah-putih di depan · Dinding: foto Presiden + Wapres (WAJIB); Pancasila; Garuda; papan struktur organisasi; papan pengumuman penuh kertas · Lemari arsip hijau besi tua; tumpukan map dan berkas; Detail Khas: Stempel basah di meja — stempel kelurahan adalah simbol birokrasi · \"Petugas kembali jam 13.00\" — tapi jam 14.00 belum ada. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kantor",
+      "kelurahan"
+    ]
+  },
+  {
+    "id": "masjid-kampung-musholla",
+    "category": "suasana",
+    "subject": "Masjid Kampung / Musholla",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MASJID KAMPUNG / MUSHOLLA. Kategori: Fasilitas ibadah; Visual Utama: Bangunan masjid kecil; kubah kecil di atas; dinding dicat putih bersih · Tempat wudhu: deretan keran kecil di luar; lantai selalu basah; aroma sabun · Jam besar di dinding waktu shalat; speaker di menara untuk adzan; Detail Khas: Adzan berkumandang 5 kali sehari — suara paling identik dengan Indonesia · Bunyi bedug (drum besar kayu) dipukul sebelum adzan di masjid tradisional · Anak-anak berlarian belajar mengaji setelah Maghrib. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "masjid",
+      "kampung"
+    ]
+  },
+  {
+    "id": "makam-kampung",
+    "category": "suasana",
+    "subject": "Makam Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MAKAM KAMPUNG. Kategori: Ruang sakral kampung; Visual Utama: Area hijau di sudut kampung; nisan berderet: marmer putih, batu alam, atau gundukan tanah dengan nisan kayu · Pohon besar (beringin/mangga) menaungi; bunga tabur kering di beberapa makam · Pagar besi/kawat; pintu kecil sering tidak terkunci; Detail Khas: Makam kampung ada DI DALAM kampung — bukan jauh di luar · Anak-anak kadang bermain di sekitar makam siang hari BAGIAN 3 — ALAM, PERTANIAN & PERDESAAN (31–45). Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "makam",
+      "kampung"
+    ]
+  },
+  {
+    "id": "sawah-berterasering",
+    "category": "suasana",
+    "subject": "Sawah Berterasering",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SAWAH BERTERASERING. Kategori: Alam & pertanian; Visual Utama: Lereng bukit dibentuk menjadi undakan horizontal; tiap undakan berisi sawah rata sempurna; air mengalir dari petak teratas ke bawah · Padi muda (2–4 minggu): hijau muda cerah — karpet hijau berbulu halus · Padi tua (panen): kuning emas; tangkai merunduk berat; angin menggerakkan sawah seperti ombak kuning · Petani kecil di kejauhan: caping (topi bambu) menonjol; membungkuk · Saat tandur: pantulan langit di air sawah = visual luar biasa indah · Kabut tipis pagi hari memeluk undakan sawah. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "sawah",
+      "berterasering"
+    ]
+  },
+  {
+    "id": "petani-di-sawah-dengan-caping",
+    "category": "suasana",
+    "subject": "Petani Di Sawah Dengan Caping",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PETANI DI SAWAH DENGAN CAPING. Kategori: Aktivitas pertanian; Visual Utama: Sosok petani membungkuk di sawah berlumpur; kaki telanjang atau sepatu boot hitam karet terbenam di lumpur setinggi betis · Caping (topi bambu anyaman bundar besar) menutupi kepala dan leher; tepi caping lebar 50–60 cm; baju lengan panjang meski panas · Celana digulung setinggi lutut; tangan kotor lumpur; Detail Khas: Caping = simbol pertanian Indonesia yang paling universal · Posisi membungkuk menanam padi satu per satu — pekerjaan sangat melelahkan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "petani",
+      "di"
+    ]
+  },
+  {
+    "id": "kebun-singkong-kebun-pisang",
+    "category": "suasana",
+    "subject": "Kebun Singkong / Kebun Pisang",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KEBUN SINGKONG / KEBUN PISANG. Kebun Singkong: Pohon setinggi 1.5–3 m; daun hijau muda berjari seperti tangan terbuka; batang abu-keunguan; tanah cokelat berbatu di sekitar batang; Kebun Pisang: Batang basah hijau muda (pseudostem dari pelepah); daun panjang lebar robek-robek di tepinya karena angin · Tandan pisang menggantung: hijau muda atau kuning; jantung pisang merah-keunguan di bawah tandan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kebun",
+      "singkong"
+    ]
+  },
+  {
+    "id": "kolam-ikan-lele-kampung",
+    "category": "suasana",
+    "subject": "Kolam Ikan Lele Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KOLAM IKAN LELE KAMPUNG. Kategori: Budidaya ikan; Visual Utama: Kolam semen atau tanah; 2×3 m hingga 5×10 m; dalam 50–80 cm · Air cokelat atau kehijauan (bukan jernih); ripple kecil dari ikan bergerak · Saat diberi makan: ribuan lele muncul ke permukaan; mulut-mulut ikan bermunculan; sangat ramai visual · Di pinggir: karung pelet ikan; sekop; jaring · Lele: ikan hitam-abu panjang dengan kumis panjang di sisi mulut. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kolam",
+      "ikan"
+    ]
+  },
+  {
+    "id": "kandang-ayam-kampung",
+    "category": "suasana",
+    "subject": "Kandang Ayam Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KANDANG AYAM KAMPUNG. Kategori: Peternakan tradisional; Visual Utama: Kandang sederhana dari bambu/kayu; lantai tanah · Ayam kampung berkeliaran bebas di halaman; bulu warna-warni · Jago (ayam jantan) berbulu indah; jengger merah menyala · Anak ayam (DOC) kuning kecil mengikuti induknya. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kandang",
+      "ayam"
+    ]
+  },
+  {
+    "id": "pohon-beringin-tua-di-alun-alun",
+    "category": "suasana",
+    "subject": "Pohon Beringin Tua Di Alun-Alun",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "POHON BERINGIN TUA DI ALUN-ALUN. Kategori: Alam perkotaan / spiritual; Visual Utama: Pohon raksasa; diameter batang 3–5 m; tinggi 20–30 m; kanopi 20 m lebar · Akar udara menjuntai dari cabang ke tanah; beberapa sudah menyentuh tanah menjadi batang baru — membentuk \"hutan\" akar yang sangat dramatis · Daun kecil-kecil hijau gelap mengkilap; rimbun dan padat; Detail Khas: Beringin = pohon sakral Jawa; tidak boleh sembarangan ditebang · Sesaji (dupa, kembang) di pangkal pohon. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pohon",
+      "beringin"
+    ]
+  },
+  {
+    "id": "pantai-dengan-perahu-nelayan",
+    "category": "suasana",
+    "subject": "Pantai Dengan Perahu Nelayan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PANTAI DENGAN PERAHU NELAYAN. Kategori: Alam pesisir; Visual Utama: Perahu nelayan terseret di pasir atau ditambatkan; cat warna-warni terang (biru, merah, kuning) yang sudah memudar dan mengelupas · Jaring ikan hitam/hijau digelar di pasir untuk dijemur atau diperbaiki · Nelayan bertelanjang dada; kulit gelap terbakar matahari · Ikan dijemur di atas anyaman bambu atau seng; Detail Khas: Perahu warna-warni berderet di pantai = visual sangat khas Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pantai",
+      "dengan"
+    ]
+  },
+  {
+    "id": "kebun-teh",
+    "category": "suasana",
+    "subject": "Kebun Teh (Puncak / Ciwidey / Wonosobo)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KEBUN TEH (PUNCAK / CIWIDEY / WONOSOBO). Kategori: Perkebunan; Visual Utama: Hamparan hijau sejauh mata memandang; tanaman teh dipangkas rata setinggi pinggang; kontur bergelombang mengikuti bukit · Warna hijau sangat seragam dan intens; pucuk teh muda lebih cerah · Petani teh (perempuan): caping; kantong kain besar di punggung; bergerak cepat memetik pucuk; Detail Khas: Saat berkabut pagi hari: pemandangan sangat menakjubkan · Bau daun teh segar yang unik dan segar. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kebun",
+      "teh"
+    ]
+  },
+  {
+    "id": "hutan-bambu",
+    "category": "suasana",
+    "subject": "Hutan Bambu",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "HUTAN BAMBU. Kategori: Alam; Visual Utama: Rumpun bambu Ø 5–20 m; batang-batang berdiri rapat vertikal; tinggi 10–20 m · Sinar matahari menerobos celah-celah bambu vertikal: efek cahaya dramatis · Tanah di bawah: lembap, berlumut, ditutupi daun bambu kering kuning; Detail Khas: Bunyi daun bambu tertiup angin: gemerisik khas yang sangat menenangkan · Bambu = material utama bangunan dan perabot tradisional Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "hutan",
+      "bambu"
+    ]
+  },
+  {
+    "id": "gunung-berapi-di-kejauhan",
+    "category": "suasana",
+    "subject": "Gunung Berapi Di Kejauhan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GUNUNG BERAPI DI KEJAUHAN. Kategori: Alam ikonik; Visual Utama: Siluet gunung kerucut sempurna di cakrawala; kadang ada kepulan asap tipis · Warna biru-ungu di kejauhan pagi; hijau-cokelat siang; siluet hitam sunset · Sawah atau ladang di latar depan; gunung di latar belakang; Detail Khas: Indonesia punya 127+ gunung berapi aktif; gunung kerucut di cakrawala adalah pemandangan sehari-hari di banyak daerah. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "gunung",
+      "berapi"
+    ]
+  },
+  {
+    "id": "sungai-kampung",
+    "category": "suasana",
+    "subject": "Sungai Kampung (Aktivitas Tepi Sungai)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SUNGAI KAMPUNG (AKTIVITAS TEPI SUNGAI). Kategori: Aktivitas tepi air; Visual Utama: Sungai lebar 5–20 m; air cokelat kekuningan; batu-batu besar di tepi · Ibu-ibu mencuci pakaian berlutut di batu; baju digoyang keras dalam air; dibanting ke batu — suara plak plak terdengar dari jauh · Anak-anak mandi dan bermain; melompat dari batu ke batu; Detail Khas: Mencuci di sungai = aktivitas sosial perempuan; sambil ngobrol ramai. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "sungai",
+      "kampung"
+    ]
+  },
+  {
+    "id": "ladang-jagung",
+    "category": "suasana",
+    "subject": "Ladang Jagung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "LADANG JAGUNG. Kategori: Pertanian; Visual Utama: Ladang jagung: batang tegak setinggi 1.5–2 m; daun panjang hijau melambai · Rambut jagung (silk) cokelat keemasan muncul dari atas tongkol · Tongkol jagung terbungkus kelobot; terlihat menggembung di sisi batang. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "ladang",
+      "jagung"
+    ]
+  },
+  {
+    "id": "pantai-berpasir-putih-dengan-kelapa",
+    "category": "suasana",
+    "subject": "Pantai Berpasir Putih Dengan Kelapa",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PANTAI BERPASIR PUTIH DENGAN KELAPA. Kategori: Alam pesisir ikonik; Visual Utama: Pasir putih halus; pohon kelapa miring-miring di tepi pantai · Air laut turquoise: gradasi putih susu → hijau muda → biru tua · Perahu nelayan ditambat di tepi; tali tambat dari tiang kayu; Detail Khas: Kelapa miring di tepi pantai = visual Indonesia paling difoto traveler asing · Batok kelapa kering berserakan di pasir. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pantai",
+      "berpasir"
+    ]
+  },
+  {
+    "id": "hutan-mangrove",
+    "category": "suasana",
+    "subject": "Hutan Mangrove",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "HUTAN MANGROVE. Kategori: Ekosistem khas; Visual Utama: Akar jangkar (prop root) bercabang-cabang muncul dari lumpur/air — seperti banyak kaki tergeletak di air · Air cokelat gelap atau hijau tua; daun hijau gelap tebal dan rapat · Kepiting, biawak, burung bangau terlihat di antara akar. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "hutan",
+      "mangrove"
+    ]
+  },
+  {
+    "id": "ladang-garam",
+    "category": "suasana",
+    "subject": "Ladang Garam (Madura / Cirebon)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "LADANG GARAM (MADURA / CIREBON). Kategori: Industri tradisional; Visual Utama: Petak-petak datar seperti cermin di bawah terik matahari; air laut diuapkan; tanah berbentuk garam · Garam: kristal putih mengkilap; tumpukan garam putih setinggi 1–2 m · Petani: kaki dan tangan putih memburam karena garam; caping; mata merah · Cermin petak memantulkan langit biru — sangat fotogenik BAGIAN 4 — PERAYAAN, TRADISI & EVENT KAMPUNG (46–56). Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "ladang",
+      "garam"
+    ]
+  },
+  {
+    "id": "17-agustus",
+    "category": "suasana",
+    "subject": "17 Agustus",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "17 AGUSTUS. Kategori: Tradisi HUT RI; Visual Utama: Batang pinang (pohon palem ±15 m) sudah ditebang dan dikuliti; dilumuri PELUMAS (gemuk/grease hitam) hingga sangat licin · Di puncak: hadiah-hadiah menarik: sepeda, sembako, baju, kipas angin · Tim panjat (5–10 orang): bertelanjang dada; mendorong, mengangkat, berpijak satu sama lain secara bertumpuk · Pelumas hitam mengotori seluruh badan peserta — visual ikonik · Peserta tergelincir jatuh berkali-kali — hiburan bagi penonton · Saat berhasil: seluruh penonton bersorak sekeras-kerasnya. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "17",
+      "agustus"
+    ]
+  },
+  {
+    "id": "hajatan-kondangan-kampung",
+    "category": "suasana",
+    "subject": "Hajatan / Kondangan Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "HAJATAN / KONDANGAN KAMPUNG. Kategori: Pesta pernikahan / selamatan; Visual Utama: Tenda besar warna-warni (merah, biru, hijau metalik) menutupi jalan/halaman · Prasmanan: meja panjang berisi makanan; nasi kuning kerucut di tengah, berbagai lauk, kerupuk · Backdrop foto: kain dengan tulisan nama mempelai + ornamen digital · Kursi pengantin besar mewah (sewaan) di podium; Detail Khas: Amplop di meja khusus pintu masuk; buku tamu ditulis tangan · Sound system besar: dangdut koplo atau pop melayu; kadang organ tunggal · \"Makan dulu Pak/Bu!\" — tuan rumah mengundang setiap tamu. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "hajatan",
+      "kondangan"
+    ]
+  },
+  {
+    "id": "tahlilan-pengajian-kampung",
+    "category": "suasana",
+    "subject": "Tahlilan / Pengajian Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TAHLILAN / PENGAJIAN KAMPUNG. Kategori: Kegiatan keagamaan; Visual Utama: Ruang tamu atau teras; tikar/karpet digelar; pria duduk bersila rapi · Baju koko putih + sarung; peci hitam — hampir seragam · Ustadz di depan memimpin dengan kitab kuning kecil; Detail Khas: Tahlil malam Jumat = rutinitas mingguan kampung Muslim Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tahlilan",
+      "pengajian"
+    ]
+  },
+  {
+    "id": "lebaran",
+    "category": "suasana",
+    "subject": "Lebaran",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "LEBARAN. Kategori: Hari raya; Visual Utama: Lapangan terbuka atau jalan raya ditutup; digelar karpet/sajadah; ribuan orang berbaris rapi dalam shaf · Baju baru warna-warni cerah; anak-anak dengan baju terbaik; sandal-sandal rapi dilepas di tepi · Langit pagi (07.00–08.30); sering berkabut tipis; suasana sangat khidmat; Detail Khas: Setelah salat: bersalaman berantai; cipika-cipiki (cium pipi kiri-kanan) · Anak-anak minta THR (amplop uang) kepada orang tua dan sanak saudara. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "lebaran"
+    ]
+  },
+  {
+    "id": "mudik-lebaran",
+    "category": "suasana",
+    "subject": "Mudik Lebaran (Stasiun / Terminal)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MUDIK LEBARAN (STASIUN / TERMINAL). Kategori: Tradisi perpindahan massal; Visual Utama: Stasiun/terminal SANGAT PADAT — kapasitas 10x saat mudik · Orang-orang membawa koper, tas, kardus diikat tali rafia, ember oleh-oleh · Anak-anak digendong atau digandeng ketat; wajah kelelahan tapi bahagia · Motor dengan 3–4 penumpang + barang bawaan memenuhi jalan tol; Detail Khas: Migrasi manusia terbesar secara periodik di dunia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "mudik",
+      "lebaran"
+    ]
+  },
+  {
+    "id": "kerja-bakti-kampung",
+    "category": "suasana",
+    "subject": "Kerja Bakti Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KERJA BAKTI KAMPUNG. Kategori: Gotong royong; Visual Utama: Minggu pagi (07.00–09.00); warga keluar membawa cangkul, sapu lidi, sekop, ember, sabit; kaos, celana karet, sandal jepit · Membersihkan got, menyapu jalan, mengecat pagar, memangkas rumput · Ibu-ibu membawa kopi dan makanan kecil untuk peserta; Detail Khas: Kerja bakti = gotong royong = nilai Indonesia yang paling murni · Tapi banyak yang sering bolos dan diwakili istri. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kerja",
+      "bakti"
+    ]
+  },
+  {
+    "id": "sunatan-khitan",
+    "category": "suasana",
+    "subject": "Sunatan / Khitan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SUNATAN / KHITAN. Kategori: Tradisi/ritual; Visual Utama: Anak yang disunat: duduk di kursi khusus; pakaian adat Jawa atau baju putih; terkadang memakai mahkota kecil dan selendang · Ekspresi wajah: campuran antara gagah dan takut · Setelah disunat: memakai sarung warna-warni; duduk di tempat tidur dengan alas bantal dan guling mengelilingi — sangat ikonik. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "sunatan",
+      "khitan"
+    ]
+  },
+  {
+    "id": "pasar-kaget-pasar-minggu",
+    "category": "suasana",
+    "subject": "Pasar Kaget / Pasar Minggu",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PASAR KAGET / PASAR MINGGU. Kategori: Event pasar dadakan; Visual Utama: Jalan raya atau lapangan; setiap Minggu pagi TIBA-TIBA menjadi pasar penuh · Lapak sederhana: terpal biru digelar di tanah atau meja lipat + payung parasol · Produk: pakaian bekas, sayuran segar, jajanan, tanaman hias, VCD bajakan, aksesoris HP, mainan anak · Ramai jam 06.00–09.00; mulai bubar jam 10.00; Detail Khas: Tawar-menawar adalah wajib dan menyenangkan · Orang-orang pakai baju santai (baju tidur masih OK). Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pasar",
+      "kaget"
+    ]
+  },
+  {
+    "id": "selamatan-syukuran",
+    "category": "suasana",
+    "subject": "Selamatan / Syukuran (Tumpeng)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SELAMATAN / SYUKURAN (TUMPENG). Kategori: Tradisi syukur; Visual Utama: Tumpeng: nasi kuning dicetak kerucut tinggi di tampah berlapisan daun pisang hijau segar; lauk warna-warni mengelilinginya · Momen pemotongan puncak: tuan rumah pegang pisau; semua memandang; diberikan kepada tamu kehormatan pertama; Detail Khas: Digunakan untuk: ulang tahun, promosi jabatan, lulus ujian, renovasi rumah · Foto momen pemotongan tumpeng = foto ikonik acara syukur Indonesia BAGIAN 5 — PROFESI & TOKOH KHAS INDONESIA (57–70). Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "selamatan",
+      "syukuran"
+    ]
+  },
+  {
+    "id": "tukang-parkir-liar",
+    "category": "suasana",
+    "subject": "Tukang Parkir Liar",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TUKANG PARKIR LIAR. Kategori: Profesi informal; Visual Utama: Pria berdiri di pinggir jalan depan toko/ATM; tidak ada seragam resmi; terkadang memakai rompi oranye lusuh bertuliskan nama kelurahan/RT · Peluit di leher; tangan bergerak memandu kendaraan; kantong kecil di pinggang · Ekspresi percaya diri; berlagak resmi meski tidak ada otoritas resmi; Detail Khas: Tidak ada izin resmi; datang sendiri dan mengklaim \"wilayah parkir\" · \"Mundur... mundur... stop! Oke!\" — suara khas · Tarif: Rp 2.000–5.000; diberikan saat akan keluar · Jika tidak bayar: ekspresi tidak senang. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tukang",
+      "parkir"
+    ]
+  },
+  {
+    "id": "satpam-security-kampung",
+    "category": "suasana",
+    "subject": "Satpam / Security Kampung",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SATPAM / SECURITY KAMPUNG. Kategori: Profesi keamanan; Visual Utama: Seragam kemeja biru/abu-abu; celana hitam; sepatu pantofel; topi pet · Badge atau patch di lengan; tongkat pendek (T) digenggam · Pos jaga: bilik kecil di pintu masuk; kursi + meja kecil; buku tamu; log pengunjung; palang/tali untuk menutup akses; Detail Khas: Buku tamu dengan pena diikat tali pendek ke meja · Malam hari: sering terlihat mengantuk di pos. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "satpam",
+      "security"
+    ]
+  },
+  {
+    "id": "pak-rt-rw-di-meja-kerjanya",
+    "category": "suasana",
+    "subject": "Pak Rt / Rw Di Meja Kerjanya",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PAK RT / RW DI MEJA KERJANYA. Kategori: Pemimpin lokal; Visual Utama: Ruangan kecil di rumah pribadi; meja kayu biasa dijadikan meja kerja · Di meja: stempel RT (tinta merah/biru); buku catatan warga; form surat keterangan; balpoin beberapa batang · Di dinding: foto Presiden + Wapres; Pancasila; peta wilayah RT yang digambar tangan di kertas karton; Detail Khas: Stempel RT = sumber kekuatan; tanpa stempel RT, urusan tidak bisa jalan · Warga sering meminta surat keterangan jam 21.00 malam. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pak",
+      "rt"
+    ]
+  },
+  {
+    "id": "kondektur-kernet-bus-angkot",
+    "category": "suasana",
+    "subject": "Kondektur / Kernet Bus / Angkot",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KONDEKTUR / KERNET BUS / ANGKOT. Kategori: Profesi transportasi; Visual Utama: Pria muda; kaos atau kemeja tidak resmi; bergantungan di pintu angkot/bus yang terbuka saat bergerak — setengah badan di luar kendaraan · Satu tangan memegang bingkai pintu; satu tangan menghitung uang; Detail Khas: \"Depok! Depok! DEPOOOOK!\" teriakan dari kernet sambil mengintip penumpang · Kembalian disimpan di celah jari. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kondektur",
+      "kernet"
+    ]
+  },
+  {
+    "id": "tukang-asongan",
+    "category": "suasana",
+    "subject": "Tukang Asongan (Bus / Kereta)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TUKANG ASONGAN (BUS / KERETA). Kategori: Pedagang mobile; Visual Utama: Membawa nampan atau kotak kardus di depan badan; tali di leher · Isi nampan: minuman botol, kerupuk sachet, kue-kue, rokok, koran, tisu · Berjalan di lorong bus/kereta: \"Korannya Pak? Minumnya? Kerupuk Bu?\". Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tukang",
+      "asongan"
+    ]
+  },
+  {
+    "id": "pelajar-sd-berseragam",
+    "category": "suasana",
+    "subject": "Pelajar Sd Berseragam",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PELAJAR SD BERSERAGAM. Kategori: Gambaran sosial; Visual Utama: Seragam SD: kemeja putih lengan pendek + celana/rok merah; dasi merah kecil; topi merah; sepatu hitam + kaos kaki putih · Tas ransel besar (sering lebih besar dari badannya) di punggung · Seragam: selalu ada noda entah dari mana; kerah sedikit kotor; Detail Khas: Upacara bendera Senin: berdiri berjajar; matahari terik; ada yang pingsan · \"Siap grak! Istirahat di tempat grak!\". Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pelajar",
+      "sd"
+    ]
+  },
+  {
+    "id": "ibu-ibu-arisan",
+    "category": "suasana",
+    "subject": "Ibu-Ibu Arisan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "IBU-IBU ARISAN. Kategori: Kegiatan sosial perempuan; Visual Utama: Ruang tamu dipenuhi ibu-ibu; kursi plastik dan tikar; makanan arisan khas: kue-kue, risoles, lemper, nastar · Mangkuk/kotak berisi gulungan kertas (nama peserta) untuk diundi · Buku catatan arisan; ibu-ibu berbaju batik atau daster cantik; Detail Khas: Gosip = agenda tidak resmi arisan; lebih penting dari acara resmi · \"Siapa yang keluar nama? Oh Bu Sari lagi? Wah beruntung!\". Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "ibu",
+      "ibu"
+    ]
+  },
+  {
+    "id": "bapak-bapak-ronda-malam",
+    "category": "suasana",
+    "subject": "Bapak-Bapak Ronda Malam",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BAPAK-BAPAK RONDA MALAM. Kategori: Kegiatan sosial pria; Visual Utama: 3–8 pria duduk di pos kamling atau teras rumah; jam 22.00–01.00 · Sarung dililitkan di bahu/pinggang; jaket; peci/beanie; sandal jepit · Kopi panas dalam cangkir plastik; asbak berisi puntung · Senter besar tergeletak; kentongan di sudut; Detail Khas: Sambil ronda: ngobrol tentang apa saja; catur atau gaple · Sesekali berkeliling gang; senter ditembakkan ke sudut-sudut gelap. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "bapak",
+      "bapak"
+    ]
+  },
+  {
+    "id": "tukang-becak-istirahat",
+    "category": "suasana",
+    "subject": "Tukang Becak Istirahat",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TUKANG BECAK ISTIRAHAT. Kategori: Profesi (momen istirahat); Visual Utama: Tukang becak berbaring di dalam kabin penumpang becaknya sendiri; kaki menjuntai keluar; caping menutupi wajah; tertidur siang · Atau: duduk di jok pengemudi; menikmati nasi bungkus dengan tangan · Becak diparkir di bawah pohon; bayangan pohon sebagai tempat berteduh; Detail Khas: Visual yang sangat manusiawi dan Indonesia · Sepatu/sandal jepit dilepas; kaki telanjang dinaikkan ke atas · Kantong kresek hitam berisi bekal di bawah tempat duduk. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tukang",
+      "becak"
+    ]
+  },
+  {
+    "id": "pedagang-kaki-lima-di-trotoar",
+    "category": "suasana",
+    "subject": "Pedagang Kaki Lima (Pkl) Di Trotoar",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PEDAGANG KAKI LIMA (PKL) DI TROTOAR. Kategori: Ekonomi informal; Visual Utama: Trotoar diubah jadi area berjualan: meja lipat, gerobak, terpal digelar · Dagangan: pakaian tergantung, sepatu berderet, aksesori HP, kacamata replika, kaset/DVD, tanaman hias; Detail Khas: Saat ada razia: PKL menyingkir kilat dalam hitungan menit; gerobak dorong cepat digulung; semua pergi · PKL kembali lagi setelah razia berlalu. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "pedagang",
+      "kaki"
+    ]
+  },
+  {
+    "id": "penjual-koran",
+    "category": "suasana",
+    "subject": "Penjual Koran (Era Lawas)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PENJUAL KORAN (ERA LAWAS). Kategori: Profesi media; Visual Utama: Pria berdiri di persimpangan lampu merah; koran-koran digenggam di kedua tangan; headline besar terlihat sebagai iklan diri · Berlarian antar mobil saat lampu merah · \"Koran Pak! Kompas! Pos Kota! Koran!\"; Detail Khas: Era 2000an ke bawah; sudah sangat langka karena era digital. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "penjual",
+      "koran"
+    ]
+  },
+  {
+    "id": "tukang-gali-sumur-tukang-galian",
+    "category": "suasana",
+    "subject": "Tukang Gali Sumur / Tukang Galian",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TUKANG GALI SUMUR / TUKANG GALIAN. Visual Utama: Lubang sumur diameter 1 meter; tukang di dalam lubang; hanya kepala dan tangan terlihat dari atas · Timba ember dari dalam; tanah galian bertumpuk di sisi · Seluruh badan penuh tanah; cangkul dan linggis sebagai alat utama. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tukang",
+      "gali"
+    ]
+  },
+  {
+    "id": "tukang-las-listrik-keliling",
+    "category": "suasana",
+    "subject": "Tukang Las Listrik Keliling",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TUKANG LAS LISTRIK KELILING. Visual Utama: Pick-up membawa mesin las portabel; kabel-kabel panjang · Saat bekerja: percikan api las MEMANCAR kuning-putih terang; terlihat dari jauh · Tukang memakai kacamata las (google hitam gelap). Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tukang",
+      "las"
+    ]
+  },
+  {
+    "id": "makan-bersama-di-lesehan",
+    "category": "suasana",
+    "subject": "Makan Bersama Di Lesehan (Nasi Liwet / Nasi Bancakan)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MAKAN BERSAMA DI LESEHAN (NASI LIWET / NASI BANCAKAN). Kategori: Tradisi makan bersama; Visual Utama: Daun pisang segar panjang digelar di lantai; nasi putih menggunung di sepanjang daun; lauk-pauk di sela-sela · Semua duduk lesehan mengelilingi daun pisang; tangan kanan makan langsung · Lauk: ayam goreng, tahu, tempe, sambal, lalap segar, ikan asin; Detail Khas: Makan bersama dari satu \"piring bersama\" (daun pisang panjang) = solidaritas dan kebersamaan Indonesia yang paling kuat · Suasana riuh; ada yang berebut lauk favorit. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "makan",
+      "bersama"
+    ]
+  },
+  {
+    "id": "orang-beli-pulsa-token-listrik",
+    "category": "suasana",
+    "subject": "Orang Beli Pulsa / Token Listrik",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ORANG BELI PULSA / TOKEN LISTRIK. Kategori: Aktivitas digital sehari-hari; Visual Utama: Konter HP kecil; papan ditulis: \"TERIMA PULSA SEMUA OPERATOR\" · Pembeli menyebutkan nomor HP; menunggu 30 detik; notif masuk · Etalase kaca: HP bekas, casing HP, charger, earphone; Detail Khas: Token listrik PLN: kode 20 digit dimasukkan ke KWH meter di rumah · Ada di setiap sudut kampung; ibu-ibu juga jual pulsa dari rumah. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "orang",
+      "beli"
+    ]
+  },
+  {
+    "id": "adegan-beli-rokok-ketengan",
+    "category": "suasana",
+    "subject": "Adegan Beli Rokok Ketengan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ADEGAN BELI ROKOK KETENGAN. Kategori: Kebiasaan unik Indonesia; Visual Utama: Pria berdiri di depan warung kelontong; menunjuk rokok dalam wadah kecil · \"Satu batang Dji Sam Soe dong\" · Penjual mengambil satu batang; menyerahkan dengan korek api; Detail Khas: Ini SANGAT unik; hampir tidak ada negara lain yang jual rokok per batang · Harga per batang: Rp 1.500–3.000 · Lebih mahal per batang tapi pembeli tidak mampu beli satu bungkus sekaligus. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "adegan",
+      "beli"
+    ]
+  },
+  {
+    "id": "motor-dengan-muatan-berlebihan",
+    "category": "suasana",
+    "subject": "Motor Dengan Muatan Berlebihan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MOTOR DENGAN MUATAN BERLEBIHAN. Kategori: Fenomena jalanan; Visual Utama: Motor bebek biasa dengan muatan yang jauh melebihi kapasitas: · Keluarga 4 orang (suami-istri + 2 anak) di satu motor · Motor membawa lemari, kulkas, atau kasur yang diikat · Motor mengangkut karung-karung besar bertumpuk · Motor dengan kandang ayam penuh ayam di belakang · Semua berjalan di jalan raya normal seolah-olah tidak ada yang aneh; Detail Khas: \"Kalau bisa diangkut, kenapa harus naik truk?\" — mentalitas efisiensi · Foto-foto motor bermuatan berlebihan viral di media sosial Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "motor",
+      "dengan"
+    ]
+  },
+  {
+    "id": "corat-coret-di-bangku-meja-sekolah",
+    "category": "suasana",
+    "subject": "Corat-Coret Di Bangku/Meja Sekolah",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "CORAT-CORET DI BANGKU/MEJA SEKOLAH. Kategori: Budaya pelajar; Visual Utama: Meja kayu sekolah: permukaan gelap mengkilap; penuh ukiran dan tulisan: · \"Made + Ayu = ❤️\" ukiran dengan penggaris atau pena · \"Kelas 9A 2012 - Forever\" tulisan dengan tip-ex · Coretan spiral, nama, angka — lapisan demi lapisan dari tahun ke tahun · Lobang kecil bekas kompas; bekas tumpahan tinta; Detail Khas: Setiap meja sekolah Indonesia adalah \"palimpsest\" sosial yang menarik. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "corat",
+      "coret"
+    ]
+  },
+  {
+    "id": "nonton-tv-bersama-di-ruang-keluarga",
+    "category": "suasana",
+    "subject": "Nonton Tv Bersama Di Ruang Keluarga",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "NONTON TV BERSAMA DI RUANG KELUARGA. Kategori: Kebiasaan keluarga; Visual Utama: TV di atas lemari; remote control ada tapi susah dicari · Seluruh keluarga berbaring/duduk di lantai bermotif karpet; bantal dan guling berserakan; ada yang mengantuk tapi belum tidur · Menonton sinetron malam: ibu-ibu sangat serius; Detail Khas: Sinetron panjang Indonesia (bisa ratusan episode) = konten utama prime time · \"Eh si Anita jahat banget ya!\" — ibu-ibu komentar serius ke karakter fiksi. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "nonton",
+      "tv"
+    ]
+  },
+  {
+    "id": "bungkus-nasi-daun-pisang-kertas-koran",
+    "category": "suasana",
+    "subject": "Bungkus Nasi Daun Pisang / Kertas Koran",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BUNGKUS NASI DAUN PISANG / KERTAS KORAN. Kategori: Kemasan makanan tradisional; Visual Utama: Nasi dibungkus daun pisang: dilipat membentuk bungkus persegi atau kerucut; diikat lidi atau tusukan bambu kecil; simpel dan indah · Nasi dibungkus kertas koran: hitam-putih berminyak dari gorengan; Detail Khas: Aroma nasi yang meresap ke daun pisang = aroma paling Indonesia · Membuka bungkusan daun pisang adalah momen yang selalu menyenangkan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "bungkus",
+      "nasi"
+    ]
+  },
+  {
+    "id": "tidur-siang",
+    "category": "suasana",
+    "subject": "Tidur Siang (Tidur Di Mana Saja)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TIDUR SIANG (TIDUR DI MANA SAJA). Kategori: Kebiasaan hidup; Visual Utama: Tukang ojek tidur di motor; tukang becak di kabin; satpam di kursi pos; pedagang keliling bersandar di gerobak; anak sekolah di kelas; bapak-bapak di masjid setelah Zuhur · Posisi apapun; di mana saja; tanpa malu; Detail Khas: Indonesia = surga tidur siang; tidak ada stigma negatif · Sarung = selimut siang dan malam; paling fleksibel. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tidur",
+      "siang"
+    ]
+  },
+  {
+    "id": "kresek-hitam-kantong-plastik-hitam-semua-fungsi",
+    "category": "suasana",
+    "subject": "Kresek Hitam / Kantong Plastik Hitam Semua Fungsi",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KRESEK HITAM / KANTONG PLASTIK HITAM SEMUA FUNGSI. Kategori: Benda sehari-hari ikonik; Visual Utama: Kantong plastik hitam tipis berbagai ukuran Detail Khas (10 fungsi kresek hitam): · 1. Belanja sayur 2. Membungkus makanan 3. Buang sampah · 4. Tempat muntah di mobil 5. Membawa baju kotor 6. Menyimpan uang · 7. Menutup barang saat hujan 8. Tempat bekal 9. Tas darurat 10. Serba-serbi. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kresek",
+      "hitam"
+    ]
+  },
+  {
+    "id": "cobek-batu-hitam-di-dapur",
+    "category": "suasana",
+    "subject": "Cobek Batu Hitam Di Dapur",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "COBEK BATU HITAM DI DAPUR. Kategori: Peralatan dapur tradisional; Visual Utama: Cobek bulat dari batu andesit hitam; diameter 20–40 cm; permukaan dalam cekung dan kasar · Ulekan (mutu): batu bulat lonjong; digunakan menggerus dan menggiling · Permukaan cobek: berlumur sisa bumbu — merah (cabai), kuning (kunyit), cokelat (terasi) — warna menumpuk dari bertahun-tahun dipakai; Detail Khas: Cobek yang baik tidak dicuci sabun — kehilangan \"rasa\" dari sisa bumbu · Bunyi ulek: gros-gros-gros (batu menggiling batu) = awal masakan Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "cobek",
+      "batu"
+    ]
+  },
+  {
+    "id": "kompor-minyak-tanah",
+    "category": "suasana",
+    "subject": "Kompor Minyak Tanah (Era Lawas)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KOMPOR MINYAK TANAH (ERA LAWAS). Kategori: Peralatan dapur era lampau; Visual Utama: Kompor dari besi berwarna hitam-biru tua; silinder besar di bawah (tangki minyak tanah); kepala dengan sumbu kain yang bisa diputar · Api: biru-oranye kecil; bau minyak tanah tipis mengepul; Detail Khas: Era 1980–2000an; sebelum subsidi gas elpiji 3 kg · Mengisi minyak dari jerigen oranye → dituang ke tangki. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kompor",
+      "minyak"
+    ]
+  },
+  {
+    "id": "tikar-pandan-tikar-plastik",
+    "category": "suasana",
+    "subject": "Tikar Pandan / Tikar Plastik",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TIKAR PANDAN / TIKAR PLASTIK. Kategori: Perabot serbaguna; Visual Utama: Tikar anyaman pandan: natural kuning-hijau-cokelat; pola geometris; aroma khas rumput kering · Tikar plastik: warna-warni cerah; motif kotak; lebih modern; Detail Khas: Tikar bisa digelar di mana saja dalam 5 detik: lapangan, teras, masjid, kebun · Indonesia tanpa tikar = tidak lengkap. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tikar",
+      "pandan"
+    ]
+  },
+  {
+    "id": "sarung",
+    "category": "suasana",
+    "subject": "Sarung (Multi-Fungsi Ajaib)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SARUNG (MULTI-FUNGSI AJAIB). Kategori: Kain serbaguna Indonesia; Visual Utama: Kain tubular bermotif kotak-kotak (sarung pelekat) atau batik; warna-warni · Merek: BHS, Wadimor, Gajah Duduk — sudah sangat ikonik 10 Fungsi Sarung: · 1. Pakaian shalat 2. Celana darurat ke toilet 3. Selimut tidur siang · 4. Gendongan bayi 5. Tikar dadakan 6. Kantong membawa buah · 7. Lap darurat 8. Tali darurat (diputar) 9. Penutup kepala saat panas · 10. Properti pesta dan pernikahan adat. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "sarung"
+    ]
+  },
+  {
+    "id": "kain-jarik-batik-di-kehidupan-sehari-hari-jawa",
+    "category": "suasana",
+    "subject": "Kain Jarik Batik Di Kehidupan Sehari-Hari Jawa",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KAIN JARIK BATIK DI KEHIDUPAN SEHARI-HARI JAWA. Kategori: Kain tradisional Jawa; Visual Utama: Kain batik panjang (2.5 m × 1 m); motif khas: parang, kawung, truntum, mega mendung; warna sogan (cokelat-biru) atau cerah · Cara melangkah khas wanita Jawa berbatik: halus, kecil-kecil, anggun; Detail Khas: Nenek-nenek Jawa: kain jarik setiap hari; berjalan dengan langkah kecil karena kain yang melilit. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kain",
+      "jarik"
+    ]
+  },
+  {
+    "id": "batok-kelapa-tempurung-serbaguna",
+    "category": "suasana",
+    "subject": "Batok Kelapa & Tempurung Serbaguna",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BATOK KELAPA & TEMPURUNG SERBAGUNA. Visual Utama: Tempurung kelapa: setengah bola keras cokelat-hitam mengkilap; sabut kelapa cokelat kasar di sisi luar · Digunakan: sendok/centong, gayung mandi, alas barang, bahan kerajinan, bahan bakar (arang kelapa dari tempurung). Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "batok",
+      "kelapa"
+    ]
+  },
+  {
+    "id": "lampu-teplok-lampu-petromax",
+    "category": "suasana",
+    "subject": "Lampu Teplok / Lampu Petromax",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "LAMPU TEPLOK / LAMPU PETROMAX. Visual Utama (Teplok): Lampu dari logam hitam-biru; tangki minyak tanah di bawah; sumbu kain tipis; tabung kaca bening melindungi nyala api kecil oranye-hangat redup; Visual Utama (Petromax): Lampu besar berwarna perak; tangki minyak tanah dipompa; mantle putih kecil menyala terang seperti matahari mini; suara mendesis saat menyala; Detail Khas: Masih digunakan di daerah tanpa listrik dan saat mati lampu. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "lampu",
+      "teplok"
+    ]
+  },
+  {
+    "id": "kipas-bambu-kipas-tangan",
+    "category": "suasana",
+    "subject": "Kipas Bambu / Kipas Tangan",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KIPAS BAMBU / KIPAS TANGAN. Visual Utama: Kipas bambu: rangka setengah lingkaran dilapisi kertas/kain berwarna; pegangan bambu di bawah · Gerak mengipasi: bolak-balik ritmis di depan wajah; Detail Khas: Digunakan di pengajian, hajatan, pasar, saat mati lampu · Gerakan mengipasi sambil duduk = bahasa tubuh khas ibu-ibu Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "kipas",
+      "bambu"
+    ]
+  },
+  {
+    "id": "galon-aqua-di-ruang-tamu",
+    "category": "suasana",
+    "subject": "Galon Aqua Di Ruang Tamu",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GALON AQUA DI RUANG TAMU. Visual Utama: Galon biru transparan (19 liter) di atas dispenser; tiga keran: merah (panas), biru (dingin), normal; lampu indikator menyala · Selalu ada di ruang tamu atau dapur Indonesia; Detail Khas: Tamu datang = langsung ditawari minum; air galon = simbol keramahan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "galon",
+      "aqua"
+    ]
+  },
+  {
+    "id": "antena-tv",
+    "category": "suasana",
+    "subject": "Antena Tv (Era Analog)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ANTENA TV (ERA ANALOG). Visual Utama: Antena TV UHF/VHF terpasang di atas genteng; bentuk silang dengan batang horizontal berbeda panjang · Di kota padat: ratusan antena di atap — \"hutan antena\" di cakrawala · Tali penyangga kawat berkarat; Detail Khas: \"Antena-nya gerakkan sedikit ke kiri!\" teriak dari dalam sambil menonton · Gambar TV bersnow jika antena tidak tepat arah. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "antena",
+      "tv"
+    ]
+  },
+  {
+    "id": "baliho-spanduk-calon-kepala-daerah",
+    "category": "suasana",
+    "subject": "Baliho / Spanduk Calon Kepala Daerah",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BALIHO / SPANDUK CALON KEPALA DAERAH. Visual Utama: Baliho besar (3×4 m+) di tepi jalan; foto calon tersenyum SANGAT LEBAR dengan latar belakang cerah (merah, biru, kuning, hijau) · Tulisan besar: nama calon, nomor urut, slogan (\"Bersama Kita Bisa!\") · Di musim pemilu: SETIAP tiang listrik, pohon, sudut jalan penuh baliho; Detail Khas: Indonesia memiliki 500+ daerah otonom; setiap beberapa tahun ada pilkada · \"Coblos no. 2!\" tempel di mana-mana. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "baliho",
+      "spanduk"
+    ]
+  },
+  {
+    "id": "pakaian-daster-ibu-ibu",
+    "category": "suasana",
+    "subject": "Pakaian Daster Ibu-Ibu",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PAKAIAN DASTER IBU-IBU. Visual Utama: Gaun panjang longgar dari kain katun bermotif bunga-bunga BESAR warna cerah · Motif: bunga merah, biru, atau abstrak floral; sangat cerah dan berani · Dipakai: di rumah, belanja di warung, mengantar anak sekolah, kerja bakti; Detail Khas: Daster = simbol kebebasan ibu rumah tangga Indonesia; anti-formal tapi nyaman · Harga Rp 25.000–75.000; tersedia di pasar tradisional. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "daster",
+      "ibu"
+    ]
+  },
+  {
+    "id": "koran-bekas-sebagai-pembungkus",
+    "category": "suasana",
+    "subject": "Koran Bekas Sebagai Pembungkus",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KORAN BEKAS SEBAGAI PEMBUNGKUS. Visual Utama: Gorengan atau makanan dibungkus langsung dengan koran hari itu · Koran hitam-putih berminyak dari gorengan; berita tercetak samar di balik minyak; Detail Khas: Kini banyak yang beralih ke kertas cokelat food-grade; tapi beberapa warteg dan pasar tradisional masih pakai koran. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "koran",
+      "bekas"
+    ]
+  },
+  {
+    "id": "baju-koko-peci",
+    "category": "suasana",
+    "subject": "Baju Koko + Peci (Busana Pria Muslim)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BAJU KOKO + PECI (BUSANA PRIA MUSLIM). Visual Utama: Baju koko: kemeja lengan panjang tanpa kerah (collarless); saku di dada kiri; warna putih (paling umum) atau warna-warni sekarang · Peci (kopiah) hitam bulat; beludru; tinggi sekitar 7–8 cm · Dipakai: shalat Jumat, pengajian, Lebaran, acara resmi adat; Detail Khas: Baju koko + peci = identitas visual Muslim Indonesia yang paling dikenal · Berbeda dari jubah Arab; Indonesia memiliki gaya sendiri. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "koko",
+      "peci"
+    ]
+  },
+  {
+    "id": "seragam-batik-kantor",
+    "category": "suasana",
+    "subject": "Seragam Batik Kantor",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SERAGAM BATIK KANTOR. Visual Utama: Kemeja batik lengan pendek/panjang; PNS, karyawan bank, guru, swasta terutama hari Jumat · Motif batik bermacam: parang, kawung, mega mendung, batik modern abstrak · Dipakai dengan celana formal hitam/abu; sepatu pantofel; Detail Khas: \"Hari Jumat batik\" — aturan tak tertulis di hampir semua kantor Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "seragam",
+      "batik"
+    ]
+  },
+  {
+    "id": "suasana-angkringan-yogya",
+    "category": "suasana",
+    "subject": "Suasana Angkringan Yogya (Malam)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SUASANA ANGKRINGAN YOGYA (MALAM). Kategori: Kuliner malam; Visual Utama: Gerobak kayu kecil; atap kain; lampu petromaks atau lampu gas putih terang · Nasi bungkus kecil (nasi kucing) bertumpuk; tusukan sate usus-jantung- telur puyuh berjajar di angkring (penyangga) · Teko-teko: kopi hitam, teh, jahe; wedang ronde, susu jahe; Detail Khas: Angkringan = equalizer sosial: mahasiswa, tukang becak, pengusaha — duduk di kursi yang sama, makan yang sama. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "suasana",
+      "angkringan"
+    ]
+  },
+  {
+    "id": "payung-hitam-di-pemakaman",
+    "category": "suasana",
+    "subject": "Payung Hitam Di Pemakaman",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PAYUNG HITAM DI PEMAKAMAN. Visual Utama: Prosesi pemakaman berjalan kaki; jenazah dalam peti/keranda dipikul; payung hitam besar dipegang di atas jenazah · Keluarga berjalan mengikuti; wajah duka; pakaian formal hitam; Detail Khas: Pemakaman Indonesia sering berjalan kaki melewati kampung; tetangga berdiri di tepi jalan memberi penghormatan. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "payung",
+      "hitam"
+    ]
+  },
+  {
+    "id": "batu-bata-merah-ekspos",
+    "category": "suasana",
+    "subject": "Batu Bata Merah Ekspos",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BATU BATA MERAH EKSPOS. Visual Utama: Bata merah tanah liat yang tidak diplester; warna merah-oranye bervariasi; pola susunan horizontal rapi; Detail Khas: Warna merah bata Indonesia khas — lebih merah-oranye dari bata Eropa · Bangunan setengah jadi dengan bata ekspos = pemandangan sangat umum. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "batu",
+      "bata"
+    ]
+  },
+  {
+    "id": "tumpukan-sandal-jepit-di-depan-masjid",
+    "category": "suasana",
+    "subject": "Tumpukan Sandal Jepit Di Depan Masjid",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TUMPUKAN SANDAL JEPIT DI DEPAN MASJID. Visual Utama: Teras masjid: puluhan hingga ratusan sandal jepit berderet tidak teratur; Swallow, Carvil, Bata — berbagai warna-warni bercampur · Waktu shalat Jumat: ratusan pasang sandal memenuhi seluruh teras dan bahkan jalan di depan masjid; Detail Khas: Sandal jepit yang hilang setelah Jumat = pengalaman universal Muslim Indonesia · \"Sandal saya hilang lagi!\" — mengeluh sambil tertawa. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "tumpukan",
+      "sandal"
+    ]
+  },
+  {
+    "id": "antrian-panjang-di-bank-atm-kantor-pos",
+    "category": "suasana",
+    "subject": "Antrian Panjang Di Bank / Atm / Kantor Pos",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ANTRIAN PANJANG DI BANK / ATM / KANTOR POS. Visual Utama: Antrian panjang di luar bank; tali meander (snake queue); di tangan: nomor antrian kertas kecil · Di dalam: AC dingin; kursi-kursi plastik penuh; nomor antrian elektronik di papan; terkadang mati atau lamban berubah; Detail Khas: Antrian di bank = pengalaman paling melelahkan + paling menyatukan rakyat · Orang yang sudah bawa berkas lengkap tapi tetap disuruh foto copy 1 lembar. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "antrian",
+      "panjang"
+    ]
+  },
+  {
+    "id": "sunset-di-pantai-dengan-penjual-jagung-bakar",
+    "category": "suasana",
+    "subject": "Sunset Di Pantai Dengan Penjual Jagung Bakar",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SUNSET DI PANTAI DENGAN PENJUAL JAGUNG BAKAR. Kategori: Momen Indonesia sempurna; Visual Utama: Pantai sore hari; matahari oranye-merah-ungu di cakrawala; pantulan emas di permukaan laut · Pedagang jagung bakar dengan tungku arang kecil; asap tipis mengepul ke langit senja oranye; jagung diputar-putar di atas bara · Pembeli berdiri menunggu sambil menatap sunset; sandal jepit di genggaman · Anak-anak berlarian di tepi ombak; siluet mereka di latar senja; Detail Khas: Jagung bakar + sunset pantai = kombinasi pengalaman Indonesia yang sempurna · \"Mau jagung? Pedes atau manis?\" — pertanyaan paling Indonesia. Suasana / pemandangan khas Indonesia sehari-hari, foto dokumenter realistis otentik — BUKAN setting generik Barat atau Asia lain.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suasana",
+      "sunset",
+      "di"
     ]
   }
 ]

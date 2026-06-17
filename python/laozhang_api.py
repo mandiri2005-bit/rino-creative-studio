@@ -2276,6 +2276,7 @@ class VeoSubmitRequest(BaseModel):
     ref_image_b64: str = ""  # base64-encoded reference image
     ref_image_mime: str = "image/jpeg"
     nusantara_corpus: bool = False
+    audio: str = ""  # explicit audio cue (dialogue/SFX/ambient/music) appended after corpus enhance
 
 
 @app.post("/veo/submit")
@@ -2305,6 +2306,8 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
             _prompt, _, _ = _corpus_enhance(_prompt)
         except Exception:
             _prompt = req.prompt
+    if req.audio:                     # explicit audio cue, appended AFTER corpus (survives rephrase)
+        _prompt = f"{_prompt}\nAudio: {req.audio}"
 
     fields = {
         "model": req.model,
@@ -2533,6 +2536,7 @@ class SoraSubmitRequest(BaseModel):
     ref_image_b64: str = ""
     ref_image_mime: str = "image/jpeg"
     nusantara_corpus: bool = False
+    audio: str = ""  # explicit audio cue (dialogue/SFX/ambient/music) appended after corpus enhance
 
 
 @app.post("/sora/submit")
@@ -2556,6 +2560,8 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
             _prompt, _, _ = _corpus_enhance(_prompt)
         except Exception:
             _prompt = req.prompt
+    if req.audio:                     # explicit audio cue, appended AFTER corpus (survives rephrase)
+        _prompt = f"{_prompt}\nAudio: {req.audio}"
 
     _size = "720x1280" if req.aspect == "9:16" else req.size
     form_data = {
