@@ -419,14 +419,24 @@ def _is_reasoning_model(model: str) -> bool:
     return m.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
+def _chat_temperature(requested: float) -> float:
+    """Effective chat temperature. CHAT_TEMPERATURE env (if set) overrides the
+    per-request value — one tunable knob in Railway, no code redeploy needed."""
+    env_t = os.getenv("CHAT_TEMPERATURE", "").strip()
+    try:
+        return float(env_t) if env_t else float(requested)
+    except (TypeError, ValueError):
+        return float(requested)
+
+
 def _generation_kwargs(model: str, temperature: float, max_tokens: int) -> dict:
     """Token/temperature kwargs for client.chat.completions.create(), per model class.
     Reasoning models → `max_completion_tokens` (>=1) via extra_body, no temperature.
-    Everything else → classic `temperature` + `max_tokens` (>=1)."""
+    Everything else → classic `temperature` (CHAT_TEMPERATURE-overridable) + `max_tokens` (>=1)."""
     mt = max(1, int(max_tokens or 0))
     if _is_reasoning_model(model):
         return {"extra_body": {"max_completion_tokens": mt}}
-    return {"temperature": temperature, "max_tokens": mt}
+    return {"temperature": _chat_temperature(temperature), "max_tokens": mt}
 
 
 # MAX_SESSIONS removed — session persistence is in PostgreSQL, no eviction needed.

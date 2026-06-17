@@ -278,7 +278,12 @@ async def _stream_openai_compat(provider: dict, step: Step, system: str,
     # GPT-5 / o-series need max_completion_tokens (>=1) + default temperature, not max_tokens.
     _reason = (step.model or "").lower().startswith(("gpt-5", "o1", "o3", "o4"))
     _mt = max(1, int(max_tokens or 0))
-    _gen = {"extra_body": {"max_completion_tokens": _mt}} if _reason else {"temperature": temperature, "max_tokens": _mt}
+    _env_t = os.getenv("CHAT_TEMPERATURE", "").strip()  # one tunable knob, overrides request value
+    try:
+        _temp = float(_env_t) if _env_t else float(temperature)
+    except (TypeError, ValueError):
+        _temp = float(temperature)
+    _gen = {"extra_body": {"max_completion_tokens": _mt}} if _reason else {"temperature": _temp, "max_tokens": _mt}
     try:
         stream = await client.chat.completions.create(
             model=step.model, messages=messages, stream=True,
