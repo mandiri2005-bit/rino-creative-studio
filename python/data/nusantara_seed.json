@@ -3173,5 +3173,836 @@
       "papua",
       "tari"
     ]
+  },
+  {
+    "id": "ulee-balang",
+    "category": "busana-adat",
+    "subject": "Ulee Balang (Adat Aceh)",
+    "region": "Aceh",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Ulee Balang, Aceh; laki: baju meukasah (atasan HITAM bersulam benang EMAS), celana sileuweu, kain songket pinggang, kopiah meukeutop, rencong; perempuan: baju kurung lengan panjang, celana cekak musang, songket, perhiasan emas",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ulee balang",
+      "aceh",
+      "adat"
+    ]
+  },
+  {
+    "id": "ulos-batak",
+    "category": "busana-adat",
+    "subject": "Adat Ulos Batak",
+    "region": "Sumatera Utara",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Ulos, Batak Toba; kain tenun ULOS disampirkan/dililit di badan; perempuan baju + ulos + sortali (ikat kepala ulos); laki setelan + ulos ragidup + penutup kepala",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ulos",
+      "batak",
+      "sumatera utara",
+      "adat"
+    ]
+  },
+  {
+    "id": "uis-karo",
+    "category": "busana-adat",
+    "subject": "Uis Karo",
+    "region": "Sumatera Utara",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Uis Karo, Sumut; kain tenun dominan MERAH-HITAM-EMAS; perempuan kebaya + uis nipes + tudung bertingkat; laki uis + bulang-bulang (ikat kepala)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "uis karo",
+      "karo",
+      "sumatera utara",
+      "adat"
+    ]
+  },
+  {
+    "id": "baju-perang-nias",
+    "category": "busana-adat",
+    "subject": "Baju Perang Nias",
+    "region": "Sumatera Utara",
+    "lang": "id",
+    "visual_facts": "Baju Perang Nias; laki baju KEEMASAN (oroba si'oli), kalung emas (kalabubu), hiasan kepala, membawa PEDANG (telögu) & perisai (baluse); gagah",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "nias",
+      "baju perang",
+      "sumatera utara",
+      "adat"
+    ]
+  },
+  {
+    "id": "bundo-kanduang",
+    "category": "busana-adat",
+    "subject": "Bundo Kanduang (Adat Minang)",
+    "region": "Sumatera Barat",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Bundo Kanduang/Limpapeh Minang; perempuan baju kurung BELUDRU bersulam emas, TINGKULUAK TANDUAK (penutup kepala bentuk tanduk kerbau), songket, dukuah; laki baju gunting cina hitam, deta, sarawa, sesamping songket, keris",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "bundo kanduang",
+      "minangkabau",
+      "sumatera barat",
+      "adat"
+    ]
+  },
+  {
+    "id": "suntiang",
+    "category": "busana-adat",
+    "subject": "Suntiang (Pengantin Minang)",
+    "region": "Sumatera Barat",
+    "lang": "id",
+    "visual_facts": "Suntiang, mahkota pengantin Minang; MAHKOTA EMAS bertingkat-tingkat menjulang tinggi, baju beludru MERAH bersulam emas, kalung bertumpuk; paling ikonik dan mewah",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "suntiang",
+      "minangkabau",
+      "sumatera barat",
+      "pengantin"
+    ]
+  },
+  {
+    "id": "mentawai",
+    "category": "busana-adat",
+    "subject": "Adat Mentawai",
+    "region": "Sumatera Barat",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Mentawai; laki cawat KULIT KAYU (kabit), hiasan kepala daun & bulu, kalung manik (leklak), TATO tradisional (titi) di sekujur tubuh",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "mentawai",
+      "sumatera barat",
+      "adat",
+      "tato"
+    ]
+  },
+  {
+    "id": "teluk-belanga",
+    "category": "busana-adat",
+    "subject": "Teluk Belanga (Melayu Riau)",
+    "region": "Riau",
+    "lang": "id",
+    "visual_facts": "Teluk Belanga, Melayu Riau; laki baju teluk belanga/cekak musang, kain samping songket, tanjak; perempuan baju kurung labuh, songket, selendang, sanggul lipat",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "teluk belanga",
+      "melayu",
+      "riau",
+      "adat"
+    ]
+  },
+  {
+    "id": "kebaya-labuh",
+    "category": "busana-adat",
+    "subject": "Kebaya Labuh (Kepri)",
+    "region": "Kepulauan Riau",
+    "lang": "id",
+    "visual_facts": "Kebaya Labuh, Kepri; perempuan kebaya labuh panjang + kain songket; laki teluk belanga + tanjak; gaya Melayu istana anggun",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kebaya labuh",
+      "kepri",
+      "melayu",
+      "adat"
+    ]
+  },
+  {
+    "id": "baju-kurung-jambi",
+    "category": "busana-adat",
+    "subject": "Baju Kurung Tanggung Jambi",
+    "region": "Jambi",
+    "lang": "id",
+    "visual_facts": "Baju Kurung Tanggung, Jambi; perempuan baju kurung tanggung BELUDRU bersulam emas, songket, teratai dada, hiasan kepala duri pandan/kembang goyang; laki lacak (penutup kepala)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jambi",
+      "baju kurung",
+      "adat"
+    ]
+  },
+  {
+    "id": "aesan-gede",
+    "category": "busana-adat",
+    "subject": "Aesan Gede (Sumsel)",
+    "region": "Sumatera Selatan",
+    "lang": "id",
+    "visual_facts": "Aesan Gede, Sumsel; sangat KEEMASAN: baju merah beludru bertabur, dodot songket lepus emas, MAHKOTA aesan gede + kembang goyang, terate (penutup bahu), pending; lambang kejayaan Sriwijaya",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "aesan gede",
+      "sumsel",
+      "palembang",
+      "pengantin"
+    ]
+  },
+  {
+    "id": "aesan-paksangko",
+    "category": "busana-adat",
+    "subject": "Aesan Paksangko",
+    "region": "Sumatera Selatan",
+    "lang": "id",
+    "visual_facts": "Aesan Paksangko, Sumsel; baju kurung MERAH + selendang mantri, songket, mahkota paksangko/kesuhun; anggun-halus, lebih lembut dari aesan gede",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "aesan paksangko",
+      "sumsel",
+      "palembang",
+      "pengantin"
+    ]
+  },
+  {
+    "id": "baju-bengkulu",
+    "category": "busana-adat",
+    "subject": "Adat Bengkulu",
+    "region": "Bengkulu",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Bengkulu; perempuan baju kurung beludru bersulam emas, kain BESUREK (motif kaligrafi khas), sanggul + hiasan emas; laki jas + kain + detar",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "bengkulu",
+      "besurek",
+      "adat"
+    ]
+  },
+  {
+    "id": "siger-lampung",
+    "category": "busana-adat",
+    "subject": "Tapis & Siger (Lampung)",
+    "region": "Lampung",
+    "lang": "id",
+    "visual_facts": "Tapis & Siger, Lampung; kain TAPIS (tenun benang emas), SIGER (mahkota emas runcing bertingkat — ikon Lampung), kalung papan jajar, selendang tapis",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "siger",
+      "tapis",
+      "lampung",
+      "adat"
+    ]
+  },
+  {
+    "id": "paksian",
+    "category": "busana-adat",
+    "subject": "Paksian (Babel)",
+    "region": "Bangka Belitung",
+    "lang": "id",
+    "visual_facts": "Paksian, Bangka Belitung; perempuan baju kurung MERAH beludru, mahkota PAKSIAN berhias emas, kain cual/songket, kembang goyang; perpaduan Tionghoa-Melayu-Arab",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "paksian",
+      "bangka belitung",
+      "pengantin",
+      "adat"
+    ]
+  },
+  {
+    "id": "pengantin-betawi",
+    "category": "busana-adat",
+    "subject": "Pengantin Betawi",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Pengantin Betawi; perempuan (Rias Besar) baju kurung + rok, konde + kembang goyang + SHANGKO (penutup wajah manik) nuansa Tionghoa; laki (Care Haji) jubah + sorban nuansa Arab",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pengantin betawi",
+      "betawi",
+      "jakarta"
+    ]
+  },
+  {
+    "id": "kebaya-encim",
+    "category": "busana-adat",
+    "subject": "Kebaya Encim (Betawi)",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Kebaya Encim, Betawi; kebaya cerah bersulam, kerudung, kain batik; busana None Betawi sehari-hari, anggun",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kebaya encim",
+      "betawi",
+      "jakarta",
+      "adat"
+    ]
+  },
+  {
+    "id": "baduy",
+    "category": "busana-adat",
+    "subject": "Adat Baduy",
+    "region": "Banten",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Baduy, Banten; Baduy Dalam: baju jamang (kampret) PUTIH tanpa kerah & kancing, ikat kepala putih, kain; Baduy Luar: HITAM-biru tua, ikat kepala batik biru; tanpa alas kaki",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "baduy",
+      "banten",
+      "adat"
+    ]
+  },
+  {
+    "id": "kebaya-sunda",
+    "category": "busana-adat",
+    "subject": "Adat Sunda (Kebaya & Pangsi)",
+    "region": "Jawa Barat",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Sunda; perempuan KEBAYA + kain batik + sanggul; bangsawan laki beskap/jas tutup + bendo; rakyat PANGSI (baju & celana longgar hitam) + iket",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "sunda",
+      "kebaya",
+      "pangsi",
+      "jawa barat",
+      "adat"
+    ]
+  },
+  {
+    "id": "kebaya-jawa",
+    "category": "busana-adat",
+    "subject": "Adat Jawa (Kebaya & Beskap)",
+    "region": "Jawa Tengah",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Jawa; perempuan KEBAYA + jarik + stagen + sanggul; laki BESKAP, BLANGKON, jarik, keris di belakang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jawa",
+      "kebaya",
+      "beskap",
+      "blangkon",
+      "adat"
+    ]
+  },
+  {
+    "id": "basahan",
+    "category": "busana-adat",
+    "subject": "Basahan/Dodotan (Pengantin Jawa)",
+    "region": "Jawa Tengah",
+    "lang": "id",
+    "visual_facts": "Basahan/Dodotan, pengantin Solo-Yogya; TANPA kebaya — DODOT/kampuh batik lebar membalut tubuh, perempuan dada terbuka + kalung sungsun + sanggul bokor + cunduk mentul; laki kuluk matak + dodot; sakral megah",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "basahan",
+      "dodotan",
+      "pengantin",
+      "jawa",
+      "solo"
+    ]
+  },
+  {
+    "id": "surjan",
+    "category": "busana-adat",
+    "subject": "Surjan & Kasatrian (Yogya)",
+    "region": "Yogyakarta",
+    "lang": "id",
+    "visual_facts": "Surjan & Kasatrian, Yogya; laki SURJAN (lurik garis-garis), blangkon Yogya, jarik, keris; perempuan kebaya + jarik + sanggul tekuk",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "surjan",
+      "yogyakarta",
+      "lurik",
+      "adat"
+    ]
+  },
+  {
+    "id": "kebaya-kutubaru",
+    "category": "busana-adat",
+    "subject": "Kebaya Kutubaru",
+    "region": "Jawa",
+    "lang": "id",
+    "visual_facts": "Kebaya Kutubaru; kebaya dengan BEF (kain penghubung) di dada, dipadu stagen & jarik batik",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kebaya kutubaru",
+      "jawa",
+      "adat"
+    ]
+  },
+  {
+    "id": "pesaan-madura",
+    "category": "busana-adat",
+    "subject": "Pesa'an (Madura)",
+    "region": "Jawa Timur",
+    "lang": "id",
+    "visual_facts": "Pesa'an, Madura; laki KAOS BELANG MERAH-PUTIH longgar, celana komprang hitam, odheng (ikat kepala), sarung kotak, kadang clurit; perempuan kebaya rancongan + batik Madura",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pesaan",
+      "madura",
+      "jawa timur",
+      "adat"
+    ]
+  },
+  {
+    "id": "payas-agung",
+    "category": "busana-adat",
+    "subject": "Payas Agung (Pengantin Bali)",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Payas Agung, Bali; pengantin TERMEWAH: mahkota emas bertatah tinggi, bunga emas, baju & kain PRADA keemasan, badong; laki udeng + saput + keris berhias",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "payas agung",
+      "bali",
+      "pengantin"
+    ]
+  },
+  {
+    "id": "payas-madya",
+    "category": "busana-adat",
+    "subject": "Payas Madya (Adat Bali)",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Payas Madya/Alit, Bali; busana adat ke pura: laki udeng + kemeja/safari + kamen + saput + umpal + keris; perempuan kebaya + kamen + senteng (selendang pinggang)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "payas madya",
+      "bali",
+      "adat"
+    ]
+  },
+  {
+    "id": "lambung-sasak",
+    "category": "busana-adat",
+    "subject": "Lambung & Pegon (Sasak)",
+    "region": "Nusa Tenggara Barat",
+    "lang": "id",
+    "visual_facts": "Lambung & Pegon, Sasak Lombok; perempuan (Lambung) baju HITAM lengan pendek, kain tenun, selendang umbak; laki (Pegon) jas beludru hitam, dodot songket, sapuq (ikat kepala), keris",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "lambung",
+      "pegon",
+      "sasak",
+      "lombok",
+      "adat"
+    ]
+  },
+  {
+    "id": "rimpu",
+    "category": "busana-adat",
+    "subject": "Rimpu (Bima)",
+    "region": "Nusa Tenggara Barat",
+    "lang": "id",
+    "visual_facts": "Rimpu, Bima NTB; perempuan membungkus tubuh & kepala dengan DUA SARUNG TENUN: rimpu mpida (gadis, hanya MATA terlihat) & rimpu colo (menikah, wajah terlihat)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "rimpu",
+      "bima",
+      "ntb",
+      "adat"
+    ]
+  },
+  {
+    "id": "tii-langga",
+    "category": "busana-adat",
+    "subject": "Ti'i Langga (Rote)",
+    "region": "Nusa Tenggara Timur",
+    "lang": "id",
+    "visual_facts": "Ti'i Langga & Tenun Rote, NTT; laki kemeja putih + selempang tenun + sarung tenun + TI'I LANGGA (topi lontar berantena, mirip sombrero — ikon Rote); perempuan kebaya + sarung tenun + habas (perhiasan bulan sabit)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tii langga",
+      "rote",
+      "ntt",
+      "adat"
+    ]
+  },
+  {
+    "id": "tenun-sumba",
+    "category": "busana-adat",
+    "subject": "Tenun Sumba (Adat)",
+    "region": "Nusa Tenggara Timur",
+    "lang": "id",
+    "visual_facts": "Tenun Sumba, NTT; laki kain TENUN IKAT (motif kuda/ayam) + selempang + ikat kepala berhias; perempuan lau (sarung tenun) + perhiasan MAMULI emas",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "sumba",
+      "tenun",
+      "ntt",
+      "adat"
+    ]
+  },
+  {
+    "id": "tenun-flores",
+    "category": "busana-adat",
+    "subject": "Tenun Ikat Flores",
+    "region": "Nusa Tenggara Timur",
+    "lang": "id",
+    "visual_facts": "Tenun Ikat Flores, NTT; kain tenun ikat khas (Sikka/Ende/Lio); laki sarung tenun + selempang + destar; perempuan sarung tenun + kebaya + perhiasan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "flores",
+      "tenun",
+      "ntt",
+      "adat"
+    ]
+  },
+  {
+    "id": "king-baba",
+    "category": "busana-adat",
+    "subject": "King Baba & King Bibinge (Dayak)",
+    "region": "Kalimantan Barat",
+    "lang": "id",
+    "visual_facts": "King Baba & King Bibinge, Dayak Kalbar; dari KULIT KAYU ditumbuk; laki (King Baba) rompi & cawat kulit kayu + ikat kepala BULU ENGGANG; perempuan (King Bibinge) atasan & rok kulit kayu + manik + penutup dada",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "king baba",
+      "dayak",
+      "kalimantan barat",
+      "adat"
+    ]
+  },
+  {
+    "id": "ngepan-iban",
+    "category": "busana-adat",
+    "subject": "Ngepan Iban (Dayak)",
+    "region": "Kalimantan Barat",
+    "lang": "id",
+    "visual_facts": "Ngepan Iban, Dayak Iban; perempuan kain kebat tenun ikat + marik empang (hiasan dada PERAK) + sugu tinggi (mahkota perak) + gelang berlapis; sarat perak berkilau",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ngepan iban",
+      "dayak iban",
+      "kalimantan barat",
+      "adat"
+    ]
+  },
+  {
+    "id": "sangkarut",
+    "category": "busana-adat",
+    "subject": "Sangkarut (Dayak Ngaju)",
+    "region": "Kalimantan Tengah",
+    "lang": "id",
+    "visual_facts": "Sangkarut, Dayak Ngaju; rompi (sangkarut) dari KULIT KAYU/anyaman berhias MANIK, kain, ikat kepala bulu enggang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "sangkarut",
+      "dayak ngaju",
+      "kalimantan tengah",
+      "adat"
+    ]
+  },
+  {
+    "id": "pengantin-banjar",
+    "category": "busana-adat",
+    "subject": "Pengantin Banjar",
+    "region": "Kalimantan Selatan",
+    "lang": "id",
+    "visual_facts": "Pengantin Banjar, Kalsel; gaya Baamar Galung Pancar Matahari (mahkota mirip MATAHARI bersinar), Bagajah Gamuling, dll.; busana mewah KEEMASAN",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pengantin banjar",
+      "banjar",
+      "kalimantan selatan"
+    ]
+  },
+  {
+    "id": "kustin-kutai",
+    "category": "busana-adat",
+    "subject": "Kustin (Kutai)",
+    "region": "Kalimantan Timur",
+    "lang": "id",
+    "visual_facts": "Kustin, Kutai Kaltim; BELUDRU HITAM bersulam emas, laki kuluk (penutup kepala kuning); busana kebesaran bangsawan Kutai",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kustin",
+      "kutai",
+      "kalimantan timur",
+      "adat"
+    ]
+  },
+  {
+    "id": "taa-sapei",
+    "category": "busana-adat",
+    "subject": "Ta'a & Sapei Sapaq (Dayak Kenyah)",
+    "region": "Kalimantan Timur",
+    "lang": "id",
+    "visual_facts": "Ta'a & Sapei Sapaq, Dayak Kenyah; perempuan (Ta'a) atasan & rok berMANIK (uleng) + hiasan kepala + bulu enggang; laki (Sapei Sapaq) rompi manik + cawat + mandau + bulu enggang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "taa",
+      "sapei sapaq",
+      "dayak kenyah",
+      "kalimantan",
+      "adat"
+    ]
+  },
+  {
+    "id": "adat-minahasa",
+    "category": "busana-adat",
+    "subject": "Adat Minahasa",
+    "region": "Sulawesi Utara",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Minahasa, Sulut; busana warna cerah; busana penari Kabasaran MERAH berhias bulu, ikat kepala berbulu",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "minahasa",
+      "sulawesi utara",
+      "adat"
+    ]
+  },
+  {
+    "id": "nggembe-kaili",
+    "category": "busana-adat",
+    "subject": "Nggembe & Koje (Kaili)",
+    "region": "Sulawesi Tengah",
+    "lang": "id",
+    "visual_facts": "Nggembe & Koje, Kaili Sulteng; perempuan (Nggembe) blus segiempat longgar + sarung tenun Donggala + perhiasan; laki (Koje) baju + sarung tenun Donggala + penutup kepala",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "nggembe",
+      "kaili",
+      "donggala",
+      "sulawesi tengah",
+      "adat"
+    ]
+  },
+  {
+    "id": "baju-bodo",
+    "category": "busana-adat",
+    "subject": "Baju Bodo (Bugis-Makassar)",
+    "region": "Sulawesi Selatan",
+    "lang": "id",
+    "visual_facts": "Baju Bodo, Bugis-Makassar; perempuan BLUS SEGIEMPAT tipis menerawang lengan pendek (WARNA menandai usia/status), sarung sutra kotak (lipa' sabbe), perhiasan emas, sanggul; ikonik",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "baju bodo",
+      "bugis",
+      "makassar",
+      "sulawesi selatan",
+      "adat"
+    ]
+  },
+  {
+    "id": "jas-tutup-bugis",
+    "category": "busana-adat",
+    "subject": "Jas Tutup & Lipa' Sabbe (Bugis)",
+    "region": "Sulawesi Selatan",
+    "lang": "id",
+    "visual_facts": "Jas Tutup & Lipa' Sabbe, laki Bugis-Makassar; jas tutup/bella dada, sarung sutra, passapu/songkok recca (songkok emas to Bone), badik",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jas tutup",
+      "bugis",
+      "makassar",
+      "songkok",
+      "adat"
+    ]
+  },
+  {
+    "id": "baju-toraja",
+    "category": "busana-adat",
+    "subject": "Adat Toraja",
+    "region": "Sulawesi Selatan",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Toraja; KANDAURE (untaian manik panjang), sa'pi' (hiasan kepala emas), busana motif ukir Toraja MERAH-KUNING-HITAM, komba boko' (gelang besar)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "toraja",
+      "kandaure",
+      "sulawesi selatan",
+      "adat"
+    ]
+  },
+  {
+    "id": "babu-nggawi",
+    "category": "busana-adat",
+    "subject": "Babu Nggawi (Tolaki)",
+    "region": "Sulawesi Tenggara",
+    "lang": "id",
+    "visual_facts": "Babu Nggawi, Tolaki Sultra; perempuan baju lengan pendek + rok panjang (roo mendaa) + perhiasan emas bertumpuk; laki jas + sarung tenun + perhiasan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "babu nggawi",
+      "tolaki",
+      "sulawesi tenggara",
+      "adat"
+    ]
+  },
+  {
+    "id": "biliu-gorontalo",
+    "category": "busana-adat",
+    "subject": "Biliu & Makuta (Gorontalo)",
+    "region": "Gorontalo",
+    "lang": "id",
+    "visual_facts": "Biliu & Makuta, Gorontalo; pengantin; perempuan (Biliu) busana berhias paramata EMAS + mahkota + baalo (penutup kepala); laki (Makuta) busana + mahkota emas",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "biliu",
+      "makuta",
+      "gorontalo",
+      "pengantin"
+    ]
+  },
+  {
+    "id": "adat-mandar",
+    "category": "busana-adat",
+    "subject": "Adat Mandar",
+    "region": "Sulawesi Barat",
+    "lang": "id",
+    "visual_facts": "Pakaian adat Mandar, Sulbar; perempuan baju bodo Mandar (rawang) + sarung sutra Mandar (lipa' saqbe), perhiasan; gaya Bugis dengan tenun khas Mandar",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "mandar",
+      "sulawesi barat",
+      "adat"
+    ]
+  },
+  {
+    "id": "baju-cele",
+    "category": "busana-adat",
+    "subject": "Baju Cele (Maluku)",
+    "region": "Maluku",
+    "lang": "id",
+    "visual_facts": "Baju Cele, Maluku; perempuan kebaya/baju cele dari kain KOTAK-KOTAK MERAH khas Maluku, kain, konde berhias bunga, lenso (saputangan); laki kemeja + jas",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "baju cele",
+      "maluku",
+      "adat"
+    ]
+  },
+  {
+    "id": "manteren-lamo",
+    "category": "busana-adat",
+    "subject": "Manteren Lamo (Ternate)",
+    "region": "Maluku Utara",
+    "lang": "id",
+    "visual_facts": "Manteren Lamo, Ternate Maluku Utara; busana KESULTANAN: jubah/jas HITAM panjang berkancing MERAH-EMAS, celana hitam bordir emas, destar",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "manteren lamo",
+      "ternate",
+      "maluku utara",
+      "kesultanan",
+      "adat"
+    ]
+  },
+  {
+    "id": "koteka",
+    "category": "busana-adat",
+    "subject": "Koteka / Holim (Papua)",
+    "region": "Papua",
+    "lang": "id",
+    "visual_facts": "Koteka/Holim, Papua pegunungan; laki KOTEKA (selongsong labu penutup kelamin, bentuk berbeda tiap suku), hiasan bulu kasuari/cendrawasih, taring babi",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "koteka",
+      "holim",
+      "papua",
+      "adat"
+    ]
+  },
+  {
+    "id": "sali-yokal",
+    "category": "busana-adat",
+    "subject": "Rok Rumbai / Sali-Yokal (Papua)",
+    "region": "Papua",
+    "lang": "id",
+    "visual_facts": "Rok Rumbai/Sali-Yokal, Papua; perempuan ROK serat sagu/rumput (yokal untuk menikah, sali untuk gadis), penutup dada, hiasan kepala bulu CENDRAWASIH, manik, badan dilukis",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "sali",
+      "yokal",
+      "rok rumbai",
+      "papua",
+      "adat"
+    ]
   }
 ]

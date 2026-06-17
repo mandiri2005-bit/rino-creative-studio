@@ -40,7 +40,7 @@ _STOP = {"yang","dan","di","ke","dari","untuk","ini","itu","atau","dengan","ada"
 _GENERIC = {"tukang","hantu","setan","orang","pura","candi","tugu","masjid","gereja",
             "jembatan","gunung","danau","pantai","pulau","taman","rumah","kota","jalan",
             "sawah","gedung","istana","benteng","kepulauan","makhluk","kain",
-            "tari","tarian","penari"}
+            "tari","tarian","penari","baju","kebaya","busana","adat","pengantin","tenun"}
 
 
 # ── seed loader ──────────────────────────────────────────────────────────
