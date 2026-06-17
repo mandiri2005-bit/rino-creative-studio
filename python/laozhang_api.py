@@ -6438,6 +6438,8 @@ class VertexImageRequest(BaseModel):
     model: str = "gemini-2.5-flash-image"
     aspect_ratio: str = "1:1"
     nusantara_corpus: bool = False
+    ref_image_b64: str | None = None      # image-conditioning (keep this face/subject)
+    ref_image_mime: str = "image/jpeg"
 
 def _corpus_enhance(prompt: str):
     """Best-effort Nusantara enhancement; never raises (image gen must not break)."""
@@ -6461,6 +6463,12 @@ async def generate_image_vertex(req: VertexImageRequest):
     prompt = req.prompt
     if req.nusantara_corpus:
         prompt, _, _ = _corpus_enhance(prompt)
+        if not req.ref_image_b64:
+            # No reference face → bias people to authentic Indonesian (else model
+            # defaults to Western faces even when the corpus is on).
+            prompt += ("\n\n(Semua MANUSIA dalam gambar berwajah dan berpenampilan "
+                       "Indonesia / Asia Tenggara yang autentik — BUKAN wajah Barat/bule/Korea — "
+                       "kecuali konteks jelas menyebut sebaliknya.)")
 
     # ── Nano Banana (gemini-*-image) → Gemini API on Vertex ──
     if _is_gemini_image_model(req.model):
@@ -6485,9 +6493,21 @@ async def generate_image_vertex(req: VertexImageRequest):
                 _gen_cfg = _gtypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
                 if _ar and _ar != "1:1":
                     prompt = f"{prompt}\n\nComposition: full-frame {_ar} aspect ratio."
+            # Reference image → image-conditioning: pass it alongside the prompt so
+            # the model keeps that face/subject (e.g. "this person at graduation").
+            _contents = prompt
+            if req.ref_image_b64:
+                try:
+                    _img_part = _gtypes.Part.from_bytes(
+                        data=base64.b64decode(req.ref_image_b64),
+                        mime_type=req.ref_image_mime or "image/jpeg",
+                    )
+                    _contents = [_img_part, prompt]
+                except Exception as _e:
+                    import warnings; warnings.warn(f"ref image decode failed: {_e}")
             resp = client.models.generate_content(
                 model=req.model,
-                contents=prompt,
+                contents=_contents,
                 config=_gen_cfg,
             )
             img_bytes = None
