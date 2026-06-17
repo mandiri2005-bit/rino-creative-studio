@@ -2353,5 +2353,825 @@
       "orang",
       "wajah"
     ]
+  },
+  {
+    "id": "saman",
+    "category": "tarian",
+    "subject": "Tari Saman",
+    "region": "Aceh",
+    "lang": "id",
+    "visual_facts": "Tari Saman, Aceh; penari PRIA berbaris rapat, baju kerawang lengan panjang ketat bersulam benang EMAS motif Gayo (merah-hitam-kuning-hijau), celana, kain sarung pendek di pinggang, bulang teleng (ikat kepala) bermotif; gerak tepuk kompak",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "saman",
+      "aceh",
+      "tari"
+    ]
+  },
+  {
+    "id": "ratoh-jaroe",
+    "category": "tarian",
+    "subject": "Tari Ratoh Jaroe",
+    "region": "Aceh",
+    "lang": "id",
+    "visual_facts": "Tari Ratoh Jaroe, Aceh; penari PEREMPUAN berbaris, baju lengan panjang seragam warna cerah, celana, songket di pinggang, jilbab dengan ikat kepala berornamen; gerak tepuk kompak",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "ratoh jaroe",
+      "aceh",
+      "tari"
+    ]
+  },
+  {
+    "id": "seudati",
+    "category": "tarian",
+    "subject": "Tari Seudati",
+    "region": "Aceh",
+    "lang": "id",
+    "visual_facts": "Tari Seudati, Aceh; penari PRIA, baju dan celana PUTIH ketat, kain songket di pinggang, tangkulok (ikat kepala) merah, rencong terselip",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "seudati",
+      "aceh",
+      "tari"
+    ]
+  },
+  {
+    "id": "tor-tor",
+    "category": "tarian",
+    "subject": "Tari Tor-Tor",
+    "region": "Sumatera Utara",
+    "lang": "id",
+    "visual_facts": "Tari Tor-Tor, Batak Sumut; ULOS disampirkan di bahu/badan; perempuan baju kurung + sortali (hiasan kepala ulos), pria ulos + tutup kepala; gerak khidmat",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tor-tor",
+      "batak",
+      "sumatera utara",
+      "tari"
+    ]
+  },
+  {
+    "id": "serampang-dua-belas",
+    "category": "tarian",
+    "subject": "Tari Serampang Dua Belas",
+    "region": "Sumatera Utara",
+    "lang": "id",
+    "visual_facts": "Tari Serampang Dua Belas, Melayu Deli; BERPASANGAN; perempuan baju kurung + selendang, pria baju teluk belanga + kain samping songket + tanjak; tari pergaulan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "serampang",
+      "melayu deli",
+      "tari"
+    ]
+  },
+  {
+    "id": "tari-piring",
+    "category": "tarian",
+    "subject": "Tari Piring",
+    "region": "Sumatera Barat",
+    "lang": "id",
+    "visual_facts": "Tari Piring, Minangkabau; perempuan baju kurung bertabur + tikuluak tanduak/suntiang emas + songket; pria baju gunting cina, sarawa, deta; MEMBAWA PIRING di kedua tangan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "piring",
+      "minangkabau",
+      "sumatera barat",
+      "tari"
+    ]
+  },
+  {
+    "id": "pasambahan",
+    "category": "tarian",
+    "subject": "Tari Pasambahan",
+    "region": "Sumatera Barat",
+    "lang": "id",
+    "visual_facts": "Tari Pasambahan, Minangkabau; perempuan, SUNTIANG besar (mahkota emas bertingkat), baju beludru bersulam songket; tari penyambutan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pasambahan",
+      "minangkabau",
+      "suntiang",
+      "tari"
+    ]
+  },
+  {
+    "id": "indang",
+    "category": "tarian",
+    "subject": "Tari Indang",
+    "region": "Sumatera Barat",
+    "lang": "id",
+    "visual_facts": "Tari Indang (Dindin Badindin), Minangkabau; penari PRIA berbaris duduk, baju koko/taqwa, celana, kopiah, kadang selempang songket; gerak tepuk",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "indang",
+      "badindin",
+      "minangkabau",
+      "tari"
+    ]
+  },
+  {
+    "id": "zapin",
+    "category": "tarian",
+    "subject": "Tari Zapin",
+    "region": "Riau",
+    "lang": "id",
+    "visual_facts": "Tari Zapin, Riau Melayu; pria baju Melayu cekak musang + kain samping + songkok; perempuan baju kurung + selendang + sanggul berhias",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "zapin",
+      "riau",
+      "melayu",
+      "tari"
+    ]
+  },
+  {
+    "id": "persembahan-riau",
+    "category": "tarian",
+    "subject": "Tari Persembahan Riau",
+    "region": "Riau",
+    "lang": "id",
+    "visual_facts": "Tari Persembahan (Makan Sirih), Riau; perempuan, baju kurung teluk belanga cerah, selendang, sanggul lipat pandan; membawa TEPAK SIRIH",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "persembahan",
+      "makan sirih",
+      "riau",
+      "tari"
+    ]
+  },
+  {
+    "id": "sekapur-sirih",
+    "category": "tarian",
+    "subject": "Tari Sekapur Sirih",
+    "region": "Jambi",
+    "lang": "id",
+    "visual_facts": "Tari Sekapur Sirih, Jambi; perempuan, baju kurung tanggung bersulam emas, hiasan sanggul kembang; membawa CERANO sirih",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "sekapur sirih",
+      "jambi",
+      "tari"
+    ]
+  },
+  {
+    "id": "gending-sriwijaya",
+    "category": "tarian",
+    "subject": "Tari Gending Sriwijaya",
+    "region": "Sumatera Selatan",
+    "lang": "id",
+    "visual_facts": "Tari Gending Sriwijaya, Sumsel; perempuan, AESAN GEDE mewah keemasan: baju merah-emas bertabur, dodot songket lepus, mahkota aesan gede + kembang goyang, terate (penutup dada), pending",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "gending sriwijaya",
+      "sumsel",
+      "aesan gede",
+      "tari"
+    ]
+  },
+  {
+    "id": "tanggai",
+    "category": "tarian",
+    "subject": "Tari Tanggai",
+    "region": "Sumatera Selatan",
+    "lang": "id",
+    "visual_facts": "Tari Tanggai, Sumsel; baju merah-emas songket mewah; ciri KUKU TANGGAI (kuku logam emas panjang) di jari",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "tanggai",
+      "sumsel",
+      "tari"
+    ]
+  },
+  {
+    "id": "topeng-betawi",
+    "category": "tarian",
+    "subject": "Tari Topeng Betawi",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Tari Topeng Betawi; perempuan, kebaya, KEMBANG TOPENG (hiasan kepala bunga & manik), kain batik, toka-toka di dada",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "topeng betawi",
+      "jakarta",
+      "tari"
+    ]
+  },
+  {
+    "id": "yapong",
+    "category": "tarian",
+    "subject": "Tari Yapong",
+    "region": "Jakarta",
+    "lang": "id",
+    "visual_facts": "Tari Yapong, Betawi; busana warna cerah ngejreng, selendang, hiasan kepala manik, kombinasi corak Betawi-Tionghoa",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "yapong",
+      "betawi",
+      "jakarta",
+      "tari"
+    ]
+  },
+  {
+    "id": "jaipong",
+    "category": "tarian",
+    "subject": "Tari Jaipong",
+    "region": "Jawa Barat",
+    "lang": "id",
+    "visual_facts": "Tari Jaipong, Sunda; perempuan, kebaya cerah, sinjang batik, apok, SAMPUR (selendang panjang) properti utama, sanggul berbunga",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "jaipong",
+      "sunda",
+      "jawa barat",
+      "tari"
+    ]
+  },
+  {
+    "id": "tari-merak",
+    "category": "tarian",
+    "subject": "Tari Merak",
+    "region": "Jawa Barat",
+    "lang": "id",
+    "visual_facts": "Tari Merak, Sunda; kostum menyerupai bulu MERAK: mahkota (jamang) berkepala merak, SAYAP kain bermotif bulu hijau-biru-emas yang dibentangkan, kemben, kilat bahu",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "merak",
+      "sunda",
+      "jawa barat",
+      "tari"
+    ]
+  },
+  {
+    "id": "topeng-cirebon",
+    "category": "tarian",
+    "subject": "Tari Topeng Cirebon",
+    "region": "Jawa Barat",
+    "lang": "id",
+    "visual_facts": "Tari Topeng Cirebon; TOPENG kayu (Panji, Samba, Rumyang, Tumenggung, Kelana), baju lengan panjang, celana sebetis, kain, sobra/mahkota, sumping",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "topeng cirebon",
+      "cirebon",
+      "jawa barat",
+      "tari"
+    ]
+  },
+  {
+    "id": "bedhaya",
+    "category": "tarian",
+    "subject": "Tari Bedhaya",
+    "region": "Jawa Tengah",
+    "lang": "id",
+    "visual_facts": "Tari Bedhaya, Kraton Solo/Yogya; perempuan SAKRAL, dodot/kemben tanpa lengan, jarik batik panjang, sampur, sanggul bokor + cunduk mentul, kalung sungsun",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "bedhaya",
+      "kraton",
+      "jawa",
+      "tari"
+    ]
+  },
+  {
+    "id": "serimpi",
+    "category": "tarian",
+    "subject": "Tari Serimpi",
+    "region": "Yogyakarta",
+    "lang": "id",
+    "visual_facts": "Tari Serimpi, Kraton Jawa; mekak/kemben, jarik, sampur, jamang, kadang membawa cundrik (keris kecil); halus dan anggun",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "serimpi",
+      "kraton",
+      "jawa",
+      "tari"
+    ]
+  },
+  {
+    "id": "gambyong",
+    "category": "tarian",
+    "subject": "Tari Gambyong",
+    "region": "Jawa Tengah",
+    "lang": "id",
+    "visual_facts": "Tari Gambyong, Jawa Tengah; perempuan, kemben tanpa lengan kuning-hijau, jarik, SAMPUR properti utama, sanggul berbunga",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "gambyong",
+      "jawa tengah",
+      "tari"
+    ]
+  },
+  {
+    "id": "tari-golek",
+    "category": "tarian",
+    "subject": "Tari Golek",
+    "region": "Yogyakarta",
+    "lang": "id",
+    "visual_facts": "Tari Golek, Yogyakarta; perempuan, kemben/kebaya, jarik, sampur, jamang; menggambarkan gadis berhias",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "golek",
+      "yogyakarta",
+      "tari"
+    ]
+  },
+  {
+    "id": "remo",
+    "category": "tarian",
+    "subject": "Tari Remo",
+    "region": "Jawa Timur",
+    "lang": "id",
+    "visual_facts": "Tari Remo, Jawa Timur; PRIA, baju dan celana hitam, kain batik pesisir di pinggang, selendang merah di bahu, udheng (ikat kepala), GONGSENG (lonceng) di kaki kanan, keris di belakang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "remo",
+      "jawa timur",
+      "tari"
+    ]
+  },
+  {
+    "id": "reog-ponorogo",
+    "category": "tarian",
+    "subject": "Reog Ponorogo",
+    "region": "Jawa Timur",
+    "lang": "id",
+    "visual_facts": "Reog Ponorogo, Jawa Timur; DADAK MERAK raksasa (topeng kepala singa/macan + bulu merak puluhan kg), warok (serba hitam komprang, usus-ususan), jathil, bujang ganong (topeng merah)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "reog",
+      "ponorogo",
+      "jawa timur",
+      "dadak merak",
+      "tari"
+    ]
+  },
+  {
+    "id": "gandrung-banyuwangi",
+    "category": "tarian",
+    "subject": "Tari Gandrung Banyuwangi",
+    "region": "Jawa Timur",
+    "lang": "id",
+    "visual_facts": "Tari Gandrung Banyuwangi, Jatim; perempuan, mahkota OMPROK berkaca kecil, baju beludru hitam berpayet emas, kain batik gajah oling, sampur, kipas, sembong",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "gandrung",
+      "banyuwangi",
+      "jawa timur",
+      "tari"
+    ]
+  },
+  {
+    "id": "legong",
+    "category": "tarian",
+    "subject": "Tari Legong",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Tari Legong, Bali; perempuan, GELUNGAN (mahkota emas bertatah bunga kamboja segar), kain prada keemasan berkilau, badong (kalung), gelang kana",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "legong",
+      "bali",
+      "tari"
+    ]
+  },
+  {
+    "id": "kecak",
+    "category": "tarian",
+    "subject": "Tari Kecak",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Tari Kecak, Bali; puluhan PRIA bertelanjang dada duduk melingkar, kain POLENG (kotak hitam-putih) di pinggang, bunga kamboja di telinga; api di tengah",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kecak",
+      "bali",
+      "tari"
+    ]
+  },
+  {
+    "id": "pendet",
+    "category": "tarian",
+    "subject": "Tari Pendet",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Tari Pendet, Bali; perempuan, kebaya/kemben prada, kain prada, selendang kuning, gelungan bunga kamboja-cempaka; membawa BOKOR bunga (penyambutan tabur bunga)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pendet",
+      "bali",
+      "tari"
+    ]
+  },
+  {
+    "id": "baris",
+    "category": "tarian",
+    "subject": "Tari Baris",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Tari Baris, Bali; PRIA, gelungan kerucut bertingkat berhias kerang, baju berlapis AWIRAN (lembar kain warna-warni), membawa tombak/keris; gerak gagah perkasa",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "baris",
+      "bali",
+      "tari"
+    ]
+  },
+  {
+    "id": "janger",
+    "category": "tarian",
+    "subject": "Tari Janger",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Tari Janger, Bali; muda-mudi berpasangan; perempuan gelungan janger berbunga, pria ikat kepala gaya kecak; ceria",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "janger",
+      "bali",
+      "tari"
+    ]
+  },
+  {
+    "id": "cendrawasih",
+    "category": "tarian",
+    "subject": "Tari Cendrawasih",
+    "region": "Bali",
+    "lang": "id",
+    "visual_facts": "Tari Cendrawasih, Bali; perempuan, kostum menyerupai burung CENDRAWASIH, sayap/ekor merah-kuning, mahkota bulu",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "cendrawasih",
+      "bali",
+      "tari"
+    ]
+  },
+  {
+    "id": "gandrung-lombok",
+    "category": "tarian",
+    "subject": "Tari Gandrung Lombok",
+    "region": "Nusa Tenggara Barat",
+    "lang": "id",
+    "visual_facts": "Tari Gandrung Lombok, Sasak NTB; perempuan, mahkota, baju & kain TENUN SASAK, selendang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "gandrung lombok",
+      "sasak",
+      "ntb",
+      "tari"
+    ]
+  },
+  {
+    "id": "caci",
+    "category": "tarian",
+    "subject": "Tari Caci",
+    "region": "Nusa Tenggara Timur",
+    "lang": "id",
+    "visual_facts": "Tari Caci, Manggarai Flores; tari CAMBUK; pria bertelanjang dada, celana putih panjang, sarung songke (tenun hitam), PANGGAL (pelindung kepala kulit kerbau bertanduk), membawa larik (cambuk) & nggiling (perisai)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "caci",
+      "manggarai",
+      "flores",
+      "ntt",
+      "tari"
+    ]
+  },
+  {
+    "id": "likurai",
+    "category": "tarian",
+    "subject": "Tari Likurai",
+    "region": "Nusa Tenggara Timur",
+    "lang": "id",
+    "visual_facts": "Tari Likurai, NTT Belu; perempuan, TENUN IKAT, hiasan kepala berbulu, membawa TIHAR (gendang kecil); pria membawa pedang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "likurai",
+      "ntt",
+      "belu",
+      "tari"
+    ]
+  },
+  {
+    "id": "kancet-ledo",
+    "category": "tarian",
+    "subject": "Tari Gong (Kancet Ledo)",
+    "region": "Kalimantan Timur",
+    "lang": "id",
+    "visual_facts": "Tari Gong / Kancet Ledo, Dayak Kenyah; perempuan menari DI ATAS GONG; baju & rok MANIK-MANIK (uleng), hiasan kepala + BULU ENGGANG, memegang bulu enggang di tangan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kancet ledo",
+      "tari gong",
+      "dayak",
+      "kalimantan",
+      "tari"
+    ]
+  },
+  {
+    "id": "hudoq",
+    "category": "tarian",
+    "subject": "Tari Hudoq",
+    "region": "Kalimantan Timur",
+    "lang": "id",
+    "visual_facts": "Tari Hudoq, Dayak Kaltim; TOPENG kayu menyeramkan wajah hama/hewan + kostum DAUN PISANG/pelepah menutup seluruh tubuh; ritual pertanian",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "hudoq",
+      "dayak",
+      "kalimantan",
+      "topeng",
+      "tari"
+    ]
+  },
+  {
+    "id": "kancet-pepatai",
+    "category": "tarian",
+    "subject": "Tari Kancet Pepatai (Mandau)",
+    "region": "Kalimantan",
+    "lang": "id",
+    "visual_facts": "Tari Kancet Pepatai (Mandau), Dayak; tari PERANG pria; rompi kulit kayu/kain manik, hiasan bulu enggang, membawa MANDAU & kelembit (perisai berukir), ikat kepala berbulu",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kancet pepatai",
+      "mandau",
+      "dayak",
+      "kalimantan",
+      "tari"
+    ]
+  },
+  {
+    "id": "giring-giring",
+    "category": "tarian",
+    "subject": "Tari Giring-Giring",
+    "region": "Kalimantan Tengah",
+    "lang": "id",
+    "visual_facts": "Tari Giring-Giring, Dayak Kalteng; busana manik-manik Dayak, membawa TONGKAT berisi biji (giring-giring) yang dihentakkan",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "giring-giring",
+      "dayak",
+      "kalimantan",
+      "tari"
+    ]
+  },
+  {
+    "id": "pakarena",
+    "category": "tarian",
+    "subject": "Tari Kipas Pakarena",
+    "region": "Sulawesi Selatan",
+    "lang": "id",
+    "visual_facts": "Tari Kipas Pakarena, Makassar Sulsel; perempuan, BAJU BODO (blus tipis transparan lengan pendek, warna menandai status), sarung sutra kotak Bugis, sanggul + bunga emas, KIPAS properti utama",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pakarena",
+      "kipas",
+      "makassar",
+      "sulawesi",
+      "baju bodo",
+      "tari"
+    ]
+  },
+  {
+    "id": "pagellu",
+    "category": "tarian",
+    "subject": "Tari Pa'gellu",
+    "region": "Sulawesi Selatan",
+    "lang": "id",
+    "visual_facts": "Tari Pa'gellu, Toraja; perempuan, KANDAURE (manik menjuntai), sa'pi' (hiasan kepala emas), komba boko' (gelang besar), busana motif ukiran Toraja merah-kuning-hitam",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pagellu",
+      "toraja",
+      "sulawesi",
+      "tari"
+    ]
+  },
+  {
+    "id": "kabasaran",
+    "category": "tarian",
+    "subject": "Tari Kabasaran",
+    "region": "Sulawesi Utara",
+    "lang": "id",
+    "visual_facts": "Tari Kabasaran, Minahasa Sulut; tari PERANG; pria busana MERAH menyala, ikat kepala berhias bulu/paruh ayam, membawa santi (pedang) & tombak, ekspresi garang",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kabasaran",
+      "minahasa",
+      "sulawesi utara",
+      "tari"
+    ]
+  },
+  {
+    "id": "maengket",
+    "category": "tarian",
+    "subject": "Tari Maengket",
+    "region": "Sulawesi Utara",
+    "lang": "id",
+    "visual_facts": "Tari Maengket, Minahasa; busana adat Minahasa warna cerah, selendang; tari rakyat berkelompok",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "maengket",
+      "minahasa",
+      "sulawesi utara",
+      "tari"
+    ]
+  },
+  {
+    "id": "saronde",
+    "category": "tarian",
+    "subject": "Tari Saronde",
+    "region": "Gorontalo",
+    "lang": "id",
+    "visual_facts": "Tari Saronde, Gorontalo; tari PERNIKAHAN; pria busana adat + saputangan, perempuan busana adat Gorontalo bersulam emas",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "saronde",
+      "gorontalo",
+      "tari"
+    ]
+  },
+  {
+    "id": "cakalele",
+    "category": "tarian",
+    "subject": "Tari Cakalele",
+    "region": "Maluku",
+    "lang": "id",
+    "visual_facts": "Tari Cakalele, Maluku; tari PERANG; pria baju merah-kuning, ikat kepala, membawa PARANG & salawaku (perisai); perempuan membawa lenso (saputangan)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "cakalele",
+      "maluku",
+      "tari"
+    ]
+  },
+  {
+    "id": "lenso",
+    "category": "tarian",
+    "subject": "Tari Lenso",
+    "region": "Maluku",
+    "lang": "id",
+    "visual_facts": "Tari Lenso, Maluku; perempuan, baju CELE (kain kotak khas Maluku) atau kebaya, membawa SAPUTANGAN (lenso)",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "lenso",
+      "maluku",
+      "cele",
+      "tari"
+    ]
+  },
+  {
+    "id": "yospan",
+    "category": "tarian",
+    "subject": "Tari Yospan",
+    "region": "Papua",
+    "lang": "id",
+    "visual_facts": "Tari Yospan (Yosim Pancar), Papua; pria & perempuan, ROK RUMBAI daun sagu, hiasan kepala BULU cendrawasih/kasuari, lukisan tubuh, manik-manik; ceria enerjik",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "yospan",
+      "yosim pancar",
+      "papua",
+      "tari"
+    ]
+  },
+  {
+    "id": "sajojo",
+    "category": "tarian",
+    "subject": "Tari Sajojo",
+    "region": "Papua",
+    "lang": "id",
+    "visual_facts": "Tari Sajojo, Papua; busana RUMBAI-rumbai, hiasan kepala berbulu, badan dilukis motif khas; tari pergaulan ceria",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "sajojo",
+      "papua",
+      "tari"
+    ]
+  },
+  {
+    "id": "musyoh",
+    "category": "tarian",
+    "subject": "Tari Musyoh",
+    "region": "Papua",
+    "lang": "id",
+    "visual_facts": "Tari Musyoh, Papua; tari RITUAL pengusir arwah; rok rumbai, hiasan bulu, membawa panah/tombak",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "musyoh",
+      "papua",
+      "ritual",
+      "tari"
+    ]
+  },
+  {
+    "id": "pangkur-sagu",
+    "category": "tarian",
+    "subject": "Tari Pangkur Sagu",
+    "region": "Papua",
+    "lang": "id",
+    "visual_facts": "Tari Pangkur Sagu, Papua; busana rumbai & manik, hiasan kepala bulu; properti alat PANGKUR SAGU",
+    "style_label": "realistic",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "pangkur sagu",
+      "papua",
+      "tari"
+    ]
   }
 ]
