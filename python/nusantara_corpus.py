@@ -281,6 +281,124 @@ def reembed(embed_fn, qdrant_url: str, qdrant_api_key: str, dim: int = 3072) -> 
             "failed_embed": failed, "collection": _COLLECTION, "dim": dim}
 
 
+# ── incremental sync (append/update only the delta — NO collection wipe) ─────
+def _point_id(exemplar_id: str) -> int:
+    """Stable uint64 Qdrant point id derived from the entry id, so the same entry
+    always maps to the same point — this is what makes upsert/delete incremental
+    (and lets a killed run resume instead of starting over)."""
+    return int(hashlib.md5(str(exemplar_id).encode()).hexdigest()[:15], 16)  # 60-bit, fits uint64
+
+def _entry_text(ex: dict) -> str:
+    return f"{ex.get('subject','')}. {ex.get('visual_facts','')}. {' '.join(ex.get('tags', []))}"
+
+def _content_hash(ex: dict) -> str:
+    return hashlib.md5(_entry_text(ex).encode("utf-8")).hexdigest()[:12]
+
+def _scroll_hashes(base: str, h: dict) -> dict:
+    """{point_id: content_hash} for every point already in the collection (paged)."""
+    import requests as _req
+    out, offset = {}, None
+    while True:
+        body = {"limit": 512, "with_payload": ["_h"], "with_vector": False}
+        if offset is not None:
+            body["offset"] = offset
+        try:
+            r = _req.post(f"{base}/collections/{_COLLECTION}/points/scroll",
+                          headers=h, json=body, timeout=30)
+        except Exception:
+            break
+        if not r.ok:
+            break
+        res = r.json().get("result", {})
+        for p in res.get("points", []):
+            out[p["id"]] = (p.get("payload") or {}).get("_h")
+        offset = res.get("next_page_offset")
+        if offset is None:
+            break
+    return out
+
+def sync(embed_fn, qdrant_url: str, qdrant_api_key: str, dim: int = 3072) -> dict:
+    """Incremental sync of the seed into Qdrant. Creates the collection if missing,
+    embeds + upserts ONLY new/changed entries (matched by stable id + content hash),
+    deletes points no longer in the seed. No wipe → no 0-point window; unchanged
+    entries are never re-embedded; batched upserts persist progress so a restart
+    resumes instead of starting from zero. Full-rebuilds via reembed() only if the
+    vector dim changed."""
+    import requests as _req
+    seed = _load_seed()
+    if not seed:
+        return {"ok": False, "error": "seed empty / not found", "added": 0, "updated": 0, "deleted": 0}
+    base = qdrant_url.rstrip("/")
+    h = {"Content-Type": "application/json"}
+    if qdrant_api_key:
+        h["api-key"] = qdrant_api_key
+    # ensure collection exists with the right dim — create if missing, NEVER drop it
+    try:
+        rc = _req.get(f"{base}/collections/{_COLLECTION}", headers=h, timeout=15)
+        if not rc.ok:
+            cr = _req.put(f"{base}/collections/{_COLLECTION}", headers=h,
+                          json={"vectors": {"size": dim, "distance": "Cosine"}}, timeout=30)
+            if not cr.ok:
+                return {"ok": False, "error": f"create collection {cr.status_code}: {cr.text[:120]}"}
+        else:
+            vinfo = (((rc.json().get("result") or {}).get("config") or {})
+                     .get("params") or {}).get("vectors", {})
+            cur_dim = vinfo.get("size") if isinstance(vinfo, dict) else None
+            if cur_dim and cur_dim != dim:                       # dim changed → must full rebuild
+                return reembed(embed_fn, qdrant_url, qdrant_api_key, dim=dim)
+    except Exception as e:
+        return {"ok": False, "error": f"qdrant unreachable: {e}"}
+
+    existing = _scroll_hashes(base, h)                            # {pid: content_hash}
+    seed_pids, failed, batch = set(), [], []
+    added = updated = 0
+
+    def _flush(pts):
+        if not pts:
+            return None
+        try:
+            ru = _req.put(f"{base}/collections/{_COLLECTION}/points", headers=h,
+                          json={"points": pts}, timeout=60)
+            if not ru.ok:
+                return f"upsert {ru.status_code}: {ru.text[:120]}"
+        except Exception as e:
+            return f"upsert err: {e}"
+        return None
+
+    for ex in seed:
+        pid = _point_id(ex["id"]); seed_pids.add(pid)
+        chash = _content_hash(ex)
+        if existing.get(pid) == chash:
+            continue                                             # unchanged → never re-embed
+        vec = embed_fn(_entry_text(ex), task="RETRIEVAL_DOCUMENT")
+        if not vec:
+            failed.append(ex["id"]); continue
+        batch.append({"id": pid, "vector": vec,
+                      "payload": {"exemplar_id": ex["id"], "_h": chash}})
+        if pid in existing: updated += 1
+        else: added += 1
+        if len(batch) >= 50:                                     # persist progress as we go
+            err = _flush(batch)
+            if err:
+                return {"ok": False, "error": err, "added": added, "updated": updated}
+            batch = []
+    err = _flush(batch)
+    if err:
+        return {"ok": False, "error": err, "added": added, "updated": updated}
+
+    stale = [pid for pid in existing if pid not in seed_pids]    # removed from seed → delete points
+    if stale:
+        try:
+            _req.post(f"{base}/collections/{_COLLECTION}/points/delete", headers=h,
+                      json={"points": stale}, timeout=60)
+        except Exception:
+            pass
+    _qmeta_set(qdrant_url, qdrant_api_key, seed_hash())
+    return {"ok": True, "added": added, "updated": updated, "deleted": len(stale),
+            "unchanged": len(seed) - added - updated - len(failed), "total": len(seed),
+            "failed_embed": failed, "collection": _COLLECTION}
+
+
 # ── public retrieve ──────────────────────────────────────────────────────
 def retrieve(query: str, top_k: int = 8,
              gemini_api_key: str | None = None,

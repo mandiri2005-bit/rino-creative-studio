@@ -197,11 +197,14 @@ def _auto_reembed_if_changed():
         import nusantara_corpus as _nc
         cur = _nc.seed_hash()
         stored = _nc._qmeta_get(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
-        if cur and cur == stored:
-            _log.info("auto-reembed: Qdrant already in sync (hash %s) — nothing to do", cur[:8])
+        count = _nc.qdrant_count(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "") or 0
+        # self-heal: skip ONLY if hash matches AND the collection actually has the points.
+        # (meta can say "synced" while the collection is empty after a killed rebuild.)
+        if cur and cur == stored and count > 0:
+            _log.info("auto-reembed: Qdrant in sync (hash %s, %d pts) — nothing to do", cur[:8], count)
             return
-        _log.warning("auto-reembed: seed changed (%s -> %s), re-indexing 233 via OAuth…", stored, cur[:8])
-        res = _nc.reembed(_vertex_embed, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+        _log.warning("auto-reembed: syncing (hash %s -> %s, have %d pts) via OAuth…", stored, cur[:8], count)
+        res = _nc.sync(_vertex_embed, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
         _log.warning("auto-reembed RESULT: %s", res)
     except Exception as e:
         _log.warning("auto-reembed FAILED: %s", e)
@@ -6793,9 +6796,12 @@ async def corpus_status():
 
 
 @app.post("/corpus/reembed")
-async def corpus_reembed(x_reembed_secret: str = Header(None, alias="X-Reembed-Secret")):
-    """Admin: (re)build the Qdrant collection from the seed using OAuth embeddings
-    (no GEMINI key). Secret-gated. After it succeeds, set CORPUS_USE_QDRANT=true."""
+async def corpus_reembed(x_reembed_secret: str = Header(None, alias="X-Reembed-Secret"),
+                         full: bool = False):
+    """Admin: index the Qdrant collection from the seed using OAuth embeddings (no
+    GEMINI key). Secret-gated. Default = incremental sync (no wipe, only embeds the
+    delta, safe to re-run / resume). Pass ?full=true to force a DELETE+rebuild
+    (use only on a dim change or suspected corruption)."""
     if not CORPUS_REEMBED_SECRET:
         raise HTTPException(503, "Set CORPUS_REEMBED_SECRET env on the Python service first")
     if x_reembed_secret != CORPUS_REEMBED_SECRET:
@@ -6808,10 +6814,12 @@ async def corpus_reembed(x_reembed_secret: str = Header(None, alias="X-Reembed-S
     if _vertex_embed("uji embedding") is None:
         raise HTTPException(502, "embedding via OAuth returned nothing — check gemini-embedding-001 access on Vertex")
     import nusantara_corpus as _nc
-    result = _nc.reembed(_vertex_embed, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+    fn = _nc.reembed if full else _nc.sync
+    result = await asyncio.to_thread(fn, _vertex_embed, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
     if not result.get("ok"):
-        raise HTTPException(500, f"reembed failed: {result.get('error')}")
-    return {**result, "note": "now set CORPUS_USE_QDRANT=true and redeploy to switch queries to Qdrant ANN"}
+        raise HTTPException(500, f"{'reembed' if full else 'sync'} failed: {result.get('error')}")
+    return {**result, "mode": "full-rebuild" if full else "incremental-sync",
+            "note": "if CORPUS_USE_QDRANT is not yet true, set it and redeploy to switch queries to Qdrant ANN"}
 
 
 if __name__ == "__main__":
