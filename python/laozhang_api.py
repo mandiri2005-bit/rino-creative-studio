@@ -114,6 +114,9 @@ QDRANT_CLOUD_KEY  = os.environ.get("QDRANT_CLOUD_KEY", "")
 # has been re-embedded into Qdrant. Flip to true AFTER running /corpus/reembed.
 CORPUS_USE_QDRANT = os.environ.get("CORPUS_USE_QDRANT", "").strip().lower() in ("1", "true", "yes", "on")
 CORPUS_REEMBED_SECRET = os.environ.get("CORPUS_REEMBED_SECRET", "")
+# Auto re-embed: on each Python boot, if the seed hash changed, re-index Qdrant in
+# the background (no manual trigger, no secret). So every deploy keeps Qdrant in sync.
+CORPUS_AUTO_REEMBED = os.environ.get("CORPUS_AUTO_REEMBED", "").strip().lower() in ("1", "true", "yes", "on")
 
 _vertex_ready = False
 _gcp_creds = None  # OAuth Credentials, reused by Imagen (vertexai) + Gemini (google.genai)
@@ -180,6 +183,38 @@ def _vertex_embed(text: str, task: str = "RETRIEVAL_QUERY"):
     except Exception as e:
         import warnings; warnings.warn(f"vertex embed failed: {e}")
         return None
+
+def _auto_reembed_if_changed():
+    """Background: re-index Qdrant only if the seed hash differs from what's stored.
+    Cheap no-op when unchanged. Gated by CORPUS_AUTO_REEMBED."""
+    if not (CORPUS_AUTO_REEMBED and QDRANT_CLOUD_URL):
+        return
+    import warnings
+    if not _ensure_vertex():
+        warnings.warn("auto-reembed skipped: Vertex/OAuth not ready")
+        return
+    try:
+        import nusantara_corpus as _nc
+        cur = _nc.seed_hash()
+        stored = _nc._qmeta_get(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+        if cur and cur == stored:
+            return                                       # already in sync — nothing to do
+        warnings.warn(f"auto-reembed: seed changed ({stored} -> {cur[:8]}), re-indexing…")
+        res = _nc.reembed(_vertex_embed, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+        warnings.warn(f"auto-reembed result: {res}")
+    except Exception as e:
+        warnings.warn(f"auto-reembed failed: {e}")
+
+def _start_auto_reembed():
+    if not CORPUS_AUTO_REEMBED:
+        return
+    import threading, time
+    def _runner():
+        time.sleep(5)                                    # let the app finish booting
+        _auto_reembed_if_changed()
+    threading.Thread(target=_runner, daemon=True).start()
+
+_start_auto_reembed()
 
 def _vertex_diag() -> str:
     """Explain why _ensure_vertex() failed — NEVER leaks values, only var NAMES / import errors."""

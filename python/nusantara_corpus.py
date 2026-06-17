@@ -11,7 +11,7 @@ Usage in /generate-image handler:
   if not req.ref_image and ref_b64:
       req.ref_image = ref_b64
 """
-import os, json, re, math, base64, io, logging
+import os, json, re, math, base64, io, logging, hashlib
 from pathlib import Path
 from collections import Counter
 from functools import lru_cache
@@ -166,7 +166,7 @@ def _qdrant_retrieve(query: str, top_k: int, api_key, qdrant_url: str,
             return None
         results = r.json().get("result", [])
         if not results:
-            return []
+            return None                              # empty/rebuilding → let BM25 try
         seed_idx = _seed_by_id()
         top = results[0].get("score") or 0.0
         cut = max(_QDRANT_MIN, _GATE_FRAC * top)    # absolute floor + relative gate
@@ -177,10 +177,50 @@ def _qdrant_retrieve(query: str, top_k: int, api_key, qdrant_url: str,
             eid = pt.get("payload", {}).get("exemplar_id")
             if eid and eid in seed_idx:
                 hits.append(seed_idx[eid])
-        return hits
+        return hits or None                          # nothing relevant → BM25 fallback
     except Exception as e:
         logger.warning("qdrant retrieve err: %s", e)
         return None
+
+
+# ── seed hash ↔ Qdrant meta (lets auto-reembed fire only when the seed changes) ──
+_META_COLLECTION = "nusantara_meta"
+
+def seed_hash() -> str:
+    try:
+        return hashlib.md5(_SEED_PATH.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+def _qmeta_get(qdrant_url: str, qdrant_api_key: str) -> str | None:
+    import requests as _req
+    h = {"Content-Type": "application/json"}
+    if qdrant_api_key:
+        h["api-key"] = qdrant_api_key
+    try:
+        r = _req.post(f"{qdrant_url.rstrip('/')}/collections/{_META_COLLECTION}/points/scroll",
+                      headers=h, json={"limit": 1, "with_payload": True}, timeout=10)
+        if r.ok:
+            pts = r.json().get("result", {}).get("points", [])
+            if pts:
+                return pts[0].get("payload", {}).get("seed_hash")
+    except Exception:
+        pass
+    return None
+
+def _qmeta_set(qdrant_url: str, qdrant_api_key: str, value: str) -> None:
+    import requests as _req
+    base = qdrant_url.rstrip("/")
+    h = {"Content-Type": "application/json"}
+    if qdrant_api_key:
+        h["api-key"] = qdrant_api_key
+    try:
+        _req.put(f"{base}/collections/{_META_COLLECTION}", headers=h,
+                 json={"vectors": {"size": 1, "distance": "Cosine"}}, timeout=15)  # no-op if exists
+        _req.put(f"{base}/collections/{_META_COLLECTION}/points", headers=h,
+                 json={"points": [{"id": 0, "vector": [0.0], "payload": {"seed_hash": value}}]}, timeout=15)
+    except Exception:
+        pass
 
 
 # ── Re-embed: (re)build the Qdrant collection from the seed via embed_fn ──────
@@ -221,6 +261,7 @@ def reembed(embed_fn, qdrant_url: str, qdrant_api_key: str, dim: int = 3072) -> 
                         "indexed": b, "total": len(seed), "failed_embed": failed}
         except Exception as e:
             return {"ok": False, "error": f"upsert err: {e}", "indexed": b, "total": len(seed)}
+    _qmeta_set(qdrant_url, qdrant_api_key, seed_hash())   # record what we just indexed
     return {"ok": True, "indexed": len(points), "total": len(seed),
             "failed_embed": failed, "collection": _COLLECTION, "dim": dim}
 
