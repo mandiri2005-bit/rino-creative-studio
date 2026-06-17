@@ -53,7 +53,7 @@ log = logging.getLogger("chat_router")
 # A provider is "usable" only if its credential is present (else auto-skipped).
 # ──────────────────────────────────────────────────────────────────────────────
 PROVIDERS: dict[str, dict] = {
-    "laozhang":   {"kind": "openai_compat", "base_url": "https://api.laozhang.ai/v1", "key_env": "LAOZHANG_API_KEY"},
+    "laozhang":   {"kind": "openai_compat", "base_url": "https://api.laozhang.ai/v1", "key_env": "LAOZHANG_API_KEY", "gateway": True},
     "openai":     {"kind": "openai_compat", "base_url": "https://api.openai.com/v1",  "key_env": "OPENAI_API_KEY"},
     "deepseek":   {"kind": "openai_compat", "base_url": "https://api.deepseek.com",   "key_env": "DEEPSEEK_API_KEY"},
     "anthropic":  {"kind": "anthropic",     "base_url": "https://api.anthropic.com",  "key_env": "ANTHROPIC_API_KEY"},
@@ -67,6 +67,8 @@ def provider_usable(name: str) -> bool:
     p = PROVIDERS.get(name)
     if not p:
         return False
+    if p.get("gateway"):
+        return True              # laozhang gateway: always listable (key is per-request, not env)
     if p["kind"] == "google_vertex":
         # OAuth refresh-token creds; lazy-checked via laozhang_api._ensure_vertex().
         try:

@@ -657,6 +657,31 @@ app.post("/api/chat", async (req,res) => {
   } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
 });
 
+// CHAT / GOOGLE via Vertex OAuth — proxy → Python /chat/google/stream. Overrides the
+// legacy Node plain-key handler further below (Express runs the first-registered route),
+// so the Google route no longer depends on the fragile/leakable GEMINI_API_KEY.
+app.post("/api/chat/google", async (req, res) => {
+  res.setHeader("Content-Type","text/event-stream");
+  res.setHeader("Cache-Control","no-cache");
+  res.setHeader("Connection","keep-alive");
+  try {
+    const _authg = req.headers["authorization"] || "";
+    const b = req.body || {};
+    const pyRes = await fetch(`${PYTHON_API}/chat/google/stream`, {
+      method:"POST", headers:{"Content-Type":"application/json",...(_authg&&{"Authorization":_authg})},
+      body: JSON.stringify({ message:b.message||"", model:b.model||"gemini-2.5-flash",
+        system:b.system||"", history:Array.isArray(b.history)?b.history:[],
+        temperature:(b.temperature??1.0), thinkingLevel:b.thinkingLevel||"",
+        max_tokens:b.max_tokens||8192, images:Array.isArray(b.images)?b.images:[],
+        session_id:b.sessionId||"" }),
+    });
+    const reader = pyRes.body.getReader();
+    req.on("close",()=>reader.cancel());
+    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
+    if(!res.writableEnded) res.end();
+  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
+});
+
 // One-shot non-streaming chat — used by auto-pick video feature
 app.post("/api/chat/once", async (req,res) => {
   try{

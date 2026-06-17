@@ -1698,6 +1698,101 @@ async def stream_chat(req: ChatRequest,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# CHAT / GOOGLE via VERTEX OAUTH — replaces the legacy Node plain-key path so the
+# Google route survives GEMINI_API_KEY rotation/leaks. Same contract as the old
+# Node /api/chat/google (client-sent history, persist+log, no credit gate); Node
+# now proxies here. Uses _genai_client() (the same Vertex OAuth as FAQ + image-gen).
+# ══════════════════════════════════════════════════════════════════════════════
+class GoogleChatRequest(BaseModel):
+    message: str = ""
+    model: str = "gemini-2.5-flash"
+    system: str = ""
+    history: list[dict] = []
+    temperature: float = 1.0
+    thinkingLevel: str = ""
+    max_tokens: int = 8192
+    images: list[dict] = []
+    session_id: str = ""
+
+
+@app.post("/chat/google/stream")
+async def stream_chat_google(req: GoogleChatRequest,
+                             user: CurrentUser = Depends(get_current_user)):
+    import base64 as _b64
+    _TENANT_ID = user.tenant_id
+    _USER_ID   = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    _session_id = _to_uuid(req.session_id) if req.session_id else \
+        uuid.uuid5(uuid.NAMESPACE_DNS, f"google-{user.tenant_id}-{uuid.uuid4()}")
+    try:
+        await db.get_or_create_session(_TENANT_ID, _USER_ID, _session_id, req.model, req.system)
+    except Exception as e:
+        print(f"[chat/google] session err: {e}", flush=True)
+
+    async def generate():
+        client = _genai_client()                       # Vertex OAuth (None if unconfigured)
+        if client is None:
+            yield "data: [ERROR: Vertex OAuth not configured on server]\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        # Build contents (dict form — version-stable): history → user/model turns.
+        contents: list[dict] = []
+        for h in (req.history or []):
+            role = "model" if h.get("role") == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": h.get("content") or ""}]})
+        uparts: list[dict] = [{"text": req.message}]
+        for img in (req.images or []):
+            if img.get("b64"):
+                uparts.append({"inline_data": {"mime_type": img.get("mime", "image/png"),
+                                               "data": img["b64"]}})
+        contents.append({"role": "user", "parts": uparts})
+        sys_text = (req.system + FILE_OUTPUT_INSTRUCTION) if req.system else FILE_OUTPUT_INSTRUCTION
+        cfg: dict = {"system_instruction": sys_text, "temperature": req.temperature,
+                     "max_output_tokens": req.max_tokens}
+        if req.thinkingLevel and req.model.startswith("gemini-3"):
+            cfg["thinking_config"] = {"thinking_level": req.thinkingLevel}
+
+        chunks: list[str] = []
+        tin = tout = 0
+        try:
+            stream = await client.aio.models.generate_content_stream(
+                model=req.model, contents=contents, config=cfg)
+            async for ch in stream:
+                t = getattr(ch, "text", None) or ""
+                if t:
+                    chunks.append(t)
+                    enc = t.replace("\\", "\\\\").replace("\n", "\\n")
+                    yield f"data: {enc}\n\n"
+                um = getattr(ch, "usage_metadata", None)
+                if um:
+                    tin  = getattr(um, "prompt_token_count", 0) or tin
+                    tout = getattr(um, "candidates_token_count", 0) or tout
+            if tin or tout:
+                yield f"data: [USAGE:{json.dumps({'input': tin, 'output': tout})}]\n\n"
+        except Exception as e:
+            yield f"data: [ERROR: {e}]\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        # Persist + log (provider=gemini, no credit gate — matches legacy Google route).
+        reply = "".join(chunks)
+        if reply:
+            stored_user = req.message + (
+                f"\n\n[Attached {len(req.images)} image(s)]" if req.images else "")
+            cost = _calc_cost(req.model, tin, tout)
+            try:
+                await db.append_message(_TENANT_ID, _session_id, "user", stored_user, req.model)
+                await db.append_message(_TENANT_ID, _session_id, "assistant", reply, req.model,
+                                        tokens_in=tin, tokens_out=tout, cost_usd=cost)
+                await db.log_usage(_TENANT_ID, _USER_ID, req.model, "chat", tin, tout, cost,
+                                   session_id=str(_session_id), provider="gemini", credits=0)
+            except Exception as e:
+                print(f"[chat/google] persist err: {e}", flush=True)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # CHAT v2 — single model registry + per-model provider failover (chat_router.py).
 # Parallel to /chat/stream above; the legacy endpoint is untouched until cutover.
 # ══════════════════════════════════════════════════════════════════════════════
