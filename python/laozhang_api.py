@@ -6654,8 +6654,10 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest):
 
 @app.get("/corpus/status")
 async def corpus_status():
-    """Read-only: corpus + Qdrant state (point count, hash sync, flags). No secret."""
+    """Read-only: corpus + Qdrant state. Never blocks the event loop or hangs —
+    Qdrant calls run in a thread with a hard timeout; vertex is the cached flag."""
     import nusantara_corpus as _nc
+    import asyncio as _asyncio
     cur = _nc.seed_hash()
     out = {
         "seed_entries": len(_nc._load_seed()),
@@ -6663,14 +6665,21 @@ async def corpus_status():
         "use_qdrant": CORPUS_USE_QDRANT,
         "auto_reembed": CORPUS_AUTO_REEMBED,
         "qdrant_url_set": bool(QDRANT_CLOUD_URL),
-        "vertex_ready": _ensure_vertex(),
+        "vertex_ready": _vertex_ready,                 # cached flag — no network call
         "active_path": "qdrant" if CORPUS_USE_QDRANT else "bm25",
     }
     if QDRANT_CLOUD_URL:
-        out["qdrant_points"] = _nc.qdrant_count(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
-        stored = _nc._qmeta_get(QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or "")
+        try:
+            pts = await _asyncio.wait_for(
+                _asyncio.to_thread(_nc.qdrant_count, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or ""), timeout=8)
+            stored = await _asyncio.wait_for(
+                _asyncio.to_thread(_nc._qmeta_get, QDRANT_CLOUD_URL, QDRANT_CLOUD_KEY or ""), timeout=8)
+        except Exception as e:
+            out["qdrant_error"] = str(e)[:120] or "qdrant unreachable/timeout"
+            pts, stored = None, None
+        out["qdrant_points"] = pts
         out["qdrant_seed_hash"] = (stored or "")[:12]
-        out["in_sync"] = bool(stored and stored == cur and out["qdrant_points"] == out["seed_entries"])
+        out["in_sync"] = bool(stored and stored == cur and pts == out["seed_entries"])
     return out
 
 
