@@ -111,7 +111,7 @@
     "subject": "Becak",
     "region": "Jawa",
     "lang": "id",
-    "visual_facts": "Becak Jawa: konfigurasi pengemudi di BELAKANG, penumpang di DEPAN (berbeda dengan becak Betawi/Sumatera); tiga roda, atap kanopi warna-warni, dekorasi lukisan; pengemudi mendayung sambil duduk tinggi di belakang; jalan pelan di gang kampung; warna cerah merah/biru/kuning",
+    "visual_facts": "BECAK. Jenis: Kendaraan tidak bermotor (pedal); Visual Eksterior: Kendaraan roda tiga; pengemudi (tukang becak) mengayuh pedal di BELAKANG; kabin penumpang di DEPAN (berbeda dari riksha India di mana pengemudi di depan) · Kabin depan: kursi duduk untuk 2 orang; atap dari terpal atau fiberglass berwarna-warni; kerangka besi melengkung menopang atap · Warna sangat bervariasi: merah, biru, hijau, kuning — tergantung kota · Di Yogyakarta: becak sering dihias dengan lukisan dan ornamen khas · Banyak becak punya kaca riben atau tirai plastik untuk melindungi penumpang dari hujan; digulung ke atas saat tidak hujan; Visual Detail: Roda depan dua: besar dan lebar; ban karet hitam · Rantai sepeda menghubungkan pedal ke roda; terlihat berkarat di banyak becak · Lampu karbid atau baterai kecil di sisi depan · Spion kecil; bel sepeda; kadang ada hiasan cermin kecil berkilau. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
     "style_label": "wayang-pop screenprint",
     "rights_class": "curated",
     "ref_image_path": "refs/becak.jpg",
@@ -6043,6 +6043,747 @@
       "jalanan",
       "ketengahan",
       "serbaguna"
+    ]
+  },
+  {
+    "id": "oplet",
+    "category": "kendaraan",
+    "subject": "Oplet",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "OPLET. Jenis: Angkutan umum kota (mini van modifikasi); Visual Eksterior: Basis kendaraan: Morris Minor (Inggris) atau Austin berbentuk van mungil; kapnya membulat seperti setengah telur — sangat mungil dan menggemaskan · Bodi baja bulat-mulus; tidak ada garis tajam; ujung depan membulat · Cat: umumnya warna-warni cerah; banyak yang cat dua warna dengan garis pemisah; beberapa bergaris dekoratif di sisi · Pintu geser di sisi kiri (atau pintu engsel kecil); ban kecil proporsional · Ukuran sangat kecil: panjang ±3.5 m, lebar ±1.5 m; terlihat seperti mainan dibandingkan bus biasa; Visual Interior: Bangku kayu panjang di kiri-kanan (berhadapan); tanpa sandaran punggung yang nyaman; jok tipis beralas kain atau vinyl · Plafon rendah; penumpang tinggi harus menunduk · Kondektur berdiri atau duduk di dekat pintu; karcis kertas kecil. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "oplet"
+    ]
+  },
+  {
+    "id": "bajaj",
+    "category": "kendaraan",
+    "subject": "Bajaj (Biru & Oranye)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BAJAJ (BIRU & ORANYE). Jenis: Angkutan umum kota (tuktuk Indonesia); Visual Eksterior: Kendaraan roda tiga berkabin tertutup; bodi bulat-bulat menggemaskan · BAJAJ ORANYE (2-tak, lama): warna oranye terang menyala; bodi fiberglass membulat; kaca depan kecil; pintu terbuka dari samping (seperti gorden) · BAJAJ BIRU (4-tak, baru): warna biru tua; mesin lebih bersih; lebih tenang; mulai menggantikan bajaj oranye sejak 2000an · Atap bundar seperti kubah; tinggi di tengah; sangat ikonik siluetnya · Kabin penumpang di belakang dengan pintu kain/plastik tipis; Visual Interior: Bangku penumpang menghadap ke depan; 2–3 orang muat · Dinding tipis; jendela kecil dengan tirai plastik · Pengemudi di depan terpisah dari penumpang; komunikasi lewat jendela kecil. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "bajaj"
+    ]
+  },
+  {
+    "id": "metromini",
+    "category": "kendaraan",
+    "subject": "Metromini",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "METROMINI. Jenis: Bus sedang trayek kota Jakarta; Visual Eksterior: Bus sedang (medium bus) panjang ±6–7 m; bodi kotak khas bus lama · Warna ORANYE dengan garis KUNING — SANGAT IKONIK; tidak ada kendaraan lain yang warnanya persis metromini · Nomor trayek di papan di kaca depan (manual, diganti-ganti) · Kondisi umum: catnya pudar, banyak penyok dan benturan di bodi; kaca retak dibalut selotip cokelat; pintu engsel yang sering copot · Pintu belakang lebar untuk naik-turun penumpang; kondektur bergantungan di pintu sambil berteriak trayek; Visual Interior: Bangku besi atau kayu keras; beberapa dilapisi spons tipis; banyak sudah sobek dengan busa menyembul keluar · Panas dan pengap; hampir tidak ada ventilasi · Tulisan-tulisan di dinding: \"Dilarang merokok\" (tapi penumpang merokok), \"Awas pencopet\", foto artis dangdut, stiker religi · Lantai kayu yang aus dan kotor; bau asap rokok dan keringat. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "metromini"
+    ]
+  },
+  {
+    "id": "kopaja",
+    "category": "kendaraan",
+    "subject": "Kopaja",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KOPAJA. Jenis: Bus sedang trayek kota Jakarta; Visual Eksterior: Sangat mirip Metromini dalam ukuran dan bentuk · Warna HIJAU tua dengan garis KUNING — pembeda dari Metromini oranye · Bodi kotak; kondisi umumnya tidak jauh berbeda dari Metromini · Beberapa unit lebih panjang dari Metromini; Visual Interior: Sama persis dengan Metromini: bangku keras, panas, berisik · Satu detail beda: kondektur Kopaja sering lebih agresif menagih ongkos. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "kopaja"
+    ]
+  },
+  {
+    "id": "mikrolet",
+    "category": "kendaraan",
+    "subject": "Mikrolet",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MIKROLET. Jenis: Angkutan kota kecil Jakarta; Visual Eksterior: Basis kendaraan: Mitsubishi Colt T120 (colt) atau Mitsubishi Minicab · Warna BIRU dengan garis KUNING — identitas khas Mikrolet Jakarta · Lebih kecil dari angkot; lebih compact; jendela-jendela kecil di sisi · Nomor trayek (M + angka) di kaca depan · Kondisi umumnya kusam; cat pudar; tapi masih beroperasi; Visual Interior: Bangku kayu atau busa di kiri-kanan berhadapan · Sangat sempit; kaki penumpang bersentuhan. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "mikrolet"
+    ]
+  },
+  {
+    "id": "becak-motor",
+    "category": "kendaraan",
+    "subject": "Becak Motor (Bentor)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BECAK MOTOR (BENTOR). Jenis: Kendaraan bermotor modifikasi; Visual Eksterior: Modifikasi becak: bagian belakang (pengayuh) diganti dengan mesin motor · Motor bebek (Honda/Yamaha) dipotong dan disambung ke bodi becak · Pengemudi naik motor di belakang; kabin penumpang di depan tetap sama · Bentuk masih seperti becak tapi lebih cepat; mesin terlihat di sisi belakang · Kondisi bervariasi; banyak las-lasan kasar terlihat di sambungan. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "becak",
+      "motor"
+    ]
+  },
+  {
+    "id": "helicak",
+    "category": "kendaraan",
+    "subject": "Helicak",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "HELICAK. Jenis: Angkutan kota Jakarta (pengganti becak 1971); Visual Eksterior: Kendaraan roda tiga bermesin; atap berbentuk kubah tinggi-runcing seperti HELM ASTRONOT atau siluet helikopter (dari sinilah nama \"helicak\") · Bodi fiberglass; warna kuning cerah dengan strip merah atau biru · Bagian depan: pengemudi; bagian belakang: kabin penumpang tertutup · Desain futuristik untuk zamannya; terlihat seperti kapsul mini. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "helicak"
+    ]
+  },
+  {
+    "id": "taksi-bluebird",
+    "category": "kendaraan",
+    "subject": "Taksi Bluebird (Era Lawas)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TAKSI BLUEBIRD (ERA LAWAS). Jenis: Taksi argometer kota; Visual Interior: Jok kulit atau fabric bersih; ada AC (mewah untuk zamannya) · Sopir berseragam kemeja biru; sopir wajib berperilaku sopan · Stiker aturan penumpang di kaca belakang. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "taksi",
+      "bluebird"
+    ]
+  },
+  {
+    "id": "bus-kota-patas",
+    "category": "kendaraan",
+    "subject": "Bus Kota Patas (Ppd/Mayasari)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BUS KOTA PATAS (PPD/MAYASARI). Jenis: Bus besar trayek dalam kota; Visual Eksterior: Bus besar (full-size) panjang 10–12 m; bodi kotak kaku khas bus Eropa · PPD (Perum Pengangkutan Djakarta): warna MERAH dengan garis putih · Mayasari Bakti: warna BIRU atau kombinasi biru-putih · Ban ganda di roda belakang; terlihat besar dan berat · Kondisi kusam; cat pudar; bodi penyok; knalpot hitam; Visual Interior: Bangku plastik keras di sisi; lorong tengah untuk berdiri · Teralis besi di langit-langit untuk pegangan penumpang berdiri · Kipas angin kecil di langit-langit (bukan AC); panas luar biasa. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "bus",
+      "kota"
+    ]
+  },
+  {
+    "id": "transjakarta-busway",
+    "category": "kendaraan",
+    "subject": "Transjakarta Busway (Generasi Pertama)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TRANSJAKARTA BUSWAY (GENERASI PERTAMA). Jenis: Bus Rapid Transit (BRT); Visual Eksterior: Bus besar berwarna MERAH dengan garis PUTIH-BIRU; logo TransJakarta · Pintu penumpang khusus di sisi kiri yang sejajar platform halte · Halte (shelter) Busway: struktur besi-kaca tinggi di median jalan; tertutup; Visual Interior: AC central; bangku di pinggir; lorong tengah; pegangan gantung · Pengumuman stasiun audio dan visual di layar LCD · Lebih bersih dan teratur dari bus sebelumnya. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "transjakarta",
+      "busway"
+    ]
+  },
+  {
+    "id": "kereta-rel-listrik-commuter-line",
+    "category": "kendaraan",
+    "subject": "Kereta Rel Listrik (Krl) Commuter Line (Era Lawas)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KERETA REL LISTRIK (KRL) COMMUTER LINE (ERA LAWAS). Jenis: Kereta listrik komuter. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "kereta",
+      "rel"
+    ]
+  },
+  {
+    "id": "kereta-uap",
+    "category": "kendaraan",
+    "subject": "Kereta Uap (Lori Tebu)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KERETA UAP (LORI TEBU). Jenis: Kereta rel sempit (narrow gauge) pabrik gula; Visual Eksterior: Lokomotif kecil berwarna hitam atau hijau tua; asap mengepul dari cerobong · Rel sangat sempit (600–700 mm); jalur menembus kebun tebu · Gerbong-gerbong kecil terbuka berisi tebu yang dipotong-potong · Kondisi tua dan berat; besi berkarat di mana-mana tapi masih berfungsi. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "kereta",
+      "uap"
+    ]
+  },
+  {
+    "id": "odong-odong",
+    "category": "kendaraan",
+    "subject": "Odong-Odong (Versi Gerobak Kampung)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ODONG-ODONG (VERSI GEROBAK KAMPUNG). Jenis: Wahana hiburan anak keliling; Visual Eksterior: Platform datar dari kayu atau besi; beroda empat kecil; ditarik oleh sepeda atau motor kecil (traktor mini) · Di atas platform: kursi-kursi kecil berwarna-warni untuk anak-anak; berbentuk hewan (ayam, kuda, gajah) atau kendaraan (mobil, motor) · Rangka besi berbentuk atap kanopi di atasnya; dihias lampu-lampu warna-warni yang berkedip-kedip · Dekorasi: hiasan plastik warna-warni; bendera-bendera mini; gambar karakter kartun (Donald Bebek, Doraemon, Hello Kitty) yang sudah pudar · Terkadang ada hiasan cermin kecil berkilau di sisi; Visual Detail: Semua terlihat buatan tangan; las-lasan kasar; cat mengelupas di sudut; tapi justru ini yang membuat odong-odong terasa \"authentic\" dan hangat · Lampu-lampu LED atau bohlam warna merah-kuning-hijau-biru berkedip tidak beraturan; ada yang berputar seperti bintang; Cara Kerja: Ditarik motor atau sepeda keliling perumahan atau mangkal di area ramai · Penumpang: anak-anak 2–10 tahun; bayar per putaran · Operator/pengemudi sesekali menoleh ke belakang mengecek anak-anak. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "odong",
+      "odong"
+    ]
+  },
+  {
+    "id": "odong-odong-kereta",
+    "category": "kendaraan",
+    "subject": "Odong-Odong Kereta (Versi Modern)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ODONG-ODONG KERETA (VERSI MODERN). Jenis: Wahana hiburan anak (versi modern); Visual Eksterior: Rangkaian \"kereta\" mini dari fiberglass atau plastik; terdiri dari lokomotif kecil + 3–5 gerbong; setiap gerbong berkapasitas 4–6 anak · Warna terang: merah, kuning, biru cerah; motif menggambarkan kereta sungguhan tapi ukuran mini; lucu dan berwarna-warni · Lokomotif paling depan sering berbentuk karakter (Thomas & Friends, Hello Kitty, atau karakter bikinan sendiri) · Berjalan di atas rel karet atau langsung di aspal/beton. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "odong",
+      "odong"
+    ]
+  },
+  {
+    "id": "komidi-putar-kampung",
+    "category": "kendaraan",
+    "subject": "Komidi Putar Kampung (Kincir Angin Keliling)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KOMIDI PUTAR KAMPUNG (KINCIR ANGIN KELILING). Jenis: Wahana hiburan berputar tradisional; Visual Eksterior: Struktur besi/baja berdiri sendiri; tiang pusat vertikal dari mana lengan-lengan besi menjulur ke luar seperti bintang · Di ujung tiap lengan: kursi atau 'gondola' kecil untuk penumpang · Diputar oleh TENAGA MANUSIA (operator mendorong/menarik) — tidak bermesin · Tinggi: 2–3 meter; diameter: 4–6 meter · Dicat warna-warni cerah: merah-kuning-hijau-biru tapi sudah banyak yang berkarat; cat mengelupas; besi las-lasan kasar; Visual Detail: Sambungan-sambungan besi terlihat dilas dengan kualitas seadanya · Terkadang ada dekorasi lampu-lampu bohlam di sepanjang lengan · Berputar pelan (tidak seperti komidi putar modern yang kencang) · Kursi gantung kecil berayun saat berputar; Cara Kerja: Operator mendorong salah satu lengan; kincir berputar; penumpang menikmati · Bayar per putaran; berhenti saat cukup. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "komidi",
+      "putar"
+    ]
+  },
+  {
+    "id": "komidi-putar-mobil-mobilan",
+    "category": "kendaraan",
+    "subject": "Komidi Putar Mobil-Mobilan (Pasar Malam / Taman Hiburan)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KOMIDI PUTAR MOBIL-MOBILAN (PASAR MALAM / TAMAN HIBURAN). Jenis: Wahana hiburan putar dengan kendaraan miniatur; Visual Eksterior: Platform bundar berputar berdiameter 4–8 meter; di atasnya terdapat kendaraan-kendaraan miniatur: mobil kecil, motor kecil, kuda-kudaan, sepeda miniatur — semuanya dipasang tetap dan ikut berputar · Kendaraan biasanya dari fiberglass warna-warni; bentuk imut dan kartun · Tiang pusat dengan ornamen bintang atau bunga berputar di atas · Lampu-lampu bohlam (kelap-kelip) di seluruh struktur; terlihat sangat meriah di malam hari; Visual Malam: Ketika semua lampu menyala dan berputar: efek visual indah dan memesona untuk anak-anak; cermin-cermin kecil memantulkan cahaya ke segala arah. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "komidi",
+      "putar"
+    ]
+  },
+  {
+    "id": "delman-dokar-bendi",
+    "category": "kendaraan",
+    "subject": "Delman / Dokar / Bendi",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "DELMAN / DOKAR / BENDI. Jenis: Kendaraan tradisional (kereta kuda); Visual Eksterior: Kereta kuda ringan beroda dua (dokar/bendi) atau empat (delman); ditarik oleh satu atau dua kuda · KUDA: pelana sederhana; tali kekang; lonceng kecil atau hiasan kepala kuda · Kerangka kayu atau besi; tempat duduk beratap kanopi; kursi berhadapan · Roda kayu berspak besi; ban karet di lingkar luar · Warna-warni tergantung daerah: di Yogyakarta sering berwarna merah-hitam dengan aksen emas; di Jakarta (wisata Kota Tua) warna cokelat kayu alami; Visual Detail: Kusir (pengemudi) duduk di depan tinggi; terkadang memakai topi khas · Cambuk panjang di tangan kusir; dipercik-percikkan ke udara (bukan kuda) · Lonceng kecil di dada kuda berbunyi saat berlari. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "delman",
+      "dokar"
+    ]
+  },
+  {
+    "id": "andong",
+    "category": "kendaraan",
+    "subject": "Andong (Kereta Kuda Besar)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ANDONG (KERETA KUDA BESAR). Jenis: Kereta kuda besar tradisional Jawa; Visual Eksterior: Lebih besar dari dokar; beroda empat; ditarik 2 kuda sejajar · Bodi kayu berukir; kursi penumpang tertutup kanopi kain · Sangat khas Yogyakarta dan Solo; sering dicat hijau tua + ornamen kuning · Kusir berbaju Jawa lengkap: blangkon, baju surjan, jarik. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "andong"
+    ]
+  },
+  {
+    "id": "cidomo",
+    "category": "kendaraan",
+    "subject": "Cidomo (Lombok)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "CIDOMO (LOMBOK). Jenis: Kereta kuda modifikasi (roda ban karet); Visual Eksterior: Kereta kuda kecil tapi roda berbentuk VELG mobil/truk bekas (bukan roda kayu spak); ban karet modern tapi kerangka kereta masih tradisional · Bentuk gabungan kuno-modern yang unik; terkadang terlihat janggal · Dihias warna-warni; kuda sering dipakaikan aksesori: hiasan kepala, kain. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "cidomo"
+    ]
+  },
+  {
+    "id": "sado",
+    "category": "kendaraan",
+    "subject": "Sado (Jakarta / Jawa Barat)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SADO (JAKARTA / JAWA BARAT). Jenis: Kereta kuda kecil Betawi; Visual Eksterior: Mirip dokar tapi lebih khas Betawi; beroda dua; ditarik satu kuda · Bodi lebih rendah; dekorasi khas Betawi (ornamen pita/renda, warna merah) · Kusir sering memakai peci dan baju koko. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "sado"
+    ]
+  },
+  {
+    "id": "perahu-klotok",
+    "category": "kendaraan",
+    "subject": "Perahu Klotok (Kalimantan)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PERAHU KLOTOK (KALIMANTAN). Jenis: Kendaraan air tradisional; Visual Eksterior: Perahu kayu panjang dan sempit; atap dari seng atau rumbia; mesin tempel di belakang atau mesin dalam dengan baling-baling · Warna kayu natural atau dicat biru/hijau tua · Panjang: 5–15 meter; lebar: 1–2 meter; Visual Interior: Bangku kayu di kiri-kanan; lantai kayu; terkadang ada tikar · Di bagian belakang: area untuk barang/dagangan. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "perahu",
+      "klotok"
+    ]
+  },
+  {
+    "id": "jukung-jolor",
+    "category": "kendaraan",
+    "subject": "Jukung / Jolor (Perahu Layar Tradisional)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "JUKUNG / JOLOR (PERAHU LAYAR TRADISIONAL). Jenis: Perahu layar tradisional; Visual Eksterior: Perahu kayu dengan cadik (penyeimbang) di kiri atau kanan; atau ganda · Layar dari anyaman daun atau kain; tiang bambu sederhana · Warna: kayu natural; beberapa dicat warna cerah · Sangat ringan; bisa diangkat 2 orang. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "jukung",
+      "jolor"
+    ]
+  },
+  {
+    "id": "bus-antar-kota",
+    "category": "kendaraan",
+    "subject": "Bus Antar Kota (Po Lorena / Po Sumber Kencono / Era Lawas)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BUS ANTAR KOTA (PO LORENA / PO SUMBER KENCONO / ERA LAWAS). Jenis: Bus antar kota antar provinsi (AKAP); Visual Eksterior: Bus besar (length 12 m); bodi khas setiap PO (perusahaan otobus) · PO Lorena: warna hijau tua dengan stripe kuning; logo singa · PO Sumber Kencono: merah-kuning; terkenal kencang/ngebut · PO Pahala Kencana: biru tua metalik; lebih premium · Front bus khas era 70–90an: moncong besar persegi; kaca depan datar (bukan kaca melengkung modern); lampu depan bulat seperti mata; Visual Interior: Kursi reclining; beberapa PO sudah ada AC; toilet di beberapa bus malam · Sopir dan kernet di kabin depan; lampu temaram · Bus malam: tirai di jendela; suasana gelap dan mengantuk. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "bus",
+      "antar"
+    ]
+  },
+  {
+    "id": "bus-telolet",
+    "category": "kendaraan",
+    "subject": "Bus Telolet (Fenomena Klakson)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BUS TELOLET (FENOMENA KLAKSON). Jenis: Fenomena budaya kendaraan (bukan kendaraan tersendiri); Visual: Bus antar kota biasa; yang membedakan adalah KLAKSON yang dipasang secara aftermarket: klakson udara (air horn) dengan nada musik/melodi · Suara bervariasi per bus: ada yang berbunyi seperti lagu, ada yang bergantian nada tinggi-rendah · Anak-anak berkumpul di pinggir jalan menunggu bus lewat sambil berteriak \"TELOLET! TELOLET!\" — meminta sopir membunyikan klakson khusus. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "bus",
+      "telolet"
+    ]
+  },
+  {
+    "id": "colt-t120-colt-diesel-minibus",
+    "category": "kendaraan",
+    "subject": "Colt T120 / Colt Diesel Minibus",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "COLT T120 / COLT DIESEL MINIBUS. Jenis: Angkutan penumpang jarak menengah; Visual Eksterior: Mitsubishi Colt T120 berbodi karoseri lokal; tampilan kotak kaku khas · Warna bervariasi per daerah; banyak dicat sesuai selera pemilik · Pintu geser kayu atau besi di sisi kiri; jendela berjeruji besi · Suspensi keras; ban kecil; terlihat seperti L300 tapi lebih tua. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "colt",
+      "t120"
+    ]
+  },
+  {
+    "id": "travel-door-to-door",
+    "category": "kendaraan",
+    "subject": "Travel Door-To-Door (Hiace/Elf Era Baru)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TRAVEL DOOR-TO-DOOR (HIACE/ELF ERA BARU). Jenis: Angkutan travel antar kota; Visual Eksterior: Toyota HiAce atau Isuzu Elf; warna polos atau dua warna; stiker nama PO · Terlihat lebih bersih dan modern dari colt diesel · Tarif lebih mahal tapi antar jemput ke rumah. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "travel",
+      "door"
+    ]
+  },
+  {
+    "id": "pesawat-perintis",
+    "category": "kendaraan",
+    "subject": "Pesawat Perintis (Casa / Dhc Twin Otter)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PESAWAT PERINTIS (CASA / DHC TWIN OTTER). Jenis: Pesawat perintis daerah terpencil; Visual Eksterior: DHC-6 Twin Otter: pesawat baling-baling kecil dengan dua mesin propeler; kapasitas 15–19 penumpang; tubuh silinder aluminium kecil · Bisa mendarat di landasan sangat pendek (STOL); dicat putih + logo maskapai · Badan sangat kecil; terlihat seperti mainan di samping Boeing; Visual Interior: Bangku kain dua baris; tanpa lorong (terlalu sempit); tanpa toilet; kepala hampir menyentuh langit-langit; sangat dekat dengan mesin · Suara propeler terasa di seluruh kabin. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "pesawat",
+      "perintis"
+    ]
+  },
+  {
+    "id": "ojek-sepeda",
+    "category": "kendaraan",
+    "subject": "OJEK SEPEDA (Jakarta LAWAS)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "OJEK SEPEDA (Jakarta LAWAS). Jenis: Ojek tradisional (sepeda sebagai taksi); Visual: Sepeda onthel (Jawa: \"pit\"); penumpang dibonceng di boncengan belakang atau di stang depan (untuk anak kecil) · Tukang ojek sepeda: sering memakai topi atau peci; kaos biasa; sarung · Biasanya mangkal di perempatan atau depan pasar. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "ojek",
+      "sepeda"
+    ]
+  },
+  {
+    "id": "ojek-payung",
+    "category": "kendaraan",
+    "subject": "Ojek Payung (Jasa Payung Saat Hujan)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "OJEK PAYUNG (JASA PAYUNG SAAT HUJAN). Jenis: Jasa payung dadakan (bukan kendaraan, tapi kendaraan sosial); Visual: Seorang anak atau remaja membawa 5–10 payung besar berwarna-warni; berlari ke orang-orang yang kehujanan di dekat stasiun, pasar, sekolah · Menawarkan payung untuk menemani berjalan sebentar ke tujuan terdekat. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "ojek",
+      "payung"
+    ]
+  },
+  {
+    "id": "grobak-sapi-pedati",
+    "category": "kendaraan",
+    "subject": "Grobak Sapi / Pedati (Kendaraan Pertanian)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GROBAK SAPI / PEDATI (KENDARAAN PERTANIAN). Jenis: Kendaraan tradisional pertanian (tidak bermotor); Visual Eksterior: Gerobak kayu besar beroda dua; ditarik oleh sapi (atau kerbau di Sulawesi) · Roda kayu besar berdiameter 1–1.5 m dengan jari-jari kayu; ban besi (bukan karet) di lingkar luar; menghasilkan bunyi keras di jalan batu · Gerobak penuh jerami, gabah, atau hasil panen · Sapi berkulit cokelat atau hitam-putih; ada kuk (palang kayu) di leher · Petani duduk di muka gerobak memegang tali pengendali; Visual Detail: Roda kayu seringkali aus dan retak; perbaikan dengan karet ban bekas · Kotoran sapi sesekali jatuh di jalan — harus dihindari pejalan kaki. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "grobak",
+      "sapi"
+    ]
+  },
+  {
+    "id": "truk-bak-terbuka",
+    "category": "kendaraan",
+    "subject": "Truk Bak Terbuka (Truk Sayap / Truk Angkutan Umum)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "TRUK BAK TERBUKA (TRUK SAYAP / TRUK ANGKUTAN UMUM). Jenis: Kendaraan serbaguna (angkutan barang + penumpang informal); Visual Eksterior: Truk medium atau kecil dengan bak terbuka di belakang · Di atas bak: bangku kayu panjang dipasang sederhana di kiri-kanan; penumpang duduk sambil berpegang pada terali besi · Terpal biru atau hijau menutup atap (kadang); kalau tidak ada terpal: penumpang kepanasan/kehujanan langsung · Bak biasanya penuh: ada karung-karung, barang dagangan, sepeda motor yang dinaik-turunkan bersama penumpang manusia; Visual Interior: Benar-benar bak truk biasa; tidak ada modifikasi khusus kenyamanan · Debu dan knalpot masuk dari belakang; penumpang berdekat-dekatan. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "truk",
+      "bak"
+    ]
+  },
+  {
+    "id": "motor-trail-motor-ojek-pelosok",
+    "category": "kendaraan",
+    "subject": "Motor Trail / Motor Ojek Pelosok",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MOTOR TRAIL / MOTOR OJEK PELOSOK. Jenis: Ojek motor off-road; Visual: Motor trail (Honda CRF, Kawasaki KLX) atau motor bebek modifikasi ban besar off-road untuk medan ekstrem · Tukang ojek pelosok membawa penumpang + barang belanjaan + galon air sekaligus di jalan tanah/lumpur yang tidak bisa dilewati kendaraan lain · Ban berulir dalam (knobby tire) — sangat mencolok; kotor berlumpur. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "motor",
+      "trail"
+    ]
+  },
+  {
+    "id": "kapal-feri-lintas-selat",
+    "category": "kendaraan",
+    "subject": "Kapal Feri Lintas Selat (Era Lawas)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KAPAL FERI LINTAS SELAT (ERA LAWAS). Jenis: Transportasi laut penyeberangan. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "kapal",
+      "feri"
+    ]
+  },
+  {
+    "id": "pinisi",
+    "category": "kendaraan",
+    "subject": "Pinisi (Kapal Layar Bugis)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "PINISI (KAPAL LAYAR BUGIS). Jenis: Kapal layar tradisional Bugis-Makassar; Visual Eksterior: Kapal kayu besar dengan dua tiang layar tinggi; layar putih atau krem besar mengembang saat angin bertiup; sangat megah dan gagah · Lambung: kayu hitam/cokelat tua; panjang 20–30 m · Ukiran ornamen di bagian depan (haluan); warna merah-hitam-cokelat · Dua layar utama + beberapa layar tambahan (layar sundari); Visual Interior: Ruang kargo di lambung; kabin kecil di bawah dek untuk awaknya · Dek atas: tali-tali, blok kayu, perlengkapan navigasi tradisional. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "pinisi"
+    ]
+  },
+  {
+    "id": "sepeda-listrik",
+    "category": "kendaraan",
+    "subject": "Sepeda Listrik (Sepeda Motor Listrik Kampung)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SEPEDA LISTRIK (SEPEDA MOTOR LISTRIK KAMPUNG). Jenis: Kendaraan listrik informal; Visual: Sepeda motor listrik murah dari China (sering tanpa merek terkenal); bodi plastik sederhana; tidak bersuara saat jalan · Atau: sepeda biasa dipasang motor listrik dan baterai aki. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "sepeda",
+      "listrik"
+    ]
+  },
+  {
+    "id": "gerobak-motor",
+    "category": "kendaraan",
+    "subject": "Gerobak Motor (Motor Gerobak / Bentor Kargo)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GEROBAK MOTOR (MOTOR GEROBAK / BENTOR KARGO). Jenis: Kendaraan kargo modifikasi; Visual: Motor bebek biasa dengan gerobak/bak terbuka disambung di belakang; total menjadi kendaraan roda tiga atau empat · Bak bisa dari kayu, plastik, atau besi; beragam ukuran · Digunakan untuk mengangkut sayuran, gas elpiji, barang dagangan kecil. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "gerobak",
+      "motor"
+    ]
+  },
+  {
+    "id": "bajaj-solar-bajaj-listrik",
+    "category": "kendaraan",
+    "subject": "Bajaj Solar / Bajaj Listrik (Modern)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BAJAJ SOLAR / BAJAJ LISTRIK (MODERN). Jenis: Tuktuk modern ramah lingkungan; Visual: Lebih ramping dari bajaj biru biasa; desain lebih modern dan streamlined · Bisa menggunakan bahan bakar solar atau listrik · Beberapa unit hadir dengan AC kecil; lebih senyap dari bajaj konvensional. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "bajaj",
+      "solar"
+    ]
+  },
+  {
+    "id": "kora-kora",
+    "category": "kendaraan",
+    "subject": "Kora-Kora (Perahu Ayun)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KORA-KORA (PERAHU AYUN). Jenis: Wahana hiburan (taman bermain); Visual: Perahu berbentuk kapal bajak laut besar; berwarna merah-kuning cerah · Diayun dari sisi ke sisi hingga hampir vertikal; penumpang duduk berjajar di bangku; tali pengaman tipis melintang di paha · Tiang-tiang besi besar menyangganya di kiri-kanan. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "kora",
+      "kora"
+    ]
+  },
+  {
+    "id": "ontang-anting-bianglala",
+    "category": "kendaraan",
+    "subject": "Ontang-Anting / Bianglala (Roda Ferris)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "ONTANG-ANTING / BIANGLALA (RODA FERRIS). Jenis: Wahana hiburan (Ferris wheel); Visual: Roda besar berdiameter 10–40 m; berputar pelan; gondola-gondola kecil tergantung di keliling roda; terlihat dari jauh · Versi kampung/pasar malam: lebih kecil dan sederhana; gondola hanya bangku besi sederhana dengan palang pengaman tipis · Malam hari: lampu-lampu berkelip di seluruh roda — sangat indah. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "ontang",
+      "anting"
+    ]
+  },
+  {
+    "id": "kereta-gantung-gondola",
+    "category": "kendaraan",
+    "subject": "Kereta Gantung / Gondola (Puncak, Tawangmangu)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "KERETA GANTUNG / GONDOLA (PUNCAK, TAWANGMANGU). Jenis: Transportasi wisata (cable car); Visual: Gondola oval kecil dari besi/fiberglass; tergantung di kabel baja tebal · Bergerak pelan melewati lembah atau perbukitan; pemandangan di bawah terlihat · Warna-warni; terlihat mengambang di udara dari jauh. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "kereta",
+      "gantung"
+    ]
+  },
+  {
+    "id": "gajah-tunggang",
+    "category": "kendaraan",
+    "subject": "Gajah Tunggang (Wisata Gajah)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "GAJAH TUNGGANG (WISATA GAJAH). Jenis: Kendaraan wisata berbahan gajah sumatera; Visual: Gajah sumatera dewasa; di punggungnya terpasang howdah (tempat duduk kayu) dengan pegangan; 2–4 penumpang duduk di atas · Mahout (pawang gajah) duduk di leher gajah; tongkat kecil di tangan · Gajah bergerak lambat dan mengayun; penumpang berguncang naik-turun. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "gajah",
+      "tunggang"
+    ]
+  },
+  {
+    "id": "dokar-palembang-ketek",
+    "category": "kendaraan",
+    "subject": "Dokar Palembang / Ketek (Perahu Kecil Sungai)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "DOKAR PALEMBANG / KETEK (PERAHU KECIL SUNGAI). Jenis: Angkutan sungai tradisional; Visual: Perahu kayu kecil ramping; ditembakkan (di-dayung atau bermesin tempel) · Di Palembang: ketek (perahu motor kecil) menyeberangi Sungai Musi; atap dari plastik atau seng; 5–10 penumpang berdempetan · Jembatan Ampera yang ikonik terlihat di latar belakang. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "dokar",
+      "palembang"
+    ]
+  },
+  {
+    "id": "bemo-yogya",
+    "category": "kendaraan",
+    "subject": "Bemo Yogya (Bemo Malioboro)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "BEMO YOGYA (BEMO MALIOBORO). Jenis: Angkutan kota Yogyakarta (berbeda dari bemo Jakarta); Visual: Sama dengan bemo Jakarta (Morris atau Daihatsu roda tiga) tapi di Yogya tetap bertahan karena cocok untuk gang-gang sempit Malioboro · Warna khas Yogya: biru tua + kuning stripe · Supir sering menambah hiasan: foto, gantungan, dan stiker lokal Yogya. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "bemo",
+      "yogya"
+    ]
+  },
+  {
+    "id": "sepeda-motor-listrik-gesits-volta",
+    "category": "kendaraan",
+    "subject": "Sepeda Motor Listrik Gesits / Volta (Era Baru)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "SEPEDA MOTOR LISTRIK GESITS / VOLTA (ERA BARU). Jenis: Kendaraan nasional bermotor listrik; Visual: Gesits: motor listrik buatan Indonesia (PT GESITS); desain sporty modern; warna merah-hitam; logo merah menyala; tanpa knalpot sama sekali · Sepeda motor tapi tanpa suara; pengisian baterai via colokan listrik. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "sepeda",
+      "motor"
+    ]
+  },
+  {
+    "id": "vespa",
+    "category": "kendaraan",
+    "subject": "Vespa (Vespa Indonesia Era Lawas)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "VESPA (VESPA INDONESIA ERA LAWAS). Jenis: Skuter ikonik Italia di Indonesia; Visual: Body baja membulat khas; warna-warna cerah era 70–80an: merah, krem, biru · Roda kecil; setang bulat; lampu bulat di depan; tutup bagasi di samping · Pemilik di Indonesia sering memodifikasi: cat motif, aksesoris tambahan, muatan berlebih (membawa kulkas, lemari — terkenal di meme). Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "vespa"
+    ]
+  },
+  {
+    "id": "jeep-willys",
+    "category": "kendaraan",
+    "subject": "Jeep Willys (Jawa / Bali Wisata)",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "JEEP WILLYS (JAWA / BALI WISATA). Jenis: Kendaraan wisata off-road vintage; Visual: Jeep Willys asli atau CJ era 1940–1950an; bodi flat datar; ban besar; tidak ada atap atau hanya kanvas tipis; tulang-tulang besi terlihat · Warna: hijau tentara, cokelat karat, atau dicat warna-warni · Di Merapi: Jeep offroad tour dengan cat hitam; penumpang duduk di bak · Di Bali: sering dimodifikasi dengan kursi tambahan untuk wisatawan. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "jeep",
+      "willys"
+    ]
+  },
+  {
+    "id": "moge-parade-harley-davidson-indonesia",
+    "category": "kendaraan",
+    "subject": "Moge (Motor Gede) Parade / Harley Davidson Indonesia",
+    "region": "Indonesia",
+    "lang": "id",
+    "visual_facts": "MOGE (MOTOR GEDE) PARADE / HARLEY DAVIDSON INDONESIA. Jenis: Motor besar komunitas / simbol status; Visual: Harley-Davidson (atau motor besar lain: BMW R, Triumph) berukuran besar; chrome berkilau di mana-mana; mesin besar V-twin terlihat di samping · Rider: jaket kulit hitam, bandana, sepatu boots; atau casual modern · Saat konvoi/parade: puluhan Moge berjajar di jalan; sangat megah; WAHANA HIBURAN (7 entri): Odong-odong kampung · Odong-odong kereta · Komidi putar kampung · Komidi putar mobil · Kora-kora · Bianglala/Ontang-anting · Kereta gantung ANGKUTAN ANTAR KOTA / JARAK JAUH (7 entri): Bus AKAP · Bus Telolet · Colt T120 · Travel Hiace · Kereta Uap · Pesawat Perintis · Kapal Feri KENDARAAN LAUT & SUNGAI (5 entri): Perahu Klotok · Jukung · Pinisi · Ketek Palembang · Dokar Palembang KENDARAAN IKONIK / BUDAYA (8 entri): Vespa Indonesia · Jeep Willys · Moge/Harley · Gajah tunggang · Becak motor · Motor trail pelosok · Gerobak motor · Ojek sepeda ══════════════════════════════════════════════════════════════════════════════ TIMELINE: KAPAN MULAI & KAPAN PUNAH ══════════════════════════════════════════════════════════════════════════════ SUDAH PUNAH / TIDAK BEROPERASI: · Oplet → Punah di Jakarta sejak 1980an · Helicak → Punah 1984 (hanya 13 tahun beroperasi) · Bemo Jakarta → Dilarang 2001 · Metromini → Dihentikan 2017 · Kopaja → Dihentikan bertahap 2015–2020; MASIH ADA TAPI LANGKA: Becak → Dilarang Jakarta; ada di Yogya, Solo, kota Jawa · Delman/Dokar → Wisata saja di kota besar · Bajaj Oranye → Makin sedikit; digantikan bajaj biru + ojek online · Bus PPD/Mayasari→ Hampir habis; digantikan TransJakarta; MASIH SANGAT AKTIF: Angkot → Seluruh Indonesia · Becak motor → Luar Jawa · Perahu Klotok → Kalimantan · Pinisi → Sulawesi, Pelabuhan Sunda Kelapa · Kereta Tebu → Beberapa pabrik gula Jawa Timur ══════════════════════════════════════════════════════════════════════════════ ENSIKLOPEDIA SUARA KENDARAAN LEGENDARIS ══════════════════════════════════════════════════════════════════════════════; SUARA PALING IKONIK: Bajaj oranye → \"BRANG BRANG BRANG\" (2-tak meraung) · Kereta uap tebu → \"chug-chug-chug\" + sirine uap melengking · Delman/dokar → \"tek-tok tek-tok\" tapak kuda di aspal · Bakso (bukan kendaraan tapi terkait jalan) → tok-tok-tok · Klotok perahu → \"klotok-klotok-klotok\" (asal nama) · Odong-odong → Lagu anak-anak remix SANGAT KERAS dari speaker · Telolet bus → \"TEELOLET!\" — viral dunia 2016 · Harley Davidson → \"potato-potato-potato\" raungan V-twin SUARA YANG MENGINGATKAN MASA KECIL: · Komidi putar kampung → kreot-kreot (besi berkarat berputar) · Bel becak → kring-kring (pelan dan ramah) · Mesin 2-tak bemo → breng-breng-breng · Knalpot metromini → menderu + asap hitam · Kondektur metromini → \"BLOK M! BLOK M! BLOK M!\" teriak dari pintu ══════════════════════════════════════════════════════════════════════════════ AKHIR KATALOG 50 Kendaraan Legendaris & Ikonik Indonesia ══════════════════════════════════════════════════════════════════════════════. Kendaraan / transportasi legendaris khas Indonesia, foto dokumenter realistis otentik — BUKAN kendaraan modern generik Barat, BUKAN CGI.",
+    "style_label": "documentary",
+    "rights_class": "curated",
+    "ref_image_path": null,
+    "tags": [
+      "kendaraan",
+      "moge",
+      "parade"
     ]
   }
 ]
