@@ -111,39 +111,76 @@ class Model:
                 "badge": self.badge, "vision": self.vision, "tools": self.tools}
 
 
-# Seed registry — Gemini chain leads with Vertex OAuth (satisfies "google via OAuth"),
-# falls back to API key, then laozhang. Non-Gemini lead with laozhang, fall back to
-# the model's native direct provider. Rino re-orders by cost later. Costs are
-# placeholder rates (USD/1M tok) to be confirmed against live provider pricing.
-MODEL_REGISTRY: list[Model] = [
-    Model("gemini-2.5-flash", "Gemini 2.5 Flash", tier="lite", badge="⭐",
-          vision=True, tools=True, max_tokens=16384, chain=[
-              Step("vertex",     "gemini-2.5-flash", 0.075, 0.30),
-              Step("google_key", "gemini-2.5-flash", 0.075, 0.30),
-              Step("laozhang",   "gemini-2.5-flash", 0.075, 0.30),
-          ]),
-    Model("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", tier="lite",
-          vision=True, tools=True, max_tokens=8192, chain=[
-              Step("vertex",     "gemini-2.5-flash-lite", 0.05, 0.20),
-              Step("google_key", "gemini-2.5-flash-lite", 0.05, 0.20),
-              Step("laozhang",   "gemini-2.5-flash-lite", 0.05, 0.20),
-          ]),
-    Model("gpt-5.5", "GPT-5.5", tier="power", badge="⭐⭐",
-          vision=True, tools=True, max_tokens=16384, chain=[
-              Step("laozhang", "gpt-5.5", 1.25, 10.0),
-              Step("openai",   "gpt-5.5", 1.25, 10.0),
-          ]),
-    Model("claude-opus-4-7", "Claude Opus 4.7", tier="power", badge="⭐⭐",
-          vision=True, tools=True, max_tokens=8192, chain=[
-              Step("laozhang",  "claude-opus-4-7", 5.0, 25.0),
-              Step("anthropic", "claude-opus-4-7", 5.0, 25.0),
-          ]),
-    Model("deepseek-v4-pro", "DeepSeek V4 Pro", tier="lite", badge="⭐⭐",
-          vision=False, tools=True, max_tokens=8192, chain=[
-              Step("laozhang", "deepseek-v4-pro",  0.28, 0.42),
-              Step("deepseek", "deepseek-chat",    0.28, 0.42),
-          ]),
+# Chain policy (Rino re-orders by cost later; costs are USD/1M tok, tune vs live pricing):
+#   route "google" -> Vertex OAuth first (survives GEMINI_API_KEY leaks), then API key,
+#                     then laozhang gateway.
+#   route "laozhang" -> laozhang gateway first, then the model's native direct provider
+#                       (if its key is configured).
+def _chain(model_id: str, ci: float, co: float, route: str, direct: Optional[str]) -> list[Step]:
+    if route == "google":
+        return [Step("vertex",     model_id, ci, co),
+                Step("google_key", model_id, ci, co),
+                Step("laozhang",   model_id, ci, co)]
+    chain = [Step("laozhang", model_id, ci, co)]
+    if direct:
+        chain.append(Step(direct, model_id, ci, co))
+    return chain
+
+
+# (id, display, tier, cost_in, cost_out, route, direct_provider, badge)
+# Single source of truth for the chat model dropdown. Mirrors the curated studio list.
+_SPEC: list[tuple] = [
+    # ── ⚡ Lite ──────────────────────────────────────────────────────────────────
+    ("glm-4.5-flash",        "GLM 4.5 Flash",          "lite",  0.01, 0.04, "laozhang", None,        ""),
+    ("gpt-5-nano",           "GPT-5 Nano",             "lite",  0.05, 0.40, "laozhang", "openai",    ""),
+    ("gemini-2.5-flash-lite","Gemini 2.5 Flash Lite",  "lite",  0.10, 0.40, "google",   None,        ""),
+    ("gpt-4o-mini",          "GPT-4o Mini",            "lite",  0.15, 0.60, "laozhang", "openai",    ""),
+    ("grok-4-fast",          "Grok 4 Fast",            "lite",  0.20, 0.50, "laozhang", None,        ""),
+    ("gpt-5.4-nano",         "GPT-5.4 Nano",           "lite",  0.20, 1.25, "laozhang", "openai",    ""),
+    ("gpt-5-mini",           "GPT-5 Mini",             "lite",  0.25, 2.00, "laozhang", "openai",    ""),
+    ("gemini-3.1-flash-lite","Gemini 3.1 Flash Lite",  "lite",  0.25, 1.50, "google",   None,        ""),
+    ("deepseek-v3-250324",   "DeepSeek V3-0324",       "lite",  0.25, 1.00, "laozhang", "deepseek",  ""),
+    ("deepseek-v4-pro",      "DeepSeek V4 Pro",        "lite",  0.28, 1.10, "laozhang", "deepseek",  ""),
+    ("deepseek-chat",        "DeepSeek V3",            "lite",  0.29, 1.14, "laozhang", "deepseek",  ""),
+    ("gemini-2.5-flash",     "Gemini 2.5 Flash",       "lite",  0.30, 2.40, "google",   None,        "⭐"),
+    ("gemini-3-flash-preview","Gemini 3 Flash",        "lite",  0.44, 2.64, "google",   None,        ""),
+    ("deepseek-r1",          "DeepSeek R1",            "lite",  0.55, 2.19, "laozhang", "deepseek",  ""),
+    ("gpt-5.4-mini",         "GPT-5.4 Mini",           "lite",  0.75, 4.50, "laozhang", "openai",    ""),
+    # ── ⚡⚡ Medium ──────────────────────────────────────────────────────────────
+    ("gemini-2.5-pro",       "Gemini 2.5 Pro",         "medium",1.25,10.00, "google",   None,        ""),
+    ("gpt-5.1",              "GPT-5.1",                "medium",1.25,10.00, "laozhang", "openai",    ""),
+    ("gpt-5",                "GPT-5",                  "medium",1.25,10.00, "laozhang", "openai",    ""),
+    ("gemini-3.5-flash",     "Gemini 3.5 Flash",       "medium",1.50, 9.00, "google",   None,        ""),
+    ("qwen-max",             "Qwen Max",               "medium",1.60, 6.40, "laozhang", None,        ""),
+    ("gpt-5.2",              "GPT-5.2",                "medium",1.75,14.00, "laozhang", "openai",    ""),
+    ("gemini-3-pro-preview", "Gemini 3 Pro",           "medium",1.80,10.80, "laozhang", None,        ""),
+    ("gpt-5.4",              "GPT-5.4",                "medium",2.50,15.00, "laozhang", "openai",    ""),
+    ("gpt-4o",               "GPT-4o",                 "medium",2.50,10.00, "laozhang", "openai",    ""),
+    # ── ⚡⚡⚡ Power ─────────────────────────────────────────────────────────────
+    ("gemini-2.5-pro-thinking",      "Gemini 2.5 Pro Thinking", "power",1.25,10.00, "laozhang", None,        ""),
+    ("gemini-3-pro-preview-thinking","Gemini 3 Pro Thinking",   "power",1.80,10.80, "laozhang", None,        ""),
+    ("gemini-3.1-pro-preview",       "Gemini 3.1 Pro",          "power",2.00,12.00, "google",   None,        ""),
+    ("grok-4-latest",        "Grok 4",                 "power", 3.00,15.00, "laozhang", None,        ""),
+    ("claude-sonnet-4-6",    "Claude Sonnet 4.6",      "power", 3.00,15.00, "laozhang", "anthropic", ""),
+    ("claude-sonnet-4-6-thinking","Claude Sonnet 4.6 Thinking","power",3.00,15.00,"laozhang","anthropic",""),
+    ("claude-opus-4-6",      "Claude Opus 4.6",        "power", 5.00,25.00, "laozhang", "anthropic", ""),
+    ("claude-opus-4-7",      "Claude Opus 4.7",        "power", 5.00,25.00, "laozhang", "anthropic", "⭐⭐"),
+    ("claude-opus-4-6-thinking","Claude Opus 4.6 Thinking","power",5.00,25.00,"laozhang","anthropic",""),
+    ("claude-opus-4-7-thinking","Claude Opus 4.7 Thinking","power",5.00,25.00,"laozhang","anthropic",""),
+    ("gpt-5.5",              "GPT-5.5",                "power", 5.00,30.00, "laozhang", "openai",    "⭐⭐"),
+    ("gpt-5-pro",            "GPT-5 Pro",              "power",15.00,120.0, "laozhang", "openai",    ""),
 ]
+
+
+def _mk(spec: tuple) -> Model:
+    mid, disp, tier, ci, co, route, direct, badge = spec
+    vision = not mid.startswith(("deepseek", "glm-", "qwen"))
+    mx = 16384 if (tier == "power" or route == "google") else 8192
+    return Model(mid, disp, tier=tier, badge=badge, vision=vision, tools=True,
+                 max_tokens=mx, chain=_chain(mid, ci, co, route, direct))
+
+
+MODEL_REGISTRY: list[Model] = [_mk(s) for s in _SPEC]
 
 _BY_ID: dict[str, Model] = {m.id: m for m in MODEL_REGISTRY}
 
@@ -158,8 +195,19 @@ def usable_chain(m: Model) -> list[Step]:
 
 
 def list_models() -> list[dict]:
-    """Payload for GET /models — only models with at least one usable provider."""
-    return [m.public() for m in MODEL_REGISTRY if usable_chain(m)]
+    """Payload for GET /chat/models — models with >=1 usable provider, each tagged
+    with `route`: which endpoint the frontend calls. "google" = Vertex-OAuth chat
+    endpoint (survives key leaks); "laozhang" = the gateway endpoint."""
+    out: list[dict] = []
+    for m in MODEL_REGISTRY:
+        uc = usable_chain(m)
+        if not uc:
+            continue
+        d = m.public()
+        kind = PROVIDERS.get(uc[0].provider, {}).get("kind", "")
+        d["route"] = "google" if kind in ("google_vertex", "google_key") else "laozhang"
+        out.append(d)
+    return out
 
 
 def step_usd(step: Step, tok_in: int, tok_out: int) -> float:
