@@ -275,10 +275,14 @@ async def _stream_openai_compat(provider: dict, step: Step, system: str,
     key = os.getenv(provider["key_env"], "")
     client = AsyncOpenAI(api_key=key, base_url=provider["base_url"])
     messages = _build_messages(system, history, prompt, images)
+    # GPT-5 / o-series need max_completion_tokens (>=1) + default temperature, not max_tokens.
+    _reason = (step.model or "").lower().startswith(("gpt-5", "o1", "o3", "o4"))
+    _mt = max(1, int(max_tokens or 0))
+    _gen = {"extra_body": {"max_completion_tokens": _mt}} if _reason else {"temperature": temperature, "max_tokens": _mt}
     try:
         stream = await client.chat.completions.create(
-            model=step.model, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, stream=True, stream_options={"include_usage": True})
+            model=step.model, messages=messages, stream=True,
+            stream_options={"include_usage": True}, **_gen)
         usage = {"tok_in": 0, "tok_out": 0}
         async for chunk in stream:
             if chunk.usage:

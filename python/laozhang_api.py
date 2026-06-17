@@ -411,6 +411,24 @@ MODEL_MAX_TOKENS: dict[str, int] = {
 }
 DEFAULT_MAX_TOKENS = 16384
 
+
+def _is_reasoning_model(model: str) -> bool:
+    """GPT-5 family + OpenAI o-series: need `max_completion_tokens`, reject `max_tokens`
+    and non-default temperature (via laozhang's OpenAI-compatible gateway)."""
+    m = (model or "").lower()
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _generation_kwargs(model: str, temperature: float, max_tokens: int) -> dict:
+    """Token/temperature kwargs for client.chat.completions.create(), per model class.
+    Reasoning models → `max_completion_tokens` (>=1) via extra_body, no temperature.
+    Everything else → classic `temperature` + `max_tokens` (>=1)."""
+    mt = max(1, int(max_tokens or 0))
+    if _is_reasoning_model(model):
+        return {"extra_body": {"max_completion_tokens": mt}}
+    return {"temperature": temperature, "max_tokens": mt}
+
+
 # MAX_SESSIONS removed — session persistence is in PostgreSQL, no eviction needed.
 
 # ── Cost estimation (USD) — used by log_usage() after each stream ────────────
@@ -1084,6 +1102,12 @@ def chat_stream(
     ceiling = MODEL_MAX_TOKENS.get(model, DEFAULT_MAX_TOKENS)
     max_tokens = min(max_tokens, ceiling)
 
+    # GPT-5 / o-series reasoning models reject `max_tokens` (need `max_completion_tokens`
+    # >= 1) and only accept the default temperature. Sending the legacy params makes
+    # laozhang translate them to `max_completion_tokens: 0` → upstream 400. Build the
+    # correct generation kwargs per model class.
+    _gen_kw = _generation_kwargs(model, temperature, max_tokens)
+
     messages: list[dict] = [{"role": "system", "content": system + FILE_OUTPUT_INSTRUCTION}]
     messages.extend(history)
 
@@ -1144,11 +1168,10 @@ def chat_stream(
                 response = client.chat.completions.create(
                     model=model,
                     messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
                     tools=MCP_TOOLS,
                     tool_choice="auto",
                     stream=False,
+                    **_gen_kw,
                 )
             except Exception as e:
                 yield f"[ERROR: {e}]"
@@ -1231,10 +1254,9 @@ def chat_stream(
         stream = client.chat.completions.create(
             model=model,
             messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
             stream=True,
             stream_options={"include_usage": True},
+            **_gen_kw,
         )
         _input_tokens = 0
         _output_tokens = 0
