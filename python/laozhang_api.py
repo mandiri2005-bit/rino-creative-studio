@@ -6163,6 +6163,7 @@ class VideoSegmentReq(BaseModel):
     visual_mode: Optional[str] = None   # set ('full_clips'|'full_images'|'hybrid') to also run the decide stage
     clip_ratio: float = 0.3
     visual_style: str = ""              # art style suffix (caricature|comic|cinematic|…) for every scene prompt
+    nusantara_corpus: bool = False      # enrich the visual brief (→ anchor → scenes) with Nusantara facts
 
 class VideoDecideReq(BaseModel):
     scenes: list
@@ -6400,6 +6401,9 @@ async def video_segment(req: VideoSegmentReq,
             except Exception as _e:
                 print(f"[video/segment] narration metering debit failed (non-fatal): {_e}")
         _brief = await _video_visual_brief(narration, req.gen_model, user, _byok)
+        if req.nusantara_corpus:
+            try: _brief, _, _ = _corpus_enhance(_brief)
+            except Exception: pass
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
                                visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
@@ -6408,6 +6412,9 @@ async def video_segment(req: VideoSegmentReq,
         if not (req.text or "").strip():
             raise HTTPException(400, "text is required")
         _brief = await _video_visual_brief(req.text, req.gen_model, user, _byok_active())
+        if req.nusantara_corpus:
+            try: _brief, _, _ = _corpus_enhance(_brief)
+            except Exception: pass
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
                                visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
@@ -6695,6 +6702,60 @@ class EnhancePromptRequest(BaseModel):
 async def enhance_prompt_endpoint(req: EnhancePromptRequest):
     enhanced, hits, ref_b64 = _corpus_enhance(req.prompt)
     return {"enhanced_prompt": enhanced, "ref_b64": ref_b64 or "", "hits": len(hits)}
+
+
+# ── FAQ / help bot: grounded RAG over faq_kb.json, answered by Gemini 2.5 Flash ──
+class FaqAskRequest(BaseModel):
+    question: str
+
+_FAQ_FALLBACK = ("Maaf, aku belum punya info soal itu di basis bantuan ceritaAI. "
+                 "Coba tanya soal fitur (Image Generation, Video Instant, Veo, Sora, Flow, Whisk, "
+                 "Batch, Nusantara Corpus, kredit), atau hubungi support untuk bantuan lebih lanjut.")
+
+@app.post("/faq/ask")
+async def faq_ask(req: FaqAskRequest, user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Help bot: retrieve relevant FAQ → Gemini 2.5 Flash (Vertex OAuth) answers ONLY from it.
+    Never gated (help must always work); usage logged tenant-scoped for cost tracking."""
+    import faq_kb as _faq
+    q = (req.question or "").strip()
+    if not q:
+        raise HTTPException(400, "question required")
+    hits = _faq.retrieve(q, k=8)
+    if not hits:
+        return {"answer": _FAQ_FALLBACK, "sources": []}
+    ctx = _faq.build_context(hits)
+    prompt = (
+        "Kamu asisten bantuan resmi ceritaAI (studio AI gambar & video bernuansa Indonesia). "
+        "Jawab dalam Bahasa Indonesia yang ramah & ringkas; beri langkah demi langkah jika relevan.\n"
+        "ATURAN KETAT:\n"
+        "1. Jawab HANYA berdasarkan KONTEKS FAQ di bawah.\n"
+        "2. Kalau jawabannya TIDAK ADA di konteks, JANGAN mengarang/menebak fitur — bilang dengan sopan "
+        "kamu belum punya infonya lalu sarankan hubungi support.\n"
+        "3. Jangan menyebut kata 'konteks' atau 'FAQ' dalam jawaban.\n\n"
+        f"=== KONTEKS FAQ ===\n{ctx}\n\n=== PERTANYAAN ===\n{q}\n\nJawaban:"
+    )
+    answer = ""
+    try:
+        _ensure_vertex()
+        client = _genai_client()
+        resp = await asyncio.to_thread(client.models.generate_content,
+                                       model="gemini-2.5-flash", contents=prompt)
+        answer = (getattr(resp, "text", None) or "").strip()
+    except Exception as e:
+        import warnings; warnings.warn(f"faq llm failed: {e}")
+    if not answer:
+        answer = _FAQ_FALLBACK
+    # Tenant-scoped usage log (best-effort, no gate — help is always available).
+    try:
+        if user:
+            _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+            await metering.debit(user.tenant_id, _uid, "chat", "gemini-2.5-flash",
+                                 {"tokens_in": len(prompt) // 4, "tokens_out": max(1, len(answer) // 4)},
+                                 byok=_byok_active(), log=True)
+    except Exception as _e:
+        import warnings; warnings.warn(f"faq usage log failed: {_e}")
+    return {"answer": answer,
+            "sources": [{"id": e["id"], "topic": e.get("topic", ""), "q": e.get("q", "")} for e in hits[:4]]}
 
 
 @app.get("/corpus/status")

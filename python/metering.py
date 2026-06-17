@@ -206,7 +206,10 @@ async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: s
     if log:
         try:
             usd = _cat.operation_usd(operation, model, units)
-            await _db.log_usage(tenant_id, user_id, model, _OP_ENDPOINT.get(operation, "other"),
+            _ep = _OP_ENDPOINT.get(operation, "other")
+            if video_job:           # tag video-pipeline (Video Instant) usage: image-VI / video-VI / tts-VI / chat-VI
+                _ep = f"{_ep}-VI"
+            await _db.log_usage(tenant_id, user_id, model, _ep,
                                 int(tok_in), int(tok_out), usd, session_id=session_id, job_id=job_id,
                                 provider=provider or _provider_for(model), credits=credits)
         except Exception as e:

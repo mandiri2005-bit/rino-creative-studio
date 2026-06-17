@@ -2379,6 +2379,18 @@ app.post("/api/enhance-prompt", async (req,res) => {
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 
+// ── FAQ / help bot proxy — forwards Authorization so Python scopes usage to the tenant ──
+app.post("/api/faq/ask", async (req,res) => {
+  try {
+    const { question } = req.body || {};
+    if (!question || !String(question).trim()) return res.status(400).json({ error:"question required" });
+    const _h = { "Content-Type":"application/json" };
+    if (req.headers["authorization"]) _h["Authorization"] = req.headers["authorization"];
+    const r = await fetch(`${PYTHON_API}/faq/ask`, { method:"POST", headers:_h, body: JSON.stringify({ question }) });
+    res.status(r.status).json(await r.json());
+  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
+});
+
 // Best-effort Nusantara corpus enhance for any prompt (Node-side). NEVER throws —
 // on any failure it returns the original prompt so generation is never broken.
 async function corpusEnhance(prompt, enabled) {

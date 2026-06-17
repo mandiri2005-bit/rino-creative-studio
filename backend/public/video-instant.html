@@ -350,6 +350,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       </select>
 
       <label class="chk"><input type="checkbox" id="refMode"/> Karakter konsisten (reference image)</label>
+      <label class="chk"><input type="checkbox" id="nusantaraCorpus"/> 🇮🇩 Nusantara Corpus — perkaya nuansa Indonesia</label>
 
       <details class="adv">
         <summary>Lanjutan — bahasa, model</summary>
@@ -531,6 +532,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         mode:state.mode, topic, text:narration, minutes:state.minutes, style:state.style, tier:state.tier,
         clip_model:state.clipModel, visual_mode:state.visualMode, clip_ratio:0.3,
         visual_style:state.visualStyle, language:state.language, gen_model:state.genModel,
+        nusantara_corpus:(document.getElementById('nusantaraCorpus')||{}).checked||false,
       })});
       const scenes=seg.scenes||[];
       if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
