@@ -184,6 +184,27 @@ def _vertex_embed(text: str, task: str = "RETRIEVAL_QUERY"):
         import warnings; warnings.warn(f"vertex embed failed: {e}")
         return None
 
+def _vertex_text(system: str, user: str) -> str | None:
+    """Gemini 2.5 Flash text via Vertex OAuth (no public GEMINI key → no 403). Used to
+    polish the Nusantara corpus prompt-enhance. Thinking disabled for low latency since
+    this runs on every corpus-enabled image gen. Returns None on any failure."""
+    client = _genai_client()
+    if not client:
+        return None
+    contents = f"{system}\n\n{user}"
+    try:
+        from google.genai import types as _gt
+        cfg = _gt.GenerateContentConfig(temperature=0.4, max_output_tokens=2000,
+                                        thinking_config=_gt.ThinkingConfig(thinking_budget=0))
+        resp = client.models.generate_content(model="gemini-2.5-flash", contents=contents, config=cfg)
+    except Exception:
+        try:                                  # config/types mismatch → plain OAuth call
+            resp = client.models.generate_content(model="gemini-2.5-flash", contents=contents)
+        except Exception as e:
+            import warnings; warnings.warn(f"vertex text failed: {e}")
+            return None
+    return (getattr(resp, "text", None) or "").strip() or None
+
 def _auto_reembed_if_changed():
     """Background: re-index Qdrant only if the seed hash differs from what's stored.
     Cheap no-op when unchanged. Gated by CORPUS_AUTO_REEMBED."""
@@ -6573,10 +6594,11 @@ def _corpus_enhance(prompt: str):
         import nusantara_corpus as _nc
         return _nc.enhance_prompt(
             prompt,
-            gemini_api_key=GEMINI_API_KEY or None,
+            gemini_api_key=None,            # public GEMINI key path is dead (403) — use OAuth text_fn
             qdrant_url=QDRANT_CLOUD_URL or None,
             qdrant_api_key=QDRANT_CLOUD_KEY or None,
             embed_fn=(_vertex_embed if CORPUS_USE_QDRANT else None),
+            text_fn=_vertex_text,           # Gemini 2.5 Flash via Vertex OAuth — polishes the prompt
         )
     except Exception as e:
         import warnings

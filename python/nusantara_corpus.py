@@ -448,6 +448,7 @@ def enhance_prompt(
     qdrant_api_key: str | None = None,
     top_k: int = 8,
     embed_fn=None,
+    text_fn=None,
 ) -> tuple[str, list[dict], str | None]:
     """
     Retrieve exemplars → build enhanced image prompt → load ref image.
@@ -471,8 +472,8 @@ def enhance_prompt(
 
     facts_block = "\n".join(f"- {h['subject']}: {h['visual_facts']}" for h in hits)
 
-    if gemini_api_key:
-        enhanced = _gg_enhance(prompt, facts_block, gemini_api_key)
+    if text_fn or gemini_api_key:
+        enhanced = _gg_enhance(prompt, facts_block, api_key=gemini_api_key, text_fn=text_fn)
     else:
         enhanced = f"{prompt}\n\n[Nusantara visual ref: {facts_block}]"
 
@@ -486,9 +487,10 @@ def enhance_prompt(
 
 
 # ── Gemini text enhance ───────────────────────────────────────────────────
-def _gg_enhance(prompt: str, facts_block: str, api_key: str) -> str:
-    """Call Gemini text model DIRECTLY to write a rich image prompt."""
-    import requests as _req
+def _gg_enhance(prompt: str, facts_block: str, api_key: str | None = None, text_fn=None) -> str:
+    """Use a Gemini text model to weave the scene + Nusantara facts into ONE rich image
+    prompt. Preferred path = text_fn (Vertex OAuth, no public GEMINI key → no 403);
+    legacy fallback = public Gemini API key; final fallback = raw facts appended."""
     sys_prompt = (
         "Kamu adalah expert text-to-image prompt engineer untuk budaya visual Indonesia (Nusantara). "
         "Expand input menjadi SATU prompt gambar kaya dan terstruktur: detail subjek, komposisi, "
@@ -496,6 +498,19 @@ def _gg_enhance(prompt: str, facts_block: str, api_key: str) -> str:
         "Output HANYA prompt final, satu paragraf, tanpa pembuka."
     )
     user = f"Scene: {prompt}\n\nReferensi visual Nusantara otentik:\n{facts_block}"
+    # ── preferred: Vertex OAuth via injected text_fn(system, user) ──
+    if text_fn is not None:
+        try:
+            t = text_fn(sys_prompt, user)
+            if t and t.strip():
+                return t.strip()
+            logger.warning("gg_enhance(oauth): empty result, falling back")
+        except Exception as e:
+            logger.warning("gg_enhance(oauth) error: %s", e)
+    # ── legacy: public Gemini API key (may 403 if key revoked) ──
+    if not api_key:
+        return f"{prompt}\n\n[Nusantara visual ref: {facts_block}]"
+    import requests as _req
     body = {
         "contents": [{"parts": [{"text": user}]}],
         "systemInstruction": {"parts": [{"text": sys_prompt}]},
