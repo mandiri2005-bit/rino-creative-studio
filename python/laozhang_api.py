@@ -522,21 +522,38 @@ def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
 # ── Per-image generation cost (USD) — best-effort flat price per image. ────────
 # Update as provider rates change. Longest-matching prefix wins (mirrors _calc_cost).
 _IMAGE_COSTS: dict[str, float] = {
+    # Imagen / DALL·E — not on the Image page, kept for other flows.
     "imagen-4.0-ultra":  0.06,
     "imagen-4.0-fast":   0.02,
     "imagen-4.0":        0.04,
     "imagen-3":          0.04,
     "imagen":            0.04,
-    "nano-banana-hd":    0.039,
-    "nano-banana":       0.039,
-    "gemini-2.0-flash":  0.039,   # gemini native image (whisk/google)
-    "gemini-2.5-flash":  0.039,
+    "dall-e-3":          0.04,
+    # Nano Banana family — priced for BOTH routes: the LaoZhang path meters the
+    # IMAGE_MODELS key (nano-banana*), the Vertex path meters req.model (gemini-*-image).
+    "nano-banana-pro":         0.134,
+    "nano-banana-2":           0.067,   # 1K default (2K≈0.101, 4K≈0.151 — per-res TODO)
+    "nano-banana-hd":          0.039,
+    "nano-banana":             0.039,
+    "gemini-3-pro-image":      0.134,
+    "gemini-3.1-flash-image":  0.067,
+    "gemini-3-flash-image":    0.067,
+    "gemini-2.5-flash":        0.039,
+    "gemini-2.0-flash":        0.039,   # gemini native image (whisk/google)
+    # GPT-Image (default = medium tier)
+    "gpt-image-2":       0.053,
+    "gpt-image-1":       0.042,
+    # Flux
     "flux-kontext-max":  0.08,
+    "flux-kontext-pro":  0.04,
     "flux-kontext":      0.05,
     "flux":              0.03,
+    # Seedream
+    "seedream-4-5":      0.04,
+    "seedream-4-0":      0.03,
     "seedream":          0.03,
-    "gpt-image-1":       0.04,
-    "dall-e-3":          0.04,
+    # Sora image
+    "sora-image":        0.04,
 }
 _IMAGE_COST_DEFAULT = 0.04
 
@@ -2451,10 +2468,11 @@ async def generate_image(req: ImageRequest,
     if not cfg:
         raise HTTPException(400, f"Unknown image model: {req.model}")
 
-    # Step 4: credit gate — 1 image unit. 402 up front if the tenant can't afford it.
+    # Step 4: model-lock (403 before any charge) → credit gate — 1 image unit.
     _byok = _byok_active()
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
+        metering.ensure_tier(user, catalog.image_min_tier(req.model), req.model)
         await metering.gate(user.tenant_id, "image", req.model, {"count": 1}, byok=_byok)
 
     # Always use IMAGE_API_KEY from env (LAOZHANG_IMAGE_API_KEY)
@@ -2590,6 +2608,7 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
     _byok = _byok_active()
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
+        metering.ensure_tier(user, catalog.video_min_tier(req.model, str(preset.get("size") or "")), req.model)
         await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
 
     # Nusantara corpus: enrich the TEXT prompt before Veo (best-effort, never breaks gen).
@@ -2844,6 +2863,7 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
     _byok = _byok_active()
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
+        metering.ensure_tier(user, catalog.video_min_tier(req.model, str(getattr(req, "size", "") or "")), req.model)
         await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
 
     # Nusantara corpus: enrich the TEXT prompt before Sora (best-effort, never breaks gen).
@@ -6880,11 +6900,12 @@ async def generate_image_vertex(req: VertexImageRequest,
                                 x_video_job: str = Header(None, alias="X-Video-Job-Id")):
     if not _ensure_vertex():
         raise HTTPException(503, f"Vertex AI not configured — {_vertex_diag()}")
-    # Credit gate — same metering as the LaoZhang /generate-image path (1 image unit).
-    # 402 up front if the tenant can't afford it; debit + usage logged after success.
+    # Model-lock (403 before charge) → credit gate — same metering as LaoZhang path.
+    # req.model here is the Vertex id (gemini-*-image); image_min_tier maps those too.
     _byok = _byok_active()
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
+        metering.ensure_tier(user, catalog.image_min_tier(req.model), req.model)
         await metering.gate(user.tenant_id, "image", req.model, {"count": 1}, byok=_byok)
     prompt = req.prompt
     if req.nusantara_corpus:

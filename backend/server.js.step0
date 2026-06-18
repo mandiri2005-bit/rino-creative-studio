@@ -1,5 +1,5 @@
 /**
- * Cerita AI Studio — unified backend
+ * Rino Creative Studio — unified backend
  *
  * Direct routes  (Node @google/genai):
  *   Batch Images · TTS · Imagen
@@ -21,21 +21,11 @@ import { GoogleGenAI } from "@google/genai";
 import Jimp from "jimp";
 import { parseAudioMime, makeWavHeader, convertToWav, prependSilence, buildJsonl, mkId as _mkId } from "./utils.mjs";
 import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile, resolveTenantId, resolveUserId, _uuid5, getOrCreateSession, appendMessage, logUsage, calcGoogleCost,
-         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, listAssets, logSyncJob, query } from "./db.js";
+         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload } from "./db.js";
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
-import * as billing from "./billing.mjs";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
-import * as storage from "./storage.mjs";
-import { isGoogleVeo, googleVeoSubmit, googleVeoStatus, googleVeoResult, getGoogleVeoJob, markGoogleVeoR2 } from "./googleVeo.mjs";
-import { randomUUID } from "crypto";
-import * as Sentry from "@sentry/node";
-import { mountVideoRoutes } from "./video/routes.mjs";
-
-// Step 3: Sentry is initialised in instrument.mjs (loaded via `node --import`)
-// so it can auto-instrument http/express before this module runs.
-const SENTRY_ON = !!process.env.SENTRY_DSN_NODE;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT        = process.env.PORT        || 3000;
@@ -43,13 +33,10 @@ const PYTHON_API  = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 const MCP_API     = process.env.MCP_API_URL    || "http://127.0.0.1:8001";
 const GEMINI_KEY  = process.env.GEMINI_API_KEY || "";
 
-// ── Project Dalang (WS-7): language table is owned by the pakem (ONE source of
-// truth, python/pakem). Node no longer hard-codes the canon; it lazily mirrors
-// it from GET ${PYTHON_API}/narration/languages and refreshes in the background.
-// The seed below is ONLY a cold-start fallback for the first few requests (or if
-// the Python API is briefly unreachable) — it is overwritten by the pakem fetch.
-// Mirrors _resolve_narasi_lang in laozhang_api.py, which itself delegates to pakem.
-let _NARASI_LANG_NAMES = {
+// Maps a language code to a display name; otherwise passes the value through
+// AS-IS so any language/register the LLM supports works (jv, su, fr, "Darija
+// Maroko", "Basa Jawa Krama", …). Mirrors _resolve_narasi_lang in laozhang_api.py.
+const _NARASI_LANG_NAMES = {
   id:"Bahasa Indonesia", en:"English", jv:"Basa Jawa (Javanese)",
   su:"Basa Sunda (Sundanese)", ms:"Bahasa Melayu (Malay)", ban:"Basa Bali (Balinese)",
   min:"Baso Minangkabau", ar:"العربية (Arabic)", zh:"中文 (Chinese)",
@@ -58,51 +45,11 @@ let _NARASI_LANG_NAMES = {
   pt:"Português (Portuguese)", hi:"हिन्दी (Hindi)", th:"ภาษาไทย (Thai)",
   vi:"Tiếng Việt (Vietnamese)", tl:"Tagalog (Filipino)",
 };
-let _pakemLangFetchedAt = 0;
-// Refresh the language mirror from the pakem (best-effort; never throws).
-async function _refreshPakemLanguages(){
-  if(Date.now()-_pakemLangFetchedAt < 5*60*1000) return; // 5-min TTL
-  _pakemLangFetchedAt = Date.now();
-  try{
-    const r = await fetch(`${PYTHON_API}/narration/languages`);
-    if(!r.ok) return;
-    const d = await r.json();
-    if(Array.isArray(d.languages) && d.languages.length){
-      const next = {};
-      for(const it of d.languages){ if(it && it.value) next[it.value] = it.label; }
-      if(Object.keys(next).length) _NARASI_LANG_NAMES = next;
-    }
-  }catch(_e){ /* keep the existing mirror */ }
-}
-// Synchronous resolver over the (pakem-sourced) mirror. Kick a background
-// refresh so the mirror trends toward the canon; resolution itself is sync so
-// every existing call site keeps working unchanged.
 const resolveLang = (lang) => {
-  _refreshPakemLanguages();   // fire-and-forget
   if(!lang) return "Bahasa Indonesia";
   const k = String(lang).trim().toLowerCase();
   return _NARASI_LANG_NAMES[k] || String(lang).trim();
 };
-
-// ── Project Dalang (WS-7): the ONE prompt assembler. Ask the pakem
-// (POST ${PYTHON_API}/narration/prompt) to build the cache-stable {system,user}
-// narration messages from (style, language, mode, outline, brief, chapter,
-// prev_tail, rag_passages). This replaces the inline style-rules + OUTPUT
-// LANGUAGE strings that used to be duplicated here. Returns {system,user,meta}
-// or null on failure so callers can fall back gracefully.
-async function _pakemNarrationPrompt(payload){
-  try{
-    const r = await fetch(`${PYTHON_API}/narration/prompt`,{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(payload),
-    });
-    if(!r.ok){ console.warn(`[pakem] /narration/prompt HTTP ${r.status}`); return null; }
-    const d = await r.json();
-    if(!d || typeof d.user!=="string"){ return null; }
-    return d; // {PAKEM_VERSION, system, user, meta}
-  }catch(e){ console.warn("[pakem] /narration/prompt failed:",e.message); return null; }
-}
 
 // ── directories ──────────────────────────────────────────────────────────────
 const DATA_DIR   = path.join(__dirname, "data");
@@ -140,112 +87,6 @@ async function pyProxy(req, res, pyPath, extraHeaders = {}) {
     if (!pyRes.ok) { const e = await pyRes.json().catch(() => ({error: pyRes.statusText})); return res.status(pyRes.status).json({error: e.error || e.detail || pyRes.statusText}); }
     res.json(await pyRes.json());
   } catch(e) { res.status(500).json({ error: e.message }); }
-}
-
-// ── Object storage: persist a generated file to R2 + record it in `assets` ──────
-// Step 2. R2 is the source of truth; local disk stays a best-effort cache. Returns
-// { key, id, signedUrl }. Falls back gracefully (logs, returns null) if R2 isn't
-// configured yet, so generation never breaks on a storage hiccup.
-//   assetType     ∈ image|audio|video|document|archive|other
-//   sourceJobType ∈ batch_image|tts|imagen|veo|sora | null  (job_type_enum)
-async function persistAsset({ tenantId, userId = null, jobId = null, assetType,
-                              sourceJobType = null, filename, buffer,
-                              contentType, metadata = {} }) {
-  if (!storage.isConfigured()) {
-    console.warn("[persistAsset] storage not configured — skipped", filename);
-    return null;
-  }
-  const key = storage.buildKey(tenantId, jobId, assetType, filename);
-  await storage.uploadBytes(key, buffer, contentType);
-  const id = await insertAsset({
-    tenantId, userId, jobId, bucket: storage.BUCKET_NAME, s3Key: key,
-    originalFilename: filename, contentType, sizeBytes: buffer.length,
-    assetType, sourceJobType, metadata,
-  });
-  return { key, id, signedUrl: await storage.signedUrl(key) };
-}
-
-// ── Signed-URL serving (Step 2.4) ──────────────────────────────────────────────
-// Fresh 600s signed R2 URL for a key the tenant owns. RLS-checked: the SELECT
-// only matches rows for the active tenant, so a user can never sign another
-// tenant's asset. Returns null if not found / storage off.
-async function signedUrlForKey(tenantId, key) {
-  if (!key || !storage.isConfigured()) return null;
-  const res = await query(
-    "SELECT 1 FROM assets WHERE s3_key=$1 AND tenant_id=$2 AND is_deleted=false LIMIT 1",
-    [key, tenantId], tenantId
-  );
-  if (!res.rows.length) return null;
-  return storage.signedUrl(key, 600);
-}
-// Enrich a result_payload.files array with a fresh signedUrl per file that has a
-// stored R2 key (added by persistAsset). Local `url` is kept as a fallback.
-async function signFiles(files) {
-  if (!Array.isArray(files) || !storage.isConfigured()) return files || [];
-  return Promise.all(files.map(async (f) =>
-    (f && f.key) ? { ...f, signedUrl: await storage.signedUrl(f.key, 600) } : f
-  ));
-}
-
-// ── Usage logging for AI calls made directly in Node (anti revenue-leakage) ─────
-// One usage_logs row per AI call. Proxied flows are logged Python-side (at the
-// upstream call), so this only covers the google-native routes that hit the model
-// from Node. Best-effort: never throws.
-//   endpoint ∈ chat|image|tts|video|embedding|batch|other
-// Per-image cost (USD), best-effort — mirrors _IMAGE_COSTS in laozhang_api.py.
-const IMAGE_COSTS = {
-  "imagen-4.0-ultra":0.06,"imagen-4.0-fast":0.02,"imagen-4.0":0.04,"imagen":0.04,
-  "nano-banana-hd":0.039,"nano-banana":0.039,"gemini-2.0-flash":0.039,
-  "gemini-2.5-flash":0.039,"flux-kontext-max":0.08,"flux-kontext":0.05,"flux":0.03,
-  "seedream":0.03,"gpt-image-1":0.04,"dall-e-3":0.04,
-};
-function calcImageCost(model, count = 1) {
-  const m = (model || "").toLowerCase();
-  const k = Object.keys(IMAGE_COSTS).filter(x => m.startsWith(x)).sort((a,b)=>b.length-a.length)[0];
-  const p = k ? IMAGE_COSTS[k] : 0.04;
-  return +(p * Math.max(0, count)).toFixed(6);
-}
-async function trackUsage(req, model, endpoint, provider = "gemini", count = 1, jobType = null) {
-  try {
-    const tenantId = resolveTenantId(req);
-    const userId   = await resolveUserId(req, tenantId);
-    const jobId = jobType ? await logSyncJob(tenantId, jobType, { model, endpoint }) : null;
-    const cost = endpoint === "image" ? calcImageCost(model, 1) : 0;
-    for (let i = 0; i < Math.max(1, count); i++) {
-      await logUsage(tenantId, userId, model || "unknown", endpoint, 0, 0, cost, null, provider, jobId);
-    }
-  } catch (e) { console.error("[trackUsage]", endpoint, e.message); }
-}
-
-function _sniffImage(buf) {
-  if (buf.slice(0,8).toString("latin1").startsWith("\x89PNG")) return ["image/png","png"];
-  if (buf[0] === 0xff && buf[1] === 0xd8) return ["image/jpeg","jpg"];
-  if (buf.slice(0,4).toString("latin1")==="RIFF" && buf.slice(8,12).toString("latin1")==="WEBP") return ["image/webp","webp"];
-  return ["image/png","png"];
-}
-// Synchronous image flows (google-native): ONE 'done' job + persist each image to
-// R2/assets (durable + moat capture; were base64-only) + one usage row per image.
-async function captureImageFlow(req, model, jobType, b64list, provider = "gemini", prompts = null) {
-  try {
-    const tenantId = resolveTenantId(req);
-    const userId   = await resolveUserId(req, tenantId);
-    const list = (b64list || []).filter(Boolean);
-    const jobId = await logSyncJob(tenantId, jobType, { model, count: list.length });
-    const cost = calcImageCost(model, 1);
-    for (let i = 0; i < list.length; i++) {
-      const buf = Buffer.from(list[i], "base64");
-      const [ct, ext] = _sniffImage(buf);
-      // Capture the generating prompt (string for all, or array aligned by index)
-      // so source_prompt lands on the asset (moat) — was being discarded.
-      const _p = Array.isArray(prompts) ? (prompts[i] || null) : (prompts || null);
-      try {
-        await persistAsset({ tenantId, userId, jobId, assetType: "image", sourceJobType: jobType,
-          filename: `${jobType}_${i+1}.${ext}`, buffer: buf, contentType: ct,
-          metadata: { model, ...(_p ? { prompt: _p } : {}) } });
-      } catch (e) { console.error("[captureImageFlow] persist", e.message); }
-      await logUsage(tenantId, userId, model || "unknown", "image", 0, 0, cost, null, provider, jobId);
-    }
-  } catch (e) { console.error("[captureImageFlow]", jobType, e.message); }
 }
 
 // ── WAV & batch helpers imported from utils.mjs ──
@@ -345,259 +186,23 @@ app.post(
   }
 );
 
-// ── Stripe Webhook — POST /webhooks/stripe ────────────────────────────────────
-// MUST be before express.json — Stripe signature verification needs the RAW body.
-// Idempotent (processed_stripe_events); credits the durable balance on success.
-app.post(
-  "/webhooks/stripe",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    if (!billing.isConfigured() || !billing.WEBHOOK_SECRET) {
-      console.error("[stripe] webhook hit but Stripe not configured");
-      return res.status(500).json({ error: "stripe_not_configured" });
-    }
-    let event;
-    try {
-      event = billing.stripe.webhooks.constructEvent(
-        req.body, req.headers["stripe-signature"], billing.WEBHOOK_SECRET);
-    } catch (err) {
-      console.warn("[stripe] invalid signature:", err.message);
-      return res.status(400).json({ error: "invalid_signature" });
-    }
-    try {
-      const r = await billing.handleStripeEvent(event);
-      console.log(`[stripe] event=${event.type} id=${event.id} ->`, JSON.stringify(r));
-      return res.status(200).json({ received: true, ...r });
-    } catch (e) {
-      console.error(`[stripe] handler error for ${event.type}:`, e.message);
-      return res.status(500).json({ error: "handler_error" });
-    }
-  }
-);
-
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
 
-// Step 3: per-request id (cross-service correlation) + Sentry request/tenant tags.
-app.use((req, res, next) => {
-  req.id = String(req.headers["x-request-id"] || "").trim() || randomUUID();
-  res.setHeader("X-Request-Id", req.id);
-  if (SENTRY_ON) {
-    try {
-      const scope = Sentry.getCurrentScope?.();
-      if (scope) {
-        scope.setTag("request_id", req.id);
-        try { const t = resolveTenantId(req); if (t) scope.setTag("tenant_id", String(t)); } catch {}
-      }
-    } catch {}
-  }
-  next();
-});
-
 // ── Global API auth guard ───────────────────────────────────────────────────
-// Every /api/* route requires a valid Clerk token EXCEPT the allowlist below and
-// the /api/admin/* family, which is gated by the X-Admin-Secret header (adminGate)
-// instead of Clerk — so the admin console (no Clerk session) can reach them.
+// Every /api/* route requires a valid Clerk token EXCEPT the allowlist below.
 const PUBLIC_API = new Set([
   "/api/health",
-  // Project Dalang (WS-7): the pakem style + language catalogs are public,
-  // non-sensitive reference data the UI fetches on mount to populate dropdowns.
-  "/api/narration/styles",
-  "/api/narration/languages",
 ]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
-  // All /api/admin/* routes enforce X-Admin-Secret in-handler (adminGate); exempt
-  // them from Clerk so they're reachable with the admin secret alone. req.path is
-  // mount-relative here (the leading "/api" is stripped), so match "/admin/".
-  if ((req.path || "").startsWith("/admin/")) return next();
   return requireAuth(req, res, next);
 });
-
-// ── Step 4: Billing (credits balance, Stripe checkout, customer portal) ───────
-app.get("/api/billing/status", async (req, res) => {
-  try {
-    res.json(await billing.getBillingStatus(resolveTenantId(req)));
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-app.post("/api/billing/checkout", async (req, res) => {
-  try {
-    const tenantId = resolveTenantId(req);
-    const userId = await resolveUserId(req, tenantId);
-    const priceId = (req.body || {}).priceId;
-    if (!priceId) return res.status(400).json({ error: "priceId required" });
-    const url = await billing.createCheckoutSession({ tenantId, userId, priceId });
-    res.json({ url });
-  } catch (e) {
-    const code = e.message === "stripe_not_configured" ? 503
-               : e.message === "unknown_price" ? 400 : 500;
-    res.status(code).json({ error: e.message });
-  }
-});
-app.post("/api/billing/portal", async (req, res) => {
-  try {
-    const url = await billing.createPortalSession({ tenantId: resolveTenantId(req) });
-    res.json({ url });
-  } catch (e) {
-    const code = e.message === "stripe_not_configured" ? 503
-               : e.message === "no_customer" ? 400 : 500;
-    res.status(code).json({ error: e.message });
-  }
-});
-// ── Step 4: manual credit grant (no Stripe at bootstrap) ──────────────────────
-// Runs in the live env, so creditTenant updates durable + Redis consistently.
-// DISABLED until ADMIN_API_SECRET is set; then gate is the X-Admin-Secret header.
-//   curl -X POST $URL/api/admin/grant -H "X-Admin-Secret: $SECRET" \
-//        -H "Content-Type: application/json" \
-//        -d '{"email":"user@example.com","credits":5000}'
-const ADMIN_SECRET = process.env.ADMIN_API_SECRET || "";
-app.post("/api/admin/grant", async (req, res) => {
-  if (!ADMIN_SECRET) return res.status(503).json({ error: "admin grant disabled — set ADMIN_API_SECRET" });
-  if ((req.headers["x-admin-secret"] || "") !== ADMIN_SECRET) return res.status(403).json({ error: "forbidden" });
-  try {
-    const b = req.body || {};
-    const credits = parseInt(b.credits, 10);
-    if (!credits) return res.status(400).json({ error: "credits required (non-zero integer)" });
-    let tenantId = b.tenant_id || null;
-    if (!tenantId && b.email) {
-      const r = await pool.query("SELECT tenant_id_by_email($1) AS t", [b.email]);   // SECURITY DEFINER
-      tenantId = r.rows[0]?.t || null;
-    }
-    if (!tenantId) return res.status(404).json({ error: "tenant not found (pass tenant_id or a known email)" });
-    const reason = ["admin_adjust", "topup", "monthly_grant"].includes(b.reason) ? b.reason : "admin_adjust";
-    const out = await billing.creditTenant(tenantId, credits, reason, b.op_id || null, { metadata: { source: "admin_api" } });
-    res.json({ tenant_id: tenantId, credits_added: credits, applied: out.applied, balance: out.balance });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── Admin gate (shared by the cross-tenant admin endpoints below) ─────────────
-// Same contract as /api/admin/grant: disabled (503) until ADMIN_API_SECRET is set,
-// then requires a matching X-Admin-Secret header (403 otherwise). Returns true when
-// authorised; on failure it has already written the response.
-function adminGate(req, res) {
-  if (!ADMIN_SECRET) { res.status(503).json({ error: "admin disabled — set ADMIN_API_SECRET" }); return false; }
-  if ((req.headers["x-admin-secret"] || "") !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return false; }
-  return true;
-}
-
-// Edit a tenant's plan and/or active flag. Body: {tenant_id, plan?, is_active?}.
-// Plan changes do NOT grant credits — use /api/admin/grant for that (kept independent).
-const _ADMIN_PLANS = ["free", "starter", "pro", "enterprise"];
-app.patch("/api/admin/tenant", async (req, res) => {
-  if (!adminGate(req, res)) return;
-  try {
-    const b = req.body || {};
-    const tenantId = b.tenant_id || null;
-    if (!tenantId) return res.status(400).json({ error: "tenant_id required" });
-    const plan = b.plan === undefined ? null : b.plan;
-    if (plan !== null && !_ADMIN_PLANS.includes(plan))
-      return res.status(400).json({ error: `plan must be one of ${_ADMIN_PLANS.join(", ")}` });
-    const isActive = b.is_active === undefined ? null : !!b.is_active;
-    if (plan === null && isActive === null)
-      return res.status(400).json({ error: "nothing to update (pass plan and/or is_active)" });
-    const r = await query(
-      `UPDATE tenants SET plan=COALESCE($2,plan), is_active=COALESCE($3,is_active), updated_at=now()
-        WHERE id=$1 RETURNING id, plan, is_active`,
-      [tenantId, plan, isActive], tenantId);
-    if (!r.rows.length) return res.status(404).json({ error: "tenant not found" });
-    res.json({ ok: true, tenant: r.rows[0] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Cross-tenant asset delete (DB row + R2 object). Body/query: {tenant_id, key}.
-// Mirrors the user DELETE /api/assets (hard delete), scoped to the given tenant.
-app.delete("/api/admin/assets", async (req, res) => {
-  if (!adminGate(req, res)) return;
-  try {
-    const tenantId = req.body?.tenant_id || req.query.tenant_id || null;
-    const key = req.body?.key || req.query.key || null;
-    if (!tenantId || !key) return res.status(400).json({ error: "tenant_id and key required" });
-    const r = await query("DELETE FROM assets WHERE s3_key=$1 AND tenant_id=$2 RETURNING id", [key, tenantId], tenantId);
-    if (!r.rows.length) return res.status(404).json({ error: "asset not found" });
-    if (storage.isConfigured()) { try { await storage.del(key); } catch (e) { console.error("[admin delete asset] R2:", e.message); } }
-    res.json({ ok: true });
-  } catch (e) { console.error("[DELETE /api/admin/assets]", e.message); res.status(500).json({ error: e.message }); }
-});
-
-// Mark a feedback row handled (or un-handle). Body: {tenant_id, handled?=true}.
-app.patch("/api/admin/feedback/:id", async (req, res) => {
-  if (!adminGate(req, res)) return;
-  try {
-    const tenantId = req.body?.tenant_id || req.query.tenant_id || null;
-    if (!tenantId) return res.status(400).json({ error: "tenant_id required" });
-    const handled = req.body?.handled === undefined ? true : !!req.body.handled;
-    const r = await query(
-      `UPDATE feedback SET handled=$2, handled_at=CASE WHEN $2 THEN now() ELSE NULL END
-        WHERE id=$1 RETURNING id, handled`,
-      [req.params.id, handled], tenantId);
-    if (!r.rows.length) return res.status(404).json({ error: "feedback not found" });
-    res.json({ ok: true, feedback: r.rows[0] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Cross-tenant job cancel. Body: {tenant_id}. Durable DB status + best-effort signal
-// to any active worker (live store + in-memory cancel flags). No balance writes —
-// credit holds are released by the worker's own cancel path or expire via TTL.
-app.post("/api/admin/jobs/:id/cancel", async (req, res) => {
-  if (!adminGate(req, res)) return;
-  try {
-    const jobId = req.params.id;
-    const tenantId = req.body?.tenant_id || req.query.tenant_id || null;
-    if (!tenantId) return res.status(400).json({ error: "tenant_id required" });
-    const live = await getLiveJob(jobId).catch(() => null);   // active worker?
-    const newStatus = live ? "cancelling" : "cancelled";
-    const r = await query(
-      `UPDATE jobs SET status=$3::job_status_enum, updated_at=now()
-        WHERE id=$1 AND tenant_id=$2 AND status IN ('queued','processing','running')
-        RETURNING id, job_type, status`,
-      [jobId, tenantId, newStatus], tenantId);
-    if (!r.rows.length) return res.status(404).json({ error: "job not found or not cancellable" });
-    if (live) {   // signal a same-process worker to stop promptly
-      try { await updateLiveJob(jobId, (j) => { j.status = "cancelling"; return j; }); } catch {}
-      googleCancelFlags.set(jobId, true);
-      ttsCancelFlags.set(jobId, true);
-      setTimeout(() => { googleCancelFlags.delete(jobId); ttsCancelFlags.delete(jobId); }, 60000);
-    }
-    res.json({ ok: true, job: r.rows[0] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── In-app user feedback → feedback table (tenant + user captured from auth) ──
-app.post("/api/feedback", async (req, res) => {
-  try {
-    const tenantId = resolveTenantId(req);
-    const userId = await resolveUserId(req, tenantId);
-    const body = String((req.body || {}).body || "").trim();
-    if (!body) return res.status(400).json({ error: "feedback body required" });
-    let userName = null, email = String((req.body || {}).email || "").trim() || null;
-    try {
-      if (userId) {
-        const u = await query("SELECT display_name, email FROM users WHERE id=$1", [userId], tenantId);
-        userName = u.rows[0]?.display_name || null;
-        if (!email) email = u.rows[0]?.email || null;
-      }
-    } catch {}
-    await query(
-      "INSERT INTO feedback (tenant_id, user_id, user_name, email, body) VALUES ($1,$2,$3,$4,$5)",
-      [tenantId, userId, userName, email, body.slice(0, 5000)], tenantId);
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 app.use("/images", express.static(OUTPUT_DIR, {maxAge:"1h"}));
 app.use("/audio",  express.static(TTS_DIR,    {maxAge:"1h"}));
 app.use("/imgs",   express.static(IMG_DIR,    {maxAge:"1h"}));
-// Root path serves the public marketing landing (ceritaAI). Registered before the
-// static middleware so "/" returns landing.html instead of the default index.html.
-// The studio app remains reachable at /index.html (where landing CTAs point).
-app.get("/", (req, res) => {
-  res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(__dirname, "public", "landing.html"));
-});
-app.use(express.static(path.join(__dirname,"public"),{
-  setHeaders:(res,p)=>{ if(p.endsWith("index.html")) res.setHeader("Cache-Control","no-cache"); }
-}));
+app.use(express.static(path.join(__dirname,"public")));
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get("/api/health", (_,res) => res.json({ ok:true, gemini:!!GEMINI_KEY, python:PYTHON_API }));
@@ -636,44 +241,26 @@ app.delete("/api/tts/profiles/:id", requireAuth, async (req,res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // CHAT  (proxy → Python)
 // ══════════════════════════════════════════════════════════════════════════════
-// ── Generic chat proxy ────────────────────────────────────────────────────────
-// Forward ALL body fields + Authorization/X-* headers to a Python streaming
-// endpoint — NO per-route field whitelist (that's the class of bug where adding a
-// field like `history` silently gets dropped). Adding a provider/route = one line.
-// `overrides` win over the client body (e.g. agentic forces use_tools). Body is a
-// pure pass-through + sessionId→session_id; Python request models ignore extras.
-function _fwdHeaders(req){
-  const h = { "Content-Type": "application/json" };
-  for (const k in req.headers){
-    const lk = k.toLowerCase();
-    if (lk === "authorization" || (lk.startsWith("x-") && !lk.startsWith("x-forwarded-") && lk !== "x-real-ip" && lk !== "x-request-id"))
-      h[k] = req.headers[k];
-  }
-  return h;
-}
-function _fwdBody(req, overrides){
-  const b = req.body || {};
-  return JSON.stringify({ ...b, session_id: b.session_id || b.sessionId, ...(overrides||{}) });
-}
-async function proxyChatStream(pyPath, req, res, overrides){
+app.post("/api/chat", async (req,res) => {
   res.setHeader("Content-Type","text/event-stream");
   res.setHeader("Cache-Control","no-cache");
   res.setHeader("Connection","keep-alive");
   try {
-    const pyRes = await fetch(`${PYTHON_API}${pyPath}`, { method:"POST", headers:_fwdHeaders(req), body:_fwdBody(req, overrides) });
+    const lzk1 = req.headers["x-laozhang-api-key"] || "";
+    const _auth1 = req.headers["authorization"] || "";
+    const pyRes = await fetch(`${PYTHON_API}/chat/stream`, {
+      method:"POST", headers:{"Content-Type":"application/json",...(lzk1&&{"X-LaoZhang-API-Key":lzk1}),...(_auth1&&{"Authorization":_auth1})},
+      body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
+        model:req.body.model||"gemini-2.5-flash", system:req.body.system||"You are a helpful assistant.",
+        temperature:req.body.temperature||0.9, max_tokens:req.body.max_tokens||8192,
+        images:Array.isArray(req.body.images)?req.body.images:[] }),
+    });
     const reader = pyRes.body.getReader();
-    req.on("close", () => reader.cancel());
-    while (true){ const {done,value} = await reader.read(); if (done) break; if (res.writableEnded) break; res.write(value); }
-    if (!res.writableEnded) res.end();
-  } catch(e){ if (!res.writableEnded){ res.write(`data: [ERROR: ${e.message}]\n\n`); res.end(); } }
-}
-
-app.post("/api/chat", (req,res) => proxyChatStream("/chat/stream", req, res));
-
-// CHAT / GOOGLE — Python /chat/google/stream uses Vertex OAuth and IGNORES any client
-// google_api_key, so the route can't depend on a leakable key. Overrides the legacy
-// Node plain-key handler below (Express runs the first-registered route).
-app.post("/api/chat/google", (req,res) => proxyChatStream("/chat/google/stream", req, res));
+    req.on("close",()=>reader.cancel());
+    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
+    if(!res.writableEnded) res.end();
+  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
+});
 
 // One-shot non-streaming chat — used by auto-pick video feature
 app.post("/api/chat/once", async (req,res) => {
@@ -702,27 +289,33 @@ app.post("/api/chat/google/once", async (req, res) => {
       model, contents: [{ role: "user", parts: [{ text: message }] }], config
     });
     const text = r?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("") || "";
-    try{
-      const _um=r?.usageMetadata||{}, _ti=_um.promptTokenCount||0, _to=_um.candidatesTokenCount||0;
-      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
-      await logUsage(_t,_u,model,"chat",_ti,_to,calcGoogleCost(model,_ti,_to),null,"gemini");
-    }catch(_){}
     res.json({ text: text.trim() });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Agentic = same /chat/stream with MCP tool-calling forced on.
-app.post("/api/chat/agentic", (req,res) =>
-  proxyChatStream("/chat/stream", req, res, { use_tools:true, mcp_paths:(req.body&&req.body.mcpPaths)||"" }));
-
-// ── CHAT v2 (model registry + per-model provider failover; Python chat_router) ──
-app.get("/api/chat/models", async(req,res)=>{ try{ res.json(await(await fetch(`${PYTHON_API}/chat/models`)).json()); }catch(e){ res.status(500).json({error:e.message}); } });
-
-app.post("/api/chat/v2", (req,res) => proxyChatStream("/chat/v2/stream", req, res));
+app.post("/api/chat/agentic", async (req,res) => {
+  res.setHeader("Content-Type","text/event-stream");
+  res.setHeader("Cache-Control","no-cache");
+  res.setHeader("Connection","keep-alive");
+  try {
+    const lzk2 = req.headers["x-laozhang-api-key"] || "";
+    const pyRes = await fetch(`${PYTHON_API}/chat/stream`, {
+      method:"POST", headers:{"Content-Type":"application/json",...(lzk2&&{"X-LaoZhang-API-Key":lzk2})},
+      body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
+        model:req.body.model||"claude-sonnet", system:req.body.system||"You are a helpful assistant. Use the search_files tool when the user asks about their documents.",
+        temperature:req.body.temperature||0.7, max_tokens:8192, use_tools:true, mcp_paths:req.body.mcpPaths||"",
+        images:Array.isArray(req.body.images)?req.body.images:[] }),
+    });
+    const reader = pyRes.body.getReader();
+    req.on("close",()=>reader.cancel());
+    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
+    if(!res.writableEnded) res.end();
+  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
+});
 
 app.post("/api/cancel/:id",  async(req,res)=>{ try{const _hc={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/cancel/${req.params.id}`,{method:"POST",headers:_hc})).json());}catch(e){res.status(500).json({error:e.message});} });
 app.get ("/api/history/:id", async(req,res)=>{ try{const _hh={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/history/${req.params.id}`,{headers:_hh})).json());}catch(e){res.status(500).json({error:e.message});} });
-app.post("/api/save",        async(req,res)=>{ try{const _hs={"Content-Type":"application/json",...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/save`,{method:"POST",headers:_hs,body:JSON.stringify(req.body)})).json());}catch(e){res.status(500).json({error:e.message});} });
+app.post("/api/save",        async(req,res)=>{ try{res.json(await(await fetch(`${PYTHON_API}/save`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(req.body)})).json());}catch(e){res.status(500).json({error:e.message});} });
 app.delete("/api/session/:id",async(req,res)=>{ try{const _hd={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};await fetch(`${PYTHON_API}/session/${req.params.id}`,{method:"DELETE",headers:_hd});res.json({status:"cleared"});}catch(e){res.status(500).json({error:e.message});} });
 app.get("/api/models",       async(req,res)=>{ try{res.json(await(await fetch(`${PYTHON_API}/models`)).json());}catch(e){res.status(500).json({error:e.message});} });
 
@@ -732,9 +325,7 @@ app.post("/api/upload", upload.single("file"), async(req,res)=>{
   try{
     const form=new FormData();
     form.append("file",req.file.buffer,{filename:req.file.originalname,contentType:req.file.mimetype});
-    const _uh={...form.getHeaders(),"Content-Length":String(form.getLengthSync()),
-               ...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};
-    const pyRes=await fetch(`${PYTHON_API}/upload`,{method:"POST",body:form.getBuffer(),headers:_uh});
+    const pyRes=await fetch(`${PYTHON_API}/upload`,{method:"POST",body:form.getBuffer(),headers:{...form.getHeaders(),"Content-Length":String(form.getLengthSync())}});
     if(!pyRes.ok){const e=await pyRes.json();return res.status(pyRes.status).json(e);}
     res.json(await pyRes.json());
   }catch(e){res.status(500).json({error:e.message});}
@@ -759,7 +350,7 @@ const NANO_TO_GOOGLE_MODEL = {
 
 // ── Flow images: Google native first, fallback LaoZhang on quota ─────────────
 app.post("/api/flow/images/native", async (req, res) => {
-  const { scenes=[], model="nano-banana-hd", aspect_ratio="16:9", image_style="", google_api_key="", nusantara_corpus=false } = req.body || {};
+  const { scenes=[], model="nano-banana-hd", aspect_ratio="16:9", image_style="", google_api_key="" } = req.body || {};
   if (!scenes.length) return res.status(400).json({ error:"scenes required" });
 
   const effectiveGoogleKey = google_api_key.trim() || GEMINI_KEY;
@@ -774,8 +365,7 @@ app.post("/api/flow/images/native", async (req, res) => {
 
       // Direct fetch — more reliable than SDK for image-gen models
       const results = await Promise.allSettled(scenes.map(async (s, i) => {
-        let prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
-        prompt = await corpusEnhance(prompt, nusantara_corpus);
+        const prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
         const fetchResp = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${nativeModel}:generateContent?key=${effectiveGoogleKey}`,
           { method:"POST", headers:{"Content-Type":"application/json"},
@@ -805,7 +395,6 @@ app.post("/api/flow/images/native", async (req, res) => {
       const okCount = images.filter(x=>x.image_b64).length;
       if (!okCount) throw new Error("Google native returned no images");
       console.log(`[flow/images/native] GOOGLE ok model=${nativeModel} scenes=${scenes.length} images=${okCount}`);
-      await captureImageFlow(req, nativeModel, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""));
       return res.json({ images, via:"google_native" });
 
     } catch(e) {
@@ -818,9 +407,8 @@ app.post("/api/flow/images/native", async (req, res) => {
   try {
     const r = await fetch(`${PYTHON_API}/flow/images`, {
       method:"POST",
-      headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey,
-               ...(req.headers.authorization ? {authorization: req.headers.authorization} : {})},
-      body: JSON.stringify({ scenes, model, aspect_ratio, image_style, nusantara_corpus }),
+      headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey},
+      body: JSON.stringify({ scenes, model, aspect_ratio, image_style }),
     });
     const data = await r.json();
     console.log(`[flow/images/native] LAOZHANG fallback model=${model} scenes=${scenes.length}`);
@@ -834,7 +422,7 @@ app.post("/api/flow/storyboard", async (req, res) => {
   const timer = setTimeout(() => controller.abort(), 600_000); // 10 min
   try {
     const headers = { "Content-Type": "application/json" };
-    for (const h of ["x-image-api-key","X-Image-API-Key","x-laozhang-api-key","X-LaoZhang-API-Key","authorization"]) {
+    for (const h of ["x-image-api-key","X-Image-API-Key","x-laozhang-api-key","X-LaoZhang-API-Key"]) {
       const v = req.headers[h.toLowerCase()] || req.headers[h];
       if (v) headers[h] = v;
     }
@@ -853,26 +441,18 @@ app.post("/api/script/tts", (req,res)=>pyProxy(req,res,"/script/tts"));
 // ── Narasi AI — LaoZhang (outline + brief + chapter) ─────────────────────
 app.post("/api/narasi/outline",  (req,res)=>pyProxy(req,res,"/narasi/outline"));
 app.post("/api/narasi/generate", (req,res)=>pyProxy(req,res,"/narasi/generate"));
-// review requires auth (python Depends) + DeepSeek routing. pyProxy forwards
-// Authorization + X-LaoZhang-API-Key + X-DeepSeek-Route; the old inline handler
-// dropped Authorization → python 401 "Missing or invalid Authorization header".
-app.post("/api/narasi/review", (req,res)=>pyProxy(req,res,"/narasi/review"));
-// ── WS-8 (Project Dalang) — converged narration job contract ─────────────────
-// ONE job endpoint shared by the Python UI and this Node path. The Node Google
-// handler (/api/narasi/generate/google) keeps its own in-process loop, but new
-// callers (and the unified UI) drive the SAME background job via these proxies:
-//   POST   /api/narration            → 202 {job_id,status:"running",total}
-//   GET    /api/narration/:id        → {status,done,total,chapters,output?}
-//   POST   /api/narration/:id/cancel → {status:"cancel_requested"}
-// pyProxy forwards Authorization (Clerk JWT) + the per-request key headers and
-// preserves the Python status code (so a 402 credit-hold surfaces unchanged).
-// Public pakem catalogs (allowlisted above) — MUST precede the `:id` route so
-// Express matches these literals before treating "styles"/"languages" as a job id.
-app.get ("/api/narration/styles",     (req,res)=>pyProxy(req,res,"/narration/styles"));
-app.get ("/api/narration/languages",  (req,res)=>pyProxy(req,res,"/narration/languages"));
-app.post("/api/narration",            (req,res)=>pyProxy(req,res,"/narration"));
-app.get ("/api/narration/:id",        (req,res)=>pyProxy(req,res,`/narration/${req.params.id}`));
-app.post("/api/narration/:id/cancel", (req,res)=>pyProxy(req,res,`/narration/${req.params.id}/cancel`));
+app.post("/api/narasi/review", async (req,res) => {
+  try {
+    const lzk = req.headers["x-laozhang-api-key"] || "";
+    const pyRes = await fetch(`${PYTHON_API}/narasi/review`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json",...(lzk&&{"X-LaoZhang-API-Key":lzk})},
+      body: JSON.stringify(req.body),
+    });
+    if (!pyRes.ok) { const e = await pyRes.json().catch(()=>({error:pyRes.statusText})); return res.status(pyRes.status).json({error:e.error||e.detail||pyRes.statusText}); }
+    res.json(await pyRes.json());
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
 // SAVE-EDIT  (proxy → Python) — captures correction pairs for the moat (WS-G Task 5)
 app.post("/api/narasi/save-edit/:jobId", async(req,res)=>{
   try{
@@ -919,14 +499,7 @@ app.post("/api/narasi/cancel/:jobId", (req,res)=>{
   setTimeout(()=>googleCancelFlags.delete(req.params.jobId), 60000); // cleanup after 1min
   pyProxy(req,res,`/narasi/cancel/${req.params.jobId}`);
 });
-// PERSIST (proxy → Python) — durable write of generated chapters + capture cols
-// (retrieved_ids/source_prompt). Used by the Google handler server-side and the
-// Phase-1 E2E suite; tenant-scoped + auth-guarded by python Depends(get_current_user).
-app.post("/api/narasi/persist", (req,res)=>pyProxy(req,res,"/narasi/persist"));
 app.get("/api/narasi/jobs", (req,res)=>pyProxy(req,res,"/narasi/jobs"));
-app.post("/api/narasi/rate", (req,res)=>pyProxy(req,res,"/narasi/rate"));
-app.post("/api/narasi/rate-all", (req,res)=>pyProxy(req,res,"/narasi/rate-all"));
-app.get("/api/narasi/chapters/:jobId", (req,res)=>pyProxy(req,res,`/narasi/chapters/${req.params.jobId}`));
 app.get("/api/narasi/status/:jobId", (req,res)=>pyProxy(req,res,`/narasi/status/${req.params.jobId}`));
 app.post("/api/narasi/stitch/:jobId", async(req,res)=>{
   try{
@@ -959,14 +532,200 @@ ${bodyText}`;
 
 // ── Narasi AI — Google native ─────────────────────────────────────────────
 
-// ── Project Dalang (WS-7): style-rule canon REMOVED from Node. ───────────────
-// The ~180-line NARASI_STYLE_RULES_JS object that duplicated laozhang_api.py
-// STYLE_RULES is deleted. Style rules (and OUTPUT LANGUAGE / factual integrity /
-// ordering) now come from the pakem (python/pakem) via POST
-// ${PYTHON_API}/narration/prompt — see _pakemNarrationPrompt + _narasiGoogleHandler.
-// _getStyleRulesJS is kept ONLY as a deprecated no-op shim so any untraced caller
-// degrades gracefully (returns ""); the real rules are injected by the pakem.
-function _getStyleRulesJS(_style){ return ""; }
+// ── Style rules (mirrors laozhang_api.py STYLE_RULES) ─────────────────────
+const NARASI_STYLE_RULES_JS={
+  "creative non-fiction":`STYLE: Creative Non-Fiction
+= Techniques of fiction (concrete scenes, specific POV, sensory detail) applied to REAL FACTS.
+
+STRUCTURE PER CHAPTER:
+1. COLD OPEN — One specific cinematic scene. Specific object, person, moment — NOT abstract.
+   BAD: "Para leluhur membawa harapan ke cakrawala."
+   GOOD: "Di geladak sempit: benih padi dibungkus daun pisang, seekor babi betina bunting diikat di tiang."
+2. UNTOLD STORY — The fact most people don't know. Specific data: %, dates, species names, site names.
+3. SUDUT PANDANG — At least one scene from a specific character's human POV.
+
+FORBIDDEN: "harapan", "keberanian", "gema purba", "kita adalah kelanjutan mereka", "penjelajah tak gentar"
+REQUIRED: Min 2 specific facts with numbers/dates per section. 1 concrete object/sensory detail per paragraph.`,
+
+  "storytelling":`STYLE: Storytelling — Narrative Drama
+= Story-first. Every historical fact must be delivered through SCENE and CHARACTER, not exposition.
+
+STRUCTURE PER CHAPTER:
+1. SCENE OPENER — Drop into the middle of a moment. In medias res. Who, what, where — in the first sentence.
+2. CONFLICT/TENSION — Every chapter needs a problem or stakes.
+3. DIALOGUE — At least 2 lines of spoken dialogue per chapter.
+4. TURN — A moment where something changes: a realization, a surprise, a decision.
+
+FORBIDDEN: Passive summary of events. Telling emotion instead of showing. Generic descriptions.
+REQUIRED: Named or clearly characterized figures. Cause-and-effect within scenes. Physical action.`,
+
+  "bedtime story":`STYLE: Bedtime Story — Gentle, Soothing
+= Warm narrator voice, gentle wonder, age-appropriate vocabulary.
+
+STRUCTURE PER CHAPTER:
+1. SOFT OPENING — Begin with a peaceful image or a gentle question. No drama, no conflict.
+2. SENSE OF WONDER — Each chapter reveals one amazing thing as a gift, not a lesson.
+3. COMFORTING CLOSE — End with warmth. A sense that things turned out okay.
+
+FORBIDDEN: Violence, conflict, darkness. Complex syntax. Academic jargon.
+REQUIRED: Short sentences. Soft vocabulary. Metaphors from nature and everyday life.`,
+
+  "harari":`STYLE: Harari / Jared Diamond — Big History (Sapiens-style)
+= Claim → Evidence → Implication. Zoom from the specific to the cosmic.
+TONE: Interdisciplinary, analytical, slightly provocative, intellectually fair.
+LANGUAGE: English. Topic can be ANY historical/civilizational subject.
+
+STRUCTURE PER CHAPTER:
+1. OPENING — Rotate types. NEVER use "Imagine" as first word more than once per book.
+   TYPE A — Direct reversal of common belief.
+   TYPE B — Specific paradox with named evidence and date.
+   TYPE C — Bold historical verdict a scholar could argue with.
+   TYPE D — Cognitive/evolutionary hook about human nature.
+
+2. EVIDENCE STACK — Min 2 named researchers + dates. Min 2 quantified data points.
+   SCHOLARLY TENSION — mandatory: name one counter-theory or scholarly debate.
+   Acknowledge what is NOT yet known.
+
+3. COMPARATIVE LENS — mandatory, intellectually fair.
+   FORBIDDEN: Claiming one civilization was "smarter" or "braver" than another.
+   REQUIRED: Explain differences through geography, ecology, or resource constraints.
+
+4. IMPLICATION — vary framing every chapter. NEVER repeat "This is the great lesson for all of humanity."
+   End with a bridge: 1–2 sentences opening the next tension.
+
+ADVANCED MECHANICS (all mandatory):
+5. MICRO-TO-MACRO ZOOM — anchor in one microscopic/mundane detail before going cosmic.
+6. SHARED FICTION FRAME — frame human institutions as "imagined realities" or "collective fictions."
+7. SENSORY ANCHOR — translate one data point into a lived, sensory prehistoric human experience.
+8. PUNCHLINE RULE — follow one long complex sentence with a brutal 3–6 word verdict.
+9. HISTORICAL CONTINGENCY — deny the reader the comfort of destiny. Acknowledge the role of chance.
+10. COGNITIVE THREAT — one realization that destabilizes a modern assumption about civilization or progress.
+
+BANNED PHRASES: "Throughout history", "It is important to note", "This suggests that", "In many ways",
+"Scholars have long debated", "Since the dawn of time", "It is worth noting", "One cannot help but wonder"
+
+ANTI-HEDGING: Avoid stacking: "perhaps", "possibly", "arguably", "may have". Use uncertainty only when evidence requires it.
+
+ABSOLUTE FORBIDDEN:
+- "Imagine" as chapter opener more than once in the entire book
+- "This is the great lesson for all of humanity"
+- Passive heroism: "brave/fearless/spirited ancestors"
+- Comfortable unearned conclusions
+
+REQUIRED ONCE PER CHAPTER:
+- One bold claim a scholar could disagree with
+- One named counter-theory bridging two disciplines
+- One quantified data point
+- One fresh implication framing
+- One Micro-to-Macro zoom
+- One Sensory Anchor
+- One Punchline Rule moment
+- One chapter bridge`,
+
+  "pov":`STYLE: POV — First Person Immersive
+= You ARE the historical figure. First person, present tense, immediate sensory experience.
+
+STRUCTURE PER CHAPTER:
+1. IMMEDIATE SENSORY OPENING — First sentence places reader in a body, in a moment.
+2. INNER MONOLOGUE — Thoughts, fears, calculations.
+3. SPECIFIC OBSERVATION — What do I see/hear/smell/touch that reveals historical context?
+4. DECISION OR ACTION — The POV character does or decides something that moves history.
+
+FORBIDDEN: Third person. Omniscient narrator intrusions. Modern sensibility projected onto ancient figure.
+REQUIRED: Present tense throughout. Specific sensory details — not abstract emotions.`,
+
+  "national geographic":`STYLE: National Geographic Documentary
+= Science anchored in beauty. Every fact arrives inside a visual, environmental description.
+
+STRUCTURE PER CHAPTER:
+1. LANDSCAPE SHOT — Open with the physical environment as it looks/feels/smells.
+2. ZOOM TO SUBJECT — From landscape to a specific creature, artifact, or human activity.
+3. SCIENTIFIC EXPLANATION — The "how does this work" in accessible, precise language.
+4. CONSERVATION/SIGNIFICANCE FRAME — Why does this matter today?
+
+FORBIDDEN: Vague wonder without specificity. Human-centric framing that ignores ecology.
+REQUIRED: Species names, geological terms, GPS-level location specificity. Present tense for ongoing phenomena.`,
+
+  "youtube":`STYLE: YouTube — Popular Science
+= Hook in first sentence. Curiosity loops. Reframe what viewer thinks they know.
+
+STRUCTURE PER CHAPTER:
+1. HOOK — First sentence must be a question, surprising fact, or counterintuitive claim.
+2. SETUP THE MYSTERY — What's the weird thing we're about to explain?
+3. EXPLAIN WITH ANALOGY — One modern analogy per complex concept.
+4. PAYOFF + REFRAME — Answer the question, then add what that means for today.
+
+FORBIDDEN: Academic tone. Passive voice. Long blocks without a hook or punchline.
+REQUIRED: Short punchy sentences mixed with longer ones. Direct address. At least one modern analogy.`,
+
+  "journalistic":`STYLE: Journalistic — Long Form
+= Report the past like a journalist covering a breaking story.
+
+STRUCTURE PER CHAPTER:
+1. LEAD — The most important/surprising fact first. Then context.
+2. NUT GRAF — What is this chapter really about? Why does it matter?
+3. SCENE + VOICE — At least one reconstructed scene + one quoted source.
+4. MULTIPLE ANGLES — Show competing interpretations.
+
+FORBIDDEN: Single narrative voice without tension. Unverified claims presented as fact.
+REQUIRED: Attribution language. Present tense for dramatic reconstruction. Specific numbers and sources.`,
+
+  "literary essay":`STYLE: Literary Essay
+= Personal intellectual voice. Digressive. Thinking on the page, not presenting conclusions.
+
+STRUCTURE PER CHAPTER:
+1. PERSONAL/ASSOCIATIVE OPENING — Start with an observation or cultural reference that connects obliquely.
+2. DIGRESSION — Follow one idea sideways before returning to the main thread.
+3. COMPLEXITY — Resist simple conclusions. Show what we don't know. Sit with ambiguity.
+4. RESONANT CLOSE — End not with a conclusion but a lingering image or open question.
+
+FORBIDDEN: Thesis statements. Bullet-point logic. Authoritative declarations.
+REQUIRED: First-person or intimate narrator voice. Cultural references. Sentences that think out loud.`,
+
+  "podcast narrative":`STYLE: Podcast Narrative
+= Written for the ear, not the eye. Conversational, signposted, built on spoken rhythm.
+
+STRUCTURE PER CHAPTER:
+1. CONVERSATIONAL HOOK — Address the listener directly. Short sentence.
+2. SCENE — Tell a short story in present tense, as if recounting to a friend.
+3. EXPLANATION — "And here's what's interesting..." — signpost the insight clearly.
+4. LISTENER TAKEAWAY — End with what this means for the listener's worldview.
+
+FORBIDDEN: Complex nested sentences. Dense data without analogies.
+REQUIRED: Short sentences (max 20 words for key points). Signpost phrases. Rhythm that works read aloud.`,
+
+  "academic popular":`STYLE: Academic Popular (like Sapiens)
+= Big claim → evidence → implication. Accessible language for complex ideas.
+
+STRUCTURE PER CHAPTER:
+1. BOLD OPENING CLAIM — State the argument plainly. No hedging.
+2. EVIDENCE STACK — 3–4 specific data points. Studies, sites, percentages.
+3. THOUGHT EXPERIMENT — "Imagine if..." — use hypothetical to make abstract concrete.
+4. IMPLICATION FOR TODAY — Connect past to present human behavior or society.
+
+FORBIDDEN: Jargon without definition. Evidence without interpretation. Hedging that kills momentum.
+REQUIRED: Footnote-worthy specifics in accessible language. Comparative lens. One thought experiment per chapter.`,
+
+  "cinematic voiceover":`STYLE: Cinematic Voiceover
+= Written for a narrator's voice over moving images. Short. Punchy. Visual. Rhythmic.
+
+STRUCTURE PER CHAPTER:
+1. VISUAL ESTABLISHING LINE — One sentence, one image. What is the camera seeing?
+2. NARRATION IN SHORT BURSTS — 2–4 sentence paragraphs max.
+3. EMOTIONAL BEAT — One moment of human connection. Brief.
+4. TITLE CARD CLOSE — End with a short, quotable line. One sentence. Strikes like a title card.
+
+FORBIDDEN: Long complex sentences. Explanatory exposition. Anything that can't be spoken in one breath.
+REQUIRED: Present tense. Fragments allowed for rhythm. Visual-first, emotion-second.`
+};
+
+function _getStyleRulesJS(style){
+  const sl=style.toLowerCase();
+  for(const key of Object.keys(NARASI_STYLE_RULES_JS)){
+    if(sl.includes(key)) return NARASI_STYLE_RULES_JS[key];
+  }
+  return NARASI_STYLE_RULES_JS["creative non-fiction"];
+}
 
 // ── Anti-drift helpers (mirrors laozhang_api.py) ───────────────────────────
 
@@ -1171,33 +930,20 @@ const _narasiGoogleHandler=async(req,res)=>{
     } else if(action==="chapter"){
       const c=body.chapter||{};
       // RAG: fetch Gutenberg passages from python-api
-      let ragText="";
+      let ragBlock="";
       if(body.use_rag){
         try{
           const ragResp=await fetch(`${PYTHON_API}/rag/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic:`${body.topic} — ${c.title}`,style,top_k:5})});
           const ragData=await ragResp.json();
-          if(ragData.ok&&ragData.context_text){ragText=ragData.context_text;console.log(`[RAG] Google path: passages=${ragData.passages}`);}
+          if(ragData.ok&&ragData.context_text){ragBlock=ragData.context_text+"\n";console.log(`[RAG] Google path: passages=${ragData.passages}`);}
         }catch(e){console.warn("[RAG] failed:",e.message);}
       }
-      // Project Dalang (WS-7): style rules + OUTPUT LANGUAGE + ordering come from
-      // the pakem assembler, not inline strings. Forward {system,user} to Google.
-      const _pk=await _pakemNarrationPrompt({
-        style, language:lang, mode:(body.video_mode?"video":"text"),
-        outline:body.outline||"", brief:body.brief||"",
-        chapter:{id:c.id,title:c.title,summary:c.description||"",
-                 word_target:body.word_target,word_min:body.word_min,word_max:body.word_max},
-        rag_passages:ragText||null, model,
-      });
-      if(_pk){
-        prompt=(_pk.system?_pk.system+"\n\n":"")+_pk.user;
-      } else {
-        // Fallback: pakem unreachable — minimal inline prompt (no style canon).
-        prompt=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}.\n\n`
-          +(ragText?ragText+"\n":"")
-          +(body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:"")
-          +(body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:"")
-          +`THIS CHAPTER:\n  Title: ${c.title}\n  Summary: ${c.description}\n  Target: ${body.word_target} words.\n\nWrite EXACTLY ${body.word_target} words in ${langLabel}. Do NOT include chapter title. Return ONLY the body text.`;
-      }
+      prompt=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; any references/context may be in another language but do NOT mirror them.\n\nYou are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic}"\nLanguage: ${langLabel}\n\n`
+        +ragBlock
+        +_getStyleRulesJS(style)+"\n\n"
+        +(body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:"")
+        +(body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:"")
+        +`THIS CHAPTER:\n  Title: ${c.title}\n  Summary: ${c.description}\n  Target: ${body.word_target} words (range: ${body.word_min}–${body.word_max})\n\nWrite EXACTLY ${body.word_target} words in ${langLabel}. Do NOT include chapter title. Return ONLY the body text.`;
       maxTok=Math.max(2000,Math.ceil((body.word_max||500)*1.5*1.2));
 
     } else if(body.chapters&&Array.isArray(body.chapters)&&body.chapters.length){
@@ -1223,9 +969,7 @@ const _narasiGoogleHandler=async(req,res)=>{
         const wt=c.words||400;
         const wmin=Math.floor(wt*0.9),wmax=Math.ceil(wt*1.1);
 
-        // Anti-drift is a Node-side continuity construct (voice anchoring + drift
-        // signals across chapters). It is NOT part of the pakem canon, so it stays
-        // here and is APPENDED to the pakem-assembled prompt below.
+        const styleRules=_getStyleRulesJS(style);
         const antidrift=_buildAntidriftBlock(i,totalChapters,voiceSample,driftSignals,prevOpeners,style);
 
         // Check cancel flag before each chapter
@@ -1233,49 +977,28 @@ const _narasiGoogleHandler=async(req,res)=>{
           console.warn(`[narasi-google] job ${jobId} cancelled at bab ${c.id}`);
           break;
         }
-        // RAG: fetch Gutenberg passages for this chapter (we still fetch here so we
-        // capture passage_ids for the persist step; the text is handed to the pakem
-        // assembler as rag_passages instead of being inlined).
-        let chRagText="";
+        // RAG: fetch Gutenberg passages for this chapter
+        let chRagBlock="";
         let chPassageIds=[];
         if(body.use_rag){
           try{
             const rr=await fetch(`${PYTHON_API}/rag/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic:`${body.topic||""} — ${c.title}`,style,top_k:5})});
             const rd=await rr.json();
-            if(rd.ok&&rd.context_text){chRagText=rd.context_text;chPassageIds=rd.passage_ids||[];console.log(`[RAG] Google multi-chapter bab=${c.id} passages=${rd.passages}`);}
+            if(rd.ok&&rd.context_text){chRagBlock=rd.context_text+"\n";chPassageIds=rd.passage_ids||[];console.log(`[RAG] Google multi-chapter bab=${c.id} passages=${rd.passages}`);}
           }catch(e){console.warn("[RAG] multi-chapter failed:",e.message);}
         }
-
-        // ── Project Dalang (WS-7): assemble via the pakem (ONE source of truth).
-        // Style rules, OUTPUT LANGUAGE, factual integrity, brief & outline ordering
-        // all come from /narration/prompt. Anti-drift is appended afterward.
-        let cp;
-        const _pk=await _pakemNarrationPrompt({
-          style, language:lang, mode:(body.video_mode?"video":"text"),
-          outline:body.outline||"", brief:body.brief||"",
-          chapter:{id:c.id,title:c.title,summary:c.description||"",
-                   index:i,total:totalChapters,
-                   word_target:wt,word_min:wmin,word_max:wmax},
-          rag_passages:chRagText||null, job_id:jobId, model,
-        });
-        if(_pk){
-          cp=(_pk.system?_pk.system+"\n\n":"")
-            +(antidrift?antidrift+"\n":"")
-            +_pk.user;
-        } else {
-          // Fallback: pakem unreachable — minimal inline prompt (no style canon).
-          cp=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; references/context may be in another language but do NOT mirror them.
+        const cp=`OUTPUT LANGUAGE: ${langLabel}. Write the ENTIRE chapter ONLY in ${langLabel}; references/context may be in another language but do NOT mirror them.
 
 You are writing Chapter ${c.id} of a ${style} narrative titled: "${body.topic||""}"
 Language: ${langLabel}
 
-${chRagText?chRagText+"\n":""}${antidrift}${body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:""}${body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:""}THIS CHAPTER:
+${chRagBlock}${styleRules}
+${antidrift}${body.brief?`NARRATIVE BRIEF:\n${body.brief}\n\n`:""}${body.outline?`FULL OUTLINE:\n${body.outline}\n\n`:""}THIS CHAPTER:
   Title: ${c.title}
   Summary: ${c.description||""}
   Target: ${wt} words (range: ${wmin}–${wmax})
 
 Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chapter title. Return ONLY body text.`;
-        }
 
         // Token budget scales with THIS chapter's word target (wt). ~2 tokens
         // per word for Latin-script + generous headroom for non-English scripts
@@ -1294,7 +1017,6 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
             config:genCfg,
           });
           let ct=(r2.text||"").trim();
-          let _genResp=r2;
           let finishReason=r2.candidates?.[0]?.finishReason||"unknown";
           // Retry if empty or too short
           if(!ct||ct.split(/\s+/).filter(Boolean).length<50){
@@ -1305,7 +1027,6 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
             });
             if(r3.text&&r3.text.trim()){
               ct=r3.text.trim();
-              _genResp=r3;
               finishReason=r3.candidates?.[0]?.finishReason||"unknown";
             }
           }
@@ -1338,9 +1059,6 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
           persistChapters.push({
             index:i, id:c.id, title:c.title, content:ct,
             source_prompt:cp, retrieved_ids:chPassageIds, word_count:wordCount,
-            model, tokens_in:_genResp?.usageMetadata?.promptTokenCount||0,
-            tokens_out:_genResp?.usageMetadata?.candidatesTokenCount||0,
-            rag_used:!!(body.use_rag&&chPassageIds.length),
           });
         }catch(e){
           errors.push({id:c.id,error:e.message});
@@ -1351,23 +1069,14 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
           );
         }
       }
-      // Step 4: charge the google-path narasi generation (sum per-chapter tokens)
-      try{
-        const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
-        const _tin=persistChapters.reduce((s,c)=>s+(c.tokens_in||0),0);
-        const _tout=persistChapters.reduce((s,c)=>s+(c.tokens_out||0),0);
-        if(_tin||_tout) await logUsage(_t,_u,model,"narasi",_tin,_tout,calcGoogleCost(model,_tin,_tout),null,"gemini");
-      }catch(e){ console.warn("[narasi-google] usage charge failed:",e.message); }
       // Step 1.2: persist to Postgres via Python (database.py = source of truth)
       try{
-        const _pr=await fetch(`${PYTHON_API}/narasi/persist`,{
+        await fetch(`${PYTHON_API}/narasi/persist`,{
           method:"POST",
           headers:{"Content-Type":"application/json",
                    ...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})},
           body:JSON.stringify({job_id:jobId, topic:body.topic||"", style, chapters:persistChapters}),
         });
-        if(!_pr.ok) console.warn(`[narasi-google] persist HTTP ${_pr.status} — chapters NOT saved (auth/tenant?)`);
-        else console.log(`[narasi-google] persisted ${persistChapters.length} chapters -> DB`);
       }catch(e){console.warn("[narasi-google] persist failed (non-fatal):",e.message);}
 
       return res.json({ok:true,job_id:jobId,errors,drift_signals_detected:driftSignals});
@@ -1384,12 +1093,6 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
     }
 
     const result=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:prompt}]}],config:{maxOutputTokens:maxTok}});
-    // Step 4: charge the google-path outline/brief/chapter call
-    try{
-      const _um=result?.usageMetadata||{}, _tin=_um.promptTokenCount||0, _tout=_um.candidatesTokenCount||0;
-      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
-      await logUsage(_t,_u,model,"narasi",_tin,_tout,calcGoogleCost(model,_tin,_tout),null,"gemini");
-    }catch(e){ console.warn("[narasi-google] outline usage failed:",e.message); }
     let text=(result.text||"").trim().replace(/^```(?:json)?\s*/mg,"").replace(/\n?```\s*$/mg,"").trim();
 
     if(action==="brief") return res.json({ok:true,brief:text});
@@ -1416,17 +1119,6 @@ Write EXACTLY ${wt} words (count carefully) in ${langLabel}. Do NOT include chap
           if(diff)chapters.reduce((a,b)=>a.words>b.words?a:b).words+=diff;
         }
         const outlineText=chapters.map(c=>`## ${c.id}. ${c.title}\n*${c.words} kata*\n${c.description}`).join("\n\n");
-        // Persist outline to narasi_outlines via Python (mirror LaoZhang's inline save_outline)
-        try{
-          const _opr=await fetch(`${PYTHON_API}/narasi/outline/persist`,{
-            method:"POST",
-            headers:{"Content-Type":"application/json",
-                     ...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})},
-            body:JSON.stringify({topic:body.topic||"",style,language:lang,chap_count:chapters.length,outline_text:outlineText,chapters,model}),
-          });
-          if(!_opr.ok) console.warn(`[narasi-google] outline persist HTTP ${_opr.status}`);
-          else console.log(`[narasi-google] outline persisted -> narasi_outlines`);
-        }catch(e){console.warn("[narasi-google] outline persist failed (non-fatal):",e.message);}
         return res.json({ok:true,chapters,outline_text:outlineText});
       }
     }
@@ -1527,11 +1219,6 @@ app.post("/api/script/tts/google", async(req,res)=>{
     });
     let text=(result.text||"").trim().replace(/^```[^\n]*\n?/mg,"").replace(/\n?```$/mg,"").trim();
     const paragraphs=text.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
-    try{
-      const _um=result?.usageMetadata||{}, _ti=_um.promptTokenCount||0, _to=_um.candidatesTokenCount||0;
-      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
-      await logUsage(_t,_u,model,"chat",_ti,_to,calcGoogleCost(model,_ti,_to),null,"gemini");   // text transform → bill as tokens + charge
-    }catch(_){}
     res.json({ok:true,transcript:text,paragraphs,count:paragraphs.length});
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -1540,41 +1227,9 @@ app.post("/api/flow/images/lz",          (req,res)=>pyProxy(req,res,"/flow/image
 // ══════════════════════════════════════════════════════════════════════════════
 // VEO  (proxy → Python)
 // ══════════════════════════════════════════════════════════════════════════════
-// ── Veo: DEFAULT Google (Gemini); a LaoZhang key (X-Veo-API-Key) overrides ────
-app.post("/api/veo/submit", async (req,res)=>{
-  // Provider is chosen EXPLICITLY by the UI (main-Veo "LaoZhang model" checkbox /
-  // Flow apiMode toggle) via body.provider — NOT inferred from key presence.
-  // Legacy fallback: a LaoZhang key present → LaoZhang, else Google.
-  const provider = String(req.body?.provider||"").toLowerCase();
-  const lzKey = (req.headers["x-veo-api-key"]||"").trim();
-  const goLaoZhang = provider==="laozhang" || (provider!=="google" && !!lzKey);
-  if (goLaoZhang) return pyProxy(req,res,"/veo/submit");       // LaoZhang (Python meters it as provider=laozhang)
-  try {                                                        // Google
-    const tenantId = resolveTenantId(req);
-    const userId   = await resolveUserId(req, tenantId);
-    const b = req.body || {};
-    const aspect = (b.preset && typeof b.preset==="object" && b.preset.aspectRatio) || b.aspect || "16:9";
-    const out = await googleVeoSubmit({
-      prompt:b.prompt, model:b.model, refB64:b.ref_image_b64, refMime:b.ref_image_mime,
-      negativePrompt:b.negative_prompt, aspectRatio:aspect, googleKey:(b.google_api_key||"").trim(),
-      tenantId, userId });
-    // usage row with the CORRECT provider (google) — was mislabeled laozhang.
-    // cost 0 for now (no Google Veo price wired) → 0 credits charged.
-    try { await logUsage(tenantId, userId, b.model||"veo", "video", 0, 0, 0, null, "google", null); } catch(_){}
-    res.json(out);
-  } catch(e){
-    const noKey = e.code==="no_google_key";
-    res.status(noKey?400:502).json({ error: noKey
-      ? "No Google API key — set GEMINI_API_KEY on the server, or pick a LaoZhang model"
-      : "Google Veo: "+String(e.message||e).slice(0,300) });
-  }
-});
-app.get("/api/veo/status/:id", async (req,res)=>{
-  if (!isGoogleVeo(req.params.id)) return pyProxy(req,res,`/veo/status/${req.params.id}`);
-  res.json(await googleVeoStatus(req.params.id));
-});
+app.post("/api/veo/submit",       (req,res)=>pyProxy(req,res,"/veo/submit"));
+app.get ("/api/veo/status/:id",   (req,res)=>pyProxy(req,res,`/veo/status/${req.params.id}`));
 app.get ("/api/veo/download/:id", async(req,res)=>{
-  if (isGoogleVeo(req.params.id)) return veoServeGoogle(req,res,true);
   try{
     const LZ_KEY = process.env.LAOZHANG_IMAGE_API_KEY || process.env.LAOZHANG_API_KEY || "";
     const r = await fetch(`https://api.laozhang.ai/v1/videos/${req.params.id}/content`,
@@ -1588,7 +1243,6 @@ app.get ("/api/veo/download/:id", async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get ("/api/veo/stream/:id", async(req,res)=>{
-  if (isGoogleVeo(req.params.id)) return veoServeGoogle(req,res,false);
   try{
     const headers={}; if(req.headers["x-veo-api-key"]) headers["X-Veo-API-Key"]=req.headers["x-veo-api-key"];
     const pyRes=await fetch(`${PYTHON_API}/veo/stream/${req.params.id}`,{headers});
@@ -1597,35 +1251,6 @@ app.get ("/api/veo/stream/:id", async(req,res)=>{
     res.end(Buffer.from(await pyRes.arrayBuffer()));
   }catch(e){if(!res.writableEnded)res.status(500).json({error:e.message});}
 });
-// Serve a finished Google Veo video — from R2 if already captured, else fetch it
-// from Google and persist once (moat: modality=video + source_prompt).
-async function veoServeGoogle(req,res,asDownload){
-  const taskId = req.params.id;
-  const sendBytes = (bytes)=>{
-    res.setHeader("Content-Type","video/mp4");
-    res.setHeader("Cache-Control","no-store");
-    if (asDownload) res.setHeader("Content-Disposition",`attachment; filename="veo-${taskId.slice(-8)}.mp4"`);
-    res.setHeader("Content-Length", bytes.length);
-    res.end(bytes);
-  };
-  const job = getGoogleVeoJob(taskId);
-  if (job && job.r2Key && storage.isConfigured()){
-    try{ return sendBytes(await storage.downloadBytes(job.r2Key)); }catch(_){ /* fall through to re-fetch */ }
-  }
-  try{
-    const r = await googleVeoResult(taskId);
-    if (!r.done) return res.status(202).json({ status:"processing" });
-    if (job && !job.r2Key && job.tenantId){
-      try{
-        const a = await persistAsset({ tenantId:job.tenantId, userId:job.userId||null,
-          assetType:"video", sourceJobType:"veo", filename:`${taskId}.mp4`,
-          buffer:r.bytes, contentType:"video/mp4", metadata:{ provider:"google", prompt:job.prompt } });
-        if (a) markGoogleVeoR2(taskId, a.key);
-      }catch(e){ console.warn("[googleVeo] persist failed (non-fatal):", String(e.message||e).slice(0,120)); }
-    }
-    sendBytes(r.bytes);
-  }catch(e){ if(!res.writableEnded) res.status(502).json({ error:"Google Veo: "+String(e.message||e).slice(0,300) }); }
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SORA  (proxy → Python)
@@ -1712,14 +1337,9 @@ app.post("/api/submit", requireAuth, async(req,res)=>{
     const userId   = await resolveUserId(req, tenantId);
     const {settings={},jobs=[]}=req.body||{};
     if(!jobs.length) return res.status(400).json({error:"No jobs"});
-    // Nusantara corpus: enrich each job prompt before building the batch JSONL (best-effort).
-    let jobsToSubmit = jobs;
-    if (settings.nusantara_corpus) {
-      jobsToSubmit = await Promise.all(jobs.map(async j => ({ ...j, prompt: await corpusEnhance(j.prompt, true) })));
-    }
     const model=settings.modelId||"gemini-3-pro-image-preview";
     const stamp=Date.now(),jsonlPath=path.join(TMP_DIR,`batch-${stamp}.jsonl`);
-    fs.writeFileSync(jsonlPath,buildJsonl(settings,jobsToSubmit));
+    fs.writeFileSync(jsonlPath,buildJsonl(settings,jobs));
     const uploaded=await ai.files.upload({file:jsonlPath,config:{mimeType:"jsonl",displayName:"image-batch-requests"}});
     const batch=await ai.batches.create({model,src:uploaded.name,config:{displayName:settings.displayName||"image-generation-batch"}});
     const mapping=jobs.map((j,i)=>({key:`image-${i+1}`,output:(j.output||`image-${i+1}`).trim()}));
@@ -1729,8 +1349,6 @@ app.post("/api/submit", requireAuth, async(req,res)=>{
     // Durable record in jobs table. Google-specific fields live in result_payload.
     const jobId = await createJob(tenantId, userId, "batch_image", record.displayName);
     await completeJob(jobId, record);   // payload set; batch tracks real lifecycle in payload.state
-    try{ await logUsage(tenantId, userId, model, "batch", 0, 0, calcImageCost(model, record.count||0), null, "gemini"); }
-    catch(e){ console.error("[batch] logUsage failed:", e.message); }
     try{fs.unlinkSync(jsonlPath);}catch{}
     res.json({ok:true,jobName:batch.name,record:{...record,id:jobId}});
   }catch(e){console.error(e);res.status(500).json({error:e?.message||String(e)});}
@@ -1750,7 +1368,6 @@ app.post("/api/retrieve", requireAuth, async(req,res)=>{
   if(!ai) return res.status(400).json({error:"No API key"});
   try{
     const tenantId = resolveTenantId(req);
-    const userId   = await resolveUserId(req, tenantId);
     const {jobName}=req.body||{};if(!jobName)return res.status(400).json({error:"jobName required"});
     const row = await findJobByJobName(tenantId, jobName);
     const record = row?.result_payload || null;
@@ -1772,13 +1389,8 @@ app.post("/api/retrieve", requireAuth, async(req,res)=>{
       const part=parts.find(p=>p?.inlineData?.data||p?.inline_data?.data);
       const data=part?.inlineData?.data||part?.inline_data?.data;
       if(!data){failed++;continue;}
-      const outName=`${filename}.png`;const _buf=Buffer.from(data,"base64");
-      fs.writeFileSync(path.join(OUTPUT_DIR,outName),_buf);
-      const _rec={key,file:outName};
-      try{ const a=await persistAsset({tenantId,userId,jobId:row?.id||null,assetType:"image",sourceJobType:"batch_image",filename:outName,buffer:_buf,contentType:"image/png",metadata:{batch:jobName}});
-           if(a){_rec.assetKey=a.key;_rec.assetId=a.id;} }
-      catch(e){console.error("[batch] R2 persist failed:",e.message);}
-      files.push(_rec);saved++;
+      const outName=`${filename}.png`;fs.writeFileSync(path.join(OUTPUT_DIR,outName),Buffer.from(data,"base64"));
+      files.push({key,file:outName});saved++;
     }
     if(row) await patchJobPayload(row.id, { state, retrieved: saved });
     res.json({ok:true,state,saved,failed,files});
@@ -1825,7 +1437,7 @@ function chunkTextForAudiobook(text, maxChars=4000){
   flush();
   return chunks;
 }
-async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runLaozhangTtsJob(jobId,{tenantId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
   let job=await getLiveJob(jobId);
   // Audiobook mode = treat whole transcript as continuous prose, chunk at ~4000 char.
   // Default = split by blank line (one file per paragraph), legacy behaviour.
@@ -1888,11 +1500,7 @@ async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,spee
         try{wav=prependSilence(wav,silenceSeconds);}catch(_){/* keep original */}
       }
       fs.writeFileSync(path.join(TTS_DIR,filename),wav);
-      const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
-      job.files.push(_f);
-      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:inputText}});
-           if(a){_f.key=a.key;_f.assetId=a.id;} }
-      catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
+      job.files.push({file:filename,url:`/audio/${encodeURIComponent(filename)}`});
       log(`✅ ${filename}`);
       await new Promise(r=>setTimeout(r,400));
       i++;job.progress=i;await flush();
@@ -1906,11 +1514,9 @@ async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,spee
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
-  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, (transcriptBody||"").length/1000*0.10, null, "laozhang"); }
-  catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 
-async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runTtsJob(jobId,{tenantId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
   let job=await getLiveJob(jobId);
   const lines=transcriptBody.trim().split(/\n\n+/).filter(l=>l.trim());
   job.total=lines.length;job.progress=0;job.status="running";
@@ -1939,11 +1545,7 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
         let wav=convertToWav(raw,inlineData.mimeType||"audio/L16;rate=24000");
         if(silenceSeconds>0)wav=prependSilence(wav,silenceSeconds);
         fs.writeFileSync(path.join(TTS_DIR,filename),wav);
-        const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
-        job.files.push(_f);
-        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:line}});
-             if(a){_f.key=a.key;_f.assetId=a.id;} }
-        catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
+        job.files.push({file:filename,url:`/audio/${encodeURIComponent(filename)}`});
         log(`✅ ${filename}`);
       }else{log(`⚠️  No audio for line ${i+1}`);}
       await new Promise(r=>setTimeout(r,1000));i++;job.progress=i;await flush();
@@ -1958,31 +1560,29 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
-  try{ await logUsage(tenantId, userId, model, "tts", 0, 0, (transcriptBody||"").length/1000*0.10, null, "gemini"); }
-  catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 app.get("/api/tts/jobs", requireAuth, async(req,res)=>{
   try{
     const rows = await listJobs(resolveTenantId(req), "tts");
-    res.json(await Promise.all(rows.map(async r => ({
+    res.json(rows.map(r => ({
       jobId:r.id, status:r.status, model:(r.result_payload?.model)||null,
       voice:(r.result_payload?.voice)||null, outputPrefix:r.output_prefix,
-      total:(r.result_payload?.total)||0, files: await signFiles(r.result_payload?.files),
+      total:(r.result_payload?.total)||0, files:(r.result_payload?.files)||[],
       createdAt:r.created_at
-    }))));
+    })));
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get("/api/tts/files", (_,res)=>{try{res.json(fs.readdirSync(TTS_DIR).filter(f=>/\.wav$/i.test(f)).map(f=>({file:f,url:`/audio/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
 app.get("/api/tts/job/:id", requireAuth, async(req,res)=>{
   try{
     const live = await getLiveJob(req.params.id);   // running job → rich live object
-    if(live){ live.files = await signFiles(live.files); return res.json(live); }
+    if(live) return res.json(live);
     const row = await getJob(resolveTenantId(req), req.params.id);   // finished → DB row
     if(row) return res.json({
       status:row.status,
       progress:(row.result_payload?.total)||0,
       total:(row.result_payload?.total)||0,
-      files: await signFiles(row.result_payload?.files),
+      files:(row.result_payload?.files)||[],
       logs:[]
     });
     res.status(404).json({error:"Not found"});
@@ -2010,7 +1610,7 @@ app.post("/api/tts/start", requireAuth, async(req,res)=>{
   // Seed result_payload so list/restart shows model/voice/total before completion.
   await patchJobPayload(jobId, { apiMode, model, voice, total:lines.length });
   const runner=apiMode==="laozhang"?runLaozhangTtsJob:runTtsJob;
-  runner(jobId,{tenantId,userId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
+  runner(jobId,{tenantId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
     .catch(async e=>{ await failJob(jobId, e.message);
       await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal: "+e.message);return j;}); });
   res.json({ok:true,jobId,total:lines.length});
@@ -2027,123 +1627,10 @@ app.post("/api/tts/cancel/:id", requireAuth, async(req,res)=>{
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ASSETS — signed-URL refresh (Step 2.4)
-// ══════════════════════════════════════════════════════════════════════════════
-// Frontend calls this to (re)mint a signed URL when one expires (10-min TTL).
-// RLS-scoped to the caller's tenant.
-app.get("/api/assets/sign", requireAuth, async (req, res) => {
-  try {
-    const tenantId = resolveTenantId(req);
-    const key = req.query.key;
-    if (!key) return res.status(400).json({ error: "key required" });
-    const url = await signedUrlForKey(tenantId, key);
-    if (!url) return res.status(404).json({ error: "asset not found" });
-    res.json({ url, expiresIn: 600 });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Same-origin content proxy — streams an asset's bytes from R2 so the browser can
-// fetch() text (for TXT/PDF/HTML download) without hitting R2 CORS. RLS-scoped:
-// only returns content for a key the caller's tenant owns.
-app.get("/api/assets/content", requireAuth, async (req, res) => {
-  try {
-    const tenantId = resolveTenantId(req);
-    const key = req.query.key;
-    if (!key) return res.status(400).json({ error: "key required" });
-    const owns = await query(
-      "SELECT content_type FROM assets WHERE s3_key=$1 AND tenant_id=$2 AND is_deleted=false LIMIT 1",
-      [key, tenantId], tenantId
-    );
-    if (!owns.rows.length) return res.status(404).json({ error: "asset not found" });
-    if (!storage.isConfigured()) return res.status(503).json({ error: "storage not configured" });
-    const buf = await storage.downloadBytes(key);
-    res.setHeader("Content-Type", owns.rows[0].content_type || "application/octet-stream");
-    res.send(buf);
-  } catch (e) { console.error("[/api/assets/content]", e.message); res.status(500).json({ error: e.message }); }
-});
-
-// Delete a single asset from the vault (R2 object + DB row). RLS-scoped — the
-// DELETE only matches rows belonging to the caller's tenant.
-app.delete("/api/assets", requireAuth, async (req, res) => {
-  try {
-    const tenantId = resolveTenantId(req);
-    const key = req.query.key;
-    if (!key) return res.status(400).json({ error: "key required" });
-    const r = await query("DELETE FROM assets WHERE s3_key=$1 AND tenant_id=$2 RETURNING id", [key, tenantId], tenantId);
-    if (!r.rows.length) return res.status(404).json({ error: "asset not found" });
-    if (storage.isConfigured()) { try { await storage.del(key); } catch (e) { console.error("[delete asset] R2:", e.message); } }
-    res.json({ ok: true });
-  } catch (e) { console.error("[DELETE /api/assets]", e.message); res.status(500).json({ error: e.message }); }
-});
-
-// Tier-based vault retention sweep: delete expired assets (DB via SECURITY DEFINER
-// fn cleanup_expired_assets — free 7d/starter 14d/pro 30d/enterprise 90d) + their
-// R2 objects. Idempotent; runs daily + on a manual trigger.
-async function runAssetRetention() {
-  try {
-    const r = await query("SELECT s3_key FROM cleanup_expired_assets()", [], null);
-    const keys = r.rows.map((x) => x.s3_key).filter(Boolean);
-    let r2 = 0;
-    if (storage.isConfigured()) for (const k of keys) { try { await storage.del(k); r2++; } catch (e) {} }
-    if (keys.length) console.log(`[retention] removed ${keys.length} expired assets (${r2} R2 objects)`);
-    return keys.length;
-  } catch (e) { console.error("[retention]", e.message); return -1; }
-}
-// Admin-gated: this runs a destructive cross-tenant retention sweep, so it must
-// NOT be reachable by an ordinary authenticated user. The daily/boot sweep calls
-// runAssetRetention() directly (see below), so it is unaffected by this gate.
-app.post("/api/admin/cleanup-assets", async (req, res) => {
-  if (!adminGate(req, res)) return;
-  try { const n = await runAssetRetention(); res.json({ ok: n >= 0, removed: Math.max(0, n) }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Durable "Media Vault" retrieval — lists the tenant's assets straight from the
-// assets table (survives redeploy + job cleanup), newest first, each with a fresh
-// 10-min signed R2 URL. Categorised for the gallery tabs:
-//   ?category=image|video|flow|whisk|narasi|narasi_review   (or omit = all)
-// Also: ?limit=, paginate with ?before=<previous page's nextBefore>.
-const VAULT_CATEGORIES = {
-  image:         { sourceJobTypes: ["generate_image", "imagen", "batch_image"] },
-  video:         { sourceJobTypes: ["veo", "sora"] },
-  flow:          { sourceJobTypes: ["flow_image", "flow_storyboard"] },
-  whisk:         { sourceJobTypes: ["whisk"] },
-  narasi:        { assetType: "document", metadataKind: "narasi" },
-  outline:       { assetType: "document", metadataKind: "outline" },
-  chat:          { assetType: "document", metadataKind: "chat" },
-  narasi_review: { assetType: "document", metadataKind: "narasi_review" },
-  uploads:       { metadataKind: "upload" },   // user-uploaded reference assets
-};
-app.get("/api/assets", requireAuth, async (req, res) => {
-  try {
-    const tenantId = resolveTenantId(req);
-    const { category = null, limit = 50, before = null } = req.query;
-    const cat = category && category !== "all" ? (VAULT_CATEGORIES[category] || {}) : {};
-    const rows = await listAssets(tenantId, { ...cat, limit, before });
-    const assets = await Promise.all(rows.map(async (r) => ({
-      id: r.id,
-      assetType: r.asset_type,
-      sourceJobType: r.source_job_type,
-      filename: r.original_filename,
-      contentType: r.content_type,
-      sizeBytes: Number(r.size_bytes),
-      createdAt: r.created_at,
-      key: r.s3_key,
-      metadata: r.metadata,
-      signedUrl: storage.isConfigured() ? await storage.signedUrl(r.s3_key, 600) : null,
-    })));
-    res.json({ assets, nextBefore: rows.length ? rows[rows.length - 1].created_at : null });
-  } catch (e) {
-    console.error("[/api/assets]", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
 // IMAGEN  (direct @google/genai, sequential)
 // ══════════════════════════════════════════════════════════════════════════════
 const PAUSE_MODELS=["imagen-4.0-ultra-generate-001","imagen-4.0-generate-001","imagen-4.0-fast-generate-001"];
-async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPrefix,aspectRatio,resolution}){
+async function runImagenJob(jobId,{tenantId,apiKey,model,prompts,outputPrefix,aspectRatio,resolution}){
   let job=await getLiveJob(jobId);job.total=prompts.length;job.progress=0;job.status="running";
   const flush=()=>setLiveJob(jobId,job);
   await flush();
@@ -2163,11 +1650,7 @@ async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPr
         const img=await Jimp.read(buf);img.resize(w,h);
         const resized=await img.getBufferAsync(Jimp.MIME_JPEG);
         fs.writeFileSync(path.join(IMG_DIR,filename),resized);
-        const _f={file:filename,url:`/imgs/${encodeURIComponent(filename)}`};
-        job.files.push(_f);
-        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"image",sourceJobType:"imagen",filename,buffer:resized,contentType:"image/jpeg",metadata:{model,width:w,height:h,prompt:prompts[i]}});
-             if(a){_f.key=a.key;_f.assetId=a.id;} }
-        catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
+        job.files.push({file:filename,url:`/imgs/${encodeURIComponent(filename)}`});
         log(`✅ ${filename}`);
       }
       if(PAUSE_MODELS.includes(model)&&(i+1)%20===0&&i+1<prompts.length){log("⏸️  Pausing 90s…");await new Promise(r=>setTimeout(r,90000));log("▶️  Resuming");}
@@ -2178,30 +1661,28 @@ async function runImagenJob(jobId,{tenantId,userId,apiKey,model,prompts,outputPr
   job.status="done";log("✅ Complete");
   await flush();
   await completeJob(jobId, { files: job.files, total: job.total });
-  try{ await logUsage(tenantId, userId, model, "image", 0, 0, calcImageCost(model, (job.files||[]).length), null, "gemini"); }
-  catch(e){ console.error("[imagen] logUsage failed:", e.message); }
 }
 app.get("/api/imagen/jobs", requireAuth, async(req,res)=>{
   try{
     const rows = await listJobs(resolveTenantId(req), "imagen");
-    res.json(await Promise.all(rows.map(async r => ({
+    res.json(rows.map(r => ({
       jobId:r.id, status:r.status, model:(r.result_payload?.model)||null,
       outputPrefix:r.output_prefix, total:(r.result_payload?.total)||0,
-      files: await signFiles(r.result_payload?.files), createdAt:r.created_at
-    }))));
+      files:(r.result_payload?.files)||[], createdAt:r.created_at
+    })));
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get("/api/imagen/files", (_,res)=>{try{res.json(fs.readdirSync(IMG_DIR).filter(f=>/\.jpe?g$/i.test(f)).map(f=>({file:f,url:`/imgs/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
 app.get("/api/imagen/job/:id", requireAuth, async(req,res)=>{
   try{
     const live = await getLiveJob(req.params.id);
-    if(live){ live.files = await signFiles(live.files); return res.json(live); }
+    if(live) return res.json(live);
     const row = await getJob(resolveTenantId(req), req.params.id);
     if(row) return res.json({
       status:row.status,
       progress:(row.result_payload?.total)||0,
       total:(row.result_payload?.total)||0,
-      files: await signFiles(row.result_payload?.files),
+      files:(row.result_payload?.files)||[],
       logs:[]
     });
     res.status(404).json({error:"Not found"});
@@ -2217,7 +1698,7 @@ app.post("/api/imagen/start", requireAuth, async(req,res)=>{
   await setLiveJob(jobId, { jobId, model, outputPrefix, status:"queued",
     total:prompts.length, progress:0, logs:[], files:[], createdAt:new Date().toISOString() });
   await patchJobPayload(jobId, { model, total:prompts.length });
-  runImagenJob(jobId,{tenantId,userId,apiKey:key,model,prompts,outputPrefix,aspectRatio,resolution})
+  runImagenJob(jobId,{tenantId,apiKey:key,model,prompts,outputPrefix,aspectRatio,resolution})
     .catch(async e=>{ await failJob(jobId, e.message);
       await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal:"+e.message);return j;}); });
   res.json({ok:true,jobId,total:prompts.length});
@@ -2332,99 +1813,22 @@ const GOOGLE_IMG_MODELS = ["imagen-4.0-fast-generate-001","imagen-4.0-generate-0
 
 app.post("/api/generate-image/google", async (req,res) => {
   try {
-    const { prompt, model="imagegeneration@006", fallback_model, aspect_ratio="16:9", image_size="1K", nusantara_corpus=false, ref_image_b64, ref_image_mime } = req.body || {};
+    const { prompt, model="imagen-4.0-fast-generate-001", aspect_ratio="16:9", google_api_key="" } = req.body || {};
+    const effectiveKey = google_api_key.trim() || GEMINI_KEY;
+    if (!effectiveKey) return res.status(400).json({ error:"No Gemini API key — set GEMINI_API_KEY in .env or enter a key in the UI" });
     if (!prompt) return res.status(400).json({ error:"prompt required" });
-    // Forward Clerk auth so Python resolves the tenant → credit gate + usage metering
-    // (revenue: Vertex gen must be billed like the LaoZhang path, not free). Python now
-    // also captures the asset (tenant-isolated), so no captureImageFlow here.
-    const _h = { "Content-Type":"application/json" };
-    if (req.headers["authorization"]) _h["Authorization"] = req.headers["authorization"];
-    if (req.headers["x-video-job-id"]) _h["X-Video-Job-Id"] = req.headers["x-video-job-id"];
-    // ── Primary: Google Vertex (Nano Banana family) ──
-    console.log(`[generate-image/google→vertex] model=${model} corpus=${nusantara_corpus} ref=${ref_image_b64?"yes":"no"}`);
-    const r = await fetch(`${PYTHON_API}/generate-image/vertex`, {
-      method:"POST", headers:_h,
-      body: JSON.stringify({ prompt, model, aspect_ratio, nusantara_corpus, ...(ref_image_b64 && { ref_image_b64, ref_image_mime: ref_image_mime || "image/jpeg" }) }),
-    });
-    const data = await r.json().catch(()=>({ error:"vertex returned non-JSON" }));
-    // ── Failover: Vertex quota/error → LaoZhang (item 4). Vertex debits only AFTER
-    // success, so a failed primary charged nothing — the LaoZhang retry bills once. ──
-    if ((!r.ok || data?.error) && fallback_model && ![402,403,429].includes(r.status)) {  // gate rejections (credits/tier/free-pool) pass through, no wasteful retry
-      console.warn(`[generate-image/google] vertex failed (${r.status} ${data?.error||""}) → failover LaoZhang model=${fallback_model}`);
-      const r2 = await fetch(`${PYTHON_API}/generate-image`, {
-        method:"POST", headers:_h,
-        body: JSON.stringify({ prompt, model: fallback_model, aspect_ratio, image_size }),
-      });
-      const data2 = await r2.json().catch(()=>({ error:"laozhang returned non-JSON" }));
-      if (r2.ok && !data2?.error) { data2._failover = "laozhang"; return res.status(200).json(data2); }
-      return res.status(r2.status||r.status||502).json({ error: data2?.error || data?.error || "image gen failed (vertex + laozhang)" });
-    }
-    return res.status(r.status).json(data);
+    console.log(`[generate-image/google] key=${google_api_key.trim()?"CLIENT("+google_api_key.trim().slice(-6)+")":"SERVER_ENV"} model=${model}`);
+    const imgAI = mkAI(effectiveKey);
+    const mdl = model.startsWith("models/") ? model : `models/${model}`;
+    const resp = await imgAI.models.generateImages({ model:mdl, prompt,
+      config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
+    const imgData = resp?.generatedImages?.[0]?.image?.imageBytes;
+    if (!imgData) throw new Error("No image returned");
+    res.json({ image_b64: imgData });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 
 app.get("/api/generate-image/google/models", (_,res) => res.json(GOOGLE_IMG_MODELS));
-
-// ── Admin: re-embed the Nusantara corpus into Qdrant (OAuth, no GEMINI key) ───
-// Behind Clerk auth (the /api guard) + the X-Reembed-Secret the Python service checks.
-app.post("/api/corpus/reembed", async (req,res) => {
-  try {
-    const r = await fetch(`${PYTHON_API}/corpus/reembed`, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json", "X-Reembed-Secret": req.get("X-Reembed-Secret") || "" },
-    });
-    const data = await r.json();
-    res.status(r.status).json(data);
-  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
-});
-app.get("/api/corpus/status", async (_req,res) => {
-  try {
-    const r = await fetch(`${PYTHON_API}/corpus/status`);
-    res.status(r.status).json(await r.json());
-  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
-});
-
-// ── Corpus enhance proxy: enrich any prompt with Nusantara cultural facts ─────
-// Mirrors Python /enhance-prompt. Used by the frontend (video/whisk/etc.) AND by
-// Node-side surfaces via the corpusEnhance() helper below.
-app.post("/api/enhance-prompt", async (req,res) => {
-  try {
-    const { prompt } = req.body || {};
-    if (!prompt || !String(prompt).trim()) return res.status(400).json({ error:"prompt required" });
-    const r = await fetch(`${PYTHON_API}/enhance-prompt`, {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ prompt }),
-    });
-    res.status(r.status).json(await r.json());
-  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
-});
-
-// ── FAQ / help bot proxy — forwards Authorization so Python scopes usage to the tenant ──
-app.post("/api/faq/ask", async (req,res) => {
-  try {
-    const { question } = req.body || {};
-    if (!question || !String(question).trim()) return res.status(400).json({ error:"question required" });
-    const _h = { "Content-Type":"application/json" };
-    if (req.headers["authorization"]) _h["Authorization"] = req.headers["authorization"];
-    const r = await fetch(`${PYTHON_API}/faq/ask`, { method:"POST", headers:_h, body: JSON.stringify({ question }) });
-    res.status(r.status).json(await r.json());
-  } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
-});
-
-// Best-effort Nusantara corpus enhance for any prompt (Node-side). NEVER throws —
-// on any failure it returns the original prompt so generation is never broken.
-async function corpusEnhance(prompt, enabled) {
-  if (!enabled || !prompt || !String(prompt).trim()) return prompt;
-  try {
-    const r = await fetch(`${PYTHON_API}/enhance-prompt`, {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ prompt }),
-    });
-    if (!r.ok) return prompt;
-    const d = await r.json();
-    return (d && d.enhanced_prompt) || prompt;
-  } catch { return prompt; }
-}
 
 // ── Google-native Whisk (Gemini multimodal → image generation) ───────────────
 app.post("/api/whisk/google", async (req,res) => {
@@ -2433,7 +1837,7 @@ app.post("/api/whisk/google", async (req,res) => {
     const { subject_image_b64, subject_description="", subject_image_mime="image/jpeg",
             scene_image_b64,   scene_description="",   scene_image_mime="image/jpeg",
             style_image_b64,   style_description="",   style_image_mime="image/jpeg",
-            aspect_ratio="1:1", nusantara_corpus=false } = req.body || {};
+            aspect_ratio="1:1" } = req.body || {};
 
     // Build multimodal parts
     const parts = [];
@@ -2444,11 +1848,6 @@ app.post("/api/whisk/google", async (req,res) => {
     if (style_image_b64)   { parts.push({ inlineData:{ data:style_image_b64,   mimeType:style_image_mime   } }); }
     if (style_description.trim())   { parts.push({ text:`Style: ${style_description}` }); }
     if (!parts.length) return res.status(400).json({ error:"At least one slot required" });
-    if (nusantara_corpus) {
-      const _combined = [subject_description, scene_description, style_description].filter(s=>s&&s.trim()).join(", ");
-      const _enh = await corpusEnhance(_combined, true);
-      if (_enh && _enh !== _combined) parts.push({ text:`Cultural authenticity reference (Nusantara): ${_enh}` });
-    }
     parts.push({ text:`Create a single creative image that blends the subject, scene, and style above. Aspect ratio: ${aspect_ratio}. Return the image only.` });
 
     const resp = await ai.models.generateContent({
@@ -2458,7 +1857,6 @@ app.post("/api/whisk/google", async (req,res) => {
     });
     const imgPart = resp?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
     if (!imgPart) throw new Error("Gemini returned no image — try LaoZhang mode");
-    await captureImageFlow(req, "gemini-2.0-flash-exp", "whisk", [imgPart.inlineData.data]);
     res.json({ image_b64: imgPart.inlineData.data });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
@@ -2512,81 +1910,34 @@ app.post("/api/flow/storyboard/google/text", async (req,res) => {
       try { scenes = JSON.parse(m?.[0] || "[]"); } catch { scenes = []; }
     }
     if (!Array.isArray(scenes)) scenes = [];
-    try{
-      const _um=resp?.usageMetadata||{}, _ti=_um.promptTokenCount||0, _to=_um.candidatesTokenCount||0;
-      const _t=resolveTenantId(req), _u=await resolveUserId(req,_t);
-      await logUsage(_t,_u,chat_model,"chat",_ti,_to,calcGoogleCost(chat_model,_ti,_to),null,"gemini");   // scene-split text → bill tokens + charge
-    }catch(_){}
     res.json({ scenes, style, scene_count: scenes.length });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 
 app.post("/api/flow/storyboard/google", async (req,res) => {
   try {
-    const { scenes=[], aspect_ratio="16:9", model="imagen-4.0-fast-generate-001", image_style="", google_api_key="", nusantara_corpus=false } = req.body || {};
+    const { scenes=[], aspect_ratio="16:9", model="imagen-4.0-fast-generate-001", image_style="", google_api_key="" } = req.body || {};
     const effectiveKey = google_api_key.trim() || GEMINI_KEY;
     if (!effectiveKey) return res.status(400).json({ error:"No Gemini API key — set GEMINI_API_KEY in .env or enter a key in the UI" });
     if (!scenes.length) return res.status(400).json({ error:"scenes required" });
-    console.log(`[flow/images] key=${google_api_key.trim()?"CLIENT("+google_api_key.trim().slice(-6)+")":"SERVER_ENV"} model=${model} scenes=${scenes.length} corpus=${nusantara_corpus}`);
+    console.log(`[flow/images] key=${google_api_key.trim()?"CLIENT("+google_api_key.trim().slice(-6)+")":"SERVER_ENV"} model=${model} scenes=${scenes.length}`);
     const flowImgAI = mkAI(effectiveKey);
     const mdl = model.startsWith("models/") ? model : `models/${model}`;
     const styleSuffix = image_style ? ` ${image_style} style.` : "";
     const results = await Promise.allSettled(scenes.map(async (s,i) => {
-      let prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
-      prompt = await corpusEnhance(prompt, nusantara_corpus);
+      const prompt = `${s.description || s.title}. Camera: ${s.camera||""}.${styleSuffix} Cinematic still frame.`;
       const resp = await flowImgAI.models.generateImages({ model:mdl, prompt,
         config:{ numberOfImages:1, outputMimeType:"image/jpeg", aspectRatio:aspect_ratio } });
       const data = resp?.generatedImages?.[0]?.image?.imageBytes;
       return { index:i, image_b64: data||"" };
     }));
     const images = results.map((r,i) => r.status==="fulfilled" ? r.value : { index:i, image_b64:"" });
-    await captureImageFlow(req, model, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""));
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });
 
-// Video assembly engine (Step 6): enqueue-only API surface. The heavy work runs
-// in the separate worker process (backend/video/worker-entry.mjs) — these routes
-// only add BullMQ jobs + read state, so ffmpeg never touches the API event loop.
-mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUserId });
-
-// Step 3: Sentry Express error handler — after all routes, before listen.
-if (SENTRY_ON) {
-  Sentry.setupExpressErrorHandler(app);
-}
-
-const server = app.listen(PORT,()=>{ console.log(`🎬 Cerita AI Studio :${PORT}`); console.log(`   Gemini: ${GEMINI_KEY?"set ✅":"MISSING ⚠️"}`); console.log(`   Python: ${PYTHON_API}`); });
-// Vault retention: daily sweep + once shortly after boot (tier-based, see cleanup_expired_assets).
-setInterval(runAssetRetention, 24*60*60*1000);
-setTimeout(runAssetRetention, 60*1000);
+const server = app.listen(PORT,()=>{ console.log(`🎬 Rino Creative Studio :${PORT}`); console.log(`   Gemini: ${GEMINI_KEY?"set ✅":"MISSING ⚠️"}`); console.log(`   Python: ${PYTHON_API}`); });
 // Prevent blank screen on long-running requests (storyboard 26+ scenes with images)
 server.timeout = 660000;          // 11 min — must be > storyboard AbortController (10 min)
 server.keepAliveTimeout = 660000;
 server.headersTimeout = 661000;
-
-// ── Step 6: optionally run the BullMQ video workers IN THIS process ──────────
-// When a dedicated video-worker service isn't available (e.g. a single-service
-// deploy), set VIDEO_INPROCESS_WORKER=1 to run audio/visual/check/stitch here.
-// ffmpeg/generation then run in the API container — fine for small/low-traffic
-// deploys; split to a separate process (VIDEO_ROLE=worker) when scale demands.
-if (process.env.VIDEO_INPROCESS_WORKER === "1") {
-  (async () => {
-    try {
-      const { markVideoWorker } = await import("./video/runtime.mjs");
-      const { startWorkers, makeDeps } = await import("./video/workers.mjs");
-      const { httpGenerationClient } = await import("./video/generationClient.mjs");
-      if (!process.env.INTERNAL_SERVICE_SECRET) {
-        console.warn("[video] in-process workers WITHOUT INTERNAL_SERVICE_SECRET — per-scene calls will be unmetered + no RLS");
-      }
-      markVideoWorker();   // lift the ffmpeg guard for this process
-      startWorkers(makeDeps({ generationClient: httpGenerationClient() }));
-      console.log("[video] in-process BullMQ workers started (VIDEO_INPROCESS_WORKER=1)");
-      try {
-        const storage = await import("./storage.mjs");
-        if (storage.isConfigured?.()) storage.ensureVideoLifecycle().catch(() => {});
-      } catch {}
-    } catch (e) {
-      console.error("[video] in-process worker start failed:", e?.message || e);
-    }
-  })();
-}

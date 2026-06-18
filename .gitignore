@@ -12,6 +12,7 @@ __pycache__/
 .env.production
 
 GOOGLE API KEY.txt
+client_secret.json
 
 # === cleanup additions ===
 .DS_Store

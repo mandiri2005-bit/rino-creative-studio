@@ -1,10 +1,10 @@
 {
   "_comment": "Single source of truth for credit pricing, read by python/credit_catalog.py and backend/billing.mjs. Edit values here to re-price without code changes. Loaders fall back per-key to the hardcoded defaults if a key is missing or this file is absent. Global knobs CREDIT_USD_VALUE / CREDIT_MARGIN / TTS_USD_PER_1K_CHARS stay env-configurable (env wins over this file).",
   "tier_monthly_credits": {
-    "free": 50,
-    "starter": 1200,
-    "pro": 3800,
-    "enterprise": 12000
+    "free": 0,
+    "starter": 320,
+    "pro": 850,
+    "enterprise": 2500
   },
   "video_usd_per_sec": {
     "veo-3.1-fast": 0.15,
@@ -21,5 +21,7 @@
   },
   "video_usd_per_sec_default": 0.50,
   "video_default_seconds": 8,
-  "tts_usd_per_1k_chars": 0.10
+  "tts_usd_per_1k_chars": 0.10,
+  "concurrency_caps": { "free": 1, "starter": 2, "pro": 4, "enterprise": 8 },
+  "tier_price_idr": { "starter": 79000, "pro": 199000, "enterprise": 499000 }
 }

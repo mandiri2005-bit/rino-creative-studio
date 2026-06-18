@@ -339,6 +339,129 @@ async def set_monthly_allowance(tenant_id: str, tier: str, op_id: str, *,
                        user_id=user_id, metadata={"tier": tier})
 
 
+# ── Free leaky-bucket + carryover lifecycle (Rino FINAL: ONE cap = 150) ─────────
+import credit_catalog as _cat
+from datetime import datetime as _datetime, timezone as _timezone, timedelta as _timedelta
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+except Exception:                                   # missing tzdata → fixed +07:00 WIB
+    _ZoneInfo = None
+
+def _wib_now():
+    if _ZoneInfo is not None:
+        try:
+            return _datetime.now(_ZoneInfo(_cat.FREE_TZ))
+        except Exception:
+            pass
+    return _datetime.now(_timezone.utc) + _timedelta(hours=7)
+
+def _wib_today() -> str:
+    return _wib_now().date().isoformat()
+
+async def tier_of(tenant_id: str) -> str:
+    """Public alias for the tenant's plan ('free'|'starter'|'pro'|'enterprise')."""
+    return await _tier_for(tenant_id)
+
+async def _set_to_target_sql(fn_sql: str, tenant_id, args, user_id=None):
+    """Call a set-to-target SQL fn returning (applied, balance, delta). Seed the Redis
+    cache from the PRE-op durable balance FIRST, run the fn (which SETS durable to the
+    target), then INCRBY the cache by the returned DELTA. This mirrors grant()'s
+    ordering: cache = pre_durable + delta = post_durable, so a NEW user (cold cache)
+    isn't double-counted, and outstanding holds are preserved (cache = durable − holds)."""
+    cl = rc.client()
+    if cl is not None:
+        try:
+            await _ensure_cached(tenant_id)          # seed cache from PRE-op durable
+        except Exception as e:
+            log.warning("_set_to_target pre-seed(%s): %s", tenant_id, e)
+    row = await db._q_fetchrow(fn_sql, *args, tenant=str(tenant_id))
+    applied, _bal, delta = (bool(row["applied"]), int(row["balance"]), int(row["delta"])) if row else (False, 0, 0)
+    if cl is not None and applied and delta:
+        try:
+            await cl.incrby(_bal_key(tenant_id), int(delta))
+        except Exception as e:
+            log.warning("_set_to_target mirror(%s): %s", tenant_id, e)
+    return await get_balance(tenant_id)
+
+async def grant_capped(tenant_id, allowance, carryover_cap=None, *, reason, op_id,
+                       user_id=None, metadata=None) -> int:
+    """Set balance = allowance + min(current, carryover_cap), idempotent on op_id.
+    subscribe/renew/re-subscribe → allowance = plan credits; lapse → allowance = 0."""
+    import json as _json
+    cap = _cat.PAID_CARRYOVER_CAP if carryover_cap is None else carryover_cap
+    return await _set_to_target_sql(
+        "SELECT applied, balance, delta FROM credit_grant_capped($1,$2,$3,$4,$5,$6,$7::jsonb)",
+        tenant_id,
+        [db._uid(tenant_id), db._uid(user_id) if user_id else None, int(allowance),
+         int(cap), reason, op_id, _json.dumps(metadata or {})],
+        user_id)
+
+async def claim_daily(tenant_id, daily=None, ceiling=None, op_id=None, user_id=None) -> int:
+    """Free leaky-bucket: top balance up to `ceiling` by at most `daily`, once per op_id."""
+    import json as _json
+    daily = _cat.FREE_DAILY_GRANT if daily is None else daily
+    ceiling = _cat.FREE_CEILING if ceiling is None else ceiling
+    op_id = op_id or f"daily_claim:{tenant_id}:{_wib_today()}"
+    return await _set_to_target_sql(
+        "SELECT applied, balance, delta FROM credit_claim_daily($1,$2,$3,$4,$5,$6::jsonb)",
+        tenant_id,
+        [db._uid(tenant_id), db._uid(user_id) if user_id else None, int(daily),
+         int(ceiling), op_id, _json.dumps({})],
+        user_id)
+
+async def ensure_daily(tenant_id: str) -> None:
+    """Grant today's free leaky-bucket claim once per WIB day. CALLER ensures the
+    tenant is free. A Redis day-marker keeps it to a single claim/day per tenant."""
+    wib = _wib_today()
+    cl = rc.client()
+    mk = f"dailychk:{tenant_id}:{wib}"
+    if cl is not None:
+        try:
+            if await cl.get(mk):
+                return
+        except Exception:
+            pass
+    try:
+        await claim_daily(tenant_id, op_id=f"daily_claim:{tenant_id}:{wib}")
+    except Exception as e:
+        log.warning("ensure_daily(%s): %s", tenant_id, e)
+    if cl is not None:
+        try:
+            await cl.set(mk, "1", ex=172800)        # 2-day marker
+        except Exception:
+            pass
+
+async def note_free_cost(usd: float) -> None:
+    """Add an upstream USD cost to today's GLOBAL free-tier counter (kill-switch input).
+    Best-effort Redis INCRBYFLOAT; called from the usage-log path for free ops only."""
+    cl = rc.client()
+    if cl is None or not usd or usd <= 0:
+        return
+    try:
+        k = f"freecogs:{_wib_today()}"
+        await cl.incrbyfloat(k, float(usd))
+        await cl.expire(k, 172800)
+    except Exception as e:
+        log.warning("note_free_cost: %s", e)
+
+async def free_global_blocked() -> bool:
+    """Global anti-farming kill-switch: True when total free-tier upstream USD today
+    (WIB) ≥ FREE_GLOBAL_DAILY_USD_CAP. Pure Redis read (counter fed by note_free_cost).
+    Disabled when cap is 0/blank; no Redis → not blocked (per-tenant ceiling still caps)."""
+    cap = _cat.FREE_GLOBAL_DAILY_USD_CAP
+    if not cap or cap <= 0:
+        return False
+    cl = rc.client()
+    if cl is None:
+        return False
+    try:
+        v = await cl.get(f"freecogs:{_wib_today()}")
+        return v is not None and float(v) >= cap
+    except Exception as e:
+        log.warning("free_global_blocked: %s", e)
+        return False
+
+
 async def reconcile(tenant_id: str) -> dict:
     """Compare the live Redis balance against the durable balance and the ledger
     sum. Returns a drift report; does NOT mutate. Healthy state:

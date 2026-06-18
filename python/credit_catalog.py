@@ -43,7 +43,113 @@ from typing import Union
 
 # ── Tunable economics (env-configurable; defaults match the pricing tool) ──────
 CREDIT_USD_VALUE = float(os.getenv("CREDIT_USD_VALUE", "0.01"))   # 1 credit = $0.01
-CREDIT_MARGIN    = float(os.getenv("CREDIT_MARGIN",    "1.0"))    # break-even basis
+CREDIT_MARGIN    = float(os.getenv("CREDIT_MARGIN",    "1.0"))    # extra global multiplier
+
+# ── Harga-jual (markup) tiers — ceritaAI official pricing, June 2026 ───────────
+# Decision (Rino, 2026-06-18): image + video are charged at a MARKUP over upstream
+# cost (not break-even), matching ceritaAI_official_pricing.xlsx so the credits a
+# package buys = the credits actually billed. credits = ceil(usd * markup / $0.01).
+#   image  : ×5 when ≤ $0.10/img, else ×3      (e.g. Nano Banana $0.039 → 20 cr)
+#   video  : ×4 when ≤ $0.12/sec, else ×2.5    (Veo 8 s flat via _VIDEO_DEFAULT_SECONDS)
+#   golpo  : ×3
+# chat / tts / narasi / embedding stay ×1 (margin comes from tier pricing + utilisation).
+IMG_MARKUP_LO       = float(os.getenv("IMG_MARKUP_LO",        "3"))     # ≤$0.10  (Rino 2026-06-18: 5→3)
+IMG_MARKUP_HI       = float(os.getenv("IMG_MARKUP_HI",        "2.5"))   # >$0.10  (3→2.5)
+IMG_MARKUP_USD_GATE = float(os.getenv("IMG_MARKUP_USD_GATE",  "0.10"))   # per-image threshold
+VID_MARKUP_LO       = float(os.getenv("VID_MARKUP_LO",        "2.5"))   # ≤$0.12/s (4→2.5; critique: don't cut Veo to 2)
+VID_MARKUP_HI       = float(os.getenv("VID_MARKUP_HI",        "2.5"))   # >$0.12/s (kept 2.5)
+VID_MARKUP_USD_GATE = float(os.getenv("VID_MARKUP_USD_GATE",  "0.12"))   # per-second threshold
+GOLPO_MARKUP        = float(os.getenv("GOLPO_MARKUP",         "3"))
+
+# ── Financial reporting / GL tagging (lightweight — tags on usage_logs, NO journal) ──
+# Single source for IDR translation + the weighted-average credit sale price used to
+# recognize revenue at consumption. KURS is the ONLY FX constant in the backend; translate
+# USD COGS → IDR here (and at month-end close), never snapshot a per-call rate.
+KURS_IDR_USD          = float(os.getenv("KURS_IDR_USD",          "18000"))  # Rp/USD
+CREDIT_SALE_PRICE_IDR = float(os.getenv("CREDIT_SALE_PRICE_IDR", "248"))    # blended fallback Rp/credit
+
+# Package list price (Rp) per plan → recognise revenue at the ACTUAL price/credit the
+# customer paid, so recognized revenue reconciles to cash (fixes flat-248 over-recognition).
+_DEFAULT_TIER_PRICE_IDR = {"starter": 79000, "pro": 199000, "enterprise": 499000}
+TIER_PRICE_IDR = dict(_DEFAULT_TIER_PRICE_IDR)   # pricing.json override merged after _PRICING (below)
+
+def credit_sale_price_idr(plan: str) -> float:
+    """Rp recognised per consumed credit = the plan's actual package price-per-credit
+    (price / allowance), so recognized revenue == cash collected. Falls back to the
+    blended CREDIT_SALE_PRICE_IDR for plans with no list price (e.g. a lapsed user
+    spending leftover paid credits, or free)."""
+    p = (plan or "").lower()
+    price = TIER_PRICE_IDR.get(p); cr = TIER_MONTHLY_CREDITS.get(p)
+    return round(price / cr, 4) if price and cr else CREDIT_SALE_PRICE_IDR
+
+# ── Free leaky-bucket + carryover caps (Rino FINAL: ONE cap = 150 everywhere) ───
+FREE_DAILY_GRANT   = int(os.getenv("FREE_DAILY_GRANT",   "15"))    # credits claimable per WIB day
+FREE_CEILING       = int(os.getenv("FREE_CEILING",       "150"))   # max free balance via daily claim
+PAID_CARRYOVER_CAP = int(os.getenv("PAID_CARRYOVER_CAP", "150"))   # leftover that survives a grant / lapse
+FREE_TZ            = os.getenv("FREE_TZ", "Asia/Jakarta")          # WIB day boundary for the daily claim
+# Global anti-farming kill-switch: total upstream USD across ALL free ops per WIB day.
+# 0 / blank disables it. A spike of throwaway free accounts caps total loss here.
+FREE_GLOBAL_DAILY_USD_CAP = float(os.getenv("FREE_GLOBAL_DAILY_USD_CAP", "10"))
+
+# ── Per-plan concurrency caps (parallel jobs per tenant) — Phase 3 ──────────────
+# Enforced at submit/enqueue (429 on exceed), NOT BullMQ worker threads. Shared with
+# the Node video path via config/pricing.json 'concurrency_caps'.
+_DEFAULT_CONCURRENCY_CAPS = {"free": 1, "starter": 2, "pro": 4, "enterprise": 8}
+CONCURRENCY_CAPS = dict(_DEFAULT_CONCURRENCY_CAPS)   # pricing.json override merged after _PRICING loads (below)
+
+# endpoint (base, before any '-VI' suffix) → GL account code. Default 4500/5500 (other).
+_GL_REVENUE_CODE = {"image": "4100", "video": "4200", "chat": "4300", "tts": "4400"}
+_GL_COGS_CODE    = {"image": "5100", "video": "5200", "chat": "5300", "tts": "5400"}
+
+def gl_codes(endpoint: str) -> tuple:
+    """(revenue_code, cogs_code) for an endpoint. Strips the Video-Instant '-VI' suffix
+    so 'image' and 'image-VI' both map to the Image accounts."""
+    base = (endpoint or "other").split("-")[0]
+    return _GL_REVENUE_CODE.get(base, "4500"), _GL_COGS_CODE.get(base, "5500")
+
+
+# ── Model-lock (loss-leader tier gating) ────────────────────────────────────────
+# Per-model minimum plan. Free = cheap image only; Starter = + cheap video + GPT-Image-2;
+# Pro = everything except ultra-premium; Studio(enterprise) = everything incl 4K + Sora Pro.
+# 4K is RESOLUTION-locked to Studio (see video_min_tier). Override via pricing.json
+# 'model_min_tier':{'image':{...},'video':{...}} so re-tiering ≠ code change.
+TIER_RANK = {"free": 0, "starter": 1, "pro": 2, "enterprise": 3}
+
+def tier_at_least(have_tier: str, min_tier: str) -> bool:
+    """True if `have_tier` ranks >= `min_tier`. Unknown/None → rank 0 (free), fail-closed."""
+    return TIER_RANK.get((have_tier or "free"), 0) >= TIER_RANK.get((min_tier or "free"), 0)
+
+_DEFAULT_IMAGE_MIN_TIER = {
+    "nano-banana": "free", "nano-banana-hd": "free",
+    "seedream-4-0": "free", "seedream-4-5": "free", "gpt-image-1": "free",
+    "nano-banana-2": "starter", "nano-banana-2-hd": "starter",
+    "gpt-image-2": "starter", "gpt-image-2-vip": "starter", "gpt-image-2-official": "starter",
+    "flux-kontext-pro": "pro", "flux-kontext-max": "pro", "sora-image": "pro",
+    "nano-banana-pro": "enterprise", "nano-banana-pro-hd": "enterprise",
+    # Vertex (google route) ids — nano-banana family via /generate-image/vertex.
+    "gemini-2.5-flash-image": "free", "gemini-3.1-flash-image": "starter",
+    "gemini-3-pro-image": "enterprise",
+}
+_DEFAULT_VIDEO_MIN_TIER = {   # longest-prefix match, like _VIDEO_USD_PER_SEC
+    "veo-3.1-fast": "starter", "veo-3-fast": "starter", "veo-fast": "starter",
+    "veo-3.1-lite": "starter", "veo-lite": "starter", "kling": "starter", "wan": "starter",
+    "veo-3.1": "pro", "veo-3": "pro", "veo": "pro",
+    "sora-2-character": "pro", "sora-character": "pro",
+    "sora-2-pro": "enterprise", "runway-aleph": "enterprise",
+}
+# Built from code defaults here; pricing.json overrides merged after _PRICING loads (below).
+IMAGE_MODEL_MIN_TIER = dict(_DEFAULT_IMAGE_MIN_TIER)
+VIDEO_MODEL_MIN_TIER = dict(_DEFAULT_VIDEO_MIN_TIER)
+
+def image_min_tier(model: str) -> str:
+    return IMAGE_MODEL_MIN_TIER.get(model, "pro")   # unknown model → locked, not free
+
+def video_min_tier(model: str, size: str = "") -> str:
+    if size and ("2160" in str(size) or "3840" in str(size)):
+        return "enterprise"        # 4K is resolution-locked to Studio, any base model
+    m = (model or "").lower()
+    key = max((k for k in VIDEO_MODEL_MIN_TIER if m.startswith(k)), key=len, default=None)
+    return VIDEO_MODEL_MIN_TIER[key] if key else "pro"   # unknown → locked
 
 # ── Hardcoded defaults ────────────────────────────────────────────────────────
 # These are used verbatim when config/pricing.json is absent or a key is missing,
@@ -51,10 +157,10 @@ CREDIT_MARGIN    = float(os.getenv("CREDIT_MARGIN",    "1.0"))    # break-even b
 # loaded-over-default, per key. NOTE: the pricing tool's top tier is "Studio"; the
 # DB `plan` CHECK constraint calls it "enterprise" (display name "Studio").
 _DEFAULT_TIER_MONTHLY_CREDITS: dict[str, int] = {
-    "free":       100,
-    "starter":    2500,
-    "pro":        9000,
-    "enterprise": 31200,   # "Studio"
+    "free":       0,       # leaky-bucket: free has NO monthly pool, accrues +FREE_DAILY_GRANT/day
+    "starter":    320,
+    "pro":        850,     # anchor regrade (was 800) → cost/credit descends
+    "enterprise": 2500,    # "Studio" (was 2000) — "Best Value", lowest cost/credit anchor
 }
 # Longest-prefix match wins (e.g. "veo-3.1-fast" before "veo"). Rates mirror the
 # pricing tool: Veo Standard ≈ $0.50/s, Fast ≈ $0.15/s, Sora ≈ $0.50/s, budget
@@ -110,6 +216,14 @@ def _load_pricing() -> dict:
 
 
 _PRICING = _load_pricing()
+
+# Model-lock: merge pricing.json 'model_min_tier' over the code defaults now that
+# _PRICING is loaded, so re-tiering a model is a config edit, not a code change.
+_mmt = (_PRICING.get("model_min_tier") or {})
+IMAGE_MODEL_MIN_TIER.update(_mmt.get("image") or {})
+VIDEO_MODEL_MIN_TIER.update(_mmt.get("video") or {})
+CONCURRENCY_CAPS.update(_PRICING.get("concurrency_caps") or {})
+TIER_PRICE_IDR.update(_PRICING.get("tier_price_idr") or {})
 
 # ── Monthly credit allowance per plan (config-driven, per-key fallback) ────────
 TIER_MONTHLY_CREDITS: dict[str, int] = {
@@ -194,11 +308,27 @@ def operation_usd(operation: str, model: str, units: Union[int, float, dict]) ->
     return _calc_cost(model, 0, tok)
 
 
+def _op_markup(operation: str, model: str, units: Union[int, float, dict], usd: float) -> float:
+    """Markup multiplier applied to upstream USD before converting to credits.
+    image/video tier on per-IMAGE / per-SECOND cost; golpo flat; everything else ×1."""
+    op = (operation or "").lower()
+    if op == "image":
+        count = int(units.get("count", 1)) if isinstance(units, dict) else int(units or 1)
+        per = (usd / count) if count else usd
+        return IMG_MARKUP_LO if per <= IMG_MARKUP_USD_GATE else IMG_MARKUP_HI
+    if op == "video":
+        return VID_MARKUP_LO if _video_usd_per_sec(model) <= VID_MARKUP_USD_GATE else VID_MARKUP_HI
+    if op == "golpo":
+        return GOLPO_MARKUP
+    return 1.0   # chat / tts / narasi / embedding → break-even
+
+
 def credit_cost(operation: str, model: str, units: Union[int, float, dict]) -> int:
     """Credits to charge for `operation` on `model` consuming `units`.
     This is the function the metering middleware calls. See operation_usd for the
-    meaning of `units` per operation."""
-    return usd_to_credits(operation_usd(operation, model, units))
+    meaning of `units` per operation. Image/video carry a harga-jual markup."""
+    usd = operation_usd(operation, model, units)
+    return usd_to_credits(usd * _op_markup(operation, model, units, usd))
 
 
 # ── Pre-call estimate helpers (for the HOLD before real units are known) ───────
