@@ -611,7 +611,7 @@ def _provider_for(model: str) -> str:
 
 async def _track_usage(user, model, endpoint, *, resp=None, tok_in=0, tok_out=0,
                        cost=None, provider=None, job_id=None, session_id=None,
-                       job_type=None):
+                       job_type=None, credits=0):
     """Leak-proof usage logging: ONE usage_logs row per AI call, so no generation
     goes unbilled. When `job_type` is given (and no job_id), also inserts a 'done'
     jobs row for the synchronous flow and links the usage to it. No-op (with a
@@ -640,7 +640,7 @@ async def _track_usage(user, model, endpoint, *, resp=None, tok_in=0, tok_out=0,
             _cost = _calc_cost(model, tok_in, tok_out)
         await db.log_usage(tenant_id, None, model, endpoint, tok_in, tok_out, _cost,
                            provider=provider or _provider_for(model),
-                           job_id=job_id, session_id=session_id)
+                           job_id=job_id, session_id=session_id, credits=credits)
     except Exception as _e:
         _lg.getLogger("usage").warning("[usage] log failed endpoint=%s: %s", endpoint, _e)
 
@@ -653,7 +653,7 @@ def _sniff_image(data: bytes):
     return "image/png", "png"
 
 
-async def _capture_image_flow(user, model, job_type, images_b64, prompts=None):
+async def _capture_image_flow(user, model, job_type, images_b64, prompts=None, credits=0):
     """Synchronous image flows (generate-image / whisk / flow-images): create ONE
     'done' jobs row, persist each generated image to R2 + assets (so it's durable
     and captured for the moat — these used to be base64-only, ephemeral), and log
@@ -668,6 +668,8 @@ async def _capture_image_flow(user, model, job_type, images_b64, prompts=None):
                 await _track_usage(user, model, "image")
         return
     jid = await db.log_sync_job(tid, job_type, {"model": model, "count": len(images_b64)})
+    _n = sum(1 for b in images_b64 if b) or 1
+    _pc = int(credits or 0) // _n                  # split the charged credits across captured images
     for i, b64 in enumerate(images_b64):
         if not b64:
             continue
@@ -684,7 +686,7 @@ async def _capture_image_flow(user, model, job_type, images_b64, prompts=None):
                                  metadata=_md, source_prompt=(_p or None))
         except Exception as _e:
             import logging as _lg; _lg.getLogger("usage").warning("[capture] %s: %s", job_type, _e)
-        await _track_usage(user, model, "image", job_id=jid)
+        await _track_usage(user, model, "image", job_id=jid, credits=_pc)
 
 # ---------------------------------------------------------------------------
 # FastAPI app  — with DB lifespan (Phase 1 migration)
@@ -2526,10 +2528,11 @@ async def generate_image(req: ImageRequest,
         if b64 is None:
             raise last_exc or HTTPException(502, "image generation failed after retries")
 
-        await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt)
+        _cr = 0
         if user:
-            await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
-                                 byok=_byok, video_job=x_video_job, log=False)
+            _cr = await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
+                                       byok=_byok, video_job=x_video_job, log=False) or 0
+        await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt, credits=_cr)
         return {
             "image_b64": b64,
             "model": req.model,
@@ -7003,10 +7006,11 @@ async def generate_image_vertex(req: VertexImageRequest,
             raise HTTPException(500, str(e))
 
     # ── Capture asset (tenant-isolated) + meter credits/usage — like /generate-image ──
-    await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt)
+    _cr = 0
     if user:
-        await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
-                             byok=_byok, video_job=x_video_job, log=False)
+        _cr = await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
+                                   byok=_byok, video_job=x_video_job, log=False) or 0
+    await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt, credits=_cr)
     return {"image_b64": b64, "model": req.model}
 
 
