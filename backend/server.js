@@ -636,52 +636,44 @@ app.delete("/api/tts/profiles/:id", requireAuth, async (req,res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // CHAT  (proxy → Python)
 // ══════════════════════════════════════════════════════════════════════════════
-app.post("/api/chat", async (req,res) => {
+// ── Generic chat proxy ────────────────────────────────────────────────────────
+// Forward ALL body fields + Authorization/X-* headers to a Python streaming
+// endpoint — NO per-route field whitelist (that's the class of bug where adding a
+// field like `history` silently gets dropped). Adding a provider/route = one line.
+// `overrides` win over the client body (e.g. agentic forces use_tools). Body is a
+// pure pass-through + sessionId→session_id; Python request models ignore extras.
+function _fwdHeaders(req){
+  const h = { "Content-Type": "application/json" };
+  for (const k in req.headers){
+    const lk = k.toLowerCase();
+    if (lk === "authorization" || (lk.startsWith("x-") && !lk.startsWith("x-forwarded-") && lk !== "x-real-ip" && lk !== "x-request-id"))
+      h[k] = req.headers[k];
+  }
+  return h;
+}
+function _fwdBody(req, overrides){
+  const b = req.body || {};
+  return JSON.stringify({ ...b, session_id: b.session_id || b.sessionId, ...(overrides||{}) });
+}
+async function proxyChatStream(pyPath, req, res, overrides){
   res.setHeader("Content-Type","text/event-stream");
   res.setHeader("Cache-Control","no-cache");
   res.setHeader("Connection","keep-alive");
   try {
-    const lzk1 = req.headers["x-laozhang-api-key"] || "";
-    const _auth1 = req.headers["authorization"] || "";
-    const pyRes = await fetch(`${PYTHON_API}/chat/stream`, {
-      method:"POST", headers:{"Content-Type":"application/json",...(lzk1&&{"X-LaoZhang-API-Key":lzk1}),...(_auth1&&{"Authorization":_auth1})},
-      body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
-        model:req.body.model||"gemini-2.5-flash", system:req.body.system||"You are a helpful assistant.",
-        temperature:req.body.temperature||0.9, max_tokens:req.body.max_tokens||8192,
-        history:Array.isArray(req.body.history)?req.body.history:[],
-        images:Array.isArray(req.body.images)?req.body.images:[] }),
-    });
+    const pyRes = await fetch(`${PYTHON_API}${pyPath}`, { method:"POST", headers:_fwdHeaders(req), body:_fwdBody(req, overrides) });
     const reader = pyRes.body.getReader();
-    req.on("close",()=>reader.cancel());
-    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
-    if(!res.writableEnded) res.end();
-  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
-});
+    req.on("close", () => reader.cancel());
+    while (true){ const {done,value} = await reader.read(); if (done) break; if (res.writableEnded) break; res.write(value); }
+    if (!res.writableEnded) res.end();
+  } catch(e){ if (!res.writableEnded){ res.write(`data: [ERROR: ${e.message}]\n\n`); res.end(); } }
+}
 
-// CHAT / GOOGLE via Vertex OAuth — proxy → Python /chat/google/stream. Overrides the
-// legacy Node plain-key handler further below (Express runs the first-registered route),
-// so the Google route no longer depends on the fragile/leakable GEMINI_API_KEY.
-app.post("/api/chat/google", async (req, res) => {
-  res.setHeader("Content-Type","text/event-stream");
-  res.setHeader("Cache-Control","no-cache");
-  res.setHeader("Connection","keep-alive");
-  try {
-    const _authg = req.headers["authorization"] || "";
-    const b = req.body || {};
-    const pyRes = await fetch(`${PYTHON_API}/chat/google/stream`, {
-      method:"POST", headers:{"Content-Type":"application/json",...(_authg&&{"Authorization":_authg})},
-      body: JSON.stringify({ message:b.message||"", model:b.model||"gemini-2.5-flash",
-        system:b.system||"", history:Array.isArray(b.history)?b.history:[],
-        temperature:(b.temperature??1.0), thinkingLevel:b.thinkingLevel||"",
-        max_tokens:b.max_tokens||8192, images:Array.isArray(b.images)?b.images:[],
-        session_id:b.sessionId||"" }),
-    });
-    const reader = pyRes.body.getReader();
-    req.on("close",()=>reader.cancel());
-    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
-    if(!res.writableEnded) res.end();
-  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
-});
+app.post("/api/chat", (req,res) => proxyChatStream("/chat/stream", req, res));
+
+// CHAT / GOOGLE — Python /chat/google/stream uses Vertex OAuth and IGNORES any client
+// google_api_key, so the route can't depend on a leakable key. Overrides the legacy
+// Node plain-key handler below (Express runs the first-registered route).
+app.post("/api/chat/google", (req,res) => proxyChatStream("/chat/google/stream", req, res));
 
 // One-shot non-streaming chat — used by auto-pick video feature
 app.post("/api/chat/once", async (req,res) => {
@@ -719,50 +711,14 @@ app.post("/api/chat/google/once", async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/chat/agentic", async (req,res) => {
-  res.setHeader("Content-Type","text/event-stream");
-  res.setHeader("Cache-Control","no-cache");
-  res.setHeader("Connection","keep-alive");
-  try {
-    const lzk2 = req.headers["x-laozhang-api-key"] || "";
-    const pyRes = await fetch(`${PYTHON_API}/chat/stream`, {
-      method:"POST", headers:{"Content-Type":"application/json",...(lzk2&&{"X-LaoZhang-API-Key":lzk2}),...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})},
-      body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
-        model:req.body.model||"claude-sonnet", system:req.body.system||"You are a helpful assistant. Use the search_files tool when the user asks about their documents.",
-        temperature:req.body.temperature||0.7, max_tokens:8192, use_tools:true, mcp_paths:req.body.mcpPaths||"",
-        images:Array.isArray(req.body.images)?req.body.images:[] }),
-    });
-    const reader = pyRes.body.getReader();
-    req.on("close",()=>reader.cancel());
-    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
-    if(!res.writableEnded) res.end();
-  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
-});
+// Agentic = same /chat/stream with MCP tool-calling forced on.
+app.post("/api/chat/agentic", (req,res) =>
+  proxyChatStream("/chat/stream", req, res, { use_tools:true, mcp_paths:(req.body&&req.body.mcpPaths)||"" }));
 
 // ── CHAT v2 (model registry + per-model provider failover; Python chat_router) ──
 app.get("/api/chat/models", async(req,res)=>{ try{ res.json(await(await fetch(`${PYTHON_API}/chat/models`)).json()); }catch(e){ res.status(500).json({error:e.message}); } });
 
-app.post("/api/chat/v2", async (req,res) => {
-  res.setHeader("Content-Type","text/event-stream");
-  res.setHeader("Cache-Control","no-cache");
-  res.setHeader("Connection","keep-alive");
-  try {
-    const lzkv = req.headers["x-laozhang-api-key"] || "";
-    const _authv = req.headers["authorization"] || "";
-    const pyRes = await fetch(`${PYTHON_API}/chat/v2/stream`, {
-      method:"POST", headers:{"Content-Type":"application/json",...(lzkv&&{"X-LaoZhang-API-Key":lzkv}),...(_authv&&{"Authorization":_authv})},
-      body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
-        model:req.body.model||"gemini-2.5-flash", system:req.body.system||"You are a helpful assistant.",
-        temperature:req.body.temperature||0.9, max_tokens:req.body.max_tokens||8192,
-        history:Array.isArray(req.body.history)?req.body.history:[],
-        images:Array.isArray(req.body.images)?req.body.images:[] }),
-    });
-    const reader = pyRes.body.getReader();
-    req.on("close",()=>reader.cancel());
-    while(true){ const {done,value}=await reader.read(); if(done)break; if(res.writableEnded)break; res.write(value); }
-    if(!res.writableEnded) res.end();
-  } catch(e){ if(!res.writableEnded){res.write(`data: [ERROR: ${e.message}]\n\n`);res.end();} }
-});
+app.post("/api/chat/v2", (req,res) => proxyChatStream("/chat/v2/stream", req, res));
 
 app.post("/api/cancel/:id",  async(req,res)=>{ try{const _hc={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/cancel/${req.params.id}`,{method:"POST",headers:_hc})).json());}catch(e){res.status(500).json({error:e.message});} });
 app.get ("/api/history/:id", async(req,res)=>{ try{const _hh={...(req.headers["authorization"]&&{"Authorization":req.headers["authorization"]})};res.json(await(await fetch(`${PYTHON_API}/history/${req.params.id}`,{headers:_hh})).json());}catch(e){res.status(500).json({error:e.message});} });
