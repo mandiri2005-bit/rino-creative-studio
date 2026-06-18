@@ -98,7 +98,9 @@ class Step:
 class Model:
     id: str
     display: str
-    tier: str = "medium"             # lite | medium | power
+    tier: str = "medium"             # legacy; superseded by `group`
+    group: str = "other"             # provider family — drives dropdown grouping
+    desc: str = ""                   # short description — dropdown hover tooltip
     badge: str = ""                  # "", "⭐", "⭐⭐"
     vision: bool = False
     tools: bool = False
@@ -107,8 +109,9 @@ class Model:
 
     def public(self) -> dict:
         """Shape returned to the frontend dropdown (no cost/provider internals)."""
-        return {"id": self.id, "display": self.display, "tier": self.tier,
-                "badge": self.badge, "vision": self.vision, "tools": self.tools}
+        return {"id": self.id, "display": self.display, "group": self.group,
+                "desc": self.desc, "badge": self.badge,
+                "vision": self.vision, "tools": self.tools}
 
 
 # Chain policy (Rino re-orders by cost later; costs are USD/1M tok, tune vs live pricing):
@@ -127,57 +130,123 @@ def _chain(model_id: str, ci: float, co: float, route: str, direct: Optional[str
     return chain
 
 
-# (id, display, tier, cost_in, cost_out, route, direct_provider, badge)
-# Single source of truth for the chat model dropdown. Mirrors the curated studio list.
+# Dropdown groups, in display order.
+GROUP_ORDER = ["gemini", "gpt", "reasoning", "claude", "grok", "deepseek", "qwen", "other"]
+GROUP_LABELS = {
+    "gemini": "Gemini", "gpt": "GPT", "reasoning": "Reasoning (o-series)",
+    "claude": "Claude", "grok": "Grok", "deepseek": "DeepSeek",
+    "qwen": "Qwen", "other": "Other",
+}
+
+
+def _est_cost(mid: str) -> tuple[float, float]:
+    """Rough USD/1M (in, out) — placeholder for v2 metering only; Rino tunes later.
+    The LIVE laozhang route meters via laozhang_api._MODEL_COSTS_PER_M, not this."""
+    m = mid.lower()
+    if any(k in m for k in ("nano", "mini", "lite", "haiku", "turbo", "gemma", "spark", "3-5-haiku")):
+        return (0.10, 0.40)
+    if any(k in m for k in ("opus", "o3-pro", "gpt-5-pro", "5.5", "qwq-plus", "480b", "grok-4")):
+        return (5.00, 25.00)
+    if any(k in m for k in ("flash", "sonnet", "deepseek", "qwen", "grok-3", "kimi",
+                            "llama", "doubao", "glm", "minimax", "ernie", "gpt-4o", "4.1", "v3", "v4")):
+        return (0.50, 2.50)
+    return (1.50, 8.00)
+
+
+def _vision(mid: str) -> bool:
+    m = mid.lower()
+    return any(k in m for k in ("gemini", "gpt-4o", "gpt-4.1", "gpt-5", "claude", "grok-4", "doubao", "llama-4"))
+
+
+# (id, display, group, badge, route, direct_provider, desc) — Rino's curated catalog (2026-06-18).
+# 6 Gemini lead the Google (Vertex-OAuth) route; everything else routes via laozhang.
 _SPEC: list[tuple] = [
-    # ── ⚡ Lite ──────────────────────────────────────────────────────────────────
-    ("glm-4.5-flash",        "GLM 4.5 Flash",          "lite",  0.01, 0.04, "laozhang", None,        ""),
-    ("gpt-5-nano",           "GPT-5 Nano",             "lite",  0.05, 0.40, "laozhang", "openai",    ""),
-    ("gemini-2.5-flash-lite","Gemini 2.5 Flash Lite",  "lite",  0.10, 0.40, "google",   None,        ""),
-    ("gpt-4o-mini",          "GPT-4o Mini",            "lite",  0.15, 0.60, "laozhang", "openai",    ""),
-    ("grok-4-fast",          "Grok 4 Fast",            "lite",  0.20, 0.50, "laozhang", None,        ""),
-    ("gpt-5.4-nano",         "GPT-5.4 Nano",           "lite",  0.20, 1.25, "laozhang", "openai",    ""),
-    ("gpt-5-mini",           "GPT-5 Mini",             "lite",  0.25, 2.00, "laozhang", "openai",    ""),
-    ("gemini-3.1-flash-lite","Gemini 3.1 Flash Lite",  "lite",  0.25, 1.50, "google",   None,        ""),
-    ("deepseek-v3-250324",   "DeepSeek V3-0324",       "lite",  0.25, 1.00, "laozhang", "deepseek",  ""),
-    ("deepseek-v4-pro",      "DeepSeek V4 Pro",        "lite",  0.28, 1.10, "laozhang", "deepseek",  ""),
-    ("deepseek-chat",        "DeepSeek V3",            "lite",  0.29, 1.14, "laozhang", "deepseek",  ""),
-    ("gemini-2.5-flash",     "Gemini 2.5 Flash",       "lite",  0.30, 2.40, "google",   None,        "⭐"),
-    ("gemini-3-flash-preview","Gemini 3 Flash",        "lite",  0.44, 2.64, "google",   None,        ""),
-    ("deepseek-r1",          "DeepSeek R1",            "lite",  0.55, 2.19, "laozhang", "deepseek",  ""),
-    ("gpt-5.4-mini",         "GPT-5.4 Mini",           "lite",  0.75, 4.50, "laozhang", "openai",    ""),
-    # ── ⚡⚡ Medium ──────────────────────────────────────────────────────────────
-    ("gemini-2.5-pro",       "Gemini 2.5 Pro",         "medium",1.25,10.00, "google",   None,        ""),
-    ("gpt-5.1",              "GPT-5.1",                "medium",1.25,10.00, "laozhang", "openai",    ""),
-    ("gpt-5",                "GPT-5",                  "medium",1.25,10.00, "laozhang", "openai",    ""),
-    ("gemini-3.5-flash",     "Gemini 3.5 Flash",       "medium",1.50, 9.00, "google",   None,        ""),
-    ("qwen-max",             "Qwen Max",               "medium",1.60, 6.40, "laozhang", None,        ""),
-    ("gpt-5.2",              "GPT-5.2",                "medium",1.75,14.00, "laozhang", "openai",    ""),
-    ("gemini-3-pro-preview", "Gemini 3 Pro",           "medium",1.80,10.80, "laozhang", None,        ""),
-    ("gpt-5.4",              "GPT-5.4",                "medium",2.50,15.00, "laozhang", "openai",    ""),
-    ("gpt-4o",               "GPT-4o",                 "medium",2.50,10.00, "laozhang", "openai",    ""),
-    # ── ⚡⚡⚡ Power ─────────────────────────────────────────────────────────────
-    ("gemini-2.5-pro-thinking",      "Gemini 2.5 Pro Thinking", "power",1.25,10.00, "laozhang", None,        ""),
-    ("gemini-3-pro-preview-thinking","Gemini 3 Pro Thinking",   "power",1.80,10.80, "laozhang", None,        ""),
-    ("gemini-3.1-pro-preview",       "Gemini 3.1 Pro",          "power",2.00,12.00, "google",   None,        ""),
-    ("grok-4-latest",        "Grok 4",                 "power", 3.00,15.00, "laozhang", None,        ""),
-    ("claude-sonnet-4-6",    "Claude Sonnet 4.6",      "power", 3.00,15.00, "laozhang", "anthropic", ""),
-    ("claude-sonnet-4-6-thinking","Claude Sonnet 4.6 Thinking","power",3.00,15.00,"laozhang","anthropic",""),
-    ("claude-opus-4-6",      "Claude Opus 4.6",        "power", 5.00,25.00, "laozhang", "anthropic", ""),
-    ("claude-opus-4-7",      "Claude Opus 4.7",        "power", 5.00,25.00, "laozhang", "anthropic", "⭐⭐"),
-    ("claude-opus-4-6-thinking","Claude Opus 4.6 Thinking","power",5.00,25.00,"laozhang","anthropic",""),
-    ("claude-opus-4-7-thinking","Claude Opus 4.7 Thinking","power",5.00,25.00,"laozhang","anthropic",""),
-    ("gpt-5.5",              "GPT-5.5",                "power", 5.00,30.00, "laozhang", "openai",    "⭐⭐"),
-    ("gpt-5-pro",            "GPT-5 Pro",              "power",15.00,120.0, "laozhang", "openai",    ""),
+    # ── Gemini (Google/Vertex-OAuth route) ──
+    ("gemini-3.5-flash",       "Gemini 3.5 Flash",       "gemini", "",   "google",   None, "Most intelligent model for sustained frontier performance in agentic and coding tasks"),
+    ("gemini-3.1-flash-lite",  "Gemini 3.1 Flash-Lite",  "gemini", "",   "google",   None, "Lighter fast model"),
+    ("gemini-3-flash-preview", "Gemini 3 Flash Preview", "gemini", "⭐⭐", "google",   None, "Fast multimodal model"),
+    ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview", "gemini", "⭐⭐", "google",   None, "Latest Pro preview with strong tool and agent capabilities"),
+    ("gemini-2.5-flash",       "Gemini 2.5 Flash",       "gemini", "⭐",  "google",   None, "Fast speed, low cost"),
+    ("gemini-2.5-flash-lite",  "Gemini 2.5 Flash Lite",  "gemini", "",   "google",   None, "Fast speed, very low cost"),
+    ("gemini-2.5-pro",         "Gemini 2.5 Pro",         "gemini", "⭐",  "laozhang", None, "Coding advantage, multimodal"),
+    ("gemini-2.0-flash-001",   "Gemini 2.0 Flash",       "gemini", "",   "laozhang", None, "Experimental"),
+    # ── GPT ──
+    ("gpt-5.5",                "GPT-5.5",                "gpt", "⭐⭐", "laozhang", "openai", "OpenAI's latest flagship model"),
+    ("gpt-5.1",                "GPT-5.1",                "gpt", "⭐⭐", "laozhang", "openai", "Strong performance, balanced"),
+    ("gpt-5.1-codex",          "GPT-5.1-Codex",          "gpt", "⭐⭐", "laozhang", "openai", "Coding specialized"),
+    ("gpt-5.1-codex-high",     "GPT-5.1-Codex High",     "gpt", "⭐",  "laozhang", "openai", "High performance coding"),
+    ("gpt-5.1-codex-mini",     "GPT-5.1-Codex Mini",     "gpt", "",   "laozhang", "openai", "Lightweight coding"),
+    ("gpt-5",                  "GPT-5",                  "gpt", "",   "laozhang", "openai", "General tasks"),
+    ("gpt-5-pro",              "GPT-5 Pro",              "gpt", "",   "laozhang", "openai", "Professional version"),
+    ("gpt-5-mini",             "GPT-5 Mini",             "gpt", "",   "laozhang", "openai", "Lightweight efficient"),
+    ("gpt-5-nano",             "GPT-5 Nano",             "gpt", "",   "laozhang", "openai", "Ultra-lightweight"),
+    ("gpt-4.1",                "GPT-4.1",                "gpt", "⭐",  "laozhang", "openai", "Fast speed"),
+    ("gpt-4.1-mini",           "GPT-4.1 Mini",           "gpt", "",   "laozhang", "openai", "Affordable lightweight"),
+    ("gpt-4.1-nano",           "GPT-4.1 Nano",           "gpt", "",   "laozhang", "openai", "Ultra-low-cost"),
+    ("gpt-4o",                 "GPT-4o",                 "gpt", "",   "laozhang", "openai", "Balanced multimodal"),
+    ("gpt-4o-mini",            "GPT-4o Mini",            "gpt", "",   "laozhang", "openai", "Lightweight, fast, compatible"),
+    # ── Reasoning (OpenAI o-series) ──
+    ("o3-pro",                 "o3-pro",                 "reasoning", "⭐⭐", "laozhang", "openai", "Strongest reasoning"),
+    ("o3",                     "o3",                     "reasoning", "⭐",  "laozhang", "openai", "Reasoning model"),
+    ("o4-mini",                "o4-mini",                "reasoning", "⭐⭐", "laozhang", "openai", "Lightweight reasoning"),
+    # ── Claude ──
+    ("claude-opus-4-7",           "Claude Opus 4.7",           "claude", "⭐⭐", "laozhang", "anthropic", "Anthropic's most capable current model"),
+    ("claude-opus-4-7-thinking",  "Claude Opus 4.7 Thinking",  "claude", "⭐⭐", "laozhang", "anthropic", "Deep reasoning mode"),
+    ("claude-sonnet-4-6",         "Claude Sonnet 4.6",         "claude", "⭐⭐", "laozhang", "anthropic", "Balanced speed, cost, and intelligence"),
+    ("claude-sonnet-4-6-thinking","Claude Sonnet 4.6 Thinking","claude", "⭐",  "laozhang", "anthropic", "Reasoning mode"),
+    ("claude-haiku-4-5",          "Claude Haiku 4.5",          "claude", "",   "laozhang", "anthropic", "Lightweight fast"),
+    ("claude-opus-4-5",           "Claude Opus 4.5",           "claude", "",   "laozhang", "anthropic", "Classic high-performance version"),
+    ("claude-opus-4-5-thinking",  "Claude Opus 4.5 Thinking",  "claude", "",   "laozhang", "anthropic", "Chain-of-thought mode"),
+    ("claude-sonnet-4-5",         "Claude Sonnet 4.5",         "claude", "",   "laozhang", "anthropic", "Stable coding version"),
+    ("claude-sonnet-4",           "Claude 4 Sonnet",           "claude", "⭐",  "laozhang", "anthropic", "Stable version"),
+    ("claude-opus-4-1",           "Claude 4.1 Opus",           "claude", "",   "laozhang", "anthropic", "Enhanced version"),
+    ("claude-3-7-sonnet-latest",  "Claude 3.7 Sonnet",         "claude", "",   "laozhang", "anthropic", "Legacy compatibility"),
+    ("claude-3-5-sonnet-latest",  "Claude 3.5 Sonnet",         "claude", "",   "laozhang", "anthropic", "Balanced performance"),
+    ("claude-3-5-haiku-latest",   "Claude 3.5 Haiku",          "claude", "",   "laozhang", "anthropic", "Lightweight fast"),
+    # ── Grok ──
+    ("grok-4",                 "Grok 4",                 "grok", "⭐", "laozhang", None, "Latest official version"),
+    ("grok-4-fast-reasoning",  "Grok 4 Fast Reasoning",  "grok", "",  "laozhang", None, "Fast reasoning"),
+    ("grok-4-fast",            "Grok 4 Fast",            "grok", "",  "laozhang", None, "Speed optimized"),
+    ("grok-3-latest",          "Grok 3",                 "grok", "",  "laozhang", None, "Stable version"),
+    ("grok-3-deepsearch",      "Grok 3 DeepSearch",      "grok", "",  "laozhang", None, "Deep search, per-call"),
+    ("grok-3-mini-latest",     "Grok 3 Mini",            "grok", "",  "laozhang", None, "Small with reasoning"),
+    # ── DeepSeek ──
+    ("deepseek-v4-pro",        "DeepSeek V4 Pro",        "deepseek", "⭐⭐", "laozhang", "deepseek", "Strong capability"),
+    ("deepseek-v4-flash",      "DeepSeek V4 Flash",      "deepseek", "⭐",  "laozhang", "deepseek", "Reliable"),
+    ("deepseek-v3.2-exp",      "DeepSeek V3.2 Exp",      "deepseek", "⭐",  "laozhang", "deepseek", "Experimental latest"),
+    ("deepseek-v3-1-250821",   "DeepSeek V3.1",          "deepseek", "⭐",  "laozhang", "deepseek", "Think/Non-Think dual mode"),
+    ("deepseek-v3",            "DeepSeek V3",            "deepseek", "",   "laozhang", "deepseek", "Strong capability"),
+    ("deepseek-r1",            "DeepSeek R1",            "deepseek", "",   "laozhang", "deepseek", "Reasoning model"),
+    ("deepseek-chat",          "DeepSeek Chat",          "deepseek", "",   "laozhang", "deepseek", "Chat-optimized version"),
+    ("deepseek-coder",         "DeepSeek Coder",         "deepseek", "",   "laozhang", "deepseek", "Code-specialized model"),
+    # ── Qwen ──
+    ("qwq-plus",               "QwQ Plus",               "qwen", "⭐⭐", "laozhang", None, "Latest reasoning model"),
+    ("qwq-72b-preview",        "QwQ 72B Preview",        "qwen", "",   "laozhang", None, "Preview version"),
+    ("qwen3-coder-480b-a35b-instruct", "Qwen3 Coder 480B", "qwen", "⭐⭐", "laozhang", None, "Large coding model"),
+    ("qwen3-coder-plus",       "Qwen3 Coder Plus",       "qwen", "⭐",  "laozhang", None, "Enhanced coding"),
+    ("qwen-max",               "Qwen Max",               "qwen", "",   "laozhang", None, "Strongest version"),
+    ("qwen-plus",              "Qwen Plus",              "qwen", "",   "laozhang", None, "Enhanced version"),
+    ("qwen-turbo",             "Qwen Turbo",             "qwen", "",   "laozhang", None, "Fast version"),
+    ("qwen-2.5-72b",           "Qwen 2.5",               "qwen", "",   "laozhang", None, "Open-source large model"),
+    # ── Other ──
+    ("kimi-k2-250711",         "Kimi K2 Official",       "other", "⭐", "laozhang", None, "Official partnership, strong stability"),
+    ("llama-4-maverick",       "Llama 4 Maverick",       "other", "⭐", "laozhang", None, "Latest open source"),
+    ("Doubao-1.5-vision-pro-32k", "Doubao 1.5 Vision Pro", "other", "⭐", "laozhang", None, "Multimodal"),
+    ("gemma-3-12b",            "Gemma 3 12B",            "other", "",  "laozhang", None, "Google open source"),
+    ("ernie-4.0",              "ERNIE 4.0",              "other", "",  "laozhang", None, "Baidu's latest model"),
+    ("glm-4",                  "GLM-4",                  "other", "",  "laozhang", None, "Tsinghua-based model"),
+    ("spark-3.5",              "Spark 3.5",              "other", "",  "laozhang", None, "iFlytek's latest version"),
+    ("minimax-abab6.5",        "MiniMax",                "other", "",  "laozhang", None, "Strong overall capabilities"),
 ]
 
 
 def _mk(spec: tuple) -> Model:
-    mid, disp, tier, ci, co, route, direct, badge = spec
-    vision = not mid.startswith(("deepseek", "glm-", "qwen"))
-    mx = 16384 if (tier == "power" or route == "google") else 8192
-    return Model(mid, disp, tier=tier, badge=badge, vision=vision, tools=True,
-                 max_tokens=mx, chain=_chain(mid, ci, co, route, direct))
+    mid, disp, group, badge, route, direct, desc = spec
+    ci, co = _est_cost(mid)
+    mx = 16384 if route == "google" else 8192
+    return Model(mid, disp, tier=group, group=group, desc=desc, badge=badge,
+                 vision=_vision(mid), tools=True, max_tokens=mx,
+                 chain=_chain(mid, ci, co, route, direct))
 
 
 MODEL_REGISTRY: list[Model] = [_mk(s) for s in _SPEC]
@@ -194,10 +263,25 @@ def usable_chain(m: Model) -> list[Step]:
     return [s for s in m.chain if provider_usable(s.provider)]
 
 
+# No available channel on the current laozhang account, or times out in chat
+# (live probe 2026-06-18). Kept in the catalog but flagged `down` → rendered red.
+# (The 6 Gemini Google-route models were NOT probed — Vertex needs prod OAuth creds.)
+DOWN_MODELS: set[str] = {
+    "gemini-2.0-flash-001", "gpt-5.1-codex-high", "gpt-5-pro", "o3-pro",
+    "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-5-thinking", "claude-sonnet-4-5",
+    "claude-sonnet-4", "claude-opus-4-1", "claude-3-7-sonnet-latest",
+    "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest",
+    "grok-4-fast", "grok-3-deepsearch", "grok-3-mini-latest",
+    "deepseek-coder", "qwq-72b-preview", "qwen-2.5-72b",
+    "kimi-k2-250711", "llama-4-maverick", "Doubao-1.5-vision-pro-32k",
+    "gemma-3-12b", "ernie-4.0", "glm-4", "spark-3.5", "minimax-abab6.5",
+}
+
+
 def list_models() -> list[dict]:
     """Payload for GET /chat/models — models with >=1 usable provider, each tagged
-    with `route`: which endpoint the frontend calls. "google" = Vertex-OAuth chat
-    endpoint (survives key leaks); "laozhang" = the gateway endpoint."""
+    with `route` (google = Vertex-OAuth endpoint; laozhang = gateway) and `down`
+    (known-degraded → frontend renders red)."""
     out: list[dict] = []
     for m in MODEL_REGISTRY:
         uc = usable_chain(m)
@@ -206,6 +290,7 @@ def list_models() -> list[dict]:
         d = m.public()
         kind = PROVIDERS.get(uc[0].provider, {}).get("kind", "")
         d["route"] = "google" if kind in ("google_vertex", "google_key") else "laozhang"
+        d["down"] = m.id in DOWN_MODELS
         out.append(d)
     return out
 
