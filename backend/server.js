@@ -648,6 +648,7 @@ app.post("/api/chat", async (req,res) => {
       body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
         model:req.body.model||"gemini-2.5-flash", system:req.body.system||"You are a helpful assistant.",
         temperature:req.body.temperature||0.9, max_tokens:req.body.max_tokens||8192,
+        history:Array.isArray(req.body.history)?req.body.history:[],
         images:Array.isArray(req.body.images)?req.body.images:[] }),
     });
     const reader = pyRes.body.getReader();
@@ -753,6 +754,7 @@ app.post("/api/chat/v2", async (req,res) => {
       body: JSON.stringify({ session_id:req.body.sessionId, message:req.body.message,
         model:req.body.model||"gemini-2.5-flash", system:req.body.system||"You are a helpful assistant.",
         temperature:req.body.temperature||0.9, max_tokens:req.body.max_tokens||8192,
+        history:Array.isArray(req.body.history)?req.body.history:[],
         images:Array.isArray(req.body.images)?req.body.images:[] }),
     });
     const reader = pyRes.body.getReader();

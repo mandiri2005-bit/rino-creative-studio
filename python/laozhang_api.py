@@ -1340,6 +1340,7 @@ def chat_stream(
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    history: list[dict] = []  # client-sent history (preferred over DB — reliable context)
     model: str = "gemini-2.5-pro"
     system: str = "You are a helpful assistant."
     temperature: float = 1.0
@@ -1609,8 +1610,13 @@ async def stream_chat(req: ChatRequest,
         print(f"[stream_chat] DB session error: {db_err}", flush=True)
         raise HTTPException(status_code=503, detail="Database unavailable")
 
-    # Build OpenAI-style history list (role + content only)
-    history_msgs = [{"role": r["role"], "content": r["content"]} for r in history]
+    # Build OpenAI-style history list. Prefer CLIENT-sent history (reliable — doesn't
+    # depend on the prior turn's DB write succeeding); fall back to DB-persisted history.
+    if req.history:
+        history_msgs = [{"role": m.get("role"), "content": m.get("content")}
+                        for m in req.history if m.get("role") and m.get("content")]
+    else:
+        history_msgs = [{"role": r["role"], "content": r["content"]} for r in history]
 
     # ── Step 4 metering: HOLD an estimate before any upstream spend ─────────
     # Raises HTTP 402 (insufficient_credits) if the balance can't cover it, so
