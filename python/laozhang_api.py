@@ -1619,9 +1619,10 @@ async def stream_chat(req: ChatRequest,
     _op_id = str(uuid.uuid4())
     _prompt_chars = len(req.message or "") + len(req.system or "") + \
         sum(len(m.get("content") or "") for m in history_msgs)
-    # Dynamic output cap: scales with input so files don't truncate AND tiny chats
-    # don't over-reserve credits. Drives both the hold estimate and generation.
-    _gen_cap = _dynamic_max_tokens(req.model, _prompt_chars)
+    # Generation cap = the model's FULL output ceiling so files NEVER truncate
+    # (a small prompt can still produce a big file). The credit HOLD below stays
+    # input-scaled & modest so tiny chats don't over-reserve / hit 402.
+    _gen_cap = min(128000, _output_ceiling(req.model))
     _est_units = {"tokens_in": _prompt_chars // 4,
                   "tokens_out": min(_gen_cap, max(1024, _prompt_chars // 4))}
     charge = await metering.begin_charge(
@@ -1810,9 +1811,8 @@ async def stream_chat_google(req: GoogleChatRequest,
                                                "data": img["b64"]}})
         contents.append({"role": "user", "parts": uparts})
         sys_text = (req.system + FILE_OUTPUT_INSTRUCTION) if req.system else FILE_OUTPUT_INSTRUCTION
-        _g_in = len(req.message or "") + len(req.system or "") + sum(len(h.get("content") or "") for h in (req.history or []))
         cfg: dict = {"system_instruction": sys_text, "temperature": req.temperature,
-                     "max_output_tokens": _dynamic_max_tokens(req.model, _g_in)}
+                     "max_output_tokens": min(128000, _output_ceiling(req.model))}
         if req.thinkingLevel and req.model.startswith("gemini-3"):
             cfg["thinking_config"] = {"thinking_level": req.thinkingLevel}
 
