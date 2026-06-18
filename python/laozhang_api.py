@@ -1314,7 +1314,7 @@ class ChatRequest(BaseModel):
     model: str = "gemini-2.5-pro"
     system: str = "You are a helpful assistant."
     temperature: float = 1.0
-    max_tokens: int = 8192
+    max_tokens: int = 16384  # higher cap so generated files don't truncate mid-stream
     use_tools: bool = False  # Opsi A/C: enable agentic MCP tool calling
     mcp_paths: str = ""  # comma-separated paths to restrict file search
     # NEW: optional inline images attached to this user turn (vision capable models)
@@ -1742,7 +1742,7 @@ class GoogleChatRequest(BaseModel):
     history: list[dict] = []
     temperature: float = 1.0
     thinkingLevel: str = ""
-    max_tokens: int = 8192
+    max_tokens: int = 16384  # higher cap so generated files don't truncate mid-stream
     images: list[dict] = []
     session_id: str = ""
 
