@@ -79,7 +79,15 @@ export async function patchMeta(jobId, partial) {
 }
 
 export async function setStatus(jobId, status, extra = {}) {
-  return patchMeta(jobId, { status, ...extra });
+  const next = await patchMeta(jobId, { status, ...extra });
+  // Phase 3: release the tenant's concurrency slot the moment a job goes terminal.
+  // setStatus is the single status chokepoint, so this covers EVERY path (orchestrator
+  // done/fail + the cancel endpoint). release() is idempotent, so double-fire is safe.
+  if (next?.tenantId && (status === "done" || status === "failed" || status === "canceled")) {
+    try { const { release } = await import("./concurrency.mjs"); await release(next.tenantId, jobId); }
+    catch { /* non-fatal — a stranded slot self-heals via its TTL */ }
+  }
+  return next;
 }
 
 /** Write disjoint scene fields (HSET, atomic per field). */

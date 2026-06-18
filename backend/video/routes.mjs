@@ -15,6 +15,8 @@ import { makeQueues } from "./workers.mjs";
 import * as store from "./store.mjs";
 import { startAssembly } from "./orchestrator.mjs";
 import * as storage from "../storage.mjs";
+import { query } from "../db.js";
+import * as conc from "./concurrency.mjs";   // per-plan parallel-job cap (Phase 3)
 
 const PYTHON_API = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 
@@ -82,6 +84,7 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
   app.post("/api/video/decide", auth, (req, res) => pyForward(req, res, "/video/decide"));
 
   app.post("/api/video/assemble", auth, async (req, res) => {
+    let _slotTenant = null, _slotJob = null;   // for releasing the concurrency slot on early failure
     try {
       const b = req.body || {};
       const scenes = b.scenes;
@@ -93,6 +96,16 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
       // other caller passes it; omitting it returns null for real Clerk users.
       const userId = resolveUserId ? await resolveUserId(req, tenantId) : (b.userId || tenantId);
       const jobId = genJobId();
+      // Phase 3 per-plan concurrency: ONE slot per assembly, released when the job
+      // goes terminal (store.setStatus). 429 if the tenant is already at its cap.
+      const _planRow = await query(`SELECT plan FROM tenants WHERE id=$1`, [tenantId], tenantId).catch(() => null);
+      const _plan = _planRow?.rows?.[0]?.plan || "free";
+      if (!(await conc.acquire(tenantId, _plan, jobId))) {
+        const lim = conc.capFor(_plan);
+        return res.status(429).json({ error: "concurrency_limit", limit: lim, plan: _plan,
+          message: `Kamu lagi menjalankan ${lim} render video paralel (paket ${_plan}). Tunggu salah satu selesai, atau upgrade buat lebih banyak job bersamaan.` });
+      }
+      _slotTenant = tenantId; _slotJob = jobId;
       // Reference-image consistency: generate ONE anchor from the brief up front, so
       // every scene (rendered in PARALLEL) can use it as ref_image — the anchor is
       // ready before the fan-out, so parallelism is preserved.
@@ -113,6 +126,8 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
       }, deps());
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {
+      // release the slot if it was acquired but the job never started running (e.g. 402 credits)
+      if (_slotTenant && _slotJob) { try { await conc.release(_slotTenant, _slotJob); } catch {} }
       res.status(e.status || 500).json({ error: e.message, creditsNeeded: e.creditsNeeded });
     }
   });

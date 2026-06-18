@@ -62,6 +62,58 @@ def insufficient_credits(needed: int, balance: int) -> HTTPException:
     })
 
 
+_TIER_LABEL = {"free": "Free", "starter": "Starter", "pro": "Pro", "enterprise": "Studio"}
+
+def tier_locked(model: str, need_tier: str, have_tier: str) -> HTTPException:
+    """Build the 403 the frontend listens for to show the upgrade prompt (model-lock)."""
+    return HTTPException(status_code=403, detail={
+        "error": "tier_locked",
+        "model": model,
+        "required_plan": need_tier,
+        "current_plan": have_tier,
+        "upgrade_url": TOPUP_URL,
+        "message": f"Model ini cuma buat paket {_TIER_LABEL.get(need_tier, need_tier)} ke atas.",
+    })
+
+def ensure_tier(user, min_tier: str, model: str) -> None:
+    """Model-lock gate: raise 403 when the user's plan ranks below `min_tier`. Call it
+    BEFORE gate() so a locked model 403s before any hold/charge. No-op for:
+      • unauthenticated calls (user=None), and
+      • trusted internal-service / video-worker calls (user.is_internal) — these run
+        server-side (Flow/Batch scene gen reuse /generate-image,/veo/submit) and must
+        NOT be tier-gated, else a Free user's Flow render 403s mid-way.
+    Tier locks ALSO apply to BYOK (product boundary, not billing) — do NOT early-return
+    on byok the way gate() does."""
+    if user is None or getattr(user, "is_internal", False):
+        return
+    have = getattr(user, "tier", "free")
+    if not _cat.tier_at_least(have, min_tier):
+        raise tier_locked(model, min_tier, have)
+
+
+def free_pool_exhausted() -> HTTPException:
+    """429 for the global free-tier kill-switch (community daily budget spent)."""
+    return HTTPException(status_code=429, detail={
+        "error": "free_pool_exhausted",
+        "upgrade_url": TOPUP_URL,
+        "message": "Kuota gratis komunitas hari ini sudah penuh 🙏 Coba lagi besok, "
+                   "atau upgrade ke Starter buat generate tanpa nunggu.",
+    })
+
+async def _free_prep(tenant_id: str) -> None:
+    """Free-tenant pre-flight, run BEFORE the balance check: (1) top up today's
+    leaky-bucket claim so the gate sees today's credits, (2) enforce the global
+    anti-farming kill-switch (429). No-op for paid tenants — one plan lookup, then
+    Redis-cheap. Never blocks paid spend."""
+    if not tenant_id:
+        return
+    if (await _credits.tier_of(tenant_id)) != "free":
+        return
+    await _credits.ensure_daily(tenant_id)
+    if await _credits.free_global_blocked():
+        raise free_pool_exhausted()
+
+
 class Charge:
     """A reserved credit hold for one operation. Settle once (commit actual) OR
     refund once (release). Idempotent: a second settle/refund is a no-op."""
@@ -144,6 +196,7 @@ async def begin_charge(*, tenant_id: str, user_id: Optional[str], operation: str
         # op still runs and settle() logs a credits=0 usage row.
         return Charge(tenant_id=tenant_id, user_id=user_id, op_id=op_id,
                       operation=operation, model=model, held=0, byok=True)
+    await _free_prep(tenant_id)          # free: top up daily claim + global kill-switch
     est = _cat.credit_cost(operation, model, estimate_units)
     if est <= 0:
         return Charge(tenant_id=tenant_id, user_id=user_id, op_id=op_id,
@@ -171,6 +224,7 @@ async def gate(tenant_id: str, operation: str, model: str,
     estimate. No-op for BYOK / disabled metering / unauthenticated (no tenant)."""
     if byok or not METERING_ENABLED or not tenant_id:
         return 0
+    await _free_prep(tenant_id)          # free: top up daily claim + global kill-switch
     est = _cat.credit_cost(operation, model, units)
     if est <= 0:
         return 0

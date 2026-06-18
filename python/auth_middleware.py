@@ -137,6 +137,7 @@ class CurrentUser:
     user_id:   str
     plan:      str
     tier:      str      # alias for plan, used by billing checks
+    is_internal: bool = False   # True only for trusted server-to-server (video worker) — exempt from model-lock
 
 # ── Internal service auth (trusted server-to-server: the video worker) ─────────
 # The video worker has no Clerk JWT. When INTERNAL_SERVICE_SECRET is set AND a
@@ -170,7 +171,7 @@ async def _internal_service_user(tenant_id: str, user_id: str) -> CurrentUser:
             api_key=os.getenv("LAOZHANG_API_KEY", ""), deepseek_key=os.getenv("DEEPSEEK_API_KEY", ""),
             gemini_key=os.getenv("GEMINI_API_KEY", ""))
     _tenant_ctx.set(ctx)
-    return CurrentUser(tenant_id=tenant_id, user_id=uid, plan=ctx.tier, tier=ctx.tier)
+    return CurrentUser(tenant_id=tenant_id, user_id=uid, plan=ctx.tier, tier=ctx.tier, is_internal=True)
 
 # ── DB helpers (lazy import to avoid circular imports) ─────────────────────────
 
@@ -299,8 +300,13 @@ async def get_current_user(
     return CurrentUser(
         tenant_id=tenant_id,
         user_id=user_id,
-        plan=plan,
-        tier=plan,
+        # plan/tier from the LIVE DB (get_tenant_context → SELECT tenants.plan), NOT
+        # the stale Clerk JWT claim. Using the JWT `plan` would gate a just-upgraded
+        # user as their OLD plan until Clerk re-mints the token (minutes–hours), so
+        # they'd 403 on models they just paid for. ctx.tier falls back to the JWT
+        # plan only when get_tenant_context itself failed. (Phase 0 tier fix.)
+        plan=ctx.tier,
+        tier=ctx.tier,
     )
 
 # ── Optional auth — capture tenant when a token is present, else None ─────────

@@ -612,9 +612,11 @@ async def log_usage(
     tenant_id, user_id, model, endpoint, tokens_in, tokens_out, cost_usd,
     *, job_id=None, session_id=None, provider="laozhang",
     model_upstream=None, latency_ms=None, http_status=200,
-    finish_reason="stop", credits=0) -> None:
+    finish_reason="stop", credits=0, is_paid=None) -> None:
     """`model` → model_alias. Pass model_upstream for resolved name.
-    `credits` = credits charged by the Step 4 metering layer (0 for BYOK/free)."""
+    `credits` = credits charged by the Step 4 metering layer (0 for BYOK/free).
+    `is_paid` = funding source override; None → derived from the tenant's plan
+    (paid-plan consumption recognizes revenue; free-plan = acquisition cost)."""
     try:
         # user_id has an FK to users(id). The middleware may hand us a derived
         # UUID that was never inserted — null it out if it doesn't exist, else
@@ -626,17 +628,47 @@ async def log_usage(
             _exists = await _q_fetchval(
                 "SELECT 1 FROM users WHERE id=$1", _cand, tenant=str(tenant_id))
             uid = _cand if _exists else None
+
+        # ── Financial GL tagging (auto, clean-from-day-one). Derived from values we
+        # already have; best-effort so a tagging hiccup never blocks usage logging. ──
+        _cost_idr = _rev_idr = _markup = _gl_rev = _gl_cogs = None
+        _paid = is_paid
+        try:
+            import credit_catalog as _cat
+            _gl_rev, _gl_cogs = _cat.gl_codes(endpoint)
+            _cusd = float(cost_usd or 0)
+            _cr = int(credits or 0)
+            _cost_idr = round(_cusd * _cat.KURS_IDR_USD, 2)
+            _markup = round(_cr * _cat.CREDIT_USD_VALUE / _cusd, 3) if _cusd > 0 else None
+            # resolve plan: drives is_paid AND the per-plan revenue-recognition price
+            _plan = await _q_fetchval("SELECT plan FROM tenants WHERE id=$1",
+                                      _uid(tenant_id), tenant=str(tenant_id))
+            if _paid is None:   # funding source: paid-plan = revenue, free-plan = acquisition cost
+                _paid = bool(_plan) and _plan != "free"
+            _rev_idr = round(_cr * _cat.credit_sale_price_idr(_plan), 2) if _paid else 0
+            if _paid is False and _cusd > 0:        # feed the global free-tier kill-switch counter
+                try:
+                    import credits as _credits
+                    await _credits.note_free_cost(_cusd)
+                except Exception:
+                    pass
+        except Exception as _gle:
+            log.warning("log_usage GL tag derive failed (non-fatal): %s", _gle)
+
         await _q_exec(
             """INSERT INTO usage_logs
                    (tenant_id,user_id,session_id,job_id,
                     endpoint,model_alias,model_upstream,provider,
                     tokens_in,tokens_out,cost_usd,credits,
-                    finish_reason,latency_ms,http_status)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)""",
+                    finish_reason,latency_ms,http_status,
+                    cost_idr,revenue_idr,markup_factor,is_paid,gl_revenue_code,gl_cogs_code)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+                       $16,$17,$18,$19,$20,$21)""",
             _uid(tenant_id), uid, _uid(session_id), _uid(job_id),
             endpoint, model, model_upstream or model, provider,
             tokens_in, tokens_out, cost_usd, int(credits or 0),
             finish_reason, latency_ms, http_status,
+            _cost_idr, _rev_idr, _markup, _paid, _gl_rev, _gl_cogs,
             tenant=str(tenant_id))   # explicit — request ContextVar is gone during SSE finally
     except Exception as e:
         log.error("log_usage: %s", e); raise
