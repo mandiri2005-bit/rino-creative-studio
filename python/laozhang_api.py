@@ -439,6 +439,34 @@ def _generation_kwargs(model: str, temperature: float, max_tokens: int) -> dict:
     return {"temperature": _chat_temperature(temperature), "max_tokens": mt}
 
 
+def _output_ceiling(model: str) -> int:
+    """Realistic max output tokens per model family — generous so files don't truncate,
+    but bounded to what providers accept. Tune as needed."""
+    m = (model or "").lower()
+    if any(k in m for k in ("flash-lite", "glm", "haiku", "gemma", "spark", "ernie", "minimax", "turbo")):
+        return 8192
+    if m.startswith("gemini") or m.startswith(("o3", "o4")):
+        return 65536
+    if "deepseek-r1" in m or "deepseek-v4" in m or "deepseek-v3.2" in m:
+        return 65536
+    if "thinking" in m:
+        return 64000
+    if m.startswith(("gpt-5", "gpt-4.1")) or "opus-4" in m or "sonnet-4" in m:
+        return 32768
+    if m.startswith("gpt-4o"):
+        return 16384
+    return 16384
+
+
+def _dynamic_max_tokens(model: str, prompt_chars: int, hard_ceiling: int = 128000) -> int:
+    """Output budget that SCALES with input: a small prompt → modest cap (so the credit
+    hold doesn't over-reserve and block low-balance users); a large prompt (e.g. an
+    attached file) → large cap up to the model ceiling / 128K, so files don't truncate."""
+    in_tok = max(0, int(prompt_chars) // 4)
+    want = max(8192, in_tok * 4)
+    return int(min(hard_ceiling, _output_ceiling(model), want))
+
+
 # MAX_SESSIONS removed — session persistence is in PostgreSQL, no eviction needed.
 
 # ── Cost estimation (USD) — used by log_usage() after each stream ────────────
@@ -1109,8 +1137,9 @@ def chat_stream(
     client = make_client(model)
     model_key = model
     model = MODELS.get(model, model)
-    ceiling = MODEL_MAX_TOKENS.get(model, DEFAULT_MAX_TOKENS)
-    max_tokens = min(max_tokens, ceiling)
+    # max_tokens is the dynamic, input-scaled cap from stream_chat; clamp to the
+    # model's real output ceiling as a safety net.
+    max_tokens = min(max(1, int(max_tokens)), _output_ceiling(model))
 
     # GPT-5 / o-series reasoning models reject `max_tokens` (need `max_completion_tokens`
     # >= 1) and only accept the default temperature. Sending the legacy params makes
@@ -1590,8 +1619,11 @@ async def stream_chat(req: ChatRequest,
     _op_id = str(uuid.uuid4())
     _prompt_chars = len(req.message or "") + len(req.system or "") + \
         sum(len(m.get("content") or "") for m in history_msgs)
+    # Dynamic output cap: scales with input so files don't truncate AND tiny chats
+    # don't over-reserve credits. Drives both the hold estimate and generation.
+    _gen_cap = _dynamic_max_tokens(req.model, _prompt_chars)
     _est_units = {"tokens_in": _prompt_chars // 4,
-                  "tokens_out": min(int(req.max_tokens or 800), 16000)}
+                  "tokens_out": min(_gen_cap, max(1024, _prompt_chars // 4))}
     charge = await metering.begin_charge(
         tenant_id=_TENANT_ID, user_id=_USER_ID, operation="chat",
         model=req.model, estimate_units=_est_units, op_id=_op_id,
@@ -1628,7 +1660,7 @@ async def stream_chat(req: ChatRequest,
                 model=req.model,
                 system=req.system,
                 temperature=req.temperature,
-                max_tokens=req.max_tokens,
+                max_tokens=_gen_cap,
                 history=history_msgs,
                 cancel_event=cancel_event,
                 use_tools=req.use_tools,
@@ -1778,8 +1810,9 @@ async def stream_chat_google(req: GoogleChatRequest,
                                                "data": img["b64"]}})
         contents.append({"role": "user", "parts": uparts})
         sys_text = (req.system + FILE_OUTPUT_INSTRUCTION) if req.system else FILE_OUTPUT_INSTRUCTION
+        _g_in = len(req.message or "") + len(req.system or "") + sum(len(h.get("content") or "") for h in (req.history or []))
         cfg: dict = {"system_instruction": sys_text, "temperature": req.temperature,
-                     "max_output_tokens": req.max_tokens}
+                     "max_output_tokens": _dynamic_max_tokens(req.model, _g_in)}
         if req.thinkingLevel and req.model.startswith("gemini-3"):
             cfg["thinking_config"] = {"thinking_level": req.thinkingLevel}
 
