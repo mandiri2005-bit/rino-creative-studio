@@ -464,6 +464,45 @@ export function buildConcatArgs(listName, outPath) {
 }
 
 /**
+ * Re-encode the PRE-RENDERED per-scene clips into one MP4 with a short crossfade at each
+ * seam (xfade video + acrossfade audio) — smoother than the byte-concat hard cut, and the
+ * crossfade lands on each clip's trailing-silence pad so it also softens the audio gap.
+ * Clips are already W×H/yuv420p (no zoompan/scale here), so this graph is much lighter
+ * than the original single-pass; still, it decodes ALL clips at once, so the caller gates
+ * it by scene count and falls back to byte-concat for very long videos (OOM-safe).
+ * `durations` = each clip's length (seconds), same order as `clipPaths`.
+ */
+export function buildXfadeConcatArgs(clipPaths, durations, outPath, opts = {}) {
+  const o = { ...VIDEO_DEFAULTS, ...opts };
+  const n = clipPaths.length;
+  const durs = durations.map((d) => Math.max(0.2, Number(d) || 0.2));
+  const XF = n > 1 ? Math.max(0.05, Math.min(Number(o.seamXf ?? 0.4), Math.min(...durs) * 0.8)) : 0;
+  const args = ["-y", ...filterThreadArgs(o)];
+  for (const c of clipPaths) args.push("-i", c);
+  const parts = [];
+  let vlab = "0:v", alab = "0:a";
+  if (n > 1) {
+    const { offsets } = xfadeOffsets(durs, XF);
+    for (let k = 1; k < n; k++) {
+      const vout = k === n - 1 ? "vout" : `vx${k}`;
+      const aout = k === n - 1 ? "aout" : `ax${k}`;
+      parts.push(`[${vlab}][${k}:v]xfade=transition=${o.transition}:duration=${XF}:offset=${offsets[k - 1]}[${vout}]`);
+      parts.push(`[${alab}][${k}:a]acrossfade=d=${XF}:c1=tri:c2=tri[${aout}]`);
+      vlab = vout; alab = aout;
+    }
+  }
+  if (parts.length) args.push("-filter_complex", parts.join(";"), "-map", `[${vlab}]`, "-map", `[${alab}]`);
+  else args.push("-map", "0:v", "-map", "0:a");
+  args.push(
+    "-r", String(o.fps), "-c:v", "libx264", ...codecThreadArgs(o), "-pix_fmt", "yuv420p",
+    "-preset", o.preset || "veryfast", "-crf", String(o.crf || 20),
+    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+    "-movflags", "+faststart", outPath
+  );
+  return args;
+}
+
+/**
  * Render each scene to its own clip, then byte-concat them (concat demuxer, -c
  * copy). Each per-scene render is a small, bounded filter graph, so this scales to
  * arbitrarily long videos (100+ scenes) where the single-pass xfade graph OOMs.
@@ -501,11 +540,20 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
     while (next < scenes.length) await renderScene(next++);
   }));
 
-  // concat list — paths are relative to cwd; single-quote-escape just in case
-  const list = join(cwd, "concat.txt");
-  await writeFile(list, clipPaths.map((c) => `file '${c.split("/").pop().replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
-  // concat-copy = byte-join, no encode → not thread-capped, not semaphore-gated.
-  await runFfmpeg(buildConcatArgs("concat.txt", outPath), { cwd });
+  // Seam crossfade (re-encode) for smoother transitions — but only up to a scene-count
+  // cap: the xfade graph decodes ALL clips at once, so very long videos fall back to the
+  // OOM-safe byte-concat hard cut. VIDEO_SEAM_XFADE=0 disables (pure byte-concat).
+  const seamXf = Number(opts.seamXf ?? process.env.VIDEO_SEAM_XFADE ?? 0.4);
+  const xfadeMax = Math.max(1, Number(process.env.VIDEO_XFADE_CONCAT_MAX ?? 12));
+  if (seamXf > 0.05 && scenes.length > 1 && scenes.length <= xfadeMax) {
+    const durs = scenes.map((s) => Math.max(0.2, Number(s.duration) || 0.2));
+    await runFfmpeg(buildXfadeConcatArgs(clipPaths, durs, outPath, { ...opts, seamXf }), { cwd, encode: true });
+  } else {
+    // byte-concat hard-cut (huge videos / disabled) — paths relative to cwd; quote-escape.
+    const list = join(cwd, "concat.txt");
+    await writeFile(list, clipPaths.map((c) => `file '${c.split("/").pop().replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
+    await runFfmpeg(buildConcatArgs("concat.txt", outPath), { cwd });
+  }
   const duration = await ffprobeDuration(outPath);
   return { path: outPath, duration, sceneCount: scenes.length };
 }

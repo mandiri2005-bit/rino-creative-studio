@@ -10,7 +10,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   xfadeOffsets, buildFilterComplex, buildStitchArgs, buildSceneClipArgs, buildConcatArgs,
-  kenBurnsExpr, runFfmpeg, captionWindows, buildSrt, buildAss, buildAssFromScenes,
+  buildXfadeConcatArgs, kenBurnsExpr, runFfmpeg, captionWindows, buildSrt, buildAss, buildAssFromScenes,
 } from "../../backend/video/ffmpeg.mjs";
 import { CLIP_MODEL_IDS } from "../../backend/video/generationClient.mjs";
 import {
@@ -312,5 +312,29 @@ describe("CLIP_MODEL_IDS — valid laozhang Veo model names", () => {
     for (const bad of ["veo-3.1", "veo-3.1-fast", "veo-3.1-fl"]) {
       assert.ok(!vals.includes(bad), `legacy "${bad}" must not be used`);
     }
+  });
+});
+
+// ── Seam crossfade for the per-scene (long-video) path ──
+describe("buildXfadeConcatArgs (seam crossfade re-encode)", () => {
+  const clips = ["/t/scene_0.mp4", "/t/scene_1.mp4", "/t/scene_2.mp4"];
+  const a = buildXfadeConcatArgs(clips, [5, 4, 6], "/t/out.mp4", { fps: 30 });
+  const s = a.join(" ");
+  it("loads every clip as an -i input", () => {
+    assert.equal(a.filter((x) => x === "-i").length, 3);
+  });
+  it("builds N-1 xfade + N-1 acrossfade, ending in vout/aout", () => {
+    assert.equal((s.match(/xfade=transition=/g) || []).length, 2);
+    assert.equal((s.match(/acrossfade=d=/g) || []).length, 2);
+    assert.match(s, /-map \[vout\] -map \[aout\]/);
+  });
+  it("re-encodes h264 (NOT -c copy) with thread caps + veryfast", () => {
+    assert.match(s, /-c:v libx264/);
+    assert.doesNotMatch(s, /-c copy/);
+    assert.match(s, /-threads 2/);
+    assert.match(s, /-preset veryfast/);
+  });
+  it("uses running xfade offsets (XF=0.4 → first offset = dur0 - XF = 4.6)", () => {
+    assert.match(s, /offset=4\.6/);
   });
 });
