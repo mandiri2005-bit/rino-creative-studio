@@ -28,7 +28,6 @@ import { ffprobeDuration, stitch, buildSrt, hasSubtitlesFilter } from "./ffmpeg.
 import { advance } from "./orchestrator.mjs";
 import { rm } from "node:fs/promises";
 import { renderWhiteboard } from "./whiteboard/render.mjs";
-import { generateWhiteboardAsset } from "./whiteboard/visuals.mjs";
 
 // Deterministic positive seed from the job id — the SAME seed for every scene of a
 // video, so image models that honour `seed` keep the look (and any recurring
@@ -70,8 +69,7 @@ async function maybeUpload(jobId, tenantId, assetType, localPath) {
   const { readFile } = await import("node:fs/promises");
   const name = localPath.split("/").pop();
   const key = s.buildKey(tenantId, jobId, assetType, name);
-  const ctype = name.endsWith(".mp4") ? "video/mp4" : name.endsWith(".png") ? "image/png"
-    : name.endsWith(".svg") ? "image/svg+xml" : "audio/wav";
+  const ctype = name.endsWith(".mp4") ? "video/mp4" : name.endsWith(".png") ? "image/png" : "audio/wav";
   await s.uploadBytes(key, await readFile(localPath), ctype);
   return { path: localPath, key };
 }
@@ -196,35 +194,11 @@ export async function visualProcessor(job, deps) {
     if (JOB_TERMINAL.has(meta.status)) return { skipped: "job-terminal" };
     if (scene.visualStatus === "done" || scene.visualStatus === "fallback") return { skipped: "already-done" };
     if (meta.visualMode === "whiteboard") {
-      // Whiteboard makes its OWN per-scene visual (Recraft vector SVG / raster+mask /
-      // LLM diagram), revealed by the Remotion render. Each Recraft asset is metered
-      // via /video/meter; lineart/diagram carry no Recraft meter. A failed asset
-      // degrades the scene to handwriting (never kills the video).
-      const genre = meta.whiteboardGenre || "lineart";
-      const tmpDir = jobTmpDir(jobId);
-      await mkdir(tmpDir, { recursive: true });
-      try {
-        const a = await generateWhiteboardAsset(genre, {
-          prompt: scene.visualPrompt || scene.text || "", tmpDir, sceneIndex,
-          aspect: meta.aspectRatio || "16:9",
-        });
-        for (const m of a.meters || []) {
-          await deps.generationClient?.meterUsage?.(
-            { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units);
-        }
-        const up = a.visualPath ? await maybeUpload(jobId, meta.tenantId, "images", a.visualPath) : { path: undefined, key: null };
-        const mk = a.maskPath ? await maybeUpload(jobId, meta.tenantId, "images", a.maskPath) : { path: undefined, key: null };
-        await deps.store.setSceneFields(jobId, sceneIndex, {
-          visualStatus: "done", visualKind: a.kind || "whiteboard",
-          ...(up.path ? { visualPath: up.path } : {}), ...(up.key ? { visualKey: up.key } : {}),
-          ...(mk.path ? { maskPath: mk.path } : {}), ...(mk.key ? { maskKey: mk.key } : {}),
-        });
-        return { sceneIndex, genre };
-      } catch (e) {
-        console.warn(`[whiteboard ${jobId}/${sceneIndex}] ${genre} asset failed: ${e.message} → handwriting`);
-        await deps.store.setSceneFields(jobId, sceneIndex, { visualStatus: "fallback", visualKind: "whiteboard", visualError: e.message });
-        return { sceneIndex, fellBack: true };
-      }
+      // Whiteboard provides its OWN per-scene visuals inside the Remotion render step
+      // (slice 2b will generate the per-genre asset here — Recraft SVG / raster+mask /
+      // diagram graph). For now: no pipeline image/clip → no wasted image-gen charge.
+      await deps.store.setSceneFields(jobId, sceneIndex, { visualStatus: "done", visualKind: "whiteboard" });
+      return { sceneIndex, skipped: "whiteboard" };
     }
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
@@ -300,10 +274,6 @@ export async function stitchProcessor(job, deps) {
         text: s?.text || "",   // per-scene caption (long-video render path)
         visualPath: wbNoAsset ? undefined : await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
           `vis_${i}.${s.visualKind === "clip" ? "mp4" : "png"}`),
-        // detail genre also carries a vectorized reveal mask (whiteboard only)
-        ...(meta.visualMode === "whiteboard" && (s.maskKey || s.maskPath)
-          ? { maskPath: await resolveLocal(jobId, tmpDir, s.maskKey, s.maskPath, `mask_${i}.svg`) }
-          : {}),
         audioPath: await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`),
       });
     }
@@ -328,10 +298,6 @@ export async function stitchProcessor(job, deps) {
       // the ffmpeg stitch. Reuses the same resolved per-scene text/audio/visual + meta
       // (genre/aspect/tier); output is one MP4 stored exactly like a stitched one.
       result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });
-      // flat render fee — 3 credits/sec of output video (post-hoc, tagged for refund)
-      await deps.generationClient?.meterUsage?.(
-        { jobId, tenantId: meta.tenantId, userId: meta.userId },
-        "video", "whiteboard", { seconds: Math.max(1, Math.round(result.duration || 0)) });
     } else {
       try {
         result = await stitch(scenes, outPath, stitchOpts);
