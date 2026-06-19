@@ -48,6 +48,7 @@ export const Whiteboard: React.FC<Spec> = (spec) => {
             theme={theme}
             fontSize={fontSize}
             fps={fps}
+            sceneDuration={s.duration}
           />
           {s.audioSrc ? <Audio src={src(s.audioSrc)} /> : null}
         </Sequence>

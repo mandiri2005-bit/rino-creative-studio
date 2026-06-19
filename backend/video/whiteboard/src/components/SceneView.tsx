@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, useVideoConfig } from "remotion";
 import type { Theme } from "../theme";
 import type { Illustration, Layout } from "../types";
-import { ILLUSTRATION_DRAW_S, DRAW_REVEAL_S, DIAGRAM_DRAW_S, RASTER_REVEAL_S } from "../timing";
+import { ILLUSTRATION_DRAW_S, DRAW_REVEAL_S, DIAGRAM_DRAW_S } from "../timing";
 import { lucideToIllustration } from "../lib/lucide";
 import { HandwrittenText } from "./HandwrittenText";
 import { SelfDrawSvg } from "./SelfDrawSvg";
@@ -32,6 +32,7 @@ interface Props {
   theme: Theme;
   fontSize: number;
   fps: number;
+  sceneDuration: number; // total frames for this scene (for reveals that span the scene)
 }
 
 // One scene, composed per layout. Text writes first (startFrame 0); underlines, icons
@@ -50,9 +51,17 @@ export const SceneView: React.FC<Props> = ({
   theme,
   fontSize,
   fps,
+  sceneDuration,
 }) => {
   const { width: frameW, height: frameH } = useVideoConfig();
   const decorStart = writeFrames;
+  // raster-reveal draws across (almost) the WHOLE scene instead of a fixed 5s then
+  // sitting static — so the detail genre keeps "being drawn" the whole time. Clamped
+  // 3s–12s so short scenes still finish and very long ones don't crawl.
+  const rasterRevealFrames = Math.min(
+    Math.round(fps * 12),
+    Math.max(Math.round(fps * 3), sceneDuration - decorStart - Math.round(fps * 0.6))
+  );
   const iconDef = icon ? ICONS[icon] : null;
   const illo: Illustration | null = illustration ?? (lucide ? lucideToIllustration(lucide) : null);
   const lucideMode = !illustration && !!illo; // resolved from a Lucide name → icon-style sizing
@@ -121,7 +130,7 @@ export const SceneView: React.FC<Props> = ({
             width={w}
             height={h}
             startFrame={start}
-            durationInFrames={Math.round(fps * RASTER_REVEAL_S)}
+            durationInFrames={rasterRevealFrames}
             ink={theme.ink}
             handBody={theme.markerBody}
           />

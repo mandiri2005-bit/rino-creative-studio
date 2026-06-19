@@ -65,7 +65,8 @@ export const RasterRevealIllustration: React.FC<{
     extrapolateRight: "clamp",
   });
   const SPAN = 0.92; // all units revealed by 92% of the window, then a brief settle
-  const WIN = 0.06; // each unit fades in over this fraction (soft rolling frontier)
+  const WIN = 0.035; // tight rolling frontier → units "pop in" right at the pen (drawn,
+                     // not a uniform wash); smaller than before so it reads as drawing.
 
   // hand cursor rides the same ordered snake at the reveal frontier
   const cursor = Math.min(1, tGlobal / SPAN) * (N - 1);
@@ -119,7 +120,7 @@ export const RasterRevealIllustration: React.FC<{
         <Hand
           x={(hx - (vx || 0)) * sx}
           y={(hy - (vy || 0)) * sy}
-          size={Math.max(120, height * 0.5)}
+          size={Math.max(150, height * 0.6)}
           nib={ink}
           body={handBody}
         />
