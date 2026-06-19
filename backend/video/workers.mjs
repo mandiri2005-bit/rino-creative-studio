@@ -158,9 +158,15 @@ async function resolveAnchor(jobId, tmpDir, meta) {
 
 // Diverse-provider image fallbacks: if the chosen model's provider is flaky or
 // content-blocks the prompt, a DIFFERENT provider usually succeeds — so a failed
-// scene still gets a REAL image instead of a placeholder. Ordered across providers
-// (Gemini → Flux → Seedream).
-const IMAGE_FALLBACK_MODELS = ["nano-banana", "flux-kontext-pro", "seedream-4-0"];
+// scene still gets a REAL image instead of a placeholder.
+// ORDER MATTERS for aspect: `flux-kontext-pro` honours the requested ratio (16:9),
+// whereas `nano-banana` is 1:1-only and `seedream-4-0` is hardcoded 2K-square — both
+// produce a square that the ffmpeg cover-crop then chops (the "kepotong di atas" bug).
+// So try the aspect-correct provider FIRST; the squares are last-resort only.
+// Override with VIDEO_IMAGE_FALLBACKS="a,b,c" (no deploy needed).
+export const IMAGE_FALLBACK_MODELS = (process.env.VIDEO_IMAGE_FALLBACKS
+  ? process.env.VIDEO_IMAGE_FALLBACKS.split(",").map((s) => s.trim()).filter(Boolean)
+  : ["flux-kontext-pro", "nano-banana", "seedream-4-0"]);
 
 async function imageWithAltModels(deps, base, tmpDir, cause) {
   const tried = base.imageModel || "nano-banana-hd";
@@ -251,8 +257,21 @@ export async function visualProcessor(job, deps) {
       v = await deps.generationClient.generateVisual(base, tmpDir);
     } catch (primaryErr) {
       let cause = primaryErr;
+      // Tier 0 (IMAGE only) — retry the SAME primary model before downgrading. The main
+      // failure in prod is Gemini (nano-banana-hd) returning 502 NO_IMAGE, which is
+      // TRANSIENT (an immediate retry succeeds ~always). Retrying the primary keeps the
+      // chosen model + correct aspect, instead of dropping to a 1:1/2K-square fallback
+      // that the cover-crop then chops. Clips are NOT retried here (a Veo re-poll is ~4min;
+      // they take the clip→image path below). Env: VIDEO_IMAGE_RETRIES (default 1).
+      const imgRetries = Math.max(0, Number(process.env.VIDEO_IMAGE_RETRIES || 1));
+      if (scene.kind !== "clip") {
+        for (let attempt = 1; attempt <= imgRetries && !v; attempt++) {
+          try { v = await deps.generationClient.generateVisual(base, tmpDir); }
+          catch (e) { cause = e; }
+        }
+      }
       // Tier 1 — a failed CLIP retries as a real image on its default model.
-      if (scene.kind === "clip") {
+      if (!v && scene.kind === "clip") {
         try {
           v = await deps.generationClient.generateVisual({ ...base, kind: "image" }, tmpDir);
           v.kind = "image";

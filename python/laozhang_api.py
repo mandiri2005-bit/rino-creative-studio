@@ -2339,6 +2339,17 @@ def _generate_google(prompt: str, model: str, aspect_ratio: str,
     except (KeyError, IndexError, TypeError, AttributeError):
         pass
     reason = ((body.get("candidates") or [{}])[0] or {}).get("finishReason") if isinstance(body, dict) else None
+    # Surface WHY there's no image: Gemini puts the cause in promptFeedback.blockReason /
+    # candidates[].finishReason / safetyRatings — but the 502 detail below is truncated, so
+    # log the FULL signal server-side (NO_IMAGE is usually transient or a safety decline;
+    # without this we can't tell which). Log-only; control flow unchanged.
+    try:
+        _c0 = ((body.get("candidates") or [{}])[0] or {}) if isinstance(body, dict) else {}
+        print(f"[generate-image/google NO_IMAGE] model={model} finishReason={reason} "
+              f"promptFeedback={(body.get('promptFeedback') if isinstance(body, dict) else None)} "
+              f"safetyRatings={_c0.get('safetyRatings')} body={str(body)[:1500]}")
+    except Exception:
+        pass
     raise HTTPException(502, f"image provider returned no image (google{', '+str(reason) if reason else ''}): {str(body)[:250]}")
 
 
