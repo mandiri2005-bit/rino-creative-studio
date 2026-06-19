@@ -27,6 +27,7 @@ import * as store from "./store.mjs";
 import { ffprobeDuration, stitch, buildSrt, hasSubtitlesFilter } from "./ffmpeg.mjs";
 import { advance } from "./orchestrator.mjs";
 import { rm } from "node:fs/promises";
+import { renderWhiteboard } from "./whiteboard/render.mjs";
 
 // Deterministic positive seed from the job id — the SAME seed for every scene of a
 // video, so image models that honour `seed` keep the look (and any recurring
@@ -192,6 +193,13 @@ export async function visualProcessor(job, deps) {
     if (!meta || !scene) return { skipped: "missing" };
     if (JOB_TERMINAL.has(meta.status)) return { skipped: "job-terminal" };
     if (scene.visualStatus === "done" || scene.visualStatus === "fallback") return { skipped: "already-done" };
+    if (meta.visualMode === "whiteboard") {
+      // Whiteboard provides its OWN per-scene visuals inside the Remotion render step
+      // (slice 2b will generate the per-genre asset here — Recraft SVG / raster+mask /
+      // diagram graph). For now: no pipeline image/clip → no wasted image-gen charge.
+      await deps.store.setSceneFields(jobId, sceneIndex, { visualStatus: "done", visualKind: "whiteboard" });
+      return { sceneIndex, skipped: "whiteboard" };
+    }
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
     const refImage = await resolveAnchor(jobId, tmpDir, meta);  // per-video reference (or null)
@@ -257,11 +265,14 @@ export async function stitchProcessor(job, deps) {
     const scenes = [];
     for (let i = 0; i < scenesRaw.length; i++) {
       const s = scenesRaw[i];
+      // whiteboard scenes may carry NO pipeline visual asset (the Remotion render makes
+      // its own) — don't demand one; other modes always have a visual to resolve.
+      const wbNoAsset = meta.visualMode === "whiteboard" && !s.visualKey && !s.visualPath;
       scenes.push({
         kind: s.visualKind || "image",
         duration: (Number(s.durationActual) || Number(s.estSeconds) || 2) + sceneGap,
         text: s?.text || "",   // per-scene caption (long-video render path)
-        visualPath: await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
+        visualPath: wbNoAsset ? undefined : await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
           `vis_${i}.${s.visualKind === "clip" ? "mp4" : "png"}`),
         audioPath: await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`),
       });
@@ -282,16 +293,23 @@ export async function stitchProcessor(job, deps) {
       console.warn(`[stitch ${jobId}] captions requested but ffmpeg has no 'subtitles' filter (no libass) — rendering without burn-in`);
     }
     let result;
-    try {
-      result = await stitch(scenes, outPath, stitchOpts);
-    } catch (e) {
-      // a font / force_style issue must never fail the whole video — retry once
-      // without the custom font so captions just render in the default face.
-      if (stitchOpts.captionFont) {
-        console.warn(`[stitch ${jobId}] retrying without captionFont after: ${e.message}`);
-        delete stitchOpts.captionFont;
+    if (meta.visualMode === "whiteboard") {
+      // Opt B: render the WHOLE video with the Remotion whiteboard engine instead of
+      // the ffmpeg stitch. Reuses the same resolved per-scene text/audio/visual + meta
+      // (genre/aspect/tier); output is one MP4 stored exactly like a stitched one.
+      result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });
+    } else {
+      try {
         result = await stitch(scenes, outPath, stitchOpts);
-      } else throw e;
+      } catch (e) {
+        // a font / force_style issue must never fail the whole video — retry once
+        // without the custom font so captions just render in the default face.
+        if (stitchOpts.captionFont) {
+          console.warn(`[stitch ${jobId}] retrying without captionFont after: ${e.message}`);
+          delete stitchOpts.captionFont;
+          result = await stitch(scenes, outPath, stitchOpts);
+        } else throw e;
+      }
     }
     // upload the final MP4 under the lifecycle-managed `videos/` prefix (Step 6f)
     let up = { path: outPath, key: null };
