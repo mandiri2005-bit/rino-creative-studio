@@ -554,11 +554,6 @@ _IMAGE_COSTS: dict[str, float] = {
     "seedream":          0.03,
     # Sora image
     "sora-image":        0.04,
-    # Recraft (whiteboard mode): vector-native SVG gen, raster gen, raster→SVG vectorize.
-    # Longest-prefix match resolves -v3-vector / -vectorize before the -v3 / bare key.
-    "recraft-v3-vector": 0.08,
-    "recraft-vectorize": 0.01,
-    "recraft-v3":        0.04,
 }
 _IMAGE_COST_DEFAULT = 0.04
 
@@ -6819,37 +6814,6 @@ async def video_tts_scene(req: VideoTtsSceneReq,
         except Exception as _e:
             print(f"[video/tts/scene] metering debit failed (non-fatal): {_e}")
     return {"audio_b64": audio_b64}
-
-
-class VideoMeterReq(BaseModel):
-    operation: str = "image"        # image | video | tts | chat | narasi
-    model: str
-    units: dict = {}                # {"count":1} | {"seconds":N} | {"chars":N}
-
-
-@app.post("/video/meter")
-async def video_meter(req: VideoMeterReq,
-                      x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
-                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
-    """Internal: charge a meter for an asset the video WORKER already produced — e.g. a
-    whiteboard Recraft image generated in-worker (op=image, model=recraft-*) or the flat
-    whiteboard render fee (op=video, model=whiteboard, units={'seconds':N}). Pure post-hoc
-    debit (the orchestrator already pre-checked balance at /assemble), tagged with the
-    video job for refunds. Internal-service auth only (X-Internal-Secret)."""
-    if not user or not getattr(user, "is_internal", False):
-        raise HTTPException(403, "internal only")
-    op = (req.operation or "").lower()
-    if op not in ("image", "video", "tts", "chat", "narasi"):
-        raise HTTPException(400, "bad operation")
-    _byok = _byok_active()
-    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
-    credits = 0
-    try:
-        credits = await metering.debit(user.tenant_id, _uid, op, req.model, req.units or {},
-                                       byok=_byok, video_job=x_video_job, log=True)
-    except Exception as _e:
-        print(f"[video/meter] debit failed (non-fatal): {_e}")
-    return {"metered": True, "credits": credits}
 
 
 class VideoRefundReq(BaseModel):
