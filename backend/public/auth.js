@@ -87,11 +87,13 @@
       closeAllModals();
       if ($siModal) $siModal.classList.add("open");
       if (!_siMounted && _clerk && $siMount) {
-        // Land on the studio app after auth, not the marketing root "/" (Clerk's
-        // default), so users aren't bounced back to the landing page.
+        // Land on the HUB (/start.html — the "pilih jalurmu" chooser with the two
+        // cards) after auth, NOT /app/ (which skipped the hub → "cards hilang") and
+        // NOT Clerk's default "/" (marketing). From the hub the user picks Video
+        // Instant or Studio.
         _clerk.mountSignIn($siMount, {
-          forceRedirectUrl: "/app/", signUpForceRedirectUrl: "/app/",
-          afterSignInUrl: "/app/", afterSignUpUrl: "/app/",
+          forceRedirectUrl: "/start.html", signUpForceRedirectUrl: "/start.html",
+          afterSignInUrl: "/start.html", afterSignUpUrl: "/start.html",
         });
         _siMounted = true;
       }
@@ -101,8 +103,8 @@
       if ($suModal) $suModal.classList.add("open");
       if (!_suMounted && _clerk && $suMount) {
         _clerk.mountSignUp($suMount, {
-          forceRedirectUrl: "/app/", signInForceRedirectUrl: "/app/",
-          afterSignUpUrl: "/app/", afterSignInUrl: "/app/",
+          forceRedirectUrl: "/start.html", signInForceRedirectUrl: "/start.html",
+          afterSignUpUrl: "/start.html", afterSignInUrl: "/start.html",
         });
         _suMounted = true;
       }
