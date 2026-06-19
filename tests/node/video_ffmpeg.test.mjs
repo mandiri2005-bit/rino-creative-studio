@@ -12,6 +12,7 @@ import {
   xfadeOffsets, buildFilterComplex, buildStitchArgs, buildSceneClipArgs, buildConcatArgs,
   kenBurnsExpr, runFfmpeg, captionWindows, buildSrt, buildAss, buildAssFromScenes,
 } from "../../backend/video/ffmpeg.mjs";
+import { CLIP_MODEL_IDS } from "../../backend/video/generationClient.mjs";
 import {
   assertWorkerProcess, markVideoWorker, isVideoWorker,
 } from "../../backend/video/runtime.mjs";
@@ -294,5 +295,22 @@ describe("buildAss / buildAssFromScenes (styled caption burn-in)", () => {
     const a = buildAss([{ start: 0, end: 1, text: "  " }, { start: 1, end: 2, text: "real" }], { width: 1920, height: 1080 });
     assert.equal((a.match(/^Dialogue:/gm) || []).length, 1);
     assert.match(a, /,real/);
+  });
+});
+
+// ── Veo model IDs must match laozhang official-forward (only *-generate-preview) ──
+describe("CLIP_MODEL_IDS — valid laozhang Veo model names", () => {
+  it("maps every veo alias to a *-generate-preview name (no legacy → no 503 no-channels)", () => {
+    for (const k of ["veo3", "veo3_fast", "veo3_pro"]) {
+      assert.match(CLIP_MODEL_IDS[k], /-generate-preview$/, `${k} must be a *-generate-preview model`);
+    }
+    assert.equal(CLIP_MODEL_IDS.veo3_fast, "veo-3.1-fast-generate-preview");
+    assert.equal(CLIP_MODEL_IDS.veo3, "veo-3.1-generate-preview");
+  });
+  it("contains NONE of the laozhang-forbidden legacy names", () => {
+    const vals = Object.values(CLIP_MODEL_IDS);
+    for (const bad of ["veo-3.1", "veo-3.1-fast", "veo-3.1-fl"]) {
+      assert.ok(!vals.includes(bad), `legacy "${bad}" must not be used`);
+    }
   });
 });

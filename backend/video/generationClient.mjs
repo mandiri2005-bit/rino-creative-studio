@@ -122,8 +122,12 @@ const VEO_FAIL = new Set(["failed", "error", "canceled", "cancelled"]);
 // Map the segmenter/decide model alias → the real upstream model id the provider
 // expects. The bare alias is rejected by the provider. Veo variants + Kling go
 // through the /veo/* routes; Sora through the parallel /sora/* routes.
-const CLIP_MODEL_IDS = {
-  veo3: "veo-3.1-generate-preview", veo3_fast: "veo-3.1-fast", veo3_pro: "veo-3.1",
+// laozhang Veo official-forward accepts ONLY the *-generate-preview names — the legacy
+// "veo-3.1" / "veo-3.1-fast" / "veo-3.1-fl" are rejected with 503 "no available channels"
+// (the Studio Veo page uses the -generate-preview names, which is why it works).
+// docs: https://docs.laozhang.ai/en/api-capabilities/veo/official-forward
+export const CLIP_MODEL_IDS = {
+  veo3: "veo-3.1-generate-preview", veo3_fast: "veo-3.1-fast-generate-preview", veo3_pro: "veo-3.1-generate-preview",
   kling3: "kling-v1.6", sora: "sora-2",
 };
 // which /{provider}/{submit,status,stream} route family an alias uses

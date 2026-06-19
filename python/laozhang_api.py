@@ -2827,9 +2827,21 @@ async def veo_stream(task_id: str, x_veo_api_key: Optional[str] = Header(default
                 )
 
             last_err = res.text[:500]
-            print(f"[veo/stream] Not ready: {last_err}")
+            print(f"[veo/stream] Not ready (status={res.status_code}): {last_err}")
 
-            if "IN_PROGRESS" in res.text or "in_progress" in res.text or res.status_code == 404:
+            # Retry transient conditions, don't fail hard:
+            #  - still encoding (IN_PROGRESS / 404) — the content file lags briefly after
+            #    status=completed (docs: "wait 10-20s and retry").
+            #  - upstream 5xx / "failed to download from upstream" — the Google->laozhang
+            #    fetch flaps 502 even once the task is done; an immediate retry usually wins.
+            # The loop caps at 6 tries, then raises 503 below — a persistent error still fails.
+            _txt = res.text or ""
+            _retryable = (
+                "IN_PROGRESS" in _txt or "in_progress" in _txt
+                or res.status_code == 404 or res.status_code >= 500
+                or "failed to download" in _txt
+            )
+            if _retryable:
                 await asyncio.sleep(12)
             else:
                 raise HTTPException(status_code=res.status_code, detail=res.text[:300])
