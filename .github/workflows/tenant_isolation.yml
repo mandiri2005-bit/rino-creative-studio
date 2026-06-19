@@ -18,10 +18,9 @@
 name: Phase 1 — Tenant Isolation & E2E
 
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
+  # Auto-run dimatikan (Rino: "email annoying"). Job ini boot Docker Compose + Neon +
+  # banyak repo-secret CI yang belum di-wire (DB sudah pindah ke Neon Singapore) → gagal
+  # tiap push = spam email. Manual-only sampai secret/DB CI dibenerin (Run workflow).
   workflow_dispatch: {}
 
 # Avoid piling up runs on the same ref
