@@ -6852,6 +6852,54 @@ async def video_meter(req: VideoMeterReq,
     return {"metered": True, "credits": credits}
 
 
+class VideoDiagramReq(BaseModel):
+    description: str
+    model: str = "deepseek-chat"   # the user's Model Narasi (gen_model)
+    language: str = ""
+
+
+@app.post("/video/diagram")
+async def video_diagram(req: VideoDiagramReq,
+                        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: description → flowchart GRAPH json for the whiteboard 'diagram' genre,
+    via the SAME LLM routing as narration (make_client(model)) so it inherits the Model
+    Narasi choice + the existing provider failover — NO new LLM key/route. NOT metered
+    separately (the flat whiteboard render fee covers it). Internal-service auth only."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    desc = (req.description or "").strip()
+    if not desc:
+        raise HTTPException(400, "description required")
+    lang = (req.language or "").strip() or "the SAME language as the description"
+    sys = (
+        "Turn the description into a flowchart GRAPH. Output STRICT JSON only: "
+        '{"title":"short title","direction":"down"|"right",'
+        '"nodes":[{"id":"a","label":"Short Label"}],'
+        '"edges":[{"from":"a","to":"b","emphasis":false}]} '
+        "Rules: ids are short slugs; labels <=3 words; 2-7 nodes; edges connect node ids; "
+        "set emphasis:true on the single most important edge. 'down' for top-to-bottom, "
+        "'right' for left-to-right pipelines. No coordinates, no SVG. "
+        f"LANGUAGE: write the title AND every label entirely in {lang}; never mix English "
+        "connectors (to/and/the/of); only the ids stay ascii."
+    )
+    fallback = {"title": "Proses", "direction": "right",
+                "nodes": [{"id": "a", "label": "Mulai"}, {"id": "b", "label": "Proses"}, {"id": "c", "label": "Hasil"}],
+                "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c", "emphasis": True}]}
+    try:
+        _client = make_client(req.model)
+        resp = await asyncio.to_thread(lambda: _client.chat.completions.create(
+            model=req.model,
+            messages=[{"role": "system", "content": sys}, {"role": "user", "content": f"Description: {desc}"}],
+            temperature=0.3, response_format={"type": "json_object"}, max_tokens=800))
+        g = json.loads(resp.choices[0].message.content or "{}")
+        if not g.get("nodes"):
+            raise ValueError("no nodes")
+        return {"graph": g}
+    except Exception as e:
+        print(f"[video/diagram] LLM failed, using fallback graph: {e}")
+        return {"graph": fallback}
+
+
 class VideoRefundReq(BaseModel):
     job_id: str
 

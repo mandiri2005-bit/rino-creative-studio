@@ -207,6 +207,12 @@ export async function visualProcessor(job, deps) {
         const a = await generateWhiteboardAsset(genre, {
           prompt: scene.visualPrompt || scene.text || "", tmpDir, sceneIndex,
           aspect: meta.aspectRatio || "16:9",
+          // diagram genre: graph from Python (same LLM routing/failover + Model Narasi)
+          diagramGraph: genre === "diagram"
+            ? (desc) => deps.generationClient?.generateDiagramGraph?.(
+                { jobId, tenantId: meta.tenantId, userId: meta.userId },
+                { description: desc, model: meta.genModel, language: meta.language })
+            : undefined,
         });
         for (const m of a.meters || []) {
           await deps.generationClient?.meterUsage?.(
