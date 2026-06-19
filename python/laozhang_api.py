@@ -6885,13 +6885,32 @@ async def video_diagram(req: VideoDiagramReq,
     fallback = {"title": "Proses", "direction": "right",
                 "nodes": [{"id": "a", "label": "Mulai"}, {"id": "b", "label": "Proses"}, {"id": "c", "label": "Hasil"}],
                 "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c", "emphasis": True}]}
+    def _extract_graph(text):
+        t = (text or "").strip()
+        if t.startswith("```"):                      # strip ```json … ``` fences
+            t = _re.sub(r"^```[a-zA-Z]*\n?", "", t)
+            t = _re.sub(r"\n?```\s*$", "", t).strip()
+        try:
+            return json.loads(t)
+        except Exception:
+            m = _re.search(r"\{.*\}", t, _re.S)       # pull the first JSON object out of prose
+            if not m:
+                raise
+            return json.loads(m.group(0))
     try:
         _client = make_client(req.model)
-        resp = await asyncio.to_thread(lambda: _client.chat.completions.create(
-            model=req.model,
-            messages=[{"role": "system", "content": sys}, {"role": "user", "content": f"Description: {desc}"}],
-            temperature=0.3, response_format={"type": "json_object"}, max_tokens=800))
-        g = json.loads(resp.choices[0].message.content or "{}")
+        msgs = [{"role": "system", "content": sys}, {"role": "user", "content": f"Description: {desc}"}]
+        def _call(use_fmt):
+            kw = dict(model=req.model, messages=msgs, temperature=0.3, max_tokens=800)
+            if use_fmt:
+                kw["response_format"] = {"type": "json_object"}
+            return _client.chat.completions.create(**kw)
+        try:                                          # many models reject json_object → retry plain
+            resp = await asyncio.to_thread(lambda: _call(True))
+        except Exception as fmt_err:
+            print(f"[video/diagram] json_object rejected ({fmt_err}); retrying without response_format")
+            resp = await asyncio.to_thread(lambda: _call(False))
+        g = _extract_graph(resp.choices[0].message.content)
         if not g.get("nodes"):
             raise ValueError("no nodes")
         return {"graph": g}

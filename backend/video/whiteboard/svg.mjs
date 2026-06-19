@@ -94,6 +94,17 @@ export function isFullCanvasPath(d, vw, vh) {
   return minX <= vw * 0.02 && minY <= vh * 0.02 && maxX >= vw * 0.98 && maxY >= vh * 0.98;
 }
 
+// A <rect> element (the reliable, un-converted form) that covers ~the whole canvas — a
+// background plate OR a border/frame drawn around the art (rounded corners included).
+// Detected from clean x/y/width/height attrs (more robust than parsing a generated `d`),
+// so slightly-inset frames and rounded borders are dropped too and the picture can fill.
+export function isFullCanvasRect(a, vw, vh) {
+  if (!vw || !vh) return false;
+  const x = num(a, "x"), y = num(a, "y"), w = num(a, "width"), h = num(a, "height");
+  if (!w || !h) return false;
+  return x <= vw * 0.03 && y <= vh * 0.03 && x + w >= vw * 0.97 && y + h >= vh * 0.97;
+}
+
 export function parseSvg(svg, { split = false, dropBg = false, dropLight = false, lightThreshold = 245, ink = null } = {}) {
   const vb = svg.match(/viewBox\s*=\s*"([^"]+)"/i);
   let viewBox = vb ? vb[1].trim() : null;
@@ -110,6 +121,7 @@ export function parseSvg(svg, { split = false, dropBg = false, dropLight = false
   while ((m = re.exec(svg))) {
     const tag = m[1].toLowerCase();
     const a = parseAttrs(m[2]);
+    if (dropBg && tag === "rect" && isFullCanvasRect(a, vw, vh)) continue; // bg plate / frame
     const d = nodeToD(tag, a);
     if (!d) continue;
     if (dropBg && isFullCanvasPath(d, vw, vh)) continue;
@@ -189,6 +201,7 @@ export function parseSvgShapes(svg, { dropBg = true } = {}) {
   while ((m = re.exec(svg))) {
     const tag = m[1].toLowerCase();
     const a = parseAttrs(m[2]);
+    if (dropBg && tag === "rect" && isFullCanvasRect(a, vw, vh)) continue; // bg plate / frame
     const d = nodeToD(tag, a);
     if (!d) continue;
     if (dropBg && isFullCanvasPath(d, vw, vh)) continue;

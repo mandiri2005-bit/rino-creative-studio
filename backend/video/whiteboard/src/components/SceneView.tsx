@@ -69,6 +69,7 @@ export const SceneView: React.FC<Props> = ({
       penColor={theme.accent}
       fontSize={size}
       align={align}
+      markerBody={theme.markerBody}
     />
   );
 
@@ -193,9 +194,15 @@ export const SceneView: React.FC<Props> = ({
   if (layout === "full" && illo) {
     const [, , vw, vh] = illo.viewBox.split(/\s+/).map(Number);
     const aspect = (vw || 1) / (vh || 1);
-    const targetW = Math.round(Math.min(frameW * 0.9, frameH * 0.88 * aspect));
+    // Colour art (draw-reveal) and raster detail COVER the frame edge-to-edge: size the
+    // box so both dims reach the frame, then clip the overflow — no board-coloured margin
+    // or "frame" around the picture. Diagrams stay CONTAINED (meet) so labels aren't cropped.
+    const cover = illo.mode === "draw-reveal" || illo.mode === "raster-reveal";
+    const targetW = cover
+      ? Math.ceil(Math.max(frameW, frameH * aspect))
+      : Math.round(Math.min(frameW * 0.9, frameH * 0.88 * aspect));
     return (
-      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", overflow: "hidden" }}>
         {graphic(targetW, decorStart)}
       </AbsoluteFill>
     );

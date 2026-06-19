@@ -100,11 +100,27 @@ export async function renderWhiteboard(scenes, meta, outPath, opts = {}) {
   const composition = await selectComposition({ serveUrl, id: "Whiteboard", inputProps: spec });
   mkdirSync(dirname(outPath), { recursive: true });
   const browserExecutable = opts.browserExecutable || process.env.REMOTION_BROWSER_EXECUTABLE || undefined;
-  await renderMedia({
+  // Anti-hang: bound the whole render so a pathological scene (e.g. a heavy
+  // raster-reveal mask) can never wedge the worker forever. If we blow the budget
+  // the stitch processor catches, fails the job, and refunds — instead of "Merangkai"
+  // spinning indefinitely. timeoutInMilliseconds is the per-frame delayRender cap.
+  const RENDER_TIMEOUT_MS = Number(process.env.WB_RENDER_TIMEOUT_MS) || 360000;
+  const render = renderMedia({
     serveUrl, composition, codec: "h264", crf: tier.crf,
     outputLocation: outPath, inputProps: spec,
+    concurrency: Number(process.env.WB_RENDER_CONCURRENCY) || 2,
+    timeoutInMilliseconds: 60000,
     ...(browserExecutable ? { browserExecutable } : {}),
   });
+  let timer;
+  const guard = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`whiteboard render exceeded ${RENDER_TIMEOUT_MS}ms`)), RENDER_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([render, guard]);
+  } finally {
+    clearTimeout(timer);
+  }
   const duration = built.reduce((a, s) => a + s.durationSeconds, 0);
   return { duration };
 }

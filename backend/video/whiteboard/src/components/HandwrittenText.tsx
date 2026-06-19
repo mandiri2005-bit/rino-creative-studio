@@ -1,21 +1,14 @@
 import React from "react";
 import { useCurrentFrame } from "remotion";
+import { Hand } from "./Hand";
 
-// A marker/pen sprite that trails the writing head (inline, sits after the text).
-const Pen: React.FC<{ color: string; size: number }> = ({ color, size }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    style={{ marginLeft: 4, transform: "rotate(8deg)", alignSelf: "flex-end" }}
-  >
-    <path d="M3 21l3.2-1L18 8.2 15.8 6 4 17.8 3 21z" fill={color} />
-    <path
-      d="M16.6 7.4l-2.2-2.2 1.7-1.7a1.7 1.7 0 0 1 2.4 0l.5.5a1.7 1.7 0 0 1 0 2.4l-2.4 1z"
-      fill={color}
-      opacity="0.85"
-    />
-  </svg>
+// The drawing hand trails the writing head: an inline relative wrapper of zero width is
+// placed right after the visible text, and the Hand's pen tip sits at its origin (the
+// writing head). Sized to the handwriting so it reads on the board.
+const WritingHand: React.FC<{ size: number; nib: string; body: string }> = ({ size, nib, body }) => (
+  <span style={{ position: "relative", width: 0, height: 0, display: "inline-block", alignSelf: "flex-end" }}>
+    <Hand x={0} y={-size * 0.06} size={size} nib={nib} body={body} />
+  </span>
 );
 
 // Reveals text character-by-character across all lines, paced by `framesPerChar`.
@@ -31,6 +24,7 @@ export const HandwrittenText: React.FC<{
   penColor: string;
   fontSize: number;
   align?: "flex-start" | "center";
+  markerBody?: string;
 }> = ({
   lines,
   startFrame,
@@ -40,6 +34,7 @@ export const HandwrittenText: React.FC<{
   penColor,
   fontSize,
   align = "flex-start",
+  markerBody = "#33312E",
 }) => {
   const frame = useCurrentFrame();
   const elapsed = Math.max(0, frame - startFrame);
@@ -72,7 +67,7 @@ export const HandwrittenText: React.FC<{
             }}
           >
             <span>{line.slice(0, visible)}</span>
-            {isActive ? <Pen color={penColor} size={fontSize * 0.78} /> : null}
+            {isActive ? <WritingHand size={fontSize * 1.6} nib={penColor} body={markerBody} /> : null}
           </div>
         );
       })}

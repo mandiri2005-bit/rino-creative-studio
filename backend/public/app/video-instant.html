@@ -502,6 +502,18 @@ select option{ background:#111019!important; color:var(--t)!important; }
     const wb=!!state.whiteboardGenre;
     $("#visualMode").disabled=wb; $("#clipModel").disabled=wb;
     $("#clipModelWrap").style.opacity=wb?".4":""; $("#visualMode").style.opacity=wb?".4":"";
+    // #5 image-model select: whiteboard renders its own visuals, so lock it.
+    $("#imageModel").disabled=wb; $("#imageModel").style.opacity=wb?".4":"";
+    // #7 Quality pills: lock interaction + dim the non-selected ones.
+    $("#tierPills").style.pointerEvents=wb?"none":"";
+    $$("#tierPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
+    // #8 aspect: whiteboard is 16:9 only — force state + active pill + lock.
+    if(wb){
+      state.aspectRatio="16:9";
+      $$("#arPills .pill").forEach(p=>p.classList.toggle("on",p.dataset.ar==="16:9"));
+    }
+    $("#arPills").style.pointerEvents=wb?"none":"";
+    $$("#arPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
     if(wb){ const v="wb_"+state.whiteboardGenre; $("#style").value=v; $("#visualStyle").value=v; }
   }
   $("#style").onchange=e=>{

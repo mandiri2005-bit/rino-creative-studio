@@ -25,11 +25,14 @@ function recraftKey() {
 }
 
 // Recraft generation → SVG (vector_illustration) or PNG bytes (digital_illustration).
-async function recraftGenerate(prompt, { vector, substyle, size } = {}) {
+// `seed` varies the composition so near-identical per-scene prompts don't collapse to
+// the same stock illustration; pass a per-scene value to keep each scene distinct.
+async function recraftGenerate(prompt, { vector, substyle, size, seed } = {}) {
   const body = {
     prompt, model: "recraftv3",
     style: vector ? "vector_illustration" : "digital_illustration",
     ...(substyle ? { substyle } : {}),
+    ...(Number.isFinite(seed) ? { random_seed: seed } : {}),
     size: size || "1365x1024", n: 1, response_format: "url",
   };
   const r = await fetch(`${RECRAFT}/images/generations`, {
@@ -49,8 +52,11 @@ async function recraftVectorize(pngBuffer) {
   const fd = new FormData();
   fd.append("file", new Blob([pngBuffer]), "image.png");
   fd.append("response_format", "url");
+  // Cap the mask at 350 shapes (was 800): the raster-reveal renders every shape as a
+  // per-frame mask path, so 800×4 scenes overwhelmed Chromium → the "Merangkai" hang.
+  // 350 keeps the reveal smooth while staying well inside the render budget.
   fd.append("limit_num_shapes", "on");
-  fd.append("max_num_shapes", "800");
+  fd.append("max_num_shapes", "350");
   const r = await fetch(`${RECRAFT}/images/vectorize`, {
     method: "POST", headers: { Authorization: `Bearer ${recraftKey()}` }, body: fd,
   });
@@ -108,6 +114,14 @@ function buildDiagramSvg(g) {
   }
   let s = `<svg viewBox="0 0 ${W} ${Hgt}" xmlns="http://www.w3.org/2000/svg" fill="none">\n`;
   if (g.title) s += `  <text x="${W / 2}" y="64" font-family="Caveat, sans-serif" font-size="52" fill="${BLUE}" text-anchor="middle">${esc(g.title)}</text>\n`;
+  // Draw NODES (box + label) before EDGES so the hand sketches each box first and
+  // only then connects them — an arrow never lands in empty space. (Edges paint on
+  // top of the box borders, which is the natural flowchart look.)
+  for (const n of g.nodes) {
+    const p = pos[n.id];
+    s += `  <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="6" stroke="${BLUE}" stroke-width="4"/>\n`;
+    s += `  <text x="${p.x + p.w / 2}" y="${p.y + p.h / 2 + 13}" font-family="Caveat, sans-serif" font-size="38" fill="${INK}" text-anchor="middle">${esc(n.label)}</text>\n`;
+  }
   for (const e of g.edges || []) {
     const a = pos[e.from], b = pos[e.to]; if (!a || !b) continue;
     const col = e.emphasis ? RED : INK, wdt = e.emphasis ? 6 : 4;
@@ -120,11 +134,6 @@ function buildDiagramSvg(g) {
       s += `  <path d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2 - 12} ${y2}" stroke="${col}" stroke-width="${wdt}"/>\n`;
       s += `  <polygon points="${x2},${y2} ${x2 - 14},${y2 - 9} ${x2 - 14},${y2 + 9}" fill="${col}"/>\n`;
     }
-  }
-  for (const n of g.nodes) {
-    const p = pos[n.id];
-    s += `  <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="6" stroke="${BLUE}" stroke-width="4"/>\n`;
-    s += `  <text x="${p.x + p.w / 2}" y="${p.y + p.h / 2 + 13}" font-family="Caveat, sans-serif" font-size="38" fill="${INK}" text-anchor="middle">${esc(n.label)}</text>\n`;
   }
   return s + "</svg>\n";
 }
@@ -147,7 +156,15 @@ const _exampleGraph = () => ({
  */
 export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneIndex, aspect, diagramGraph }) {
   if (genre === "color") {
-    const { text } = await recraftGenerate(prompt, { vector: true, substyle: "vivid_shapes", size: sizeFor(aspect) });
+    // Drive a DISTINCT illustration per scene: keep the full per-scene visualPrompt as the
+    // subject, frame it as a single standalone vector illustration, and vary the seed by
+    // sceneIndex so near-identical prompts don't collapse to one stock vivid_shapes layout.
+    const subject = String(prompt || "").trim();
+    const scenePrompt =
+      `${subject}. A distinct standalone illustration focused entirely on this specific subject, ` +
+      `unique composition, flat vector style on a plain white background.`;
+    const seed = 1000 + (Number.isFinite(sceneIndex) ? sceneIndex : 0) * 7919;
+    const { text } = await recraftGenerate(scenePrompt, { vector: true, substyle: "vivid_shapes", size: sizeFor(aspect), seed });
     const visualPath = join(tmpDir, `wb_${sceneIndex}.svg`);
     await writeFile(visualPath, text);
     return { visualPath, kind: "whiteboard-color", meters: [{ operation: "image", model: "recraft-v3-vector", units: { count: 1 } }] };

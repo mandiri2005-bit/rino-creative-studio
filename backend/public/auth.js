@@ -163,9 +163,17 @@
       });
 
       _clerk.addListener(({ user }) => {
-        _currentUser = user || null;
+        // Clerk emits interim resource updates where the destructured `user` is
+        // momentarily null (token refresh on load, session revalidation, tab
+        // focus) even while the session is still valid. Trusting that null here
+        // flipped the UI to the sign-in gate and re-hid #root — on start.html
+        // (where #root is visibility:hidden until _revealApp) that wiped the hub
+        // cards for an already-signed-in user. Treat the live session user
+        // (_clerk.user) as authoritative so a transient null can't gate us out.
+        const liveUser = user || (_clerk && _clerk.user) || null;
+        _currentUser = liveUser;
         notifyUserChange();
-        if (user) { closeAllModals(); showApp(); }
+        if (liveUser) { closeAllModals(); showApp(); }
         else { showGate(); }
       });
 
