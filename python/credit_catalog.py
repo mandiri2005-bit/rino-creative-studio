@@ -177,6 +177,9 @@ _DEFAULT_VIDEO_USD_PER_SEC: dict[str, float] = {
     "kling":          0.05,
     "wan":            0.05,
     "runway":         0.20,
+    # Whiteboard render (Opt B): flat SELL price per second of output video (render
+    # compute ≈ $0). Markup-exempt in _op_markup so credits == 3/sec exactly.
+    "whiteboard":     0.03,
 }
 _DEFAULT_VIDEO_USD_PER_SEC_DEFAULT = 0.50
 _DEFAULT_VIDEO_DEFAULT_SECONDS = 8     # a Veo/Sora clip is ~8s when length unknown
@@ -317,6 +320,10 @@ def _op_markup(operation: str, model: str, units: Union[int, float, dict], usd: 
         per = (usd / count) if count else usd
         return IMG_MARKUP_LO if per <= IMG_MARKUP_USD_GATE else IMG_MARKUP_HI
     if op == "video":
+        # Whiteboard render fee is a FLAT sell price (the per-second rate IS the price,
+        # not a COGS to mark up) → no markup so credits == 3/sec exactly.
+        if (model or "").lower().startswith("whiteboard"):
+            return 1.0
         return VID_MARKUP_LO if _video_usd_per_sec(model) <= VID_MARKUP_USD_GATE else VID_MARKUP_HI
     if op == "golpo":
         return GOLPO_MARKUP
