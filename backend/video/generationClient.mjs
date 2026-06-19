@@ -77,7 +77,6 @@ export function syntheticGenerationClient(opts = {}) {
     },
     async refundVideoJob() { return { skipped: "synthetic" }; },
     async meterUsage() { return { credits: 0, skipped: "synthetic" }; },
-    async generateDiagramGraph() { return null; },  // → buildDiagramSvg uses its example graph
   };
 }
 
@@ -272,19 +271,6 @@ export function httpGenerationClient(opts = {}) {
         console.warn(`[meter] ${operation}/${model} failed: ${e.message}`);
         return { credits: 0 };
       }
-    },
-
-    // Flowchart graph for the whiteboard 'diagram' genre — from Python, which uses the
-    // SAME LLM routing/failover + Model Narasi as narration (no new LLM key in the
-    // worker). The worker turns the graph into a clean SVG (buildDiagramSvg).
-    async generateDiagramGraph(ctx, { description, model, language } = {}) {
-      const r = await fetch(`${PYTHON_API}/video/diagram`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
-        body: JSON.stringify({ description: description || "", model: model || "deepseek-chat", language: language || "" }),
-      });
-      if (!r.ok) throw new Error(`diagram ${r.status}`);
-      return (await r.json()).graph;
     },
   };
 }

@@ -1,10 +1,10 @@
 // video/whiteboard/visuals.mjs — per-genre per-scene ASSET generation for whiteboard
 // jobs, run IN the visual worker (off the API loop). Reuses the proven standalone
 // logic: color → Recraft vector SVG; detail → Recraft raster + vectorized mask SVG;
-// diagram → flowchart graph (fetched from Python via opts.diagramGraph, which reuses the
-// existing narration LLM routing/failover + Model Narasi) → deterministic SVG here. The
-// caller meters color/detail via /video/meter (Recraft cost); diagram's LLM cost is
-// folded into the flat render fee. ONLY worker env key needed: RECRAFT_API_KEY.
+// diagram → LLM flowchart graph → deterministic SVG. The caller meters color/detail
+// via /video/meter (Recraft cost); diagram's LLM cost is folded into the flat render
+// fee (no separate meter). Keys from the worker env: RECRAFT_API_KEY,
+// LLM_API_KEY / LLM_BASE_URL / LLM_MODEL.
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -135,17 +135,40 @@ const _exampleGraph = () => ({
   edges: [{ from: "a", to: "b" }, { from: "b", to: "c", emphasis: true }],
 });
 
-// The diagram GRAPH is fetched from Python (/video/diagram → the SAME LLM routing/
-// failover + Model Narasi as narration; NO new LLM key in the worker). The caller passes
-// it in as opts.diagramGraph(description); this module only turns the graph into a clean
-// SVG via buildDiagramSvg, falling back to _exampleGraph if the LLM is unavailable.
+async function diagramSvg(description) {
+  const KEY = process.env.LLM_API_KEY;
+  const BASE = process.env.LLM_BASE_URL || "https://api.openai.com/v1";
+  const MODEL = process.env.LLM_MODEL || "gpt-4o-mini";
+  const LANG = process.env.LANG_NAME || "the SAME language as the description";
+  if (!KEY) return buildDiagramSvg(_exampleGraph());
+  const SYS = `Turn the description into a flowchart GRAPH. Output STRICT JSON only:
+{ "title": "short title", "direction": "down" | "right",
+  "nodes": [ { "id": "a", "label": "Short Label" } ],
+  "edges": [ { "from": "a", "to": "b", "emphasis": false } ] }
+Rules: ids are short slugs; labels <= 3 words; 2-7 nodes; edges connect node ids; set "emphasis":true on the single most important edge (drawn red). "down" for top-to-bottom flows, "right" for left-to-right pipelines. No coordinates, no SVG — just the graph.
+LANGUAGE: write the "title" AND every node "label" entirely in ${LANG}. Never mix in English connectors ("to"/"and"/"the"/"of"). Only the "id" slugs stay ascii.`;
+  try {
+    const r = await fetch(`${BASE}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: MODEL, temperature: 0.3, response_format: { type: "json_object" },
+        messages: [{ role: "system", content: SYS }, { role: "user", content: `Description: ${description}` }] }),
+    });
+    if (!r.ok) throw new Error(`llm ${r.status}`);
+    const g = JSON.parse((await r.json()).choices[0].message.content);
+    if (!g.nodes?.length) throw new Error("no nodes");
+    return buildDiagramSvg(g);
+  } catch {
+    return buildDiagramSvg(_exampleGraph());
+  }
+}
 
 /**
  * Generate the per-scene whiteboard asset for a genre. Writes file(s) to tmpDir.
  * @returns { visualPath?, maskPath?, kind, meters:[{operation,model,units}] }
  *   meters = what the caller should charge via /video/meter (empty for lineart/diagram).
  */
-export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneIndex, aspect, diagramGraph }) {
+export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneIndex, aspect }) {
   if (genre === "color") {
     const { text } = await recraftGenerate(prompt, { vector: true, substyle: "vivid_shapes", size: sizeFor(aspect) });
     const visualPath = join(tmpDir, `wb_${sceneIndex}.svg`);
@@ -164,10 +187,8 @@ export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneInde
                { operation: "image", model: "recraft-vectorize", units: { count: 1 } }] };
   }
   if (genre === "diagram") {
-    let graph = null;
-    try { graph = await diagramGraph?.(prompt); } catch { /* fall back to the example graph */ }
     const visualPath = join(tmpDir, `wb_${sceneIndex}.svg`);
-    await writeFile(visualPath, buildDiagramSvg(graph?.nodes?.length ? graph : _exampleGraph()));
+    await writeFile(visualPath, await diagramSvg(prompt));
     return { visualPath, kind: "whiteboard-diagram", meters: [] }; // LLM cost folded into render fee
   }
   return { kind: "whiteboard-lineart", meters: [] }; // lineart: handwriting only, no asset
