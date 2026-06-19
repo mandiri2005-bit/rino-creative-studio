@@ -10,6 +10,15 @@ import { join } from "node:path";
 
 const RECRAFT = "https://external.api.recraft.ai/v1";
 
+// Per-request timeout so a hung Recraft call can't hold the BullMQ visual slot until the
+// socket dies (mirrors generationClient.fetchT; kept local to keep this lazy-imported
+// module self-contained). GEN_FETCH_TIMEOUT_MS=0 disables it = escape hatch.
+const GEN_FETCH_TIMEOUT_MS = Number(process.env.GEN_FETCH_TIMEOUT_MS || 120000);
+function fetchT(url, opts = {}) {
+  if (!(GEN_FETCH_TIMEOUT_MS > 0)) return fetch(url, opts);
+  return fetch(url, { ...opts, signal: opts.signal ?? AbortSignal.timeout(GEN_FETCH_TIMEOUT_MS) });
+}
+
 // Recraft sizes are a fixed set; map the aspect → the nearest supported size.
 function sizeFor(aspect) {
   if (aspect === "9:16") return "1024x1365";
@@ -35,7 +44,7 @@ async function recraftGenerate(prompt, { vector, substyle, size, seed } = {}) {
     ...(Number.isFinite(seed) ? { random_seed: seed } : {}),
     size: size || "1365x1024", n: 1, response_format: "url",
   };
-  const r = await fetch(`${RECRAFT}/images/generations`, {
+  const r = await fetchT(`${RECRAFT}/images/generations`, {
     method: "POST",
     headers: { Authorization: `Bearer ${recraftKey()}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -43,7 +52,7 @@ async function recraftGenerate(prompt, { vector, substyle, size, seed } = {}) {
   if (!r.ok) throw new Error(`recraft gen ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const url = (await r.json())?.data?.[0]?.url;
   if (!url) throw new Error("recraft gen: no url in response");
-  const a = await fetch(url);
+  const a = await fetchT(url);
   return vector ? { text: await a.text() } : { buffer: Buffer.from(await a.arrayBuffer()) };
 }
 
@@ -57,13 +66,13 @@ async function recraftVectorize(pngBuffer) {
   // 350 keeps the reveal smooth while staying well inside the render budget.
   fd.append("limit_num_shapes", "on");
   fd.append("max_num_shapes", "350");
-  const r = await fetch(`${RECRAFT}/images/vectorize`, {
+  const r = await fetchT(`${RECRAFT}/images/vectorize`, {
     method: "POST", headers: { Authorization: `Bearer ${recraftKey()}` }, body: fd,
   });
   if (!r.ok) throw new Error(`recraft vectorize ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const url = (await r.json())?.image?.url;
   if (!url) throw new Error("recraft vectorize: no url in response");
-  return await (await fetch(url)).text();
+  return await (await fetchT(url)).text();
 }
 
 // ── diagram: LLM graph → deterministic flowchart SVG (ported from scripts/diagram.mjs) ──

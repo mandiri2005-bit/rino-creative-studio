@@ -16,6 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { spawn } from "node:child_process";
 import { assertWorkerProcess } from "./runtime.mjs";
+import { withEncoderSlot } from "./ffmpeg-cpu.mjs";
 
 export const FFMPEG = process.env.FFMPEG_BIN || "ffmpeg";
 export const FFPROBE = process.env.FFPROBE_BIN || "ffprobe";
@@ -27,9 +28,27 @@ export const VIDEO_DEFAULTS = Object.freeze({
   xfade: Number(process.env.VIDEO_XFADE || 0.5),       // crossfade seconds between scenes
   transition: process.env.VIDEO_TRANSITION || "fade",  // any xfade transition name
   fadeDuration: Number(process.env.VIDEO_FADE || 0.8), // fade-in at start + fade-to-black at end (0 disables)
-  preset: process.env.VIDEO_PRESET || "medium",
+  // veryfast (was "medium") cuts encode wall-time hard for a small size/quality cost;
+  // set VIDEO_PRESET=medium to restore the pre-fix output.
+  preset: process.env.VIDEO_PRESET || "veryfast",
   crf: Number(process.env.VIDEO_CRF || 20),
+  // CPU caps per encode. `threads` bounds the libx264 CODEC pool; `filterThreads`
+  // bounds the SEPARATE filtergraph pool (zoompan/scale/xfade) — without the latter,
+  // -threads alone doesn't cap CPU because filtering spins up to nproc threads.
+  // 0 → omit the flag = ffmpeg default (all cores) = the env escape hatch.
+  threads: Number(process.env.VIDEO_THREADS || 2),
+  filterThreads: Number(process.env.VIDEO_FILTER_THREADS || 2),
 });
+
+// -filter_complex_threads is a GLOBAL option → goes up front (after -y). -threads is an
+// OUTPUT option → goes with the encoder args. Either is omitted when set to 0 so the
+// escape-hatch env (VIDEO_THREADS=0 / VIDEO_FILTER_THREADS=0) reproduces old behaviour.
+function filterThreadArgs(o) {
+  return Number(o.filterThreads) > 0 ? ["-filter_complex_threads", String(o.filterThreads)] : [];
+}
+function codecThreadArgs(o) {
+  return Number(o.threads) > 0 ? ["-threads", String(o.threads)] : [];
+}
 
 // Ken Burns moves rotate by scene index so adjacent stills don't move identically.
 export const KEN_BURNS_MOVES = ["zoom_in", "pan_left", "pan_right", "zoom_out"];
@@ -210,7 +229,7 @@ export function buildFilterComplex(scenes, opts = {}) {
  */
 export function buildStitchArgs(scenes, outPath, opts = {}) {
   const o = { ...VIDEO_DEFAULTS, ...opts };
-  const args = ["-y"];
+  const args = ["-y", ...filterThreadArgs(o)];
   scenes.forEach((s) => {
     if (s.kind === "image") {
       args.push("-loop", "1", "-t", String(s.duration), "-i", s.visualPath);
@@ -227,7 +246,7 @@ export function buildStitchArgs(scenes, outPath, opts = {}) {
     "-filter_complex", filter,
     "-map", `[${vlabel}]`, "-map", `[${alabel}]`,
     "-r", String(o.fps),
-    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", o.preset || "medium",
+    "-c:v", "libx264", ...codecThreadArgs(o), "-pix_fmt", "yuv420p", "-preset", o.preset || "medium",
     "-crf", String(o.crf || 20),
     "-c:a", "aac", "-b:a", "192k",
     "-max_muxing_queue_size", "9999",
@@ -273,10 +292,15 @@ export function ffprobeDuration(filePath) {
 
 /** Run ffmpeg with the given argv; resolves on exit 0, rejects with stderr tail.
  * Guarded: an ffmpeg encode is CPU-heavy and must run in the worker process, not
- * an API handler (the Step 3 trap). See runtime.assertWorkerProcess. */
-export function runFfmpeg(args, { onProgress, cwd } = {}) {
+ * an API handler (the Step 3 trap). See runtime.assertWorkerProcess.
+ *
+ * Pass { encode: true } for libx264 ENCODE invocations — they're routed through the
+ * box-level encoder semaphore (ffmpeg-cpu.withEncoderSlot) so concurrent encoders
+ * can't oversubscribe the CPU. The concat-copy (-c copy) and ffprobe are NOT encodes
+ * and run unbounded. */
+export function runFfmpeg(args, { onProgress, cwd, encode = false } = {}) {
   assertWorkerProcess("ffmpeg encode");
-  return new Promise((resolve, reject) => {
+  const exec = () => new Promise((resolve, reject) => {
     const p = spawn(FFMPEG, args, cwd ? { cwd } : undefined);
     let err = "";
     p.stderr.on("data", (d) => {
@@ -292,6 +316,7 @@ export function runFfmpeg(args, { onProgress, cwd } = {}) {
       code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}:\n${err.slice(-1500)}`))
     );
   });
+  return encode ? withEncoderSlot(exec) : exec();
 }
 
 // One-line SRT for a single scene clip (the caption shows for the whole clip).
@@ -318,7 +343,7 @@ export function buildSceneClipArgs(scene, idx, outPath, opts = {}) {
   const W = o.width, H = o.height, FPS = o.fps;
   const dur = Math.max(0.2, Number(scene.duration) || 0.2);
   const frames = Math.max(1, Math.round(dur * FPS));
-  const args = ["-y"];
+  const args = ["-y", ...filterThreadArgs(o)];
   if (scene.kind === "image") args.push("-loop", "1", "-t", String(dur), "-i", scene.visualPath);
   else args.push("-i", scene.visualPath);
   args.push("-i", scene.audioPath);
@@ -345,11 +370,20 @@ export function buildSceneClipArgs(scene, idx, outPath, opts = {}) {
 
   args.push(
     "-filter_complex", `${vf};${af}`, "-map", "[v]", "-map", "[a]",
-    "-r", String(FPS), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", o.preset || "medium",
+    "-r", String(FPS), "-c:v", "libx264", ...codecThreadArgs(o), "-pix_fmt", "yuv420p", "-preset", o.preset || "medium",
     "-crf", String(o.crf || 20), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
     "-video_track_timescale", "90000", "-movflags", "+faststart", outPath
   );
   return args;
+}
+
+/**
+ * ffmpeg argv for the concat-demuxer byte-join (-c copy → NO re-encode, so it stays
+ * cheap and is intentionally NOT thread-capped or semaphore-gated). Kept as a pure
+ * exported builder so the "the copy step carries no -threads" guarantee is unit-testable.
+ */
+export function buildConcatArgs(listName, outPath) {
+  return ["-y", "-f", "concat", "-safe", "0", "-i", listName, "-c", "copy", "-movflags", "+faststart", outPath];
 }
 
 /**
@@ -376,7 +410,7 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
     const args = buildSceneClipArgs(scenes[i], i, clip, {
       ...opts, srt, isFirst: i === 0, isLast: i === scenes.length - 1,
     });
-    await runFfmpeg(args, { cwd });
+    await runFfmpeg(args, { cwd, encode: true });
     clipPaths[i] = clip;
   }
 
@@ -391,10 +425,8 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
   // concat list — paths are relative to cwd; single-quote-escape just in case
   const list = join(cwd, "concat.txt");
   await writeFile(list, clipPaths.map((c) => `file '${c.split("/").pop().replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
-  await runFfmpeg(
-    ["-y", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "-movflags", "+faststart", outPath],
-    { cwd }
-  );
+  // concat-copy = byte-join, no encode → not thread-capped, not semaphore-gated.
+  await runFfmpeg(buildConcatArgs("concat.txt", outPath), { cwd });
   const duration = await ffprobeDuration(outPath);
   return { path: outPath, duration, sceneCount: scenes.length };
 }
@@ -409,7 +441,7 @@ export async function stitch(scenes, outPath, opts = {}) {
     return stitchPerScene(scenes, outPath, opts);
   }
   const args = buildStitchArgs(scenes, outPath, opts);
-  await runFfmpeg(args, opts);
+  await runFfmpeg(args, { ...opts, encode: true });
   const duration = await ffprobeDuration(outPath);
   return { path: outPath, duration, sceneCount: scenes.length };
 }

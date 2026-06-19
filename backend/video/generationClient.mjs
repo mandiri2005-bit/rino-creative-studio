@@ -22,6 +22,17 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FFMPEG } from "./ffmpeg.mjs";
 
+// Per-request fetch timeout (Node 20+ global fetch + AbortSignal.timeout). The clip
+// path has its own clipTimeoutMs poll budget, but TTS / image / Recraft / download
+// calls had NONE — a hung upstream would hold a BullMQ audio/visual slot until the
+// socket eventually died (slot leak under the same scarcity we're fixing on the CPU
+// side). GEN_FETCH_TIMEOUT_MS=0 disables it = escape hatch to pre-fix behaviour.
+const GEN_FETCH_TIMEOUT_MS = Number(process.env.GEN_FETCH_TIMEOUT_MS || 120000);
+function fetchT(url, opts = {}) {
+  if (!(GEN_FETCH_TIMEOUT_MS > 0)) return fetch(url, opts);
+  return fetch(url, { ...opts, signal: opts.signal ?? AbortSignal.timeout(GEN_FETCH_TIMEOUT_MS) });
+}
+
 function run(bin, args) {
   return new Promise((resolve, reject) => {
     const p = spawn(bin, args);
@@ -143,7 +154,7 @@ export function httpGenerationClient(opts = {}) {
   }
 
   async function getBytes(url, headers, out) {
-    const r = await fetch(url, { headers });
+    const r = await fetchT(url, { headers });
     if (!r.ok) throw new Error(`fetch ${r.status} ${url}`);
     await writeFile(out, Buffer.from(await r.arrayBuffer()));
     return out;
@@ -160,7 +171,7 @@ export function httpGenerationClient(opts = {}) {
       if (/gemini/i.test(model) && /tts/i.test(model) && process.env.GEMINI_API_KEY) {
         try {
           await writeFile(out, await geminiTts(scene.text, scene.voice, model));
-          await fetch(`${PYTHON_API}${ttsAudioPath}`, {
+          await fetchT(`${PYTHON_API}${ttsAudioPath}`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authHeaders(scene) },
             body: JSON.stringify({ text: scene.text, model, meter_only: true, scene_index: scene.sceneIndex }),
@@ -168,7 +179,7 @@ export function httpGenerationClient(opts = {}) {
           return { path: out };
         } catch { /* fall through to the OpenAI-compatible path */ }
       }
-      const r = await fetch(`${PYTHON_API}${ttsAudioPath}`, {
+      const r = await fetchT(`${PYTHON_API}${ttsAudioPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(scene) },
         body: JSON.stringify({ text: scene.text, voice: scene.voice, model: model || undefined, scene_index: scene.sceneIndex }),
@@ -185,7 +196,7 @@ export function httpGenerationClient(opts = {}) {
       const h = authHeaders(scene);
       if (scene.kind !== "clip") {
         const out = join(tmpDir, `img_${scene.sceneIndex}.png`);
-        const r = await fetch(`${PYTHON_API}/generate-image`, {
+        const r = await fetchT(`${PYTHON_API}/generate-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...h },
           body: JSON.stringify({ model: scene.imageModel || "nano-banana-hd", prompt: scene.visualPrompt, aspect_ratio: scene.aspectRatio || "16:9", seed: scene.seed || 0, ref_image: scene.refImage || "" }),

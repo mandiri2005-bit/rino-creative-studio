@@ -9,12 +9,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  xfadeOffsets, buildFilterComplex, buildStitchArgs, kenBurnsExpr, runFfmpeg,
-  captionWindows, buildSrt,
+  xfadeOffsets, buildFilterComplex, buildStitchArgs, buildSceneClipArgs, buildConcatArgs,
+  kenBurnsExpr, runFfmpeg, captionWindows, buildSrt,
 } from "../../backend/video/ffmpeg.mjs";
 import {
   assertWorkerProcess, markVideoWorker, isVideoWorker,
 } from "../../backend/video/runtime.mjs";
+import {
+  withEncoderSlot, _setEncoderSlotsForTest, _encoderSlotStats,
+} from "../../backend/video/ffmpeg-cpu.mjs";
 
 describe("xfadeOffsets", () => {
   it("computes running offsets and total for a 3-scene video", () => {
@@ -161,5 +164,83 @@ describe("worker-process guard (the Step 3 discipline, in code)", () => {
     markVideoWorker();
     assert.equal(isVideoWorker(), true);
     assert.doesNotThrow(() => assertWorkerProcess("ffmpeg encode"));
+  });
+});
+
+// ── CPU oversubscription fix: per-encode thread caps + concat-copy stays clean ──
+describe("encode CPU caps in the argv", () => {
+  const encScenes = [
+    { kind: "image", duration: 3, visualPath: "/t/i.png", audioPath: "/t/a.wav" },
+    { kind: "clip", duration: 4, visualPath: "/t/c.mp4", audioPath: "/t/b.wav" },
+  ];
+  // indexOf on the array (not a joined string) so "-threads" can't be confused with
+  // the distinct element "-filter_complex_threads".
+  const after = (a, flag) => { const i = a.indexOf(flag); return i > -1 ? a[i + 1] : undefined; };
+
+  it("buildStitchArgs caps codec + filtergraph threads by default (2/2)", () => {
+    const a = buildStitchArgs(encScenes, "/t/out.mp4", { fadeDuration: 0 });
+    assert.equal(after(a, "-threads"), "2");
+    assert.equal(after(a, "-filter_complex_threads"), "2");
+  });
+  it("buildSceneClipArgs caps codec + filtergraph threads by default (2/2)", () => {
+    const a = buildSceneClipArgs(encScenes[0], 0, "/t/scene_0.mp4", { fadeDuration: 0 });
+    assert.equal(after(a, "-threads"), "2");
+    assert.equal(after(a, "-filter_complex_threads"), "2");
+  });
+  it("uses the veryfast preset by default", () => {
+    assert.equal(after(buildStitchArgs(encScenes, "/t/out.mp4", { fadeDuration: 0 }), "-preset"), "veryfast");
+  });
+  it("omits both thread flags when set to 0 (env escape hatch → ffmpeg default)", () => {
+    const opts = { fadeDuration: 0, threads: 0, filterThreads: 0 };
+    const a = buildStitchArgs(encScenes, "/t/out.mp4", opts);
+    const b = buildSceneClipArgs(encScenes[0], 0, "/t/scene_0.mp4", opts);
+    assert.equal(a.indexOf("-threads"), -1);
+    assert.equal(a.indexOf("-filter_complex_threads"), -1);
+    assert.equal(b.indexOf("-threads"), -1);
+    assert.equal(b.indexOf("-filter_complex_threads"), -1);
+  });
+});
+
+describe("buildConcatArgs (byte-join, must NOT be thread-capped)", () => {
+  const c = buildConcatArgs("concat.txt", "/t/out.mp4");
+  it("is a -c copy demux join with no re-encode", () => {
+    const i = c.indexOf("-c");
+    assert.ok(i > -1 && c[i + 1] === "copy");
+    assert.ok(c.includes("concat.txt"));
+    assert.equal(c[c.length - 1], "/t/out.mp4");
+  });
+  it("carries NEITHER -threads NOR -filter_complex_threads", () => {
+    assert.equal(c.indexOf("-threads"), -1);
+    assert.equal(c.indexOf("-filter_complex_threads"), -1);
+  });
+});
+
+describe("withEncoderSlot (box-level encoder semaphore)", () => {
+  const runN = async (n) => {
+    let active = 0, peak = 0;
+    const task = () => withEncoderSlot(async () => {
+      active++; peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 20));
+      active--;
+    });
+    await Promise.all(Array.from({ length: n }, task));
+    return peak;
+  };
+
+  it("never runs more encodes than the slot count", async () => {
+    _setEncoderSlotsForTest(2);
+    assert.equal(await runN(6), 2);
+  });
+  it("is unlimited when slots <= 0 (escape hatch)", async () => {
+    _setEncoderSlotsForTest(0);
+    assert.equal(await runN(5), 5);
+  });
+  it("releases the slot even when the encode throws (no leak)", async () => {
+    _setEncoderSlotsForTest(1);
+    await assert.rejects(withEncoderSlot(async () => { throw new Error("boom"); }));
+    let ran = false;
+    await withEncoderSlot(async () => { ran = true; });
+    assert.equal(ran, true);
+    assert.equal(_encoderSlotStats().active, 0);
   });
 });
