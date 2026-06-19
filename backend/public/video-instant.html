@@ -424,9 +424,9 @@ select option{ background:#111019!important; color:var(--t)!important; }
                 <option value="tts-1-hd">TTS-1 HD (kualitas lebih)</option>
               </optgroup>
               <optgroup label="Google (Gemini)">
-                <option value="gemini-2.5-flash-preview-tts" disabled>Gemini 2.5 Flash TTS (segera)</option>
-                <option value="gemini-2.5-pro-preview-tts" disabled>Gemini 2.5 Pro TTS (segera)</option>
-                <option value="gemini-3.1-flash-tts-preview" disabled>Gemini 3.1 Flash TTS (segera)</option>
+                <option value="gemini-2.5-flash-preview-tts">Gemini 2.5 Flash TTS</option>
+                <option value="gemini-2.5-pro-preview-tts">Gemini 2.5 Pro TTS</option>
+                <option value="gemini-3.1-flash-tts-preview">Gemini 3.1 Flash TTS</option>
               </optgroup>
             </select>
           </div>
@@ -569,8 +569,27 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#refMode").onchange=e=>state.refMode=e.target.checked;
   $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
   $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
-  $("#ttsSel")&&($("#ttsSel").onchange=e=>state.ttsModel=e.target.value);
+  // Voice sets differ by provider: OpenAI uses alloy/echo/…; Gemini TTS needs its OWN
+  // prebuilt voices (Zephyr/Puck/…). Sending an OpenAI voice to a Gemini model makes the
+  // worker's geminiTts reject it → silent fallback to tts-1. So repopulate #voiceSel to
+  // match the chosen TTS model's provider (keeps the user's voice within the same provider).
+  const VOICES={
+    openai:[["alloy","Alloy (netral)"],["echo","Echo (pria)"],["fable","Fable (hangat)"],["onyx","Onyx (pria, dalam)"],["nova","Nova (wanita)"],["shimmer","Shimmer (wanita, lembut)"]],
+    gemini:[["Zephyr","Zephyr (cerah)"],["Puck","Puck (ceria)"],["Charon","Charon (informatif)"],["Kore","Kore (tegas)"],["Fenrir","Fenrir (semangat)"],["Leda","Leda (muda)"],["Aoede","Aoede (santai)"],["Enceladus","Enceladus (lembut)"]],
+  };
+  function syncVoiceOptions(){
+    const sel=$("#voiceSel"); if(!sel) return;
+    const prov=/gemini/i.test(state.ttsModel)?"gemini":"openai";
+    if(sel.dataset.prov===prov) return;                 // same provider → keep current voice
+    sel.dataset.prov=prov;
+    sel.innerHTML=VOICES[prov].map(([v,l])=>`<option value="${v}">${l}</option>`).join("");
+    state.voice=VOICES[prov][0][0];
+    sel.value=state.voice;
+    sel.dispatchEvent(new Event("change",{bubbles:true}));   // refresh enhanced widget + state
+  }
+  $("#ttsSel")&&($("#ttsSel").onchange=e=>{ state.ttsModel=e.target.value; syncVoiceOptions(); });
   $("#voiceSel")&&($("#voiceSel").onchange=e=>state.voice=e.target.value);
+  syncVoiceOptions();   // align the voice list with the default TTS model on load
 
   // ── live estimate via /api/video/params ──
   let estTimer=null;
