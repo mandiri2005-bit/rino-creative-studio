@@ -182,7 +182,7 @@ select:focus{ outline:none!important; border-color:rgba(139,92,246,.55)!importan
 select option{ background:#111019!important; color:var(--t)!important; }
 </style>
 
-  <script type="module" crossorigin src="/app/assets/select-enhance-BZSPmDm0.js"></script>
+  <script type="module" crossorigin src="/app/assets/select-enhance-Qbm9AalL.js"></script>
 </head>
 <body>
 <script>window.__CLERK_PK = "pk_test_cHJpbWUtYm9hci00NS5jbGVyay5hY2NvdW50cy5kZXYk"; window.__appReady = true;</script>
@@ -233,6 +233,12 @@ select option{ background:#111019!important; color:var(--t)!important; }
           <option value="natgeo">Dokumenter (NatGeo)</option>
           <option value="bedtime_story">Bedtime story</option>
           <option value="pov_first_person">POV orang pertama</option>
+          <optgroup label="Whiteboard papan tulis ✍️">
+            <option value="wb_lineart">Garis tangan (hitam-putih)</option>
+            <option value="wb_color">Berwarna (draw-reveal)</option>
+            <option value="wb_diagram">Diagram / alur</option>
+            <option value="wb_detail">Detail realistis</option>
+          </optgroup>
         </select>
       </div>
 
@@ -277,6 +283,12 @@ select option{ background:#111019!important; color:var(--t)!important; }
       <label class="lbl">Gaya visual</label>
       <select id="visualStyle">
         <option value="">Default (bawaan model)</option>
+        <optgroup label="Whiteboard papan tulis ✍️">
+          <option value="wb_lineart">Garis tangan (hitam-putih)</option>
+          <option value="wb_color">Berwarna (draw-reveal)</option>
+          <option value="wb_diagram">Diagram / alur</option>
+          <option value="wb_detail">Detail realistis</option>
+        </optgroup>
         <optgroup label="Realistik">
           <option value="cinematic">Cinematic</option>
           <option value="photorealistic">Photorealistic</option>
@@ -452,7 +464,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -481,10 +493,29 @@ select option{ background:#111019!important; color:var(--t)!important; }
   });
 
   $$("#tierPills .pill").forEach(p=>p.onclick=()=>{ state.tier=p.dataset.tier; $$("#tierPills .pill").forEach(x=>x.classList.toggle("on",x===p)); refreshEstimate(); });
-  $("#style").onchange=e=>state.style=e.target.value;
+  // ── whiteboard genre: selectable in BOTH Gaya narasi (#style) and Gaya visual
+  // (#visualStyle). Picking one LOCKS both to that genre + disables Mode visual / Model
+  // klip. state.style/visualStyle keep their REAL (non-wb) values; the wb genre rides on
+  // state.whiteboardGenre. Picking a normal option in either select exits whiteboard. ──
+  const wbGenreOf=v=>v&&v.indexOf("wb_")===0?v.slice(3):null;
+  function applyWBLock(){
+    const wb=!!state.whiteboardGenre;
+    $("#visualMode").disabled=wb; $("#clipModel").disabled=wb;
+    $("#clipModelWrap").style.opacity=wb?".4":""; $("#visualMode").style.opacity=wb?".4":"";
+    if(wb){ const v="wb_"+state.whiteboardGenre; $("#style").value=v; $("#visualStyle").value=v; }
+  }
+  $("#style").onchange=e=>{
+    const g=wbGenreOf(e.target.value);
+    if(g){ state.whiteboardGenre=g; } else { state.whiteboardGenre=null; state.style=e.target.value; $("#visualStyle").value=state.visualStyle||""; }
+    applyWBLock(); refreshEstimate();
+  };
+  $("#visualStyle").onchange=e=>{
+    const g=wbGenreOf(e.target.value);
+    if(g){ state.whiteboardGenre=g; } else { state.whiteboardGenre=null; state.visualStyle=e.target.value; $("#style").value=state.style||"creative_nonfiction"; }
+    applyWBLock(); refreshEstimate();
+  };
   $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; refreshEstimate(); };
   $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
-  $("#visualStyle").onchange=e=>state.visualStyle=e.target.value;
   $("#imageModel").onchange=e=>state.imageModel=e.target.value;
   $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
   $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
@@ -530,8 +561,8 @@ select option{ background:#111019!important; color:var(--t)!important; }
       // 1) segment (+ generate narration for Mode A) + decide visual treatment
       const seg=await api("/api/video/segment",{method:"POST",body:JSON.stringify({
         mode:state.mode, topic, text:narration, minutes:state.minutes, style:state.style, tier:state.tier,
-        clip_model:state.clipModel, visual_mode:state.visualMode, clip_ratio:0.3,
-        visual_style:state.visualStyle, language:state.language, gen_model:state.genModel,
+        clip_model:state.clipModel, visual_mode:state.whiteboardGenre?"full_images":state.visualMode, clip_ratio:0.3,
+        visual_style:state.whiteboardGenre?"":state.visualStyle, language:state.language, gen_model:state.genModel,
         nusantara_corpus:(document.getElementById('nusantaraCorpus')||{}).checked||false,
       })});
       const scenes=seg.scenes||[];
@@ -541,7 +572,9 @@ select option{ background:#111019!important; color:var(--t)!important; }
       renderStage({status:"dispatching",scenes});
       // 2) assemble
       const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
-        scenes, tier:state.tier, clipModel:state.clipModel, visualMode:state.visualMode, captions:state.captions,
+        scenes, tier:state.tier, clipModel:state.clipModel,
+        visualMode:state.whiteboardGenre?"whiteboard":state.visualMode, whiteboardGenre:state.whiteboardGenre||undefined,
+        captions:state.captions, genModel:state.genModel,
         ttsModel:state.ttsModel, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
         imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
       })});
