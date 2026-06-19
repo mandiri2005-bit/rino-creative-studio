@@ -10,7 +10,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   xfadeOffsets, buildFilterComplex, buildStitchArgs, buildSceneClipArgs, buildConcatArgs,
-  kenBurnsExpr, runFfmpeg, captionWindows, buildSrt,
+  kenBurnsExpr, runFfmpeg, captionWindows, buildSrt, buildAss, buildAssFromScenes,
 } from "../../backend/video/ffmpeg.mjs";
 import {
   assertWorkerProcess, markVideoWorker, isVideoWorker,
@@ -128,17 +128,19 @@ describe("captions (Step 6e) — built from the known script + measured timing",
     assert.match(srt, /1\n00:00:00,000 --> 00:00:02,500\nHello there/);
     assert.match(srt, /00:00:06,000 --> 00:00:08,500\nThe end/);
   });
-  it("buildFilterComplex adds a subtitles pass and remaps the video label", () => {
+  it("buildFilterComplex adds an ass caption pass and remaps the video label", () => {
     const r = buildFilterComplex(
       [{ kind: "image", duration: 3 }, { kind: "image", duration: 3 }],
-      { srt: "captions.srt", fadeDuration: 0 }
+      { ass: "captions.ass", fadeDuration: 0 }
     );
     assert.equal(r.vlabel, "vsub");
-    assert.match(r.filter, /subtitles=captions\.srt/);
+    assert.match(r.filter, /ass=captions\.ass/);
+    assert.doesNotMatch(r.filter, /subtitles=/);   // no more srt+force_style path
   });
-  it("no subtitles pass when captions are off", () => {
+  it("no caption pass when captions are off", () => {
     const r = buildFilterComplex([{ kind: "image", duration: 3 }, { kind: "image", duration: 3 }], { fadeDuration: 0 });
     assert.equal(r.vlabel, "vout");
+    assert.doesNotMatch(r.filter, /ass=/);
     assert.doesNotMatch(r.filter, /subtitles=/);
   });
   it("fade: in from black at start + out to black at end, remaps v/a labels", () => {
@@ -242,5 +244,55 @@ describe("withEncoderSlot (box-level encoder semaphore)", () => {
     await withEncoderSlot(async () => { ran = true; });
     assert.equal(ran, true);
     assert.equal(_encoderSlotStats().active, 0);
+  });
+});
+
+// ── Caption styling: full .ass (replaces subtitles=srt:force_style) ──
+describe("buildAss / buildAssFromScenes (styled caption burn-in)", () => {
+  const ass = buildAss(
+    [{ start: 0, end: 3.5, text: "Hello, world — wow" }, { start: 3.5, end: 6, text: "Second {beat}" }],
+    { width: 1920, height: 1080 }
+  );
+
+  it("emits a v4.00+ script with PlayRes matched to the frame aspect", () => {
+    assert.match(ass, /\[Script Info\]/);
+    assert.match(ass, /ScriptType: v4\.00\+/);
+    assert.match(ass, /ScaledBorderAndShadow: yes/);
+    assert.match(ass, /WrapStyle: 0/);
+    // 16:9 frame → PlayResX/Y in the same ratio (360 * 1920/1080 = 640)
+    assert.match(ass, /PlayResX: 640/);
+    assert.match(ass, /PlayResY: 360/);
+  });
+  it("has a [V4+ Styles] block styled per spec (font/size/bold/outline/shadow/align/margin)", () => {
+    assert.match(ass, /\[V4\+ Styles\]/);
+    // Default style: Liberation Sans, 22, white primary, black outline, bold=1, BorderStyle=1, Outline 2, Shadow 1, Alignment 2, MarginV 45
+    assert.match(ass, /Style: Default,Liberation Sans,22,&H00FFFFFF,[^\n]*&H00000000,[^\n]*,1,0,0,0,100,100,0,0,1,2,1,2,40,40,45,1/);
+  });
+  it("defaults the font to Liberation Sans (Calibri/Carlito not in the worker image)", () => {
+    assert.match(ass, /Style: Default,Liberation Sans,/);
+  });
+  it("honours an explicit captionFont override", () => {
+    const a = buildAss([{ start: 0, end: 1, text: "x" }], { width: 1920, height: 1080, captionFont: "DejaVu Sans" });
+    assert.match(a, /Style: Default,DejaVu Sans,/);
+  });
+  it("keeps commas in the narration text (Text is the field after the 9th comma)", () => {
+    // This is the whole point of moving off subtitles=srt:force_style.
+    assert.match(ass, /Dialogue: 0,0:00:00\.00,0:00:03\.50,Default,,0,0,0,,Hello, world — wow/);
+  });
+  it("neutralises ASS override braces and uses centisecond timestamps", () => {
+    assert.match(ass, /,Second \(beat\)/);          // {} → ()
+    assert.doesNotMatch(ass, /\{beat\}/);
+    assert.match(ass, /0:00:03\.50,0:00:06\.00/);   // H:MM:SS.cc
+  });
+  it("buildAssFromScenes lays cues on the caption-window timeline", () => {
+    const a = buildAssFromScenes(["one", "two", "three"], [3, 4, 2.5], 0.5, { width: 1920, height: 1080 });
+    // windows: [0,2.5],[2.5,6],[6,8.5]
+    assert.match(a, /Dialogue: 0,0:00:00\.00,0:00:02\.50,Default,,0,0,0,,one/);
+    assert.match(a, /Dialogue: 0,0:00:06\.00,0:00:08\.50,Default,,0,0,0,,three/);
+  });
+  it("skips empty/blank scene text (no stray Dialogue line)", () => {
+    const a = buildAss([{ start: 0, end: 1, text: "  " }, { start: 1, end: 2, text: "real" }], { width: 1920, height: 1080 });
+    assert.equal((a.match(/^Dialogue:/gm) || []).length, 1);
+    assert.match(a, /,real/);
   });
 });

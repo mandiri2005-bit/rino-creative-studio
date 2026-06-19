@@ -126,6 +126,93 @@ export function buildSrt(texts, durations, xfade = VIDEO_DEFAULTS.xfade) {
   }).join("\n");
 }
 
+// ── Caption styling (.ass) ───────────────────────────────────────────────────
+// Burned captions use a FULL ASS style (not subtitles=srt:force_style) so we get
+// proper font / outline / shadow / word-wrap AND avoid the comma-in-force_style trap
+// that broke the single-pass filtergraph. Font note: Calibri/Carlito are NOT in the
+// worker image (Debian apt has no redistributable Calibri and we don't install
+// fonts-crosextra-carlito); the best installed sans is Liberation Sans
+// (fonts-liberation, Arial-metric) — DejaVu Sans / Noto Sans are also present. All
+// knobs are env-tunable.
+export const CAPTION_DEFAULTS = Object.freeze({
+  font: process.env.VIDEO_CAPTION_FONT || "Liberation Sans",
+  fontSize: Number(process.env.VIDEO_CAPTION_FONTSIZE || 22),
+  marginV: Number(process.env.VIDEO_CAPTION_MARGINV || 45),
+  outline: Number(process.env.VIDEO_CAPTION_OUTLINE || 2),
+  shadow: Number(process.env.VIDEO_CAPTION_SHADOW || 1),
+});
+
+// ASS canvas reference height. Fontsize/MarginV are expressed against this; PlayResX
+// is matched to the frame aspect so libass scales the canvas to the real frame with
+// NO horizontal stretch (a 4:3 default canvas on a 16:9 frame would widen the text).
+const CAPTION_REF_H = 360;
+
+// ASS timestamp: H:MM:SS.cc (centiseconds).
+function _assTime(sec) {
+  let s = Math.max(0, sec);
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  let ss = Math.floor(s % 60);
+  let cs = Math.round((s - Math.floor(s)) * 100);
+  if (cs === 100) { cs = 0; ss += 1; }   // rounding roll-over
+  const p = (n) => String(n).padStart(2, "0");
+  return `${hh}:${p(mm)}:${p(ss)}.${p(cs)}`;
+}
+
+// Make narration safe for an ASS Dialogue line: collapse newlines (libass auto-wraps)
+// and neutralise the override-block braces. Commas are FINE here — the Text field is
+// everything after the 9th comma, so a comma in narration is safe (the whole reason
+// for moving off inline subtitles=srt:force_style).
+function _assText(text) {
+  return String(text ?? "").trim().replace(/\r?\n/g, " ").replace(/\{/g, "(").replace(/\}/g, ")");
+}
+
+/**
+ * Build a full .ass subtitle file. `cues` = [{ start, end, text }] in seconds.
+ * White bold text, black outline + soft shadow, bottom-centre (Alignment=2), smart
+ * word-wrap (WrapStyle 0). opts: { width, height, captionFont, captionFontSize,
+ * captionMarginV, captionOutline, captionShadow }.
+ */
+export function buildAss(cues, opts = {}) {
+  const W = Number(opts.width || VIDEO_DEFAULTS.width);
+  const H = Number(opts.height || VIDEO_DEFAULTS.height);
+  const playY = CAPTION_REF_H;
+  const playX = Math.max(1, Math.round(CAPTION_REF_H * W / H));   // match frame aspect → uniform scale
+  const font = opts.captionFont || CAPTION_DEFAULTS.font;
+  const fs = Number(opts.captionFontSize || CAPTION_DEFAULTS.fontSize);
+  const mv = Number(opts.captionMarginV ?? CAPTION_DEFAULTS.marginV);
+  const ol = Number(opts.captionOutline ?? CAPTION_DEFAULTS.outline);
+  const sh = Number(opts.captionShadow ?? CAPTION_DEFAULTS.shadow);
+  const header =
+    "[Script Info]\n" +
+    "ScriptType: v4.00+\n" +
+    "WrapStyle: 0\n" +                  // smart wrap (lower line wider) — no manual \\N
+    "ScaledBorderAndShadow: yes\n" +    // outline/shadow scale with the frame, not pinned px
+    `PlayResX: ${playX}\nPlayResY: ${playY}\n\n` +
+    "[V4+ Styles]\n" +
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, " +
+    "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, " +
+    "Alignment, MarginL, MarginR, MarginV, Encoding\n" +
+    // PrimaryColour white &H00FFFFFF; OutlineColour black &H00000000; BackColour soft
+    // black shadow &H64000000; Bold=1; BorderStyle=1 (outline+shadow); Alignment=2 (bottom-centre).
+    `Style: Default,${font},${fs},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,1,0,0,0,` +
+    `100,100,0,0,1,${ol},${sh},2,40,40,${mv},1\n\n` +
+    "[Events]\n" +
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
+  const events = (cues || [])
+    .filter((c) => _assText(c.text))
+    .map((c) => `Dialogue: 0,${_assTime(c.start)},${_assTime(c.end)},Default,,0,0,0,,${_assText(c.text)}`)
+    .join("\n");
+  return header + events + "\n";
+}
+
+/** Build the captions .ass for the single-pass path — per-scene windows on the xfade
+ * timeline (same timing model as buildSrt). */
+export function buildAssFromScenes(texts, durations, xfade = VIDEO_DEFAULTS.xfade, opts = {}) {
+  const cues = captionWindows(durations, xfade).map((w, i) => ({ start: w.start, end: w.end, text: texts[i] }));
+  return buildAss(cues, opts);
+}
+
 /**
  * Build the full filter_complex for N scenes. `scenes` is
  *   [{ kind: 'image'|'clip', duration: <seconds>, move?: <ken-burns> }, ...]
@@ -195,16 +282,13 @@ export function buildFilterComplex(scenes, opts = {}) {
     vlabel = "vout"; alabel = "aout";
   }
 
-  // ── optional burned-in captions (Step 6e). `srt` is a basename in the ffmpeg
-  // cwd, so no path-escaping; runFfmpeg is invoked with cwd = the job temp dir.
-  // No force_style here: commas in a style string break filter_complex parsing —
-  // libass renders the SRT with safe defaults (white, bottom-centre). ──
-  if (o.srt) {
-    // optional caption font — a SINGLE force_style field (no comma) so it can't
-    // break the comma-separated filtergraph; the worker retries without it on any
-    // failure. The font must exist in the render container (installed in Dockerfile).
-    const style = o.captionFont ? `:force_style='Fontname=${o.captionFont}'` : "";
-    parts.push(`[${vlabel}]subtitles=${o.srt}${style}[vsub]`);
+  // ── optional burned-in captions (Step 6e): a FULL ASS style (font/outline/shadow/
+  // wrap) burned via the `ass` filter. `ass` is a basename in the ffmpeg cwd (runFfmpeg
+  // is invoked with cwd = the job temp dir). Using ass=file (not subtitles=srt:
+  // force_style) means commas in narration are safe AND we get full styling here and
+  // in the per-scene path. The style/font live inside the .ass (see buildAss). ──
+  if (o.ass) {
+    parts.push(`[${vlabel}]ass=${o.ass}[vsub]`);
     vlabel = "vsub";
   }
 
@@ -319,16 +403,9 @@ export function runFfmpeg(args, { onProgress, cwd, encode = false } = {}) {
   return encode ? withEncoderSlot(exec) : exec();
 }
 
-// One-line SRT for a single scene clip (the caption shows for the whole clip).
-function sceneSrt(text, dur) {
-  const t = (s) => {
-    const ms = Math.max(0, Math.round(s * 1000));
-    const hh = String(Math.floor(ms / 3600000)).padStart(2, "0");
-    const mm = String(Math.floor((ms % 3600000) / 60000)).padStart(2, "0");
-    const ss = String(Math.floor((ms % 60000) / 1000)).padStart(2, "0");
-    return `${hh}:${mm}:${ss},${String(ms % 1000).padStart(3, "0")}`;
-  };
-  return `1\n${t(0)} --> ${t(Math.max(0.2, dur - 0.05))}\n${(text || "").trim()}\n`;
+// One-cue styled .ass for a single scene clip (the caption shows for the whole clip).
+function sceneAss(text, dur, opts = {}) {
+  return buildAss([{ start: 0, end: Math.max(0.2, dur - 0.05), text }], opts);
 }
 
 /**
@@ -357,7 +434,7 @@ export function buildSceneClipArgs(scene, idx, outPath, opts = {}) {
   } else {
     vf = `[0:v]${box},fps=${FPS},trim=0:${dur},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${dur},trim=0:${dur},setsar=1,format=yuv420p`;
   }
-  if (opts.srt) vf += `,subtitles=${opts.srt}${opts.captionFont ? `:force_style='Fontname=${opts.captionFont}'` : ""}`;
+  if (opts.ass) vf += `,ass=${opts.ass}`;
   const fd = Math.min(Number(o.fadeDuration ?? 0), dur / 2.2);
   if (opts.isFirst && fd > 0.05) vf += `,fade=t=in:st=0:d=${fd.toFixed(3)}`;
   if (opts.isLast && fd > 0.05) vf += `,fade=t=out:st=${(dur - fd).toFixed(3)}:d=${fd.toFixed(3)}`;
@@ -402,13 +479,15 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
 
   async function renderScene(i) {
     const clip = join(cwd, `scene_${i}.mp4`);
-    let srt = null;
+    let ass = null;
     if (wantCaps && (scenes[i].text || "").trim()) {
-      srt = `scene_${i}.srt`;
-      await writeFile(join(cwd, srt), sceneSrt(scenes[i].text, scenes[i].duration), "utf8");
+      ass = `scene_${i}.ass`;
+      await writeFile(join(cwd, ass), sceneAss(scenes[i].text, scenes[i].duration, {
+        width: opts.width, height: opts.height, captionFont: opts.captionFont,
+      }), "utf8");
     }
     const args = buildSceneClipArgs(scenes[i], i, clip, {
-      ...opts, srt, isFirst: i === 0, isLast: i === scenes.length - 1,
+      ...opts, ass, isFirst: i === 0, isLast: i === scenes.length - 1,
     });
     await runFfmpeg(args, { cwd, encode: true });
     clipPaths[i] = clip;

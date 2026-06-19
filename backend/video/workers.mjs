@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QUEUE, CONCURRENCY, makeConnection } from "./connection.mjs";
 import * as store from "./store.mjs";
-import { ffprobeDuration, stitch, buildSrt, hasSubtitlesFilter } from "./ffmpeg.mjs";
+import { ffprobeDuration, stitch, buildAssFromScenes, hasSubtitlesFilter } from "./ffmpeg.mjs";
 import { advance } from "./orchestrator.mjs";
 import { rm } from "node:fs/promises";
 // NOTE: whiteboard render/visuals are imported LAZILY inside the worker-only branches
@@ -320,13 +320,15 @@ export async function stitchProcessor(job, deps) {
     const stitchOpts = { cwd: tmpDir };
     if (meta.aspectRatio === "9:16") { stitchOpts.width = 1080; stitchOpts.height = 1920; } // portrait
     if (meta.captions && (await hasSubtitlesFilter())) {
-      // Step 6e: burn captions from the KNOWN script + measured timing (no ASR).
+      // Step 6e: burn captions from the KNOWN script + measured timing (no ASR), as a
+      // fully-styled .ass (font/outline/shadow/wrap) — see buildAss.
       const { writeFile } = await import("node:fs/promises");
       const xfade = Number(process.env.VIDEO_XFADE || 0.5);
-      const srt = buildSrt(scenesRaw.map((s) => s?.text || ""), scenes.map((s) => s.duration), xfade);
-      await writeFile(join(tmpDir, "captions.srt"), srt, "utf8");
-      stitchOpts.srt = "captions.srt";       // single-pass path (≤ threshold scenes)
-      stitchOpts.captions = true;            // per-scene path builds its own per-scene SRTs
+      const assOpts = { width: stitchOpts.width, height: stitchOpts.height, captionFont: meta.captionFont };
+      const ass = buildAssFromScenes(scenesRaw.map((s) => s?.text || ""), scenes.map((s) => s.duration), xfade, assOpts);
+      await writeFile(join(tmpDir, "captions.ass"), ass, "utf8");
+      stitchOpts.ass = "captions.ass";       // single-pass path (≤ threshold scenes)
+      stitchOpts.captions = true;            // per-scene path builds its own per-scene .ass
       if (meta.captionFont) stitchOpts.captionFont = meta.captionFont;
     } else if (meta.captions) {
       console.warn(`[stitch ${jobId}] captions requested but ffmpeg has no 'subtitles' filter (no libass) — rendering without burn-in`);
