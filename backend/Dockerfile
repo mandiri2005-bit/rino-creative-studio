@@ -1,11 +1,16 @@
 FROM node:20-slim
 WORKDIR /app
 
-# ffmpeg/ffprobe for the Step 6 video stitch worker (used by the video-worker
-# service; harmless in the API image, which never invokes it — guarded).
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# ffmpeg/ffprobe for the Step 6 video stitch worker; chromium for the whiteboard
+# Remotion render (Opt B — video/whiteboard). Both used by the video-worker service;
+# harmless in the API image, which never invokes them (guarded).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg chromium \
     fonts-dejavu-core fonts-liberation fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
+
+# Remotion (whiteboard render) uses the system Chromium installed above instead of
+# downloading its own — keeps the image lean and works offline in the container.
+ENV REMOTION_BROWSER_EXECUTABLE=/usr/bin/chromium
 
 # Install dependencies
 COPY package*.json ./

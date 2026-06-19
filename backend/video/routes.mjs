@@ -119,9 +119,10 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
       const result = await startAssembly({
         jobId, tenantId, userId, scenes,
         tier: b.tier || "hd", clipModel: b.clipModel || "veo3",
-        visualMode: b.visualMode || "hybrid", captions: !!b.captions,
+        visualMode: b.visualMode || "hybrid", whiteboardGenre: b.whiteboardGenre,
+        captions: !!b.captions,
         voice: b.voice, imageModel: b.imageModel,
-        ttsModel: b.ttsModel, language: b.language, aspectRatio: b.aspectRatio,
+        ttsModel: b.ttsModel, language: b.language, genModel: b.genModel, aspectRatio: b.aspectRatio,
         captionFont: b.captionFont, anchorKey, anchorB64,
       }, deps());
       res.json({ ok: true, status: "running", ...result });

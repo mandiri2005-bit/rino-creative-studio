@@ -27,6 +27,10 @@ import * as store from "./store.mjs";
 import { ffprobeDuration, stitch, buildSrt, hasSubtitlesFilter } from "./ffmpeg.mjs";
 import { advance } from "./orchestrator.mjs";
 import { rm } from "node:fs/promises";
+// NOTE: whiteboard render/visuals are imported LAZILY inside the worker-only branches
+// below (dynamic import), NEVER at top level — workers.mjs is loaded by the API/frontend
+// process too (server.js → routes.mjs → makeQueues), and render.mjs pulls @remotion +
+// Chromium. An eager import here crashed the whole frontend on startup. Keep it lazy.
 
 // Deterministic positive seed from the job id — the SAME seed for every scene of a
 // video, so image models that honour `seed` keep the look (and any recurring
@@ -68,7 +72,8 @@ async function maybeUpload(jobId, tenantId, assetType, localPath) {
   const { readFile } = await import("node:fs/promises");
   const name = localPath.split("/").pop();
   const key = s.buildKey(tenantId, jobId, assetType, name);
-  const ctype = name.endsWith(".mp4") ? "video/mp4" : name.endsWith(".png") ? "image/png" : "audio/wav";
+  const ctype = name.endsWith(".mp4") ? "video/mp4" : name.endsWith(".png") ? "image/png"
+    : name.endsWith(".svg") ? "image/svg+xml" : "audio/wav";
   await s.uploadBytes(key, await readFile(localPath), ctype);
   return { path: localPath, key };
 }
@@ -192,6 +197,44 @@ export async function visualProcessor(job, deps) {
     if (!meta || !scene) return { skipped: "missing" };
     if (JOB_TERMINAL.has(meta.status)) return { skipped: "job-terminal" };
     if (scene.visualStatus === "done" || scene.visualStatus === "fallback") return { skipped: "already-done" };
+    if (meta.visualMode === "whiteboard") {
+      // Whiteboard makes its OWN per-scene visual (Recraft vector SVG / raster+mask /
+      // LLM diagram), revealed by the Remotion render. Each Recraft asset is metered
+      // via /video/meter; lineart/diagram carry no Recraft meter. A failed asset
+      // degrades the scene to handwriting (never kills the video).
+      const genre = meta.whiteboardGenre || "lineart";
+      const tmpDir = jobTmpDir(jobId);
+      await mkdir(tmpDir, { recursive: true });
+      try {
+        const { generateWhiteboardAsset } = await import("./whiteboard/visuals.mjs"); // lazy (worker-only)
+        const a = await generateWhiteboardAsset(genre, {
+          prompt: scene.visualPrompt || scene.text || "", tmpDir, sceneIndex,
+          aspect: meta.aspectRatio || "16:9",
+          // diagram genre: graph from Python (same LLM routing/failover + Model Narasi)
+          diagramGraph: genre === "diagram"
+            ? (desc) => deps.generationClient?.generateDiagramGraph?.(
+                { jobId, tenantId: meta.tenantId, userId: meta.userId },
+                { description: desc, model: meta.genModel, language: meta.language })
+            : undefined,
+        });
+        for (const m of a.meters || []) {
+          await deps.generationClient?.meterUsage?.(
+            { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units);
+        }
+        const up = a.visualPath ? await maybeUpload(jobId, meta.tenantId, "images", a.visualPath) : { path: undefined, key: null };
+        const mk = a.maskPath ? await maybeUpload(jobId, meta.tenantId, "images", a.maskPath) : { path: undefined, key: null };
+        await deps.store.setSceneFields(jobId, sceneIndex, {
+          visualStatus: "done", visualKind: a.kind || "whiteboard",
+          ...(up.path ? { visualPath: up.path } : {}), ...(up.key ? { visualKey: up.key } : {}),
+          ...(mk.path ? { maskPath: mk.path } : {}), ...(mk.key ? { maskKey: mk.key } : {}),
+        });
+        return { sceneIndex, genre };
+      } catch (e) {
+        console.warn(`[whiteboard ${jobId}/${sceneIndex}] ${genre} asset failed: ${e.message} → handwriting`);
+        await deps.store.setSceneFields(jobId, sceneIndex, { visualStatus: "fallback", visualKind: "whiteboard", visualError: e.message });
+        return { sceneIndex, fellBack: true };
+      }
+    }
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
     const refImage = await resolveAnchor(jobId, tmpDir, meta);  // per-video reference (or null)
@@ -257,12 +300,19 @@ export async function stitchProcessor(job, deps) {
     const scenes = [];
     for (let i = 0; i < scenesRaw.length; i++) {
       const s = scenesRaw[i];
+      // whiteboard scenes may carry NO pipeline visual asset (the Remotion render makes
+      // its own) — don't demand one; other modes always have a visual to resolve.
+      const wbNoAsset = meta.visualMode === "whiteboard" && !s.visualKey && !s.visualPath;
       scenes.push({
         kind: s.visualKind || "image",
         duration: (Number(s.durationActual) || Number(s.estSeconds) || 2) + sceneGap,
         text: s?.text || "",   // per-scene caption (long-video render path)
-        visualPath: await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
+        visualPath: wbNoAsset ? undefined : await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
           `vis_${i}.${s.visualKind === "clip" ? "mp4" : "png"}`),
+        // detail genre also carries a vectorized reveal mask (whiteboard only)
+        ...(meta.visualMode === "whiteboard" && (s.maskKey || s.maskPath)
+          ? { maskPath: await resolveLocal(jobId, tmpDir, s.maskKey, s.maskPath, `mask_${i}.svg`) }
+          : {}),
         audioPath: await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`),
       });
     }
@@ -282,16 +332,28 @@ export async function stitchProcessor(job, deps) {
       console.warn(`[stitch ${jobId}] captions requested but ffmpeg has no 'subtitles' filter (no libass) — rendering without burn-in`);
     }
     let result;
-    try {
-      result = await stitch(scenes, outPath, stitchOpts);
-    } catch (e) {
-      // a font / force_style issue must never fail the whole video — retry once
-      // without the custom font so captions just render in the default face.
-      if (stitchOpts.captionFont) {
-        console.warn(`[stitch ${jobId}] retrying without captionFont after: ${e.message}`);
-        delete stitchOpts.captionFont;
+    if (meta.visualMode === "whiteboard") {
+      // Opt B: render the WHOLE video with the Remotion whiteboard engine instead of
+      // the ffmpeg stitch. render.mjs is imported LAZILY here (worker-only) so the API
+      // process never loads @remotion/Chromium at startup.
+      const { renderWhiteboard } = await import("./whiteboard/render.mjs");
+      result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });
+      // flat render fee — 3 credits/sec of output video (post-hoc, tagged for refund)
+      await deps.generationClient?.meterUsage?.(
+        { jobId, tenantId: meta.tenantId, userId: meta.userId },
+        "video", "whiteboard", { seconds: Math.max(1, Math.round(result.duration || 0)) });
+    } else {
+      try {
         result = await stitch(scenes, outPath, stitchOpts);
-      } else throw e;
+      } catch (e) {
+        // a font / force_style issue must never fail the whole video — retry once
+        // without the custom font so captions just render in the default face.
+        if (stitchOpts.captionFont) {
+          console.warn(`[stitch ${jobId}] retrying without captionFont after: ${e.message}`);
+          delete stitchOpts.captionFont;
+          result = await stitch(scenes, outPath, stitchOpts);
+        } else throw e;
+      }
     }
     // upload the final MP4 under the lifecycle-managed `videos/` prefix (Step 6f)
     let up = { path: outPath, key: null };

@@ -554,6 +554,11 @@ _IMAGE_COSTS: dict[str, float] = {
     "seedream":          0.03,
     # Sora image
     "sora-image":        0.04,
+    # Recraft (whiteboard mode): vector-native SVG gen, raster gen, raster→SVG vectorize.
+    # Longest-prefix match resolves -v3-vector / -vectorize before the -v3 / bare key.
+    "recraft-v3-vector": 0.08,
+    "recraft-vectorize": 0.01,
+    "recraft-v3":        0.04,
 }
 _IMAGE_COST_DEFAULT = 0.04
 
@@ -6814,6 +6819,85 @@ async def video_tts_scene(req: VideoTtsSceneReq,
         except Exception as _e:
             print(f"[video/tts/scene] metering debit failed (non-fatal): {_e}")
     return {"audio_b64": audio_b64}
+
+
+class VideoMeterReq(BaseModel):
+    operation: str = "image"        # image | video | tts | chat | narasi
+    model: str
+    units: dict = {}                # {"count":1} | {"seconds":N} | {"chars":N}
+
+
+@app.post("/video/meter")
+async def video_meter(req: VideoMeterReq,
+                      x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
+                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: charge a meter for an asset the video WORKER already produced — e.g. a
+    whiteboard Recraft image generated in-worker (op=image, model=recraft-*) or the flat
+    whiteboard render fee (op=video, model=whiteboard, units={'seconds':N}). Pure post-hoc
+    debit (the orchestrator already pre-checked balance at /assemble), tagged with the
+    video job for refunds. Internal-service auth only (X-Internal-Secret)."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    op = (req.operation or "").lower()
+    if op not in ("image", "video", "tts", "chat", "narasi"):
+        raise HTTPException(400, "bad operation")
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    credits = 0
+    try:
+        credits = await metering.debit(user.tenant_id, _uid, op, req.model, req.units or {},
+                                       byok=_byok, video_job=x_video_job, log=True)
+    except Exception as _e:
+        print(f"[video/meter] debit failed (non-fatal): {_e}")
+    return {"metered": True, "credits": credits}
+
+
+class VideoDiagramReq(BaseModel):
+    description: str
+    model: str = "deepseek-chat"   # the user's Model Narasi (gen_model)
+    language: str = ""
+
+
+@app.post("/video/diagram")
+async def video_diagram(req: VideoDiagramReq,
+                        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: description → flowchart GRAPH json for the whiteboard 'diagram' genre,
+    via the SAME LLM routing as narration (make_client(model)) so it inherits the Model
+    Narasi choice + the existing provider failover — NO new LLM key/route. NOT metered
+    separately (the flat whiteboard render fee covers it). Internal-service auth only."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    desc = (req.description or "").strip()
+    if not desc:
+        raise HTTPException(400, "description required")
+    lang = (req.language or "").strip() or "the SAME language as the description"
+    sys = (
+        "Turn the description into a flowchart GRAPH. Output STRICT JSON only: "
+        '{"title":"short title","direction":"down"|"right",'
+        '"nodes":[{"id":"a","label":"Short Label"}],'
+        '"edges":[{"from":"a","to":"b","emphasis":false}]} '
+        "Rules: ids are short slugs; labels <=3 words; 2-7 nodes; edges connect node ids; "
+        "set emphasis:true on the single most important edge. 'down' for top-to-bottom, "
+        "'right' for left-to-right pipelines. No coordinates, no SVG. "
+        f"LANGUAGE: write the title AND every label entirely in {lang}; never mix English "
+        "connectors (to/and/the/of); only the ids stay ascii."
+    )
+    fallback = {"title": "Proses", "direction": "right",
+                "nodes": [{"id": "a", "label": "Mulai"}, {"id": "b", "label": "Proses"}, {"id": "c", "label": "Hasil"}],
+                "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c", "emphasis": True}]}
+    try:
+        _client = make_client(req.model)
+        resp = await asyncio.to_thread(lambda: _client.chat.completions.create(
+            model=req.model,
+            messages=[{"role": "system", "content": sys}, {"role": "user", "content": f"Description: {desc}"}],
+            temperature=0.3, response_format={"type": "json_object"}, max_tokens=800))
+        g = json.loads(resp.choices[0].message.content or "{}")
+        if not g.get("nodes"):
+            raise ValueError("no nodes")
+        return {"graph": g}
+    except Exception as e:
+        print(f"[video/diagram] LLM failed, using fallback graph: {e}")
+        return {"graph": fallback}
 
 
 class VideoRefundReq(BaseModel):

@@ -92,8 +92,8 @@ export async function dispatchBatch(jobId, batchIndex, ctx, deps) {
 export async function startAssembly(ctx, deps) {
   const {
     jobId, tenantId, userId, scenes, tier = "hd",
-    clipModel = "veo3", visualMode = "hybrid", captions = false,
-    voice, imageModel, ttsModel, language, aspectRatio = "16:9", captionFont,
+    clipModel = "veo3", visualMode = "hybrid", whiteboardGenre = "", captions = false,
+    voice, imageModel, ttsModel, language, genModel, aspectRatio = "16:9", captionFont,
     anchorKey, anchorB64,
   } = ctx;
   if (!jobId) throw new Error("startAssembly: jobId required");
@@ -115,9 +115,9 @@ export async function startAssembly(ctx, deps) {
   }
 
   await deps.store.createJob({
-    jobId, tenantId, userId, tier: tierN, clipModel, visualMode, captions,
+    jobId, tenantId, userId, tier: tierN, clipModel, visualMode, whiteboardGenre, captions,
     voice: voice || "", imageModel: imageModel || "",
-    ttsModel: ttsModel || "", language: language || "", aspectRatio,
+    ttsModel: ttsModel || "", language: language || "", genModel: genModel || "", aspectRatio,
     captionFont: captionFont || "",
     anchorKey: anchorKey || "", anchorB64: anchorB64 || "",
     sceneCount: scenes.length, batchSize: 10, batchPlan,
