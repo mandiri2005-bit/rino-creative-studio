@@ -6766,6 +6766,54 @@ async def video_decide(req: VideoDecideReq,
     return {"scenes": decided, "visual_mode": req.visual_mode,
             "clips": sum(1 for s in decided if s.get("kind") == "clip")}
 
+def _pcm_to_wav(pcm, mime: str = "audio/L16;rate=24000") -> bytes:
+    """Wrap raw little-endian 16-bit mono PCM (Gemini TTS output) in a WAV container."""
+    import io as _io, wave as _wave
+    rate = 24000
+    m = _re.search(r"rate=(\d+)", mime or "")
+    if m:
+        rate = int(m.group(1))
+    buf = _io.BytesIO()
+    with _wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(bytes(pcm))
+    return buf.getvalue()
+
+
+def _is_gemini_tts(model: str) -> bool:
+    m = (model or "").lower()
+    return m.startswith("gemini") and "tts" in m
+
+
+def _gemini_tts_oauth(model: str, voice: str, text: str) -> bytes:
+    """Gemini TTS via Vertex OAuth (this deployment uses Google OAuth, NOT a GEMINI_API_KEY).
+    Returns WAV bytes. Raises on any failure so the caller can fall back to OpenAI tts-1."""
+    client = _genai_client()
+    if client is None:
+        raise RuntimeError("vertex/oauth not configured (GCP_* env missing)")
+    from google.genai import types as _gt
+    vname = voice or "Zephyr"
+    try:
+        cfg = _gt.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=_gt.SpeechConfig(
+                voice_config=_gt.VoiceConfig(
+                    prebuilt_voice_config=_gt.PrebuiltVoiceConfig(voice_name=vname))))
+        resp = client.models.generate_content(model=model, contents=text, config=cfg)
+    except Exception:                                  # types/version mismatch → plain dict config
+        resp = client.models.generate_content(
+            model=model, contents=text,
+            config={"response_modalities": ["AUDIO"],
+                    "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": vname}}}})
+    part = resp.candidates[0].content.parts[0]
+    inline = getattr(part, "inline_data", None)
+    raw = getattr(inline, "data", None) if inline else None
+    if not raw:
+        raise RuntimeError("gemini tts returned no audio")
+    pcm = raw if isinstance(raw, (bytes, bytearray)) else base64.b64decode(raw)
+    return _pcm_to_wav(pcm, getattr(inline, "mime_type", "") or "audio/L16;rate=24000")
+
+
 @app.post("/video/tts/scene")
 async def video_tts_scene(req: VideoTtsSceneReq,
                           x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
@@ -6798,19 +6846,31 @@ async def video_tts_scene(req: VideoTtsSceneReq,
                   "speed": float(req.speed) or 1.0, "response_format": "wav"}, timeout=120)
         r.raise_for_status()
         return r.content
-    try:
-        content = await asyncio.to_thread(_speak, req.model)
-    except Exception as e1:
-        # the chosen model (e.g. a Gemini TTS variant the OpenAI-compatible
-        # /v1/audio/speech route may not serve) failed — fall back to tts-1 so one
-        # voice choice never fails the whole video (audio has no other safety net).
-        if (req.model or "tts-1") != "tts-1":
+    if _is_gemini_tts(req.model):
+        # Gemini TTS → Vertex OAuth (this deployment authenticates via Google OAuth, not a
+        # GEMINI_API_KEY; the LaoZhang /v1/audio/speech route does NOT serve Gemini voices).
+        # Fall back to tts-1 only if Vertex genuinely fails, so a video is never left mute.
+        try:
+            content = await asyncio.to_thread(_gemini_tts_oauth, req.model, req.voice, synth)
+        except Exception as eg:
+            print(f"[video/tts/scene] gemini-oauth tts failed ({str(eg)[:200]}); falling back to tts-1")
             try:
                 content = await asyncio.to_thread(_speak, "tts-1")
             except Exception as e2:
-                raise HTTPException(502, f"tts failed (model + tts-1 fallback): {str(e2)[:200]}")
-        else:
-            raise HTTPException(502, f"tts failed: {str(e1)[:200]}")
+                raise HTTPException(502, f"gemini tts + tts-1 fallback failed: {str(e2)[:200]}")
+    else:
+        try:
+            content = await asyncio.to_thread(_speak, req.model)
+        except Exception as e1:
+            # the chosen model failed on the OpenAI-compatible /v1/audio/speech route —
+            # fall back to tts-1 so one voice choice never fails the whole video.
+            if (req.model or "tts-1") != "tts-1":
+                try:
+                    content = await asyncio.to_thread(_speak, "tts-1")
+                except Exception as e2:
+                    raise HTTPException(502, f"tts failed (model + tts-1 fallback): {str(e2)[:200]}")
+            else:
+                raise HTTPException(502, f"tts failed: {str(e1)[:200]}")
     audio_b64 = base64.b64encode(content).decode()
     if user:
         try:
@@ -6897,6 +6957,7 @@ async def video_diagram(req: VideoDiagramReq,
             if not m:
                 raise
             return json.loads(m.group(0))
+    g = None
     try:
         _client = make_client(req.model)
         msgs = [{"role": "system", "content": sys}, {"role": "user", "content": f"Description: {desc}"}]
@@ -6910,13 +6971,26 @@ async def video_diagram(req: VideoDiagramReq,
         except Exception as fmt_err:
             print(f"[video/diagram] json_object rejected ({fmt_err}); retrying without response_format")
             resp = await asyncio.to_thread(lambda: _call(False))
-        g = _extract_graph(resp.choices[0].message.content)
-        if not g.get("nodes"):
-            raise ValueError("no nodes")
-        return {"graph": g}
+        cand = _extract_graph(resp.choices[0].message.content)
+        if cand.get("nodes"):
+            g = cand
     except Exception as e:
-        print(f"[video/diagram] LLM failed, using fallback graph: {e}")
-        return {"graph": fallback}
+        print(f"[video/diagram] make_client path failed: {e}")
+    if g is None:
+        # OAuth fallback: Gemini via Vertex (no API key). Works in prod even when the
+        # LaoZhang/make_client path is unavailable, so a real graph still beats the stub.
+        try:
+            txt = await asyncio.to_thread(_vertex_text, sys, f"Description: {desc}")
+            if txt:
+                cand = _extract_graph(txt)
+                if cand.get("nodes"):
+                    g = cand
+        except Exception as e:
+            print(f"[video/diagram] vertex-oauth fallback failed: {e}")
+    if g is None:
+        print("[video/diagram] all LLM paths failed, using static fallback graph")
+        g = fallback
+    return {"graph": g}
 
 
 class VideoRefundReq(BaseModel):
