@@ -415,18 +415,33 @@ select option{ background:#111019!important; color:var(--t)!important; }
             </select>
           </div>
         </div>
-        <label class="lbl">Model suara (TTS)</label>
-        <select id="ttsSel">
-          <optgroup label="OpenAI">
-            <option value="tts-1">TTS-1 (default, cepat)</option>
-            <option value="tts-1-hd">TTS-1 HD (kualitas lebih)</option>
-          </optgroup>
-          <optgroup label="Google (Gemini)">
-            <option value="gemini-2.5-flash-preview-tts">Gemini 2.5 Flash TTS</option>
-            <option value="gemini-2.5-pro-preview-tts">Gemini 2.5 Pro TTS</option>
-            <option value="gemini-3.1-flash-tts-preview">Gemini 3.1 Flash TTS</option>
-          </optgroup>
-        </select>
+        <div class="row">
+          <div>
+            <label class="lbl">Model suara (TTS)</label>
+            <select id="ttsSel">
+              <optgroup label="OpenAI">
+                <option value="tts-1">TTS-1 (default, cepat)</option>
+                <option value="tts-1-hd">TTS-1 HD (kualitas lebih)</option>
+              </optgroup>
+              <optgroup label="Google (Gemini)">
+                <option value="gemini-2.5-flash-preview-tts" disabled>Gemini 2.5 Flash TTS (segera)</option>
+                <option value="gemini-2.5-pro-preview-tts" disabled>Gemini 2.5 Pro TTS (segera)</option>
+                <option value="gemini-3.1-flash-tts-preview" disabled>Gemini 3.1 Flash TTS (segera)</option>
+              </optgroup>
+            </select>
+          </div>
+          <div>
+            <label class="lbl">Suara</label>
+            <select id="voiceSel">
+              <option value="alloy">Alloy (netral)</option>
+              <option value="echo">Echo (pria)</option>
+              <option value="fable">Fable (hangat)</option>
+              <option value="onyx">Onyx (pria, dalam)</option>
+              <option value="nova">Nova (wanita)</option>
+              <option value="shimmer">Shimmer (wanita, lembut)</option>
+            </select>
+          </div>
+        </div>
       </details>
 
       <div class="estimate">
@@ -464,7 +479,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
+  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -498,12 +513,31 @@ select option{ background:#111019!important; color:var(--t)!important; }
   // klip. state.style/visualStyle keep their REAL (non-wb) values; the wb genre rides on
   // state.whiteboardGenre. Picking a normal option in either select exits whiteboard. ──
   const wbGenreOf=v=>v&&v.indexOf("wb_")===0?v.slice(3):null;
+  // select-enhance.js replaces each <select> with a custom widget: it wraps the
+  // (now hidden) native <select> in a `<div class="cs">` and appends a visible
+  // `button.cs-btn` the user actually clicks. Setting .disabled / .style.opacity on
+  // the native <select> has NO visual effect — we must dim + block the .cs wrapper.
+  // Falls back to the raw select if it hasn't been enhanced yet (timing safety).
+  function lockEnhancedSelect(sel,locked){
+    if(!sel) return;
+    sel.disabled=locked;                                 // keep value semantically locked
+    const wrap=sel.closest(".cs")||sel;                  // the node the user actually clicks
+    wrap.style.pointerEvents=locked?"none":"";
+    wrap.style.opacity=locked?".4":"";
+    if(locked){                                          // shut any open dropdown for this select
+      const open=wrap.classList&&wrap.classList.contains("cs-open");
+      if(open&&wrap.__close) wrap.__close();
+    }
+  }
   function applyWBLock(){
     const wb=!!state.whiteboardGenre;
-    $("#visualMode").disabled=wb; $("#clipModel").disabled=wb;
-    $("#clipModelWrap").style.opacity=wb?".4":""; $("#visualMode").style.opacity=wb?".4":"";
-    // #5 image-model select: whiteboard renders its own visuals, so lock it.
-    $("#imageModel").disabled=wb; $("#imageModel").style.opacity=wb?".4":"";
+    // #5 image-model + #6 mode-visual / model-klip selects: whiteboard owns these,
+    // so lock the VISIBLE enhanced widget (the .cs wrapper), not the hidden native select.
+    lockEnhancedSelect($("#imageModel"),wb);
+    lockEnhancedSelect($("#visualMode"),wb);
+    lockEnhancedSelect($("#clipModel"),wb);
+    // #clipModelWrap also carries a label; dim the whole group for visual consistency.
+    $("#clipModelWrap").style.opacity=wb?".4":"";
     // #7 Quality pills: lock interaction + dim the non-selected ones.
     $("#tierPills").style.pointerEvents=wb?"none":"";
     $$("#tierPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
@@ -536,6 +570,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
   $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
   $("#ttsSel")&&($("#ttsSel").onchange=e=>state.ttsModel=e.target.value);
+  $("#voiceSel")&&($("#voiceSel").onchange=e=>state.voice=e.target.value);
 
   // ── live estimate via /api/video/params ──
   let estTimer=null;
@@ -587,7 +622,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         scenes, tier:state.tier, clipModel:state.clipModel,
         visualMode:state.whiteboardGenre?"whiteboard":state.visualMode, whiteboardGenre:state.whiteboardGenre||undefined,
         captions:state.captions, genModel:state.genModel,
-        ttsModel:state.ttsModel, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
+        ttsModel:state.ttsModel, voice:state.voice, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
         imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
       })});
       state.jobId=asm.jobId;

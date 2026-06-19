@@ -163,18 +163,46 @@
       });
 
       _clerk.addListener(({ user }) => {
-        // Clerk emits interim resource updates where the destructured `user` is
-        // momentarily null (token refresh on load, session revalidation, tab
-        // focus) even while the session is still valid. Trusting that null here
-        // flipped the UI to the sign-in gate and re-hid #root — on start.html
+        // Clerk v5 emits interim resource events during initial load, token
+        // refresh, session revalidation and tab-focus where the WHOLE singleton's
+        // resources are momentarily cleared — so the destructured `user` AND
+        // `_clerk.user` are BOTH transiently null even while the session is still
+        // valid. The earlier fix (trust `_clerk.user`) didn't cover that double-
+        // null window, so showGate() still fired and re-hid #root → on start.html
         // (where #root is visibility:hidden until _revealApp) that wiped the hub
-        // cards for an already-signed-in user. Treat the live session user
-        // (_clerk.user) as authoritative so a transient null can't gate us out.
+        // cards. Asymmetry was the real bug: a truthy user revealed, but ANY
+        // falsy value unconditionally hid #root + showed the gate.
+        //
+        // Fix: never gate on a bare null. A genuine sign-out leaves _clerk.user
+        // null AND it STAYS null; a transient null recovers within a tick. So on
+        // a null event, re-check on a microtask-ish delay and only gate if Clerk
+        // is loaded and the user is *still* null (real sign-out). A transient
+        // null becomes a no-op and the cards stay put.
         const liveUser = user || (_clerk && _clerk.user) || null;
-        _currentUser = liveUser;
-        notifyUserChange();
-        if (liveUser) { closeAllModals(); showApp(); }
-        else { showGate(); }
+        if (liveUser) {
+          _currentUser = liveUser;
+          notifyUserChange();
+          closeAllModals();
+          showApp();
+          return;
+        }
+        // Falsy: defer the decision. Don't touch #root yet.
+        setTimeout(() => {
+          const confirmed = (_clerk && _clerk.user) || null;
+          if (confirmed) {
+            // Was a transient null — session is actually live. Keep the app up.
+            _currentUser = confirmed;
+            notifyUserChange();
+            closeAllModals();
+            showApp();
+          } else if (_clerk && _clerk.loaded) {
+            // Clerk has loaded and the user is genuinely gone → real sign-out.
+            _currentUser = null;
+            notifyUserChange();
+            showGate();
+          }
+          // else: Clerk not yet loaded — leave the loading overlay as-is.
+        }, 250);
       });
 
       _currentUser = _clerk.user || null;

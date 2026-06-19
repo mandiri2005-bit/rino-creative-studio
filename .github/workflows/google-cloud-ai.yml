@@ -1,8 +1,9 @@
 name: Google Cloud AI Workflow
 
 on:
-  push:
-    branches: [ "main" ] # Berjalan setiap kali Anda push ke branch main
+  # Auto-run dimatikan (Rino): WIF pool 'culun-git-pool' belum terbinding →
+  # "failed to generate Google Cloud federated token". Manual-only sampai WIF benar.
+  workflow_dispatch: {}
 
 jobs:
   run-ai-task:
