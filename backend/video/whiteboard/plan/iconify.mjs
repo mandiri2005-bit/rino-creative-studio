@@ -83,7 +83,9 @@ export function resolveIconify(query, { ink = "#1F2937", width = 4, minScore = 4
   // genuine stroke icons fall back to strokes so they self-draw.
   const sh = parseSvgShapes(svg, { dropBg: false });
   if (sh.shapes.length) {
-    return { lib: `iconify:${prefix}`, license: meta.lic, name: best.name, viewBox: sh.viewBox, shapes: sh.shapes.map((s) => ({ ...s, fill: s.fill && s.fill !== "none" ? ink : (s.fill || ink) })) };
+    // preserve the icon's OWN colours (multi-colour sets) — only default currentColor / no-fill to
+    // ink. Recolouring everything to ink flattened genuinely-coloured icons into mono blobs.
+    return { lib: `iconify:${prefix}`, license: meta.lic, name: best.name, viewBox: sh.viewBox, shapes: sh.shapes.map((s) => ({ ...s, fill: (s.fill && s.fill !== "none" && s.fill !== "currentColor") ? s.fill : ink })) };
   }
   const ps = parseSvg(svg, { ink });
   const strokes = ps.strokes.map((s) => ({ d: s.d, stroke: s.stroke || ink, width }));

@@ -255,8 +255,13 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         if (ts <= 0) return;
         const L = 1200;
         if (s.kind === "shape") {
+          // HALUS: a fill icon draws as a thin outline (like a line icon) + a LIGHT tint, not a solid
+          // recoloured blob (Rino: "terlalu kasar & bold / terlalu penuh warnanya"). Keeps the icon's
+          // own colour. NB: sw (=4) is calibrated for a vb100 icon — normalise it to THIS icon's
+          // viewBox or a vb24 (Lucide/iconify) icon gets a 17%-wide outline that fills the whole shape.
           const col = s.fill && s.fill !== "none" ? s.fill : ink;
-          out.push(`<path d="${s.d}" fill="${col}" fill-opacity="${clamp((ts - 0.5) * 2, 0, 1).toFixed(3)}" stroke="${col}" stroke-width="${Math.max(2, sw * 0.5)}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${((1 - ts) * L).toFixed(1)}"/>`);
+          const ow = Math.max(0.6, vbw * sw / 100);
+          out.push(`<path d="${s.d}" fill="${col}" fill-opacity="${(clamp((ts - 0.5) * 2, 0, 1) * 0.22).toFixed(3)}" stroke="${col}" stroke-width="${ow.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${((1 - ts) * L).toFixed(1)}"/>`);
         } else {
           out.push(`<path d="${s.d}" fill="none" stroke="${s.stroke || ink}" stroke-width="${s.width || sw}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${((1 - ts) * L).toFixed(1)}"/>`);
         }

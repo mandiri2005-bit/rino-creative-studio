@@ -149,14 +149,13 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     const sw = Math.max(0.6, (parseFloat(viewBox.split(/\s+/)[2]) || 100) * (pack.stroke.width / 100));
     strokes = strokes.map((s) => ({ ...s, width: sw }));
 
-    // color genre: recolor the (monochrome) lib icon to a palette colour + emit a chip colour.
-    // Skip elements that already carry their own colours (Recraft "color"/raster keep theirs).
+    // color genre: KEEP the icon's own colours (Rino: don't force a palette blue over the real icon
+    // colour) — just emit a soft colour CHIP behind it for the "berwarna" pop. Mono icons stay their
+    // natural ink; genuinely multi-colour iconify icons keep their colours. The renderer draws fill
+    // icons as a thin outline + LIGHT tint (not a solid blob), so they read as drawn line icons.
     let chip = null;
     if (colorize && PALETTE.length && assetSource !== "recraft" && !el.raster) {
-      const c = PALETTE[elIdx % PALETTE.length];
-      strokes = strokes.map((s) => ({ ...s, stroke: c }));
-      if (libShapes && libShapes.length) libShapes = libShapes.map((s) => ({ ...s, fill: c }));
-      chip = c;
+      chip = PALETTE[elIdx % PALETTE.length];
     }
 
     const beat = drawBeatFor(el.id, plan.beats, Math.min(1.5, duration));

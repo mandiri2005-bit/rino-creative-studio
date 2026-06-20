@@ -120,6 +120,9 @@ export async function audioProcessor(job, deps) {
       // sceneComplete's audio "fallback". Last resort; if no silentAudio (old mock) → rethrow.
       if (typeof deps.generationClient.silentAudio !== "function") throw e;
       audioErr = e.message; audioFellBack = true;
+      // LOG it — the silent fallback used to be invisible in logs (only stored on the scene row),
+      // so "no sound" had no findable cause. This surfaces the real TTS error (timeout/key/provider).
+      console.warn(`[audio ${jobId}/${sceneIndex}] TTS failed → SILENT track: ${e.message}`);
       a = await deps.generationClient.silentAudio(base, tmpDir);
     }
     const duration = (await ffprobeDuration(a.path)) || a.durationSeconds || Number(scene.estSeconds) || 0;

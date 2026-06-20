@@ -111,7 +111,7 @@ const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<S
 const FilledShapes: React.FC<{ shapes: PlanShape[]; viewBox: string; width: number; height: number; startFrame: number; durFrames: number }> = ({ shapes, viewBox, width, height, startFrame, durFrames }) => {
   const frame = useCurrentFrame();
   const vbw = Number(viewBox.split(/\s+/)[2]) || 100;
-  const outline = Math.max(1.5, vbw / 64); // viewBox-relative outline so the trace is visible at any scale
+  const outline = Math.max(0.6, (vbw * 4) / 100); // viewBox-normalised thin outline (vb24 → ~1px, not 17%)
   const n = Math.max(1, shapes.length);
   const per = Math.max(1, durFrames) / n; // each shape gets an equal slice → drawn in sequence
   return (
@@ -126,7 +126,7 @@ const FilledShapes: React.FC<{ shapes: PlanShape[]; viewBox: string; width: numb
               key={i}
               d={s.d}
               fill={col}
-              fillOpacity={Math.max(0, Math.min(1, (ts - 0.5) * 2))}
+              fillOpacity={Math.max(0, Math.min(1, (ts - 0.5) * 2)) * 0.22 /* HALUS: light tint, not a solid blob */}
               stroke={col}
               strokeWidth={(s.width as number) || outline}
               strokeLinecap="round"
