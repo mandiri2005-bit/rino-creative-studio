@@ -28,9 +28,12 @@ describe("sceneKind — honors the Python segmenter's snake_case", () => {
 });
 
 describe("sceneComplete / sceneFailed predicates", () => {
-  it("complete needs audio done + visual done/fallback", () => {
+  it("complete needs audio done/fallback + visual done/fallback", () => {
     assert.equal(sceneComplete({ audioStatus: "done", visualStatus: "done" }), true);
     assert.equal(sceneComplete({ audioStatus: "done", visualStatus: "fallback" }), true);
+    // audio "fallback" = silent track (TTS failed) → still counts complete, job not killed
+    assert.equal(sceneComplete({ audioStatus: "fallback", visualStatus: "done" }), true);
+    assert.equal(sceneComplete({ audioStatus: "fallback", visualStatus: "fallback" }), true);
     assert.equal(sceneComplete({ audioStatus: "done", visualStatus: "pending" }), false);
     assert.equal(sceneComplete({ audioStatus: "pending", visualStatus: "done" }), false);
   });

@@ -26,7 +26,7 @@ function r() { return sharedConnection(); }
 export function sceneComplete(scene) {
   return (
     scene &&
-    scene.audioStatus === "done" &&
+    (scene.audioStatus === "done" || scene.audioStatus === "fallback") &&   // "fallback" = silent track
     (scene.visualStatus === "done" || scene.visualStatus === "fallback")
   );
 }

@@ -55,6 +55,45 @@ async function makePlaceholder(tmpDir, sceneIndex, W = 1280, H = 720) {
   return { path: out, kind: "image", placeholder: true };
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A SILENT WAV the length of the scene — the audio counterpart to makePlaceholder. When
+// TTS fails after retries, the scene degrades to silence instead of failing the whole video
+// (sceneComplete counts an audio "fallback", so planAdvance still completes the job). Pure
+// ffmpeg/lavfi, no API/keys. Lets GEN_FETCH_TIMEOUT_MS go back to a safe value: a timed-out
+// TTS no longer kills the job.
+async function makeSilentAudio(tmpDir, sceneIndex, dur) {
+  const out = join(tmpDir, `audio_${sceneIndex}.wav`);
+  const d = Math.max(0.5, Number(dur) || 2);
+  await run(FFMPEG, ["-v", "error", "-y", "-f", "lavfi", "-i",
+    "anullsrc=channel_layout=stereo:sample_rate=48000", "-t", String(d), out]);
+  return { path: out, durationSeconds: d, silent: true };
+}
+
+// De-burst clip submits: a 20-scene job fires ~10 Veo /submit at once → laozhang's Veo group
+// 429s ("当前分组上游负载已饱和" / upstream load saturated). Cap concurrent SUBMITS (poll/stream
+// stay unbounded — they're spread over time anyway). Per-process; env VIDEO_CLIP_CONCURRENCY.
+const CLIP_SUBMIT_RETRIES = Math.max(0, Number(process.env.VIDEO_CLIP_SUBMIT_RETRIES || 3));
+const CLIP_SUBMIT_BACKOFF_MS = Math.max(500, Number(process.env.VIDEO_CLIP_SUBMIT_BACKOFF_MS || 6000));
+let _clipMax = Math.max(1, Number(process.env.VIDEO_CLIP_CONCURRENCY || 3));
+let _clipActive = 0;
+const _clipWaiters = [];
+function _clipAcquire() {
+  if (_clipActive < _clipMax) { _clipActive++; return Promise.resolve(); }
+  return new Promise((res) => _clipWaiters.push(res));
+}
+function _clipRelease() {
+  const next = _clipWaiters.shift();
+  if (next) next();
+  else _clipActive = Math.max(0, _clipActive - 1);
+}
+// Run fn() holding one clip-submit slot (released in finally so a throw never leaks).
+export async function withClipSlot(fn) {
+  await _clipAcquire();
+  try { return await fn(); } finally { _clipRelease(); }
+}
+export function _setClipSlotsForTest(n) { _clipMax = Math.max(1, Number(n)); _clipActive = 0; _clipWaiters.length = 0; }
+
 // ── Synthetic (no API keys) ───────────────────────────────────────────────────
 export function syntheticGenerationClient(opts = {}) {
   const W = opts.width || 1280, H = opts.height || 720, fps = opts.fps || 30;
@@ -85,6 +124,9 @@ export function syntheticGenerationClient(opts = {}) {
     },
     async placeholderImage(scene, tmpDir) {
       return makePlaceholder(tmpDir, scene.sceneIndex, W, H);
+    },
+    async silentAudio(scene, tmpDir) {
+      return makeSilentAudio(tmpDir, scene.sceneIndex, scene.estSeconds);
     },
     async refundVideoJob() { return { skipped: "synthetic" }; },
     async meterUsage() { return { credits: 0, skipped: "synthetic" }; },
@@ -183,17 +225,35 @@ export function httpGenerationClient(opts = {}) {
           return { path: out };
         } catch { /* fall through to the OpenAI-compatible path */ }
       }
-      const r = await fetchT(`${PYTHON_API}${ttsAudioPath}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders(scene) },
-        body: JSON.stringify({ text: scene.text, voice: scene.voice, model: model || undefined, scene_index: scene.sceneIndex }),
-      });
-      if (!r.ok) throw new Error(`tts ${r.status}: ${(await r.text()).slice(0, 200)}`);
-      const data = await r.json();
-      if (data.audio_b64) await writeFile(out, Buffer.from(data.audio_b64, "base64"));
-      else if (data.audio_url) await getBytes(data.audio_url, {}, out);
-      else throw new Error("tts response had no audio_b64/audio_url");
-      return { path: out, durationSeconds: data.duration_seconds };
+      // Retry the OpenAI-compatible TTS on TRANSIENT failure (fetch timeout / 5xx) before
+      // giving up — the worker then degrades to a silent track (never a job-kill). A 4xx is a
+      // real caller error → no retry. env GEN_TTS_RETRIES (default 2).
+      const ttsRetries = Math.max(0, Number(process.env.GEN_TTS_RETRIES || 2));
+      let lastErr;
+      for (let attempt = 0; attempt <= ttsRetries; attempt++) {
+        try {
+          const r = await fetchT(`${PYTHON_API}${ttsAudioPath}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders(scene) },
+            body: JSON.stringify({ text: scene.text, voice: scene.voice, model: model || undefined, scene_index: scene.sceneIndex }),
+          });
+          if (!r.ok) {
+            if (r.status >= 500 && attempt < ttsRetries) { lastErr = new Error(`tts ${r.status}`); await sleep(2000 * (attempt + 1)); continue; }
+            throw new Error(`tts ${r.status}: ${(await r.text()).slice(0, 200)}`);
+          }
+          const data = await r.json();
+          if (data.audio_b64) await writeFile(out, Buffer.from(data.audio_b64, "base64"));
+          else if (data.audio_url) await getBytes(data.audio_url, {}, out);
+          else throw new Error("tts response had no audio_b64/audio_url");
+          return { path: out, durationSeconds: data.duration_seconds };
+        } catch (e) {
+          lastErr = e;
+          const transient = /timeout|aborted|fetch failed|network|ECONN|ETIMEDOUT/i.test(e.message || "");
+          if (transient && attempt < ttsRetries) { await sleep(2000 * (attempt + 1)); continue; }
+          throw e;
+        }
+      }
+      throw lastErr;
     },
 
     async generateVisual(scene, tmpDir) {
@@ -220,13 +280,25 @@ export function httpGenerationClient(opts = {}) {
       // translate to the real upstream id + pick the /veo or /sora route family.
       const modelId = CLIP_MODEL_IDS[scene.clipModel] || scene.clipModelId || "veo-3.1-generate-preview";
       const prov = clipProvider(scene.clipModel);
-      const submit = await fetch(`${PYTHON_API}/${prov}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...h },
-        body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId, aspect: scene.aspectRatio || "16:9", seed: scene.seed ? String(scene.seed) : "" }),
+      // De-burst (withClipSlot caps concurrent submits) + retry on 429/503 ("upstream load
+      // saturated, retry later") — both are transient under a multi-scene burst, so riding them
+      // out yields a real CLIP instead of silently degrading to the clip→image fallback.
+      let task_id;
+      await withClipSlot(async () => {
+        for (let attempt = 0; ; attempt++) {
+          const submit = await fetch(`${PYTHON_API}/${prov}/submit`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...h },
+            body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId, aspect: scene.aspectRatio || "16:9", seed: scene.seed ? String(scene.seed) : "" }),
+          });
+          if (submit.ok) { ({ task_id } = await submit.json()); return; }
+          if ((submit.status === 429 || submit.status === 503) && attempt < CLIP_SUBMIT_RETRIES) {
+            await sleep(CLIP_SUBMIT_BACKOFF_MS * (attempt + 1));
+            continue;
+          }
+          throw new Error(`${prov} submit ${submit.status}`);
+        }
       });
-      if (!submit.ok) throw new Error(`${prov} submit ${submit.status}`);
-      const { task_id } = await submit.json();
       if (!task_id) throw new Error(`${prov} submit returned no task_id`);
       const deadline = Date.now() + clipTimeoutMs;
       // poll loop runs INSIDE the visual worker (separate process) → never blocks the API loop
@@ -249,6 +321,11 @@ export function httpGenerationClient(opts = {}) {
     // (for clips) the clip→image fallback are unavailable, so the video completes.
     async placeholderImage(scene, tmpDir) {
       return makePlaceholder(tmpDir, scene.sceneIndex, opts.width, opts.height);
+    },
+    // Last-resort silent narration — the worker calls this when TTS fails after retries,
+    // so ONE bad scene degrades to silence instead of failing the whole video.
+    async silentAudio(scene, tmpDir) {
+      return makeSilentAudio(tmpDir, scene.sceneIndex, scene.estSeconds);
     },
 
     // Refund a FAILED assembly's actual spend. Internal-auth only; idempotent on the

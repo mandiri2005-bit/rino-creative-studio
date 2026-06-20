@@ -105,19 +105,30 @@ export async function audioProcessor(job, deps) {
     const scene = await deps.store.getScene(jobId, sceneIndex);
     if (!meta || !scene) return { skipped: "missing" };
     if (JOB_TERMINAL.has(meta.status)) return { skipped: "job-terminal" };
-    if (scene.audioStatus === "done") return { skipped: "already-done" }; // idempotent: no re-charge
+    if (scene.audioStatus === "done" || scene.audioStatus === "fallback") return { skipped: "already-done" }; // idempotent: no re-charge
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
-    const a = await deps.generationClient.synthesizeAudio(
-      { jobId, sceneIndex, text: scene.text, estSeconds: Number(scene.estSeconds),
-        voice: meta.voice || undefined, ttsModel: meta.ttsModel || undefined,
-        tenantId: meta.tenantId, userId: meta.userId }, tmpDir);
+    const base = { jobId, sceneIndex, text: scene.text, estSeconds: Number(scene.estSeconds),
+      voice: meta.voice || undefined, ttsModel: meta.ttsModel || undefined,
+      tenantId: meta.tenantId, userId: meta.userId };
+    let a, audioFellBack = false, audioErr = null;
+    try {
+      a = await deps.generationClient.synthesizeAudio(base, tmpDir);
+    } catch (e) {
+      // TTS failed after its own retries → degrade this ONE scene to a SILENT track so the
+      // whole video doesn't fail (mirrors the visual placeholder). Counts as complete via
+      // sceneComplete's audio "fallback". Last resort; if no silentAudio (old mock) → rethrow.
+      if (typeof deps.generationClient.silentAudio !== "function") throw e;
+      audioErr = e.message; audioFellBack = true;
+      a = await deps.generationClient.silentAudio(base, tmpDir);
+    }
     const duration = (await ffprobeDuration(a.path)) || a.durationSeconds || Number(scene.estSeconds) || 0;
     const up = await maybeUpload(jobId, meta.tenantId, "audio", a.path);
     await deps.store.setSceneFields(jobId, sceneIndex, {
-      audioStatus: "done", audioPath: up.path, audioKey: up.key, durationActual: duration.toFixed(3),
+      audioStatus: audioFellBack ? "fallback" : "done", audioPath: up.path, audioKey: up.key,
+      durationActual: duration.toFixed(3), ...(audioFellBack ? { audioError: audioErr } : {}),
     });
-    return { sceneIndex };
+    return { sceneIndex, ...(audioFellBack ? { fellBack: true } : {}) };
   } catch (e) {
     await deps.store.setSceneFields(jobId, sceneIndex, { audioStatus: "failed", audioError: e.message }).catch(() => {});
     return { sceneIndex, failed: e.message };

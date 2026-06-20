@@ -12,7 +12,7 @@ import {
   xfadeOffsets, buildFilterComplex, buildStitchArgs, buildSceneClipArgs, buildConcatArgs,
   buildXfadeConcatArgs, kenBurnsExpr, runFfmpeg, captionWindows, buildSrt, buildAss, buildAssFromScenes,
 } from "../../backend/video/ffmpeg.mjs";
-import { CLIP_MODEL_IDS } from "../../backend/video/generationClient.mjs";
+import { CLIP_MODEL_IDS, withClipSlot, _setClipSlotsForTest } from "../../backend/video/generationClient.mjs";
 import {
   assertWorkerProcess, markVideoWorker, isVideoWorker,
 } from "../../backend/video/runtime.mjs";
@@ -312,6 +312,32 @@ describe("CLIP_MODEL_IDS — valid laozhang Veo model names", () => {
     for (const bad of ["veo-3.1", "veo-3.1-fast", "veo-3.1-fl"]) {
       assert.ok(!vals.includes(bad), `legacy "${bad}" must not be used`);
     }
+  });
+});
+
+// ── Clip-submit de-burst semaphore (Veo 429 "upstream load saturated" mitigation) ──
+describe("withClipSlot — caps concurrent Veo submits to de-burst the upstream", () => {
+  it("never lets more than N clip submits run at once", async () => {
+    _setClipSlotsForTest(2);
+    let live = 0, peak = 0;
+    const task = () => withClipSlot(async () => {
+      live++; peak = Math.max(peak, live);
+      await new Promise((r) => setTimeout(r, 15));
+      live--;
+    });
+    await Promise.all(Array.from({ length: 8 }, task));
+    assert.equal(peak, 2, `peak concurrency should be capped at 2, got ${peak}`);
+    assert.equal(live, 0, "all slots released");
+    _setClipSlotsForTest(3); // reset to the default cap (min clamp is 1)
+  });
+  it("releases the slot even when the task throws", async () => {
+    _setClipSlotsForTest(1);
+    await assert.rejects(withClipSlot(async () => { throw new Error("boom"); }), /boom/);
+    // if the slot leaked, this second call would hang forever (await would never resolve)
+    let ran = false;
+    await withClipSlot(async () => { ran = true; });
+    assert.ok(ran, "slot was released after the throw");
+    _setClipSlotsForTest(3);
   });
 });
 
