@@ -503,11 +503,61 @@ export function buildXfadeConcatArgs(clipPaths, durations, outPath, opts = {}) {
 }
 
 /**
- * Render each scene to its own clip, then byte-concat them (concat demuxer, -c
- * copy). Each per-scene render is a small, bounded filter graph, so this scales to
- * arbitrarily long videos (100+ scenes) where the single-pass xfade graph OOMs.
- * Trade-off: hard cuts between scenes (no crossfade) — the per-scene audio gap +
- * the open/close fades keep transitions clean.
+ * Pure planner: split `count` clips into chunks of at most `chunkSize` so each xfade
+ * graph decodes only ~chunkSize clips (bounded memory). Returns [startIndex, len] pairs;
+ * a trailing chunk of 1 is a lone clip (carried forward, crossfaded at the next level).
+ * Exported for unit testing.
+ */
+export function planXfadeChunks(count, chunkSize) {
+  const size = Math.max(2, Number(chunkSize) || 2);
+  const chunks = [];
+  for (let i = 0; i < count; i += size) chunks.push([i, Math.min(size, count - i)]);
+  return chunks;
+}
+
+/**
+ * Crossfade pre-rendered per-scene clips into ONE mp4 with BOUNDED memory. When there are
+ * more clips than VIDEO_XFADE_CHUNK, render xfade-concat in chunks (each a small graph),
+ * ffprobe the real segment durations, then crossfade the segments — recursively. Peak
+ * simultaneous decoders ≈ chunk size, so seams crossfade at ANY scene count without the
+ * single-graph OOM that used to force a byte-concat hard cut on long videos.
+ * `durations` = each clip's length (s), same order as `clipPaths`.
+ */
+export async function stitchXfadeChunked(clipPaths, durations, outPath, opts = {}, level = 0) {
+  const { join } = await import("node:path");
+  const cwd = opts.cwd || ".";
+  const chunkSize = Math.max(2, Number(opts.xfadeChunk ?? process.env.VIDEO_XFADE_CHUNK ?? 12));
+  const n = clipPaths.length;
+  // Small enough for one graph (the proven-safe size) — render it directly.
+  if (n <= chunkSize) {
+    await runFfmpeg(buildXfadeConcatArgs(clipPaths, durations, outPath, opts), { cwd, encode: true });
+    return;
+  }
+  // Otherwise: chunk → render each chunk to a segment → recurse on the segments.
+  const segPaths = [], segDurs = [];
+  const chunks = planXfadeChunks(n, chunkSize);
+  for (let g = 0; g < chunks.length; g++) {
+    const [start, len] = chunks[g];
+    const cp = clipPaths.slice(start, start + len);
+    const cd = durations.slice(start, start + len);
+    if (len === 1) {
+      segPaths.push(cp[0]); segDurs.push(cd[0]);   // lone tail — crossfades at next level
+      continue;
+    }
+    const seg = join(cwd, `xseg_L${level}_${g}.mp4`);
+    await runFfmpeg(buildXfadeConcatArgs(cp, cd, seg, opts), { cwd, encode: true });
+    segPaths.push(seg);
+    // measure the real segment length (xfades shrink it) so the next level's offsets are exact
+    segDurs.push((await ffprobeDuration(seg)) || cd.reduce((a, b) => a + b, 0));
+  }
+  return stitchXfadeChunked(segPaths, segDurs, outPath, opts, level + 1);
+}
+
+/**
+ * Render each scene to its own clip, then join them. Each per-scene render is a small,
+ * bounded filter graph, so this scales to arbitrarily long videos (100+ scenes) where the
+ * single-pass xfade graph OOMs. Seams crossfade via stitchXfadeChunked (bounded-memory) at
+ * ANY scene count; VIDEO_SEAM_XFADE=0 falls back to a byte-concat hard cut.
  */
 export async function stitchPerScene(scenes, outPath, opts = {}) {
   const { writeFile } = await import("node:fs/promises");
@@ -540,16 +590,17 @@ export async function stitchPerScene(scenes, outPath, opts = {}) {
     while (next < scenes.length) await renderScene(next++);
   }));
 
-  // Seam crossfade (re-encode) for smoother transitions — but only up to a scene-count
-  // cap: the xfade graph decodes ALL clips at once, so very long videos fall back to the
-  // OOM-safe byte-concat hard cut. VIDEO_SEAM_XFADE=0 disables (pure byte-concat).
+  // Seam crossfade (re-encode) for smoother transitions — now at ANY scene count via
+  // bounded-memory chunking (stitchXfadeChunked): clips beyond VIDEO_XFADE_CHUNK are
+  // crossfaded in chunks so the graph never decodes the whole video at once (no OOM).
+  // The old VIDEO_XFADE_CONCAT_MAX hard cliff is retired. VIDEO_SEAM_XFADE=0 disables
+  // crossfade entirely → pure byte-concat hard cut.
   const seamXf = Number(opts.seamXf ?? process.env.VIDEO_SEAM_XFADE ?? 0.4);
-  const xfadeMax = Math.max(1, Number(process.env.VIDEO_XFADE_CONCAT_MAX ?? 12));
-  if (seamXf > 0.05 && scenes.length > 1 && scenes.length <= xfadeMax) {
+  if (seamXf > 0.05 && scenes.length > 1) {
     const durs = scenes.map((s) => Math.max(0.2, Number(s.duration) || 0.2));
-    await runFfmpeg(buildXfadeConcatArgs(clipPaths, durs, outPath, { ...opts, seamXf }), { cwd, encode: true });
+    await stitchXfadeChunked(clipPaths, durs, outPath, { ...opts, seamXf, cwd });
   } else {
-    // byte-concat hard-cut (huge videos / disabled) — paths relative to cwd; quote-escape.
+    // byte-concat hard-cut (single scene / crossfade disabled) — paths relative to cwd; quote-escape.
     const list = join(cwd, "concat.txt");
     await writeFile(list, clipPaths.map((c) => `file '${c.split("/").pop().replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
     await runFfmpeg(buildConcatArgs("concat.txt", outPath), { cwd });

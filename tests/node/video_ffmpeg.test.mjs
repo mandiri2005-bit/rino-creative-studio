@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   xfadeOffsets, buildFilterComplex, buildStitchArgs, buildSceneClipArgs, buildConcatArgs,
   buildXfadeConcatArgs, kenBurnsExpr, runFfmpeg, captionWindows, buildSrt, buildAss, buildAssFromScenes,
+  planXfadeChunks,
 } from "../../backend/video/ffmpeg.mjs";
 import { CLIP_MODEL_IDS, withClipSlot, _setClipSlotsForTest } from "../../backend/video/generationClient.mjs";
 import {
@@ -338,6 +339,32 @@ describe("withClipSlot — caps concurrent Veo submits to de-burst the upstream"
     await withClipSlot(async () => { ran = true; });
     assert.ok(ran, "slot was released after the throw");
     _setClipSlotsForTest(3);
+  });
+});
+
+// ── Bounded-memory chunk planner (crossfade at any scene count without OOM) ──
+describe("planXfadeChunks (bounded-memory chunking)", () => {
+  it("returns the whole list as one chunk when it fits", () => {
+    assert.deepEqual(planXfadeChunks(8, 12), [[0, 8]]);
+    assert.deepEqual(planXfadeChunks(12, 12), [[0, 12]]);
+  });
+  it("splits into chunks of at most chunkSize (15 @ 6 → 6+6+3)", () => {
+    assert.deepEqual(planXfadeChunks(15, 6), [[0, 6], [6, 6], [12, 3]]);
+  });
+  it("keeps a lone tail chunk of 1 (13 @ 6 → 6+6+1)", () => {
+    assert.deepEqual(planXfadeChunks(13, 6), [[0, 6], [6, 6], [12, 1]]);
+  });
+  it("clamps a degenerate chunkSize to >=2 (never an infinite loop)", () => {
+    assert.deepEqual(planXfadeChunks(5, 1), [[0, 2], [2, 2], [4, 1]]);
+    assert.deepEqual(planXfadeChunks(5, 0), [[0, 2], [2, 2], [4, 1]]);
+  });
+  it("covers every clip exactly once (no gaps/overlap) for many sizes", () => {
+    for (const [n, k] of [[15, 12], [25, 12], [100, 12], [13, 6], [7, 3]]) {
+      const chunks = planXfadeChunks(n, k);
+      const covered = chunks.flatMap(([s, len]) => Array.from({ length: len }, (_, i) => s + i));
+      assert.deepEqual(covered, Array.from({ length: n }, (_, i) => i), `n=${n} k=${k}`);
+      assert.ok(chunks.every(([, len]) => len <= k), `no chunk exceeds k for n=${n} k=${k}`);
+    }
   });
 });
 
