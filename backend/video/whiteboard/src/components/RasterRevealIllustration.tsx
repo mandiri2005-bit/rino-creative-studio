@@ -58,14 +58,12 @@ export const RasterRevealIllustration: React.FC<{
     return ba % 2 === 0 ? a.x - b.x : b.x - a.x; // snake: even band L→R, odd band R→L
   });
 
-  const N = Math.max(1, units.length);
   const total = Math.max(1, durationInFrames);
   const tGlobal = interpolate(frame, [startFrame, startFrame + total], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
-  const SPAN = 0.92; // all units revealed by 92% of the window, then a brief settle
-  const WIN = 0.06; // each unit fades in over this fraction (soft rolling frontier)
+  const SPAN = 0.92; // reveal completes by 92% of the window, then a brief settle
 
   // NO mask units (vectorize unavailable, e.g. flux raster without recraft) → reveal the FULL
   // image with a left→right wipe so the (paid) raster is never lost or masked out to blank.
@@ -80,13 +78,14 @@ export const RasterRevealIllustration: React.FC<{
     );
   }
 
-  // hand cursor rides the same ordered snake at the reveal frontier
-  const cursor = Math.min(1, tGlobal / SPAN) * (N - 1);
-  const i0 = Math.floor(cursor);
-  const i1 = Math.min(N - 1, i0 + 1);
-  const f = cursor - i0;
-  const hx = units[i0].x + (units[i1].x - units[i0].x) * f;
-  const hy = units[i0].y + (units[i1].y - units[i0].y) * f;
+  // Reveal the photo top→bottom THROUGH the traced forms: mask = all forms (so edges look inked,
+  // not a hard wipe), GATED by a growing vertical clip so even a few big potrace shapes draw on
+  // GRADUALLY instead of dumping at once. The hand rides the frontier, sweeping L↔R as it descends.
+  const clipId = maskId + "c";
+  const revP = Math.min(1, tGlobal / SPAN);
+  const revealH = Math.max(0, (vh || 100) * revP);
+  const hx = (vx || 0) + (vw || 100) * (0.5 + 0.34 * Math.sin(revP * Math.PI * 5));
+  const hy = (vy || 0) + revealH;
   const handVisible = tGlobal > 0.005 && tGlobal < 0.985;
 
   return (
@@ -94,29 +93,17 @@ export const RasterRevealIllustration: React.FC<{
       <svg width={width} height={height} viewBox={viewBox}>
         <defs>
           <mask id={maskId} maskUnits="userSpaceOnUse">
-            {units.map((u, i) => {
-              const center = (i / N) * SPAN;
-              const op = interpolate(tGlobal, [center, center + WIN], [0, 1], {
-                extrapolateLeft: "clamp",
-                extrapolateRight: "clamp",
-              });
-              if (op <= 0) return null;
-              return u.el === "shape" ? (
-                <path key={i} d={u.d} fill="white" opacity={op} />
+            {units.map((u, i) =>
+              u.el === "shape" ? (
+                <path key={i} d={u.d} fill="white" />
               ) : (
-                <path
-                  key={i}
-                  d={u.d}
-                  fill="none"
-                  stroke="white"
-                  strokeWidth={brush}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  opacity={op}
-                />
-              );
-            })}
+                <path key={i} d={u.d} fill="none" stroke="white" strokeWidth={brush} strokeLinecap="round" strokeLinejoin="round" />
+              )
+            )}
           </mask>
+          <clipPath id={clipId}>
+            <rect x={vx || 0} y={vy || 0} width={vw} height={revealH} />
+          </clipPath>
         </defs>
         <image
           href={raster}
@@ -126,6 +113,7 @@ export const RasterRevealIllustration: React.FC<{
           height={vh}
           preserveAspectRatio="xMidYMid meet"
           mask={`url(#${maskId})`}
+          clipPath={`url(#${clipId})`}
         />
       </svg>
       {handVisible ? (

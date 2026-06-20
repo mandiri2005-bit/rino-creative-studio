@@ -166,21 +166,25 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         }
         continue;
       }
-      const N = Math.max(1, units.length), SPAN = 0.92, WIN = 0.06;
-      const id = `rv${clipId++}`;
-      out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})"><mask id="${id}" maskUnits="userSpaceOnUse">`);
-      units.forEach((u, i) => {
-        const op = clamp((p - (i / N) * SPAN) / WIN, 0, 1);
-        if (op <= 0) return;
+      // Reveal the photo top→bottom THROUGH the traced forms: the mask = all traced shapes (the
+      // image's own forms, so edges look inked, not a hard wipe line), GATED by a growing vertical
+      // clip so even a few big potrace shapes draw on GRADUALLY instead of dumping at once. The hand
+      // rides the frontier, sweeping L↔R as it descends — i.e. the scene gets "sketched" in.
+      const SPAN = 0.92;
+      const id = `rv${clipId++}`, cid = `rc${clipId++}`;
+      const revP = clamp(p / SPAN, 0, 1), revealH = Math.max(0, mvh * revP);
+      out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})">`);
+      out.push(`<clipPath id="${cid}"><rect x="${mvx}" y="${mvy}" width="${mvw}" height="${revealH.toFixed(1)}"/></clipPath>`);
+      out.push(`<mask id="${id}" maskUnits="userSpaceOnUse">`);
+      for (const u of units) {
         out.push(u.el === "shape"
-          ? `<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`
-          : `<path d="${u.d}" fill="none" stroke="white" stroke-width="${brush}" stroke-linecap="round" stroke-linejoin="round" opacity="${op.toFixed(3)}"/>`);
-      });
-      out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})"/></g>`);
-      if (p > 0.005 && p < 0.985 && N > 0) {
-        const cur = Math.min(1, p / SPAN) * (N - 1), i0 = Math.floor(cur), i1 = Math.min(N - 1, i0 + 1), fr = cur - i0;
-        const hx = units[i0].x + (units[i1].x - units[i0].x) * fr, hy = units[i0].y + (units[i1].y - units[i0].y) * fr;
-        hands.push({ x: mgx + hx * ms, y: mgy + hy * ms, size: Math.max(120, iconH * 0.5), nib: ink });
+          ? `<path d="${u.d}" fill="white"/>`
+          : `<path d="${u.d}" fill="none" stroke="white" stroke-width="${brush}" stroke-linecap="round" stroke-linejoin="round"/>`);
+      }
+      out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})" clip-path="url(#${cid})"/></g>`);
+      if (p > 0.005 && p < 0.985) {
+        const hx = mvw * (0.5 + 0.34 * Math.sin(revP * Math.PI * 5));  // sweep L↔R while descending
+        hands.push({ x: mgx + hx * ms, y: mgy + revealH * ms, size: Math.max(120, iconH * 0.5), nib: ink });
       }
     } else {
       // color genre: soft colour chip behind the icon (icon stroke is the same colour)

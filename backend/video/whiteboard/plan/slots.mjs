@@ -6,6 +6,8 @@
 // so any valid plan lays out without an "unknown slot" error. Pure data + one fn.
 
 export const SLOT_MAP_16_9 = {
+  // detail genre: ONE full-frame hero illustration that draws on (covers the whole 16:9 canvas)
+  full_canvas: { x: 960, y: 540, w: 1920, h: 1080 },
   // single_concept
   center: { x: 960, y: 540, w: 360, h: 320 },
   top_center: { x: 960, y: 210, w: 700, h: 150 },

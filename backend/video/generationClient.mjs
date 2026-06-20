@@ -400,13 +400,13 @@ export function httpGenerationClient(opts = {}) {
     // Python /video/whiteboard-raster (laozhang flux-kontext-pro — Python owns the image key).
     // Returns base64 string or null; the worker vectorizes it (recraft) into the reveal mask and
     // meters flux-kontext-pro itself. null → caller falls back to Recraft / handwriting.
-    async generateWhiteboardRaster(ctx, { query, provider, aspect, seed } = {}) {
+    async generateWhiteboardRaster(ctx, { query, provider, aspect, seed, mode } = {}) {
       const r = await fetch(`${PYTHON_API}/video/whiteboard-raster`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
         body: JSON.stringify({
           query: query || "", provider: provider || "flux",
-          aspect_ratio: aspect || "1:1", seed: Number(seed) || 0,
+          aspect_ratio: aspect || "1:1", seed: Number(seed) || 0, mode: mode || "subject",
         }),
       });
       if (!r.ok) throw new Error(`whiteboard-raster ${r.status}`);

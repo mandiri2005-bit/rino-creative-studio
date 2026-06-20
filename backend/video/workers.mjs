@@ -252,57 +252,43 @@ export async function visualProcessor(job, deps) {
               const { parseSvg, parseSvgShapes } = await import("./whiteboard/svg.mjs");
               const meters = [];
               if (genre === "detail") {
-                // raster-reveal: provider = recraft (default) OR flux (laozhang flux-kontext-pro,
-                // Guide-2 §I) via WB_RASTER_PROVIDER. FLUX gens the raster (Python route) + recraft
-                // vectorizes the mask; falls back to recraft raster if flux returns nothing.
-                const provider = (process.env.WB_RASTER_PROVIDER || "recraft").toLowerCase();
-                const { generateRecraftRaster, vectorizeRasterB64, isRecraftCreditSkip } = await import("./whiteboard/visuals.mjs");
+                // detail = ONE cohesive HERO illustration per SCENE (Golpo look), drawn on via a
+                // LOCAL potrace line-trace reveal (free, no recraft). 1 flux image + 1 local trace per
+                // scene → ~5× cheaper than the old per-element raster-reveal, and the whole scene is a
+                // single realistic illustration that "draws" itself instead of scattered photos.
+                const { traceMaskB64 } = await import("./whiteboard/visuals.mjs");
                 const ctx = { jobId, tenantId: meta.tenantId, userId: meta.userId };
-                for (const el of plan.elements || []) {
-                  const q = el.asset_query || el.id;
-                  try {
-                    const ckind = provider === "flux" ? "raster-flux" : "raster";
-                    const hit = await deps.store.getCachedAsset?.(ckind, q); // cross-job reuse
-                    if (hit && hit.raster) {
-                      el.raster = hit.raster; el.maskViewBox = hit.maskViewBox; el.maskStrokes = hit.maskStrokes;
-                      el.maskShapes = hit.maskShapes; el.assetSource = `${ckind}-cache`;
-                      el.license = hit.license || "generated:provider-terms"; continue; // no gen, no meter
+                const aspect = meta.aspectRatio === "9:16" ? "9:16" : "16:9";
+                const heroQuery = ([plan.visual_metaphor, narration].filter(Boolean).join(". ").trim().slice(0, 300))
+                  || plan.elements?.[0]?.asset_query || "scene";
+                try {
+                  const hkey = `${aspect}:${heroQuery}`;
+                  const hit = await deps.store.getCachedAsset?.("hero", hkey); // cross-job reuse
+                  let raster, maskViewBox = "0 0 1024 1024", maskShapes = [], source = "flux-hero", lic = "flux-kontext-pro:provider-terms";
+                  if (hit && hit.raster) {
+                    raster = hit.raster; maskViewBox = hit.maskViewBox || maskViewBox; maskShapes = hit.maskShapes || [];
+                    source = "flux-hero-cache"; lic = hit.license || lic;
+                  } else {
+                    const b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
+                      { query: heroQuery, provider: "flux", aspect, seed: 1000 + sceneIndex * 13, mode: "hero" });
+                    if (b64) {
+                      raster = "data:image/png;base64," + b64;
+                      meters.push({ operation: "image", model: "flux-kontext-pro", units: { count: 1 } });
+                      try { ({ maskViewBox, maskShapes } = await traceMaskB64(b64)); } // FREE local line-trace (no meter)
+                      catch (te) { console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero trace failed (${te.message}) → full-image reveal`); }
+                      await deps.store.setCachedAsset?.("hero", hkey,
+                        { raster, maskViewBox, maskShapes, source, model: "flux-kontext-pro", license: lic, createdAt: new Date().toISOString() });
                     }
-                    let raster, maskSvg = null, ms, source = "recraft-raster";
-                    if (provider === "flux") {
-                      const b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
-                        { query: q, provider: "flux", aspect: "1:1", seed: 1000 + sceneIndex * 13 });
-                      if (b64) {
-                        // ALWAYS keep the paid raster — the mask (recraft vectorize) is a best-effort
-                        // EXTRA. A vectorize failure (e.g. no RECRAFT_API_KEY when using flux) must NOT
-                        // discard the image — the renderer falls back to a full-image wipe reveal.
-                        raster = "data:image/png;base64," + b64;
-                        source = "flux-raster";
-                        ms = [{ operation: "image", model: "flux-kontext-pro", units: { count: 1 } }];
-                        try { const v = await vectorizeRasterB64(b64); maskSvg = v.maskSvg; if (v.meters) ms.push(...v.meters); }
-                        catch (ve) { if (!isRecraftCreditSkip(ve.message)) console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] flux mask vectorize failed (${ve.message}) → full-image reveal`); }
-                      }
-                    }
-                    if (!raster) { // recraft (default, or flux fallback) — gen + mask together
-                      ({ raster, maskSvg, meters: ms } = await generateRecraftRaster(q, { seed: 1000 + sceneIndex * 13 }));
-                      source = "recraft-raster";
-                    }
-                    // mask is OPTIONAL — empty mask → renderer does a full-image wipe (image never lost)
-                    let viewBox = "0 0 1024 1024", strokes = [], shapes = [];
-                    if (maskSvg) {
-                      ({ viewBox, strokes } = parseSvg(maskSvg, { dropBg: true, dropLight: true }));
-                      ({ shapes } = parseSvgShapes(maskSvg, { dropBg: true }));
-                    }
-                    const model = source === "flux-raster" ? "flux-kontext-pro" : "recraft-v3";
-                    const lic = `${model}:provider-terms`;
-                    el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = source; el.license = lic;
-                    await deps.store.setCachedAsset?.(source === "flux-raster" ? "raster-flux" : "raster", q,
-                      { raster, maskViewBox: viewBox, maskStrokes: strokes, maskShapes: shapes,
-                        source, model, license: lic, createdAt: new Date().toISOString() }); // §S provenance
-                    if (ms) meters.push(...ms);
-                  } catch (ge) {
-                    if (!isRecraftCreditSkip(ge.message)) console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] raster "${q}" failed: ${ge.message}`);
                   }
+                  if (raster) {
+                    // the whole scene = ONE full-canvas hero element that draws on
+                    plan.elements = [{ id: "hero", type: "illustration", slot: "full_canvas",
+                      raster, maskViewBox, maskStrokes: [], maskShapes, assetSource: source, license: lic }];
+                    plan.beats = [{ start: 0, end: Math.max(1, Number(duration) || 6), action: "draw_icon", target: "hero" }];
+                    plan.template = "single_concept"; plan.layout = "flow"; plan.camera = [];
+                  }
+                } catch (ge) {
+                  console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero failed: ${ge.message}`);
                 }
               } else {
                 const { coveredByLibrary } = await import("./whiteboard/plan/resolver.mjs");

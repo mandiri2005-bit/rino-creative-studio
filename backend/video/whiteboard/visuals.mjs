@@ -155,6 +155,27 @@ export async function vectorizeRasterB64(b64) {
   };
 }
 
+// LOCAL line-trace reveal mask via potrace — the FREE (no API, no credits) alternative to recraft
+// vectorize for the raster-reveal "draw". Traces the hero photo's dark forms into vector subpaths;
+// the renderer reveals the photo region-by-region in a top→bottom snake with the hand on the
+// frontier → the scene gets "drawn on" (Golpo-style). Returns maskShapes/maskViewBox (no meter:
+// it's local). One compound path → split into subpaths so the reveal is progressive, biggest first,
+// capped for render safety (each shape is a per-frame mask path; too many wedges Chromium).
+export async function traceMaskB64(b64, { maxShapes = 140 } = {}) {
+  const { createRequire } = await import("node:module");
+  const potrace = createRequire(import.meta.url)("potrace");
+  const buffer = Buffer.from(b64, "base64");
+  const svg = await new Promise((resolve, reject) =>
+    potrace.trace(buffer, { threshold: 175, turdSize: 130, optTolerance: 0.8, color: "#000", background: "transparent" },
+      (err, out) => (err ? reject(err) : resolve(out))));
+  const maskViewBox = (svg.match(/viewBox="([^"]+)"/) || [])[1] || "0 0 1024 1024";
+  const d = (svg.match(/\sd="([^"]+)"/) || [])[1] || "";
+  let subs = (d.match(/[Mm][^Mm]*/g) || []).map((s) => s.trim()).filter((s) => s.length > 8);
+  if (!subs.length) throw new Error("potrace produced no subpaths");
+  if (subs.length > maxShapes) subs = subs.sort((a, b) => b.length - a.length).slice(0, maxShapes);
+  return { maskViewBox, maskShapes: subs.map((dd) => ({ d: dd, fill: "#000" })) };
+}
+
 // ── diagram: LLM graph → deterministic flowchart SVG (ported from scripts/diagram.mjs) ──
 const BLUE = "#2C6CA8", INK = "#1A1A1A", RED = "#D9534F";
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

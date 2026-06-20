@@ -7209,6 +7209,7 @@ class VideoWhiteboardRasterReq(BaseModel):
     provider: str = "flux"               # flux (flux-kontext-pro via laozhang) | recraft (Node handles recraft itself)
     aspect_ratio: str = "1:1"
     seed: int = 0
+    mode: str = "subject"                # "subject" = one centered object (icon-reveal) | "hero" = a full cohesive SCENE (detail genre, 1 image/scene, drawn on)
 
 
 @app.post("/video/whiteboard-raster")
@@ -7229,8 +7230,14 @@ async def video_whiteboard_raster(req: VideoWhiteboardRasterReq,
     if model not in IMAGE_MODELS:
         raise HTTPException(400, f"unknown image model: {model}")
     cfg = IMAGE_MODELS[model]
-    prompt = (f"{q}. Detailed realistic illustration, single clear subject, centered, "
-              "plain white background, no text, no words.")
+    if (req.mode or "subject").lower() == "hero":
+        # detail genre: ONE cohesive SCENE per scene (Golpo look) — hand-drawn ink lines + loose
+        # watercolor so the local potrace line-trace + reveal "draws" it convincingly.
+        prompt = (f"{q}. Hand-drawn ink line illustration with loose watercolor wash, a single "
+                  "cohesive scene, clear bold ink outlines, white background, no text, no words, no border.")
+    else:
+        prompt = (f"{q}. Detailed realistic illustration, single clear subject, centered, "
+                  "plain white background, no text, no words.")
     try:
         b64 = await asyncio.to_thread(
             _generate_openai_image, prompt, cfg["model"], req.aspect_ratio, "1K", "",
