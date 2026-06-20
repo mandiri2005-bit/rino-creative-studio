@@ -38,12 +38,15 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   // draw on in sequence; arrows are auto-derived per layout below.
   const layout = ["cycle", "funnel", "branch"].includes(plan.layout) ? plan.layout : "flow";
 
-  // Diagram mode: a flowchart. Drop connector/arrow ELEMENTS (arrows are auto-drawn, so the
-  // LLM's ↑ filler icons don't clutter it) and re-lay the NODES independent of the LLM's cramped
-  // slot choices. Still DYNAMIC: nodes + arrows draw on in sequence.
-  let workEls = laid.elements;
+  // Connector/arrow elements are flow FILLER the LLM inserts between concepts. In DIAGRAM the arrows
+  // are auto-drawn (below), so the LLM's ↑ icons are noise; in icons/color/lineart a connector
+  // resolves to a stray "arrow-up" chip (asset_query "arrow"/"arrow right" all score to tabler:
+  // arrow-up). Drop them in EVERY mode → a clean concept row / flowchart, never random ↑ icons.
+  // (Was the "panah ke arah atas" + "kadang ada kadang ngga" bug: only diagram filtered, not icons.)
+  const isConnectorEl = (e) => /^connector/i.test(e.slot || "") || e.type === "arrow" || e.type === "connector";
+  let workEls = laid.elements.filter((e) => !isConnectorEl(e));
   if (mode === "diagram") {
-    const nodes = laid.elements.filter((e) => !/^connector/i.test(e.slot || "") && e.type !== "arrow");
+    const nodes = workEls; // already connector-free
     const n = Math.max(1, nodes.length);
     const cx = Math.round(canvas.width * 0.5), cy = Math.round(canvas.height * 0.5);
     if (layout === "cycle") {

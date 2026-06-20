@@ -33,13 +33,16 @@ const generationClient = synthetic ? syntheticGenerationClient() : httpGeneratio
 
 const engine = startWorkers(makeDeps({ generationClient }));
 
-// One-time, idempotent: auto-expire finished videos under the R2 `videos/` prefix
-// after VIDEO_R2_TTL_DAYS (default 7). Best-effort — never blocks worker startup.
-if (!synthetic) {
+// Auto-expire finished videos under the R2 `videos/` prefix after VIDEO_R2_TTL_DAYS (default 7).
+// OPT-IN via VIDEO_R2_LIFECYCLE=1: the R2 API token usually lacks PutBucketLifecycle perms, so this
+// just logged "Access Denied" on EVERY boot. R2 lifecycle is simplest set ONCE in the Cloudflare
+// dashboard (Bucket → Settings → Object lifecycle rules → expire prefix `videos/` after 7 days).
+// Flip the flag only if the token has lifecycle perms and you want it managed from code.
+if (!synthetic && /^(1|true|yes)$/i.test(process.env.VIDEO_R2_LIFECYCLE || "")) {
   import("../storage.mjs")
     .then((s) => s.isConfigured?.() && s.ensureVideoLifecycle()
-      .then(() => console.log("[video-worker] R2 videos/ 7-day lifecycle ensured"))
-      .catch((e) => console.warn("[video-worker] lifecycle setup skipped:", e.message)))
+      .then(() => console.log("[video-worker] R2 videos/ lifecycle ensured"))
+      .catch((e) => console.warn("[video-worker] lifecycle setup skipped (set the rule in the Cloudflare dashboard):", e.message)))
     .catch(() => {});
 }
 

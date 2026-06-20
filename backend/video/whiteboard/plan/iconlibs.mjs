@@ -40,6 +40,26 @@ const STOP = new Set(["large", "small", "big", "little", "new", "old", "up", "do
   "top", "bottom", "the", "and", "with", "for", "into", "from", "out", "off", "icon", "symbol"]);
 const words = (q) => String(q || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
 
+// Common narration words that MISS the icon libs (or hit a bad logo, e.g. river→la:red-river) but
+// have an obvious FREE-icon synonym → keeps terrain/nature/scene concepts off paid Recraft and off a
+// misleading generic (the "hills → bohlam" report). Matched on the whole lowercased+trimmed query;
+// each target verified to resolve to a free Lucide/Tabler/Phosphor icon.
+const QUERY_ALIASES = {
+  // terrain
+  hill: "mountain", hills: "mountain", hillside: "mountain", "rolling hills": "mountain", valley: "mountain", cliff: "mountain", peak: "mountain", mountains: "mountain",
+  // rural / farm
+  countryside: "farm", rural: "farm", farmland: "farm", pasture: "farm", ranch: "farm",
+  meadow: "plant", grassland: "plant",
+  "rice field": "wheat", "rice fields": "wheat", paddy: "wheat", sawah: "wheat", harvest: "wheat", crops: "wheat",
+  // water
+  river: "waves", stream: "waves", creek: "waves", brook: "waves", ocean: "waves", sea: "waves", lake: "waves", pond: "waves", canal: "waves",
+  // woods
+  woods: "trees", woodland: "trees", grove: "trees", orchard: "trees", jungle: "trees", rainforest: "trees",
+  // vineyard
+  vineyard: "grape", grapevine: "grape", grapes: "grape",
+};
+const aliasQuery = (q) => QUERY_ALIASES[String(q || "").trim().toLowerCase()] || q;
+
 function scoreIcon(qWords, name, icon) {
   const nameParts = name.split("-").filter((p) => p.length > 1);
   const qset = new Set(qWords);
@@ -76,6 +96,7 @@ function bestInLib(qWords, lib) {
 
 // Resolve a query to the best free icon across all libs. minScore avoids weak matches (→ Recraft).
 export function resolveIcon(query, { ink = "#1F2937", width = 4, minScore = 3 } = {}) {
+  query = aliasQuery(query); // route common synonyms to a known free icon BEFORE scoring
   const qWords = words(query);
   if (!qWords.length) return null;
   let winner = null;

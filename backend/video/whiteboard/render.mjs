@@ -108,9 +108,12 @@ export async function renderWhiteboard(scenes, meta, outPath, opts = {}) {
 
   const spec = { theme: "marker", grid: false, fps: tier.fps, width, height, scenes: built };
   const serveUrl = await bundle({ entryPoint: ENTRY, publicDir: pub });
-  const composition = await selectComposition({ serveUrl, id: "Whiteboard", inputProps: spec });
-  mkdirSync(dirname(outPath), { recursive: true });
+  // Pass the system Chromium to BOTH selectComposition AND renderMedia — without it on
+  // selectComposition, Remotion downloads its own Chrome Headless Shell (~92MB) on every cold
+  // start (slow boot). /usr/bin/chromium is in the image + set via REMOTION_BROWSER_EXECUTABLE.
   const browserExecutable = opts.browserExecutable || process.env.REMOTION_BROWSER_EXECUTABLE || undefined;
+  const composition = await selectComposition({ serveUrl, id: "Whiteboard", inputProps: spec, ...(browserExecutable ? { browserExecutable } : {}) });
+  mkdirSync(dirname(outPath), { recursive: true });
   // Anti-hang: bound the whole render so a pathological scene (e.g. a heavy
   // raster-reveal mask) can never wedge the worker forever. If we blow the budget
   // the stitch processor catches, fails the job, and refunds — instead of "Merangkai"
@@ -215,9 +218,10 @@ export async function renderWhiteboardPlan(scenes, meta, outPath, opts = {}) {
 
   const spec = { fps, width, height, scenes: built };
   const serveUrl = await bundle({ entryPoint: ENTRY, publicDir: pub });
-  const composition = await selectComposition({ serveUrl, id: "WhiteboardPlanVideo", inputProps: spec });
-  mkdirSync(dirname(outPath), { recursive: true });
+  // system Chromium to BOTH calls (else selectComposition re-downloads Chrome Headless Shell ~92MB/boot)
   const browserExecutable = opts.browserExecutable || process.env.REMOTION_BROWSER_EXECUTABLE || undefined;
+  const composition = await selectComposition({ serveUrl, id: "WhiteboardPlanVideo", inputProps: spec, ...(browserExecutable ? { browserExecutable } : {}) });
+  mkdirSync(dirname(outPath), { recursive: true });
   const RENDER_TIMEOUT_MS = Number(process.env.WB_RENDER_TIMEOUT_MS) || 360000;
   const render = renderMedia({
     serveUrl, composition, codec: "h264", crf: tier.crf,
