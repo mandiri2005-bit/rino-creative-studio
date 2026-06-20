@@ -239,6 +239,7 @@ export async function visualProcessor(job, deps) {
           }
           const v = plan ? validateWhiteboardPlan(plan) : { ok: false, errors: ["no plan returned"] };
           if (plan && v.ok) {
+            if (v.warnings && v.warnings.length) console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] rendered with warnings: ${v.warnings.slice(0, 3).join("; ")}`);
             // Cache the RAW plan (pre-baking) so the value stays small; assets reuse via the asset cache.
             if (!planFromCache) await deps.store.setCachedPlan?.(planKey, plan);
             // Bake per-element assets into the plan (render phase stays dumb). Two modes:
