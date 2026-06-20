@@ -21,19 +21,24 @@ export const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 // connection it blocks on. One shared connection is fine for queues + workers in
 // the same process; the standalone worker entry creates its own.
 export function makeConnection() {
-  return new Redis(REDIS_URL, {
-    maxRetriesPerRequest: null,
+  const conn = new Redis(REDIS_URL, {
+    maxRetriesPerRequest: null,   // BullMQ requirement (it manages blocking commands)
     enableReadyCheck: false,
+    // Upstash is remote TLS — without these a transient drop surfaced as repeated
+    // `connect ETIMEDOUT` + BullMQ `could not renew lock` and never recovered.
+    connectTimeout: 20000,        // give the cross-network TLS handshake room (default 10s)
+    keepAlive: 30000,             // keep the socket warm so Upstash/NAT doesn't reap an idle conn
+    retryStrategy: (times) => Math.min(1000 + times * 500, 8000), // reconnect w/ backoff, never give up
+    reconnectOnError: () => true, // also reconnect on command-level errors (e.g. READONLY/failover)
   });
+  conn.on("error", (e) => console.warn("[video/redis]", e.code || e.message)); // log, don't crash
+  return conn;
 }
 
 // A lazily-created shared connection for queue producers (the API side).
 let _shared = null;
 export function sharedConnection() {
-  if (!_shared) {
-    _shared = makeConnection();
-    _shared.on("error", (e) => console.error("[video/redis]", e.message));
-  }
+  if (!_shared) _shared = makeConnection(); // makeConnection already attaches an 'error' handler
   return _shared;
 }
 
