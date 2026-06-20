@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveLucide } from "./lucide.mjs";
+import { coveredByIconLibs } from "./iconlibs.mjs";
 
 export function loadManifest(assetsDir) {
   const man = JSON.parse(readFileSync(join(assetsDir, "manifest.json"), "utf8"));
@@ -21,13 +21,14 @@ export function defaultManifest() {
   return _defaultMan;
 }
 
-// Is this query already covered by the FREE library (curated manifest OR Lucide)? Used to
-// decide whether a (paid) Recraft generate-on-miss is needed — keeps API spend to true gaps.
+// Is this query already covered by the FREE libs (curated manifest OR Lucide/Tabler/Phosphor)?
+// Gates the (paid) Recraft generate-on-miss → keeps API spend to TRUE gaps. With Tabler (5093) +
+// Phosphor (1512) added, coverage jumps ~1.7k→~8.3k icons, so Recraft vector almost never fires.
 export function coveredByLibrary(query, manifest) {
   const m = manifest || defaultManifest();
   const r = resolveAsset(query, m);
   if (r && !r.fallback) return true;
-  return !!resolveLucide(query);
+  return coveredByIconLibs(query);
 }
 
 export function scoreAsset(query, asset) {

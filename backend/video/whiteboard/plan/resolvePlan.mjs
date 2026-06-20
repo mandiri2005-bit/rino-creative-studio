@@ -11,7 +11,7 @@ import { validateWhiteboardPlan } from "./validate.mjs";
 import { secondsToFrames, drawBeatFor } from "./beats.mjs";
 import { DEFAULT_FPS, DEFAULT_CANVAS } from "./schema.mjs";
 import { resolveStylePack } from "./stylePacks.mjs";
-import { resolveLucide } from "./lucide.mjs";
+import { resolveIcon } from "./iconlibs.mjs";
 
 export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict = true } = {}) {
   const plan = typeof planOrPath === "string" ? JSON.parse(readFileSync(planOrPath, "utf8")) : planOrPath;
@@ -99,6 +99,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     const query = el.asset_query || el.id;
     let viewBox = "0 0 100 100";
     let strokes = [];
+    let libShapes = null; // filled icons from a fill lib (Phosphor) render as shapes, not strokes
     let assetId = null;
     let assetSource = "none";
     let fallback = true;
@@ -120,9 +121,11 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
         strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
         assetId = r.asset?.id || null; assetSource = "manifest"; fallback = false;
       } else {
-        const lu = resolveLucide(query, { ink: pack.palette.ink, width: pack.stroke.width });
-        if (lu) {
-          viewBox = lu.viewBox; strokes = lu.strokes; assetId = "lucide:" + lu.name; assetSource = "lucide"; fallback = false;
+        const lib = resolveIcon(query, { ink: pack.palette.ink, width: pack.stroke.width });
+        if (lib) {
+          viewBox = lib.viewBox; assetId = `${lib.lib}:${lib.name}`; assetSource = lib.lib; fallback = false;
+          if (lib.strokes) strokes = lib.strokes;       // lucide / tabler → self-draw strokes
+          if (lib.shapes) libShapes = lib.shapes;       // phosphor → filled silhouette
         } else if (r.path) {
           const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink }); // generic_concept
           viewBox = parsed.viewBox;
@@ -150,7 +153,9 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       fallback,
       viewBox,
       strokes,
-      ...(Array.isArray(el.shapes) && el.shapes.length ? { shapes: el.shapes } : {}), // colored fills (Recraft/color)
+      // colored fills: from upstream baking (Recraft/color) OR a fill lib (Phosphor silhouette)
+      ...((Array.isArray(el.shapes) && el.shapes.length) ? { shapes: el.shapes }
+        : (libShapes && libShapes.length) ? { shapes: libShapes } : {}),
       ...(el.raster ? {
         raster: el.raster,
         maskViewBox: el.maskViewBox || el.viewBox || "0 0 100 100",
