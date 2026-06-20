@@ -26,6 +26,39 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const lerp = (a, b, t) => a + (b - a) * t;
 const progress = (t, sf, df, fps) => clamp((t - sf / fps) / Math.max(0.001, df / fps), 0, 1);
+// labels: same humanist sans the Linux worker (+ Chromium) fall back to → parity, no bundled font
+const FONT_STACK = "Inter, 'Liberation Sans', 'DejaVu Sans', 'Noto Sans', Arial, sans-serif";
+
+// pure-JS point-at-progress along a path `d` (Chromium-free replacement for getPointAtLength),
+// cached per `d`. Drives the marker hand that follows the pen.
+let _pathProps = null;
+const _ptCache = new Map();
+async function ensurePathLib() { if (!_pathProps) ({ svgPathProperties: _pathProps } = await import("svg-path-properties")); }
+function pointOnPath(d, frac) {
+  try {
+    let p = _ptCache.get(d);
+    if (!p) { p = new _pathProps(d); _ptCache.set(d, p); }
+    const len = p.getTotalLength();
+    if (!len) return null;
+    return p.getPointAtLength(clamp(frac, 0, 1) * len);
+  } catch { return null; }
+}
+
+// the marker hand (forearm + fist + pen), nib at the draw point — ported from components/Hand.tsx
+// (the HAND_IMAGE=null inline branch the plan composition uses). px,py = canvas pen-tip; size px.
+function handSvg(px, py, size, nib) {
+  const s = size / 256, ox = px - size * 0.03, oy = py - size * 0.03;
+  return `<g transform="translate(${ox.toFixed(1)} ${oy.toFixed(1)}) scale(${s.toFixed(4)})">`
+    + `<path d="M132 150 C165 180 195 205 225 228 C238 238 256 242 256 256 L150 256 C128 244 116 212 119 180 C121 165 125 156 132 150 Z" fill="#E6B089"/>`
+    + `<path d="M256 256 L150 256 C176 240 192 214 201 193 L256 220 Z" fill="#3F6FB2"/>`
+    + `<path d="M104 110 C108 92 132 86 148 96 C166 86 188 98 190 120 C206 128 209 154 193 166 C189 190 159 203 134 192 C112 199 92 180 94 158 C86 146 90 122 104 110 Z" fill="#E6B089"/>`
+    + `<path d="M100 118 C86 112 75 126 85 140 C93 151 110 149 116 136 C114 126 108 120 100 118 Z" fill="#E6B089"/>`
+    + `<path d="M120 116 C134 108 152 112 164 124" stroke="#C98F66" stroke-width="2.5" fill="none" stroke-linecap="round"/>`
+    + `<path d="M116 134 C132 127 150 130 162 140" stroke="#C98F66" stroke-width="2.5" fill="none" stroke-linecap="round"/>`
+    + `<path d="M21 11 L156 146 L146 156 L11 21 Z" fill="#303030"/>`
+    + `<path d="M31 19 L150 138" stroke="#5a5a5a" stroke-width="2" stroke-linecap="round"/>`
+    + `<path d="M21 11 L7 7 L11 21 Z" fill="${nib}"/></g>`;
+}
 
 // camera: mirror WhiteboardPlan.tsx cameraTransform, expressed as an SVG group transform
 // (CSS translate+scale around centre → translate(W/2+dx,H/2+dy) scale(s) translate(-W/2,-H/2)).
@@ -61,6 +94,7 @@ export function buildSceneSvg(plan, frame, fps = 30) {
     `<rect width="${W}" height="${H}" fill="${board}"/>`,
     `<g transform="${cameraSvg(plan.camera, frame, fps, W, H)}">`];
   let clipId = 0;
+  const hands = []; // marker-hand draws, collected then rendered on top (inside the camera g)
 
   // arrows (under cards): rough shaft if present, else straight; draw-on via dashoffset
   for (const c of plan.connectors || []) {
@@ -98,43 +132,69 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         out.push(`<rect x="${x}" y="${y}" width="${b.w}" height="${b.h}" rx="24" fill="${accent}12" stroke="${accent}" stroke-width="3" opacity="${clamp(p * 2, 0, 1)}"/>`);
       }
       // numbered badge (matches the Remotion card): accent circle, white index, top-left corner
-      out.push(`<g opacity="${clamp(p * 2, 0, 1)}"><circle cx="${x}" cy="${y}" r="24" fill="${accent}"/><text x="${x}" y="${y + 9}" text-anchor="middle" font-family="${pack.font?.label || "Inter, sans-serif"}" font-weight="800" font-size="26" fill="#fff">${ei + 1}</text></g>`);
+      out.push(`<g opacity="${clamp(p * 2, 0, 1)}"><circle cx="${x}" cy="${y}" r="24" fill="${accent}"/><text x="${x}" y="${y + 9}" text-anchor="middle" font-family="${FONT_STACK}" font-weight="800" font-size="26" fill="#fff">${ei + 1}</text></g>`);
     }
 
     const iconH = b.h * (diagram ? 0.48 : 0.9), iconTop = diagram ? b.h * 0.16 : 0;
 
     if (el.raster) {
-      // raster-reveal: photo wiped in left→right, the vectorized mask strokes drawn over it
-      const id = `rv${clipId++}`;
-      const rw = Math.round(b.w * p);
-      out.push(`<clipPath id="${id}"><rect x="${x}" y="${y + iconTop}" width="${rw}" height="${iconH}"/></clipPath>`);
-      out.push(`<image href="${el.raster}" x="${x}" y="${y + iconTop}" width="${b.w}" height="${iconH}" preserveAspectRatio="xMidYMid meet" clip-path="url(#${id})"/>`);
-      const [, , mvw = 100, mvh = 100] = String(el.maskViewBox || "0 0 100 100").split(/\s+/).map(Number);
+      // raster-reveal (mirror RasterRevealIllustration): the real photo revealed through a
+      // self-drawing vector MASK, units ordered in a top→bottom reading SNAKE, hand on the frontier.
+      const [mvx = 0, mvy = 0, mvw = 100, mvh = 100] = String(el.maskViewBox || "0 0 100 100").split(/\s+/).map(Number);
       const ms = Math.min(b.w / mvw, iconH / mvh);
       const mgx = x + (b.w - mvw * ms) / 2, mgy = y + iconTop + (iconH - mvh * ms) / 2;
-      out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})">`);
-      for (const s of el.maskStrokes || []) {
-        const L = 1200;
-        out.push(`<path d="${s.d}" fill="none" stroke="${s.stroke || ink}" stroke-width="${s.width || sw}" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${(1 - p) * L}"/>`);
+      const brush = Math.max(8, Math.round(mvw / 34));
+      const rep = (d) => { const m = /[Mm]\s*(-?[\d.]+)[\s,]+(-?[\d.]+)/.exec(d); return m ? { x: +m[1], y: +m[2] } : { x: mvx + mvw / 2, y: mvy + mvh / 2 }; };
+      const NB = 4, bandH = mvh / NB;
+      const units = [
+        ...(el.maskShapes || []).map((s) => ({ ...rep(s.d), el: "shape", d: s.d })),
+        ...(el.maskStrokes || []).map((s) => ({ ...rep(s.d), el: "stroke", d: s.d })),
+      ].sort((a, c) => {
+        const ba = clamp(Math.floor((a.y - mvy) / bandH), 0, NB - 1), bb = clamp(Math.floor((c.y - mvy) / bandH), 0, NB - 1);
+        return ba !== bb ? ba - bb : (ba % 2 === 0 ? a.x - c.x : c.x - a.x);
+      });
+      const N = Math.max(1, units.length), SPAN = 0.92, WIN = 0.06;
+      const id = `rv${clipId++}`;
+      out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})"><mask id="${id}" maskUnits="userSpaceOnUse">`);
+      units.forEach((u, i) => {
+        const op = clamp((p - (i / N) * SPAN) / WIN, 0, 1);
+        if (op <= 0) return;
+        out.push(u.el === "shape"
+          ? `<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`
+          : `<path d="${u.d}" fill="none" stroke="white" stroke-width="${brush}" stroke-linecap="round" stroke-linejoin="round" opacity="${op.toFixed(3)}"/>`);
+      });
+      out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})"/></g>`);
+      if (p > 0.005 && p < 0.985 && N > 0) {
+        const cur = Math.min(1, p / SPAN) * (N - 1), i0 = Math.floor(cur), i1 = Math.min(N - 1, i0 + 1), fr = cur - i0;
+        const hx = units[i0].x + (units[i1].x - units[i0].x) * fr, hy = units[i0].y + (units[i1].y - units[i0].y) * fr;
+        hands.push({ x: mgx + hx * ms, y: mgy + hy * ms, size: Math.max(120, iconH * 0.5), nib: ink });
       }
-      out.push(`</g>`);
     } else {
-      // vector icon: filled shapes (Recraft/color/phosphor) under self-draw strokes
+      // vector icon: filled shapes (Recraft/color/phosphor) under self-draw strokes that draw
+      // SEQUENTIALLY (match Remotion: stroke i over [start+i·per, +per]); the hand rides the active one.
       const [, , vbw = 100, vbh = 100] = String(el.viewBox || "0 0 100 100").split(/\s+/).map(Number);
       const scale = Math.min(b.w / vbw, iconH / vbh);
       const gx = x + (b.w - vbw * scale) / 2, gy = y + iconTop + (iconH - vbh * scale) / 2;
       out.push(`<g transform="translate(${gx} ${gy}) scale(${scale})">`);
       for (const s of el.shapes || []) out.push(`<path d="${s.d}" fill="${s.fill || "none"}" stroke="${s.stroke || "none"}" stroke-width="${s.width || 0}" opacity="${p}"/>`);
-      for (const s of el.strokes || []) {
+      const strokes = el.strokes || [];
+      const n = Math.max(1, strokes.length), per = el.draw.durFrames / n;
+      strokes.forEach((s, si) => {
+        const ts = progress(t, el.draw.startFrame + si * per, per, fps);
+        if (ts <= 0) return;
         const L = 1200;
-        out.push(`<path d="${s.d}" fill="none" stroke="${s.stroke || ink}" stroke-width="${s.width || sw}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${(1 - p) * L}"/>`);
-      }
+        out.push(`<path d="${s.d}" fill="none" stroke="${s.stroke || ink}" stroke-width="${s.width || sw}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${(1 - ts) * L}"/>`);
+        if (ts > 0.02 && ts < 0.985) {
+          const pt = pointOnPath(s.d, ts);
+          if (pt) hands.push({ x: gx + pt.x * scale, y: gy + pt.y * scale, size: Math.max(90, iconH * 0.55), nib: s.stroke || ink });
+        }
+      });
       out.push(`</g>`);
     }
 
     if (el.label) {
       const ly = diagram ? y + b.h * 0.68 + 28 : y + b.h + 34;
-      out.push(`<text x="${b.x}" y="${ly}" text-anchor="middle" font-family="${pack.font?.label || "Inter, sans-serif"}" font-weight="${pack.font?.weight || 800}" font-size="${pack.font?.labelSize || 34}" fill="${ink}" opacity="${clamp((p - 0.4) * 2, 0, 1)}">${esc(el.label)}</text>`);
+      out.push(`<text x="${b.x}" y="${ly}" text-anchor="middle" font-family="${FONT_STACK}" font-weight="${pack.font?.weight || 800}" font-size="${pack.font?.labelSize || 34}" fill="${ink}" opacity="${clamp((p - 0.4) * 2, 0, 1)}">${esc(el.label)}</text>`);
     }
   }
   // overlays (highlight circles)
@@ -144,6 +204,7 @@ export function buildSceneSvg(plan, frame, fps = 30) {
     const rxr = (ov.box.w / 2 + 18), ryr = (ov.box.h / 2 + 18), L = Math.PI * 2 * Math.max(rxr, ryr);
     out.push(`<ellipse cx="${ov.box.x}" cy="${ov.box.y}" rx="${rxr}" ry="${ryr}" fill="none" stroke="${pack.palette?.highlight || accent}" stroke-width="${sw + 1}" stroke-dasharray="${L}" stroke-dashoffset="${(1 - p) * L}"/>`);
   }
+  for (const h of hands) out.push(handSvg(h.x, h.y, h.size, h.nib)); // marker hand(s) on top
   out.push(`</g></svg>`);
   return out.join("");
 }
@@ -152,7 +213,10 @@ export function buildSceneSvg(plan, frame, fps = 30) {
 async function rasterizeSvg(svg, width, outPng) {
   try {
     const { Resvg } = await import("@resvg/resvg-js");
-    writeFileSync(outPng, new Resvg(svg, { fitTo: { mode: "width", value: width } }).render().asPng());
+    // load the worker's system fonts (fonts-dejavu-core/liberation/noto) so labels render in the
+    // same humanist sans Chromium falls back to → font parity without bundling a font file.
+    const opts = { fitTo: { mode: "width", value: width }, font: { loadSystemFonts: true, defaultFontFamily: "DejaVu Sans" } };
+    writeFileSync(outPng, new Resvg(svg, opts).render().asPng());
     return;
   } catch (e) { if (!/Cannot find|ERR_MODULE/.test(String(e.message))) throw e; }
   try {
@@ -176,6 +240,7 @@ const ff = (args) => new Promise((res, rej) => {
 // Render ONE resolved scene → MP4 (frames → rasterize → ffmpeg, optional audio).
 export async function renderSceneSvgFfmpeg(plan, outMp4, { fps = 30, crf = 23, audioPath = null } = {}) {
   const frames = plan.durationInFrames || Math.round((plan.duration || 4) * fps);
+  await ensurePathLib().catch(() => {}); // for the following-hand pen tip (graceful if absent)
   const dir = mkdtempSync(join(tmpdir(), "wbsvg-"));
   try {
     for (let f = 0; f < frames; f++) {
