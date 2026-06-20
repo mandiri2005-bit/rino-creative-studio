@@ -7094,24 +7094,42 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
             return json.loads(m.group(0))
 
     plan = None
+    # Model is OPEN (env-overridable), NOT hardcoded — defaults to Opus (strong at strict JSON,
+    # so we don't lean on the Vertex fallback). Deliberately ignores req.model (the user's Model
+    # Narasi, often weak at JSON like DeepSeek). Set WB_PLAN_MODEL to use any other model.
+    _plan_model = os.environ.get("WB_PLAN_MODEL") or "claude-opus-4-6"
     usr = f"Scene ID: {req.scene_id}\nNarration: {narr}\nDuration seconds: {dur}\nReturn strict JSON only."
     try:
-        _client = make_client(req.model)
+        _client = make_client(_plan_model)
         msgs = [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
         def _call(use_fmt):
-            kw = dict(model=req.model, messages=msgs, temperature=0.4, max_tokens=1400)
+            kw = dict(model=_plan_model, messages=msgs, temperature=0.4, max_tokens=2500)
             if use_fmt:
                 kw["response_format"] = {"type": "json_object"}
             return _client.chat.completions.create(**kw)
-        try:
-            resp = await asyncio.to_thread(lambda: _call(True))
-        except Exception as fmt_err:
-            print(f"[video/whiteboard-plan] json_object rejected ({fmt_err}); retrying plain")
-            resp = await asyncio.to_thread(lambda: _call(False))
-        cand = _extract(resp.choices[0].message.content)
-        if cand.get("template") and cand.get("elements"):
-            plan = cand
+
+        # Up to 2 attempts: the 2nd is a REPAIR ask (feed the bad output back) so a malformed/
+        # truncated first reply is fixed by the same model BEFORE we ever fall back to Vertex.
+        for attempt in range(2):
+            try:
+                resp = await asyncio.to_thread(lambda: _call(True))
+            except Exception as fmt_err:
+                print(f"[video/whiteboard-plan] json_object rejected ({fmt_err}); retrying plain")
+                resp = await asyncio.to_thread(lambda: _call(False))
+            content = resp.choices[0].message.content
+            try:
+                cand = _extract(content)
+            except Exception:
+                cand = None
+            if cand and cand.get("template") and cand.get("elements"):
+                plan = cand
+                break
+            if attempt == 0:
+                msgs.append({"role": "assistant", "content": content or ""})
+                msgs.append({"role": "user", "content":
+                    "That was not a complete, valid JSON object. Return ONLY the full JSON plan object, nothing else."})
+                print(f"[video/whiteboard-plan] {_plan_model} attempt 1 invalid → repair retry")
     except Exception as e:
         print(f"[video/whiteboard-plan] make_client path failed: {e}")
     if plan is None:
