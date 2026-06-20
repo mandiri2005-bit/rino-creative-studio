@@ -6708,6 +6708,28 @@ async def video_segment(req: VideoSegmentReq,
         raise HTTPException(400, "minutes must be <= 60")
     mode = (req.mode or "B").strip().upper()
 
+    # SEGMENT CACHE: same inputs → same script + visual brief → skip BOTH gemini calls (narration
+    # /segment + brief) and the decide ranker; this also unblocks the downstream plan-cache +
+    # asset-cache, so a repeat of the SAME title costs ~$0. Per-tenant. Default ON; set
+    # WB_SEGMENT_CACHE=0 to always regenerate (e.g. when you want a fresh script per run).
+    _seg_key = None
+    if os.environ.get("WB_SEGMENT_CACHE", "1") != "0":
+        import hashlib
+        _sig = json.dumps([req.text, req.topic, req.minutes, mode, req.style, req.clip_model,
+                           req.tier, req.gen_model, req.language, req.visual_mode, req.clip_ratio,
+                           req.visual_style, req.nusantara_corpus], sort_keys=True)
+        _tenant = str(getattr(user, "tenant_id", "anon")) if user else "anon"
+        _seg_key = f"vseg:v1:{_tenant}:{hashlib.sha256(_sig.encode()).hexdigest()[:24]}"
+        try:
+            _cli = rc.client()
+            if _cli:
+                _hit = await _cli.get(_seg_key)
+                if _hit:
+                    print(f"[video/segment] cache HIT → skip LLM ({_seg_key})")
+                    return json.loads(_hit)
+        except Exception as _e:
+            print(f"[video/segment] cache get failed (non-fatal): {_e}")
+
     if mode == "A":
         # Mode A: generate documentary narration from a topic to the target length,
         # then segment it. The LLM call is billable → gated + debited like /chat/once.
@@ -6773,6 +6795,13 @@ async def video_segment(req: VideoSegmentReq,
     if req.visual_mode:   # one-shot: segment + decide the visual treatment
         out["scenes"] = await _decide(out["scenes"], req.visual_mode, req.clip_model, req.clip_ratio, user=user)
         out["visual_mode"] = req.visual_mode
+    if _seg_key:   # store for the next identical request (segment + brief + decide all reused)
+        try:
+            _cli = rc.client()
+            if _cli:
+                await _cli.set(_seg_key, json.dumps(out), ex=30 * 86400)
+        except Exception as _e:
+            print(f"[video/segment] cache set failed (non-fatal): {_e}")
     return out
 
 
