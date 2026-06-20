@@ -57,7 +57,7 @@ function scoreName(qWords, name) {
 }
 
 // minScore higher than the curated libs (4) so iconify only wins clear matches (it's the fallback).
-export function resolveIconify(query, { ink = "#1F2937", width = 4, minScore = 5 } = {}) {
+export function resolveIconify(query, { ink = "#1F2937", width = 4, minScore = 4 } = {}) {
   const ix = idx();
   const qWords = words(query);
   if (!qWords.length || !ix.icons.length) return null;

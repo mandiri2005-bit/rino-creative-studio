@@ -196,8 +196,17 @@ export async function renderWhiteboardPlan(scenes, meta, outPath, opts = {}) {
       plan = null;
     }
     if (!plan) {
-      plan = { fps, duration: sceneDur, durationInFrames: Math.max(1, Math.round(sceneDur * fps)),
-        canvas: { width, height }, elements: [], overlays: [], camera: [] };
+      // plan unavailable (gen/resolve failed) → DON'T leave a blank board: show the scene's
+      // narration as a centered write-on text so the scene always has content.
+      const fdur = Math.max(1, Math.round(sceneDur * fps));
+      const txt = String(sc.text || sc.visualPrompt || "").trim().split(/\s+/).slice(0, 14).join(" ");
+      plan = {
+        fps, duration: sceneDur, durationInFrames: fdur, canvas: { width, height }, mode: "icons",
+        elements: txt ? [{ id: "fallback", type: "text", slot: "center", box: { x: Math.round(width / 2), y: Math.round(height / 2), w: Math.round(width * 0.7), h: 160 },
+          label: txt, viewBox: "0 0 100 100", strokes: [], assetSource: "fallback", fallback: true,
+          draw: { startFrame: 0, durFrames: Math.max(6, Math.round(fdur * 0.45)) } }] : [],
+        overlays: [], camera: [],
+      };
     }
     const qa = validateResolvedScene(plan); // §N non-fatal QA gate on the resolved scene
     if (!qa.ok || qa.warnings.length) console.warn(`[whiteboard-plan ${meta.jobId || ""}/${i}] resolved-scene QA: ${[...qa.errors, ...qa.warnings].slice(0, 4).join("; ")}`);

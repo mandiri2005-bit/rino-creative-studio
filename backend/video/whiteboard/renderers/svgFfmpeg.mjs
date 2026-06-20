@@ -305,7 +305,14 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
         console.warn(`[whiteboard-plan-svg ${meta.jobId || ""}/${i}] resolve failed: ${e.message} → blank`);
         plan = null;
       }
-      if (!plan) plan = { fps, duration: sceneDur, durationInFrames: Math.max(1, Math.round(sceneDur * fps)), canvas: { width, height }, elements: [], overlays: [], camera: [] };
+      if (!plan) {
+        const fd = Math.max(1, Math.round(sceneDur * fps));
+        const txt = String(sc.text || sc.visualPrompt || "").trim().split(/\s+/).slice(0, 14).join(" ");
+        plan = { fps, duration: sceneDur, durationInFrames: fd, canvas: { width, height }, mode: "icons",
+          elements: txt ? [{ id: "fallback", type: "text", box: { x: Math.round(width / 2), y: Math.round(height / 2), w: Math.round(width * 0.7), h: 160 },
+            label: txt, viewBox: "0 0 100 100", strokes: [], draw: { startFrame: 0, durFrames: Math.max(6, Math.round(fd * 0.45)) } }] : [],
+          overlays: [], camera: [] };
+      }
       const qa = validateResolvedScene(plan); // §N non-fatal QA gate
       if (!qa.ok || qa.warnings.length) console.warn(`[whiteboard-plan-svg ${meta.jobId || ""}/${i}] resolved-scene QA: ${[...qa.errors, ...qa.warnings].slice(0, 4).join("; ")}`);
       const mp4 = join(work, `scene-${i}.mp4`);
