@@ -350,3 +350,49 @@ def test_clip_modes_size_scenes_to_fit_clips():
     # the unspecified/legacy mode keeps the documented WORDS_PER_SCENE preset table.
     assert vs.words_per_scene_for("full_images", "veo3") < vs.WORDS_PER_SCENE
     assert vs.words_per_scene_for("", "veo3") == vs.WORDS_PER_SCENE
+
+
+# ── visual-prompt budget: a verbose brief must NOT collapse per-scene prompts ──
+_LONG_BRIEF = (  # >MAX_VISUAL_PROMPT_CHARS — the kind that used to eat the whole budget
+    "A panoramic, evolving tableau of Depok, Indonesia, from the 17th to 21st century, centered "
+    "around a stoic Cornelis Chastelein in colonial Dutch dress as a constant observer integrated "
+    "into each temporal layer, transitioning from a 17th-century agrarian landscape with enslaved "
+    "laborers and wooden churches to a bustling modern Indonesian city of glass towers and busy "
+    "markets, rendered as a richly detailed flat vector illustration with warm earthy tones, soft "
+    "golden lighting, consistent character design, and a calm documentary atmosphere throughout, "
+    "keeping the same palette, faces, and wardrobe identical across every single scene."
+)
+_DISTINCT_SCENES = [
+    "Di antara hiruk pikuk Jakarta tersembunyi sebuah kota dengan kisah unik.",
+    "Kisah Depok bermula dari saudagar Belanda bernama Cornelis Chastelein.",
+    "Pada akhir abad ke-17 ia membeli tanah luas di selatan Batavia.",
+    "Ia mendirikan komunitas bebas bagi para budak yang ia merdekakan.",
+    "Kini Depok tumbuh menjadi kota penyangga metropolitan yang ramai.",
+]
+
+
+def test_long_brief_does_not_collapse_per_scene_prompts():
+    assert len(_LONG_BRIEF) > vs.MAX_VISUAL_PROMPT_CHARS  # precondition: brief is verbose
+    out = [vs.build_visual_prompt(t, style="documentary", context=_LONG_BRIEF) for t in _DISTINCT_SCENES]
+    # every scene keeps its own per-scene content → all distinct (the bug made them identical)
+    assert len(set(out)) == len(out), f"expected {len(out)} distinct, got {len(set(out))}"
+    # the shared brief (style/consistency) still leads every prompt
+    assert all(o.startswith("A panoramic") for o in out)
+    # still within the API caps
+    for o in out:
+        assert len(o) <= vs.MAX_VISUAL_PROMPT_CHARS
+        assert len(o.split()) <= vs.MAX_VISUAL_PROMPT_WORDS
+
+
+def test_short_brief_still_distinct_and_consistent():
+    short = "Golden-hour light, earthy terracotta tones, timeless Moroccan landscape"
+    out = [vs.build_visual_prompt(t, style="documentary", context=short) for t in _DISTINCT_SCENES]
+    assert len(set(out)) == len(out)
+    assert all(o.startswith("Golden-hour light") for o in out)
+
+
+def test_clip_words_truncates_on_word_boundary():
+    s = "alpha beta gamma delta epsilon"
+    clipped = vs._clip_words(s, 14)   # "alpha beta" (no mid-word cut)
+    assert clipped == "alpha beta"
+    assert vs._clip_words("short", 100) == "short"

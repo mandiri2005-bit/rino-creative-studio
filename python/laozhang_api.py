@@ -6677,7 +6677,11 @@ async def _video_visual_brief(content: str, model: str, user, byok: bool) -> str
             temperature=0.5, max_tokens=mt))
         # join into one line (the model may still emit bullets) and strip list markers
         raw = (r.choices[0].message.content or "")
-        brief = " ".join(b.strip().strip('"').lstrip("-•* ") for b in raw.splitlines() if b.strip())[:400]
+        brief = " ".join(b.strip().strip('"').lstrip("-•* ") for b in raw.splitlines() if b.strip())
+        # Enforce the "max 40 words" we asked the LLM for (it sometimes ignores it and
+        # returns a 500+ char paragraph). A bounded brief is the 2nd layer that keeps the
+        # per-scene visual prompts distinct (see build_visual_prompt's separate budgets).
+        brief = " ".join(brief.split()[:40])[:280]
         if user and brief:
             try:
                 _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)

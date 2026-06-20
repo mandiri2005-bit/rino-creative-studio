@@ -692,18 +692,24 @@ def build_visual_prompt(text: str, style: str = "", position: str = "middle",
         # nothing extracted (very short / abstract line) → summarise the opening
         core = " ".join(text.split()[:8])
 
-    # The brief LEADS (so every scene shares the same world — place, era, the
-    # ethnicity & dress of people, architecture); then the scene-specific subject;
-    # then the art style. The cap trims from the end (framing/tone) first, so the
-    # brief and the look survive — this is what keeps a Sriwijaya story from
-    # rendering European faces.
+    # The brief LEADS (so every scene shares the same world — place, era, the ethnicity
+    # & dress of people, architecture); then the scene-specific subject; then the art
+    # style. SEPARATE budgets: the brief and the per-scene core are each trimmed to their
+    # OWN char budget BEFORE joining, so the per-scene core ALWAYS survives no matter how
+    # long the brief is. (Old bug: the whole JOINED string was trimmed from the end, so a
+    # verbose brief ate the entire 560-char budget and every scene's core was cut off →
+    # identical visual prompts across scenes.)
     vstyle = VISUAL_STYLE.get(_normalize_style(visual_style)) if visual_style else None
+    brief = _clip_words(context, BRIEF_BUDGET_CHARS) if (context and context.strip()) else ""
+    core = _clip_words(core, CORE_BUDGET_CHARS)
     parts = []
-    if context and context.strip():
-        parts.append(context.strip().rstrip(". "))
+    if brief:
+        parts.append(brief.rstrip(". "))
     parts.append(core)
     if vstyle:
         parts.append(vstyle)
+    # brief(≤BRIEF_BUDGET) + core(≤CORE_BUDGET) fit well inside MAX_VISUAL_PROMPT_CHARS, so
+    # the final cap only ever trims the trailing framing/tone — never the brief or core.
     return _cap_prompt(f"{', '.join(parts)} — {framing}, {tone}")
 
 
@@ -715,6 +721,22 @@ def _cap_prompt(prompt: str) -> str:
     if len(prompt) > MAX_VISUAL_PROMPT_CHARS:
         prompt = prompt[:MAX_VISUAL_PROMPT_CHARS].rsplit(" ", 1)[0]
     return prompt
+
+
+# Per-component budgets for build_visual_prompt: the shared brief and the per-scene core
+# are trimmed to their OWN limits BEFORE joining, so a verbose brief can never crowd the
+# per-scene core out of the prompt. brief ≤50% / core ≤40% of MAX_VISUAL_PROMPT_CHARS.
+BRIEF_BUDGET_CHARS = round(MAX_VISUAL_PROMPT_CHARS * 0.5)   # 280
+CORE_BUDGET_CHARS = round(MAX_VISUAL_PROMPT_CHARS * 0.4)    # 224
+
+
+def _clip_words(s: str, max_chars: int) -> str:
+    """Collapse whitespace and truncate to max_chars on a WORD boundary (never mid-word)."""
+    s = re.sub(r'\s+', ' ', (s or "")).strip(" ,—-")
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars]
+    return cut.rsplit(" ", 1)[0] if " " in cut else cut
 
 
 def _position_for(index: int, count: int) -> str:
