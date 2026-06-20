@@ -511,7 +511,16 @@ export async function stitchProcessor(job, deps) {
           }
         } else {
           const { renderWhiteboardPlan } = await import("./whiteboard/render.mjs");
-          result = await renderWhiteboardPlan(scenes, { ...meta, jobId }, outPath, { tmpDir });
+          try {
+            result = await renderWhiteboardPlan(scenes, { ...meta, jobId }, outPath, { tmpDir });
+          } catch (be) {
+            // Remotion (Chromium) can OOM-crash on a long/heavy render ("Target closed"). Auto-fall
+            // back to the Chromium-free SVG/FFmpeg backend so the video STILL completes (slower, never
+            // a browser crash). → Remotion stays the fast default; this is its safety net.
+            console.warn(`[stitch ${jobId}] Remotion backend failed (${be.message}) → svg_ffmpeg fallback`);
+            const { renderWhiteboardPlanSvg } = await import("./whiteboard/renderers/svgFfmpeg.mjs");
+            result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir });
+          }
         }
       } else {
         const { renderWhiteboard } = await import("./whiteboard/render.mjs");

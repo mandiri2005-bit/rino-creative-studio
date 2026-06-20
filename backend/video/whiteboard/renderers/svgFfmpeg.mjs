@@ -246,7 +246,11 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       units.forEach((s, si) => {
         const ts = progress(t, el.draw.startFrame + si * per, per, fps);
         if (ts <= 0) return;
-        const L = 1200;
+        // REAL outline length, not a fixed 1200 — resvg ignores pathLength, so a 1200 dash on a vb24
+        // iconify path (~100 units long) showed the whole outline INSTANTLY ("already drawn"). With the
+        // true length the dash-offset traces it progressively → the pen actually DRAWS the icon (incl.
+        // a compound fill path: its subpaths trace in sequence), like Lucide's strokes.
+        const L = pathLen(s.d);
         if (s.kind === "shape") {
           // A fill icon draws as a thin BLACK outline (linework) + a visible COLOUR fill — "garis hitam
           // + warna", not a solid recoloured blob. col = the fill colour (palette for mono, own colour
@@ -324,8 +328,11 @@ export async function renderSceneSvgFfmpeg(plan, outMp4, { fps = 30, crf = 23, a
     const args = ["-y", "-framerate", String(fps), "-i", join(dir, "f%05d.png")];
     if (audioPath) args.push("-i", audioPath);
     else args.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
+    // -af apad: pad the audio with trailing silence so -shortest trims it to the EXACT video length
+    // (= durationInFrames/fps). Without it the per-scene video (frame-quantised) and audio (exact VO)
+    // differ by up to half a frame; across scenes that drift accumulates into the audible "ngelag".
     args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf),
-      "-c:a", "aac", "-shortest", outMp4);
+      "-af", "apad", "-c:a", "aac", "-shortest", outMp4);
     await ff(args);
     return { path: outMp4, frames };
   } finally {
