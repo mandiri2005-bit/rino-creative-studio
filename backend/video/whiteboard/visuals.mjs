@@ -161,7 +161,7 @@ export async function vectorizeRasterB64(b64) {
 // frontier → the scene gets "drawn on" (Golpo-style). Returns maskShapes/maskViewBox (no meter:
 // it's local). One compound path → split into subpaths so the reveal is progressive, biggest first,
 // capped for render safety (each shape is a per-frame mask path; too many wedges Chromium).
-export async function traceMaskB64(b64, { maxShapes = 140 } = {}) {
+export async function traceMaskB64(b64, { maxShapes = 90 } = {}) {
   const { createRequire } = await import("node:module");
   const potrace = createRequire(import.meta.url)("potrace");
   const buffer = Buffer.from(b64, "base64");

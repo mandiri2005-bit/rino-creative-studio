@@ -44,6 +44,33 @@ function pointOnPath(d, frac) {
     return p.getPointAtLength(clamp(frac, 0, 1) * len);
   } catch { return null; }
 }
+// actual path length (resvg ignores pathLength, so dash-trace needs real lengths). Cached per `d`.
+const _lenCache = new Map();
+function pathLen(d) {
+  let L = _lenCache.get(d);
+  if (L == null) {
+    try { let p = _ptCache.get(d); if (!p) { p = new _pathProps(d); _ptCache.set(d, p); } L = p.getTotalLength() || 100; }
+    catch { L = 100; }
+    _lenCache.set(d, L);
+  }
+  return L;
+}
+// vertical centre of a path (sampled) → time each region's draw by WHERE it is, so big shapes draw
+// at their position (smooth top→bottom) instead of dumping early. Cached per `d`.
+const _cyCache = new Map();
+function centroidY(d) {
+  let y = _cyCache.get(d);
+  if (y == null) {
+    try {
+      let p = _ptCache.get(d); if (!p) { p = new _pathProps(d); _ptCache.set(d, p); }
+      const L = p.getTotalLength() || 1; let s = 0, c = 0;
+      for (const f of [0.1, 0.3, 0.5, 0.7, 0.9]) { const pt = p.getPointAtLength(f * L); if (pt) { s += pt.y; c++; } }
+      y = c ? s / c : 0;
+    } catch { y = 0; }
+    _cyCache.set(d, y);
+  }
+  return y;
+}
 
 // the marker hand (forearm + fist + pen), nib at the draw point — ported from components/Hand.tsx
 // (the HAND_IMAGE=null inline branch the plan composition uses). px,py = canvas pen-tip; size px.
@@ -166,25 +193,42 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         }
         continue;
       }
-      // Reveal the photo top→bottom THROUGH the traced forms: the mask = all traced shapes (the
-      // image's own forms, so edges look inked, not a hard wipe line), GATED by a growing vertical
-      // clip so even a few big potrace shapes draw on GRADUALLY instead of dumping at once. The hand
-      // rides the frontier, sweeping L↔R as it descends — i.e. the scene gets "sketched" in.
-      const SPAN = 0.92;
-      const id = `rv${clipId++}`, cid = `rc${clipId++}`;
-      const revP = clamp(p / SPAN, 0, 1), revealH = Math.max(0, mvh * revP);
+      // GOLPO-STYLE draw — NOT a curtain wipe. The pen TRACES each form's ink outline (a visible line
+      // being drawn) THEN its colour fills in from the photo. Each region is timed by its VERTICAL
+      // CENTRE, so the draw moves smoothly top→bottom and big shapes draw at their position instead of
+      // dumping early. resvg ignores pathLength → trace with the REAL path length.
+      const SPAN = 0.92, win = 0.17;                       // each region draws over 17% of the window
+      const inkW = Math.max(1.6, mvw / 340);
+      const startPof = (u) => clamp((centroidY(u.d) - mvy) / (mvh || 1), 0, 1) * (SPAN - win);
+      const id = `rv${clipId++}`;
       out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})">`);
-      out.push(`<clipPath id="${cid}"><rect x="${mvx}" y="${mvy}" width="${mvw}" height="${revealH.toFixed(1)}"/></clipPath>`);
+      // 1) colour fills (each region fills AFTER its outline has mostly traced)
       out.push(`<mask id="${id}" maskUnits="userSpaceOnUse">`);
       for (const u of units) {
-        out.push(u.el === "shape"
-          ? `<path d="${u.d}" fill="white"/>`
-          : `<path d="${u.d}" fill="none" stroke="white" stroke-width="${brush}" stroke-linecap="round" stroke-linejoin="round"/>`);
+        const sp = clamp((p - startPof(u)) / win, 0, 1);
+        const fillOp = clamp((sp - 0.5) / 0.5, 0, 1);
+        if (fillOp > 0) out.push(`<path d="${u.d}" fill="white" opacity="${fillOp.toFixed(3)}"/>`);
       }
-      out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})" clip-path="url(#${cid})"/></g>`);
+      out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})"/>`);
+      // 2) ink outlines traced on top — the pen drawing the lines
+      for (const u of units) {
+        const sp = clamp((p - startPof(u)) / win, 0, 1);
+        if (sp <= 0) continue;
+        const traceP = clamp(sp / 0.55, 0, 1);             // outline drawn over the first ~55% of the window
+        const L = pathLen(u.d);
+        out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.82"/>`);
+      }
+      out.push(`</g>`);
+      // 3) the pen rides whichever region is mid-trace nearest the descending front
       if (p > 0.005 && p < 0.985) {
-        const hx = mvw * (0.5 + 0.34 * Math.sin(revP * Math.PI * 5));  // sweep L↔R while descending
-        hands.push({ x: mgx + hx * ms, y: mgy + revealH * ms, size: Math.max(120, iconH * 0.5), nib: ink });
+        const frontY = mvy + clamp(p / SPAN, 0, 1) * mvh;
+        let best = null, bd = Infinity;
+        for (const u of units) { const sp = clamp((p - startPof(u)) / win, 0, 1); if (sp > 0.02 && sp < 0.98) { const dd = Math.abs(centroidY(u.d) - frontY); if (dd < bd) { bd = dd; best = u; } } }
+        if (best) {
+          const sp = clamp((p - startPof(best)) / win, 0, 1);
+          const pt = pointOnPath(best.d, clamp(sp / 0.55, 0, 1)) || { x: best.x, y: best.y };
+          hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink });
+        }
       }
     } else {
       // color genre: soft colour chip behind the icon (icon stroke is the same colour)
