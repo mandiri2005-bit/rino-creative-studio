@@ -586,6 +586,11 @@ export function startWorkers(deps) {
   const mk = (name, processor) =>
     new Worker(name, (job) => processor(job, deps), {
       connection: makeConnection(), concurrency: CONCURRENCY[name] || 5,
+      // Long renders + (synchronous) potrace tracing can stall the event loop well past BullMQ's
+      // 30s default lock → "could not renew lock" + false-stall RE-RUNS (double work/charge). Give a
+      // generous lock (renewal fires at lockDuration/2, so 5min headroom tolerates multi-second stalls).
+      lockDuration: Number(process.env.WB_LOCK_DURATION_MS) || 600000,
+      stalledInterval: 60000,
     });
   const audio = mk(QUEUE.AUDIO, audioProcessor);
   const visual = mk(QUEUE.VISUAL, visualProcessor);

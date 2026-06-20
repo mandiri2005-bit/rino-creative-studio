@@ -224,16 +224,13 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.82"/>`);
       }
       out.push(`</g>`);
-      // 3) the pen rides whichever region is mid-trace nearest the descending front
+      // 3) the pen sweeps L↔R SMOOTHLY as it descends with the front — a natural drawing hand, NOT
+      // teleporting to "whichever scattered region is nearest" (that read as robotic/unnatural).
       if (p > 0.005 && p < 0.985) {
-        const frontY = mvy + clamp(p / SPAN, 0, 1) * mvh;
-        let best = null, bd = Infinity;
-        for (const u of units) { const sp = clamp((p - startPof(u)) / win, 0, 1); if (sp > 0.02 && sp < 0.98) { const dd = Math.abs(centroidY(u.d) - frontY); if (dd < bd) { bd = dd; best = u; } } }
-        if (best) {
-          const sp = clamp((p - startPof(best)) / win, 0, 1);
-          const pt = pointOnPath(best.d, clamp(sp / 0.55, 0, 1)) || { x: best.x, y: best.y };
-          hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink });
-        }
+        const revP = clamp(p / SPAN, 0, 1);
+        const penX = mvx + mvw * (0.5 + 0.3 * Math.sin(revP * Math.PI * 6));
+        const penY = mvy + revP * mvh;
+        hands.push({ x: mgx + penX * ms, y: mgy + penY * ms, size: Math.max(120, iconH * 0.5), nib: ink });
       }
     } else {
       // color genre: soft colour chip behind the icon (icon stroke is the same colour)

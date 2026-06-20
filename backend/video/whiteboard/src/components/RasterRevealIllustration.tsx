@@ -82,13 +82,12 @@ export const RasterRevealIllustration: React.FC<{
   // fills in — timed by the form's vertical centre so it draws top→bottom, NOT a curtain wipe.
   const startPof = (u: Unit) => Math.min(1, Math.max(0, (u.cy - (vy || 0)) / (vh || 100))) * (SPAN - WIN);
   const inkW = Math.max(1.6, (vw || 100) / 340);
-  const frontY = (vy || 0) + Math.min(1, tGlobal / SPAN) * (vh || 100);
-  let pen: Unit | null = null, bd = Infinity;
-  for (const u of units) {
-    const sp = Math.min(1, Math.max(0, (tGlobal - startPof(u)) / WIN));
-    if (sp > 0.02 && sp < 0.98) { const dd = Math.abs(u.cy - frontY); if (dd < bd) { bd = dd; pen = u; } }
-  }
-  const handVisible = tGlobal > 0.005 && tGlobal < 0.985 && pen != null;
+  // pen sweeps L↔R SMOOTHLY as it descends with the front — a natural drawing hand, not teleporting
+  // to "whichever scattered region is nearest" (robotic).
+  const revP = Math.min(1, tGlobal / SPAN);
+  const penX = (vx || 0) + (vw || 100) * (0.5 + 0.3 * Math.sin(revP * Math.PI * 6));
+  const penY = (vy || 0) + revP * (vh || 100);
+  const handVisible = tGlobal > 0.005 && tGlobal < 0.985;
 
   return (
     <div style={{ position: "relative", width, height }}>
@@ -140,10 +139,10 @@ export const RasterRevealIllustration: React.FC<{
           );
         })}
       </svg>
-      {handVisible && pen ? (
+      {handVisible ? (
         <Hand
-          x={(pen.x - (vx || 0)) * sx}
-          y={(frontY - (vy || 0)) * sy}
+          x={(penX - (vx || 0)) * sx}
+          y={(penY - (vy || 0)) * sy}
           size={Math.max(120, height * 0.5)}
           nib={ink}
           body={handBody}
