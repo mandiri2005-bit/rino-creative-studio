@@ -7156,6 +7156,45 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
     return {"plan": plan}                  # plan may be null → Node degrades that scene to handwriting
 
 
+class VideoWhiteboardRasterReq(BaseModel):
+    query: str
+    provider: str = "flux"               # flux (flux-kontext-pro via laozhang) | recraft (Node handles recraft itself)
+    aspect_ratio: str = "1:1"
+    seed: int = 0
+
+
+@app.post("/video/whiteboard-raster")
+async def video_whiteboard_raster(req: VideoWhiteboardRasterReq,
+                                  user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: asset_query → ONE realistic raster illustration (base64) for the whiteboard
+    raster-reveal genre, via the SAME laozhang image route as /generate-image (Guide-2 §I: FLUX
+    as an asset supplier). Default model = flux-kontext-pro. NOT metered here — the video worker
+    meters it via /video/meter (model 'flux-kontext-pro' is in _IMAGE_COSTS). Internal-only; the
+    Node side still does the recraft vectorize for the reveal mask. Returns null on failure so the
+    worker can fall back to Recraft / handwriting."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    q = (req.query or "").strip()
+    if not q:
+        raise HTTPException(400, "query required")
+    model = "flux-kontext-pro" if (req.provider or "flux").lower() == "flux" else (req.provider or "flux")
+    if model not in IMAGE_MODELS:
+        raise HTTPException(400, f"unknown image model: {model}")
+    cfg = IMAGE_MODELS[model]
+    prompt = (f"{q}. Detailed realistic illustration, single clear subject, centered, "
+              "plain white background, no text, no words.")
+    try:
+        b64 = await asyncio.to_thread(
+            _generate_openai_image, prompt, cfg["model"], req.aspect_ratio, "1K", "",
+            extra_params=(cfg.get("extra_params") or {}), size_map_vip=cfg.get("size_map_vip"),
+            returns_url=(cfg["api"] == "openai-image-url"), key=IMAGE_API_KEY, seed=req.seed,
+        )
+        return {"raster_b64": b64, "model": model}
+    except Exception as e:
+        print(f"[video/whiteboard-raster] {model} failed: {e}")
+        return {"raster_b64": None, "model": model}
+
+
 class VideoRefundReq(BaseModel):
     job_id: str
 

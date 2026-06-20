@@ -117,6 +117,20 @@ export async function generateRecraftRaster(query, { seed } = {}) {
   };
 }
 
+// FLUX raster-reveal (Guide-2 §I): the raster is generated upstream by the Python
+// /video/whiteboard-raster route (laozhang flux-kontext-pro — Python owns the image key); here we
+// only vectorize that PNG into the reveal mask via Recraft (the worker meters both ops). Same
+// return shape as generateRecraftRaster minus the raster-gen meter (the worker adds flux's).
+export async function vectorizeRasterB64(b64) {
+  const buffer = Buffer.from(b64, "base64");
+  const maskSvg = await recraftVectorize(buffer);
+  return {
+    raster: "data:image/png;base64," + b64,
+    maskSvg,
+    meters: [{ operation: "image", model: "recraft-vectorize", units: { count: 1 } }],
+  };
+}
+
 // ── diagram: LLM graph → deterministic flowchart SVG (ported from scripts/diagram.mjs) ──
 const BLUE = "#2C6CA8", INK = "#1A1A1A", RED = "#D9534F";
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

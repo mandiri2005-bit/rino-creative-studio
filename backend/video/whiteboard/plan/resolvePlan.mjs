@@ -229,6 +229,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     stylePack: pack,                                       // resolved palette/stroke/font for the renderer
     mode,
     layout,
+    style_pass: plan.style_pass || { mode: "clean" },   // §H — drives the rough hand-drawn pass
     connectors,
     fps,
     duration,

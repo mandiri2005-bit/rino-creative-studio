@@ -132,6 +132,7 @@ export function syntheticGenerationClient(opts = {}) {
     async meterUsage() { return { credits: 0, skipped: "synthetic" }; },
     async generateDiagramGraph() { return null; },  // → buildDiagramSvg uses its example graph
     async generateWhiteboardPlan() { return null; }, // → scene degrades to handwriting in synthetic mode
+    async generateWhiteboardRaster() { return null; }, // → falls back to recraft/handwriting in synthetic mode
   };
 }
 
@@ -394,6 +395,22 @@ export function httpGenerationClient(opts = {}) {
       });
       if (!r.ok) throw new Error(`whiteboard-plan ${r.status}`);
       return (await r.json()).plan;
+    },
+    // Whiteboard raster supplier (Guide-2 §I): asset_query → ONE realistic raster (base64) via
+    // Python /video/whiteboard-raster (laozhang flux-kontext-pro — Python owns the image key).
+    // Returns base64 string or null; the worker vectorizes it (recraft) into the reveal mask and
+    // meters flux-kontext-pro itself. null → caller falls back to Recraft / handwriting.
+    async generateWhiteboardRaster(ctx, { query, provider, aspect, seed } = {}) {
+      const r = await fetch(`${PYTHON_API}/video/whiteboard-raster`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
+        body: JSON.stringify({
+          query: query || "", provider: provider || "flux",
+          aspect_ratio: aspect || "1:1", seed: Number(seed) || 0,
+        }),
+      });
+      if (!r.ok) throw new Error(`whiteboard-raster ${r.status}`);
+      return (await r.json()).raster_b64 || null;
     },
   };
 }

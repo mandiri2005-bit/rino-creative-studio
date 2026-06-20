@@ -15,6 +15,11 @@ import { fileURLToPath } from "node:url";
 import { parseSvg, parseSvgShapes, parseSvgDiagram } from "./svg.mjs";
 import { resolvePlan } from "./plan/resolvePlan.mjs";
 
+// §H rough hand-drawn pass (roughjs) — loaded once, guarded: a missing dep just disables rough.
+let _roughen = null;
+try { ({ roughenResolved: _roughen } = await import("./plan/rough.mjs")); }
+catch (e) { console.warn(`[whiteboard-plan] rough pass unavailable: ${e.message}`); }
+
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ENTRY = join(__dir, "src", "index.ts");
 const PLAN_ASSETS = join(__dir, "assets", "whiteboard");
@@ -175,6 +180,15 @@ export async function renderWhiteboardPlan(scenes, meta, outPath, opts = {}) {
         const mode = GENRE_MODE[meta.whiteboardGenre] || "icons"; // genre → render mode
         plan = resolvePlan(rescalePlanTiming({ ...raw, mode }, sceneDur), { assetsDir: PLAN_ASSETS, fps, strict: false });
         plan.canvas = { width, height };
+        // §H rough hand-drawn pass — opt-in via WB_STYLE=rough or plan.style_pass.mode. _roughen is
+        // loaded once at module top (guarded), so a missing roughjs dep just leaves the clean style.
+        const roughMode = (process.env.WB_STYLE || "").toLowerCase() === "rough" || raw.style_pass?.mode === "rough";
+        if (roughMode && plan.mode === "diagram" && _roughen) {
+          try {
+            plan.style_pass = { mode: "rough", ...(raw.style_pass || {}) };
+            _roughen(plan);
+          } catch (re) { console.warn(`[whiteboard-plan] rough pass skipped: ${re.message}`); }
+        }
       }
     } catch (e) {
       console.warn(`[whiteboard-plan ${meta.jobId || ""}/${i}] resolve failed: ${e.message} → blank board`);

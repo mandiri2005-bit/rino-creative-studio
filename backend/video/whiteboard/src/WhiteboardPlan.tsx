@@ -27,6 +27,7 @@ export interface PlanElement {
   maskViewBox?: string;
   maskStrokes?: PlanStroke[];
   maskShapes?: PlanShape[];
+  _roughBorder?: string;      // rough-style-pass: baked wobbly card-border path `d` (local coords)
   draw: { startFrame: number; durFrames: number };
 }
 export interface PlanOverlay { kind: string; box: PlanBox; startFrame: number; durFrames: number }
@@ -37,7 +38,7 @@ export interface StylePack {
   stroke?: { width?: number };
   font?: { label?: string; weight?: number; labelSize?: number };
 }
-export interface PlanConnector { from: PlanBox; to: PlanBox; startFrame: number; durFrames: number }
+export interface PlanConnector { from: PlanBox; to: PlanBox; startFrame: number; durFrames: number; _roughShaft?: string }
 export interface ResolvedPlan {
   fps: number;
   durationInFrames: number;
@@ -132,8 +133,13 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; di
   const iconH = box.h * (diagram ? 0.48 : 0.9);
   const iconTop = diagram ? box.h * 0.16 : 0;
   const labelTop = diagram ? box.h * 0.68 : box.h + 6;
+  const roughBorder = diagram ? el._roughBorder : null; // baked wobbly card outline (rough style pass)
   const boxStyle = diagram
-    ? { border: `3px solid ${pack.palette.accent}`, borderRadius: 24, background: `${pack.palette.accent}12`, boxShadow: "0 12px 34px rgba(15,23,42,0.10)" }
+    ? {
+        // rough pass draws its own wobbly border, so suppress the crisp CSS one
+        border: roughBorder ? "3px solid transparent" : `3px solid ${pack.palette.accent}`,
+        borderRadius: 24, background: `${pack.palette.accent}12`, boxShadow: "0 12px 34px rgba(15,23,42,0.10)",
+      }
     : {};
   return (
     <div style={{ position: "absolute", left, top, width: box.w, height: box.h, boxSizing: "border-box", ...boxStyle }}>
@@ -144,6 +150,15 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; di
           justifyContent: "center", fontFamily: pack.font.label, fontWeight: 800, fontSize: 26,
           boxShadow: "0 4px 12px rgba(15,23,42,0.22)",
         }}>{index + 1}</div>
+      ) : null}
+      {roughBorder ? (
+        <div style={{ position: "absolute", left: 0, top: 0, width: box.w, height: box.h }}>
+          <SelfDrawSvg
+            d={roughBorder} viewBox={`0 0 ${box.w} ${box.h}`} width={box.w} height={box.h}
+            stroke={pack.palette.accent} strokeWidth={pack.stroke.width} hand={false}
+            startFrame={draw.startFrame} durationInFrames={Math.max(6, draw.durFrames * 0.6)}
+          />
+        </div>
       ) : null}
       <div style={{ position: "absolute", left: 0, top: iconTop, width: box.w, height: iconH }}>
         {el.shapes && el.shapes.length ? (
@@ -220,7 +235,9 @@ const Connector: React.FC<{ c: PlanConnector; canvas: { width: number; height: n
   const ah = 22;
   const lx = ex - ah * (ux - uy * 0.6), ly = ey - ah * (uy + ux * 0.6);
   const rx = ex - ah * (ux + uy * 0.6), ry = ey - ah * (uy - ux * 0.6);
-  const d = `M ${sx} ${sy} L ${ex} ${ey} M ${ex} ${ey} L ${lx} ${ly} M ${ex} ${ey} L ${rx} ${ry}`;
+  // rough style pass: swap the straight shaft for the baked wobbly path, keep a crisp arrowhead
+  const shaft = c._roughShaft ? c._roughShaft : `M ${sx} ${sy} L ${ex} ${ey}`;
+  const d = `${shaft} M ${ex} ${ey} L ${lx} ${ly} M ${ex} ${ey} L ${rx} ${ry}`;
   return (
     <div style={{ position: "absolute", left: 0, top: 0, width: canvas.width, height: canvas.height }}>
       <SelfDrawSvg

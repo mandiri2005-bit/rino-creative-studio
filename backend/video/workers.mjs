@@ -251,23 +251,43 @@ export async function visualProcessor(job, deps) {
               const { parseSvg, parseSvgShapes } = await import("./whiteboard/svg.mjs");
               const meters = [];
               if (genre === "detail") {
-                const { generateRecraftRaster } = await import("./whiteboard/visuals.mjs");
+                // raster-reveal: provider = recraft (default) OR flux (laozhang flux-kontext-pro,
+                // Guide-2 §I) via WB_RASTER_PROVIDER. FLUX gens the raster (Python route) + recraft
+                // vectorizes the mask; falls back to recraft raster if flux returns nothing.
+                const provider = (process.env.WB_RASTER_PROVIDER || "recraft").toLowerCase();
+                const { generateRecraftRaster, vectorizeRasterB64 } = await import("./whiteboard/visuals.mjs");
+                const ctx = { jobId, tenantId: meta.tenantId, userId: meta.userId };
                 for (const el of plan.elements || []) {
                   const q = el.asset_query || el.id;
                   try {
-                    const hit = await deps.store.getCachedAsset?.("raster", q); // cross-job reuse
+                    const ckind = provider === "flux" ? "raster-flux" : "raster";
+                    const hit = await deps.store.getCachedAsset?.(ckind, q); // cross-job reuse
                     if (hit && hit.raster) {
                       el.raster = hit.raster; el.maskViewBox = hit.maskViewBox; el.maskStrokes = hit.maskStrokes;
-                      el.maskShapes = hit.maskShapes; el.assetSource = "recraft-raster-cache"; continue; // no Recraft, no meter
+                      el.maskShapes = hit.maskShapes; el.assetSource = `${ckind}-cache`; continue; // no gen, no meter
                     }
-                    const { raster, maskSvg, meters: ms } = await generateRecraftRaster(q, { seed: 1000 + sceneIndex * 13 });
+                    let raster, maskSvg, ms, source = "recraft-raster";
+                    if (provider === "flux") {
+                      const b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
+                        { query: q, provider: "flux", aspect: "1:1", seed: 1000 + sceneIndex * 13 });
+                      if (b64) {
+                        ({ raster, maskSvg, meters: ms } = await vectorizeRasterB64(b64));
+                        ms = [{ operation: "image", model: "flux-kontext-pro", units: { count: 1 } }, ...(ms || [])];
+                        source = "flux-raster";
+                      }
+                    }
+                    if (!raster) { // recraft (default, or flux fallback)
+                      ({ raster, maskSvg, meters: ms } = await generateRecraftRaster(q, { seed: 1000 + sceneIndex * 13 }));
+                      source = "recraft-raster";
+                    }
                     const { viewBox, strokes } = parseSvg(maskSvg, { dropBg: true, dropLight: true });
                     const { shapes } = parseSvgShapes(maskSvg, { dropBg: true });
-                    el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = "recraft-raster";
-                    await deps.store.setCachedAsset?.("raster", q, { raster, maskViewBox: viewBox, maskStrokes: strokes, maskShapes: shapes });
+                    el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = source;
+                    await deps.store.setCachedAsset?.(source === "flux-raster" ? "raster-flux" : "raster", q,
+                      { raster, maskViewBox: viewBox, maskStrokes: strokes, maskShapes: shapes });
                     if (ms) meters.push(...ms);
                   } catch (ge) {
-                    console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft raster "${q}" failed: ${ge.message}`);
+                    console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] raster "${q}" failed: ${ge.message}`);
                   }
                 }
               } else {
