@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "id": "office_worker",
+      "path": "icons/office_worker.svg",
+      "tags": ["worker", "office", "person", "manual work", "tired", "employee", "staff"],
+      "license": "internal_procedural",
+      "source": "curated_svg_library"
+    },
+    {
+      "id": "paper_pile",
+      "path": "icons/paper_pile.svg",
+      "tags": ["paper", "documents", "pile", "manual work", "busy", "stack", "files"],
+      "license": "internal_procedural",
+      "source": "curated_svg_library"
+    },
+    {
+      "id": "ai_agent",
+      "path": "icons/ai_agent.svg",
+      "tags": ["ai", "assistant", "robot", "automation", "friendly", "agent", "bot"],
+      "license": "internal_procedural",
+      "source": "curated_svg_library"
+    },
+    {
+      "id": "growth_chart",
+      "path": "icons/growth_chart.svg",
+      "tags": ["growth", "chart", "graph", "increase", "faster", "results", "up"],
+      "license": "internal_procedural",
+      "source": "curated_svg_library"
+    },
+    {
+      "id": "generic_concept",
+      "path": "icons/generic_concept.svg",
+      "tags": ["concept", "idea", "generic", "lightbulb", "thought"],
+      "license": "internal_procedural",
+      "source": "curated_svg_library"
+    }
+  ]
+}

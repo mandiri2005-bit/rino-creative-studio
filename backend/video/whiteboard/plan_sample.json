@@ -1,0 +1,28 @@
+{
+  "scene_id": "scene_001",
+  "template": "problem_solution",
+  "duration": 8.7,
+  "style_pack": "clean_explainer",
+  "visual_metaphor": "manual work transformed into AI automation",
+  "narration": "Many teams waste hours on repetitive tasks. AI automation changes that, handling routine work so results grow faster.",
+  "canvas": { "width": 1920, "height": 1080, "background": "whiteboard_clean" },
+  "elements": [
+    { "id": "worker", "type": "icon", "asset_query": "tired office worker", "slot": "left_center", "label": "Manual Work" },
+    { "id": "paper_pile", "type": "icon", "asset_query": "paper pile", "slot": "left_bottom" },
+    { "id": "ai_agent", "type": "icon", "asset_query": "friendly AI assistant", "slot": "right_center", "label": "AI Automation" },
+    { "id": "growth", "type": "icon", "asset_query": "growth chart", "slot": "right_top", "label": "3x Faster" }
+  ],
+  "beats": [
+    { "start": 0.0, "end": 1.8, "action": "draw_icon", "target": "worker" },
+    { "start": 1.8, "end": 3.2, "action": "draw_icon", "target": "paper_pile" },
+    { "start": 3.2, "end": 4.0, "action": "highlight_circle", "target": "paper_pile" },
+    { "start": 4.0, "end": 5.2, "action": "pan_to", "target": "ai_agent" },
+    { "start": 5.2, "end": 6.8, "action": "draw_icon", "target": "ai_agent" },
+    { "start": 6.8, "end": 8.7, "action": "draw_icon", "target": "growth" }
+  ],
+  "camera": [
+    { "start": 0.0, "end": 3.8, "type": "zoom_to", "target": "worker", "scale": 1.12 },
+    { "start": 3.8, "end": 5.2, "type": "pan_to", "target": "ai_agent", "scale": 1.12 },
+    { "start": 7.0, "end": 8.7, "type": "zoom_out", "target": "full_canvas", "scale": 1.0 }
+  ]
+}
