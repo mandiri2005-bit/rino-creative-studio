@@ -53,8 +53,9 @@ const QUERY_ALIASES = {
   "rice field": "wheat", "rice fields": "wheat", paddy: "wheat", sawah: "wheat", harvest: "wheat", crops: "wheat",
   // water
   river: "waves", stream: "waves", creek: "waves", brook: "waves", ocean: "waves", sea: "waves", lake: "waves", pond: "waves", canal: "waves",
-  // woods
+  // woods + foliage
   woods: "trees", woodland: "trees", grove: "trees", orchard: "trees", jungle: "trees", rainforest: "trees",
+  eucalyptus: "leaf", "gum leaves": "leaf", "gum tree": "tree", foliage: "leaf", herb: "leaf",
   // vineyard
   vineyard: "grape", grapevine: "grape", grapes: "grape",
 };

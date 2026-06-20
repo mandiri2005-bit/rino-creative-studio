@@ -7110,7 +7110,11 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
         "DEPICTS it: 'aroma kopi'/coffee aroma→'coffee cup', morning/pagi→'sunrise', fresh/segar→"
         "'leaf', idea→'light bulb', fast→'rocket', growth→'plant', love→'heart', music→'music note', "
         "danger→'warning sign', time→'clock'. An abstract asset_query ('aroma','morning','feeling') "
-        "matches NO icon and renders a wrong/generic picture. It looks up an icon library; no file names, no phrases; "
+        "matches NO icon and renders a wrong/generic picture. The English asset_query is ONLY the "
+        "icon-search key — the visible 'label' is a SEPARATE field that MUST stay in the narration's "
+        "language; NEVER translate the label to English (Indonesian narration → label 'Pohon' not "
+        "'Tree', 'Jiwa Lembut' not 'Gentle Soul'; proper nouns 'Koala'/'Prancis' stay as-is). "
+        "It looks up an icon library; no file names, no phrases; "
         "use progressive reveal (each element has a draw_icon/write_text beat); every beat target must "
         "be an element id; no pixel coordinates; 2-3 camera moves max, scale 1.05-1.18 then zoom_out to "
         f"full_canvas. The 'duration' field MUST equal {dur} and no beat may end after {dur}. "
@@ -7124,7 +7128,13 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
         "funnel or filtering), 'branch' for ONE thing splitting into several (one cause → many "
         "effects, a root with children), else 'flow' for a straight sequence (then 'direction' "
         "picks down vs right). Match the layout to the content; do not default to 'flow' blindly. "
-        f"LANGUAGE: write visual_metaphor + every label entirely in {lang}; only ids stay ascii."
+        f"LANGUAGE: write visual_metaphor + EVERY label entirely in {lang} — match the narration's "
+        "language exactly (Indonesian narration ⇒ Indonesian labels like 'Pohon'/'Jiwa Lembut'; proper "
+        "nouns like 'Koala'/'Prancis' unchanged); NEVER write a label in English unless the narration "
+        "itself is English. Only the 'id' fields and asset_query stay ascii-English. "
+        "CONTENT FIDELITY: visualise ONLY what THIS narration scene literally says — take every element "
+        "straight from its words; do NOT invent or add related-but-unmentioned concepts (if the "
+        "narration never mentions eucalyptus, there is no eucalyptus element)."
     )
 
     def _extract(text):
