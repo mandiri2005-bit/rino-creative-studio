@@ -26,10 +26,11 @@ function libs() {
   const tb = load("src/icons/tabler-icons.json");
   const ph = load("src/icons/phosphor-icons.json");
   _libs = [
-    lu && { name: "lucide", kind: "stroke", icons: lu.icons || {}, aliases: lu.aliases || {}, viewBox: (lu.meta && lu.meta.viewBox) || "0 0 24 24", pref: 2 },
-    tb && { name: "tabler", kind: "stroke", icons: tb.icons || {}, aliases: {}, viewBox: (tb.meta && tb.meta.viewBox) || "0 0 24 24", pref: 2 },
+    // license per lib — all commercial-safe (recorded so generated-asset provenance is complete)
+    lu && { name: "lucide", license: "ISC", kind: "stroke", icons: lu.icons || {}, aliases: lu.aliases || {}, viewBox: (lu.meta && lu.meta.viewBox) || "0 0 24 24", pref: 2 },
+    tb && { name: "tabler", license: "MIT", kind: "stroke", icons: tb.icons || {}, aliases: {}, viewBox: (tb.meta && tb.meta.viewBox) || "0 0 24 24", pref: 2 },
     // Phosphor is FILLED → slight negative pref so a stroke icon wins ties (keeps the line look)
-    ph && { name: "phosphor", kind: "fill", icons: ph.icons || {}, aliases: {}, viewBox: (ph.meta && ph.meta.viewBox) || "0 0 256 256", pref: -1 },
+    ph && { name: "phosphor", license: "MIT", kind: "fill", icons: ph.icons || {}, aliases: {}, viewBox: (ph.meta && ph.meta.viewBox) || "0 0 256 256", pref: -1 },
   ].filter(Boolean);
   return _libs;
 }
@@ -90,14 +91,14 @@ export function resolveIcon(query, { ink = "#1F2937", width = 4, minScore = 3 } 
 
   if (lib.kind === "fill") {
     const shapes = (icon.d || []).map((d) => ({ d, fill: ink }));
-    return shapes.length ? { lib: lib.name, name: realName, viewBox: lib.viewBox, shapes } : null;
+    return shapes.length ? { lib: lib.name, license: lib.license, name: realName, viewBox: lib.viewBox, shapes } : null;
   }
   const strokes = [];
   for (const [tag, attrs] of icon.p || []) {
     const d = tag === "path" ? attrs.d : nodeToD(tag, attrs);
     if (d) strokes.push({ d, stroke: ink, width });
   }
-  return strokes.length ? { lib: lib.name, name: realName, viewBox: lib.viewBox, strokes } : null;
+  return strokes.length ? { lib: lib.name, license: lib.license, name: realName, viewBox: lib.viewBox, strokes } : null;
 }
 
 // is this query covered by ANY free lib? (gates the paid Recraft generate-on-miss)

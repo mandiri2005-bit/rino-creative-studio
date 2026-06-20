@@ -264,7 +264,8 @@ export async function visualProcessor(job, deps) {
                     const hit = await deps.store.getCachedAsset?.(ckind, q); // cross-job reuse
                     if (hit && hit.raster) {
                       el.raster = hit.raster; el.maskViewBox = hit.maskViewBox; el.maskStrokes = hit.maskStrokes;
-                      el.maskShapes = hit.maskShapes; el.assetSource = `${ckind}-cache`; continue; // no gen, no meter
+                      el.maskShapes = hit.maskShapes; el.assetSource = `${ckind}-cache`;
+                      el.license = hit.license || "generated:provider-terms"; continue; // no gen, no meter
                     }
                     let raster, maskSvg, ms, source = "recraft-raster";
                     if (provider === "flux") {
@@ -282,9 +283,12 @@ export async function visualProcessor(job, deps) {
                     }
                     const { viewBox, strokes } = parseSvg(maskSvg, { dropBg: true, dropLight: true });
                     const { shapes } = parseSvgShapes(maskSvg, { dropBg: true });
-                    el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = source;
+                    const model = source === "flux-raster" ? "flux-kontext-pro" : "recraft-v3";
+                    const lic = `${model}:provider-terms`;
+                    el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = source; el.license = lic;
                     await deps.store.setCachedAsset?.(source === "flux-raster" ? "raster-flux" : "raster", q,
-                      { raster, maskViewBox: viewBox, maskStrokes: strokes, maskShapes: shapes });
+                      { raster, maskViewBox: viewBox, maskStrokes: strokes, maskShapes: shapes,
+                        source, model, license: lic, createdAt: new Date().toISOString() }); // §S provenance
                     if (ms) meters.push(...ms);
                   } catch (ge) {
                     console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] raster "${q}" failed: ${ge.message}`);
@@ -301,16 +305,17 @@ export async function visualProcessor(job, deps) {
                     const hit = await deps.store.getCachedAsset?.(kind, q); // cross-job reuse
                     if (hit && hit.strokes) {
                       el.viewBox = hit.viewBox; el.strokes = hit.strokes; if (hit.shapes) el.shapes = hit.shapes;
-                      el.assetSource = "recraft-cache"; continue; // no Recraft, no meter
+                      el.assetSource = "recraft-cache"; el.license = hit.license || "recraft-v3-vector:provider-terms"; continue; // no Recraft, no meter
                     }
                     const { svg, meter } = await generateRecraftIcon(q, { genre, seed: 1000 + sceneIndex * 13 });
                     const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
                     if (parsed.strokes && parsed.strokes.length) {
-                      el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft";
+                      el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft"; el.license = "recraft-v3-vector:provider-terms";
                       // colored fills (so Recraft icons aren't thin outlines — drawn under the strokes)
                       const { shapes } = parseSvgShapes(svg, { dropBg: true });
                       if (shapes && shapes.length) el.shapes = shapes;
-                      await deps.store.setCachedAsset?.(kind, q, { viewBox: parsed.viewBox, strokes: parsed.strokes, shapes });
+                      await deps.store.setCachedAsset?.(kind, q, { viewBox: parsed.viewBox, strokes: parsed.strokes, shapes,
+                        source: "recraft", model: "recraft-v3-vector", license: "recraft-v3-vector:provider-terms", createdAt: new Date().toISOString() }); // §S provenance
                       if (meter) meters.push(meter);
                     }
                   } catch (ge) {

@@ -102,35 +102,36 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     let libShapes = null; // filled icons from a fill lib (Phosphor) render as shapes, not strokes
     let assetId = null;
     let assetSource = "none";
+    let license = null;   // provenance/license trail (commercial-safety at scale, guide §P/§S)
     let fallback = true;
 
     // Asset fallback ladder (guide §J): raster-reveal (genre detail, Recraft photo + mask) →
     // pre-baked strokes (Recraft on-miss) → curated manifest → Lucide (1737) → generic.
     if (el.raster) {
-      assetSource = "recraft-raster"; fallback = false; // raster + mask carried in the return
+      assetSource = el.assetSource || "recraft-raster"; license = el.license || "generated:provider-terms"; fallback = false; // raster + mask carried in the return
     } else if (Array.isArray(el.strokes) && el.strokes.length) {
       // already resolved upstream (e.g. Recraft generate-on-miss baked strokes into the plan)
       viewBox = el.viewBox || "0 0 100 100";
       strokes = el.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
-      assetId = el.assetId || "prebaked"; assetSource = el.assetSource || "prebaked"; fallback = false;
+      assetId = el.assetId || "prebaked"; assetSource = el.assetSource || "prebaked"; license = el.license || "generated:provider-terms"; fallback = false;
     } else {
       const r = resolveAssetPath(query, manifest);
       if (!r.fallback && r.path) {
         const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink });
         viewBox = parsed.viewBox;
         strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
-        assetId = r.asset?.id || null; assetSource = "manifest"; fallback = false;
+        assetId = r.asset?.id || null; assetSource = "manifest"; license = r.asset?.license || "curated"; fallback = false;
       } else {
         const lib = resolveIcon(query, { ink: pack.palette.ink, width: pack.stroke.width });
         if (lib) {
-          viewBox = lib.viewBox; assetId = `${lib.lib}:${lib.name}`; assetSource = lib.lib; fallback = false;
+          viewBox = lib.viewBox; assetId = `${lib.lib}:${lib.name}`; assetSource = lib.lib; license = lib.license || "unknown"; fallback = false;
           if (lib.strokes) strokes = lib.strokes;       // lucide / tabler → self-draw strokes
           if (lib.shapes) libShapes = lib.shapes;       // phosphor → filled silhouette
         } else if (r.path) {
           const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink }); // generic_concept
           viewBox = parsed.viewBox;
           strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
-          assetId = r.asset?.id || "generic"; assetSource = "generic"; fallback = true;
+          assetId = r.asset?.id || "generic"; assetSource = "generic"; license = "internal"; fallback = true;
         }
       }
     }
@@ -150,6 +151,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       label: el.label || null,
       assetId,
       assetSource,
+      license,
       fallback,
       viewBox,
       strokes,
