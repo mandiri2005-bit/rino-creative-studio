@@ -26,7 +26,7 @@ const ENTRY = join(__dir, "src", "index.ts");
 const PLAN_ASSETS = join(__dir, "assets", "whiteboard");
 // genre → plan render mode: diagram = flowchart (boxes+arrows); detail = raster-reveal
 // (Recraft raster, falls back to icons until that renderer lands); else stroke icons.
-const GENRE_MODE = { diagram: "diagram", detail: "raster", lineart: "icons", color: "icons" };
+const GENRE_MODE = { diagram: "diagram", detail: "raster", lineart: "icons", color: "color" };
 
 // cap 1080p; tier sets fps + crf (render fee is flat, tier is quality only)
 const ASPECT = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };

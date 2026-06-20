@@ -17,7 +17,7 @@ import { validateResolvedScene } from "../qa.mjs";
 // keep these in sync with render.mjs (duplicated so this stays Chromium/@remotion-free)
 const ASPECT = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
 const TIER = { fast: { fps: 30, crf: 28 }, hd: { fps: 30, crf: 23 }, hd_plus: { fps: 60, crf: 20 } };
-const GENRE_MODE = { diagram: "diagram", detail: "raster", lineart: "icons", color: "icons" };
+const GENRE_MODE = { diagram: "diagram", detail: "raster", lineart: "icons", color: "color" };
 
 let _roughen = null;
 try { ({ roughenResolved: _roughen } = await import("../plan/rough.mjs")); } catch { /* roughjs optional */ }
@@ -183,6 +183,10 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         hands.push({ x: mgx + hx * ms, y: mgy + hy * ms, size: Math.max(120, iconH * 0.5), nib: ink });
       }
     } else {
+      // color genre: soft colour chip behind the icon (icon stroke is the same colour)
+      if (el.chip) {
+        out.push(`<rect x="${(x + b.w * 0.16).toFixed(1)}" y="${(y + iconTop + iconH * 0.02).toFixed(1)}" width="${(b.w * 0.68).toFixed(1)}" height="${(iconH * 0.96).toFixed(1)}" rx="28" fill="${el.chip}22" opacity="${clamp(p * 2, 0, 1)}"/>`);
+      }
       // vector icon: filled shapes (Recraft/color/phosphor) under self-draw strokes that draw
       // SEQUENTIALLY (match Remotion: stroke i over [start+i·per, +per]); the hand rides the active one.
       const [, , vbw = 100, vbh = 100] = String(el.viewBox || "0 0 100 100").split(/\s+/).map(Number);

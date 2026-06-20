@@ -28,6 +28,7 @@ export interface PlanElement {
   maskStrokes?: PlanStroke[];
   maskShapes?: PlanShape[];
   _roughBorder?: string;      // rough-style-pass: baked wobbly card-border path `d` (local coords)
+  chip?: string;              // color genre: soft colour chip behind the icon
   draw: { startFrame: number; durFrames: number };
 }
 export interface PlanOverlay { kind: string; box: PlanBox; startFrame: number; durFrames: number }
@@ -150,6 +151,14 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; di
           justifyContent: "center", fontFamily: pack.font.label, fontWeight: 800, fontSize: 26,
           boxShadow: "0 4px 12px rgba(15,23,42,0.22)",
         }}>{index + 1}</div>
+      ) : null}
+      {el.chip ? (
+        // color genre: soft colour chip behind the icon (icon stroke is the same colour)
+        <div style={{
+          position: "absolute", left: box.w * 0.16, top: iconTop + iconH * 0.02,
+          width: box.w * 0.68, height: iconH * 0.96, borderRadius: 28, background: el.chip + "22",
+          opacity: frame >= draw.startFrame ? 1 : 0,
+        }} />
       ) : null}
       {roughBorder ? (
         <div style={{ position: "absolute", left: 0, top: 0, width: box.w, height: box.h }}>

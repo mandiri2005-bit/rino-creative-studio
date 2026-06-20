@@ -29,6 +29,10 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   const laid = layoutWhiteboardPlan(plan); // attaches `box`; throws on unknown slot
   const mode = plan.mode || "icons";
   const direction = (plan.direction === "down" || plan.direction === "vertical") ? "down" : "right";
+  // color genre: free libs are monochrome, so COLORIZE icons with the pack palette (cycle per
+  // element) + a soft colour chip behind each → "berwarna" look without paying for Recraft.
+  const colorize = mode === "color";
+  const PALETTE = [pack.palette.accent, pack.palette.highlight, pack.palette.success, pack.palette.warning].filter(Boolean);
   // Diagram LAYOUT — flow (down|right line) is default; cycle/funnel/branch are richer shapes
   // the LLM picks to fit the content (loop / narrowing / one-to-many). All keep nodes BIG and
   // draw on in sequence; arrows are auto-derived per layout below.
@@ -95,7 +99,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   }
   const boxOf = (id) => workEls.find((e) => e.id === id)?.box || null;
 
-  const elements = workEls.map((el) => {
+  const elements = workEls.map((el, elIdx) => {
     const query = el.asset_query || el.id;
     let viewBox = "0 0 100 100";
     let strokes = [];
@@ -142,6 +146,16 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     const sw = Math.max(0.6, (parseFloat(viewBox.split(/\s+/)[2]) || 100) * (pack.stroke.width / 100));
     strokes = strokes.map((s) => ({ ...s, width: sw }));
 
+    // color genre: recolor the (monochrome) lib icon to a palette colour + emit a chip colour.
+    // Skip elements that already carry their own colours (Recraft "color"/raster keep theirs).
+    let chip = null;
+    if (colorize && PALETTE.length && assetSource !== "recraft" && !el.raster) {
+      const c = PALETTE[elIdx % PALETTE.length];
+      strokes = strokes.map((s) => ({ ...s, stroke: c }));
+      if (libShapes && libShapes.length) libShapes = libShapes.map((s) => ({ ...s, fill: c }));
+      chip = c;
+    }
+
     const beat = drawBeatFor(el.id, plan.beats, Math.min(1.5, duration));
     return {
       id: el.id,
@@ -155,6 +169,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       fallback,
       viewBox,
       strokes,
+      ...(chip ? { chip } : {}),   // color genre: soft colour chip behind the icon
       // colored fills: from upstream baking (Recraft/color) OR a fill lib (Phosphor silhouette)
       ...((Array.isArray(el.shapes) && el.shapes.length) ? { shapes: el.shapes }
         : (libShapes && libShapes.length) ? { shapes: libShapes } : {}),
