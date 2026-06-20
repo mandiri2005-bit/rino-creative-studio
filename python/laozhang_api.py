@@ -7231,10 +7231,21 @@ async def video_whiteboard_raster(req: VideoWhiteboardRasterReq,
         raise HTTPException(400, f"unknown image model: {model}")
     cfg = IMAGE_MODELS[model]
     if (req.mode or "subject").lower() == "hero":
-        # detail genre: ONE cohesive SCENE per scene (Golpo look) — hand-drawn ink lines + loose
-        # watercolor so the local potrace line-trace + reveal "draws" it convincingly.
-        prompt = (f"{q}. Hand-drawn ink line illustration with loose watercolor wash, a single "
-                  "cohesive scene, clear bold ink outlines, white background, no text, no words, no border.")
+        # detail genre: ONE cohesive SCENE per scene, drawn on. An ILLUSTRATED style (clear outlines)
+        # line-traces + "draws" FAR smoother than a photo (potrace gets clean lines, not mush), so the
+        # hero is always illustrated, never photoreal. Pick the look via WB_HERO_STYLE (default = the
+        # Golpo ink+watercolor).
+        _HERO_STYLES = {
+            "ink_watercolor": "Hand-drawn ink line illustration with loose watercolor wash, clear bold ink outlines",
+            "caricature": "Hand-drawn caricature illustration, bold clean outlines, light flat shading, expressive",
+            "comic": "Comic-book ink illustration, bold black outlines, flat cel shading",
+            "flat_vector": "Flat vector illustration, clean bold outlines, simple solid colours",
+            "pencil": "Detailed pencil sketch, clear graphite linework, light shading",
+            "engraving": "Vintage line engraving woodcut, fine cross-hatched ink lines, monochrome",
+        }
+        _hs = (os.environ.get("WB_HERO_STYLE") or "ink_watercolor").lower()
+        style = _HERO_STYLES.get(_hs, _HERO_STYLES["ink_watercolor"])
+        prompt = (f"{q}. {style}, a single cohesive scene, white background, no text, no words, no border.")
     else:
         prompt = (f"{q}. Detailed realistic illustration, single clear subject, centered, "
                   "plain white background, no text, no words.")

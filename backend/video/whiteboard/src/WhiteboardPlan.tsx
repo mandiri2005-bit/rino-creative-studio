@@ -104,18 +104,39 @@ const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<S
   );
 };
 
-// Colored fills for Recraft/color elements (fixes "Recraft can't be filled") — faded in over
-// the draw window, rendered UNDER the ink strokes so the outline still draws on top.
+// Colored fills (Recraft/color/Phosphor/Iconify). DRAW each shape: trace its outline (pathLength-
+// normalised, like SelfDrawSvg) then fill it in over the back half of its window, SEQUENTIALLY — so
+// FILL icons self-draw like the line icons instead of just fading in (was the "iconify pops, doesn't
+// draw" bug). Rendered under the ink strokes.
 const FilledShapes: React.FC<{ shapes: PlanShape[]; viewBox: string; width: number; height: number; startFrame: number; durFrames: number }> = ({ shapes, viewBox, width, height, startFrame, durFrames }) => {
   const frame = useCurrentFrame();
-  const t = interpolate(frame, [startFrame, startFrame + Math.max(1, durFrames)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  if (t <= 0) return null;
+  const vbw = Number(viewBox.split(/\s+/)[2]) || 100;
+  const outline = Math.max(1.5, vbw / 64); // viewBox-relative outline so the trace is visible at any scale
+  const n = Math.max(1, shapes.length);
+  const per = Math.max(1, durFrames) / n; // each shape gets an equal slice → drawn in sequence
   return (
     <div style={{ position: "absolute", left: 0, top: 0, width, height }}>
       <svg width={width} height={height} viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
-        {shapes.map((s, i) => (
-          <path key={i} d={s.d} fill={s.fill || "none"} stroke={s.stroke || "none"} strokeWidth={s.width || 0} opacity={t} />
-        ))}
+        {shapes.map((s, i) => {
+          const ts = interpolate(frame, [startFrame + i * per, startFrame + (i + 1) * per], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+          if (ts <= 0) return null;
+          const col = s.fill && s.fill !== "none" ? s.fill : "#1A1A1A";
+          return (
+            <path
+              key={i}
+              d={s.d}
+              fill={col}
+              fillOpacity={Math.max(0, Math.min(1, (ts - 0.5) * 2))}
+              stroke={col}
+              strokeWidth={(s.width as number) || outline}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              pathLength={100}
+              strokeDasharray={100}
+              strokeDashoffset={(1 - ts) * 100}
+            />
+          );
+        })}
       </svg>
     </div>
   );

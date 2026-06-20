@@ -197,17 +197,28 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       const scale = Math.min(b.w / vbw, iconH / vbh);
       const gx = x + (b.w - vbw * scale) / 2, gy = y + iconTop + (iconH - vbh * scale) / 2;
       out.push(`<g transform="translate(${gx} ${gy}) scale(${scale})">`);
-      for (const s of el.shapes || []) out.push(`<path d="${s.d}" fill="${s.fill || "none"}" stroke="${s.stroke || "none"}" stroke-width="${s.width || 0}" opacity="${p}"/>`);
-      const strokes = el.strokes || [];
-      const n = Math.max(1, strokes.length), per = el.draw.durFrames / n;
-      strokes.forEach((s, si) => {
+      // DRAW every unit sequentially + hand on the active one. FILL icons (Phosphor / Iconify /
+      // Recraft) used to just fade in (opacity=p) → looked "revealed", not drawn. Now a fill shape
+      // TRACES its outline (dashoffset) then fills in over the back half of its window — so iconify
+      // icons self-draw like the Lucide/Tabler line icons instead of popping.
+      const units = [
+        ...(el.shapes || []).map((s) => ({ ...s, kind: "shape" })),
+        ...(el.strokes || []).map((s) => ({ ...s, kind: "stroke" })),
+      ];
+      const n = Math.max(1, units.length), per = el.draw.durFrames / n;
+      units.forEach((s, si) => {
         const ts = progress(t, el.draw.startFrame + si * per, per, fps);
         if (ts <= 0) return;
         const L = 1200;
-        out.push(`<path d="${s.d}" fill="none" stroke="${s.stroke || ink}" stroke-width="${s.width || sw}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${(1 - ts) * L}"/>`);
+        if (s.kind === "shape") {
+          const col = s.fill && s.fill !== "none" ? s.fill : ink;
+          out.push(`<path d="${s.d}" fill="${col}" fill-opacity="${clamp((ts - 0.5) * 2, 0, 1).toFixed(3)}" stroke="${col}" stroke-width="${Math.max(2, sw * 0.5)}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${((1 - ts) * L).toFixed(1)}"/>`);
+        } else {
+          out.push(`<path d="${s.d}" fill="none" stroke="${s.stroke || ink}" stroke-width="${s.width || sw}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L}" stroke-dashoffset="${((1 - ts) * L).toFixed(1)}"/>`);
+        }
         if (ts > 0.02 && ts < 0.985) {
           const pt = pointOnPath(s.d, ts);
-          if (pt) hands.push({ x: gx + pt.x * scale, y: gy + pt.y * scale, size: Math.max(90, iconH * 0.55), nib: s.stroke || ink });
+          if (pt) hands.push({ x: gx + pt.x * scale, y: gy + pt.y * scale, size: Math.max(90, iconH * 0.55), nib: (s.kind === "shape" ? (s.fill && s.fill !== "none" ? s.fill : ink) : (s.stroke || ink)) });
         }
       });
       out.push(`</g>`);
