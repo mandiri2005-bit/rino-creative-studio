@@ -10,6 +10,7 @@ import { layoutWhiteboardPlan } from "./slots.mjs";
 import { validateWhiteboardPlan } from "./validate.mjs";
 import { secondsToFrames, drawBeatFor } from "./beats.mjs";
 import { DEFAULT_FPS, DEFAULT_CANVAS } from "./schema.mjs";
+import { resolveStylePack } from "./stylePacks.mjs";
 
 export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict = true } = {}) {
   const plan = typeof planOrPath === "string" ? JSON.parse(readFileSync(planOrPath, "utf8")) : planOrPath;
@@ -20,6 +21,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   }
 
   const manifest = loadManifest(assetsDir);
+  const pack = resolveStylePack(plan.style_pack);          // §O — palette/stroke/font
   const canvas = { ...DEFAULT_CANVAS, ...(plan.canvas || {}) };
   const duration = Number(plan.duration) || 0;
   const durationInFrames = Math.max(1, secondsToFrames(duration, fps));
@@ -31,9 +33,9 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     let viewBox = "0 0 100 100";
     let strokes = [];
     if (r.path) {
-      const parsed = parseSvg(readFileSync(r.path, "utf8"));
+      const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink }); // recolour to the pack's ink
       viewBox = parsed.viewBox;
-      strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || "#1F2937", width: s.width || 4 }));
+      strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
     }
     const beat = drawBeatFor(el.id, plan.beats, Math.min(1.5, duration));
     return {
@@ -83,7 +85,8 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   return {
     scene_id: plan.scene_id,
     template: plan.template,
-    style_pack: plan.style_pack || "clean_explainer",
+    style_pack: pack.name,
+    stylePack: pack,                                       // resolved palette/stroke/font for the renderer
     fps,
     duration,
     durationInFrames,

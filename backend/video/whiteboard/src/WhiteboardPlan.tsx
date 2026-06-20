@@ -23,6 +23,12 @@ export interface PlanElement {
 }
 export interface PlanOverlay { kind: string; box: PlanBox; startFrame: number; durFrames: number }
 export interface PlanCamera { type: string; scale: number; startFrame: number; endFrame: number; cx: number; cy: number }
+export interface StylePack {
+  board?: string;
+  palette?: { ink?: string; accent?: string; highlight?: string };
+  stroke?: { width?: number };
+  font?: { label?: string; weight?: number; labelSize?: number };
+}
 export interface ResolvedPlan {
   fps: number;
   durationInFrames: number;
@@ -30,7 +36,14 @@ export interface ResolvedPlan {
   elements: PlanElement[];
   overlays: PlanOverlay[];
   camera: PlanCamera[];
+  stylePack?: StylePack;
 }
+const DEFAULT_PACK: Required<StylePack> = {
+  board: BOARD,
+  palette: { ink: INK, accent: ACCENT, highlight: ACCENT },
+  stroke: { width: 4 },
+  font: { label: "Inter, system-ui, sans-serif", weight: 800, labelSize: 34 },
+};
 
 function easeInOut(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -60,7 +73,7 @@ function cameraTransform(camera: PlanCamera[], frame: number, canvas: { width: n
   return `translate(${dx}px, ${dy}px) scale(${s})`;
 }
 
-const WriteOnText: React.FC<{ text: string; startFrame: number }> = ({ text, startFrame }) => {
+const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<StylePack> }> = ({ text, startFrame, pack }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const charsPerSec = 16;
@@ -69,8 +82,8 @@ const WriteOnText: React.FC<{ text: string; startFrame: number }> = ({ text, sta
     <div
       style={{
         position: "absolute", bottom: -4, left: 0, width: "100%", textAlign: "center",
-        fontFamily: "Inter, system-ui, sans-serif", fontWeight: 800, fontSize: 34,
-        color: INK, opacity: frame >= startFrame ? 1 : 0, letterSpacing: "-0.01em",
+        fontFamily: pack.font.label, fontWeight: pack.font.weight, fontSize: pack.font.labelSize,
+        color: pack.palette.ink, opacity: frame >= startFrame ? 1 : 0, letterSpacing: "-0.01em",
       }}
     >
       {text.slice(0, shown)}
@@ -78,7 +91,7 @@ const WriteOnText: React.FC<{ text: string; startFrame: number }> = ({ text, sta
   );
 };
 
-const PlanElementView: React.FC<{ el: PlanElement }> = ({ el }) => {
+const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack> }> = ({ el, pack }) => {
   const frame = useCurrentFrame();
   const { box, strokes, viewBox, draw, label } = el;
   if (frame < draw.startFrame) return null; // not yet revealed
@@ -104,12 +117,12 @@ const PlanElementView: React.FC<{ el: PlanElement }> = ({ el }) => {
           />
         </div>
       ))}
-      {label ? <WriteOnText text={label} startFrame={draw.startFrame + draw.durFrames * 0.55} /> : null}
+      {label ? <WriteOnText text={label} startFrame={draw.startFrame + draw.durFrames * 0.55} pack={pack} /> : null}
     </div>
   );
 };
 
-const HighlightView: React.FC<{ ov: PlanOverlay }> = ({ ov }) => {
+const HighlightView: React.FC<{ ov: PlanOverlay; pack: Required<StylePack> }> = ({ ov, pack }) => {
   const frame = useCurrentFrame();
   if (frame < ov.startFrame) return null;
   const pad = 18;
@@ -123,7 +136,8 @@ const HighlightView: React.FC<{ ov: PlanOverlay }> = ({ ov }) => {
     <div style={{ position: "absolute", left, top, width: w, height: h }}>
       <SelfDrawSvg
         d={ellipse} viewBox="0 0 100 100" width={w} height={h}
-        stroke={ACCENT} strokeWidth={5} startFrame={ov.startFrame} durationInFrames={ov.durFrames} hand={false}
+        stroke={pack.palette.highlight} strokeWidth={pack.stroke.width + 1}
+        startFrame={ov.startFrame} durationInFrames={ov.durFrames} hand={false}
       />
     </div>
   );
@@ -132,8 +146,16 @@ const HighlightView: React.FC<{ ov: PlanOverlay }> = ({ ov }) => {
 export const WhiteboardPlanScene: React.FC<{ plan: ResolvedPlan }> = ({ plan }) => {
   const frame = useCurrentFrame();
   const transform = cameraTransform(plan.camera || [], frame, plan.canvas);
+  // merge the plan's style pack over the defaults so partial packs still work
+  const sp = plan.stylePack || {};
+  const pack: Required<StylePack> = {
+    board: sp.board || DEFAULT_PACK.board,
+    palette: { ...DEFAULT_PACK.palette, ...(sp.palette || {}) },
+    stroke: { ...DEFAULT_PACK.stroke, ...(sp.stroke || {}) },
+    font: { ...DEFAULT_PACK.font, ...(sp.font || {}) },
+  };
   return (
-    <AbsoluteFill style={{ background: BOARD }}>
+    <AbsoluteFill style={{ background: pack.board }}>
       <div
         style={{
           position: "absolute", left: 0, top: 0,
@@ -141,8 +163,8 @@ export const WhiteboardPlanScene: React.FC<{ plan: ResolvedPlan }> = ({ plan }) 
           transform, transformOrigin: "center center",
         }}
       >
-        {(plan.elements || []).map((el) => <PlanElementView key={el.id} el={el} />)}
-        {(plan.overlays || []).map((ov, i) => <HighlightView key={`ov${i}`} ov={ov} />)}
+        {(plan.elements || []).map((el) => <PlanElementView key={el.id} el={el} pack={pack} />)}
+        {(plan.overlays || []).map((ov, i) => <HighlightView key={`ov${i}`} ov={ov} pack={pack} />)}
       </div>
     </AbsoluteFill>
   );
