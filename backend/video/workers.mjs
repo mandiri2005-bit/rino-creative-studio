@@ -487,9 +487,23 @@ export async function stitchProcessor(job, deps) {
       // the ffmpeg stitch. render.mjs is imported LAZILY here (worker-only) so the API
       // process never loads @remotion/Chromium at startup.
       if ((process.env.WB_ENGINE || "legacy") === "plan") {
-        // Golpo-like plan engine: per-scene visual_plan → resolve → multi-scene Remotion render
-        const { renderWhiteboardPlan } = await import("./whiteboard/render.mjs");
-        result = await renderWhiteboardPlan(scenes, { ...meta, jobId }, outPath, { tmpDir });
+        // Golpo-like plan engine: per-scene visual_plan → resolve → multi-scene render.
+        // BACKEND is pluggable (Guide-2 §K/§L): default Remotion (proven); WB_RENDER_BACKEND=svg_ffmpeg
+        // routes to the Chromium-free SVG/FFmpeg renderer. Falls back to Remotion on any svg-backend error.
+        const backend = (process.env.WB_RENDER_BACKEND || "remotion").toLowerCase();
+        if (backend === "svg_ffmpeg") {
+          try {
+            const { renderWhiteboardPlanSvg } = await import("./whiteboard/renderers/svgFfmpeg.mjs");
+            result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir });
+          } catch (be) {
+            console.warn(`[stitch ${jobId}] svg_ffmpeg backend failed (${be.message}) → Remotion fallback`);
+            const { renderWhiteboardPlan } = await import("./whiteboard/render.mjs");
+            result = await renderWhiteboardPlan(scenes, { ...meta, jobId }, outPath, { tmpDir });
+          }
+        } else {
+          const { renderWhiteboardPlan } = await import("./whiteboard/render.mjs");
+          result = await renderWhiteboardPlan(scenes, { ...meta, jobId }, outPath, { tmpDir });
+        }
       } else {
         const { renderWhiteboard } = await import("./whiteboard/render.mjs");
         result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });

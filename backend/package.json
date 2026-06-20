@@ -18,6 +18,7 @@
     "@remotion/bundler": "4.0.481",
     "@remotion/google-fonts": "4.0.481",
     "@remotion/renderer": "4.0.481",
+    "@resvg/resvg-js": "^2.6.2",
     "@sentry/node": "^8.0.0",
     "bullmq": "^5.78.1",
     "cors": "^2.8.5",
