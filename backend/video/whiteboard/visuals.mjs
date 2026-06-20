@@ -96,6 +96,23 @@ async function recraftVectorize(pngBuffer) {
   return await (await fetchT(url)).text();
 }
 
+// Raster-reveal asset (genre "detail"): a REAL Recraft photo for one element + its vectorized
+// reveal mask. Returns the raster as a data URI + the raw mask SVG (caller parses to strokes/
+// shapes) + meters. Two paid Recraft calls per element — only used for the "detail" genre.
+export async function generateRecraftRaster(query, { seed } = {}) {
+  const prompt = `${query}. Detailed realistic illustration, single clear subject, centered, plain white background, no text, no words.`;
+  const { buffer } = await recraftGenerate(prompt, { vector: false, size: "1024x1024", seed });
+  const maskSvg = await recraftVectorize(buffer);
+  return {
+    raster: "data:image/png;base64," + buffer.toString("base64"),
+    maskSvg,
+    meters: [
+      { operation: "image", model: "recraft-v3", units: { count: 1 } },
+      { operation: "image", model: "recraft-vectorize", units: { count: 1 } },
+    ],
+  };
+}
+
 // ── diagram: LLM graph → deterministic flowchart SVG (ported from scripts/diagram.mjs) ──
 const BLUE = "#2C6CA8", INK = "#1A1A1A", RED = "#D9534F";
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

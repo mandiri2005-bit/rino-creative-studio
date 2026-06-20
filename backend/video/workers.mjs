@@ -232,26 +232,45 @@ export async function visualProcessor(job, deps) {
               genre, model: meta.genModel, language: meta.language, sceneId: `s${sceneIndex}` });
           const v = plan ? validateWhiteboardPlan(plan) : { ok: false, errors: ["no plan returned"] };
           if (plan && v.ok) {
-            // Recraft GENERATE-ON-MISS: only for elements the FREE library (curated manifest +
-            // 1737 Lucide) doesn't cover (e.g. anatomy) → keeps paid Recraft calls to true gaps.
-            // Best-effort per element: a failure just leaves it to resolve as Lucide/generic.
+            // Bake per-element assets into the plan (render phase stays dumb). Two modes:
+            //  • genre "detail" → RASTER-REVEAL: a real Recraft photo + vectorized mask per
+            //    element (2 paid calls/element — the genre's whole point: realistic).
+            //  • else → generate-on-miss VECTOR icon ONLY for elements the FREE library
+            //    (manifest + 1737 Lucide) misses (e.g. anatomy) → paid calls only on true gaps.
+            // Best-effort per element: a failure leaves it to resolve as Lucide/generic.
             try {
-              const { coveredByLibrary } = await import("./whiteboard/plan/resolver.mjs");
-              const { generateRecraftIcon } = await import("./whiteboard/visuals.mjs");
-              const { parseSvg } = await import("./whiteboard/svg.mjs");
+              const { parseSvg, parseSvgShapes } = await import("./whiteboard/svg.mjs");
               const meters = [];
-              for (const el of plan.elements || []) {
-                const q = el.asset_query || el.id;
-                if (coveredByLibrary(q)) continue;
-                try {
-                  const { svg, meter } = await generateRecraftIcon(q, { genre, seed: 1000 + sceneIndex * 13 });
-                  const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
-                  if (parsed.strokes && parsed.strokes.length) {
-                    el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft";
-                    if (meter) meters.push(meter);
+              if (genre === "detail") {
+                const { generateRecraftRaster } = await import("./whiteboard/visuals.mjs");
+                for (const el of plan.elements || []) {
+                  const q = el.asset_query || el.id;
+                  try {
+                    const { raster, maskSvg, meters: ms } = await generateRecraftRaster(q, { seed: 1000 + sceneIndex * 13 });
+                    const { viewBox, strokes } = parseSvg(maskSvg, { dropBg: true, dropLight: true });
+                    const { shapes } = parseSvgShapes(maskSvg, { dropBg: true });
+                    el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = "recraft-raster";
+                    if (ms) meters.push(...ms);
+                  } catch (ge) {
+                    console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft raster "${q}" failed: ${ge.message}`);
                   }
-                } catch (ge) {
-                  console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft icon "${q}" failed: ${ge.message}`);
+                }
+              } else {
+                const { coveredByLibrary } = await import("./whiteboard/plan/resolver.mjs");
+                const { generateRecraftIcon } = await import("./whiteboard/visuals.mjs");
+                for (const el of plan.elements || []) {
+                  const q = el.asset_query || el.id;
+                  if (coveredByLibrary(q)) continue;
+                  try {
+                    const { svg, meter } = await generateRecraftIcon(q, { genre, seed: 1000 + sceneIndex * 13 });
+                    const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
+                    if (parsed.strokes && parsed.strokes.length) {
+                      el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft";
+                      if (meter) meters.push(meter);
+                    }
+                  } catch (ge) {
+                    console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft icon "${q}" failed: ${ge.message}`);
+                  }
                 }
               }
               for (const m of meters) {
@@ -259,7 +278,7 @@ export async function visualProcessor(job, deps) {
                   { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units);
               }
             } catch (re) {
-              console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] generate-on-miss skipped: ${re.message}`);
+              console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] asset baking skipped: ${re.message}`);
             }
             await deps.store.setSceneFields(jobId, sceneIndex, {
               visualStatus: "done", visualKind: "whiteboard-plan", planJson: JSON.stringify(plan) });

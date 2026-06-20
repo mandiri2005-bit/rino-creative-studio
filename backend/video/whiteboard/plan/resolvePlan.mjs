@@ -37,9 +37,11 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     let assetSource = "none";
     let fallback = true;
 
-    // Asset fallback ladder (guide §J): pre-baked strokes (Recraft on-miss, visual phase) →
-    // curated manifest (strong tag match) → Lucide (1737) → generic placeholder.
-    if (Array.isArray(el.strokes) && el.strokes.length) {
+    // Asset fallback ladder (guide §J): raster-reveal (genre detail, Recraft photo + mask) →
+    // pre-baked strokes (Recraft on-miss) → curated manifest → Lucide (1737) → generic.
+    if (el.raster) {
+      assetSource = "recraft-raster"; fallback = false; // raster + mask carried in the return
+    } else if (Array.isArray(el.strokes) && el.strokes.length) {
       // already resolved upstream (e.g. Recraft generate-on-miss baked strokes into the plan)
       viewBox = el.viewBox || "0 0 100 100";
       strokes = el.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
@@ -76,6 +78,12 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       fallback,
       viewBox,
       strokes,
+      ...(el.raster ? {
+        raster: el.raster,
+        maskViewBox: el.maskViewBox || el.viewBox || "0 0 100 100",
+        maskStrokes: el.maskStrokes || [],
+        maskShapes: el.maskShapes || [],
+      } : {}),
       draw: {
         startFrame: secondsToFrames(beat.start, fps),
         durFrames: Math.max(1, secondsToFrames(beat.end - beat.start, fps)),

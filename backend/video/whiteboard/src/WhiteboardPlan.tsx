@@ -1,6 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { SelfDrawSvg } from "./components/SelfDrawSvg";
+import { RasterRevealIllustration } from "./components/RasterRevealIllustration";
 
 // The "dumb" renderer for a RESOLVED whiteboard plan (produced by scripts/lib/plan/
 // resolvePlan.mjs on the Node side). It only DRAWS what's already planned: per-element
@@ -13,12 +14,18 @@ const ACCENT = "#F59E0B";
 
 export interface PlanBox { x: number; y: number; w: number; h: number }
 export interface PlanStroke { d: string; stroke?: string; width?: number }
+export interface PlanShape { d: string; fill?: string; stroke?: string; width?: number }
 export interface PlanElement {
   id: string;
   box: PlanBox;
   label: string | null;
   viewBox: string;
   strokes: PlanStroke[];
+  // raster-reveal (genre "detail"): the original Recraft photo revealed through a vector mask
+  raster?: string;            // data URI / URL
+  maskViewBox?: string;
+  maskStrokes?: PlanStroke[];
+  maskShapes?: PlanShape[];
   draw: { startFrame: number; durFrames: number };
 }
 export interface PlanOverlay { kind: string; box: PlanBox; startFrame: number; durFrames: number }
@@ -108,21 +115,38 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; di
     : {};
   return (
     <div style={{ position: "absolute", left, top, width: box.w, height: box.h, boxSizing: "border-box", ...boxStyle }}>
-      {strokes.map((s, i) => (
-        <div key={i} style={{ position: "absolute", left: 0, top: 0, width: box.w, height: iconH }}>
-          <SelfDrawSvg
-            d={s.d}
-            viewBox={viewBox}
+      {el.raster ? (
+        <div style={{ position: "absolute", left: 0, top: 0, width: box.w, height: iconH }}>
+          <RasterRevealIllustration
+            viewBox={el.maskViewBox || viewBox}
+            raster={el.raster}
+            strokes={el.maskStrokes || []}
+            shapes={el.maskShapes || []}
             width={box.w}
             height={iconH}
-            stroke={s.stroke || INK}
-            strokeWidth={s.width || 4}
-            startFrame={draw.startFrame + i * per}
-            durationInFrames={per}
-            hand
+            startFrame={draw.startFrame}
+            durationInFrames={draw.durFrames}
+            ink={pack.palette.ink}
+            handBody="#33312E"
           />
         </div>
-      ))}
+      ) : (
+        strokes.map((s, i) => (
+          <div key={i} style={{ position: "absolute", left: 0, top: 0, width: box.w, height: iconH }}>
+            <SelfDrawSvg
+              d={s.d}
+              viewBox={viewBox}
+              width={box.w}
+              height={iconH}
+              stroke={s.stroke || INK}
+              strokeWidth={s.width || 4}
+              startFrame={draw.startFrame + i * per}
+              durationInFrames={per}
+              hand
+            />
+          </div>
+        ))
+      )}
       {label ? <WriteOnText text={label} startFrame={draw.startFrame + draw.durFrames * 0.55} pack={pack} /> : null}
     </div>
   );
