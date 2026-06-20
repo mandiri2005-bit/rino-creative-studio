@@ -11,6 +11,7 @@ import { validateWhiteboardPlan } from "./validate.mjs";
 import { secondsToFrames, drawBeatFor } from "./beats.mjs";
 import { DEFAULT_FPS, DEFAULT_CANVAS } from "./schema.mjs";
 import { resolveStylePack } from "./stylePacks.mjs";
+import { resolveLucide } from "./lucide.mjs";
 
 export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict = true } = {}) {
   const plan = typeof planOrPath === "string" ? JSON.parse(readFileSync(planOrPath, "utf8")) : planOrPath;
@@ -29,14 +30,40 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   const boxOf = (id) => laid.elements.find((e) => e.id === id)?.box || null;
 
   const elements = laid.elements.map((el) => {
-    const r = resolveAssetPath(el.asset_query || el.id, manifest);
+    const query = el.asset_query || el.id;
     let viewBox = "0 0 100 100";
     let strokes = [];
-    if (r.path) {
-      const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink }); // recolour to the pack's ink
-      viewBox = parsed.viewBox;
-      strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
+    let assetId = null;
+    let assetSource = "none";
+    let fallback = true;
+
+    // Asset fallback ladder (guide §J): pre-baked strokes (Recraft on-miss, visual phase) →
+    // curated manifest (strong tag match) → Lucide (1737) → generic placeholder.
+    if (Array.isArray(el.strokes) && el.strokes.length) {
+      // already resolved upstream (e.g. Recraft generate-on-miss baked strokes into the plan)
+      viewBox = el.viewBox || "0 0 100 100";
+      strokes = el.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
+      assetId = el.assetId || "prebaked"; assetSource = el.assetSource || "prebaked"; fallback = false;
+    } else {
+      const r = resolveAssetPath(query, manifest);
+      if (!r.fallback && r.path) {
+        const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink });
+        viewBox = parsed.viewBox;
+        strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
+        assetId = r.asset?.id || null; assetSource = "manifest"; fallback = false;
+      } else {
+        const lu = resolveLucide(query, { ink: pack.palette.ink, width: pack.stroke.width });
+        if (lu) {
+          viewBox = lu.viewBox; strokes = lu.strokes; assetId = "lucide:" + lu.name; assetSource = "lucide"; fallback = false;
+        } else if (r.path) {
+          const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink }); // generic_concept
+          viewBox = parsed.viewBox;
+          strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
+          assetId = r.asset?.id || "generic"; assetSource = "generic"; fallback = true;
+        }
+      }
     }
+
     const beat = drawBeatFor(el.id, plan.beats, Math.min(1.5, duration));
     return {
       id: el.id,
@@ -44,8 +71,9 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       slot: el.slot,
       box: el.box,
       label: el.label || null,
-      assetId: r.asset?.id || null,
-      fallback: r.fallback,
+      assetId,
+      assetSource,
+      fallback,
       viewBox,
       strokes,
       draw: {
