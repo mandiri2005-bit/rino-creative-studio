@@ -267,22 +267,31 @@ export async function visualProcessor(job, deps) {
                       el.maskShapes = hit.maskShapes; el.assetSource = `${ckind}-cache`;
                       el.license = hit.license || "generated:provider-terms"; continue; // no gen, no meter
                     }
-                    let raster, maskSvg, ms, source = "recraft-raster";
+                    let raster, maskSvg = null, ms, source = "recraft-raster";
                     if (provider === "flux") {
                       const b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
                         { query: q, provider: "flux", aspect: "1:1", seed: 1000 + sceneIndex * 13 });
                       if (b64) {
-                        ({ raster, maskSvg, meters: ms } = await vectorizeRasterB64(b64));
-                        ms = [{ operation: "image", model: "flux-kontext-pro", units: { count: 1 } }, ...(ms || [])];
+                        // ALWAYS keep the paid raster — the mask (recraft vectorize) is a best-effort
+                        // EXTRA. A vectorize failure (e.g. no RECRAFT_API_KEY when using flux) must NOT
+                        // discard the image — the renderer falls back to a full-image wipe reveal.
+                        raster = "data:image/png;base64," + b64;
                         source = "flux-raster";
+                        ms = [{ operation: "image", model: "flux-kontext-pro", units: { count: 1 } }];
+                        try { const v = await vectorizeRasterB64(b64); maskSvg = v.maskSvg; if (v.meters) ms.push(...v.meters); }
+                        catch (ve) { console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] flux mask vectorize failed (${ve.message}) → full-image reveal`); }
                       }
                     }
-                    if (!raster) { // recraft (default, or flux fallback)
+                    if (!raster) { // recraft (default, or flux fallback) — gen + mask together
                       ({ raster, maskSvg, meters: ms } = await generateRecraftRaster(q, { seed: 1000 + sceneIndex * 13 }));
                       source = "recraft-raster";
                     }
-                    const { viewBox, strokes } = parseSvg(maskSvg, { dropBg: true, dropLight: true });
-                    const { shapes } = parseSvgShapes(maskSvg, { dropBg: true });
+                    // mask is OPTIONAL — empty mask → renderer does a full-image wipe (image never lost)
+                    let viewBox = "0 0 1024 1024", strokes = [], shapes = [];
+                    if (maskSvg) {
+                      ({ viewBox, strokes } = parseSvg(maskSvg, { dropBg: true, dropLight: true }));
+                      ({ shapes } = parseSvgShapes(maskSvg, { dropBg: true }));
+                    }
                     const model = source === "flux-raster" ? "flux-kontext-pro" : "recraft-v3";
                     const lic = `${model}:provider-terms`;
                     el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = source; el.license = lic;

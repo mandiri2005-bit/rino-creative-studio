@@ -65,8 +65,20 @@ export const RasterRevealIllustration: React.FC<{
     extrapolateRight: "clamp",
   });
   const SPAN = 0.92; // all units revealed by 92% of the window, then a brief settle
-  const WIN = 0.035; // tight rolling frontier → units "pop in" right at the pen (drawn,
-                     // not a uniform wash); smaller than before so it reads as drawing.
+  const WIN = 0.06; // each unit fades in over this fraction (soft rolling frontier)
+
+  // NO mask units (vectorize unavailable, e.g. flux raster without recraft) → reveal the FULL
+  // image with a left→right wipe so the (paid) raster is never lost or masked out to blank.
+  if (units.length === 0) {
+    const reveal = interpolate(tGlobal, [0, 0.92], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+    return (
+      <div style={{ position: "relative", width, height, overflow: "hidden" }}>
+        <div style={{ width: `${Math.round(reveal * 100)}%`, height: "100%", overflow: "hidden" }}>
+          <img src={raster} alt="" style={{ width, height, objectFit: "contain", maxWidth: "none" }} />
+        </div>
+      </div>
+    );
+  }
 
   // hand cursor rides the same ordered snake at the reveal frontier
   const cursor = Math.min(1, tGlobal / SPAN) * (N - 1);
@@ -120,7 +132,7 @@ export const RasterRevealIllustration: React.FC<{
         <Hand
           x={(hx - (vx || 0)) * sx}
           y={(hy - (vy || 0)) * sy}
-          size={Math.max(150, height * 0.6)}
+          size={Math.max(120, height * 0.5)}
           nib={ink}
           body={handBody}
         />

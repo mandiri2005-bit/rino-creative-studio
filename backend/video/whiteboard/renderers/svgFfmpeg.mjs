@@ -154,6 +154,18 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         const ba = clamp(Math.floor((a.y - mvy) / bandH), 0, NB - 1), bb = clamp(Math.floor((c.y - mvy) / bandH), 0, NB - 1);
         return ba !== bb ? ba - bb : (ba % 2 === 0 ? a.x - c.x : c.x - a.x);
       });
+      if (units.length === 0) {
+        // NO mask (vectorize unavailable, e.g. flux without recraft) → reveal the FULL image with a
+        // left→right wipe so the paid raster is never lost / blanked.
+        const id = `rw${clipId++}`, rw = Math.round(b.w * p);
+        out.push(`<clipPath id="${id}"><rect x="${x}" y="${y + iconTop}" width="${rw}" height="${iconH}"/></clipPath>`);
+        out.push(`<image href="${el.raster}" x="${x}" y="${y + iconTop}" width="${b.w}" height="${iconH}" preserveAspectRatio="xMidYMid meet" clip-path="url(#${id})"/>`);
+        if (el.label) {
+          const ly2 = diagram ? y + b.h * 0.68 + 28 : y + b.h + 34;
+          out.push(`<text x="${b.x}" y="${ly2}" text-anchor="middle" font-family="${FONT_STACK}" font-weight="${pack.font?.weight || 800}" font-size="${pack.font?.labelSize || 34}" fill="${ink}" opacity="${clamp((p - 0.4) * 2, 0, 1)}">${esc(el.label)}</text>`);
+        }
+        continue;
+      }
       const N = Math.max(1, units.length), SPAN = 0.92, WIN = 0.06;
       const id = `rv${clipId++}`;
       out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})"><mask id="${id}" maskUnits="userSpaceOnUse">`);
