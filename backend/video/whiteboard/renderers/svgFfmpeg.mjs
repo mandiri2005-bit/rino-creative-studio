@@ -16,7 +16,7 @@ import { validateResolvedScene } from "../qa.mjs";
 
 // keep these in sync with render.mjs (duplicated so this stays Chromium/@remotion-free)
 const ASPECT = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
-const TIER = { fast: { fps: 30, crf: 28 }, hd: { fps: 30, crf: 23 }, hd_plus: { fps: 60, crf: 20 } };
+const TIER = { fast: { fps: 30, crf: 26 }, hd: { fps: 30, crf: 20 }, hd_plus: { fps: 60, crf: 18 } }; // crf lowered: crisper line-art (less "pixelated" during the draw)
 const GENRE_MODE = { diagram: "diagram", detail: "raster", lineart: "icons", color: "color" };
 
 let _roughen = null;
@@ -202,8 +202,13 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       const startPof = (u) => clamp((centroidY(u.d) - mvy) / (mvh || 1), 0, 1) * (SPAN - win);
       const id = `rv${clipId++}`;
       out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})">`);
-      // 1) colour fills (each region fills AFTER its outline has mostly traced)
+      // 1) colour fills. The potrace shapes give an ORGANIC leading edge (drawn region-by-region);
+      // a "catch-up" solid band trailing the front by ~12% then fills EVERYTHING behind it — so no
+      // region is left empty/sparse, even pale/low-contrast areas potrace barely traces (e.g. a light
+      // koala). Result: organic front + complete fill, not a patchy half-coloured scene.
       out.push(`<mask id="${id}" maskUnits="userSpaceOnUse">`);
+      const catchH = Math.max(0, clamp(p / SPAN, 0, 1) - 0.12) * mvh;
+      if (catchH > 0) out.push(`<rect x="${mvx}" y="${mvy}" width="${mvw}" height="${catchH.toFixed(1)}" fill="white"/>`);
       for (const u of units) {
         const sp = clamp((p - startPof(u)) / win, 0, 1);
         const fillOp = clamp((sp - 0.5) / 0.5, 0, 1);

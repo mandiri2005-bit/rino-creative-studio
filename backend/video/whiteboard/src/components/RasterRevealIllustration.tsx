@@ -95,6 +95,13 @@ export const RasterRevealIllustration: React.FC<{
       <svg width={width} height={height} viewBox={viewBox}>
         <defs>
           <mask id={maskId} maskUnits="userSpaceOnUse">
+            {/* catch-up: solid fill trailing the front by ~12% so NO region is left empty/sparse —
+                even pale/low-contrast areas potrace barely traces (e.g. a light koala). The potrace
+                shapes give the organic LEADING edge; this fills solidly behind it. */}
+            {(() => {
+              const catchH = Math.max(0, Math.min(1, tGlobal / SPAN) - 0.12) * (vh || 100);
+              return catchH > 0 ? <rect x={vx || 0} y={vy || 0} width={vw} height={catchH} fill="white" /> : null;
+            })()}
             {units.map((u, i) => {
               const sp = Math.min(1, Math.max(0, (tGlobal - startPof(u)) / WIN));
               const fillOp = Math.min(1, Math.max(0, (sp - 0.5) / 0.5));
