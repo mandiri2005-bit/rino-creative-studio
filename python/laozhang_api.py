@@ -6713,7 +6713,11 @@ async def video_segment(req: VideoSegmentReq,
     # asset-cache, so a repeat of the SAME title costs ~$0. Per-tenant. Default ON; set
     # WB_SEGMENT_CACHE=0 to always regenerate (e.g. when you want a fresh script per run).
     _seg_key = None
-    if os.environ.get("WB_SEGMENT_CACHE", "1") != "0":
+    if os.environ.get("WB_SEGMENT_CACHE", "1") == "0":
+        # Cache explicitly disabled → the (paid) LLM runs EVERY call. Surface it so a stray
+        # WB_SEGMENT_CACHE=0 on this service isn't mistaken for a cache bug ("masih call api").
+        print("[video/segment] cache DISABLED (WB_SEGMENT_CACHE=0) → LLM runs every call")
+    else:
         import hashlib
         _sig = json.dumps([req.text, req.topic, req.minutes, mode, req.style, req.clip_model,
                            req.tier, req.gen_model, req.language, req.visual_mode, req.clip_ratio,
@@ -6727,8 +6731,18 @@ async def video_segment(req: VideoSegmentReq,
                 if _hit:
                     print(f"[video/segment] cache HIT → skip LLM ({_seg_key})")
                     return json.loads(_hit)
+                # Redis is reachable but this exact key isn't stored. Logging the key lets you
+                # compare two "same title" runs: SAME key twice = real first-miss-then-hit (fine);
+                # DIFFERENT keys = an input param varies (tier/model/visual_mode/…) → key churn.
+                print(f"[video/segment] cache MISS → LLM (key={_seg_key}, redis=up)")
+            else:
+                # client() is None → REDIS_URL not configured on THIS (python) service. Cache can
+                # never persist → LLM every call. THIS is the usual "judul sama tapi masih call api".
+                print("[video/segment] cache SKIP: redis client unavailable (set REDIS_URL on the python service) → LLM")
         except Exception as _e:
-            print(f"[video/segment] cache get failed (non-fatal): {_e}")
+            # client() truthy but the op threw → Redis configured but unreachable (wrong/expired URL,
+            # network). init_redis keeps a dead client on ping-fail, so this is the down-Redis path.
+            print(f"[video/segment] cache get failed → LLM (redis unreachable; check REDIS_URL): {_e}")
 
     if mode == "A":
         # Mode A: generate documentary narration from a topic to the target length,
