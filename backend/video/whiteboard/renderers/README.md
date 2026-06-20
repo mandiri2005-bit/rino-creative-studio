@@ -10,10 +10,23 @@ interchangeable; the plan (not any renderer) is the source of truth.
 | **manim** | `manim.mjs` + `../../../python/whiteboard/manim_generators/` | 🧪 SCAFFOLD — unverified | Specialized math/science only. Needs `manim` + LaTeX/Cairo (heavy, not in the image). Controlled templates only (LLM fills data, never writes Manim code). |
 
 `dispatch.mjs` picks the backend from `engine_hint` / `animation.backend_preference`. It currently
-routes **everything to Remotion** (the proven path — roadmap §B: "Default tetap Remotion enhanced
-sampai SVG/FFmpeg backend terbukti lebih murah/stabil"). `pickBackend(hint, {allowExperimental})`
-only returns svg_ffmpeg/manim when a caller explicitly opts in; nothing in the live worker calls
-the dispatcher yet — it is the seam the experimental backends plug into once verified.
+routes **everything to Remotion** (the proven path — roadmap §B). `pickBackend(hint, {allowExperimental})`
+only returns svg_ffmpeg/manim when a caller explicitly opts in.
+
+## Benchmark — data-driven default (§R/§T #13)
+`cerita-ai-whiteboard/scripts/bench-backends.mjs` renders the SAME resolved scene through both backends.
+**Result (macOS arm64, plan_diagram 8s/240f):**
+
+| Backend | Render / 8s scene | Note |
+|---|---|---|
+| **Remotion** (Chromium) | **~4.8s** | + ~0.6s one-time bundle; needs Chromium + RAM |
+| SVG/FFmpeg (resvg) | ~37.5s | **~8× SLOWER** — per-frame resvg rasterization is the bottleneck; no Chromium |
+
+**Decision: Remotion stays the default** — the benchmark DISPROVED the "no-Chromium = faster" assumption.
+svg_ffmpeg's value is *dependency removal* (no Chromium → lighter image, no headless-browser OOM/hang),
+NOT speed. Use `WB_RENDER_BACKEND=svg_ffmpeg` only where Chromium is a problem, accepting the slower
+render. (Re-run the bench on the Linux worker for the production number; per-frame resvg is the
+optimization target if svg_ffmpeg ever needs to be faster.)
 
 ## svg_ffmpeg — DONE (2026-06-20)
 1. ✅ `@resvg/resvg-js` in deps. 2. ✅ verified locally → MP4. 3. ✅ raster-reveal + camera + rough ported.

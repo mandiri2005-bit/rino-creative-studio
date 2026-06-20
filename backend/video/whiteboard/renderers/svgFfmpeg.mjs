@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, dirname, extname } from "node:path";
 import { resolvePlan } from "../plan/resolvePlan.mjs";
+import { validateResolvedScene } from "../qa.mjs";
 
 // keep these in sync with render.mjs (duplicated so this stays Chromium/@remotion-free)
 const ASPECT = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
@@ -289,6 +290,8 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
         plan = null;
       }
       if (!plan) plan = { fps, duration: sceneDur, durationInFrames: Math.max(1, Math.round(sceneDur * fps)), canvas: { width, height }, elements: [], overlays: [], camera: [] };
+      const qa = validateResolvedScene(plan); // §N non-fatal QA gate
+      if (!qa.ok || qa.warnings.length) console.warn(`[whiteboard-plan-svg ${meta.jobId || ""}/${i}] resolved-scene QA: ${[...qa.errors, ...qa.warnings].slice(0, 4).join("; ")}`);
       const mp4 = join(work, `scene-${i}.mp4`);
       await renderSceneSvgFfmpeg(plan, mp4, { fps, crf: tier.crf, audioPath: sc.audioPath || null });
       sceneMp4s.push(mp4);

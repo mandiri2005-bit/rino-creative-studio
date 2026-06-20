@@ -14,6 +14,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSvg, parseSvgShapes, parseSvgDiagram } from "./svg.mjs";
 import { resolvePlan } from "./plan/resolvePlan.mjs";
+import { validateResolvedScene } from "./qa.mjs";
 
 // §H rough hand-drawn pass (roughjs) — loaded once, guarded: a missing dep just disables rough.
 let _roughen = null;
@@ -198,6 +199,8 @@ export async function renderWhiteboardPlan(scenes, meta, outPath, opts = {}) {
       plan = { fps, duration: sceneDur, durationInFrames: Math.max(1, Math.round(sceneDur * fps)),
         canvas: { width, height }, elements: [], overlays: [], camera: [] };
     }
+    const qa = validateResolvedScene(plan); // §N non-fatal QA gate on the resolved scene
+    if (!qa.ok || qa.warnings.length) console.warn(`[whiteboard-plan ${meta.jobId || ""}/${i}] resolved-scene QA: ${[...qa.errors, ...qa.warnings].slice(0, 4).join("; ")}`);
     return { plan, audioSrc };
   });
 

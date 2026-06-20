@@ -26,19 +26,39 @@ function r() { return sharedConnection(); }
 // SAME query never re-hits the paid generator again — in this job OR any future job. Keyed by
 // a canonical slug of the query (+ kind). Long TTL; best-effort (a cache miss/error just
 // regenerates). The durable shared library (R2/Postgres + embeddings) is the later upgrade.
-export function assetCacheKey(kind, query) {
-  const slug = String(query || "")
-    .toLowerCase().trim()
-    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-  return `wbasset:v1:${kind}:${slug || "unknown"}`;
+function assetSlug(query) {
+  return String(query || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";
 }
+export function assetCacheKey(kind, query) { return `wbasset:v1:${kind}:${assetSlug(query)}`; }
+// DURABLE layer (Guide-2 §I/§T #7): generated assets also land in object storage (R2), so they
+// survive a Redis flush AND are reusable across deploys — a real "generated asset manifest", not
+// just a hot cache. Lazy + guarded: no R2 configured → Redis-only (unchanged behaviour).
+const assetR2Key = (kind, query) => `whiteboard/assets/v1/${kind}/${assetSlug(query)}.json`;
+async function durableStore() {
+  try { const s = await import("../storage.mjs"); return s.isConfigured?.() ? s : null; } catch { return null; }
+}
+
 export async function getCachedAsset(kind, query) {
-  try { const v = await r().get(assetCacheKey(kind, query)); return v ? JSON.parse(v) : null; }
-  catch { return null; }
+  try { const v = await r().get(assetCacheKey(kind, query)); if (v) return JSON.parse(v); } catch { /* fall through */ }
+  // Redis miss → try the durable R2 manifest; on hit, warm Redis back up
+  try {
+    const s = await durableStore();
+    if (s) {
+      const buf = await s.downloadBytes(assetR2Key(kind, query)).catch(() => null);
+      if (buf) {
+        const val = JSON.parse(buf.toString("utf8"));
+        r().set(assetCacheKey(kind, query), JSON.stringify(val), "EX", 180 * 86400).catch(() => {});
+        return val;
+      }
+    }
+  } catch { /* durable is best-effort */ }
+  return null;
 }
 export async function setCachedAsset(kind, query, value, ttlSeconds = 180 * 86400) {
-  try { await r().set(assetCacheKey(kind, query), JSON.stringify(value), "EX", ttlSeconds); }
-  catch { /* cache is best-effort */ }
+  const json = JSON.stringify(value);
+  try { await r().set(assetCacheKey(kind, query), json, "EX", ttlSeconds); } catch { /* hot cache best-effort */ }
+  try { const s = await durableStore(); if (s) await s.uploadBytes(assetR2Key(kind, query), Buffer.from(json), "application/json"); }
+  catch { /* durable best-effort */ }
 }
 
 // ── Whiteboard PLAN cache (cross-job reuse) ──────────────────────────────────

@@ -513,6 +513,12 @@ export async function stitchProcessor(job, deps) {
         const { renderWhiteboard } = await import("./whiteboard/render.mjs");
         result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });
       }
+      // §N non-fatal QA: probe the produced MP4 (exists, video stream, duration ≈ expected)
+      try {
+        const { validateRenderedClip } = await import("./whiteboard/qa.mjs");
+        const clipQA = await validateRenderedClip(outPath, { expectedDuration: result?.duration || 0 });
+        if (!clipQA.ok || clipQA.warnings.length) console.warn(`[stitch ${jobId}] rendered-clip QA: ${[...clipQA.errors, ...clipQA.warnings].slice(0, 4).join("; ")} (streams: ${clipQA.streams})`);
+      } catch (qe) { console.warn(`[stitch ${jobId}] clip QA skipped: ${qe.message}`); }
       // flat render fee — 3 credits/sec of output video (post-hoc, tagged for refund)
       await deps.generationClient?.meterUsage?.(
         { jobId, tenantId: meta.tenantId, userId: meta.userId },
