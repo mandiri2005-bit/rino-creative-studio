@@ -166,7 +166,9 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       type: el.type || "icon",
       slot: el.slot,
       box: el.box,
-      label: el.label || null,
+      // never leave an element textless: if the VD omitted the label, derive one from the asset_query
+      // (Title Case) so a scene is never "no text" (Rino).
+      label: el.label || (el.asset_query ? String(el.asset_query).replace(/\b\w/g, (c) => c.toUpperCase()) : null),
       assetId,
       assetSource,
       license,

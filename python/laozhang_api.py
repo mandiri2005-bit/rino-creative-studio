@@ -7104,20 +7104,23 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
         '"layout":"flow"|"cycle"|"funnel"|"branch","duration":<seconds>,'
         '"visual_metaphor":"short","style_pack":"clean_explainer",'
         '"canvas":{"width":1920,"height":1080,"background":"whiteboard_clean"},'
-        '"elements":[{"id":"slug","type":"icon","asset_query":"plain words","slot":"<template slot>","label":"1-5 words optional"}],'
+        '"elements":[{"id":"slug","type":"icon","asset_query":"plain words","slot":"<template slot>","label":"1-5 words REQUIRED"}],'
         '"beats":[{"start":0.0,"end":1.8,"action":"draw_icon","target":"slug"}],'
         '"camera":[{"start":0.0,"end":3.0,"type":"zoom_to","target":"slug or full_canvas","scale":1.12}]}'
         f" Allowed templates and their ONLY legal slots: {slots_guide}. "
         f"Allowed beat actions: {', '.join(_WB_ACTIONS)}. "
         "Rules: pick ONE template; every element.slot MUST be one of that template's slots; "
-        "max 6 elements; labels 1-5 words; "
+        "max 6 elements; EVERY element MUST have a label (1-5 words, never omit it); "
         "asset_query MUST be 1-3 plain ENGLISH words naming a concrete object/icon (e.g. 'tooth', "
         "'stomach', 'spoon', 'clock', 'rocket'). The icon library is English-keyed, so ALWAYS write "
         "asset_query in English — TRANSLATE the subject from ANY language to English no matter what "
         "language the narration/labels are in (Indonesian kereta→train, sungai→river, sawah→rice "
         "field; Spanish río→river; Arabic قطار→train; Chinese 火车→train; etc.). Pick the CONCRETE "
         "noun, not an abstract phrase (for 'kereta tua meluncur' use 'train', not 'old train "
-        "sliding'). CRITICAL — if the idea is ABSTRACT (a smell, taste, feeling, sound, idea, "
+        "sliding'). The asset_query must LITERALLY depict the element's own subject — NEVER a tangential "
+        "or sci-fi substitution: 'flight arrives'→'airplane' (NOT 'robot'), 'a different land'→'map' or "
+        "'island' (NOT 'robot'/'alien'), 'technology'→the actual device shown (NOT a generic 'robot'). "
+        "CRITICAL — if the idea is ABSTRACT (a smell, taste, feeling, sound, idea, "
         "quality, or time of day) DO NOT emit the abstract word; choose a CONCRETE OBJECT that "
         "DEPICTS it: 'aroma kopi'/coffee aroma→'coffee cup', morning/pagi→'sunrise', fresh/segar→"
         "'leaf', idea→'light bulb', fast→'rocket', growth→'plant', love→'heart', music→'music note', "
