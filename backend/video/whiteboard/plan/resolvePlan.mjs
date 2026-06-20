@@ -11,7 +11,7 @@ import { validateWhiteboardPlan } from "./validate.mjs";
 import { secondsToFrames, drawBeatFor } from "./beats.mjs";
 import { DEFAULT_FPS, DEFAULT_CANVAS } from "./schema.mjs";
 import { resolveStylePack } from "./stylePacks.mjs";
-import { resolveIcon } from "./iconlibs.mjs";
+import { resolveIcon, isBlockedQuery } from "./iconlibs.mjs";
 
 export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict = true } = {}) {
   const plan = typeof planOrPath === "string" ? JSON.parse(readFileSync(planOrPath, "utf8")) : planOrPath;
@@ -122,24 +122,42 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       strokes = el.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
       assetId = el.assetId || "prebaked"; assetSource = el.assetSource || "prebaked"; license = el.license || "generated:provider-terms"; fallback = false;
     } else {
-      const r = resolveAssetPath(query, manifest);
-      if (!r.fallback && r.path) {
-        const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink });
-        viewBox = parsed.viewBox;
-        strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
-        assetId = r.asset?.id || null; assetSource = "manifest"; license = r.asset?.license || "curated"; fallback = false;
-      } else {
-        const lib = resolveIcon(query, { ink: pack.palette.ink, width: pack.stroke.width });
+      // Resolve against asset_query FIRST, then the human-readable LABEL, then the id, before the
+      // generic lightbulb. This rescues scenes where the VD emitted a creative/sci-fi asset_query
+      // (e.g. "alien" for "a different land") that the sci-fi guard blocks: the label ("a different
+      // land") still resolves to the correct icon (land-plot) instead of a robot. (Rino: "masih ada robot")
+      const candidates = [];
+      for (const c of [el.asset_query, el.label, el.id]) {
+        const t = String(c || "").trim();
+        if (t && !candidates.includes(t)) candidates.push(t);
+      }
+      let primaryR = null, resolved = false;
+      for (const cand of candidates) {
+        if (isBlockedQuery(cand)) continue; // skip sci-fi/robot ENTIRELY (manifest too, e.g. "robot"→ai_agent)
+        const r = resolveAssetPath(cand, manifest);
+        if (!primaryR) primaryR = r; // keep the FIRST query's generic fallback path
+        if (!r.fallback && r.path) {
+          const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink });
+          viewBox = parsed.viewBox;
+          strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
+          assetId = r.asset?.id || null; assetSource = "manifest"; license = r.asset?.license || "curated"; fallback = false;
+          resolved = true; break;
+        }
+        const lib = resolveIcon(cand, { ink: pack.palette.ink, width: pack.stroke.width });
         if (lib) {
           viewBox = lib.viewBox; assetId = `${lib.lib}:${lib.name}`; assetSource = lib.lib; license = lib.license || "unknown"; fallback = false;
           if (lib.strokes) strokes = lib.strokes;       // lucide / tabler → self-draw strokes
           if (lib.shapes) libShapes = lib.shapes;       // phosphor → filled silhouette
-        } else if (r.path) {
-          const parsed = parseSvg(readFileSync(r.path, "utf8"), { ink: pack.palette.ink }); // generic_concept
-          viewBox = parsed.viewBox;
-          strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
-          assetId = r.asset?.id || "generic"; assetSource = "generic"; license = "internal"; fallback = true;
+          resolved = true; break;
         }
+      }
+      // all candidates blocked/missing → force a TRUE generic (lightbulb), never a robot or a blank
+      if (!resolved && !primaryR) primaryR = resolveAssetPath("__wb_generic_placeholder__", manifest);
+      if (!resolved && primaryR && primaryR.path) {
+        const parsed = parseSvg(readFileSync(primaryR.path, "utf8"), { ink: pack.palette.ink }); // generic_concept
+        viewBox = parsed.viewBox;
+        strokes = parsed.strokes.map((s) => ({ d: s.d, stroke: s.stroke || pack.palette.ink, width: s.width || pack.stroke.width }));
+        assetId = primaryR.asset?.id || "generic"; assetSource = "generic"; license = "internal"; fallback = true;
       }
     }
 
