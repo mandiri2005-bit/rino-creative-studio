@@ -6,6 +6,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeToD } from "../svg.mjs";
+import { resolveIconify } from "./iconify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // JSONs sit at a different depth in the standalone (scripts/lib/plan) vs the VI bundle
@@ -84,7 +85,8 @@ export function resolveIcon(query, { ink = "#1F2937", width = 4, minScore = 3 } 
     const effective = b.score + (lib.pref || 0); // stroke libs edge out a filled tie
     if (!winner || effective > winner.effective) winner = { ...b, lib, effective };
   }
-  if (!winner || winner.score < minScore) return null;
+  // curated libs (Lucide/Tabler/Phosphor) missed → fall to the ~188k Iconify gap-filler (free).
+  if (!winner || winner.score < minScore) return resolveIconify(query, { ink, width });
   const { lib } = winner;
   const realName = (lib.aliases && lib.aliases[winner.name]) || winner.name;
   const icon = lib.icons[realName] || winner.icon;
