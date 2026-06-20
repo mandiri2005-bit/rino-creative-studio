@@ -110,11 +110,25 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
     };
   });
 
+  // Render mode (genre → how the scene is drawn): "icons" (default), "diagram" (boxes + arrows
+  // flowchart), "raster" (Recraft photos revealed through a mask). Genre maps in render.mjs.
+  const mode = plan.mode || "icons";
+
+  // For diagram mode: arrows connect elements in DRAW order (visual flow), appearing after the
+  // source element is drawn. Computed here so the composition stays dumb.
+  const ordered = [...elements].sort((a, b) => a.draw.startFrame - b.draw.startFrame);
+  const connectors = mode !== "diagram" ? [] : ordered.slice(0, -1).map((a, i) => {
+    const b = ordered[i + 1];
+    return { from: a.box, to: b.box, startFrame: Math.max(a.draw.startFrame + a.draw.durFrames, b.draw.startFrame - 8), durFrames: 14 };
+  });
+
   return {
     scene_id: plan.scene_id,
     template: plan.template,
     style_pack: pack.name,
     stylePack: pack,                                       // resolved palette/stroke/font for the renderer
+    mode,
+    connectors,
     fps,
     duration,
     durationInFrames,

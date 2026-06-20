@@ -29,6 +29,7 @@ export interface StylePack {
   stroke?: { width?: number };
   font?: { label?: string; weight?: number; labelSize?: number };
 }
+export interface PlanConnector { from: PlanBox; to: PlanBox; startFrame: number; durFrames: number }
 export interface ResolvedPlan {
   fps: number;
   durationInFrames: number;
@@ -37,6 +38,8 @@ export interface ResolvedPlan {
   overlays: PlanOverlay[];
   camera: PlanCamera[];
   stylePack?: StylePack;
+  mode?: string;                 // "icons" (default) | "diagram" (boxes+arrows) | "raster"
+  connectors?: PlanConnector[];  // diagram-mode arrows between elements (draw order)
 }
 const DEFAULT_PACK: Required<StylePack> = {
   board: BOARD,
@@ -91,7 +94,7 @@ const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<S
   );
 };
 
-const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack> }> = ({ el, pack }) => {
+const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; diagram?: boolean }> = ({ el, pack, diagram }) => {
   const frame = useCurrentFrame();
   const { box, strokes, viewBox, draw, label } = el;
   if (frame < draw.startFrame) return null; // not yet revealed
@@ -100,8 +103,11 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack> }> 
   const n = Math.max(1, strokes.length);
   const per = draw.durFrames / n; // each stroke gets an equal slice of the element's draw window
   const iconH = box.h * 0.78;
+  const boxStyle = diagram
+    ? { border: `${pack.stroke.width}px solid ${pack.palette.ink}`, borderRadius: 18, background: "rgba(0,0,0,0.015)" }
+    : {};
   return (
-    <div style={{ position: "absolute", left, top, width: box.w, height: box.h }}>
+    <div style={{ position: "absolute", left, top, width: box.w, height: box.h, boxSizing: "border-box", ...boxStyle }}>
       {strokes.map((s, i) => (
         <div key={i} style={{ position: "absolute", left: 0, top: 0, width: box.w, height: iconH }}>
           <SelfDrawSvg
@@ -143,9 +149,32 @@ const HighlightView: React.FC<{ ov: PlanOverlay; pack: Required<StylePack> }> = 
   );
 };
 
+// Diagram-mode arrow between two element boxes, drawing on (no hand). Rendered over the canvas.
+const Connector: React.FC<{ c: PlanConnector; canvas: { width: number; height: number }; pack: Required<StylePack> }> = ({ c, canvas, pack }) => {
+  const frame = useCurrentFrame();
+  if (frame < c.startFrame) return null;
+  const ax = c.from.x, ay = c.from.y, bx = c.to.x, by = c.to.y;
+  const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+  const gap = Math.min(len * 0.42, 120); // stop short of each box so the arrow sits between them
+  const sx = ax + ux * gap, sy = ay + uy * gap, ex = bx - ux * gap, ey = by - uy * gap;
+  const ah = 22;
+  const lx = ex - ah * (ux - uy * 0.6), ly = ey - ah * (uy + ux * 0.6);
+  const rx = ex - ah * (ux + uy * 0.6), ry = ey - ah * (uy - ux * 0.6);
+  const d = `M ${sx} ${sy} L ${ex} ${ey} M ${ex} ${ey} L ${lx} ${ly} M ${ex} ${ey} L ${rx} ${ry}`;
+  return (
+    <div style={{ position: "absolute", left: 0, top: 0, width: canvas.width, height: canvas.height }}>
+      <SelfDrawSvg
+        d={d} viewBox={`0 0 ${canvas.width} ${canvas.height}`} width={canvas.width} height={canvas.height}
+        stroke={pack.palette.accent} strokeWidth={pack.stroke.width} startFrame={c.startFrame} durationInFrames={c.durFrames} hand={false}
+      />
+    </div>
+  );
+};
+
 export const WhiteboardPlanScene: React.FC<{ plan: ResolvedPlan }> = ({ plan }) => {
   const frame = useCurrentFrame();
   const transform = cameraTransform(plan.camera || [], frame, plan.canvas);
+  const diagram = (plan.mode || "icons") === "diagram";
   // merge the plan's style pack over the defaults so partial packs still work
   const sp = plan.stylePack || {};
   const pack: Required<StylePack> = {
@@ -163,7 +192,8 @@ export const WhiteboardPlanScene: React.FC<{ plan: ResolvedPlan }> = ({ plan }) 
           transform, transformOrigin: "center center",
         }}
       >
-        {(plan.elements || []).map((el) => <PlanElementView key={el.id} el={el} pack={pack} />)}
+        {diagram ? (plan.connectors || []).map((c, i) => <Connector key={`c${i}`} c={c} canvas={plan.canvas} pack={pack} />) : null}
+        {(plan.elements || []).map((el) => <PlanElementView key={el.id} el={el} pack={pack} diagram={diagram} />)}
         {(plan.overlays || []).map((ov, i) => <HighlightView key={`ov${i}`} ov={ov} pack={pack} />)}
       </div>
     </AbsoluteFill>
