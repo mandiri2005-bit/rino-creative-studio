@@ -7059,7 +7059,8 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
     sys = (
         "You are a senior whiteboard explainer visual director. Convert a narration scene into a "
         "structured whiteboard visual plan. Return STRICT JSON only, this exact shape: "
-        '{"scene_id":"id","template":"<one allowed template>","duration":<seconds>,'
+        '{"scene_id":"id","template":"<one allowed template>","direction":"down"|"right",'
+        '"layout":"flow"|"cycle"|"funnel"|"branch","duration":<seconds>,'
         '"visual_metaphor":"short","style_pack":"clean_explainer",'
         '"canvas":{"width":1920,"height":1080,"background":"whiteboard_clean"},'
         '"elements":[{"id":"slug","type":"icon","asset_query":"plain words","slot":"<template slot>","label":"1-5 words optional"}],'
@@ -7077,6 +7078,14 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
         f"full_canvas. The 'duration' field MUST equal {dur} and no beat may end after {dur}. "
         f"GENRE/style: {req.genre} (lineart=simple line icons; color=richer; diagram=prefer process_flow/"
         "timeline/comparison; detail=detailed scene). "
+        "'direction': choose to fit the content — 'down' for top-to-bottom flows (steps, hierarchy, "
+        "cause then effect, a list building up) and 'right' for left-to-right timelines/pipelines. "
+        "VARY it; do NOT always pick 'right'. "
+        "'layout' (diagram genre only): pick the SHAPE that fits the meaning — 'cycle' for a "
+        "repeating loop/feedback (no end), 'funnel' for narrowing stages (many→few, e.g. a sales "
+        "funnel or filtering), 'branch' for ONE thing splitting into several (one cause → many "
+        "effects, a root with children), else 'flow' for a straight sequence (then 'direction' "
+        "picks down vs right). Match the layout to the content; do not default to 'flow' blindly. "
         f"LANGUAGE: write visual_metaphor + every label entirely in {lang}; only ids stay ascii."
     )
 

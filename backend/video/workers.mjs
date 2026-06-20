@@ -226,12 +226,21 @@ export async function visualProcessor(job, deps) {
       if ((process.env.WB_ENGINE || "legacy") === "plan") {
         try {
           const { validateWhiteboardPlan } = await import("./whiteboard/plan/validate.mjs");
-          const plan = await deps.generationClient?.generateWhiteboardPlan?.(
-            { jobId, tenantId: meta.tenantId, userId: meta.userId },
-            { narration: scene.text || scene.visualPrompt || "", duration: Number(scene.estSeconds) || 8,
-              genre, model: meta.genModel, language: meta.language, sceneId: `s${sceneIndex}` });
+          const narration = scene.text || scene.visualPrompt || "";
+          const duration = Number(scene.estSeconds) || 8;
+          const planKey = { genre, duration, narration };
+          // Re-run the SAME script → reuse the cached plan, skipping the (paid) LLM entirely.
+          let plan = await deps.store.getCachedPlan?.(planKey);
+          const planFromCache = !!plan;
+          if (!plan) {
+            plan = await deps.generationClient?.generateWhiteboardPlan?.(
+              { jobId, tenantId: meta.tenantId, userId: meta.userId },
+              { narration, duration, genre, model: meta.genModel, language: meta.language, sceneId: `s${sceneIndex}` });
+          }
           const v = plan ? validateWhiteboardPlan(plan) : { ok: false, errors: ["no plan returned"] };
           if (plan && v.ok) {
+            // Cache the RAW plan (pre-baking) so the value stays small; assets reuse via the asset cache.
+            if (!planFromCache) await deps.store.setCachedPlan?.(planKey, plan);
             // Bake per-element assets into the plan (render phase stays dumb). Two modes:
             //  • genre "detail" → RASTER-REVEAL: a real Recraft photo + vectorized mask per
             //    element (2 paid calls/element — the genre's whole point: realistic).
@@ -246,10 +255,16 @@ export async function visualProcessor(job, deps) {
                 for (const el of plan.elements || []) {
                   const q = el.asset_query || el.id;
                   try {
+                    const hit = await deps.store.getCachedAsset?.("raster", q); // cross-job reuse
+                    if (hit && hit.raster) {
+                      el.raster = hit.raster; el.maskViewBox = hit.maskViewBox; el.maskStrokes = hit.maskStrokes;
+                      el.maskShapes = hit.maskShapes; el.assetSource = "recraft-raster-cache"; continue; // no Recraft, no meter
+                    }
                     const { raster, maskSvg, meters: ms } = await generateRecraftRaster(q, { seed: 1000 + sceneIndex * 13 });
                     const { viewBox, strokes } = parseSvg(maskSvg, { dropBg: true, dropLight: true });
                     const { shapes } = parseSvgShapes(maskSvg, { dropBg: true });
                     el.raster = raster; el.maskViewBox = viewBox; el.maskStrokes = strokes; el.maskShapes = shapes; el.assetSource = "recraft-raster";
+                    await deps.store.setCachedAsset?.("raster", q, { raster, maskViewBox: viewBox, maskStrokes: strokes, maskShapes: shapes });
                     if (ms) meters.push(...ms);
                   } catch (ge) {
                     console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft raster "${q}" failed: ${ge.message}`);
@@ -258,10 +273,16 @@ export async function visualProcessor(job, deps) {
               } else {
                 const { coveredByLibrary } = await import("./whiteboard/plan/resolver.mjs");
                 const { generateRecraftIcon } = await import("./whiteboard/visuals.mjs");
+                const kind = `icon-${genre}`; // genre-aware prompt → genre-aware cache
                 for (const el of plan.elements || []) {
                   const q = el.asset_query || el.id;
                   if (coveredByLibrary(q)) continue;
                   try {
+                    const hit = await deps.store.getCachedAsset?.(kind, q); // cross-job reuse
+                    if (hit && hit.strokes) {
+                      el.viewBox = hit.viewBox; el.strokes = hit.strokes; if (hit.shapes) el.shapes = hit.shapes;
+                      el.assetSource = "recraft-cache"; continue; // no Recraft, no meter
+                    }
                     const { svg, meter } = await generateRecraftIcon(q, { genre, seed: 1000 + sceneIndex * 13 });
                     const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
                     if (parsed.strokes && parsed.strokes.length) {
@@ -269,6 +290,7 @@ export async function visualProcessor(job, deps) {
                       // colored fills (so Recraft icons aren't thin outlines — drawn under the strokes)
                       const { shapes } = parseSvgShapes(svg, { dropBg: true });
                       if (shapes && shapes.length) el.shapes = shapes;
+                      await deps.store.setCachedAsset?.(kind, q, { viewBox: parsed.viewBox, strokes: parsed.strokes, shapes });
                       if (meter) meters.push(meter);
                     }
                   } catch (ge) {

@@ -59,11 +59,15 @@ async function recraftGenerate(prompt, { vector, substyle, size, seed } = {}) {
 // Generate-on-miss (guide §J step 5): one whiteboard-style vector ICON for an asset_query the
 // curated library + Lucide don't cover (e.g. anatomy: "large intestine", "tongue"). Returns the
 // raw SVG + a meter. Genre tunes the look. Caller parses → strokes and bakes into the plan.
+// Prompts tuned for SOLID, legible icons — Recraft's plain `line_art` returns hairline-thin
+// filled strokes that read as "too thin" on the board, so we ask for BOLD heavy weight (and the
+// renderer fills the shapes via FilledShapes + bolds the self-draw outline per-viewBox). color/
+// detail get richer, more detailed art (Rino: "ikon Recraft lebih detail").
 const ICON_STYLE = {
-  lineart: "simple black ink line icon, single colour, minimal, thick clean strokes",
-  diagram: "simple black ink line icon, single colour, minimal",
-  color: "flat 2-colour vector illustration, bold simple shapes",
-  detail: "detailed flat vector illustration, clear shapes",
+  lineart: "bold black icon, thick heavy uniform strokes, high contrast, solid filled accents, no thin hairlines, clear and legible at small size",
+  diagram: "bold black icon, thick heavy strokes, high contrast, minimal, no thin hairlines",
+  color: "rich flat vector illustration, 3-4 bold colours, clear detailed shapes, strong outlines, vibrant",
+  detail: "highly detailed flat vector illustration, layered shapes, rich shading, clear single subject, strong outlines",
 };
 export async function generateRecraftIcon(query, { genre = "lineart", seed } = {}) {
   const styleHint = ICON_STYLE[genre] || ICON_STYLE.lineart;

@@ -81,17 +81,23 @@ export function isLightColor(c, threshold = 245) {
   return rgb ? rgb.every((v) => v >= threshold) : false;
 }
 
-// a simple rectangle path covering ~the whole canvas (Recraft's background plate)
+// a background PLATE covering ~the whole canvas (Recraft's bg fill) — a simple rect OR a
+// many-point path whose every vertex hugs the canvas border (a rect traced with extra points).
 export function isFullCanvasPath(d, vw, vh) {
   if (!d || !vw || !vh) return false;
-  const cmds = (d.match(/[a-zA-Z]/g) || []).length;
-  if (cmds > 7) return false; // detailed shape, not a bg plate
   const nums = (d.match(/-?\d*\.?\d+/g) || []).map(Number);
   const xs = [], ys = [];
   for (let i = 0; i + 1 < nums.length; i += 2) { xs.push(nums[i]); ys.push(nums[i + 1]); }
   if (xs.length < 2) return false;
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-  return minX <= vw * 0.02 && minY <= vh * 0.02 && maxX >= vw * 0.98 && maxY >= vh * 0.98;
+  const fullBox = minX <= vw * 0.02 && minY <= vh * 0.02 && maxX >= vw * 0.98 && maxY >= vh * 0.98;
+  if (!fullBox) return false;
+  const cmds = (d.match(/[a-zA-Z]/g) || []).length;
+  if (cmds <= 7) return true; // simple rectangle plate
+  // many-point path: bg ONLY if every vertex hugs an edge (a frame). A real foreground subject
+  // is centred, so its points are NOT all on the border — the old cmds<=7 gate let the bg leak.
+  const mx = vw * 0.06, my = vh * 0.06;
+  return xs.every((x, i) => x <= mx || x >= vw - mx || ys[i] <= my || ys[i] >= vh - my);
 }
 
 // A <rect> element (the reliable, un-converted form) that covers ~the whole canvas — a
