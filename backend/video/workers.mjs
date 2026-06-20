@@ -125,7 +125,16 @@ export async function audioProcessor(job, deps) {
       console.warn(`[audio ${jobId}/${sceneIndex}] TTS failed → SILENT track: ${e.message}`);
       a = await deps.generationClient.silentAudio(base, tmpDir);
     }
-    const duration = (await ffprobeDuration(a.path)) || a.durationSeconds || Number(scene.estSeconds) || 0;
+    const probed = await ffprobeDuration(a.path);
+    const duration = probed || a.durationSeconds || Number(scene.estSeconds) || 0;
+    if (!probed && !a.durationSeconds) {
+      // Neither a real measurement nor a provider-declared length → we fall back to the LLM's
+      // pre-synthesis estSeconds, which UNDER-predicts dense narration and used to clip the scene
+      // tail via the renderer's -shortest. The renderer now re-measures the audio and extends the
+      // window, but surface this so the root (ffprobe-null / Gemini-TTS returns no duration) is
+      // findable instead of silent. (Rino: "audio kepotong di awal scene N")
+      console.warn(`[audio ${jobId}/${sceneIndex}] no measured/declared audio duration → estSeconds=${Number(scene.estSeconds) || 0}s (renderer re-measures & extends to avoid a tail-cut)`);
+    }
     const up = await maybeUpload(jobId, meta.tenantId, "audio", a.path);
     await deps.store.setSceneFields(jobId, sceneIndex, {
       audioStatus: audioFellBack ? "fallback" : "done", audioPath: up.path, audioKey: up.key,
@@ -299,7 +308,11 @@ export async function visualProcessor(job, deps) {
                 const kind = `icon-${genre}`; // genre-aware prompt → genre-aware cache
                 for (const el of plan.elements || []) {
                   const q = el.asset_query || el.id;
-                  if (coveredByLibrary(q)) continue;
+                  const labelQ = el.label ? String(el.label).trim() : "";
+                  // Recraft only when NEITHER the asset_query NOR the label resolves to a free icon —
+                  // mirrors the resolve ladder (asset_query → label → Recraft → generic) so we don't pay
+                  // for Recraft when the label backup would have found a perfectly good icon. (Rino)
+                  if (coveredByLibrary(q) || (labelQ && coveredByLibrary(labelQ))) continue;
                   try {
                     const hit = await deps.store.getCachedAsset?.(kind, q); // cross-job reuse
                     if (hit && hit.strokes) {

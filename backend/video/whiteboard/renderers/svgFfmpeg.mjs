@@ -29,6 +29,10 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const progress = (t, sf, df, fps) => clamp((t - sf / fps) / Math.max(0.001, df / fps), 0, 1);
 // labels: same humanist sans the Linux worker (+ Chromium) fall back to → parity, no bundled font
 const FONT_STACK = "Inter, 'Liberation Sans', 'DejaVu Sans', 'Noto Sans', Arial, sans-serif";
+// breath after a scene's narration; also absorbs sub-frame rounding so -shortest never clips the
+// last phoneme. The per-scene video window is extended to (narration + this) when the narration is
+// longer than the planned window → audio is NEVER truncated (fixes "kepotong di awal scene N").
+const AUDIO_TAIL_PAD = Number(process.env.WB_AUDIO_TAIL_PAD || 0.12);
 
 // pure-JS point-at-progress along a path `d` (Chromium-free replacement for getPointAtLength),
 // cached per `d`. Drives the marker hand that follows the pen.
@@ -315,26 +319,52 @@ const ff = (args) => new Promise((res, rej) => {
   p.on("error", rej); p.on("close", (c) => (c === 0 ? res() : rej(new Error(`ffmpeg ${c}: ${err.slice(-300)}`))));
 });
 
+// probe a media file's duration (seconds) — resolves null on ANY failure (never throws), so a
+// missing/racing audio file just falls back to the planned window instead of breaking the render.
+const ffprobeDur = (file) => new Promise((res) => {
+  const p = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration",
+    "-of", "default=noprint_wrappers=1:nokey=1", file]);
+  let out = "";
+  p.stdout.on("data", (d) => (out += d));
+  p.on("error", () => res(null));
+  p.on("close", () => { const v = parseFloat(String(out).trim()); res(Number.isFinite(v) ? v : null); });
+});
+
 // Render ONE resolved scene → MP4 (frames → rasterize → ffmpeg, optional audio).
 export async function renderSceneSvgFfmpeg(plan, outMp4, { fps = 30, crf = 23, audioPath = null } = {}) {
-  const frames = plan.durationInFrames || Math.round((plan.duration || 4) * fps);
+  const planFrames = plan.durationInFrames || Math.round((plan.duration || 4) * fps);
+  // The video window MUST cover the actual narration. Measure the very file we're about to mux and
+  // EXTEND the window (freeze the finished board for the extra frames) when the narration is longer
+  // than the planned window. Defense-in-depth: correct even when upstream sc.duration under-estimated
+  // (durationActual → estSeconds fallback was clipping the scene tail via -shortest). Only EXTENDS,
+  // never shrinks, so a correctly-sized scene is untouched. (Rino: "audio kepotong di awal scene 9")
+  let frames = planFrames;
+  if (audioPath) {
+    const audioLen = await ffprobeDur(audioPath);
+    if (Number.isFinite(audioLen) && audioLen > 0) {
+      const need = Math.ceil((audioLen + AUDIO_TAIL_PAD) * fps);
+      if (need > frames) frames = need;
+    }
+  }
   await ensurePathLib().catch(() => {}); // for the following-hand pen tip (graceful if absent)
   const dir = mkdtempSync(join(tmpdir(), "wbsvg-"));
   try {
     for (let f = 0; f < frames; f++) {
+      // f beyond planFrames → progress()/cameraSvg() clamp to 1 → a clean freeze of the finished board
       await rasterizeSvg(buildSceneSvg(plan, f, fps), plan.canvas.width, join(dir, `f${String(f).padStart(5, "0")}.png`));
     }
     // every scene mp4 carries an audio track (real TTS, or a silent one) so the concat is uniform
     const args = ["-y", "-framerate", String(fps), "-i", join(dir, "f%05d.png")];
     if (audioPath) args.push("-i", audioPath);
     else args.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-    // -af apad: pad the audio with trailing silence so -shortest trims it to the EXACT video length
-    // (= durationInFrames/fps). Without it the per-scene video (frame-quantised) and audio (exact VO)
-    // differ by up to half a frame; across scenes that drift accumulates into the audible "ngelag".
-    // normalise audio to 44.1k stereo so every scene matches → the concat FILTER (gapless) can join
-    // them without param-mismatch. -af apad pads to the exact video length (see above).
+    // afade-in (10ms): ramp each scene's narration ONSET so the concat seam (previous scene's apad
+    // silence → this scene's first sample) has no amplitude STEP → kills the residual boundary click
+    // ("audio patah sedikit"), with NO length change and NO A/V drift (unlike acrossfade, which shifts
+    // every later scene earlier and desyncs the drawing). apad then pads trailing silence so -shortest
+    // trims the audio to the EXACT (now audio-covering) video length → narration never truncated, and
+    // the half-frame video/audio quantisation drift stays absorbed. 44.1k stereo → uniform concat input.
     args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf),
-      "-af", "apad", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest", outMp4);
+      "-af", "afade=t=in:st=0:d=0.01,apad", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest", outMp4);
     await ff(args);
     return { path: outMp4, frames };
   } finally {
@@ -351,6 +381,7 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
   const assetsDir = opts.assetsDir || join(dirname(new URL(import.meta.url).pathname), "..", "assets", "whiteboard");
   const work = mkdtempSync(join(tmpdir(), "wbplan-svg-"));
   const sceneMp4s = [];
+  let totalFrames = 0;
   try {
     for (let i = 0; i < scenes.length; i++) {
       const sc = scenes[i];
@@ -382,7 +413,8 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
       const qa = validateResolvedScene(plan); // §N non-fatal QA gate
       if (!qa.ok || qa.warnings.length) console.warn(`[whiteboard-plan-svg ${meta.jobId || ""}/${i}] resolved-scene QA: ${[...qa.errors, ...qa.warnings].slice(0, 4).join("; ")}`);
       const mp4 = join(work, `scene-${i}.mp4`);
-      await renderSceneSvgFfmpeg(plan, mp4, { fps, crf: tier.crf, audioPath: sc.audioPath || null });
+      const r = await renderSceneSvgFfmpeg(plan, mp4, { fps, crf: tier.crf, audioPath: sc.audioPath || null });
+      totalFrames += r.frames; // ACTUAL frames (may be > planned when narration drove a window extension)
       sceneMp4s.push(mp4);
     }
     // concat via the FILTER (decode + sample-accurate join), NOT the demuxer: the demuxer left an AAC
@@ -397,7 +429,9 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
       await ff(["-y", ...inputs, "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(tier.crf), "-c:a", "aac", "-ar", "44100", "-ac", "2", outPath]);
     }
-    const duration = scenes.reduce((a, s) => a + Math.max(0.5, Number(s.duration) || 0.5), 0);
+    // ACTUAL rendered length (sum of real per-scene frames) — covers any audio-driven window
+    // extension so the video meter (workers.mjs) and QA expectedDuration match the probed mp4.
+    const duration = totalFrames / fps;
     return { duration };
   } finally {
     rmSync(work, { recursive: true, force: true });
