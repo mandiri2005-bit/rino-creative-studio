@@ -38,16 +38,21 @@ async function durableStore() {
   try { const s = await import("../storage.mjs"); return s.isConfigured?.() ? s : null; } catch { return null; }
 }
 
+// Big blobs (raster b64 — a flux hero is ~200KB–1MB) must NOT live in Redis: they balloon the
+// instance toward the fixed-plan STORAGE CAP (e.g. 250MB). Keep those in the DURABLE R2 layer only;
+// Redis caches just the small vector/metadata assets. R2 holds everything (durable + cheap + huge).
+const REDIS_ASSET_MAX = 48 * 1024; // bytes of JSON; above this → R2-only
+
 export async function getCachedAsset(kind, query) {
   try { const v = await r().get(assetCacheKey(kind, query)); if (v) return JSON.parse(v); } catch { /* fall through */ }
-  // Redis miss → try the durable R2 manifest; on hit, warm Redis back up
+  // Redis miss → try the durable R2 manifest; on hit, warm Redis back up ONLY if small enough.
   try {
     const s = await durableStore();
     if (s) {
       const buf = await s.downloadBytes(assetR2Key(kind, query)).catch(() => null);
       if (buf) {
         const val = JSON.parse(buf.toString("utf8"));
-        r().set(assetCacheKey(kind, query), JSON.stringify(val), "EX", 180 * 86400).catch(() => {});
+        if (buf.length <= REDIS_ASSET_MAX) r().set(assetCacheKey(kind, query), JSON.stringify(val), "EX", 180 * 86400).catch(() => {});
         return val;
       }
     }
@@ -56,7 +61,10 @@ export async function getCachedAsset(kind, query) {
 }
 export async function setCachedAsset(kind, query, value, ttlSeconds = 180 * 86400) {
   const json = JSON.stringify(value);
-  try { await r().set(assetCacheKey(kind, query), json, "EX", ttlSeconds); } catch { /* hot cache best-effort */ }
+  // small (icon/metadata) → Redis hot cache + R2; big (raster) → R2 ONLY so Redis stays under the cap.
+  if (json.length <= REDIS_ASSET_MAX) {
+    try { await r().set(assetCacheKey(kind, query), json, "EX", ttlSeconds); } catch { /* hot cache best-effort */ }
+  }
   try { const s = await durableStore(); if (s) await s.uploadBytes(assetR2Key(kind, query), Buffer.from(json), "application/json"); }
   catch { /* durable best-effort */ }
 }
