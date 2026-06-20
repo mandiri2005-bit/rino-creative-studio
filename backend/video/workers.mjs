@@ -451,7 +451,9 @@ export async function stitchProcessor(job, deps) {
     // A breath between scenes: pad each scene with trailing silence so narrations
     // don't run back-to-back (the acrossfade used to OVERLAP them → "mepet"). The
     // visual holds (image Ken Burns / clip freeze-pad) through the pause.
-    const sceneGap = Math.max(0, Number(process.env.VIDEO_SCENE_GAP || 0.5));
+    // 0.5s read as a "patah" (long silence) once -af apad started honouring it; 0.25s = a natural beat
+    // between narrations without running them together. Tune via VIDEO_SCENE_GAP (0 = back-to-back).
+    const sceneGap = Math.max(0, Number(process.env.VIDEO_SCENE_GAP || 0.25));
     const scenes = [];
     for (let i = 0; i < scenesRaw.length; i++) {
       const s = scenesRaw[i];
