@@ -266,6 +266,9 @@ export async function visualProcessor(job, deps) {
                     const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
                     if (parsed.strokes && parsed.strokes.length) {
                       el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft";
+                      // colored fills (so Recraft icons aren't thin outlines — drawn under the strokes)
+                      const { shapes } = parseSvgShapes(svg, { dropBg: true });
+                      if (shapes && shapes.length) el.shapes = shapes;
                       if (meter) meters.push(meter);
                     }
                   } catch (ge) {

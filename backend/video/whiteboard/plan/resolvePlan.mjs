@@ -66,6 +66,12 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       }
     }
 
+    // Normalise stroke width to the icon's viewBox so Lucide (vb 24), Recraft (vb 1024) and
+    // curated SVGs (vb 100) all render at the SAME visual thickness — fixes "Lucide too thick /
+    // Recraft too thin". pack.stroke.width is calibrated for a 100-unit viewBox.
+    const sw = Math.max(0.6, (parseFloat(viewBox.split(/\s+/)[2]) || 100) * (pack.stroke.width / 100));
+    strokes = strokes.map((s) => ({ ...s, width: sw }));
+
     const beat = drawBeatFor(el.id, plan.beats, Math.min(1.5, duration));
     return {
       id: el.id,
@@ -78,6 +84,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
       fallback,
       viewBox,
       strokes,
+      ...(Array.isArray(el.shapes) && el.shapes.length ? { shapes: el.shapes } : {}), // colored fills (Recraft/color)
       ...(el.raster ? {
         raster: el.raster,
         maskViewBox: el.maskViewBox || el.viewBox || "0 0 100 100",

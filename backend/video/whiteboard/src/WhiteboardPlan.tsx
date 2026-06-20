@@ -21,6 +21,7 @@ export interface PlanElement {
   label: string | null;
   viewBox: string;
   strokes: PlanStroke[];
+  shapes?: PlanShape[];       // colored fills (Recraft/color) drawn under the ink strokes
   // raster-reveal (genre "detail"): the original Recraft photo revealed through a vector mask
   raster?: string;            // data URI / URL
   maskViewBox?: string;
@@ -83,7 +84,7 @@ function cameraTransform(camera: PlanCamera[], frame: number, canvas: { width: n
   return `translate(${dx}px, ${dy}px) scale(${s})`;
 }
 
-const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<StylePack> }> = ({ text, startFrame, pack }) => {
+const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<StylePack>; top: number }> = ({ text, startFrame, pack, top }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const charsPerSec = 16;
@@ -91,12 +92,29 @@ const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<S
   return (
     <div
       style={{
-        position: "absolute", bottom: -4, left: 0, width: "100%", textAlign: "center",
+        position: "absolute", top, left: -30, width: "calc(100% + 60px)", textAlign: "center",
         fontFamily: pack.font.label, fontWeight: pack.font.weight, fontSize: pack.font.labelSize,
-        color: pack.palette.ink, opacity: frame >= startFrame ? 1 : 0, letterSpacing: "-0.01em",
+        lineHeight: 1.1, color: pack.palette.ink, opacity: frame >= startFrame ? 1 : 0, letterSpacing: "-0.01em",
       }}
     >
       {text.slice(0, shown)}
+    </div>
+  );
+};
+
+// Colored fills for Recraft/color elements (fixes "Recraft can't be filled") — faded in over
+// the draw window, rendered UNDER the ink strokes so the outline still draws on top.
+const FilledShapes: React.FC<{ shapes: PlanShape[]; viewBox: string; width: number; height: number; startFrame: number; durFrames: number }> = ({ shapes, viewBox, width, height, startFrame, durFrames }) => {
+  const frame = useCurrentFrame();
+  const t = interpolate(frame, [startFrame, startFrame + Math.max(1, durFrames)], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  if (t <= 0) return null;
+  return (
+    <div style={{ position: "absolute", left: 0, top: 0, width, height }}>
+      <svg width={width} height={height} viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+        {shapes.map((s, i) => (
+          <path key={i} d={s.d} fill={s.fill || "none"} stroke={s.stroke || "none"} strokeWidth={s.width || 0} opacity={t} />
+        ))}
+      </svg>
     </div>
   );
 };
@@ -109,12 +127,15 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; di
   const top = box.y - box.h / 2;
   const n = Math.max(1, strokes.length);
   const per = draw.durFrames / n; // each stroke gets an equal slice of the element's draw window
-  const iconH = box.h * 0.78;
+  const iconH = box.h * 0.62; // leave a clear band below for the label (no overlap)
   const boxStyle = diagram
     ? { border: `${pack.stroke.width}px solid ${pack.palette.ink}`, borderRadius: 18, background: "rgba(0,0,0,0.015)" }
     : {};
   return (
     <div style={{ position: "absolute", left, top, width: box.w, height: box.h, boxSizing: "border-box", ...boxStyle }}>
+      {el.shapes && el.shapes.length ? (
+        <FilledShapes shapes={el.shapes} viewBox={viewBox} width={box.w} height={iconH} startFrame={draw.startFrame} durFrames={draw.durFrames} />
+      ) : null}
       {el.raster ? (
         <div style={{ position: "absolute", left: 0, top: 0, width: box.w, height: iconH }}>
           <RasterRevealIllustration
@@ -147,7 +168,7 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; di
           </div>
         ))
       )}
-      {label ? <WriteOnText text={label} startFrame={draw.startFrame + draw.durFrames * 0.55} pack={pack} /> : null}
+      {label ? <WriteOnText text={label} startFrame={draw.startFrame + draw.durFrames * 0.55} pack={pack} top={iconH + 8} /> : null}
     </div>
   );
 };
