@@ -1,5 +1,6 @@
-// Iconify gap-filler — ~188k commercial-safe icons (121 permissive UI sets) behind the curated
-// Lucide/Tabler/Phosphor. A compact 7MB token index (names only) is loaded in RAM; the icon BODY
+// Iconify gap-filler — ~244k commercial-safe icons (177 sets: ~195k attribution-free + ~49k CC-BY
+// recorded in iconify-attribution.json; rebuild via build-iconify-index.mjs, ICONIFY_ATTR=0 drops
+// the CC-BY tier) behind the curated Lucide/Tabler/Phosphor. A compact ~9MB token index (names only) is loaded in RAM; the icon BODY
 // is lazy-loaded from the @iconify/json package (on disk) only for the winning icon, so worker RAM
 // stays small. Consulted ONLY when the curated libs miss → keeps the dominant style consistent
 // while covering the long tail for free (no paid Recraft). Returns { lib, license, viewBox, shapes }.

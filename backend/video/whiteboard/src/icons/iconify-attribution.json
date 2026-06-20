@@ -1,0 +1,296 @@
+[
+  {
+    "prefix": "solar",
+    "name": "Solar",
+    "author": "480 Design",
+    "url": "https://www.figma.com/community/file/1166831539721848736",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "iconamoon",
+    "name": "IconaMoon",
+    "author": "Dariush Habibpour",
+    "url": "https://github.com/dariushhpg1/IconaMoon",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "basil",
+    "name": "Basil",
+    "author": "Craftwork",
+    "url": "https://www.figma.com/community/file/931906394678748246",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "pixel",
+    "name": "Pixel Icon",
+    "author": "HackerNoon",
+    "url": "https://github.com/hackernoon/pixel-icon-library",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "ci",
+    "name": "coolicons",
+    "author": "Kryston Schwarze",
+    "url": "https://github.com/krystonschwarze/coolicons",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "lets-icons",
+    "name": "Lets Icons",
+    "author": "Leonid Tsvetkov",
+    "url": "https://www.figma.com/community/file/886554014393250663",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-ultimate",
+    "name": "Ultimate free icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-plump",
+    "name": "Plump free icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-sharp",
+    "name": "Sharp free icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-cyber",
+    "name": "Cyber free icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "guidance",
+    "name": "Guidance",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "cil",
+    "name": "CoreUI Free",
+    "author": "creativeLabs Łukasz Holeczek",
+    "url": "https://github.com/coreui/coreui-icons",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-pixel",
+    "name": "Pixel free icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-block",
+    "name": "Streamline Block",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-freehand",
+    "name": "Freehand free icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "pepicons-pop",
+    "name": "Pepicons Pop!",
+    "author": "CyCraft",
+    "url": "https://github.com/CyCraft/pepicons",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "pepicons-print",
+    "name": "Pepicons Print",
+    "author": "CyCraft",
+    "url": "https://github.com/CyCraft/pepicons",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "pepicons-pencil",
+    "name": "Pepicons Pencil",
+    "author": "CyCraft",
+    "url": "https://github.com/CyCraft/pepicons",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline",
+    "name": "Streamline",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-flex",
+    "name": "Flex free icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "fa7-solid",
+    "name": "Font Awesome Solid",
+    "author": "Dave Gandy",
+    "url": "https://github.com/FortAwesome/Font-Awesome",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "fa7-regular",
+    "name": "Font Awesome Regular",
+    "author": "Dave Gandy",
+    "url": "https://github.com/FortAwesome/Font-Awesome",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "nrk",
+    "name": "NRK Core Icons",
+    "author": "Norsk rikskringkasting",
+    "url": "https://github.com/nrkno/core-icons",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-ultimate-color",
+    "name": "Ultimate color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-plump-color",
+    "name": "Plump color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-freehand-color",
+    "name": "Freehand color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-kameleon-color",
+    "name": "Kameleon color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-stickies-color",
+    "name": "Stickies color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-color",
+    "name": "Streamline color",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-flex-color",
+    "name": "Flex color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-sharp-color",
+    "name": "Sharp color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "streamline-cyber-color",
+    "name": "Cyber color icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "codicon",
+    "name": "Codicons",
+    "author": "Microsoft Corporation",
+    "url": "https://github.com/microsoft/vscode-codicons",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "game-icons",
+    "name": "Game Icons",
+    "author": "GameIcons",
+    "url": "https://github.com/game-icons/icons",
+    "license": "CC-BY-3.0"
+  },
+  {
+    "prefix": "fad",
+    "name": "FontAudio",
+    "author": "@fefanto",
+    "url": "https://github.com/fefanto/fontaudio",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "covid",
+    "name": "Covid Icons",
+    "author": "Streamline",
+    "url": "https://github.com/webalys-hq/streamline-vectors",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "fa6-solid",
+    "name": "Font Awesome 6 Solid",
+    "author": "Dave Gandy",
+    "url": "https://github.com/FortAwesome/Font-Awesome",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "fa6-regular",
+    "name": "Font Awesome 6 Regular",
+    "author": "Dave Gandy",
+    "url": "https://github.com/FortAwesome/Font-Awesome",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "fa-solid",
+    "name": "Font Awesome 5 Solid",
+    "author": "Dave Gandy",
+    "url": "https://github.com/FortAwesome/Font-Awesome",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "fa-regular",
+    "name": "Font Awesome 5 Regular",
+    "author": "Dave Gandy",
+    "url": "https://github.com/FortAwesome/Font-Awesome",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "subway",
+    "name": "Subway Icon Set",
+    "author": "Mariusz Ostrowski",
+    "url": "https://github.com/mariuszostrowski/subway",
+    "license": "CC-BY-4.0"
+  },
+  {
+    "prefix": "pepicons",
+    "name": "Pepicons",
+    "author": "CyCraft",
+    "url": "https://github.com/CyCraft/pepicons",
+    "license": "CC-BY-4.0"
+  }
+]
