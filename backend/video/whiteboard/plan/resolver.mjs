@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { coveredByIconLibs, isBlockedQuery } from "./iconlibs.mjs";
+import { coveredByIconLibs } from "./iconlibs.mjs";
 
 export function loadManifest(assetsDir) {
   const man = JSON.parse(readFileSync(join(assetsDir, "manifest.json"), "utf8"));
@@ -25,9 +25,6 @@ export function defaultManifest() {
 // Gates the (paid) Recraft generate-on-miss → keeps API spend to TRUE gaps. With Tabler (5093) +
 // Phosphor (1512) added, coverage jumps ~1.7k→~8.3k icons, so Recraft vector almost never fires.
 export function coveredByLibrary(query, manifest) {
-  // a sci-fi/robot query is "covered" only to STOP the paid Recraft generate-on-miss from drawing
-  // the robot — the actual icon comes from the label fallback at resolve time (resolvePlan).
-  if (isBlockedQuery(query)) return true;
   const m = manifest || defaultManifest();
   const r = resolveAsset(query, m);
   if (r && !r.fallback) return true;

@@ -61,22 +61,6 @@ const QUERY_ALIASES = {
 };
 const aliasQuery = (q) => QUERY_ALIASES[String(q || "").trim().toLowerCase()] || q;
 
-// Sci-fi / robot guard. In a cultural-story whiteboard explainer a "robot/alien/android" icon is
-// essentially ALWAYS a creative misfire by the Visual Director (e.g. it emits "alien" for "a newcomer
-// in a different land" → tabler:alien, which reads as a robot — Rino: "masih ada robot"). These words
-// are blocked from the icon match so the resolver falls through to the human-readable LABEL instead
-// (resolvePlan candidate chain). isBlockedQuery() also tells coveredByLibrary() to report TRUE so the
-// PAID Recraft generate-on-miss is skipped (otherwise it would just draw the robot itself).
-const SCIFI_BLOCK = new Set(["alien", "aliens", "robot", "robots", "android", "androids", "cyborg",
-  "cyborgs", "droid", "droids", "humanoid", "humanoids", "automaton", "automatons", "ufo", "ufos",
-  "mech", "mecha", "bot", "bots", "terminator", "extraterrestrial"]);
-export function isBlockedQuery(q) {
-  const t = String(q || "").trim().toLowerCase();
-  if (!t) return false;
-  if (SCIFI_BLOCK.has(t)) return true;
-  return t.split(/[^a-z0-9]+/).some((w) => SCIFI_BLOCK.has(w));
-}
-
 function scoreIcon(qWords, name, icon) {
   const nameParts = name.split("-").filter((p) => p.length > 1);
   const qset = new Set(qWords);
@@ -113,7 +97,6 @@ function bestInLib(qWords, lib) {
 
 // Resolve a query to the best free icon across all libs. minScore avoids weak matches (→ Recraft).
 export function resolveIcon(query, { ink = "#1F2937", width = 4, minScore = 3 } = {}) {
-  if (isBlockedQuery(query)) return null; // never render a robot/alien — fall through to the label
   query = aliasQuery(query); // route common synonyms to a known free icon BEFORE scoring
   const qWords = words(query);
   if (!qWords.length) return null;
