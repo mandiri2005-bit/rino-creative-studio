@@ -19,6 +19,28 @@ function fetchT(url, opts = {}) {
   return fetch(url, { ...opts, signal: opts.signal ?? AbortSignal.timeout(GEN_FETCH_TIMEOUT_MS) });
 }
 
+// Recraft credit circuit-breaker. Once Recraft answers "not_enough_credits", EVERY further call this
+// run will fail too — so a detail-genre video (1 raster + 1 vectorize PER ELEMENT) would spam dozens
+// of doomed round-trips (latency + log noise). On the first credit error we open the breaker for a
+// cooldown; subsequent calls short-circuit instantly (no network) → the caller's try/catch takes the
+// free fallback (flux full-image reveal / Lucide icon). Auto-retries after the cooldown in case the
+// balance was topped up. Reset on process restart.
+let _recraftOutUntil = 0;
+const RECRAFT_CREDIT_COOLDOWN_MS = Number(process.env.RECRAFT_CREDIT_COOLDOWN_MS || 600000); // 10 min
+function recraftCreditGuard() {
+  if (_recraftOutUntil && Date.now() < _recraftOutUntil) throw new Error("recraft skipped: out of credits (breaker open)");
+}
+function noteRecraftFailure(status, bodyText) {
+  const credit = status === 402 || /not_enough_credits|insufficient|quota|balance/i.test(bodyText || "");
+  if (!credit) return;
+  if (!(_recraftOutUntil && Date.now() < _recraftOutUntil)) { // log the situation ONCE per cooldown, not per element
+    console.warn(`[whiteboard] Recraft out of credits → pausing Recraft for ${Math.round(RECRAFT_CREDIT_COOLDOWN_MS / 60000)}min; using free fallbacks (flux full-image reveal / Lucide icons). Top up Recraft to restore vector reveal-masks + icon-gap generation.`);
+  }
+  _recraftOutUntil = Date.now() + RECRAFT_CREDIT_COOLDOWN_MS;
+}
+// caller-side: a credit/breaker failure is already announced once above → don't spam per element.
+export function isRecraftCreditSkip(msg) { return /breaker open|not_enough_credits|insufficient|quota|balance/i.test(String(msg || "")); }
+
 // Recraft sizes are a fixed set; map the aspect → the nearest supported size.
 function sizeFor(aspect) {
   if (aspect === "9:16") return "1024x1365";
@@ -44,12 +66,13 @@ async function recraftGenerate(prompt, { vector, substyle, size, seed } = {}) {
     ...(Number.isFinite(seed) ? { random_seed: seed } : {}),
     size: size || "1365x1024", n: 1, response_format: "url",
   };
+  recraftCreditGuard();
   const r = await fetchT(`${RECRAFT}/images/generations`, {
     method: "POST",
     headers: { Authorization: `Bearer ${recraftKey()}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`recraft gen ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) { const t = await r.text(); noteRecraftFailure(r.status, t); throw new Error(`recraft gen ${r.status}: ${t.slice(0, 200)}`); }
   const url = (await r.json())?.data?.[0]?.url;
   if (!url) throw new Error("recraft gen: no url in response");
   const a = await fetchT(url);
@@ -91,10 +114,11 @@ async function recraftVectorize(pngBuffer) {
   // 350 keeps the reveal smooth while staying well inside the render budget.
   fd.append("limit_num_shapes", "on");
   fd.append("max_num_shapes", "350");
+  recraftCreditGuard();
   const r = await fetchT(`${RECRAFT}/images/vectorize`, {
     method: "POST", headers: { Authorization: `Bearer ${recraftKey()}` }, body: fd,
   });
-  if (!r.ok) throw new Error(`recraft vectorize ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) { const t = await r.text(); noteRecraftFailure(r.status, t); throw new Error(`recraft vectorize ${r.status}: ${t.slice(0, 200)}`); }
   const url = (await r.json())?.image?.url;
   if (!url) throw new Error("recraft vectorize: no url in response");
   return await (await fetchT(url)).text();

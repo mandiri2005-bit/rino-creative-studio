@@ -256,7 +256,7 @@ export async function visualProcessor(job, deps) {
                 // Guide-2 §I) via WB_RASTER_PROVIDER. FLUX gens the raster (Python route) + recraft
                 // vectorizes the mask; falls back to recraft raster if flux returns nothing.
                 const provider = (process.env.WB_RASTER_PROVIDER || "recraft").toLowerCase();
-                const { generateRecraftRaster, vectorizeRasterB64 } = await import("./whiteboard/visuals.mjs");
+                const { generateRecraftRaster, vectorizeRasterB64, isRecraftCreditSkip } = await import("./whiteboard/visuals.mjs");
                 const ctx = { jobId, tenantId: meta.tenantId, userId: meta.userId };
                 for (const el of plan.elements || []) {
                   const q = el.asset_query || el.id;
@@ -280,7 +280,7 @@ export async function visualProcessor(job, deps) {
                         source = "flux-raster";
                         ms = [{ operation: "image", model: "flux-kontext-pro", units: { count: 1 } }];
                         try { const v = await vectorizeRasterB64(b64); maskSvg = v.maskSvg; if (v.meters) ms.push(...v.meters); }
-                        catch (ve) { console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] flux mask vectorize failed (${ve.message}) → full-image reveal`); }
+                        catch (ve) { if (!isRecraftCreditSkip(ve.message)) console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] flux mask vectorize failed (${ve.message}) → full-image reveal`); }
                       }
                     }
                     if (!raster) { // recraft (default, or flux fallback) — gen + mask together
@@ -301,12 +301,12 @@ export async function visualProcessor(job, deps) {
                         source, model, license: lic, createdAt: new Date().toISOString() }); // §S provenance
                     if (ms) meters.push(...ms);
                   } catch (ge) {
-                    console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] raster "${q}" failed: ${ge.message}`);
+                    if (!isRecraftCreditSkip(ge.message)) console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] raster "${q}" failed: ${ge.message}`);
                   }
                 }
               } else {
                 const { coveredByLibrary } = await import("./whiteboard/plan/resolver.mjs");
-                const { generateRecraftIcon } = await import("./whiteboard/visuals.mjs");
+                const { generateRecraftIcon, isRecraftCreditSkip } = await import("./whiteboard/visuals.mjs");
                 const kind = `icon-${genre}`; // genre-aware prompt → genre-aware cache
                 for (const el of plan.elements || []) {
                   const q = el.asset_query || el.id;
@@ -329,7 +329,7 @@ export async function visualProcessor(job, deps) {
                       if (meter) meters.push(meter);
                     }
                   } catch (ge) {
-                    console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft icon "${q}" failed: ${ge.message}`);
+                    if (!isRecraftCreditSkip(ge.message)) console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft icon "${q}" failed: ${ge.message}`);
                   }
                 }
               }
