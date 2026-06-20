@@ -56,6 +56,27 @@ async function recraftGenerate(prompt, { vector, substyle, size, seed } = {}) {
   return vector ? { text: await a.text() } : { buffer: Buffer.from(await a.arrayBuffer()) };
 }
 
+// Generate-on-miss (guide §J step 5): one whiteboard-style vector ICON for an asset_query the
+// curated library + Lucide don't cover (e.g. anatomy: "large intestine", "tongue"). Returns the
+// raw SVG + a meter. Genre tunes the look. Caller parses → strokes and bakes into the plan.
+const ICON_STYLE = {
+  lineart: "simple black ink line icon, single colour, minimal, thick clean strokes",
+  diagram: "simple black ink line icon, single colour, minimal",
+  color: "flat 2-colour vector illustration, bold simple shapes",
+  detail: "detailed flat vector illustration, clear shapes",
+};
+export async function generateRecraftIcon(query, { genre = "lineart", seed } = {}) {
+  const styleHint = ICON_STYLE[genre] || ICON_STYLE.lineart;
+  const prompt = `${query}. ${styleHint}. Whiteboard explainer style, centered, plain white background, no text, no words.`;
+  const { text } = await recraftGenerate(prompt, {
+    vector: true,
+    substyle: genre === "color" || genre === "detail" ? undefined : "line_art",
+    size: "1024x1024",
+    seed: Number.isFinite(seed) ? seed : undefined,
+  });
+  return { svg: text, meter: { operation: "image", model: "recraft-v3-vector", units: { count: 1 } } };
+}
+
 // Recraft raster → SVG mask (the reveal map for raster-reveal).
 async function recraftVectorize(pngBuffer) {
   const fd = new FormData();

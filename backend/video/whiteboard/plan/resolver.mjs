@@ -4,11 +4,30 @@
 // Pure functions → unit-testable. (Semantic embedding search is the later upgrade.)
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveLucide } from "./lucide.mjs";
 
 export function loadManifest(assetsDir) {
   const man = JSON.parse(readFileSync(join(assetsDir, "manifest.json"), "utf8"));
   return { ...man, _dir: assetsDir };
+}
+
+// The bundled curated assets live next to this module (../assets/whiteboard).
+const ASSETS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "whiteboard");
+let _defaultMan = null;
+export function defaultManifest() {
+  if (!_defaultMan) _defaultMan = loadManifest(ASSETS_DIR);
+  return _defaultMan;
+}
+
+// Is this query already covered by the FREE library (curated manifest OR Lucide)? Used to
+// decide whether a (paid) Recraft generate-on-miss is needed — keeps API spend to true gaps.
+export function coveredByLibrary(query, manifest) {
+  const m = manifest || defaultManifest();
+  const r = resolveAsset(query, m);
+  if (r && !r.fallback) return true;
+  return !!resolveLucide(query);
 }
 
 export function scoreAsset(query, asset) {

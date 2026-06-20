@@ -232,6 +232,35 @@ export async function visualProcessor(job, deps) {
               genre, model: meta.genModel, language: meta.language, sceneId: `s${sceneIndex}` });
           const v = plan ? validateWhiteboardPlan(plan) : { ok: false, errors: ["no plan returned"] };
           if (plan && v.ok) {
+            // Recraft GENERATE-ON-MISS: only for elements the FREE library (curated manifest +
+            // 1737 Lucide) doesn't cover (e.g. anatomy) → keeps paid Recraft calls to true gaps.
+            // Best-effort per element: a failure just leaves it to resolve as Lucide/generic.
+            try {
+              const { coveredByLibrary } = await import("./whiteboard/plan/resolver.mjs");
+              const { generateRecraftIcon } = await import("./whiteboard/visuals.mjs");
+              const { parseSvg } = await import("./whiteboard/svg.mjs");
+              const meters = [];
+              for (const el of plan.elements || []) {
+                const q = el.asset_query || el.id;
+                if (coveredByLibrary(q)) continue;
+                try {
+                  const { svg, meter } = await generateRecraftIcon(q, { genre, seed: 1000 + sceneIndex * 13 });
+                  const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
+                  if (parsed.strokes && parsed.strokes.length) {
+                    el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft";
+                    if (meter) meters.push(meter);
+                  }
+                } catch (ge) {
+                  console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft icon "${q}" failed: ${ge.message}`);
+                }
+              }
+              for (const m of meters) {
+                await deps.generationClient?.meterUsage?.(
+                  { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units);
+              }
+            } catch (re) {
+              console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] generate-on-miss skipped: ${re.message}`);
+            }
             await deps.store.setSceneFields(jobId, sceneIndex, {
               visualStatus: "done", visualKind: "whiteboard-plan", planJson: JSON.stringify(plan) });
             return { sceneIndex, genre, engine: "plan" };
