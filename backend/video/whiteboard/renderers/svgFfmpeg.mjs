@@ -331,8 +331,10 @@ export async function renderSceneSvgFfmpeg(plan, outMp4, { fps = 30, crf = 23, a
     // -af apad: pad the audio with trailing silence so -shortest trims it to the EXACT video length
     // (= durationInFrames/fps). Without it the per-scene video (frame-quantised) and audio (exact VO)
     // differ by up to half a frame; across scenes that drift accumulates into the audible "ngelag".
+    // normalise audio to 44.1k stereo so every scene matches → the concat FILTER (gapless) can join
+    // them without param-mismatch. -af apad pads to the exact video length (see above).
     args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf),
-      "-af", "apad", "-c:a", "aac", "-shortest", outMp4);
+      "-af", "apad", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest", outMp4);
     await ff(args);
     return { path: outMp4, frames };
   } finally {
@@ -383,11 +385,18 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
       await renderSceneSvgFfmpeg(plan, mp4, { fps, crf: tier.crf, audioPath: sc.audioPath || null });
       sceneMp4s.push(mp4);
     }
-    // concat (re-encode for safe joins across scenes)
-    const listFile = join(work, "list.txt");
-    writeFileSync(listFile, sceneMp4s.map((m) => `file '${m}'`).join("\n"));
+    // concat via the FILTER (decode + sample-accurate join), NOT the demuxer: the demuxer left an AAC
+    // encoder-priming gap/click at EVERY scene boundary ("audio patah di pergantian scene"). The
+    // filter concatenates the decoded audio samples → gapless. (One scene → just copy.)
     mkdirSync(dirname(outPath), { recursive: true });
-    await ff(["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(tier.crf), "-c:a", "aac", outPath]);
+    if (sceneMp4s.length === 1) {
+      await ff(["-y", "-i", sceneMp4s[0], "-c", "copy", outPath]);
+    } else {
+      const inputs = sceneMp4s.flatMap((m) => ["-i", m]);
+      const fc = sceneMp4s.map((_, i) => `[${i}:v:0][${i}:a:0]`).join("") + `concat=n=${sceneMp4s.length}:v=1:a=1[v][a]`;
+      await ff(["-y", ...inputs, "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(tier.crf), "-c:a", "aac", "-ar", "44100", "-ac", "2", outPath]);
+    }
     const duration = scenes.reduce((a, s) => a + Math.max(0.5, Number(s.duration) || 0.5), 0);
     return { duration };
   } finally {
