@@ -108,10 +108,10 @@ const WriteOnText: React.FC<{ text: string; startFrame: number; pack: Required<S
 // normalised, like SelfDrawSvg) then fill it in over the back half of its window, SEQUENTIALLY — so
 // FILL icons self-draw like the line icons instead of just fading in (was the "iconify pops, doesn't
 // draw" bug). Rendered under the ink strokes.
-const FilledShapes: React.FC<{ shapes: PlanShape[]; viewBox: string; width: number; height: number; startFrame: number; durFrames: number }> = ({ shapes, viewBox, width, height, startFrame, durFrames }) => {
+const FilledShapes: React.FC<{ shapes: PlanShape[]; viewBox: string; width: number; height: number; startFrame: number; durFrames: number; ink: string }> = ({ shapes, viewBox, width, height, startFrame, durFrames, ink }) => {
   const frame = useCurrentFrame();
   const vbw = Number(viewBox.split(/\s+/)[2]) || 100;
-  const outline = Math.max(0.6, (vbw * 4) / 100); // viewBox-normalised thin outline (vb24 → ~1px, not 17%)
+  const outline = Math.max(0.5, (vbw * 3) / 100); // viewBox-normalised THIN black linework (Rino: "garis hitamnya dikecilin")
   const n = Math.max(1, shapes.length);
   const per = Math.max(1, durFrames) / n; // each shape gets an equal slice → drawn in sequence
   return (
@@ -120,14 +120,14 @@ const FilledShapes: React.FC<{ shapes: PlanShape[]; viewBox: string; width: numb
         {shapes.map((s, i) => {
           const ts = interpolate(frame, [startFrame + i * per, startFrame + (i + 1) * per], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
           if (ts <= 0) return null;
-          const col = s.fill && s.fill !== "none" ? s.fill : "#1A1A1A";
+          const col = s.fill && s.fill !== "none" ? s.fill : ink;
           return (
             <path
               key={i}
               d={s.d}
               fill={col}
-              fillOpacity={Math.max(0, Math.min(1, (ts - 0.5) * 2)) * 0.22 /* HALUS: light tint, not a solid blob */}
-              stroke={col}
+              fillOpacity={Math.max(0, Math.min(1, (ts - 0.5) * 2)) * 0.55 /* visible COLOUR fill, not a solid blob */}
+              stroke={ink}
               strokeWidth={(s.width as number) || outline}
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -192,7 +192,7 @@ const PlanElementView: React.FC<{ el: PlanElement; pack: Required<StylePack>; di
       ) : null}
       <div style={{ position: "absolute", left: 0, top: iconTop, width: box.w, height: iconH }}>
         {el.shapes && el.shapes.length ? (
-          <FilledShapes shapes={el.shapes} viewBox={viewBox} width={box.w} height={iconH} startFrame={draw.startFrame} durFrames={draw.durFrames} />
+          <FilledShapes shapes={el.shapes} viewBox={viewBox} width={box.w} height={iconH} startFrame={draw.startFrame} durFrames={draw.durFrames} ink={pack.palette.ink} />
         ) : null}
         {el.raster ? (
           <RasterRevealIllustration
