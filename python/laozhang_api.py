@@ -6941,6 +6941,7 @@ class VideoMeterReq(BaseModel):
     operation: str = "image"        # image | video | tts | chat | narasi
     model: str
     units: dict = {}                # {"count":1} | {"seconds":N} | {"chars":N}
+    gate_only: bool = False         # True = pre-check balance ONLY (no debit) → {"ok": bool}
 
 
 @app.post("/video/meter")
@@ -6958,6 +6959,17 @@ async def video_meter(req: VideoMeterReq,
     if op not in ("image", "video", "tts", "chat", "narasi"):
         raise HTTPException(400, "bad operation")
     _byok = _byok_active()
+    # gate_only: pre-check balance WITHOUT debiting (the worker calls this before a paid in-worker
+    # gen — e.g. Recraft icon — so it can fall back to a free icon instead of debiting into the
+    # negative). Mirrors the flux gate in /video/whiteboard-raster + TTS in /video/tts/scene.
+    if req.gate_only:
+        try:
+            await metering.gate(user.tenant_id, op, req.model, req.units or {}, byok=_byok)
+            return {"ok": True}
+        except HTTPException as ge:
+            if getattr(ge, "status_code", None) == 402:
+                return {"ok": False, "gated": True}
+            raise
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
     credits = 0
     try:
@@ -7229,6 +7241,17 @@ async def video_whiteboard_raster(req: VideoWhiteboardRasterReq,
     model = "flux-kontext-pro" if (req.provider or "flux").lower() == "flux" else (req.provider or "flux")
     if model not in IMAGE_MODELS:
         raise HTTPException(400, f"unknown image model: {model}")
+    # GATE before generating (mirror /video/tts/scene). Whiteboard images were debited POST-HOC only
+    # (the /assemble pre-check covers the flat render fee, NOT the dynamic per-scene flux), so a tenant
+    # at balance 0 kept generating paid flux and went NEGATIVE (Rino: balance -547). Now: 402 → null →
+    # the worker falls back to a free icon (no provider call, no debit, no leak).
+    try:
+        await metering.gate(user.tenant_id, "image", model, {"count": 1}, byok=_byok_active())
+    except HTTPException as ge:
+        if getattr(ge, "status_code", None) == 402:
+            print(f"[video/whiteboard-raster] insufficient credits → fallback (no gen) tenant={user.tenant_id}")
+            return {"raster_b64": None, "model": model, "gated": True}
+        raise
     cfg = IMAGE_MODELS[model]
     if (req.mode or "subject").lower() == "hero":
         # detail genre: ONE cohesive SCENE per scene, drawn on. An ILLUSTRATED style (clear outlines)

@@ -306,6 +306,11 @@ export async function visualProcessor(job, deps) {
                       el.viewBox = hit.viewBox; el.strokes = hit.strokes; if (hit.shapes) el.shapes = hit.shapes;
                       el.assetSource = "recraft-cache"; el.license = hit.license || "recraft-v3-vector:provider-terms"; continue; // no Recraft, no meter
                     }
+                    // GATE before the paid Recraft gen → at balance 0 skip it (free fallback) instead
+                    // of debiting into the negative (same guard as flux/TTS).
+                    if (!(await deps.generationClient?.gateUsage?.({ jobId, tenantId: meta.tenantId, userId: meta.userId }, "image", "recraft-v3-vector", { count: 1 }))) {
+                      console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft icon "${q}" skipped: insufficient credits → free fallback`); continue;
+                    }
                     const { svg, meter } = await generateRecraftIcon(q, { genre, seed: 1000 + sceneIndex * 13 });
                     const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
                     if (parsed.strokes && parsed.strokes.length) {

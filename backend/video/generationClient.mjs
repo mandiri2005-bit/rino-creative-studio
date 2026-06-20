@@ -368,6 +368,22 @@ export function httpGenerationClient(opts = {}) {
       }
     },
 
+    // Pre-check balance for a paid in-worker gen (e.g. Recraft icon) BEFORE generating, so we can
+    // fall back to a free icon instead of debiting into the negative. Returns true if covered.
+    // Fail-OPEN on a metering hiccup (don't block a render on a transient error) — the flux route +
+    // /assemble pre-check are the other guards.
+    async gateUsage(ctx, operation, model, units) {
+      try {
+        const r = await fetch(`${PYTHON_API}/video/meter`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
+          body: JSON.stringify({ operation, model, units: units || {}, gate_only: true }),
+        });
+        if (!r.ok) return true;
+        return (await r.json()).ok !== false;
+      } catch { return true; }
+    },
+
     // Flowchart graph for the whiteboard 'diagram' genre — from Python, which uses the
     // SAME LLM routing/failover + Model Narasi as narration (no new LLM key in the
     // worker). The worker turns the graph into a clean SVG (buildDiagramSvg).
