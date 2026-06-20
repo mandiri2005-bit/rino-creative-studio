@@ -53,15 +53,25 @@ export function slotBox(slot) {
   return SLOT_MAP_16_9[slot] || null;
 }
 
-// Attach a concrete `box` to every element from its semantic slot. Throws on an
-// unknown slot so a bad plan fails LOUD here (not as a silent off-canvas element).
+// Attach a concrete `box` to every element from its semantic slot. TOLERANT: an unknown/missing
+// slot (the LLM picked a slot not in this template) falls back to an auto grid instead of THROWING
+// — one off-slot must never blank the whole scene (that was the "all text" bug, esp. color/icons).
 export function layoutWhiteboardPlan(plan) {
+  const els = plan.elements || [];
+  const n = els.length;
   return {
     ...plan,
-    elements: (plan.elements || []).map((element) => {
-      const box = SLOT_MAP_16_9[element.slot];
-      if (!box) throw new Error(`Unknown slot: ${element.slot} (element ${element.id})`);
-      return { ...element, box };
-    }),
+    elements: els.map((element, i) => ({ ...element, box: SLOT_MAP_16_9[element.slot] || fallbackBox(i, n) })),
   };
+}
+
+// even centred grid across the 16:9 canvas for elements whose slot isn't in the map
+function fallbackBox(i, n) {
+  const W = 1920, H = 1080;
+  const perRow = Math.min(Math.max(1, n), 4);
+  const rows = Math.max(1, Math.ceil(n / perRow));
+  const col = i % perRow, row = Math.floor(i / perRow);
+  const cellW = W / (perRow + 1), cellH = H / (rows + 1);
+  const sz = Math.round(Math.min(cellW, cellH) * 0.62);
+  return { x: Math.round(cellW * (col + 1)), y: Math.round(cellH * (row + 1)), w: sz, h: sz };
 }

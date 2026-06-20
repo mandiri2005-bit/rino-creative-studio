@@ -8,7 +8,8 @@ import { ALLOWED_ACTIONS, ALLOWED_ELEMENT_TYPES, ELEMENT_TARGET_ACTIONS, MAX_LAB
 
 export function validateWhiteboardPlan(plan, templateRegistry = WHITEBOARD_TEMPLATES) {
   const errors = [];
-  if (!plan || typeof plan !== "object") return { ok: false, errors: ["plan is not an object"] };
+  const warnings = [];
+  if (!plan || typeof plan !== "object") return { ok: false, errors: ["plan is not an object"], warnings };
 
   if (!plan.scene_id) errors.push("Missing scene_id");
   if (!(typeof plan.duration === "number" && plan.duration > 0)) errors.push("duration must be a positive number");
@@ -27,10 +28,12 @@ export function validateWhiteboardPlan(plan, templateRegistry = WHITEBOARD_TEMPL
   for (const el of elements) {
     if (!el.id) errors.push("Element missing id");
     if (el.type && !ALLOWED_ELEMENT_TYPES.includes(el.type)) errors.push(`Element ${el.id}: invalid type ${el.type}`);
-    if (!el.slot) errors.push(`Element ${el.id}: missing slot`);
-    else if (!SLOT_MAP_16_9[el.slot]) errors.push(`Element ${el.id}: slot ${el.slot} not in slot map`);
-    else if (template && !template.allowedSlots.includes(el.slot)) {
-      errors.push(`Element ${el.id}: slot ${el.slot} not allowed for template ${plan.template}`);
+    // slot mismatch is NON-FATAL now — layoutWhiteboardPlan falls back to an auto grid for any
+    // unknown/missing/wrong-template slot, so it must NOT reject the plan (that blanked scenes).
+    if (el.slot && !SLOT_MAP_16_9[el.slot]) warnings.push(`Element ${el.id}: slot ${el.slot} not in slot map (auto-placed)`);
+    else if (el.slot && template && !template.allowedSlots.includes(el.slot)) warnings.push(`Element ${el.id}: slot ${el.slot} not in ${plan.template} (auto-placed)`);
+    if (el.label && String(el.label).trim().split(/\s+/).length > MAX_LABEL_WORDS) {
+      errors.push(`Element ${el.id}: label too long (>${MAX_LABEL_WORDS} words): "${el.label}"`);
     }
     if (el.label && String(el.label).trim().split(/\s+/).length > MAX_LABEL_WORDS) {
       errors.push(`Element ${el.id}: label too long (>${MAX_LABEL_WORDS} words): "${el.label}"`);
@@ -56,5 +59,5 @@ export function validateWhiteboardPlan(plan, templateRegistry = WHITEBOARD_TEMPL
     }
   }
 
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors, warnings };
 }
