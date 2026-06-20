@@ -42,19 +42,12 @@ export const RasterRevealIllustration: React.FC<{
     return m ? { x: +m[1], y: +m[2] } : { x: (vx || 0) + (vw || 0) / 2, y: (vy || 0) + (vh || 0) / 2 };
   };
 
-  // vertical centre of each form (regex-sampled) → time its draw by WHERE it sits, so the scene
-  // draws smoothly top→bottom and big shapes draw at their position (not dumping early).
-  const cyOf = (d: string): number => {
-    const nums = d.match(/-?\d*\.?\d+/g);
-    if (!nums || nums.length < 2) return (vy || 0) + (vh || 100) / 2;
-    let s = 0, c = 0;
-    for (let i = 1; i < nums.length; i += 2) { s += parseFloat(nums[i]); c++; }
-    return c ? s / c : (vy || 0) + (vh || 100) / 2;
-  };
-  type Unit = { x: number; y: number; cy: number; el: "shape" | "stroke"; d: string };
+  // units in DRAW ORDER — maskShapes are pre-ordered NEAREST-NEIGHBOUR by traceMaskB64, so the pen
+  // moves continuously between adjacent forms (natural drawing, not a sweep). rep point = on the form.
+  type Unit = { x: number; y: number; d: string };
   const units: Unit[] = [
-    ...(shapes || []).map((s) => ({ ...repPoint(s.d), cy: cyOf(s.d), el: "shape" as const, d: s.d })),
-    ...strokeArr.map((s) => ({ ...repPoint(s.d), cy: cyOf(s.d), el: "stroke" as const, d: s.d })),
+    ...(shapes || []).map((s) => ({ ...repPoint(s.d), d: s.d })),
+    ...strokeArr.map((s) => ({ ...repPoint(s.d), d: s.d })),
   ];
 
   const total = Math.max(1, durationInFrames);
@@ -62,11 +55,9 @@ export const RasterRevealIllustration: React.FC<{
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
-  const SPAN = 0.92; // reveal completes by 92% of the window, then a brief settle
-  const WIN = 0.17;  // each region draws over this fraction of the window
+  const SPAN = 0.92;
 
-  // NO mask units (vectorize unavailable, e.g. flux raster without potrace) → reveal the FULL
-  // image with a left→right wipe so the (paid) raster is never lost or masked out to blank.
+  // NO mask units → reveal the FULL image with a left→right wipe so the raster is never blanked.
   if (units.length === 0) {
     const reveal = interpolate(tGlobal, [0, 0.92], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
     return (
@@ -78,75 +69,48 @@ export const RasterRevealIllustration: React.FC<{
     );
   }
 
-  // GOLPO-STYLE: the pen TRACES each form's ink outline (a visible line being drawn) THEN its colour
-  // fills in — timed by the form's vertical centre so it draws top→bottom, NOT a curtain wipe.
-  const startPof = (u: Unit) => Math.min(1, Math.max(0, (u.cy - (vy || 0)) / (vh || 100))) * (SPAN - WIN);
+  // GOLPO-STYLE: forms drawn ONE AFTER ANOTHER along the nearest-neighbour path — for each, the pen
+  // traces its ink outline then its colour fills. Each form's TIME ∝ its outline length (d-string
+  // proxy) so big forms draw slower (natural) + even pacing. A catch-up band fills light regions.
   const inkW = Math.max(1.6, (vw || 100) / 340);
-  // pen sweeps L↔R SMOOTHLY as it descends with the front — a natural drawing hand, not teleporting
-  // to "whichever scattered region is nearest" (robotic).
-  const revP = Math.min(1, tGlobal / SPAN);
-  const penX = (vx || 0) + (vw || 100) * (0.5 + 0.3 * Math.sin(revP * Math.PI * 6));
-  const penY = (vy || 0) + revP * (vh || 100);
-  const handVisible = tGlobal > 0.005 && tGlobal < 0.985;
+  const N = units.length;
+  const lens = units.map((u) => Math.max(1, u.d.length));
+  const totLen = lens.reduce((a, c) => a + c, 0) || 1;
+  let cum = 0; const startF = lens.map((l) => { const s = (cum / totLen) * SPAN; cum += l; return s; });
+  const durF = lens.map((l) => Math.max(0.012, (l / totLen) * SPAN) * 1.6);
+  const spOf = (i: number) => Math.min(1, Math.max(0, (tGlobal - startF[i]) / durF[i]));
+  let act = -1;
+  for (let i = 0; i < N; i++) { const sp = spOf(i); if (sp > 0.01 && sp < 0.99) act = i; }
+  const penU = act >= 0 ? units[act] : null;
+  const handVisible = tGlobal > 0.005 && tGlobal < 0.985 && penU != null;
 
   return (
     <div style={{ position: "relative", width, height }}>
       <svg width={width} height={height} viewBox={viewBox}>
         <defs>
           <mask id={maskId} maskUnits="userSpaceOnUse">
-            {/* catch-up: solid fill trailing the front by ~12% so NO region is left empty/sparse —
-                even pale/low-contrast areas potrace barely traces (e.g. a light koala). The potrace
-                shapes give the organic LEADING edge; this fills solidly behind it. */}
             {(() => {
-              const catchH = Math.max(0, Math.min(1, tGlobal / SPAN) - 0.12) * (vh || 100);
+              const catchH = Math.max(0, Math.min(1, tGlobal / SPAN) - 0.15) * (vh || 100);
               return catchH > 0 ? <rect x={vx || 0} y={vy || 0} width={vw} height={catchH} fill="white" /> : null;
             })()}
             {units.map((u, i) => {
-              const sp = Math.min(1, Math.max(0, (tGlobal - startPof(u)) / WIN));
-              const fillOp = Math.min(1, Math.max(0, (sp - 0.5) / 0.5));
-              return fillOp > 0 ? <path key={i} d={u.d} fill="white" opacity={fillOp} /> : null;
+              const op = Math.min(1, Math.max(0, (spOf(i) - 0.4) / 0.6));
+              return op > 0 ? <path key={i} d={u.d} fill="white" opacity={op} /> : null;
             })}
           </mask>
         </defs>
-        <image
-          href={raster}
-          x={vx || 0}
-          y={vy || 0}
-          width={vw}
-          height={vh}
-          preserveAspectRatio="xMidYMid meet"
-          mask={`url(#${maskId})`}
-        />
-        {/* ink outlines traced on top — the pen drawing the lines */}
+        <image href={raster} x={vx || 0} y={vy || 0} width={vw} height={vh} preserveAspectRatio="xMidYMid meet" mask={`url(#${maskId})`} />
         {units.map((u, i) => {
-          const sp = Math.min(1, Math.max(0, (tGlobal - startPof(u)) / WIN));
+          const sp = spOf(i);
           if (sp <= 0) return null;
-          const traceP = Math.min(1, sp / 0.55);
+          const traceP = Math.min(1, sp / 0.5);
           return (
-            <path
-              key={"ink" + i}
-              d={u.d}
-              fill="none"
-              stroke={ink}
-              strokeWidth={inkW}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              pathLength={100}
-              strokeDasharray={100}
-              strokeDashoffset={(1 - traceP) * 100}
-              opacity={0.82}
-            />
+            <path key={"ink" + i} d={u.d} fill="none" stroke={ink} strokeWidth={inkW} strokeLinecap="round" strokeLinejoin="round" pathLength={100} strokeDasharray={100} strokeDashoffset={(1 - traceP) * 100} opacity={0.82} />
           );
         })}
       </svg>
-      {handVisible ? (
-        <Hand
-          x={(penX - (vx || 0)) * sx}
-          y={(penY - (vy || 0)) * sy}
-          size={Math.max(120, height * 0.5)}
-          nib={ink}
-          body={handBody}
-        />
+      {handVisible && penU ? (
+        <Hand x={(penU.x - (vx || 0)) * sx} y={(penU.y - (vy || 0)) * sy} size={Math.max(120, height * 0.5)} nib={ink} body={handBody} />
       ) : null}
     </div>
   );

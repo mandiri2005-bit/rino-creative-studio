@@ -171,19 +171,15 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       const [mvx = 0, mvy = 0, mvw = 100, mvh = 100] = String(el.maskViewBox || "0 0 100 100").split(/\s+/).map(Number);
       const ms = Math.min(b.w / mvw, iconH / mvh);
       const mgx = x + (b.w - mvw * ms) / 2, mgy = y + iconTop + (iconH - mvh * ms) / 2;
-      const brush = Math.max(8, Math.round(mvw / 34));
       const rep = (d) => { const m = /[Mm]\s*(-?[\d.]+)[\s,]+(-?[\d.]+)/.exec(d); return m ? { x: +m[1], y: +m[2] } : { x: mvx + mvw / 2, y: mvy + mvh / 2 }; };
-      const NB = 4, bandH = mvh / NB;
+      // units in DRAW ORDER — maskShapes are pre-ordered NEAREST-NEIGHBOUR by traceMaskB64, so the pen
+      // moves continuously between adjacent forms (natural). No re-sort.
       const units = [
         ...(el.maskShapes || []).map((s) => ({ ...rep(s.d), el: "shape", d: s.d })),
         ...(el.maskStrokes || []).map((s) => ({ ...rep(s.d), el: "stroke", d: s.d })),
-      ].sort((a, c) => {
-        const ba = clamp(Math.floor((a.y - mvy) / bandH), 0, NB - 1), bb = clamp(Math.floor((c.y - mvy) / bandH), 0, NB - 1);
-        return ba !== bb ? ba - bb : (ba % 2 === 0 ? a.x - c.x : c.x - a.x);
-      });
+      ];
       if (units.length === 0) {
-        // NO mask (vectorize unavailable, e.g. flux without recraft) → reveal the FULL image with a
-        // left→right wipe so the paid raster is never lost / blanked.
+        // NO mask → reveal the FULL image with a left→right wipe so the paid raster is never lost.
         const id = `rw${clipId++}`, rw = Math.round(b.w * p);
         out.push(`<clipPath id="${id}"><rect x="${x}" y="${y + iconTop}" width="${rw}" height="${iconH}"/></clipPath>`);
         out.push(`<image href="${el.raster}" x="${x}" y="${y + iconTop}" width="${b.w}" height="${iconH}" preserveAspectRatio="xMidYMid meet" clip-path="url(#${id})"/>`);
@@ -193,44 +189,39 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         }
         continue;
       }
-      // GOLPO-STYLE draw — NOT a curtain wipe. The pen TRACES each form's ink outline (a visible line
-      // being drawn) THEN its colour fills in from the photo. Each region is timed by its VERTICAL
-      // CENTRE, so the draw moves smoothly top→bottom and big shapes draw at their position instead of
-      // dumping early. resvg ignores pathLength → trace with the REAL path length.
-      const SPAN = 0.92, win = 0.17;                       // each region draws over 17% of the window
+      // GOLPO-STYLE draw: forms are drawn ONE AFTER ANOTHER along a nearest-neighbour path — for each,
+      // the pen TRACES its ink outline then its colour fills. The pen rides the actual line being
+      // drawn (pointOnPath), so it follows the artwork like a hand — NOT a mechanical sweep.
+      const SPAN = 0.92, N = units.length;
       const inkW = Math.max(1.6, mvw / 340);
-      const startPof = (u) => clamp((centroidY(u.d) - mvy) / (mvh || 1), 0, 1) * (SPAN - win);
+      // each form's draw TIME ∝ its outline length → big forms take longer (natural) + EVEN area
+      // pacing (no front-loading from a few big shapes filling the canvas early).
+      const lens = units.map((u) => pathLen(u.d));
+      const totLen = lens.reduce((a, c) => a + c, 0) || 1;
+      let _cum = 0; const startF = lens.map((l) => { const s = (_cum / totLen) * SPAN; _cum += l; return s; });
+      const durF = lens.map((l) => Math.max(0.012, (l / totLen) * SPAN) * 1.6); // *1.6 = slight overlap
+      const spOf = (i) => clamp((p - startF[i]) / durF[i], 0, 1);
       const id = `rv${clipId++}`;
       out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})">`);
-      // 1) colour fills. The potrace shapes give an ORGANIC leading edge (drawn region-by-region);
-      // a "catch-up" solid band trailing the front by ~12% then fills EVERYTHING behind it — so no
-      // region is left empty/sparse, even pale/low-contrast areas potrace barely traces (e.g. a light
-      // koala). Result: organic front + complete fill, not a patchy half-coloured scene.
       out.push(`<mask id="${id}" maskUnits="userSpaceOnUse">`);
-      const catchH = Math.max(0, clamp(p / SPAN, 0, 1) - 0.12) * mvh;
+      // catch-up band trails the draw → fills LIGHT regions trace misses (pale koala), so nothing
+      // stays empty; the per-form fills give the leading edge near the pen.
+      const catchH = Math.max(0, clamp(p / SPAN, 0, 1) - 0.15) * mvh;
       if (catchH > 0) out.push(`<rect x="${mvx}" y="${mvy}" width="${mvw}" height="${catchH.toFixed(1)}" fill="white"/>`);
-      for (const u of units) {
-        const sp = clamp((p - startPof(u)) / win, 0, 1);
-        const fillOp = clamp((sp - 0.5) / 0.5, 0, 1);
-        if (fillOp > 0) out.push(`<path d="${u.d}" fill="white" opacity="${fillOp.toFixed(3)}"/>`);
-      }
+      units.forEach((u, i) => { const op = clamp((spOf(i) - 0.4) / 0.6, 0, 1); if (op > 0) out.push(`<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`); });
       out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})"/>`);
-      // 2) ink outlines traced on top — the pen drawing the lines
-      for (const u of units) {
-        const sp = clamp((p - startPof(u)) / win, 0, 1);
-        if (sp <= 0) continue;
-        const traceP = clamp(sp / 0.55, 0, 1);             // outline drawn over the first ~55% of the window
+      units.forEach((u, i) => {
+        const sp = spOf(i); if (sp <= 0) return;
+        const traceP = clamp(sp / 0.5, 0, 1);
         const L = pathLen(u.d);
         out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.82"/>`);
-      }
+      });
       out.push(`</g>`);
-      // 3) the pen sweeps L↔R SMOOTHLY as it descends with the front — a natural drawing hand, NOT
-      // teleporting to "whichever scattered region is nearest" (that read as robotic/unnatural).
+      // pen rides the LEADING form being traced (real point on its line) → follows the NN path
       if (p > 0.005 && p < 0.985) {
-        const revP = clamp(p / SPAN, 0, 1);
-        const penX = mvx + mvw * (0.5 + 0.3 * Math.sin(revP * Math.PI * 6));
-        const penY = mvy + revP * mvh;
-        hands.push({ x: mgx + penX * ms, y: mgy + penY * ms, size: Math.max(120, iconH * 0.5), nib: ink });
+        let act = -1;
+        for (let i = 0; i < N; i++) { const sp = spOf(i); if (sp > 0.01 && sp < 0.99) act = i; }
+        if (act >= 0) { const u = units[act]; const pt = pointOnPath(u.d, clamp(spOf(act) / 0.5, 0, 1)) || { x: u.x, y: u.y }; hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink }); }
       }
     } else {
       // color genre: soft colour chip behind the icon (icon stroke is the same colour)

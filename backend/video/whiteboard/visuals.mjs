@@ -155,16 +155,19 @@ export async function vectorizeRasterB64(b64) {
   };
 }
 
-// LOCAL line-trace reveal mask via potrace — the FREE (no API, no credits) alternative to recraft
-// vectorize for the raster-reveal "draw". Traces the hero photo's dark forms into vector subpaths;
-// the renderer reveals the photo region-by-region in a top→bottom snake with the hand on the
-// frontier → the scene gets "drawn on" (Golpo-style). Returns maskShapes/maskViewBox (no meter:
-// it's local). One compound path → split into subpaths so the reveal is progressive, biggest first,
-// capped for render safety (each shape is a per-frame mask path; too many wedges Chromium).
-export async function traceMaskB64(b64, { maxShapes = 90 } = {}) {
+// LOCAL line-trace reveal mask via potrace — FREE (no API/credits) alternative to recraft vectorize.
+// POSTERIZE (multi-level), NOT trace(threshold): a single threshold only catches DARK forms, so a
+// pale subject (e.g. a light koala) got no shape → its colour never revealed ("ada yang kosong").
+// Posterize captures light + dark tones → full coverage. Shapes are then ordered into a NEAREST-
+// NEIGHBOUR chain so the renderer draws them in a continuous path (the pen moves smoothly between
+// ADJACENT forms = natural drawing, not teleporting/sweeping). Returns maskShapes/maskViewBox.
+export async function traceMaskB64(b64, { maxShapes = 70 } = {}) {
   const { createRequire } = await import("node:module");
   const potrace = createRequire(import.meta.url)("potrace");
   const buffer = Buffer.from(b64, "base64");
+  // TRACE (threshold), not posterize: posterize's lightest level is a near-full-canvas shape that
+  // dumps the whole image the instant it fills (front-loads). Trace gives only the dark FORMS →
+  // clean ink lines + progressive pacing. Light regions are covered by the renderer's catch-up band.
   const svg = await new Promise((resolve, reject) =>
     potrace.trace(buffer, { threshold: 175, turdSize: 130, optTolerance: 0.8, color: "#000", background: "transparent" },
       (err, out) => (err ? reject(err) : resolve(out))));
@@ -173,7 +176,19 @@ export async function traceMaskB64(b64, { maxShapes = 90 } = {}) {
   let subs = (d.match(/[Mm][^Mm]*/g) || []).map((s) => s.trim()).filter((s) => s.length > 8);
   if (!subs.length) throw new Error("potrace produced no subpaths");
   if (subs.length > maxShapes) subs = subs.sort((a, b) => b.length - a.length).slice(0, maxShapes);
-  return { maskViewBox, maskShapes: subs.map((dd) => ({ d: dd, fill: "#000" })) };
+  // centroid of each subpath (avg of its coords) → greedy nearest-neighbour ordering from the top.
+  const ctr = (d) => { const n = d.match(/-?\d*\.?\d+/g) || []; let sx = 0, sy = 0, c = 0; for (let i = 0; i + 1 < n.length; i += 2) { sx += +n[i]; sy += +n[i + 1]; c++; } return c ? { x: sx / c, y: sy / c } : { x: 0, y: 0 }; };
+  const pts = subs.map((d) => ({ d, c: ctr(d) }));
+  const remaining = new Set(pts);
+  let cur = pts.reduce((a, b) => (b.c.y < a.c.y ? b : a), pts[0]); // start at the top-most form
+  remaining.delete(cur);
+  const ordered = [cur];
+  while (remaining.size) {
+    let best = null, bd = Infinity;
+    for (const p of remaining) { const dd = (p.c.x - cur.c.x) ** 2 + (p.c.y - cur.c.y) ** 2; if (dd < bd) { bd = dd; best = p; } }
+    remaining.delete(best); ordered.push(best); cur = best;
+  }
+  return { maskViewBox, maskShapes: ordered.map((p) => ({ d: p.d, fill: "#000" })) };
 }
 
 // ── diagram: LLM graph → deterministic flowchart SVG (ported from scripts/diagram.mjs) ──
