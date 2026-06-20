@@ -13,9 +13,11 @@ import { readFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSvg, parseSvgShapes, parseSvgDiagram } from "./svg.mjs";
+import { resolvePlan } from "./plan/resolvePlan.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ENTRY = join(__dir, "src", "index.ts");
+const PLAN_ASSETS = join(__dir, "assets", "whiteboard");
 
 // cap 1080p; tier sets fps + crf (render fee is flat, tier is quality only)
 const ASPECT = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
@@ -122,5 +124,87 @@ export async function renderWhiteboard(scenes, meta, outPath, opts = {}) {
     clearTimeout(timer);
   }
   const duration = built.reduce((a, s) => a + s.durationSeconds, 0);
+  return { duration };
+}
+
+// Scale a plan's beat/camera timings from the LLM's assumed duration to the scene's REAL
+// (VO-measured) duration, and clamp — so pacing follows the actual narration length.
+function rescalePlanTiming(plan, actualDuration) {
+  const src = Number(plan?.duration) || actualDuration || 1;
+  const f = actualDuration > 0 && src > 0 ? actualDuration / src : 1;
+  const scale = (arr) =>
+    (arr || []).map((b) => ({
+      ...b,
+      ...(typeof b.start === "number" ? { start: Math.max(0, +(b.start * f).toFixed(3)) } : {}),
+      ...(typeof b.end === "number" ? { end: Math.min(actualDuration, +(b.end * f).toFixed(3)) } : {}),
+    }));
+  return { ...plan, duration: actualDuration, beats: scale(plan?.beats), camera: scale(plan?.camera) };
+}
+
+/**
+ * Plan-engine render (Golpo-like): each scene carries a whiteboard_visual_plan (sc.planJson,
+ * generated+validated in the visual phase). Resolve each plan (assets→strokes, slots→boxes,
+ * beats→frames), rescale to the measured VO duration, and render the multi-scene
+ * "WhiteboardPlanVideo" composition → ONE MP4. A scene with no/invalid plan degrades to a
+ * blank board for its duration (audio still plays). Mirrors renderWhiteboard's structure.
+ * @returns { duration } seconds
+ */
+export async function renderWhiteboardPlan(scenes, meta, outPath, opts = {}) {
+  const [width, height] = ASPECT[meta.aspectRatio] || ASPECT["16:9"];
+  const tier = TIER[meta.tier] || TIER.hd;
+  const fps = tier.fps;
+  const tmpDir = opts.tmpDir || dirname(outPath);
+  const pub = join(tmpDir, "wb-public");
+  mkdirSync(join(pub, "audio"), { recursive: true });
+
+  const built = scenes.map((sc, i) => {
+    let audioSrc = null;
+    if (sc.audioPath) {
+      const rel = `audio/scene-${i}${extname(sc.audioPath) || ".wav"}`;
+      copyFileSync(sc.audioPath, join(pub, rel));
+      audioSrc = rel;
+    }
+    const sceneDur = Math.max(0.5, Number(sc.duration) || 0.5);
+    let plan = null;
+    try {
+      if (sc.planJson) {
+        const raw = typeof sc.planJson === "string" ? JSON.parse(sc.planJson) : sc.planJson;
+        plan = resolvePlan(rescalePlanTiming(raw, sceneDur), { assetsDir: PLAN_ASSETS, fps, strict: false });
+        plan.canvas = { width, height };
+      }
+    } catch (e) {
+      console.warn(`[whiteboard-plan ${meta.jobId || ""}/${i}] resolve failed: ${e.message} → blank board`);
+      plan = null;
+    }
+    if (!plan) {
+      plan = { fps, duration: sceneDur, durationInFrames: Math.max(1, Math.round(sceneDur * fps)),
+        canvas: { width, height }, elements: [], overlays: [], camera: [] };
+    }
+    return { plan, audioSrc };
+  });
+
+  const spec = { fps, width, height, scenes: built };
+  const serveUrl = await bundle({ entryPoint: ENTRY, publicDir: pub });
+  const composition = await selectComposition({ serveUrl, id: "WhiteboardPlanVideo", inputProps: spec });
+  mkdirSync(dirname(outPath), { recursive: true });
+  const browserExecutable = opts.browserExecutable || process.env.REMOTION_BROWSER_EXECUTABLE || undefined;
+  const RENDER_TIMEOUT_MS = Number(process.env.WB_RENDER_TIMEOUT_MS) || 360000;
+  const render = renderMedia({
+    serveUrl, composition, codec: "h264", crf: tier.crf,
+    outputLocation: outPath, inputProps: spec,
+    concurrency: Number(process.env.WB_RENDER_CONCURRENCY) || 2,
+    timeoutInMilliseconds: 60000,
+    ...(browserExecutable ? { browserExecutable } : {}),
+  });
+  let timer;
+  const guard = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`whiteboard plan render exceeded ${RENDER_TIMEOUT_MS}ms`)), RENDER_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([render, guard]);
+  } finally {
+    clearTimeout(timer);
+  }
+  const duration = built.reduce((a, s) => a + s.plan.durationInFrames / fps, 0);
   return { duration };
 }

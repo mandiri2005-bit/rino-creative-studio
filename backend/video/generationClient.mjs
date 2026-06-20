@@ -131,6 +131,7 @@ export function syntheticGenerationClient(opts = {}) {
     async refundVideoJob() { return { skipped: "synthetic" }; },
     async meterUsage() { return { credits: 0, skipped: "synthetic" }; },
     async generateDiagramGraph() { return null; },  // → buildDiagramSvg uses its example graph
+    async generateWhiteboardPlan() { return null; }, // → scene degrades to handwriting in synthetic mode
   };
 }
 
@@ -377,6 +378,22 @@ export function httpGenerationClient(opts = {}) {
       });
       if (!r.ok) throw new Error(`diagram ${r.status}`);
       return (await r.json()).graph;
+    },
+    // Whiteboard plan-engine: narration scene → whiteboard_visual_plan JSON (Golpo-like),
+    // via Python /video/whiteboard-plan (same LLM routing as narration). Returns the plan
+    // object or null (Node then validates/resolves; null → handwriting fallback for the scene).
+    async generateWhiteboardPlan(ctx, { narration, duration, genre, model, language, sceneId } = {}) {
+      const r = await fetch(`${PYTHON_API}/video/whiteboard-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
+        body: JSON.stringify({
+          narration: narration || "", duration: Number(duration) || 8,
+          genre: genre || "lineart", model: model || "deepseek-chat",
+          language: language || "", scene_id: sceneId || "scene",
+        }),
+      });
+      if (!r.ok) throw new Error(`whiteboard-plan ${r.status}`);
+      return (await r.json()).plan;
     },
   };
 }

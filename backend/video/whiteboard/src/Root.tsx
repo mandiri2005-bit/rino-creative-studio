@@ -4,6 +4,7 @@ import { Whiteboard } from "./Whiteboard";
 import { computeMeta } from "./timing";
 import type { Spec } from "./types";
 import { WhiteboardPlanScene, type ResolvedPlan } from "./WhiteboardPlan";
+import { WhiteboardPlanVideo, planVideoFrames, type PlanVideoSpec } from "./WhiteboardPlanVideo";
 
 // Plan-driven composition (Golpo-like). Props = a RESOLVED plan from
 // backend/video/whiteboard/plan/resolvePlan.mjs; metadata come from the plan.
@@ -11,6 +12,7 @@ const emptyPlan: ResolvedPlan = {
   fps: 30, durationInFrames: 30, canvas: { width: 1920, height: 1080 },
   elements: [], overlays: [], camera: [],
 };
+const emptyVideo: PlanVideoSpec = { fps: 30, width: 1920, height: 1080, scenes: [] };
 
 // Default props so Remotion Studio opens with something playable. The real props
 // come from input/*.json at render time (--props=... or scripts/render.mjs).
@@ -68,6 +70,24 @@ export const RemotionRoot: React.FC = () => {
             fps: plan.fps || 30,
             width: plan.canvas?.width || 1920,
             height: plan.canvas?.height || 1080,
+          };
+        }}
+      />
+      <Composition
+        id="WhiteboardPlanVideo"
+        component={WhiteboardPlanVideo}
+        durationInFrames={30}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={emptyVideo}
+        calculateMetadata={({ props }) => {
+          const spec = props as PlanVideoSpec;
+          return {
+            durationInFrames: planVideoFrames(spec),
+            fps: spec.fps || 30,
+            width: spec.width || 1920,
+            height: spec.height || 1080,
           };
         }}
       />

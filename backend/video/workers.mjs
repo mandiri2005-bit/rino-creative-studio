@@ -220,6 +220,29 @@ export async function visualProcessor(job, deps) {
       // via /video/meter; lineart/diagram carry no Recraft meter. A failed asset
       // degrades the scene to handwriting (never kills the video).
       const genre = meta.whiteboardGenre || "lineart";
+      // Plan-engine (Golpo-like): generate a per-scene whiteboard_visual_plan via the live
+      // Visual Director (Python LLM route), validate it, and store it for the render phase.
+      // Invalid/failed plan degrades the scene to handwriting (never kills the video).
+      if ((process.env.WB_ENGINE || "legacy") === "plan") {
+        try {
+          const { validateWhiteboardPlan } = await import("./whiteboard/plan/validate.mjs");
+          const plan = await deps.generationClient?.generateWhiteboardPlan?.(
+            { jobId, tenantId: meta.tenantId, userId: meta.userId },
+            { narration: scene.text || scene.visualPrompt || "", duration: Number(scene.estSeconds) || 8,
+              genre, model: meta.genModel, language: meta.language, sceneId: `s${sceneIndex}` });
+          const v = plan ? validateWhiteboardPlan(plan) : { ok: false, errors: ["no plan returned"] };
+          if (plan && v.ok) {
+            await deps.store.setSceneFields(jobId, sceneIndex, {
+              visualStatus: "done", visualKind: "whiteboard-plan", planJson: JSON.stringify(plan) });
+            return { sceneIndex, genre, engine: "plan" };
+          }
+          console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] invalid plan → handwriting: ${(v.errors || []).slice(0, 2).join("; ")}`);
+        } catch (e) {
+          console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] failed → handwriting: ${e.message}`);
+        }
+        await deps.store.setSceneFields(jobId, sceneIndex, { visualStatus: "fallback", visualKind: "whiteboard", visualError: "plan unavailable" });
+        return { sceneIndex, fellBack: true };
+      }
       const tmpDir = jobTmpDir(jobId);
       await mkdir(tmpDir, { recursive: true });
       try {
@@ -343,6 +366,8 @@ export async function stitchProcessor(job, deps) {
         ...(meta.visualMode === "whiteboard" && (s.maskKey || s.maskPath)
           ? { maskPath: await resolveLocal(jobId, tmpDir, s.maskKey, s.maskPath, `mask_${i}.svg`) }
           : {}),
+        // whiteboard plan-engine: per-scene visual plan (built in the visual phase)
+        ...(s.planJson ? { planJson: s.planJson } : {}),
         audioPath: await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`),
       });
     }
@@ -368,8 +393,14 @@ export async function stitchProcessor(job, deps) {
       // Opt B: render the WHOLE video with the Remotion whiteboard engine instead of
       // the ffmpeg stitch. render.mjs is imported LAZILY here (worker-only) so the API
       // process never loads @remotion/Chromium at startup.
-      const { renderWhiteboard } = await import("./whiteboard/render.mjs");
-      result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });
+      if ((process.env.WB_ENGINE || "legacy") === "plan") {
+        // Golpo-like plan engine: per-scene visual_plan → resolve → multi-scene Remotion render
+        const { renderWhiteboardPlan } = await import("./whiteboard/render.mjs");
+        result = await renderWhiteboardPlan(scenes, { ...meta, jobId }, outPath, { tmpDir });
+      } else {
+        const { renderWhiteboard } = await import("./whiteboard/render.mjs");
+        result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });
+      }
       // flat render fee — 3 credits/sec of output video (post-hoc, tagged for refund)
       await deps.generationClient?.meterUsage?.(
         { jobId, tenantId: meta.tenantId, userId: meta.userId },

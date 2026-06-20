@@ -7020,6 +7020,112 @@ async def video_diagram(req: VideoDiagramReq,
     return {"graph": g}
 
 
+class VideoWhiteboardPlanReq(BaseModel):
+    narration: str
+    duration: float = 8.0
+    genre: str = "lineart"          # lineart | color | diagram | detail (style hint)
+    model: str = "deepseek-chat"    # the user's Model Narasi (gen_model)
+    language: str = ""
+    scene_id: str = "scene"
+
+
+# Allowed templates → their semantic slots (mirrors plan/templates.mjs + slots.mjs).
+_WB_TEMPLATE_SLOTS = {
+    "single_concept": ["center", "top_center", "bottom_center", "left_note", "right_note"],
+    "problem_solution": ["left_center", "left_bottom", "center_arrow", "right_center", "right_top", "right_bottom"],
+    "process_flow": ["step_1", "step_2", "step_3", "step_4", "connector_1", "connector_2", "connector_3"],
+    "comparison": ["left_title", "right_title", "left_1", "left_2", "left_3", "right_1", "right_2", "right_3"],
+    "timeline": ["title", "milestone_1", "milestone_2", "milestone_3", "milestone_4", "milestone_5"],
+}
+_WB_ACTIONS = ["draw_icon", "write_text", "draw_arrow", "highlight_circle", "underline",
+               "pan_to", "zoom_to", "zoom_out", "fade_old", "erase", "transform"]
+
+
+@app.post("/video/whiteboard-plan")
+async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
+                                user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: narration scene → whiteboard_visual_plan JSON (the Golpo-like plan engine).
+    Uses the SAME LLM routing as narration (make_client(model)) + Vertex OAuth fallback — no
+    new key/route. NOT metered separately (the flat whiteboard render fee covers it). Node
+    validates/resolves the plan (plan/validate.mjs + resolvePlan.mjs). Internal-service only."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    narr = (req.narration or "").strip()
+    if not narr:
+        raise HTTPException(400, "narration required")
+    dur = max(1.0, float(req.duration or 8.0))
+    lang = (req.language or "").strip() or "the SAME language as the narration"
+    slots_guide = "; ".join(f"{t}: [{', '.join(s)}]" for t, s in _WB_TEMPLATE_SLOTS.items())
+    sys = (
+        "You are a senior whiteboard explainer visual director. Convert a narration scene into a "
+        "structured whiteboard visual plan. Return STRICT JSON only, this exact shape: "
+        '{"scene_id":"id","template":"<one allowed template>","duration":<seconds>,'
+        '"visual_metaphor":"short","style_pack":"clean_explainer",'
+        '"canvas":{"width":1920,"height":1080,"background":"whiteboard_clean"},'
+        '"elements":[{"id":"slug","type":"icon","asset_query":"plain words","slot":"<template slot>","label":"1-5 words optional"}],'
+        '"beats":[{"start":0.0,"end":1.8,"action":"draw_icon","target":"slug"}],'
+        '"camera":[{"start":0.0,"end":3.0,"type":"zoom_to","target":"slug or full_canvas","scale":1.12}]}'
+        f" Allowed templates and their ONLY legal slots: {slots_guide}. "
+        f"Allowed beat actions: {', '.join(_WB_ACTIONS)}. "
+        "Rules: pick ONE template; every element.slot MUST be one of that template's slots; "
+        "max 6 elements; labels 1-5 words; asset_query is plain descriptive words (no file names); "
+        "use progressive reveal (each element has a draw_icon/write_text beat); every beat target must "
+        "be an element id; no pixel coordinates; 2-3 camera moves max, scale 1.05-1.18 then zoom_out to "
+        f"full_canvas. The 'duration' field MUST equal {dur} and no beat may end after {dur}. "
+        f"GENRE/style: {req.genre} (lineart=simple line icons; color=richer; diagram=prefer process_flow/"
+        "timeline/comparison; detail=detailed scene). "
+        f"LANGUAGE: write visual_metaphor + every label entirely in {lang}; only ids stay ascii."
+    )
+
+    def _extract(text):
+        t = (text or "").strip()
+        if t.startswith("```"):
+            t = _re.sub(r"^```[a-zA-Z]*\n?", "", t)
+            t = _re.sub(r"\n?```\s*$", "", t).strip()
+        try:
+            return json.loads(t)
+        except Exception:
+            m = _re.search(r"\{.*\}", t, _re.S)
+            if not m:
+                raise
+            return json.loads(m.group(0))
+
+    plan = None
+    usr = f"Scene ID: {req.scene_id}\nNarration: {narr}\nDuration seconds: {dur}\nReturn strict JSON only."
+    try:
+        _client = make_client(req.model)
+        msgs = [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
+
+        def _call(use_fmt):
+            kw = dict(model=req.model, messages=msgs, temperature=0.4, max_tokens=1400)
+            if use_fmt:
+                kw["response_format"] = {"type": "json_object"}
+            return _client.chat.completions.create(**kw)
+        try:
+            resp = await asyncio.to_thread(lambda: _call(True))
+        except Exception as fmt_err:
+            print(f"[video/whiteboard-plan] json_object rejected ({fmt_err}); retrying plain")
+            resp = await asyncio.to_thread(lambda: _call(False))
+        cand = _extract(resp.choices[0].message.content)
+        if cand.get("template") and cand.get("elements"):
+            plan = cand
+    except Exception as e:
+        print(f"[video/whiteboard-plan] make_client path failed: {e}")
+    if plan is None:
+        try:
+            txt = await asyncio.to_thread(_vertex_text, sys, usr)
+            if txt:
+                cand = _extract(txt)
+                if cand.get("template") and cand.get("elements"):
+                    plan = cand
+        except Exception as e:
+            print(f"[video/whiteboard-plan] vertex-oauth fallback failed: {e}")
+    if plan is not None:
+        plan["duration"] = dur            # force VO-synced duration (never the LLM's guess)
+        plan.setdefault("scene_id", req.scene_id)
+    return {"plan": plan}                  # plan may be null → Node degrades that scene to handwriting
+
+
 class VideoRefundReq(BaseModel):
     job_id: str
 
