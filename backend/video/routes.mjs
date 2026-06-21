@@ -89,7 +89,7 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
     res.set("Cache-Control", "no-store");
     res.json({
       genModel: process.env.VI_GEN_MODEL || "deepseek-chat",
-      ttsModel: process.env.VI_TTS_MODEL || "tts-1",
+      ttsModel: process.env.VI_TTS_MODEL || "gemini-2.5-flash-preview-tts",   // default Gemini → UI shows the 30 gendered voices (Rino overrides via env)
     });
   });
 
