@@ -883,6 +883,52 @@ def make_client(model: str = "") -> OpenAI:
     return OpenAI(api_key=_req_key.get() or API_KEY, base_url=BASE_URL)
 
 
+# ── Narration LLM: hard stall timeout + fast fallback ────────────────────────
+# make_client() sets NO timeout, so the OpenAI SDK default (600s) applies. A single
+# upstream hang on the chosen narration model blocks the whole render with zero
+# feedback — observed in prod: a gemini-2.5-flash narration call stuck 233s while the
+# user saw a ~7-min "idle". For the SHORT, latency-sensitive narration call we instead
+# FAIL FAST: if the chosen model stalls past WB_NARRATION_STALL_SEC (default 30s) we
+# abort it (max_retries=0 → no silent 3× SDK retry) and run the narration ONCE more on a
+# fast, reliable model (claude-sonnet-4-6). Scoped to THIS call only — deliberately NOT a
+# global client timeout, which would wrongly kill legit long reasoning calls elsewhere.
+NARRATION_STALL_SEC = int(os.environ.get("WB_NARRATION_STALL_SEC") or 30)
+NARRATION_FALLBACK_MODEL = os.environ.get("WB_NARRATION_FALLBACK_MODEL") or "claude-sonnet-4-6"
+
+
+def _maxtok_for(model: str) -> int:
+    # per-model output ceiling, exactly like Studio chat (high cap costs nothing —
+    # billing is per real token; a tight cap truncated reasoning models to a 2s video).
+    return min(12000, MODEL_MAX_TOKENS.get(MODELS.get(model, model), DEFAULT_MAX_TOKENS))
+
+
+async def _chat_with_stall_fallback(model: str, messages: list, *, temperature: float = 0.8,
+                                    stall_sec: int = NARRATION_STALL_SEC,
+                                    fallback_model: str = NARRATION_FALLBACK_MODEL):
+    """Run a chat completion with a hard `stall_sec` timeout and ONE fast fallback.
+    Returns (resp, used_model). used_model MAY differ from `model` → bill THAT, not the
+    requested model. Raises only if both the primary and the fallback fail/return empty."""
+    def _call(m, timeout, retries):
+        client = make_client(m).with_options(timeout=float(timeout), max_retries=retries)
+        return client.chat.completions.create(
+            model=m, messages=messages, temperature=temperature, max_tokens=_maxtok_for(m))
+    try:
+        resp = await asyncio.to_thread(_call, model, stall_sec, 0)
+        if (resp.choices[0].message.content or "").strip():
+            return resp, model
+        print(f"[chat-fallback] {model} returned empty → fallback {fallback_model}")
+    except Exception as e:
+        if model == fallback_model:
+            raise
+        print(f"[chat-fallback] {model} stalled/failed after {stall_sec}s "
+              f"({type(e).__name__}: {e}) → fallback {fallback_model}")
+    if model == fallback_model:
+        raise HTTPException(502, f"{model} returned empty")
+    # Fallback: sonnet is fast + reliable; give it a sane ceiling (3× the stall) + 1 retry.
+    resp = await asyncio.to_thread(_call, fallback_model, max(stall_sec * 3, 90), 1)
+    return resp, fallback_model
+
+
 def _byok_active() -> bool:
     """Step 4 BYOK: True when the caller supplied their OWN upstream key via the
     X-LaoZhang-API-Key header (key_override_middleware put it in _req_key). They
@@ -6759,16 +6805,12 @@ async def video_segment(req: VideoSegmentReq,
             await metering.gate(user.tenant_id, "chat", req.gen_model,
                                 {"tokens_in": len(prompt) // 4, "tokens_out": params.target_words * 2}, byok=_byok)
         try:
-            _client = make_client(req.gen_model)
-            # max_tokens: the per-model ceiling, exactly like Studio chat
-            # (min(12000, MODEL_MAX_TOKENS[model])). Reasoning models (Gemini 2.5/3,
-            # DeepSeek R1, Claude thinking) spend output tokens THINKING before the
-            # narration; a tight cap truncated the text to a few words → a 2-second
-            # video. Billing is per real token used, so a high cap costs nothing extra.
-            _maxtok = min(12000, MODEL_MAX_TOKENS.get(MODELS.get(req.gen_model, req.gen_model), DEFAULT_MAX_TOKENS))
-            resp = await asyncio.to_thread(lambda: _client.chat.completions.create(
-                model=req.gen_model, messages=[{"role": "user", "content": prompt}],
-                temperature=0.8, max_tokens=_maxtok))
+            # 30s stall guard + fast fallback to claude-sonnet-4-6 (see _chat_with_stall_fallback).
+            # A single upstream hang on the chosen model used to block the whole render with no
+            # feedback ("idle 7 min"); now it fails fast and the narration still gets produced.
+            # _used_model may differ from req.gen_model → bill THAT below.
+            resp, _used_model = await _chat_with_stall_fallback(
+                req.gen_model, [{"role": "user", "content": prompt}], temperature=0.8)
             narration = (resp.choices[0].message.content or "").strip()
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"narration generation failed: {e}")
@@ -6780,7 +6822,7 @@ async def video_segment(req: VideoSegmentReq,
                 _u = getattr(resp, "usage", None)
                 tin = getattr(_u, "prompt_tokens", None) or len(prompt) // 4
                 tout = getattr(_u, "completion_tokens", None) or len(narration) // 4
-                await metering.debit(user.tenant_id, _uid, "chat", req.gen_model,
+                await metering.debit(user.tenant_id, _uid, "chat", _used_model,
                                      {"tokens_in": tin, "tokens_out": tout}, byok=_byok, log=True)
             except Exception as _e:
                 print(f"[video/segment] narration metering debit failed (non-fatal): {_e}")
