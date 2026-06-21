@@ -70,6 +70,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass, field
@@ -84,14 +85,22 @@ WORDS_PER_MINUTE = 130          # documentary narration pace (English baseline; 
 # spoken rate per language → the rendered video lands near the requested duration. (Rino)
 WPM_BY_LANG = {
     "en": 130,
-    "id": 105, "ms": 105,                                      # Indonesian / Malay (Rino: → 105)
-    "jv": 105, "su": 105, "min": 105, "ban": 105, "bug": 105,  # Javanese/Sundanese/Minang/Balinese/Buginese
+    "id": 125, "ms": 125,                                      # Indonesian / Malay — recalibrated to Gemini TTS (measured ~116-124 wpm; 105 was for the OLD slow OpenAI TTS and made 3-min videos land ~2:30)
+    "jv": 105, "su": 105, "min": 105, "ban": 105, "bug": 105,  # Javanese/Sundanese/Minang/Balinese/Buginese (Gemini Javanese measured ~92 → 105 stays slightly long, safe)
     "btk": 105, "ace": 105, "mad": 105,                        # Batak/Acehnese/Madurese (Suara Lokal moat)
 }
 def wpm_for(language: str | None) -> int:
-    """Words-per-minute target for the given output language; defaults to the Indonesian pace
-    (the product is Indonesian-first), English keeps the faster 130."""
-    return WPM_BY_LANG.get((language or "id").strip().lower(), 105)
+    """Words-per-minute TARGET for the given output language → drives the word budget so the
+    rendered video (length = sum of actual TTS audio) lands near the requested duration.
+    Default 120 covers custom/free-text languages (mostly Indonesian-register). English keeps 130.
+    `VI_WPM_SCALE` (Railway, default 1.0) is Rino's live knob: >1 = more words = LONGER video,
+    <1 = shorter — no redeploy needed to fine-tune duration calibration as TTS voices change."""
+    base = WPM_BY_LANG.get((language or "id").strip().lower(), 120)
+    try:
+        scale = float(os.environ.get("VI_WPM_SCALE", "1") or "1")
+    except (TypeError, ValueError):
+        scale = 1.0
+    return max(40, round(base * scale))
 WORDS_PER_SCENE = 45            # scene_count = round(target_words / WORDS_PER_SCENE)
 IMAGE_SCENE_SECONDS = 8         # full_images pacing: ~one fresh image every 8s
 MIN_SCENES = 2                  # a video is at least two scenes (so there's a cut)
