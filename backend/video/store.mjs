@@ -82,7 +82,7 @@ function _planSlug({ genre, duration, narration }) {
   const d = Math.round(Number(duration) || 0);
   return `${g}:${d}:${(h >>> 0).toString(36)}`;
 }
-export function planCacheKey(parts) { return `wbplan:v1:${_planSlug(parts)}`; }
+export function planCacheKey(parts) { return `wbplan:v2:${_planSlug(parts)}`; }
 export async function getCachedPlan(parts) {
   try { const v = await r().get(planCacheKey(parts)); return v ? JSON.parse(v) : null; }
   catch { return null; }

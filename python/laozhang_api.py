@@ -6723,7 +6723,7 @@ async def video_segment(req: VideoSegmentReq,
                            req.tier, req.gen_model, req.language, req.visual_mode, req.clip_ratio,
                            req.visual_style, req.nusantara_corpus], sort_keys=True)
         _tenant = str(getattr(user, "tenant_id", "anon")) if user else "anon"
-        _seg_key = f"vseg:v1:{_tenant}:{hashlib.sha256(_sig.encode()).hexdigest()[:24]}"
+        _seg_key = f"vseg:v2:{_tenant}:{hashlib.sha256(_sig.encode()).hexdigest()[:24]}"
         try:
             _cli = rc.client()
             if _cli:
