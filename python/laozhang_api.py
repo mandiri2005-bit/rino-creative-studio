@@ -6830,17 +6830,12 @@ async def video_segment(req: VideoSegmentReq,
         if await _req_canceled(request):   # user pressed Batalkan during "Menulis narasi" → don't charge
             print("[video/segment] canceled after narration → skip debit + brief/segment/decide (no charge)")
             return {"canceled": True, "scenes": []}
-        if user:
-            try:
-                _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
-                _u = getattr(resp, "usage", None)
-                tin = getattr(_u, "prompt_tokens", None) or len(prompt) // 4
-                tout = getattr(_u, "completion_tokens", None) or len(narration) // 4
-                await metering.debit(user.tenant_id, _uid, "chat", _used_model,
-                                     {"tokens_in": tin, "tokens_out": tout}, byok=_byok, log=True)
-            except Exception as _e:
-                print(f"[video/segment] narration metering debit failed (non-fatal): {_e}")
-        _brief = await _video_visual_brief(narration, req.gen_model, user, _byok)
+        # GATE-ONLY segment (Rino): narration/brief/decide are NOT debited here, so a cancel during
+        # "Menulis narasi" NEVER bills the user (Railway's proxy doesn't propagate the client
+        # disconnect → is_disconnected can't be relied on). Balance was already gated above; the tiny
+        # narration/brief/decide LLM cost is absorbed into the video price (render fee + per-scene
+        # markup), which only applies once the user COMMITS at /assemble. (user=None → skip metering.)
+        _brief = await _video_visual_brief(narration, req.gen_model, None, _byok)
         if req.nusantara_corpus:
             try: _brief, _, _ = _corpus_enhance(_brief)
             except Exception: pass
@@ -6861,7 +6856,7 @@ async def video_segment(req: VideoSegmentReq,
         if await _req_canceled(request):   # canceled before the (metered) brief → no charge
             print("[video/segment] canceled (mode B) → skip brief/segment/decide (no charge)")
             return {"canceled": True, "scenes": []}
-        _brief = await _video_visual_brief(req.text, req.gen_model, user, _byok_active())
+        _brief = await _video_visual_brief(req.text, req.gen_model, None, _byok_active())   # gate-only segment → no charge until /assemble
         if req.nusantara_corpus:
             try: _brief, _, _ = _corpus_enhance(_brief)
             except Exception: pass
@@ -6876,7 +6871,7 @@ async def video_segment(req: VideoSegmentReq,
         print("[video/segment] canceled before decide → skip decide (no charge)")
         return {"canceled": True, "scenes": []}
     if req.visual_mode:   # one-shot: segment + decide the visual treatment
-        out["scenes"] = await _decide(out["scenes"], req.visual_mode, req.clip_model, req.clip_ratio, user=user)
+        out["scenes"] = await _decide(out["scenes"], req.visual_mode, req.clip_model, req.clip_ratio, user=None)   # gate-only segment → no charge until /assemble
         out["visual_mode"] = req.visual_mode
     if _seg_key:   # store for the next identical request (segment + brief + decide all reused)
         try:

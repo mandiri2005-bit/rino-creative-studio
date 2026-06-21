@@ -748,8 +748,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
   function renderStage(s){
     const msg = s.status==="dispatching" ? "Merangkai tiap scene…"
       : (state.mode==="A" ? "Menulis narasi & memotong scene…" : "Memotong scene…");
-    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>'+msg+'</h3><p>Sebentar, mesin paralel kami sedang bekerja.</p>'+
-      '<div class="prog-actions" style="margin-top:18px"><button class="cancel-btn" onclick="window.__cancelStage()">Batalkan</button></div></div>';
+    // Cancel ONLY during the narasi/segment phase (before a job exists + before any charge). Once
+    // "merangkai" starts (dispatching/running/stitching) the work is committed → NO cancel. (Rino)
+    const _cx = s.status==="segmenting" ? '<div class="prog-actions" style="margin-top:18px"><button class="cancel-btn" onclick="window.__cancelStage()">Batalkan</button></div>' : '';
+    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>'+msg+'</h3><p>Sebentar, mesin paralel kami sedang bekerja.</p>'+_cx+'</div>';
   }
   function badge(status){
     const map={running:["run","Berjalan"],stitching:["run","Merangkai"],done:["done","Selesai"],failed:["fail","Gagal"],queued:["run","Antre"]};
@@ -791,8 +793,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       const mmss=s=>Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
       const eta=rp>3?Math.round(el/rp*(100-rp)):0;
       stage.innerHTML=head+'<div class="bar-wrap"><div class="bar"><i style="width:'+(rp||4)+'%;transition:width .5s"></i></div>'+
-        '<div class="bar-meta"><span>Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):'')+'</span><span>'+(rp?rp+'%':'…')+'</span></div></div>'+
-        '<div class="prog-actions"><button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button></div>';
+        '<div class="bar-meta"><span>Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):'')+'</span><span>'+(rp?rp+'%':'…')+'</span></div></div>';
       return;
     }
     // in progress
@@ -810,7 +811,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
           '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+(s.text||"").slice(0,90)+'</div></div>';
       }).join("")+'</div>';
     }
-    stage.innerHTML=head+body+'<div class="prog-actions"><button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button></div>';
+    stage.innerHTML=head+body;   // merangkai phase = committed → no cancel button (Rino)
   }
 
   // ── handoff from Studio (Flow Storyboard / Script→TTS "Send to Video Instant") ──
