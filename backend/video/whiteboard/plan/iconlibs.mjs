@@ -64,9 +64,10 @@ const QUERY_ALIASES = {
   gerobak: "cart", barrow: "cart",
   // food / soup (a bakso/broth scene) — these miss; a bowl reads correctly and is free.
   broth: "bowl", soup: "bowl", stock: "bowl", stew: "bowl", "noodle soup": "bowl",
-  // NOTE: "skewer" (tusuk sate) is intentionally NOT aliased to a free icon. Rino already paid for a
-  // tailored Recraft asset (cached at whiteboard/assets/v1/icon-color/skewer.json), so it must stay on
-  // the Recraft path → the worker reuses the cached asset (no new credit, better than a generic kebab).
+  // skewered street food (sate/tusuk sate). The worker is CACHE-FIRST, so a previously-paid Recraft
+  // "skewer" asset is reused BEFORE this alias is consulted; kebab is only the FREE FALLBACK when no
+  // cached asset exists — so we never pay Recraft again for sate when a free skewer icon will do.
+  skewer: "kebab", satay: "kebab", sate: "kebab", "food skewer": "kebab", "satay skewer": "kebab",
 };
 const aliasQuery = (q) => QUERY_ALIASES[String(q || "").trim().toLowerCase()] || q;
 

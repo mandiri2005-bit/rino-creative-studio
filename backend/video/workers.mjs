@@ -309,16 +309,17 @@ export async function visualProcessor(job, deps) {
                 for (const el of plan.elements || []) {
                   const q = el.asset_query || el.id;
                   const labelQ = el.label ? String(el.label).trim() : "";
-                  // Recraft only when NEITHER the asset_query NOR the label resolves to a free icon —
-                  // mirrors the resolve ladder (asset_query → label → Recraft → generic) so we don't pay
-                  // for Recraft when the label backup would have found a perfectly good icon. (Rino)
-                  if (coveredByLibrary(q) || (labelQ && coveredByLibrary(labelQ))) continue;
                   try {
-                    const hit = await deps.store.getCachedAsset?.(kind, q); // cross-job reuse
+                    // LADDER (Rino): 1) REUSE a previously-PAID Recraft asset for this query (the corpus)
+                    // FIRST — a cached recraft (e.g. tusuk sate "skewer") must WIN over a generic free icon;
+                    // 2) else a FREE lib icon (asset_query OR label); 3) else generate a new Recraft. The
+                    // free icon is only a FALLBACK when nothing is cached — it never overrides a paid asset.
+                    const hit = await deps.store.getCachedAsset?.(kind, q); // reuse the paid asset (no meter)
                     if (hit && hit.strokes) {
                       el.viewBox = hit.viewBox; el.strokes = hit.strokes; if (hit.shapes) el.shapes = hit.shapes;
-                      el.assetSource = "recraft-cache"; el.license = hit.license || "recraft-v3-vector:provider-terms"; continue; // no Recraft, no meter
+                      el.assetSource = "recraft-cache"; el.license = hit.license || "recraft-v3-vector:provider-terms"; continue;
                     }
+                    if (coveredByLibrary(q) || (labelQ && coveredByLibrary(labelQ))) continue; // free lib fallback
                     // GATE before the paid Recraft gen → at balance 0 skip it (free fallback) instead
                     // of debiting into the negative (same guard as flux/TTS).
                     if (!(await deps.generationClient?.gateUsage?.({ jobId, tenantId: meta.tenantId, userId: meta.userId }, "image", "recraft-v3-vector", { count: 1 }))) {
