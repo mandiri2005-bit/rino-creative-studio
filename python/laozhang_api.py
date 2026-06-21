@@ -6904,6 +6904,15 @@ def _is_gemini_tts(model: str) -> bool:
     return m.startswith("gemini") and "tts" in m
 
 
+# Gemini TTS fallback CHAIN (Rino): when a Gemini TTS voice is chosen, a failed scene cycles through
+# THESE Gemini models only — all via the SAME Vertex OAuth + the SAME Gemini voices (Zephyr, etc.), so
+# the voice stays valid. Do NOT fall back to OpenAI tts-1: it rejects Gemini voices with 400 → silent
+# scenes (the bug). Env WB_GEMINI_TTS_CHAIN overrides (comma-separated).
+GEMINI_TTS_CHAIN = [m.strip() for m in (os.environ.get("WB_GEMINI_TTS_CHAIN") or
+    "gemini-2.5-flash-preview-tts,gemini-3.1-flash-tts-preview,"
+    "gemini-2.5-pro-preview-tts,gemini-3.5-live-translate-preview").split(",") if m.strip()]
+
+
 def _gemini_tts_oauth(model: str, voice: str, text: str) -> bytes:
     """Gemini TTS via Vertex OAuth (this deployment uses Google OAuth, NOT a GEMINI_API_KEY).
     Returns WAV bytes. Raises on any failure so the caller can fall back to OpenAI tts-1."""
@@ -6966,17 +6975,23 @@ async def video_tts_scene(req: VideoTtsSceneReq,
         r.raise_for_status()
         return r.content
     if _is_gemini_tts(req.model):
-        # Gemini TTS → Vertex OAuth (this deployment authenticates via Google OAuth, not a
-        # GEMINI_API_KEY; the LaoZhang /v1/audio/speech route does NOT serve Gemini voices).
-        # Fall back to tts-1 only if Vertex genuinely fails, so a video is never left mute.
-        try:
-            content = await asyncio.to_thread(_gemini_tts_oauth, req.model, req.voice, synth)
-        except Exception as eg:
-            print(f"[video/tts/scene] gemini-oauth tts failed ({str(eg)[:200]}); falling back to tts-1")
+        # Gemini TTS → Vertex OAuth (Google OAuth, not a GEMINI_API_KEY). On failure, cycle the
+        # Gemini TTS model chain (same OAuth + same Gemini voices → voice always valid). NO tts-1
+        # fallback: it 400s on Gemini voices like "Zephyr" → silent scenes. (Rino's call.)
+        chain = [req.model] + [m for m in GEMINI_TTS_CHAIN if m != req.model]
+        content = None; _errs = []
+        for _m in chain:
             try:
-                content = await asyncio.to_thread(_speak, "tts-1")
-            except Exception as e2:
-                raise HTTPException(502, f"gemini tts + tts-1 fallback failed: {str(e2)[:200]}")
+                content = await asyncio.to_thread(_gemini_tts_oauth, _m, req.voice, synth)
+                if content:
+                    if _m != req.model:
+                        print(f"[video/tts/scene] gemini TTS fell back {req.model} → {_m} (voice {req.voice})")
+                    break
+            except Exception as eg:
+                _errs.append(f"{_m}: {str(eg)[:80]}")
+                continue
+        if not content:
+            raise HTTPException(502, f"gemini tts chain failed ({len(chain)} models): {' | '.join(_errs)[:240]}")
     else:
         try:
             content = await asyncio.to_thread(_speak, req.model)
