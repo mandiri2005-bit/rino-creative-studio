@@ -234,6 +234,12 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       // the pen TRACES its ink outline then its colour fills. The pen rides the actual line being
       // drawn (pointOnPath), so it follows the artwork like a hand — NOT a mechanical sweep.
       const SPAN = 0.92, N = units.length;
+      // DETAIL draw pacing: trace the ink line FASTER so it's drawn BEFORE the colour sweep covers it
+      // (Rino: "masih drawing sudah ketutup sweeping color fill"). WB_DETAIL_DRAW_SPEED=1 restores the
+      // EXACT previous timing; default 2 = trace 2× faster + the top→bottom colour band lags 2× more.
+      const DRAW_SPEED = Math.max(1, Number(process.env.WB_DETAIL_DRAW_SPEED) || 2);
+      const TRACE_WIN = 0.5 / DRAW_SPEED;                   // outline traced within this fraction of each form's window
+      const BAND_LAG = Math.min(0.25, 0.15 * DRAW_SPEED);   // colour catch-up band trails the pen by this much
       const inkW = Math.max(1.0, mvw / 700);   // thinner pen overlay (was /340≈3px → ~1.5px): the
       // overlay re-strokes the raster's own outlines, so a fat one made lines look doubled/too thick
       // each form's draw TIME ∝ its outline length → big forms take longer (natural) + EVEN area
@@ -248,13 +254,13 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       out.push(`<mask id="${id}" maskUnits="userSpaceOnUse">`);
       // catch-up band trails the draw → fills LIGHT regions trace misses (pale koala), so nothing
       // stays empty; the per-form fills give the leading edge near the pen.
-      const catchH = Math.max(0, clamp(p / SPAN, 0, 1) - 0.15) * mvh;
+      const catchH = Math.max(0, clamp(p / SPAN, 0, 1) - BAND_LAG) * mvh;
       if (catchH > 0) out.push(`<rect x="${mvx}" y="${mvy}" width="${mvw}" height="${catchH.toFixed(1)}" fill="white"/>`);
       units.forEach((u, i) => { const op = clamp((spOf(i) - 0.4) / 0.6, 0, 1); if (op > 0) out.push(`<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`); });
       out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})"/>`);
       units.forEach((u, i) => {
         const sp = spOf(i); if (sp <= 0) return;
-        const traceP = clamp(sp / 0.5, 0, 1);
+        const traceP = clamp(sp / TRACE_WIN, 0, 1);
         const L = pathLen(u.d);
         out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.55"/>`);
       });
@@ -263,7 +269,7 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       if (p > 0.005 && p < 0.985) {
         let act = -1;
         for (let i = 0; i < N; i++) { const sp = spOf(i); if (sp > 0.01 && sp < 0.99) act = i; }
-        if (act >= 0) { const u = units[act]; const pt = pointOnPath(u.d, clamp(spOf(act) / 0.5, 0, 1)) || { x: u.x, y: u.y }; hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink }); }
+        if (act >= 0) { const u = units[act]; const pt = pointOnPath(u.d, clamp(spOf(act) / TRACE_WIN, 0, 1)) || { x: u.x, y: u.y }; hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink }); }
       }
     } else {
       // color genre: soft colour chip behind the icon (icon stroke is the same colour)
