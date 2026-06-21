@@ -664,10 +664,11 @@ select option{ background:#111019!important; color:var(--t)!important; }
       if(wc>cap) return showErr(`Narasi kepanjangan: ~${wc} kata (≈ ${Math.round(wc/wpm)} menit). Maksimal 10 menit (~${cap} kata) — kurangi sekitar ${wc-cap} kata dulu.`);
     }
     setBusy(true);
+    state.abort=new AbortController();   // so "Batalkan" can abort the narasi/segment phase (before a job exists)
     renderStage({status:"segmenting"});
     try{
       // 1) segment (+ generate narration for Mode A) + decide visual treatment
-      const seg=await api("/api/video/segment",{method:"POST",body:JSON.stringify({
+      const seg=await api("/api/video/segment",{method:"POST",signal:state.abort.signal,body:JSON.stringify({
         mode:state.mode, topic, text:narration, minutes:state.minutes, style:state.style, tier:state.tier,
         clip_model:state.clipModel, visual_mode:state.whiteboardGenre?"full_images":state.visualMode, clip_ratio:0.3,
         visual_style:state.whiteboardGenre?"":state.visualStyle, language:state.language, gen_model:state.genModel,
@@ -679,7 +680,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       state.brief=seg.brief||"";   // art-direction brief → reference anchor (when refMode)
       renderStage({status:"dispatching",scenes});
       // 2) assemble
-      const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
+      const asm=await api("/api/video/assemble",{method:"POST",signal:state.abort.signal,body:JSON.stringify({
         scenes, tier:state.tier, clipModel:state.clipModel,
         visualMode:state.whiteboardGenre?"whiteboard":state.visualMode, whiteboardGenre:state.whiteboardGenre||undefined,
         captions:state.captions, genModel:state.genModel,
@@ -690,6 +691,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       viRemember(asm.jobId,{scenes:asm.sceneCount,title:(state.narrationText||"").slice(0,60)});
       pollJob(asm);
     }catch(e){
+      if(e&&(e.name==="AbortError"||e.code===20)) return; // user pressed Batalkan → __cancelStage already reset the UI
       setBusy(false);
       if(e.status===402) showErr("Kredit tidak cukup ("+(e.data?.detail?.needed ?? e.data?.creditsNeeded ?? "?")+" diperlukan). Top up dulu di Studio.");
       else showErr(e.message||"Gagal membuat video.");
@@ -727,6 +729,9 @@ select option{ background:#111019!important; color:var(--t)!important; }
     $("#stage").innerHTML='<div class="stage-empty"><div class="big">⏹️</div><h3>Dibatalkan</h3><p>Job dihentikan. Kredit yang belum terpakai dikembalikan.</p></div>';
   }
   window.__cancelVideo=cancelJob;
+  // cancel the PRE-job phase (narasi/segment, before a jobId exists): abort the in-flight fetch + reset.
+  // (The narration LLM may still finish server-side — a small charge — but no render job is created.)
+  window.__cancelStage=()=>{ try{ state.abort&&state.abort.abort(); }catch(e){} clearInterval(state.poll); setBusy(false); window.__viNew(); };
   // download the MP4 as a blob so it actually downloads (the cross-origin signed
   // R2 URL ignores <a download> and just plays in the tab otherwise).
   window.__dlVideo=async()=>{
@@ -743,7 +748,8 @@ select option{ background:#111019!important; color:var(--t)!important; }
   function renderStage(s){
     const msg = s.status==="dispatching" ? "Merangkai tiap scene…"
       : (state.mode==="A" ? "Menulis narasi & memotong scene…" : "Memotong scene…");
-    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>'+msg+'</h3><p>Sebentar, mesin paralel kami sedang bekerja.</p></div>';
+    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>'+msg+'</h3><p>Sebentar, mesin paralel kami sedang bekerja.</p>'+
+      '<div class="prog-actions" style="margin-top:18px"><button class="cancel-btn" onclick="window.__cancelStage()">Batalkan</button></div></div>';
   }
   function badge(status){
     const map={running:["run","Berjalan"],stitching:["run","Merangkai"],done:["done","Selesai"],failed:["fail","Gagal"],queued:["run","Antre"]};
