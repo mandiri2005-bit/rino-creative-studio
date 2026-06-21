@@ -33,3 +33,6 @@ __pycache__/
 # eval run artifacts — keep the dir, ignore its contents
 eval/results/*
 !eval/results/.gitkeep
+
+# local 16:9 safety backups before 9:16 work (never push)
+_wb_backup/

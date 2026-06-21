@@ -415,7 +415,9 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
         if (sc.planJson) {
           const raw = typeof sc.planJson === "string" ? JSON.parse(sc.planJson) : sc.planJson;
           const mode = GENRE_MODE[meta.whiteboardGenre] || "icons";
-          plan = resolvePlan(rescaleTiming({ ...raw, mode }, sceneDur), { assetsDir, fps, strict: false });
+          // pass the REAL canvas (incl. portrait 9:16) INTO resolvePlan so its layout is aspect-aware
+          // (the VD plan hardcodes canvas 1920x1080; for 16:9 this is identical → no behaviour change).
+          plan = resolvePlan(rescaleTiming({ ...raw, mode, canvas: { width, height } }, sceneDur), { assetsDir, fps, strict: false });
           plan.canvas = { width, height };
           const roughMode = (process.env.WB_STYLE || "").toLowerCase() === "rough" || raw.style_pass?.mode === "rough";
           if (roughMode && plan.mode === "diagram" && _roughen) {

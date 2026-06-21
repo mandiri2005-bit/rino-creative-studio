@@ -57,18 +57,35 @@ export function slotBox(slot) {
 }
 
 // Attach a concrete `box` to every element from its semantic slot. TOLERANT: an unknown/missing
-// slot (the LLM picked a slot not in this template) falls back to an auto grid instead of THROWING
-// — one off-slot must never blank the whole scene (that was the "all text" bug, esp. color/icons).
-export function layoutWhiteboardPlan(plan) {
+// slot falls back to an auto grid instead of THROWING (one off-slot must never blank the scene).
+// ASPECT-AWARE (additive): the SLOT_MAP is LANDSCAPE 16:9 (x up to 1560) — those coords run OFF a
+// PORTRAIT canvas (9:16, height>width). For portrait we lay flow elements out as an even VERTICAL
+// stack sized to the canvas instead. The 16:9 branch below is byte-identical to before; the portrait
+// branch NEVER runs for landscape, so existing 16:9 output is unchanged. (cycle/funnel/branch diagram
+// layouts are canvas-relative in resolvePlan → they already adapt to any aspect.)
+export function layoutWhiteboardPlan(plan, canvas) {
   const els = plan.elements || [];
   const n = els.length;
-  let boxed = els.map((element, i) => ({ ...element, box: SLOT_MAP_16_9[element.slot] || fallbackBox(i, n) }));
+  const W = Math.round(canvas?.width) || 1920;
+  const H = Math.round(canvas?.height) || 1080;
+  if (H > W) {
+    // PORTRAIT (e.g. 9:16): vertical stack, never off-canvas / never overlapping. full_canvas (the
+    // detail-genre hero) fills the whole portrait canvas.
+    return { ...plan, elements: els.map((element, i) => ({
+      ...element,
+      box: element.slot === "full_canvas"
+        ? { x: Math.round(W / 2), y: Math.round(H / 2), w: W, h: H }
+        : portraitStackBox(i, n, W, H),
+    })) };
+  }
+  // ===== LANDSCAPE 16:9 — unchanged behaviour =====
+  let boxed = els.map((element, i) => ({ ...element, box: SLOT_MAP_16_9[element.slot] || fallbackBox(i, n, W, H) }));
   // Overprint guard (Rino: "label ditimpa"): the VD sometimes assigns the SAME slot to 2+ elements
   // (e.g. two "center" → both get SLOT_MAP.center) or a fallback lands on a slotted box, so icons AND
   // labels stack on the identical spot. If any two boxes clearly overlap, re-grid the WHOLE scene into
   // an even auto-grid so every element gets a distinct cell. Runs at resolve time → fixes cached plans.
   if (hasBoxCollision(boxed)) {
-    boxed = els.map((element, i) => ({ ...element, box: fallbackBox(i, n) }));
+    boxed = els.map((element, i) => ({ ...element, box: fallbackBox(i, n, W, H) }));
   }
   return { ...plan, elements: boxed };
 }
@@ -86,13 +103,23 @@ function hasBoxCollision(els) {
   return false;
 }
 
-// even centred grid across the 16:9 canvas for elements whose slot isn't in the map
-function fallbackBox(i, n) {
-  const W = 1920, H = 1080;
+// even centred grid for elements whose slot isn't in the map (canvas-aware; 16:9 defaults = old values)
+function fallbackBox(i, n, W = 1920, H = 1080) {
   const perRow = Math.min(Math.max(1, n), 4);
   const rows = Math.max(1, Math.ceil(n / perRow));
   const col = i % perRow, row = Math.floor(i / perRow);
   const cellW = W / (perRow + 1), cellH = H / (rows + 1);
   const sz = Math.round(Math.min(cellW, cellH) * 0.62);
   return { x: Math.round(cellW * (col + 1)), y: Math.round(cellH * (row + 1)), w: sz, h: sz };
+}
+
+// PORTRAIT vertical stack: n boxes centred horizontally, each in its row-cell with room BELOW for the
+// (wrapped) label → no overlap by construction, nothing off-canvas. boxW ~74% width, boxH ~half the cell.
+function portraitStackBox(i, n, W, H) {
+  const top = Math.round(H * 0.11), bottom = Math.round(H * 0.05);
+  const cell = (H - top - bottom) / Math.max(1, n);
+  const boxH = Math.round(Math.min(cell * 0.5, 360));
+  const boxW = Math.round(W * 0.74);
+  const cy = Math.round(top + cell * i + cell * 0.36);
+  return { x: Math.round(W / 2), y: cy, w: boxW, h: boxH };
 }

@@ -546,13 +546,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
     // #7 Quality pills: lock interaction + dim the non-selected ones.
     $("#tierPills").style.pointerEvents=wb?"none":"";
     $$("#tierPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
-    // #8 aspect: whiteboard is 16:9 only — force state + active pill + lock.
-    if(wb){
-      state.aspectRatio="16:9";
-      $$("#arPills .pill").forEach(p=>p.classList.toggle("on",p.dataset.ar==="16:9"));
-    }
-    $("#arPills").style.pointerEvents=wb?"none":"";
-    $$("#arPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
+    // #8 aspect: whiteboard now supports BOTH 16:9 and 9:16 (portrait) → no longer forced/locked.
+    // Leave the arPills fully interactive (default stays 16:9 via the markup; user can pick 9:16).
+    $("#arPills").style.pointerEvents="";
+    $$("#arPills .pill").forEach(p=>{ p.style.opacity=""; });
     if(wb){ const v="wb_"+state.whiteboardGenre; setSel("#style",v); setSel("#visualStyle",v); }
     // WB defines BOTH narration + visual → lock the dropdown the user did NOT pick WB from, so the
     // two can't conflict (Rino: WB on via Gaya narasi → Gaya visual disabled, and vice versa).

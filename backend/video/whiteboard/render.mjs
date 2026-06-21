@@ -183,7 +183,8 @@ export async function renderWhiteboardPlan(scenes, meta, outPath, opts = {}) {
       if (sc.planJson) {
         const raw = typeof sc.planJson === "string" ? JSON.parse(sc.planJson) : sc.planJson;
         const mode = GENRE_MODE[meta.whiteboardGenre] || "icons"; // genre → render mode
-        plan = resolvePlan(rescalePlanTiming({ ...raw, mode }, sceneDur), { assetsDir: PLAN_ASSETS, fps, strict: false });
+        // pass the REAL canvas (incl. portrait 9:16) INTO resolvePlan → aspect-aware layout (16:9 identical)
+        plan = resolvePlan(rescalePlanTiming({ ...raw, mode, canvas: { width, height } }, sceneDur), { assetsDir: PLAN_ASSETS, fps, strict: false });
         plan.canvas = { width, height };
         // §H rough hand-drawn pass — opt-in via WB_STYLE=rough or plan.style_pass.mode. _roughen is
         // loaded once at module top (guarded), so a missing roughjs dep just leaves the clean style.

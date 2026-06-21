@@ -26,7 +26,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   const canvas = { ...DEFAULT_CANVAS, ...(plan.canvas || {}) };
   const duration = Number(plan.duration) || 0;
   const durationInFrames = Math.max(1, secondsToFrames(duration, fps));
-  const laid = layoutWhiteboardPlan(plan); // attaches `box`; auto-grids unknown/missing slots (no throw)
+  const laid = layoutWhiteboardPlan(plan, canvas); // attaches `box`; aspect-aware (portrait = vertical stack); auto-grids unknown slots
   const mode = plan.mode || "icons";
   const direction = (plan.direction === "down" || plan.direction === "vertical") ? "down" : "right";
   // color genre: free libs are monochrome, so COLORIZE icons with the pack palette (cycle per
