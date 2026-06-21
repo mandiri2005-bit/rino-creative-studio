@@ -275,7 +275,9 @@ export async function visualProcessor(job, deps) {
                 const heroQuery = ([plan.visual_metaphor, narration].filter(Boolean).join(". ").trim().slice(0, 300))
                   || plan.elements?.[0]?.asset_query || "scene";
                 try {
-                  const hkey = `${aspect}:${heroQuery}`;
+                  // include provider + heroStyle in the key so switching the hero look (or model)
+                  // re-generates instead of reusing a cached hero of the OLD style.
+                  const hkey = `${aspect}:${process.env.WB_RASTER_PROVIDER || "flux"}:${meta.heroStyle || ""}:${heroQuery}`;
                   const hit = await deps.store.getCachedAsset?.("hero", hkey); // cross-job reuse
                   let raster, maskViewBox = "0 0 1024 1024", maskShapes = [], source = "flux-hero", lic = "flux-kontext-pro:provider-terms";
                   if (hit && hit.raster) {
