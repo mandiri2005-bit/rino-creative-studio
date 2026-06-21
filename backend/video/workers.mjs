@@ -269,15 +269,16 @@ export async function visualProcessor(job, deps) {
                 // LOCAL potrace line-trace reveal (free, no recraft). 1 flux image + 1 local trace per
                 // scene → ~5× cheaper than the old per-element raster-reveal, and the whole scene is a
                 // single realistic illustration that "draws" itself instead of scattered photos.
-                const { traceMaskB64 } = await import("./whiteboard/visuals.mjs");
+                const { traceMaskB64, vectorizeMaskB64 } = await import("./whiteboard/visuals.mjs");
                 const ctx = { jobId, tenantId: meta.tenantId, userId: meta.userId };
                 const aspect = meta.aspectRatio === "9:16" ? "9:16" : "16:9";
                 const heroQuery = ([plan.visual_metaphor, narration].filter(Boolean).join(". ").trim().slice(0, 300))
                   || plan.elements?.[0]?.asset_query || "scene";
                 try {
-                  // include provider + heroStyle in the key so switching the hero look (or model)
-                  // re-generates instead of reusing a cached hero of the OLD style.
-                  const hkey = `${aspect}:${process.env.WB_RASTER_PROVIDER || "flux"}:${meta.heroStyle || ""}:${heroQuery}`;
+                  // include provider + heroStyle + mask-mode in the key so switching the hero look,
+                  // model, OR mask (potrace↔recraft) re-generates instead of reusing a stale cached hero.
+                  const _maskMode = (process.env.WB_HERO_MASK || "potrace").toLowerCase();   // potrace (free) | recraft ($0.01, cleaner)
+                  const hkey = `${aspect}:${process.env.WB_RASTER_PROVIDER || "flux"}:${meta.heroStyle || ""}:${_maskMode}:${heroQuery}`;
                   const hit = await deps.store.getCachedAsset?.("hero", hkey); // cross-job reuse
                   let raster, maskViewBox = "0 0 1024 1024", maskShapes = [], source = "flux-hero", lic = "flux-kontext-pro:provider-terms";
                   if (hit && hit.raster) {
@@ -311,8 +312,22 @@ export async function visualProcessor(job, deps) {
                     if (b64) {
                       raster = "data:image/png;base64," + b64;
                       meters.push({ operation: "image", model: _heroModel, units: { count: 1 } });
-                      try { ({ maskViewBox, maskShapes } = await traceMaskB64(b64)); } // FREE local line-trace (no meter)
-                      catch (te) { console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero trace failed (${te.message}) → full-image reveal`); }
+                      // reveal mask: WB_HERO_MASK=recraft → Recraft vectorize ($0.01, cleaner segmented
+                      // shapes) on the hero PNG; else potrace (FREE). Recraft out-of-credits (breaker) or
+                      // any error → fall back to potrace so a render never fails on the mask.
+                      let _masked = false;
+                      if (_maskMode === "recraft") {
+                        try {
+                          const vm = await vectorizeMaskB64(b64);
+                          maskViewBox = vm.maskViewBox; maskShapes = vm.maskShapes;
+                          if (vm.meter) meters.push(vm.meter);   // recraft-vectorize $0.01
+                          _masked = true;
+                        } catch (ve) { console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft mask failed (${ve.message}) → potrace`); }
+                      }
+                      if (!_masked) {
+                        try { ({ maskViewBox, maskShapes } = await traceMaskB64(b64)); } // FREE local line-trace (no meter)
+                        catch (te) { console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero trace failed (${te.message}) → full-image reveal`); }
+                      }
                       await deps.store.setCachedAsset?.("hero", hkey,
                         { raster, maskViewBox, maskShapes, source, model: _heroModel, license: lic, createdAt: new Date().toISOString() });
                     }

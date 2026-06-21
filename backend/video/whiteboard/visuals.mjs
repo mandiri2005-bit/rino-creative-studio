@@ -191,6 +191,34 @@ export async function traceMaskB64(b64, { maxShapes = 70 } = {}) {
   return { maskViewBox, maskShapes: ordered.map((p) => ({ d: p.d, fill: "#000" })) };
 }
 
+// Recraft-vectorize reveal mask (genre detail, WB_HERO_MASK=recraft): vectorize the EXISTING hero PNG
+// (nano-banana/flux) into clean, SEGMENTED SVG shapes → cleaner per-form "drawing" than potrace's
+// threshold trace (which is rough + misses light regions). Same {maskViewBox, maskShapes} shape
+// (NN-ordered) as traceMaskB64 + the $0.01 meter. Throws if Recraft is out of credits (breaker) → the
+// worker falls back to potrace, so a render never fails on the mask.
+export async function vectorizeMaskB64(b64, { maxShapes = 70 } = {}) {
+  const buffer = Buffer.from(b64, "base64");
+  const svg = await recraftVectorize(buffer);
+  const maskViewBox = (svg.match(/viewBox="([^"]+)"/) || [])[1] || "0 0 1024 1024";
+  // recraft returns MANY <path d="…"/> (one per region) — extract each (vs potrace's single combined d).
+  let subs = [...svg.matchAll(/\sd="([^"]+)"/g)].map((m) => m[1].trim()).filter((s) => s.length > 8);
+  if (!subs.length) throw new Error("recraft vectorize produced no paths");
+  if (subs.length > maxShapes) subs = subs.sort((a, b) => b.length - a.length).slice(0, maxShapes);
+  // same greedy nearest-neighbour ordering (top-most first) so the pen draws adjacent forms continuously.
+  const ctr = (d) => { const n = d.match(/-?\d*\.?\d+/g) || []; let sx = 0, sy = 0, c = 0; for (let i = 0; i + 1 < n.length; i += 2) { sx += +n[i]; sy += +n[i + 1]; c++; } return c ? { x: sx / c, y: sy / c } : { x: 0, y: 0 }; };
+  const pts = subs.map((d) => ({ d, c: ctr(d) }));
+  const remaining = new Set(pts);
+  let cur = pts.reduce((a, b) => (b.c.y < a.c.y ? b : a), pts[0]);
+  remaining.delete(cur);
+  const ordered = [cur];
+  while (remaining.size) {
+    let best = null, bd = Infinity;
+    for (const p of remaining) { const dd = (p.c.x - cur.c.x) ** 2 + (p.c.y - cur.c.y) ** 2; if (dd < bd) { bd = dd; best = p; } }
+    remaining.delete(best); ordered.push(best); cur = best;
+  }
+  return { maskViewBox, maskShapes: ordered.map((p) => ({ d: p.d, fill: "#000" })), meter: { operation: "image", model: "recraft-vectorize", units: { count: 1 } } };
+}
+
 // ── diagram: LLM graph → deterministic flowchart SVG (ported from scripts/diagram.mjs) ──
 const BLUE = "#2C6CA8", INK = "#1A1A1A", RED = "#D9534F";
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
