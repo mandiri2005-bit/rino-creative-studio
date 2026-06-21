@@ -397,7 +397,20 @@ select option{ background:#111019!important; color:var(--t)!important; }
               <option value="ms">Melayu</option>
               <option value="en">English</option>
               <option value="ar">Arab</option>
+              <option value="zh">中文 (Mandarin)</option>
+              <option value="ja">日本語 (Japanese)</option>
+              <option value="es">Español (Spanish)</option>
+              <option value="fr">Français (French)</option>
+              <option value="de">Deutsch (German)</option>
+              <option value="nl">Nederlands (Dutch)</option>
+              <option value="pt">Português (Portuguese)</option>
+              <option value="hi">हिन्दी (Hindi)</option>
+              <option value="th">ภาษาไทย (Thai)</option>
+              <option value="vi">Tiếng Việt (Vietnamese)</option>
+              <option value="tl">Tagalog (Filipino)</option>
+              <option value="other">✏️ Lainnya (ketik bahasa…)</option>
             </select>
+            <input id="langOther" placeholder="cth: Jerman, Batak Toba, Português…" style="display:none;margin-top:6px"/>
           </div>
           <div id="llmWrap" style="display:none">
             <label class="lbl">Model narasi</label>
@@ -598,7 +611,13 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
   $("#captionFont").onchange=e=>state.captionFont=e.target.value;
   $("#refMode").onchange=e=>state.refMode=e.target.checked;
-  $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
+  // "Lainnya" → reveal a free-text box; the typed language is sent as-is (backend writes in it).
+  $("#langSel")&&($("#langSel").onchange=e=>{
+    const v=e.target.value, other=$("#langOther");
+    if(v==="other"){ if(other){ other.style.display=""; other.focus(); } state.language=(other&&other.value.trim())||""; }
+    else{ if(other) other.style.display="none"; state.language=v; }
+  });
+  $("#langOther")&&($("#langOther").oninput=e=>state.language=e.target.value.trim());
   $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
   // Voice sets differ by provider: OpenAI uses alloy/echo/…; Gemini TTS needs its OWN
   // prebuilt voices (Zephyr/Puck/…). Sending an OpenAI voice to a Gemini model makes the

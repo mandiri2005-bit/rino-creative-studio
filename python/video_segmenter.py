@@ -771,6 +771,8 @@ LANGUAGE_NAMES: dict[str, str] = {
     "min": "Bahasa Minang", "ban": "Bahasa Bali (Balinese)", "bug": "Bahasa Bugis",
     "btk": "Bahasa Batak", "ms": "Bahasa Melayu", "en": "English", "ar": "Arabic",
     "zh": "Chinese (Mandarin)", "ja": "Japanese", "ko": "Korean",
+    "es": "Spanish", "fr": "French", "de": "German", "nl": "Dutch", "pt": "Portuguese",
+    "hi": "Hindi", "th": "Thai", "vi": "Vietnamese", "tl": "Filipino (Tagalog)",
 }
 
 
@@ -783,7 +785,9 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
     on `topic`. The caller feeds this to the existing narration generator
     (which layers STYLE_RULES on top); the returned text is then passed to
     `segment()`. Kept here so the word-count target lives with the formula."""
-    lang = LANGUAGE_NAMES.get((language or "id").strip().lower(), "Bahasa Indonesia")
+    # unknown code OR free-text ("Jerman", "Batak Toba", "Português") → use it AS-IS so the user can
+    # pick any language via the UI "Lainnya" box (don't silently fall back to Indonesian).
+    lang = LANGUAGE_NAMES.get((language or "id").strip().lower(), (language or "").strip() or "Bahasa Indonesia")
     _wpm = wpm_for(language)
     style_clause = f" in the '{style}' style" if style else ""
     return (
