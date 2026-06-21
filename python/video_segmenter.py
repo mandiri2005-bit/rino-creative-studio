@@ -84,14 +84,14 @@ WORDS_PER_MINUTE = 130          # documentary narration pace (English baseline; 
 # spoken rate per language → the rendered video lands near the requested duration. (Rino)
 WPM_BY_LANG = {
     "en": 130,
-    "id": 85, "ms": 85,                                   # Indonesian / Malay
-    "jv": 85, "su": 85, "min": 85, "ban": 85, "bug": 85,  # Javanese/Sundanese/Minang/Balinese/Buginese
-    "btk": 85, "ace": 85, "mad": 85,                       # Batak/Acehnese/Madurese (Suara Lokal moat)
+    "id": 100, "ms": 100,                                      # Indonesian / Malay (Rino: 85→100)
+    "jv": 100, "su": 100, "min": 100, "ban": 100, "bug": 100,  # Javanese/Sundanese/Minang/Balinese/Buginese
+    "btk": 100, "ace": 100, "mad": 100,                        # Batak/Acehnese/Madurese (Suara Lokal moat)
 }
 def wpm_for(language: str | None) -> int:
     """Words-per-minute target for the given output language; defaults to the Indonesian pace
     (the product is Indonesian-first), English keeps the faster 130."""
-    return WPM_BY_LANG.get((language or "id").strip().lower(), 85)
+    return WPM_BY_LANG.get((language or "id").strip().lower(), 100)
 WORDS_PER_SCENE = 45            # scene_count = round(target_words / WORDS_PER_SCENE)
 IMAGE_SCENE_SECONDS = 8         # full_images pacing: ~one fresh image every 8s
 MIN_SCENES = 2                  # a video is at least two scenes (so there's a cut)
