@@ -26,6 +26,7 @@ import { QUEUE, CONCURRENCY, makeConnection } from "./connection.mjs";
 import * as store from "./store.mjs";
 import { ffprobeDuration, stitch, buildAssFromScenes, hasSubtitlesFilter } from "./ffmpeg.mjs";
 import { advance } from "./orchestrator.mjs";
+import { startRecovery } from "./recovery.mjs";
 import { rm } from "node:fs/promises";
 // NOTE: whiteboard render/visuals are imported LAZILY inside the worker-only branches
 // below (dynamic import), NEVER at top level — workers.mjs is loaded by the API/frontend
@@ -658,10 +659,17 @@ export function startWorkers(deps) {
   audio.on("failed", netFor("audioStatus"));
   visual.on("failed", netFor("visualStatus"));
 
+  // STITCH had no failed-handler → a stitch killed by a deploy/restart or lock-stall left the
+  // job stuck at "stitching" + charged, forever. Recovery converges EVERY job to done or
+  // failed+refund: re-dispatch on stitch failure (bounded), + a boot scan & reaper for jobs
+  // orphaned by a restart. (See recovery.mjs.) Idempotent refund → never double-pays.
+  const recovery = startRecovery({ store: deps.store, queues: deps.queues, credits: deps.credits });
+  stitch.on("failed", (job, err) => recovery.onStitchFailed(job?.data?.jobId, err?.message || "stitch failed"));
+
   const workers = [audio, visual, check, stitch];
   return {
     workers,
-    async close() { await Promise.all(workers.map((w) => w.close())); },
+    async close() { await recovery.stop(); await Promise.all(workers.map((w) => w.close())); },
   };
 }
 
