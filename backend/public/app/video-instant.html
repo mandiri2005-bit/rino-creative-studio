@@ -478,8 +478,8 @@ select option{ background:#111019!important; color:var(--t)!important; }
 (function(){
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-  const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["2 mnt",2],["3 mnt",3],["5 mnt",5],["10 mnt",10],["15 mnt",15]];
-  const state={mode:"A",minutes:2,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
+  const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["3 mnt",3],["5 mnt",5],["10 mnt",10]];
+  const state={mode:"A",minutes:1,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -529,6 +529,11 @@ select option{ background:#111019!important; color:var(--t)!important; }
       if(open&&wrap.__close) wrap.__close();
     }
   }
+  // set a select-enhanced dropdown's value AND refresh its VISIBLE label. Setting .value alone updates
+  // the hidden native <select> but not the custom widget text (Rino: "pilih garis tangan tapi display
+  // detail realistis"). Touching the "value" attribute trips select-enhance's MutationObserver → sync()
+  // — no 'change' event, so the onchange handlers don't recurse.
+  function setSel(id,v){ const s=$(id); if(!s) return; s.value=v; s.setAttribute("value",String(v)); }
   function applyWBLock(){
     const wb=!!state.whiteboardGenre;
     // #5 image-model + #6 mode-visual / model-klip selects: whiteboard owns these,
@@ -548,16 +553,20 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }
     $("#arPills").style.pointerEvents=wb?"none":"";
     $$("#arPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
-    if(wb){ const v="wb_"+state.whiteboardGenre; $("#style").value=v; $("#visualStyle").value=v; }
+    if(wb){ const v="wb_"+state.whiteboardGenre; setSel("#style",v); setSel("#visualStyle",v); }
+    // WB defines BOTH narration + visual → lock the dropdown the user did NOT pick WB from, so the
+    // two can't conflict (Rino: WB on via Gaya narasi → Gaya visual disabled, and vice versa).
+    lockEnhancedSelect($("#style"), wb && state.wbSource!=="style");
+    lockEnhancedSelect($("#visualStyle"), wb && state.wbSource!=="visualStyle");
   }
   $("#style").onchange=e=>{
     const g=wbGenreOf(e.target.value);
-    if(g){ state.whiteboardGenre=g; } else { state.whiteboardGenre=null; state.style=e.target.value; $("#visualStyle").value=state.visualStyle||""; }
+    if(g){ state.whiteboardGenre=g; state.wbSource="style"; } else { state.whiteboardGenre=null; state.wbSource=null; state.style=e.target.value; setSel("#visualStyle",state.visualStyle||""); }
     applyWBLock(); refreshEstimate();
   };
   $("#visualStyle").onchange=e=>{
     const g=wbGenreOf(e.target.value);
-    if(g){ state.whiteboardGenre=g; } else { state.whiteboardGenre=null; state.visualStyle=e.target.value; $("#style").value=state.style||"creative_nonfiction"; }
+    if(g){ state.whiteboardGenre=g; state.wbSource="visualStyle"; } else { state.whiteboardGenre=null; state.wbSource=null; state.visualStyle=e.target.value; setSel("#style",state.style||"creative_nonfiction"); }
     applyWBLock(); refreshEstimate();
   };
   $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; refreshEstimate(); };
@@ -621,6 +630,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
     const topic=$("#topic").value.trim(), narration=$("#narration").value.trim();
     if(state.mode==="A"&&!topic) return showErr("Isi topiknya dulu.");
     if(state.mode==="B"&&!narration) return showErr("Tempel narasimu dulu.");
+    if(state.mode==="B"){ // cap pasted narration at ~10 minutes (EN 10*130, ID 10*105) — backend enforces too
+      const wpm=state.language==="en"?130:105, wc=narration.split(/\s+/).filter(Boolean).length, cap=10*wpm;
+      if(wc>cap) return showErr(`Narasi kepanjangan: ~${wc} kata (≈ ${Math.round(wc/wpm)} menit). Maksimal 10 menit (~${cap} kata) — kurangi sekitar ${wc-cap} kata dulu.`);
+    }
     setBusy(true);
     renderStage({status:"segmenting"});
     try{
