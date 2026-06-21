@@ -290,11 +290,16 @@ export async function visualProcessor(job, deps) {
                     // fall through to the icon fallback (raster stays undefined). Tunable WB_HERO_*.
                     const _heroTimeout = Number(process.env.WB_HERO_TIMEOUT_MS) || 75000;
                     const _heroTries = Math.max(1, Number(process.env.WB_HERO_RETRIES || 1) + 1);
+                    // meter the ACTUAL provider (WB_RASTER_PROVIDER), not a hardcoded flux — mirrors
+                    // python /video/whiteboard-raster (flux→flux-kontext-pro, else the provider id) so
+                    // the charge uses the real model's price (nano-banana-2-hd ≠ flux-kontext-pro).
+                    const _heroProvider = process.env.WB_RASTER_PROVIDER || "flux";
+                    const _heroModel = _heroProvider === "flux" ? "flux-kontext-pro" : _heroProvider;
                     let b64 = null;
                     for (let _a = 1; _a <= _heroTries; _a++) {
                       try {
                         b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
-                          { query: heroQuery, provider: process.env.WB_RASTER_PROVIDER || "flux", aspect, seed: 1000 + sceneIndex * 13, mode: "hero", timeoutMs: _heroTimeout });
+                          { query: heroQuery, provider: _heroProvider, aspect, seed: 1000 + sceneIndex * 13, mode: "hero", timeoutMs: _heroTimeout });
                         if (b64) break;
                       } catch (he) {
                         console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero gen attempt ${_a}/${_heroTries} failed: ${he.message}`);
@@ -303,11 +308,11 @@ export async function visualProcessor(job, deps) {
                     }
                     if (b64) {
                       raster = "data:image/png;base64," + b64;
-                      meters.push({ operation: "image", model: "flux-kontext-pro", units: { count: 1 } });
+                      meters.push({ operation: "image", model: _heroModel, units: { count: 1 } });
                       try { ({ maskViewBox, maskShapes } = await traceMaskB64(b64)); } // FREE local line-trace (no meter)
                       catch (te) { console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero trace failed (${te.message}) → full-image reveal`); }
                       await deps.store.setCachedAsset?.("hero", hkey,
-                        { raster, maskViewBox, maskShapes, source, model: "flux-kontext-pro", license: lic, createdAt: new Date().toISOString() });
+                        { raster, maskViewBox, maskShapes, source, model: _heroModel, license: lic, createdAt: new Date().toISOString() });
                     }
                   }
                   if (raster) {
