@@ -632,7 +632,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     l.unshift({id, ts:Date.now(), scenes:(meta&&meta.scenes)||0, title:((meta&&meta.title)||"").trim()}); viSaveList(l); }
   function viForget(id){ viSaveList(viLoad().filter(x=>x.id!==id)); }
   async function resumeJob(id){   // re-attach to an existing job: show it (done→video, running→resume poll)
-    if(!id) return; clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null; state.jobId=id;
+    if(!id) return; clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; state.jobId=id;
     try{
       const j=await api("/api/video/assemble/"+id,{method:"GET"});
       renderJob(j,{sceneCount:j.sceneCount});
@@ -640,7 +640,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }catch(e){ if(e&&e.status===404) viForget(id); } // expired/gone → drop quietly
   }
   window.__viOpen=(id)=>resumeJob(id);
-  window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; state.shownDoneFor=null; state.stitchT0=null; setBusy(false);
+  window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; setBusy(false);
     stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Siap bikin video baru</h3><p>Atur pengaturan di kiri, lalu tekan Buat video.</p></div>'; };
   window.__viHistory=()=>{
     const l=viLoad();
@@ -700,7 +700,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   };
 
   function pollJob(asm){
-    clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null;
+    clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null; state.rMax=null;
     state.poll=setInterval(async()=>{
       try{
         const j=await api("/api/video/assemble/"+state.jobId,{method:"GET"});
@@ -769,7 +769,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     if(j.status==="done"){
       clearInterval(state.poll);                      // terminal → stop ANY poll (kills the done↔progress loop)
       if(state.shownDoneFor===state.jobId) return;    // already showing this video → DON'T rewrite stage (no remount/restart/flicker)
-      state.shownDoneFor=state.jobId; state.stitchT0=null;
+      state.shownDoneFor=state.jobId; state.stitchT0=null; state.rMax=null;
       const src=j.mp4Url||"";
       window.__lastMp4=src;
       stage.innerHTML=head+'<div class="player">'+
@@ -784,16 +784,26 @@ select option{ background:#111019!important; color:var(--t)!important; }
       return;
     }
     if(j.status==="stitching"){
-      // RENDER phase: assets are 100% done; the backend writes renderProgress per scene as it renders.
-      // Show a LIVE render bar + elapsed/ETA so it never looks frozen (the "stuck" perception).
+      // RENDER phase: assets done; backend writes renderProgress per scene as it renders.
       if(!state.stitchT0) state.stitchT0=Date.now();
-      const rp=Number(j.renderProgress)||0;
-      const rd=j.renderScenesDone||0, rt=j.renderScenesTotal||total||0;
+      let rp=Number(j.renderProgress)||0;
+      let rd=j.renderScenesDone||0; const rt=j.renderScenesTotal||total||0;
+      // render progress is MONOTONIC — clamp the display so a backend patchMeta race (concurrent
+      // read-modify-write of the job JSON) can't make scene/% jump backward (4→5→4).
+      state.rMax=state.rMax||{done:0,pct:0};
+      rd=Math.max(rd,state.rMax.done); rp=Math.max(rp,state.rMax.pct);
+      state.rMax.done=rd; state.rMax.pct=rp;
       const el=Math.round((Date.now()-state.stitchT0)/1000);
       const mmss=s=>Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
-      const eta=rp>3?Math.round(el/rp*(100-rp)):0;
-      stage.innerHTML=head+'<div class="bar-wrap"><div class="bar"><i style="width:'+(rp||4)+'%;transition:width .5s"></i></div>'+
-        '<div class="bar-meta"><span>Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):'')+'</span><span>'+(rp?rp+'%':'…')+'</span></div></div>';
+      // all scenes rendered but still stitching = final concat + upload → distinct ticking message
+      // (so it doesn't look "stuck at 6/6"); elapsed keeps moving.
+      const finalizing = rt>0 && rd>=rt;
+      const eta = (!finalizing && rp>3) ? Math.round(el/rp*(100-rp)) : 0;
+      const label = finalizing
+        ? ('Menggabungkan & menyimpan… '+mmss(el))
+        : ('Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):''));
+      stage.innerHTML=head+'<div class="bar-wrap"><div class="bar"><i style="width:'+(finalizing?100:(rp||4))+'%;transition:width .5s"></i></div>'+
+        '<div class="bar-meta"><span>'+label+'</span><span>'+(finalizing?'…':(rp?rp+'%':'…'))+'</span></div></div>';
       return;
     }
     // in progress
