@@ -281,8 +281,11 @@ export async function visualProcessor(job, deps) {
                     raster = hit.raster; maskViewBox = hit.maskViewBox || maskViewBox; maskShapes = hit.maskShapes || [];
                     source = "flux-hero-cache"; lic = hit.license || lic;
                   } else {
+                    // WB_RASTER_PROVIDER (video-worker env) switches the detail-hero image model:
+                    // "flux" (default → flux-kontext-pro, honors 16:9/9:16) | "nano-banana-hd" | etc.
+                    // (any IMAGE_MODELS key the python /video/whiteboard-raster route accepts).
                     const b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
-                      { query: heroQuery, provider: "flux", aspect, seed: 1000 + sceneIndex * 13, mode: "hero" });
+                      { query: heroQuery, provider: process.env.WB_RASTER_PROVIDER || "flux", aspect, seed: 1000 + sceneIndex * 13, mode: "hero" });
                     if (b64) {
                       raster = "data:image/png;base64," + b64;
                       meters.push({ operation: "image", model: "flux-kontext-pro", units: { count: 1 } });
@@ -477,9 +480,20 @@ export async function stitchProcessor(job, deps) {
       // whiteboard scenes may carry NO pipeline visual asset (the Remotion render makes
       // its own) — don't demand one; other modes always have a visual to resolve.
       const wbNoAsset = meta.visualMode === "whiteboard" && !s.visualKey && !s.visualPath;
+      const audioPath = await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`);
+      // The scene window MUST cover the ACTUAL narration so the stitch never truncates it. The WB svg
+      // renderer already re-measures + extends its frames; do the SAME at the source for the NON-WB
+      // stitch path — buildSceneClipArgs/buildFilterComplex use atrim=0:dur, which CUTS audio longer
+      // than the window (happens when durationActual under-estimated via the estSeconds fallback). Only
+      // for non-WB → WB's window stays exactly as before (byte-identical). (Rino: audio truncation non-WB)
+      let base = Number(s.durationActual) || Number(s.estSeconds) || 2;
+      if (meta.visualMode !== "whiteboard" && audioPath) {
+        const aLen = await ffprobeDuration(audioPath);
+        if (Number.isFinite(aLen) && aLen > base) base = aLen;
+      }
       scenes.push({
         kind: s.visualKind || "image",
-        duration: (Number(s.durationActual) || Number(s.estSeconds) || 2) + sceneGap,
+        duration: base + sceneGap,
         text: s?.text || "",   // per-scene caption (long-video render path)
         visualPath: wbNoAsset ? undefined : await resolveLocal(jobId, tmpDir, s.visualKey, s.visualPath,
           `vis_${i}.${s.visualKind === "clip" ? "mp4" : "png"}`),
@@ -489,7 +503,7 @@ export async function stitchProcessor(job, deps) {
           : {}),
         // whiteboard plan-engine: per-scene visual plan (built in the visual phase)
         ...(s.planJson ? { planJson: s.planJson } : {}),
-        audioPath: await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`),
+        audioPath,
       });
     }
     const outPath = join(tmpDir, "out.mp4");

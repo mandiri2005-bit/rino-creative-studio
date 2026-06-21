@@ -7,6 +7,10 @@
 //
 // Only ACTIVE jobs block — WAITING/DELAYED jobs survive a restart (BullMQ re-picks them), so they
 // don't need to drain. Pair with the worker's SIGTERM graceful-drain (worker-entry.mjs).
+//
+// GENERAL (not WB-only): these 4 queues are genre-agnostic — EVERY Video Instant job (whiteboard,
+// hybrid, full_clips, full_images) flows through audio/visual/check/stitch, so this gates ALL VI
+// renders/generation. (Python narration/chat are HTTP on the python service — a separate concern.)
 import { Queue } from "bullmq";
 import { makeConnection, QUEUE } from "./connection.mjs";
 
