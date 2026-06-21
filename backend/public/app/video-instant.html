@@ -74,6 +74,9 @@
   .seg button{flex:1;background:none;border:none;color:var(--td);font-family:var(--fb);font-size:13px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer;transition:.2s}
   .seg button.on{background:var(--as);color:var(--t)}
   textarea,select,input{width:100%;background:var(--bg);border:1px solid var(--br);border-radius:11px;color:var(--t);font-family:var(--fb);font-size:14px;padding:11px 13px;transition:.2s}
+  /* select-enhance dropdown a touch smaller (voice labels carry gender+sifat+pitch now) */
+  .cs-panel .cs-opt,.cs-panel .cs-grp{font-size:12.5px}
+  .cs .cs-btn{font-size:13px}
   textarea:focus,select:focus,input:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3px var(--as)}
   textarea{resize:vertical;min-height:88px;line-height:1.5}
   .pills{display:flex;flex-wrap:wrap;gap:7px}
@@ -605,14 +608,21 @@ select option{ background:#111019!important; color:var(--t)!important; }
   const VOICES={
     openai:[["alloy","Netral"],["echo","Pria"],["fable","Pria · hangat"],["onyx","Pria · dalam"],["nova","Wanita"],["shimmer","Wanita · lembut"]],
     gemini:[
-      ["Achernar","Pria · lembut"],["Achird","Wanita · ramah"],["Algenib","Pria · serak"],["Algieba","Pria · halus"],
-      ["Alnilam","Pria · tegas"],["Aoede","Wanita · modern & santai"],["Autonoe","Wanita · cerah"],["Callirrhoe","Wanita · santai"],
-      ["Charon","Pria · informatif"],["Despina","Wanita · halus"],["Enceladus","Pria · lembut berdesah"],["Erinome","Wanita · jernih"],
-      ["Fenrir","Pria · bersemangat"],["Gacrux","Pria · dewasa"],["Iapetus","Pria · jernih"],["Kore","Wanita · tegas"],
-      ["Laomedeia","Wanita · ceria"],["Leda","Wanita · muda"],["Orus","Pria · tegas"],["Puck","Pria · ceria"],
-      ["Pulcherrima","Pria · tegas"],["Rasalgethi","Pria · informatif"],["Sadachbia","Wanita · lincah"],["Sadaltager","Pria · berwawasan"],
-      ["Schedar","Pria · stabil"],["Sulafat","Wanita · hangat"],["Umbriel","Pria · santai"],["Vindemiatrix","Wanita · kalem"],
-      ["Zephyr","Pria · cerah"],["Zubenelgenubi","Pria · kasual"],
+      ["Achernar","Pria · Lembut, nada tinggi"],["Achird","Wanita · Ramah, nada sedang-rendah"],
+      ["Algenib","Pria · Serak, nada rendah"],["Algieba","Pria · Halus, nada rendah"],
+      ["Alnilam","Pria · Tegas, nada sedang-rendah"],["Aoede","Wanita · Modern & santai, nada sedang"],
+      ["Autonoe","Wanita · Cerah, nada sedang"],["Callirrhoe","Wanita · Santai, nada sedang"],
+      ["Charon","Pria · Informatif, nada rendah"],["Despina","Wanita · Halus, nada sedang"],
+      ["Enceladus","Pria · Lembut berdesah, nada rendah"],["Erinome","Wanita · Jernih, nada sedang"],
+      ["Fenrir","Pria · Bersemangat, nada sedang-rendah"],["Gacrux","Pria · Dewasa, nada sedang"],
+      ["Iapetus","Pria · Jernih, nada sedang-rendah"],["Kore","Wanita · Tegas, nada sedang"],
+      ["Laomedeia","Wanita · Ceria, nada tinggi"],["Leda","Wanita · Muda/energik, nada tinggi"],
+      ["Orus","Pria · Tegas, nada sedang-rendah"],["Puck","Pria · Ceria, nada sedang"],
+      ["Pulcherrima","Pria · Tegas, nada sedang"],["Rasalgethi","Pria · Informatif, nada sedang"],
+      ["Sadachbia","Wanita · Lincah, nada rendah"],["Sadaltager","Pria · Berwawasan, nada sedang"],
+      ["Schedar","Pria · Stabil/datar, nada sedang-rendah"],["Sulafat","Wanita · Hangat, nada sedang"],
+      ["Umbriel","Pria · Santai, nada sedang-rendah"],["Vindemiatrix","Wanita · Lembut/kalem, nada sedang"],
+      ["Zephyr","Pria · Cerah, nada tinggi"],["Zubenelgenubi","Pria · Santai/kasual, nada sedang-rendah"],
     ],
   };
   function syncVoiceOptions(){
