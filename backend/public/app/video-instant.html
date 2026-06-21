@@ -857,7 +857,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     if(j.status==="done"){
       clearInterval(state.poll);                      // terminal → stop ANY poll (kills the done↔progress loop)
       if(state.shownDoneFor===state.jobId) return;    // already showing this video → DON'T rewrite stage (no remount/restart/flicker)
-      state.shownDoneFor=state.jobId; state.stitchT0=null; state.rMax=null;
+      state.shownDoneFor=state.jobId; state.stitchT0=null; state.rMax=null; state.rSamples=null;
       const src=j.mp4Url||"";
       window.__lastMp4=src;
       stage.innerHTML=head+'<div class="player">'+
@@ -880,7 +880,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         return;
       }
       // RENDER phase: assets done; backend writes renderProgress per scene as it renders.
-      if(!state.stitchT0) state.stitchT0=Date.now();
+      if(!state.stitchT0){ state.stitchT0=Date.now(); state.rSamples=[]; }
       let rp=Number(j.renderProgress)||0;
       let rd=j.renderScenesDone||0; const rt=j.renderScenesTotal||total||0;
       // render progress is MONOTONIC — clamp the display so a backend patchMeta race (concurrent
@@ -893,7 +893,19 @@ select option{ background:#111019!important; color:var(--t)!important; }
       // all scenes rendered but still stitching = final concat + upload → distinct ticking message
       // (so it doesn't look "stuck at 6/6"); elapsed keeps moving.
       const finalizing = rt>0 && rd>=rt;
-      const eta = (!finalizing && rp>3) ? Math.round(el/rp*(100-rp)) : 0;
+      // ETA from RECENT scene-completion pace — NOT cumulative el/rp, which the slow cold-start first
+      // scene (+ the pre-render wait baked into stitchT0) poisons into a wildly pessimistic "~15 min".
+      // Sample (rd,t) on each scene change, keep a sliding window, DROP the rd=0 cold-start anchor,
+      // and extrapolate the remaining scenes from the recent rate. No samples yet → show no ETA (honest).
+      state.rSamples=state.rSamples||[];
+      if(!state.rSamples.length || state.rSamples[state.rSamples.length-1].rd!==rd) state.rSamples.push({rd,t:Date.now()});
+      if(state.rSamples.length>6) state.rSamples=state.rSamples.slice(-6);
+      let eta=0;
+      const _sp=state.rSamples.filter(s=>s.rd>=1);   // exclude the cold-start (rd=0) sample
+      if(!finalizing && rt>0 && _sp.length>=2){
+        const f=_sp[0], l=_sp[_sp.length-1];
+        if(l.rd>f.rd && l.t>f.t){ const pace=(l.rd-f.rd)/((l.t-f.t)/1000); if(pace>0) eta=Math.round((rt-rd)/pace); }
+      }
       const label = finalizing
         ? ('Menggabungkan & menyimpan… '+mmss(el))
         : ('Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):''));
