@@ -240,36 +240,49 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       const DRAW_SPEED = Math.max(1, Number(process.env.WB_DETAIL_DRAW_SPEED) || 2);
       const TRACE_WIN = 0.5 / DRAW_SPEED;                   // outline traced within this fraction of each form's window
       const BAND_LAG = Math.min(0.25, 0.15 * DRAW_SPEED);   // colour catch-up band trails the pen by this much
-      const inkW = Math.max(1.0, mvw / 700);   // thinner pen overlay (was /340≈3px → ~1.5px): the
-      // overlay re-strokes the raster's own outlines, so a fat one made lines look doubled/too thick
-      // each form's draw TIME ∝ its outline length → big forms take longer (natural) + EVEN area
-      // pacing (no front-loading from a few big shapes filling the canvas early).
+      // WB_DETAIL_COLOR_AT (default 0 = interleaved = current behaviour): >0 SPLITS the scene into a
+      // LINE-ART phase [0→CAT] (ink outlines trace, the colour raster stays HIDDEN) then a COLOUR phase
+      // [CAT→1] (raster reveals via mask) → "draw most of the canvas, THEN colour sweeps in". e.g. 0.8
+      // = draw 4/5 first. This is the REAL lever for that look (the colour reveal is what the eye reads,
+      // not the thin ink overlay). Reversible: unset/0 → byte-identical to today.
+      const CAT = clamp(Number(process.env.WB_DETAIL_COLOR_AT) || 0, 0, 0.95);
+      // BOLD ink during the line-art phase so the drawing READS (1.5px/0.55 was too faint → "drawing ngga
+      // berubah"). The overlay re-strokes the raster's own outlines, so it MUST fade as colour reveals or
+      // it doubles the lines (why it was thinned) → phase-dependent (inkOp below). Thin when CAT=0 (today).
+      const inkW = Math.max(1.0, mvw / (CAT > 0 ? 360 : 700));
+      // each form's draw TIME ∝ its outline length → big forms take longer (natural) + EVEN area pacing.
       const lens = units.map((u) => pathLen(u.d));
       const totLen = lens.reduce((a, c) => a + c, 0) || 1;
       let _cum = 0; const startF = lens.map((l) => { const s = (_cum / totLen) * SPAN; _cum += l; return s; });
       const durF = lens.map((l) => Math.max(0.012, (l / totLen) * SPAN) * 1.6); // *1.6 = slight overlap
-      const spOf = (i) => clamp((p - startF[i]) / durF[i], 0, 1);
+      // TWO clocks: line-art draws over [0→CAT], colour reveals over [CAT→1] (CAT=0 → both = p = today).
+      const pd = CAT > 0 ? clamp(p / CAT, 0, 1) : p;                 // draw clock → ink trace + pen
+      const pc = CAT > 0 ? clamp((p - CAT) / (1 - CAT), 0, 1) : p;   // colour clock → mask reveal (fills + band)
+      const spDraw = (i) => clamp((pd - startF[i]) / durF[i], 0, 1);
+      const spFill = (i) => clamp((pc - startF[i]) / durF[i], 0, 1);
+      // ink BOLD+opaque while drawing, FADING as colour comes in so it never doubles the revealed raster.
+      const inkOp = CAT > 0 ? clamp(0.92 - 0.6 * pc, 0.32, 0.92) : 0.55;
       const id = `rv${clipId++}`;
       out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})">`);
       out.push(`<mask id="${id}" maskUnits="userSpaceOnUse">`);
       // catch-up band trails the draw → fills LIGHT regions trace misses (pale koala), so nothing
       // stays empty; the per-form fills give the leading edge near the pen.
-      const catchH = Math.max(0, clamp(p / SPAN, 0, 1) - BAND_LAG) * mvh;
+      const catchH = Math.max(0, clamp(pc / SPAN, 0, 1) - BAND_LAG) * mvh;
       if (catchH > 0) out.push(`<rect x="${mvx}" y="${mvy}" width="${mvw}" height="${catchH.toFixed(1)}" fill="white"/>`);
-      units.forEach((u, i) => { const op = clamp((spOf(i) - 0.4) / 0.6, 0, 1); if (op > 0) out.push(`<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`); });
+      units.forEach((u, i) => { const op = clamp((spFill(i) - 0.4) / 0.6, 0, 1); if (op > 0) out.push(`<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`); });
       out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})"/>`);
       units.forEach((u, i) => {
-        const sp = spOf(i); if (sp <= 0) return;
+        const sp = spDraw(i); if (sp <= 0) return;
         const traceP = clamp(sp / TRACE_WIN, 0, 1);
         const L = pathLen(u.d);
-        out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.55"/>`);
+        out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="${inkOp.toFixed(3)}"/>`);
       });
       out.push(`</g>`);
       // pen rides the LEADING form being traced (real point on its line) → follows the NN path
       if (p > 0.005 && p < 0.985) {
         let act = -1;
-        for (let i = 0; i < N; i++) { const sp = spOf(i); if (sp > 0.01 && sp < 0.99) act = i; }
-        if (act >= 0) { const u = units[act]; const pt = pointOnPath(u.d, clamp(spOf(act) / TRACE_WIN, 0, 1)) || { x: u.x, y: u.y }; hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink }); }
+        for (let i = 0; i < N; i++) { const sp = spDraw(i); if (sp > 0.01 && sp < 0.99) act = i; }
+        if (act >= 0) { const u = units[act]; const pt = pointOnPath(u.d, clamp(spDraw(act) / TRACE_WIN, 0, 1)) || { x: u.x, y: u.y }; hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink }); }
       }
     } else {
       // color genre: soft colour chip behind the icon (icon stroke is the same colour)
