@@ -354,6 +354,10 @@ async function rasterizeMany(jobs, width) {
       for (const w of pool) {
         w.on("message", (m) => { if (!m.ok) return reject(new Error(m.err)); if (++done === jobs.length) resolve(); else feed(w); });
         w.on("error", reject);
+        // a worker that dies SILENTLY (e.g. native segfault) emits 'exit' without 'message' → would
+        // otherwise hang the pool forever. Reject on any abnormal exit before all frames are done →
+        // the catch below re-renders the rest sequentially. (never hang a render)
+        w.on("exit", (code) => { if (code !== 0 && done < jobs.length) reject(new Error(`raster worker exited ${code}`)); });
       }
       for (const w of pool) feed(w);
     }).finally(async () => { await Promise.all(pool.map((w) => w.terminate().catch(() => {}))); });
