@@ -16,7 +16,11 @@ import { validateResolvedScene } from "../qa.mjs";
 
 // keep these in sync with render.mjs (duplicated so this stays Chromium/@remotion-free)
 const ASPECT = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
-const TIER = { fast: { fps: 30, crf: 26 }, hd: { fps: 30, crf: 20 }, hd_plus: { fps: 60, crf: 18 } }; // crf lowered: crisper line-art (less "pixelated" during the draw)
+// fps: WB drawing doesn't need 30 — 24 cuts ~20% of frames (= ~20% faster CPU-bound raster) with
+// no perceptible loss on a whiteboard reveal. Env WB_FPS overrides (set 30 to revert). hd_plus stays
+// 60 (premium smoothness). Audio is muxed by seconds → fps change can't desync it.
+const WB_FPS = Math.max(1, Number(process.env.WB_FPS) || 24);
+const TIER = { fast: { fps: WB_FPS, crf: 26 }, hd: { fps: WB_FPS, crf: 20 }, hd_plus: { fps: 60, crf: 18 } }; // crf lowered: crisper line-art (less "pixelated" during the draw)
 const GENRE_MODE = { diagram: "diagram", detail: "raster", lineart: "icons", color: "color" };
 
 let _roughen = null;

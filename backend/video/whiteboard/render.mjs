@@ -31,7 +31,9 @@ const GENRE_MODE = { diagram: "diagram", detail: "raster", lineart: "icons", col
 // cap 1080p; tier sets fps + crf (render fee is flat, tier is quality only)
 const ASPECT = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
 // crf lowered for whiteboard (line-art + draw motion compresses badly at 23 → "kadang pixelated"); 20 is crisp.
-const TIER = { fast: { fps: 30, crf: 26 }, hd: { fps: 30, crf: 20 }, hd_plus: { fps: 60, crf: 18 }, "hd+": { fps: 60, crf: 18 } };
+// fps env-tunable (WB_FPS, default 24 for fast/hd — see svgFfmpeg.mjs); hd_plus stays 60 (premium).
+const WB_FPS = Math.max(1, Number(process.env.WB_FPS) || 24);
+const TIER = { fast: { fps: WB_FPS, crf: 26 }, hd: { fps: WB_FPS, crf: 20 }, hd_plus: { fps: 60, crf: 18 }, "hd+": { fps: 60, crf: 18 } };
 const DRAW = { lineart: 2.5, color: 4, diagram: 6, detail: 5 };
 
 const dataUri = (p) => {
