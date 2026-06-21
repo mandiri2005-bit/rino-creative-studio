@@ -49,9 +49,20 @@ if (!synthetic && /^(1|true|yes)$/i.test(process.env.VIDEO_R2_LIFECYCLE || "")) 
 const mode = process.env.VIDEO_SYNTHETIC === "1" ? "synthetic" : "http";
 console.log(`[video-worker] up — audio/visual/check/stitch workers running (generation: ${mode})`);
 
+// GRACEFUL SHUTDOWN — on redeploy/restart Railway sends SIGTERM before SIGKILL. Stop accepting new
+// jobs and let ACTIVE ones finish (BullMQ worker.close() drains in-flight processors) so a deploy
+// doesn't kill a mid-render job (→ stall/re-run/re-charge). Capped by WB_DRAIN_TIMEOUT_MS so a very
+// long render can't block the exit forever (it just re-queues). Pair with the pre-deploy gate
+// (video/predeploy-check.mjs) which defers the deploy itself while jobs are active.
+let _draining = false;
 async function shutdown(sig) {
-  console.log(`[video-worker] ${sig} — draining…`);
-  try { await engine.close(); } finally { process.exit(0); }
+  if (_draining) return; _draining = true;
+  const maxMs = Number(process.env.WB_DRAIN_TIMEOUT_MS) || 120000;
+  console.log(`[video-worker] ${sig} → draining active jobs before exit (max ${maxMs}ms)…`);
+  const t = setTimeout(() => { console.warn(`[video-worker] drain exceeded ${maxMs}ms → exiting; unfinished jobs re-queue`); process.exit(0); }, maxMs);
+  try { await engine.close(); console.log("[video-worker] drained cleanly → exit"); }
+  catch (e) { console.warn("[video-worker] drain error:", e.message); }
+  finally { clearTimeout(t); process.exit(0); }
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
