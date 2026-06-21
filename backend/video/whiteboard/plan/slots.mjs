@@ -15,13 +15,14 @@ export const SLOT_MAP_16_9 = {
   left_note: { x: 470, y: 540, w: 320, h: 260 },
   right_note: { x: 1450, y: 540, w: 320, h: 260 },
 
-  // problem_solution
-  left_center: { x: 560, y: 540, w: 330, h: 290 },
-  left_bottom: { x: 560, y: 820, w: 300, h: 220 },
-  center_arrow: { x: 960, y: 540, w: 220, h: 120 },
-  right_center: { x: 1360, y: 540, w: 330, h: 290 },
-  right_top: { x: 1360, y: 300, w: 300, h: 230 },
-  right_bottom: { x: 1360, y: 800, w: 300, h: 230 },
+  // problem_solution — heights kept SHORT so each icon's below-label clears the next stacked icon
+  // (icons/lineart draw the label BELOW the box; the right column stacks 3 → was overlapping). (Rino)
+  left_center: { x: 560, y: 470, w: 300, h: 200 },
+  left_bottom: { x: 560, y: 820, w: 300, h: 170 },
+  center_arrow: { x: 960, y: 520, w: 200, h: 110 },
+  right_center: { x: 1360, y: 540, w: 280, h: 150 },
+  right_top: { x: 1360, y: 285, w: 280, h: 150 },
+  right_bottom: { x: 1360, y: 800, w: 280, h: 150 },
 
   // process_flow (4 steps + 3 connectors between them)
   step_1: { x: 340, y: 560, w: 260, h: 240 },

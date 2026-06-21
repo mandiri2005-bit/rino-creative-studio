@@ -43,7 +43,10 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
   // resolves to a stray "arrow-up" chip (asset_query "arrow"/"arrow right" all score to tabler:
   // arrow-up). Drop them in EVERY mode → a clean concept row / flowchart, never random ↑ icons.
   // (Was the "panah ke arah atas" + "kadang ada kadang ngga" bug: only diagram filtered, not icons.)
-  const isConnectorEl = (e) => /^connector/i.test(e.slot || "") || e.type === "arrow" || e.type === "connector";
+  // connector/arrow elements are flow FILLER — drop them. Also catches the problem_solution
+  // "center_arrow" slot (q "arrow right" → a stray ↑ chip with a transition label like "Menyaksikan"
+  // that reads as noise; the arrows are auto-drawn in diagram anyway). (Rino: "arrow gak jelas")
+  const isConnectorEl = (e) => /(^connector|arrow)/i.test(e.slot || "") || /^arrow\b/i.test(e.asset_query || "") || e.type === "arrow" || e.type === "connector";
   let workEls = laid.elements.filter((e) => !isConnectorEl(e));
   if (mode === "diagram") {
     const nodes = workEls; // already connector-free

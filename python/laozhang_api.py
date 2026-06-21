@@ -6795,6 +6795,13 @@ async def video_segment(req: VideoSegmentReq,
     else:
         if not (req.text or "").strip():
             raise HTTPException(400, "text is required")
+        # CAP pasted narration at 10 minutes' worth of words (language-aware) — a huge paste must not
+        # become a 15-min render. EN 10*130=1300, ID 10*105=1050. Tell the user how much to cut. (Rino)
+        _wc = len((req.text or "").split())
+        _wpm = _vseg.wpm_for(req.language or "id")
+        _cap = 10 * _wpm
+        if _wc > _cap:
+            raise HTTPException(400, f"Narasi kepanjangan: ~{_wc} kata (≈ {round(_wc/_wpm)} menit). Maksimal 10 menit (~{_cap} kata) — kurangi sekitar {_wc - _cap} kata dulu.")
         _brief = await _video_visual_brief(req.text, req.gen_model, user, _byok_active())
         if req.nusantara_corpus:
             try: _brief, _, _ = _corpus_enhance(_brief)

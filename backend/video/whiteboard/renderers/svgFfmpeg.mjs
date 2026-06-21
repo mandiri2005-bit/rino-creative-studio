@@ -34,6 +34,30 @@ const FONT_STACK = "Inter, 'Liberation Sans', 'DejaVu Sans', 'Noto Sans', Arial,
 // longer than the planned window → audio is NEVER truncated (fixes "kepotong di awal scene N").
 const AUDIO_TAIL_PAD = Number(process.env.WB_AUDIO_TAIL_PAD || 0.12);
 
+// Render a node label as WRAPPED lines that fit `maxW` px (≈ the node's own width) so long labels in
+// a tight timeline/flow don't overflow into the neighbour's label ("diagram alur nimpa2" — Rino).
+// One line if it fits; else word-wrap to ≤2 lines (overflow merged into line 2); shrink the font if a
+// single word still overflows. Lines stack DOWNWARD from baseY (stays below the node).
+function labelSvg(text, cx, baseY, maxW, { fontSize = 34, weight = 800, fill = "#1F2937", opacity = 1 } = {}) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  const maxChars = Math.max(6, Math.floor(maxW / (fontSize * 0.55)));
+  const T = (y, fs, str) => `<text x="${cx}" y="${y.toFixed(1)}" text-anchor="middle" font-family="${FONT_STACK}" font-weight="${weight}" font-size="${fs}" fill="${fill}" opacity="${opacity}">${esc(str)}</text>`;
+  if (s.length <= maxChars) return T(baseY, fontSize, s);
+  const words = s.split(/\s+/); const lines = []; let cur = "";
+  for (const w of words) {
+    if (!cur) cur = w;
+    else if ((cur + " " + w).length <= maxChars) cur += " " + w;
+    else { lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  if (lines.length > 2) lines.splice(1, lines.length - 1, lines.slice(1).join(" ")); // merge overflow → line 2
+  const longest = Math.max(...lines.map((l) => l.length), 1);
+  const fs = longest > maxChars ? Math.max(20, Math.floor(fontSize * maxChars / longest)) : fontSize;
+  const lh = fs * 1.12;
+  return lines.map((l, i) => T(baseY + i * lh, fs, l)).join("");
+}
+
 // pure-JS point-at-progress along a path `d` (Chromium-free replacement for getPointAtLength),
 // cached per `d`. Drives the marker hand that follows the pen.
 let _pathProps = null;
@@ -189,7 +213,7 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         out.push(`<image href="${el.raster}" x="${x}" y="${y + iconTop}" width="${b.w}" height="${iconH}" preserveAspectRatio="xMidYMid meet" clip-path="url(#${id})"/>`);
         if (el.label) {
           const ly2 = diagram ? y + b.h * 0.68 + 28 : y + b.h + 34;
-          out.push(`<text x="${b.x}" y="${ly2}" text-anchor="middle" font-family="${FONT_STACK}" font-weight="${pack.font?.weight || 800}" font-size="${pack.font?.labelSize || 34}" fill="${ink}" opacity="${clamp((p - 0.4) * 2, 0, 1)}">${esc(el.label)}</text>`);
+          out.push(labelSvg(el.label, b.x, ly2, b.w, { fontSize: pack.font?.labelSize || 34, weight: pack.font?.weight || 800, fill: ink, opacity: clamp((p - 0.4) * 2, 0, 1) }));
         }
         continue;
       }
@@ -276,7 +300,7 @@ export function buildSceneSvg(plan, frame, fps = 30) {
 
     if (el.label) {
       const ly = diagram ? y + b.h * 0.68 + 28 : y + b.h + 34;
-      out.push(`<text x="${b.x}" y="${ly}" text-anchor="middle" font-family="${FONT_STACK}" font-weight="${pack.font?.weight || 800}" font-size="${pack.font?.labelSize || 34}" fill="${ink}" opacity="${clamp((p - 0.4) * 2, 0, 1)}">${esc(el.label)}</text>`);
+      out.push(labelSvg(el.label, b.x, ly, b.w, { fontSize: pack.font?.labelSize || 34, weight: pack.font?.weight || 800, fill: ink, opacity: clamp((p - 0.4) * 2, 0, 1) }));
     }
   }
   // overlays (highlight circles)
