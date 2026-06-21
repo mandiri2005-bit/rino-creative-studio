@@ -7399,10 +7399,15 @@ async def video_credits_refund(req: VideoRefundReq,
     job_id = (req.job_id or "").strip()
     if not job_id:
         raise HTTPException(400, "job_id required")
-    # charges are negative deltas tagged with video_job; -SUM = what to give back
+    # charges are negative deltas tagged with video_job; -SUM = what to give back. TOLERANT of both
+    # encodings: new rows store metadata as a jsonb OBJECT (metadata->>'video_job'); historical rows
+    # were double-encoded as a jsonb STRING (the old credits.py double-dump bug) → reach the tag via
+    # (metadata #>> '{}')::jsonb. Without this branch every refund summed 0 (refunds silently failed).
     spent = await db._q_fetchval(
         "SELECT COALESCE(-SUM(delta),0) FROM credit_ledger "
-        "WHERE tenant_id=$1 AND reason='charge' AND delta<0 AND metadata->>'video_job'=$2",
+        "WHERE tenant_id=$1 AND reason='charge' AND delta<0 AND ("
+        "  metadata->>'video_job'=$2 "
+        "  OR (jsonb_typeof(metadata)='string' AND (metadata #>> '{}')::jsonb->>'video_job'=$2))",
         db._uid(user.tenant_id), job_id, tenant=str(user.tenant_id))
     spent = int(spent or 0)
     if spent <= 0:

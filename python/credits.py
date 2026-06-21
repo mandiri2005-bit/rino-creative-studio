@@ -124,8 +124,8 @@ async def _credit_apply(tenant_id: str, delta: int, reason: str, *,
     row = await db._q_fetchrow(
         "SELECT applied, balance FROM credit_apply($1,$2,$3,$4,$5,$6::jsonb)",
         db._uid(tenant_id), db._uid(user_id) if user_id else None,
-        int(delta), reason, op_id, _json.dumps(metadata or {}),
-        tenant=str(tenant_id))
+        int(delta), reason, op_id, metadata or {},   # pass the DICT — the asyncpg jsonb codec
+        tenant=str(tenant_id))                        # encodes ONCE; json.dumps here = double-encode
     return (bool(row["applied"]), int(row["balance"])) if row else (False, 0)
 
 
@@ -393,7 +393,7 @@ async def grant_capped(tenant_id, allowance, carryover_cap=None, *, reason, op_i
         "SELECT applied, balance, delta FROM credit_grant_capped($1,$2,$3,$4,$5,$6,$7::jsonb)",
         tenant_id,
         [db._uid(tenant_id), db._uid(user_id) if user_id else None, int(allowance),
-         int(cap), reason, op_id, _json.dumps(metadata or {})],
+         int(cap), reason, op_id, metadata or {}],   # dict → codec encodes once (no double-dump)
         user_id)
 
 async def claim_daily(tenant_id, daily=None, ceiling=None, op_id=None, user_id=None) -> int:
@@ -406,7 +406,7 @@ async def claim_daily(tenant_id, daily=None, ceiling=None, op_id=None, user_id=N
         "SELECT applied, balance, delta FROM credit_claim_daily($1,$2,$3,$4,$5,$6::jsonb)",
         tenant_id,
         [db._uid(tenant_id), db._uid(user_id) if user_id else None, int(daily),
-         int(ceiling), op_id, _json.dumps({})],
+         int(ceiling), op_id, {}],   # dict → codec encodes once (no double-dump)
         user_id)
 
 async def ensure_daily(tenant_id: str) -> None:
