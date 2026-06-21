@@ -204,6 +204,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     <div class="brand"><img src="/app/assets/ceritaai-mark.png" alt="" onerror="this.style.display='none'"/>Video Instant <span class="zap">⚡</span></div>
     <div class="top-r">
       <span class="credit-pill" id="creditPill" title="Sisa kredit" style="display:none">⬡ <b id="creditVal">—</b></span>
+      <button class="lnk" style="background:none;cursor:pointer" onclick="window.__viHistory&&window.__viHistory()">🎬 Video saya</button>
       <button class="lnk" style="background:none;cursor:pointer" onclick="window.__tpOpen&&window.__tpOpen()">📜 Teleprompter</button>
       <a class="lnk" href="/start.html">← Ganti jalur</a>
       <a class="lnk" href="/app/">Studio</a>
@@ -622,6 +623,37 @@ select option{ background:#111019!important; color:var(--t)!important; }
   function clearErr(){ errBox.style.display="none"; }
   function setBusy(b){ btn.disabled=b; btn.textContent=b?"Sedang dibuat…":"Buat video ⚡"; }
 
+  // ── persistence: a hard-refresh must NEVER lose a finished video (it lives in R2). We keep the
+  // last jobs in localStorage and re-hydrate the newest on load + offer a "Video saya" list. ──
+  const VI_LS="vi:jobs"; let viHandoff=false;
+  function viLoad(){ try{ return JSON.parse(localStorage.getItem(VI_LS)||"[]"); }catch{ return []; } }
+  function viSaveList(l){ try{ localStorage.setItem(VI_LS, JSON.stringify(l.slice(0,20))); }catch{} }
+  function viRemember(id, meta){ if(!id) return; const l=viLoad().filter(x=>x.id!==id);
+    l.unshift({id, ts:Date.now(), scenes:(meta&&meta.scenes)||0, title:((meta&&meta.title)||"").trim()}); viSaveList(l); }
+  function viForget(id){ viSaveList(viLoad().filter(x=>x.id!==id)); }
+  async function resumeJob(id){   // re-attach to an existing job: show it (done→video, running→resume poll)
+    if(!id) return; state.jobId=id;
+    try{
+      const j=await api("/api/video/assemble/"+id,{method:"GET"});
+      renderJob(j,{sceneCount:j.sceneCount});
+      if(j.status==="running"||j.status==="stitching"||j.status==="queued"){ setBusy(true); pollJob({sceneCount:j.sceneCount}); }
+    }catch(e){ if(e&&e.status===404) viForget(id); } // expired/gone → drop quietly
+  }
+  window.__viOpen=(id)=>resumeJob(id);
+  window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; setBusy(false);
+    stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Siap bikin video baru</h3><p>Atur pengaturan di kiri, lalu tekan Buat video.</p></div>'; };
+  window.__viHistory=()=>{
+    const l=viLoad();
+    if(!l.length){ stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Belum ada video</h3><p>Video yang kamu buat tersimpan di sini (R2 menyimpan ±7 hari).</p></div>'; return; }
+    stage.innerHTML='<div class="stage-head"><div><div class="st-t">Video saya</div><div class="st-s">'+l.length+' terakhir</div></div>'+
+      '<div class="head-right"><button class="lnk" style="background:none;cursor:pointer" onclick="window.__viNew()">+ Baru</button></div></div>'+
+      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">'+l.map(x=>{
+        const t=new Date(x.ts).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+        const ttl=x.title?(' · '+String(x.title).replace(/[<>]/g,"").slice(0,48)):"";
+        return '<button onclick="window.__viOpen(\''+x.id+'\')" style="text-align:left;padding:12px 14px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);color:inherit;cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center"><span>🎬 '+(x.scenes||"?")+' scene'+ttl+'</span><span style="opacity:.55;white-space:nowrap;font-size:12px">'+t+'</span></button>';
+      }).join("")+'</div>';
+  };
+
   $("#produceBtn").onclick=async()=>{
     clearErr();
     const topic=$("#topic").value.trim(), narration=$("#narration").value.trim();
@@ -655,6 +687,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
       })});
       state.jobId=asm.jobId;
+      viRemember(asm.jobId,{scenes:asm.sceneCount,title:(state.narrationText||"").slice(0,60)});
       pollJob(asm);
     }catch(e){
       setBusy(false);
@@ -731,7 +764,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       stage.innerHTML=head+'<div class="player">'+
         (src?'<video src="'+src+'" controls autoplay playsinline></video>':'<div class="stage-empty" style="min-height:200px"><div class="big">✅</div><h3>Video jadi</h3><p>File tersimpan. URL pratinjau butuh penyimpanan objek (R2) aktif.</p></div>')+
         '<div class="p-actions">'+(src?'<button class="dl" onclick="window.__dlVideo()">Unduh MP4</button>':'')+
-        '<button class="again" onclick="location.reload()">Buat lagi</button></div></div>'+
+        '<button class="again" onclick="window.__viNew()">Buat lagi</button></div></div>'+
         '<div class="note">Durasi ≈ '+(j.durationActual||"?")+' dtk · suara jadi penentu tempo.</div>';
       return;
     }
@@ -764,6 +797,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       localStorage.removeItem("rc_vi_handoff");
       const h=JSON.parse(raw);
       if(h&&h.text&&(!h.ts||Date.now()-h.ts<30*60*1000)){
+        viHandoff=true; // came from Studio to make a NEW video → don't auto-rehydrate the old one
         state.mode="B";
         $$("#modeSeg button").forEach(x=>x.classList.toggle("on",x.dataset.mode==="B"));
         $("#modeA").style.display="none"; $("#modeB").style.display="";
@@ -773,6 +807,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
       }
     }catch{}
   })();
+
+  // ── rehydrate: on load, re-attach to the most recent job so a refresh keeps your video.
+  // Skipped when a Studio handoff just prefilled the form for a NEW video. ──
+  (function rehydrate(){ if(viHandoff) return; const last=viLoad()[0]; if(last) resumeJob(last.id); })();
 
   // init
   // ── teleprompter ──
