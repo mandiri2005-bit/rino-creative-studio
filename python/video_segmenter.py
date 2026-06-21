@@ -78,7 +78,20 @@ from typing import Optional
 # ══════════════════════════════════════════════════════════════════════════════
 # Constants — the formula's tunables
 # ══════════════════════════════════════════════════════════════════════════════
-WORDS_PER_MINUTE = 130          # documentary narration pace
+WORDS_PER_MINUTE = 130          # documentary narration pace (English baseline; legacy default)
+# LANGUAGE-AWARE pace: TTS speaks Indonesian/regional tongues much SLOWER than English, so a flat 130
+# wpm made "1 min" come out ~1:38 (130 ID words ≈ 98s of speech). Pace the WORD TARGET to the actual
+# spoken rate per language → the rendered video lands near the requested duration. (Rino)
+WPM_BY_LANG = {
+    "en": 130,
+    "id": 85, "ms": 85,                                   # Indonesian / Malay
+    "jv": 85, "su": 85, "min": 85, "ban": 85, "bug": 85,  # Javanese/Sundanese/Minang/Balinese/Buginese
+    "btk": 85, "ace": 85, "mad": 85,                       # Batak/Acehnese/Madurese (Suara Lokal moat)
+}
+def wpm_for(language: str | None) -> int:
+    """Words-per-minute target for the given output language; defaults to the Indonesian pace
+    (the product is Indonesian-first), English keeps the faster 130."""
+    return WPM_BY_LANG.get((language or "id").strip().lower(), 85)
 WORDS_PER_SCENE = 45            # scene_count = round(target_words / WORDS_PER_SCENE)
 IMAGE_SCENE_SECONDS = 8         # full_images pacing: ~one fresh image every 8s
 MIN_SCENES = 2                  # a video is at least two scenes (so there's a cut)
@@ -276,18 +289,21 @@ def _batch_plan(scene_count: int, batch_size: int = BATCH_SIZE) -> list[int]:
 
 def calculate_video_params(minutes: float, tier: str = "hd",
                            visual_mode: str = "",
-                           clip_model: str = DEFAULT_CLIP_MODEL) -> VideoParams:
+                           clip_model: str = DEFAULT_CLIP_MODEL,
+                           language: str = "id") -> VideoParams:
     """The central formula. From a target duration, derive everything downstream
     reads: scene count, words per scene, dispatch mode, batch plan, progress UI,
     and the planning credit estimate. When `visual_mode` wants clips the scenes
-    are sized DOWN to the clip length so they're actually clip-eligible."""
+    are sized DOWN to the clip length so they're actually clip-eligible.
+    `language` paces the word target to the actual spoken rate (wpm_for)."""
     if minutes is None or minutes <= 0:
         raise ValueError("minutes must be > 0")
     tier = _normalize_tier(tier)
-    target_words = round(minutes * WORDS_PER_MINUTE)
+    wpm = wpm_for(language)
+    target_words = round(minutes * wpm)
     scene_count = scene_count_for_words(target_words, words_per_scene_for(visual_mode, clip_model))
     words_per_scene = max(1, round(target_words / scene_count))
-    seconds_per_scene = round(words_per_scene / WORDS_PER_MINUTE * 60, 2)
+    seconds_per_scene = round(words_per_scene / wpm * 60, 2)
     by_tier = tier_credits(scene_count)
     return VideoParams(
         minutes=float(minutes),
@@ -768,11 +784,12 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
     (which layers STYLE_RULES on top); the returned text is then passed to
     `segment()`. Kept here so the word-count target lives with the formula."""
     lang = LANGUAGE_NAMES.get((language or "id").strip().lower(), "Bahasa Indonesia")
+    _wpm = wpm_for(language)
     style_clause = f" in the '{style}' style" if style else ""
     return (
         f"Write documentary voiceover narration{style_clause} about: {topic}.\n"
         f"Language: {lang}. Target length: about {target_words} words "
-        f"(~{target_words / WORDS_PER_MINUTE:.1f} minutes at {WORDS_PER_MINUTE} wpm).\n"
+        f"(~{target_words / _wpm:.1f} minutes at {_wpm} wpm) — STAY CLOSE to {target_words} words.\n"
         f"Write flowing spoken narration in complete sentences — no headings, no "
         f"scene labels, no stage directions. Pace it for the ear."
     )
@@ -784,7 +801,8 @@ def build_generation_prompt(topic: str, target_words: int, style: str = "",
 def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
             style: str = "", clip_model: str = DEFAULT_CLIP_MODEL,
             tier: str = "hd", visual_mode: str = "",
-            visual_style: str = "", scene_context: str = "") -> SegmentResult:
+            visual_style: str = "", scene_context: str = "",
+            language: str = "id") -> SegmentResult:
     """Cut narration into timed scene objects.
 
     Mode A: pass the freshly generated narration and the `minutes` it targeted;
@@ -796,19 +814,20 @@ def segment(text: str, *, mode: str = "B", minutes: Optional[float] = None,
     mode = (mode or "B").strip().upper()
     text = (text or "").strip()
     actual_words = _word_count(text)
-    actual_minutes = round(actual_words / WORDS_PER_MINUTE, 2)
+    _wpm = wpm_for(language)
+    actual_minutes = round(actual_words / _wpm, 2)
 
     if mode == "A":
         if minutes is None or minutes <= 0:
             raise ValueError("Mode A requires the target `minutes`")
-        params = calculate_video_params(minutes, tier, visual_mode, clip_model)
+        params = calculate_video_params(minutes, tier, visual_mode, clip_model, language)
         note = (f"Mode A: targeted {params.target_words} words "
                 f"(~{minutes:.1f} min); generated {actual_words} words.")
     else:
         # Mode B: the existing narration IS the truth. Plan from its real length.
         eff_minutes = actual_minutes if actual_words else (minutes or 0)
-        params = calculate_video_params(max(eff_minutes, 1 / WORDS_PER_MINUTE), tier,
-                                        visual_mode, clip_model)
+        params = calculate_video_params(max(eff_minutes, 1 / _wpm), tier,
+                                        visual_mode, clip_model, language)
         # re-anchor the reported target on the real text, never on a request
         params.target_words = actual_words
         params.minutes = actual_minutes

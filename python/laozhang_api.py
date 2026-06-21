@@ -6635,7 +6635,7 @@ async def video_params(req: VideoParamsReq):
     """Duration → scene_count / words / batch / credits. Drives the UI picker.
     `credits` is the HONEST per-asset estimate (Model B); `credits_flat` keeps the
     old tier-flat number for reference."""
-    p = _vseg.calculate_video_params(req.minutes, req.tier, req.visual_mode, req.clip_model)
+    p = _vseg.calculate_video_params(req.minutes, req.tier, req.visual_mode, req.clip_model, getattr(req, "language", None) or "id")
     out = _asdict(p)
     out["credits_flat"] = out.get("credits")
     try:
@@ -6752,7 +6752,7 @@ async def video_segment(req: VideoSegmentReq,
             raise HTTPException(400, "topic is required for mode A")
         if req.minutes is None or req.minutes <= 0:
             raise HTTPException(400, "minutes is required for mode A")
-        params = _vseg.calculate_video_params(req.minutes, req.tier, req.visual_mode or "hybrid", req.clip_model)
+        params = _vseg.calculate_video_params(req.minutes, req.tier, req.visual_mode or "hybrid", req.clip_model, getattr(req, "language", None) or "id")
         prompt = _vseg.build_generation_prompt(topic, params.target_words, req.style, req.language)
         _byok = _byok_active()
         if user:
@@ -6791,7 +6791,7 @@ async def video_segment(req: VideoSegmentReq,
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
                                visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
-                               scene_context=_brief)
+                               scene_context=_brief, language=req.language or "id")
     else:
         if not (req.text or "").strip():
             raise HTTPException(400, "text is required")
@@ -6802,7 +6802,7 @@ async def video_segment(req: VideoSegmentReq,
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
                                visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
-                               scene_context=_brief)
+                               scene_context=_brief, language=req.language or "id")
 
     out = result.to_dict()
     out["brief"] = _brief   # the art-direction brief → the UI builds a reference anchor from it
