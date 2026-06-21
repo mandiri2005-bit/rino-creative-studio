@@ -388,6 +388,20 @@ const ff = (args) => new Promise((res, rej) => {
   p.on("error", rej); p.on("close", (c) => (c === 0 ? res() : rej(new Error(`ffmpeg ${c}: ${err.slice(-300)}`))));
 });
 
+// Optional, default-OFF x264 tuning, spliced into BOTH encodes (per-scene + final concat) — byte-identical
+// to before when both env are unset. WB_FFMPEG_PRESET=veryfast ≈ 2-4× faster encode on flat whiteboard
+// frames at near-identical quality (same CRF) → shrinks the single-process encode/concat "valleys" where
+// the box is otherwise ~1 core busy. WB_FFMPEG_THREADS caps each encoder's thread fan-out so encoders
+// don't oversubscribe the CPUs against the scene/raster pools when WB_SCENE_CONCURRENCY>1.
+function x264Tune() {
+  const a = [];
+  const preset = (process.env.WB_FFMPEG_PRESET || "").trim();
+  if (preset) a.push("-preset", preset);
+  const threads = (process.env.WB_FFMPEG_THREADS || "").trim();
+  if (threads) a.push("-threads", threads);
+  return a;
+}
+
 // probe a media file's duration (seconds) — resolves null on ANY failure (never throws), so a
 // missing/racing audio file just falls back to the planned window instead of breaking the render.
 const ffprobeDur = (file) => new Promise((res) => {
@@ -446,7 +460,7 @@ export async function renderSceneSvgFfmpeg(plan, outMp4, { fps = 30, crf = 23, a
     // every later scene earlier and desyncs the drawing). apad then pads trailing silence so -shortest
     // trims the audio to the EXACT (now audio-covering) video length → narration never truncated, and
     // the half-frame video/audio quantisation drift stays absorbed. 44.1k stereo → uniform concat input.
-    args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf),
+    args.push("-c:v", "libx264", ...x264Tune(), "-pix_fmt", "yuv420p", "-crf", String(crf),
       "-af", "afade=t=in:st=0:d=0.01,apad", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest", outMp4);
     await ff(args);
     return { path: outMp4, frames };
@@ -466,7 +480,12 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
   const sceneMp4s = [];
   let totalFrames = 0;
   try {
-    for (let i = 0; i < scenes.length; i++) {
+    // Per-scene render, extracted so it can run SERIALLY (the proven default → byte-identical output) or
+    // through a bounded pool when WB_SCENE_CONCURRENCY>1 (overlaps scenes to fill the single-thread
+    // SVG-build + ffmpeg-encode valleys). Results are written BY INDEX so concat order is always
+    // preserved even when scenes finish out of order. On an 8-vCPU box pair SC=2 with
+    // WB_RASTER_CONCURRENCY≈4 so SC×K stays ≤ cores (avoid raster-pool thrash).
+    const renderOne = async (i) => {
       const sc = scenes[i];
       const sceneDur = Math.max(0.5, Number(sc.duration) || 0.5);
       let plan = null;
@@ -500,9 +519,19 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
       const mp4 = join(work, `scene-${i}.mp4`);
       const r = await renderSceneSvgFfmpeg(plan, mp4, { fps, crf: tier.crf, audioPath: sc.audioPath || null });
       totalFrames += r.frames; // ACTUAL frames (may be > planned when narration drove a window extension)
-      sceneMp4s.push(mp4);
-      // live render progress (best-effort; the worker writes it to the job meta for the UI bar)
-      if (opts.onProgress) { try { await opts.onProgress(i + 1, scenes.length); } catch { /* non-fatal */ } }
+      sceneMp4s[i] = mp4;      // BY INDEX → concat stays in scene order even if scenes finish out of order
+    };
+    // progress = a monotonic completion COUNT (UI shows N/total); identical to i+1 on the serial path.
+    const SC = Math.max(1, Number(process.env.WB_SCENE_CONCURRENCY) || 1);
+    let progressDone = 0;
+    const tick = async () => { progressDone++; if (opts.onProgress) { try { await opts.onProgress(progressDone, scenes.length); } catch { /* non-fatal */ } } };
+    if (SC <= 1) {
+      for (let i = 0; i < scenes.length; i++) { await renderOne(i); await tick(); } // proven serial path (default)
+    } else {
+      // bounded pool: same shared-index idiom as rasterizeMany; the FIRST error aborts the render (matches serial).
+      let next = 0;
+      const pump = async () => { while (next < scenes.length) { const i = next++; await renderOne(i); await tick(); } };
+      await Promise.all(Array.from({ length: Math.min(SC, scenes.length) }, () => pump()));
     }
     // concat via the FILTER (decode + sample-accurate join), NOT the demuxer: the demuxer left an AAC
     // encoder-priming gap/click at EVERY scene boundary ("audio patah di pergantian scene"). The
@@ -514,7 +543,7 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
       const inputs = sceneMp4s.flatMap((m) => ["-i", m]);
       const fc = sceneMp4s.map((_, i) => `[${i}:v:0][${i}:a:0]`).join("") + `concat=n=${sceneMp4s.length}:v=1:a=1[v][a]`;
       await ff(["-y", ...inputs, "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(tier.crf), "-c:a", "aac", "-ar", "44100", "-ac", "2", outPath]);
+        "-c:v", "libx264", ...x264Tune(), "-pix_fmt", "yuv420p", "-crf", String(tier.crf), "-c:a", "aac", "-ar", "44100", "-ac", "2", outPath]);
     }
     // ACTUAL rendered length (sum of real per-scene frames) — covers any audio-driven window
     // extension so the video meter (workers.mjs) and QA expectedDuration match the probed mp4.
