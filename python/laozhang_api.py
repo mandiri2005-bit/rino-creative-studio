@@ -6744,8 +6744,19 @@ async def _video_visual_brief(content: str, model: str, user, byok: bool) -> str
         return ""
 
 
+async def _req_canceled(request) -> bool:
+    """True if the client disconnected (pressed Batalkan). Used to SKIP charges + downstream LLM work
+    so a cancelled generation never bills the user. Best-effort — if the platform proxy doesn't
+    propagate the disconnect, it falls through to normal (so it never wrongly drops a live request)."""
+    try:
+        return bool(request) and await request.is_disconnected()
+    except Exception:
+        return False
+
+
 @app.post("/video/segment")
 async def video_segment(req: VideoSegmentReq,
+                        request: Request,
                         user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Cut narration into timed scene objects (Mode A: to a target; Mode B:
     existing text, never truncated). When visual_mode is set, also runs the
@@ -6816,6 +6827,9 @@ async def video_segment(req: VideoSegmentReq,
             raise HTTPException(status_code=502, detail=f"narration generation failed: {e}")
         if not narration:
             raise HTTPException(502, "narration generation returned empty")
+        if await _req_canceled(request):   # user pressed Batalkan during "Menulis narasi" → don't charge
+            print("[video/segment] canceled after narration → skip debit + brief/segment/decide (no charge)")
+            return {"canceled": True, "scenes": []}
         if user:
             try:
                 _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
@@ -6844,6 +6858,9 @@ async def video_segment(req: VideoSegmentReq,
         _cap = 10 * _wpm
         if _wc > _cap:
             raise HTTPException(400, f"Narasi kepanjangan: ~{_wc} kata (≈ {round(_wc/_wpm)} menit). Maksimal 10 menit (~{_cap} kata) — kurangi sekitar {_wc - _cap} kata dulu.")
+        if await _req_canceled(request):   # canceled before the (metered) brief → no charge
+            print("[video/segment] canceled (mode B) → skip brief/segment/decide (no charge)")
+            return {"canceled": True, "scenes": []}
         _brief = await _video_visual_brief(req.text, req.gen_model, user, _byok_active())
         if req.nusantara_corpus:
             try: _brief, _, _ = _corpus_enhance(_brief)
@@ -6855,6 +6872,9 @@ async def video_segment(req: VideoSegmentReq,
 
     out = result.to_dict()
     out["brief"] = _brief   # the art-direction brief → the UI builds a reference anchor from it
+    if await _req_canceled(request):   # canceled before the (metered) decide stage → no charge
+        print("[video/segment] canceled before decide → skip decide (no charge)")
+        return {"canceled": True, "scenes": []}
     if req.visual_mode:   # one-shot: segment + decide the visual treatment
         out["scenes"] = await _decide(out["scenes"], req.visual_mode, req.clip_model, req.clip_ratio, user=user)
         out["visual_mode"] = req.visual_mode
