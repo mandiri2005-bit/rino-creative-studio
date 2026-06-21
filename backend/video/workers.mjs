@@ -299,7 +299,7 @@ export async function visualProcessor(job, deps) {
                     for (let _a = 1; _a <= _heroTries; _a++) {
                       try {
                         b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
-                          { query: heroQuery, provider: _heroProvider, aspect, seed: 1000 + sceneIndex * 13, mode: "hero", timeoutMs: _heroTimeout });
+                          { query: heroQuery, provider: _heroProvider, aspect, seed: 1000 + sceneIndex * 13, mode: "hero", timeoutMs: _heroTimeout, heroStyle: meta.heroStyle });
                         if (b64) break;
                       } catch (he) {
                         console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero gen attempt ${_a}/${_heroTries} failed: ${he.message}`);

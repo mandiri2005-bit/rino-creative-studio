@@ -7323,6 +7323,7 @@ class VideoWhiteboardRasterReq(BaseModel):
     aspect_ratio: str = "1:1"
     seed: int = 0
     mode: str = "subject"                # "subject" = one centered object (icon-reveal) | "hero" = a full cohesive SCENE (detail genre, 1 image/scene, drawn on)
+    hero_style: str = ""                 # per-video hero look from the VI UI (ink_watercolor|flat_vector|comic|caricature|pencil|engraving); "" → WB_HERO_STYLE env → ink_watercolor
 
 
 @app.post("/video/whiteboard-raster")
@@ -7367,7 +7368,8 @@ async def video_whiteboard_raster(req: VideoWhiteboardRasterReq,
             "pencil": "Detailed pencil sketch, clear graphite linework, light shading",
             "engraving": "Vintage line engraving woodcut, fine cross-hatched ink lines, monochrome",
         }
-        _hs = (os.environ.get("WB_HERO_STYLE") or "ink_watercolor").lower()
+        # per-video UI choice wins; WB_HERO_STYLE env is now just a fallback (obsolete as the control)
+        _hs = ((req.hero_style or "").strip().lower() or os.environ.get("WB_HERO_STYLE") or "ink_watercolor")
         style = _HERO_STYLES.get(_hs, _HERO_STYLES["ink_watercolor"])
         prompt = (f"{q}. {style}, a single cohesive scene, white background, no text, no words, no border.")
     else:

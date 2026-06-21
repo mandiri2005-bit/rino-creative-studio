@@ -123,7 +123,7 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
         captions: !!b.captions,
         voice: b.voice, imageModel: b.imageModel,
         ttsModel: b.ttsModel, language: b.language, genModel: b.genModel, aspectRatio: b.aspectRatio,
-        captionFont: b.captionFont, anchorKey, anchorB64,
+        captionFont: b.captionFont, anchorKey, anchorB64, heroStyle: b.heroStyle,
       }, deps());
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {

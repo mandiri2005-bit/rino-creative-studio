@@ -332,6 +332,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         </optgroup>
       </select>
 
+      <div id="imageModelWrap">
       <label class="lbl">Model gambar</label>
       <select id="imageModel">
         <option value="nano-banana-hd">Nano Banana HD ★ (16:9)</option>
@@ -346,6 +347,20 @@ select option{ background:#111019!important; color:var(--t)!important; }
         <option value="seedream-4-0">SeeDream 4.0</option>
         <option value="seedream-4-5">SeeDream 4.5</option>
       </select>
+      </div>
+      <!-- WB detail-realistis ONLY: replaces "Model gambar" (the hero uses a fixed raster provider,
+           not this image-model picker). Always-mounted + display-toggled (select-enhance gotcha). -->
+      <div id="heroStyleWrap" style="display:none">
+      <label class="lbl">Gaya hero</label>
+      <select id="heroStyle">
+        <option value="ink_watercolor">Ink watercolor</option>
+        <option value="flat_vector">Flat vector</option>
+        <option value="comic">Comic</option>
+        <option value="caricature">Caricature</option>
+        <option value="pencil">Pencil</option>
+        <option value="engraving">Engraving</option>
+      </select>
+      </div>
 
       <label class="lbl">Rasio</label>
       <div class="pills" id="arPills">
@@ -480,7 +495,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["3 mnt",3],["5 mnt",5],["10 mnt",10]];
-  const state={mode:"A",minutes:1,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
+  const state={mode:"A",minutes:1,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",heroStyle:"ink_watercolor",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -556,6 +571,11 @@ select option{ background:#111019!important; color:var(--t)!important; }
     // two can't conflict (Rino: WB on via Gaya narasi → Gaya visual disabled, and vice versa).
     lockEnhancedSelect($("#style"), wb && state.wbSource!=="style");
     lockEnhancedSelect($("#visualStyle"), wb && state.wbSource!=="visualStyle");
+    // WB detail-realistis: swap "Model gambar" (irrelevant — hero uses a fixed raster provider) for
+    // the "Gaya hero" style picker. Toggle WRAPPER display (selects stay mounted → select-enhance safe).
+    const isDetail = state.whiteboardGenre==="detail";
+    $("#heroStyleWrap").style.display = isDetail ? "" : "none";
+    $("#imageModelWrap").style.display = isDetail ? "none" : "";
   }
   $("#style").onchange=e=>{
     const g=wbGenreOf(e.target.value);
@@ -570,6 +590,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; refreshEstimate(); };
   $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
   $("#imageModel").onchange=e=>state.imageModel=e.target.value;
+  $("#heroStyle").onchange=e=>state.heroStyle=e.target.value;
   $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
   $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
   $("#captionFont").onchange=e=>state.captionFont=e.target.value;
@@ -686,6 +707,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         captions:state.captions, genModel:state.genModel,
         ttsModel:state.ttsModel, voice:state.voice, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
         imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
+        heroStyle:state.heroStyle,
       })});
       state.jobId=asm.jobId;
       viRemember(asm.jobId,{scenes:asm.sceneCount,title:(state.narrationText||"").slice(0,60)});

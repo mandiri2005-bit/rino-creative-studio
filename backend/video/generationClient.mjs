@@ -416,7 +416,7 @@ export function httpGenerationClient(opts = {}) {
     // Python /video/whiteboard-raster (laozhang flux-kontext-pro — Python owns the image key).
     // Returns base64 string or null; the worker vectorizes it (recraft) into the reveal mask and
     // meters flux-kontext-pro itself. null → caller falls back to Recraft / handwriting.
-    async generateWhiteboardRaster(ctx, { query, provider, aspect, seed, mode, timeoutMs } = {}) {
+    async generateWhiteboardRaster(ctx, { query, provider, aspect, seed, mode, timeoutMs, heroStyle } = {}) {
       // timeoutMs: abort a STALLED hero image gen (the upstream POST is 180s internally; a hero that
       // takes that long is a stall) so the worker can retry fast instead of blocking the whole scene.
       const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
@@ -426,6 +426,7 @@ export function httpGenerationClient(opts = {}) {
         body: JSON.stringify({
           query: query || "", provider: provider || "flux",
           aspect_ratio: aspect || "1:1", seed: Number(seed) || 0, mode: mode || "subject",
+          hero_style: heroStyle || "",   // per-video hero look (UI dropdown); "" → server default
         }),
       });
       if (!r.ok) throw new Error(`whiteboard-raster ${r.status}`);
