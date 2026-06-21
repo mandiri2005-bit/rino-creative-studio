@@ -285,8 +285,22 @@ export async function visualProcessor(job, deps) {
                     // WB_RASTER_PROVIDER (video-worker env) switches the detail-hero image model:
                     // "flux" (default → flux-kontext-pro, honors 16:9/9:16) | "nano-banana-hd" | etc.
                     // (any IMAGE_MODELS key the python /video/whiteboard-raster route accepts).
-                    const b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
-                      { query: heroQuery, provider: process.env.WB_RASTER_PROVIDER || "flux", aspect, seed: 1000 + sceneIndex * 13, mode: "hero" });
+                    // B: bound a STALLED hero gen (one scene took 188s = the 180s upstream timeout)
+                    // + retry once → a slow image no longer gates the whole asset phase. Both fail →
+                    // fall through to the icon fallback (raster stays undefined). Tunable WB_HERO_*.
+                    const _heroTimeout = Number(process.env.WB_HERO_TIMEOUT_MS) || 75000;
+                    const _heroTries = Math.max(1, Number(process.env.WB_HERO_RETRIES || 1) + 1);
+                    let b64 = null;
+                    for (let _a = 1; _a <= _heroTries; _a++) {
+                      try {
+                        b64 = await deps.generationClient?.generateWhiteboardRaster?.(ctx,
+                          { query: heroQuery, provider: process.env.WB_RASTER_PROVIDER || "flux", aspect, seed: 1000 + sceneIndex * 13, mode: "hero", timeoutMs: _heroTimeout });
+                        if (b64) break;
+                      } catch (he) {
+                        console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] hero gen attempt ${_a}/${_heroTries} failed: ${he.message}`);
+                        if (_a === _heroTries) throw he; // outer catch logs + falls back to icons
+                      }
+                    }
                     if (b64) {
                       raster = "data:image/png;base64," + b64;
                       meters.push({ operation: "image", model: "flux-kontext-pro", units: { count: 1 } });

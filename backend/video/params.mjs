@@ -17,6 +17,15 @@
 
 export const BATCH_SIZE = 10;
 
+// DISPATCH batch size — an ORCHESTRATION concern, decoupled from BATCH_SIZE (which stays the
+// UI card-threshold + Python cost lockstep). Batches dispatch SEQUENTIALLY (each waits for its
+// slowest scene), so small batches serialize asset-gen for no reason: the per-queue concurrency
+// (VIDEO_*_CONCURRENCY, default 10) + per-resource semaphores (clip submit cap, encoder slots)
+// already throttle PEAK load, so a bigger dispatch batch does NOT raise peak concurrency — it
+// only removes the inter-batch stalls. Default 24 → a typical ≤24-scene video dispatches as ONE
+// full-parallel batch (the proven ≤10 path, just wider). Env-tunable; lower to 10 to revert.
+export const DISPATCH_BATCH_SIZE = Math.max(1, Number(process.env.VIDEO_BATCH_SIZE) || 24);
+
 // Per-scene planning credits by quality tier (the up-front hold estimate; the
 // real charge is metered per scene at dispatch). Keys match the Python module.
 export const TIER_CREDITS_PER_SCENE = Object.freeze({ fast: 2, hd: 5, hd_plus: 8 });
@@ -33,12 +42,12 @@ export function normalizeTier(tier) {
 }
 
 /** "full_parallel" when the whole video fits one batch, else "batch". */
-export function dispatchMode(sceneCount, batchSize = BATCH_SIZE) {
+export function dispatchMode(sceneCount, batchSize = DISPATCH_BATCH_SIZE) {
   return sceneCount <= batchSize ? "full_parallel" : "batch";
 }
 
 /** How many scenes per dispatch batch, e.g. 43 → [10,10,10,10,3]. */
-export function batchPlan(sceneCount, batchSize = BATCH_SIZE) {
+export function batchPlan(sceneCount, batchSize = DISPATCH_BATCH_SIZE) {
   const n = Math.max(0, Math.trunc(sceneCount));
   if (n === 0) return [];
   if (n <= batchSize) return [n];
@@ -73,7 +82,7 @@ export function progressUi(sceneCount, cardLimit = BATCH_SIZE) {
  * Turn a scene list into the ordered batches the orchestrator dispatches.
  * Returns an array of arrays of scene objects (or indices), preserving order.
  */
-export function intoBatches(scenes, batchSize = BATCH_SIZE) {
+export function intoBatches(scenes, batchSize = DISPATCH_BATCH_SIZE) {
   const out = [];
   for (let i = 0; i < scenes.length; i += batchSize) {
     out.push(scenes.slice(i, i + batchSize));

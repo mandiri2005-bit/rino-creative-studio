@@ -16,7 +16,7 @@
 // (fail fast with 402) — it does NOT keep a second ledger or double-charge.
 // ─────────────────────────────────────────────────────────────────────────────
 import { QUEUE, DEFAULT_JOB_OPTS, METERED_JOB_OPTS } from "./connection.mjs";
-import { creditsForScenes, batchPlan as planBatches, normalizeTier } from "./params.mjs";
+import { creditsForScenes, batchPlan as planBatches, normalizeTier, dispatchMode, DISPATCH_BATCH_SIZE } from "./params.mjs";
 import * as store from "./store.mjs";
 
 // ── pure: batch index → [start, end) scene range ──
@@ -120,7 +120,7 @@ export async function startAssembly(ctx, deps) {
     ttsModel: ttsModel || "", language: language || "", genModel: genModel || "", aspectRatio,
     captionFont: captionFont || "",
     anchorKey: anchorKey || "", anchorB64: anchorB64 || "",
-    sceneCount: scenes.length, batchSize: 10, batchPlan,
+    sceneCount: scenes.length, batchSize: DISPATCH_BATCH_SIZE, batchPlan,
     status: "running", progress: 0, creditsEstimate: creditsNeeded,
     scenes,
   });
@@ -131,7 +131,7 @@ export async function startAssembly(ctx, deps) {
   return {
     jobId,
     sceneCount: scenes.length,
-    dispatch: scenes.length <= 10 ? "full_parallel" : "batch",
+    dispatch: dispatchMode(scenes.length),
     batchPlan,
     creditsEstimate: creditsNeeded,
   };
