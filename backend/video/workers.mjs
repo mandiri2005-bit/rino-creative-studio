@@ -307,6 +307,9 @@ export async function visualProcessor(job, deps) {
                 const { generateRecraftIcon, isRecraftCreditSkip } = await import("./whiteboard/visuals.mjs");
                 const kind = `icon-${genre}`; // genre-aware prompt → genre-aware cache
                 for (const el of plan.elements || []) {
+                  // Connectors/arrows are flow FILLER that resolvePlan DROPS at render → never pay
+                  // Recraft for them ("hug"/"Seperti pelukan" was generated then dropped). (Rino)
+                  if (/^connector/i.test(el.slot || "") || el.type === "arrow" || el.type === "connector") continue;
                   const q = el.asset_query || el.id;
                   const labelQ = el.label ? String(el.label).trim() : "";
                   try {
