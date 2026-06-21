@@ -685,15 +685,19 @@ select option{ background:#111019!important; color:var(--t)!important; }
   window.__viOpen=(id)=>resumeJob(id);
   window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; setBusy(false);
     stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Siap bikin video baru</h3><p>Atur pengaturan di kiri, lalu tekan Buat video.</p></div>'; };
-  window.__viHistory=()=>{
-    const l=viLoad();
-    if(!l.length){ stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Belum ada video</h3><p>Video yang kamu buat tersimpan di sini (R2 menyimpan ±7 hari).</p></div>'; return; }
-    stage.innerHTML='<div class="stage-head"><div><div class="st-t">Video saya</div><div class="st-s">'+l.length+' terakhir</div></div>'+
+  // Server-backed history (cross-device): the tenant's recent videos from /api/video/jobs, not this
+  // browser's localStorage. Click → __viOpen (re-fetches fresh status → plays the finished video).
+  window.__viHistory=async()=>{
+    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>Memuat video saya…</h3></div>';
+    let jobs=[]; try{ jobs=(await api("/api/video/jobs",{method:"GET"})).jobs||[]; }catch(e){}
+    if(!jobs.length){ stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Belum ada video</h3><p>Video yang kamu buat muncul di sini (tersimpan ±7 hari).</p></div>'; return; }
+    const badge=s=>s==="done"?'<span style="color:#7ee0a8">Selesai</span>':s==="failed"?'<span style="color:#e88">Gagal</span>':'<span style="color:#caa6ff">Proses</span>';
+    stage.innerHTML='<div class="stage-head"><div><div class="st-t">Video saya</div><div class="st-s">'+jobs.length+' terakhir</div></div>'+
       '<div class="head-right"><button class="lnk" style="background:none;cursor:pointer" onclick="window.__viNew()">+ Baru</button></div></div>'+
-      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">'+l.map(x=>{
-        const t=new Date(x.ts).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
-        const ttl=x.title?(' · '+String(x.title).replace(/[<>]/g,"").slice(0,48)):"";
-        return '<button onclick="window.__viOpen(\''+x.id+'\')" style="text-align:left;padding:12px 14px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);color:inherit;cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center"><span>🎬 '+(x.scenes||"?")+' scene'+ttl+'</span><span style="opacity:.55;white-space:nowrap;font-size:12px">'+t+'</span></button>';
+      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">'+jobs.map(x=>{
+        const t=x.createdAt?new Date(x.createdAt).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):"";
+        const dur=x.durationActual?(' · '+Math.round(x.durationActual)+'s'):'';
+        return '<button onclick="window.__viOpen(\''+x.jobId+'\')" style="text-align:left;padding:12px 14px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);color:inherit;cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center"><span>🎬 '+(x.sceneCount||"?")+' scene'+dur+' · '+badge(x.status)+'</span><span style="opacity:.55;white-space:nowrap;font-size:12px">'+t+'</span></button>';
       }).join("")+'</div>';
   };
 

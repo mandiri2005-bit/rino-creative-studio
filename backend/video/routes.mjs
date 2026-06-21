@@ -93,6 +93,25 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
     });
   });
 
+  // Server-backed "Video saya": the tenant's recent videos (cross-device; not just this browser's
+  // localStorage). Done videos carry a fresh signed mp4Url so they play directly.
+  app.get("/api/video/jobs", auth, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const tenantId = resolveTenantId ? await resolveTenantId(req) : null;
+    if (!tenantId) return res.json({ jobs: [] });
+    const rows = await store.listTenantJobs(tenantId, 24).catch(() => []);
+    const jobs = [];
+    for (const j of rows) {
+      let mp4Url = null;
+      if (j.status === "done" && j.mp4Key && storage.isConfigured?.()) {
+        try { mp4Url = await storage.signedUrl(j.mp4Key, 3600); } catch { /* ignore */ }
+      }
+      jobs.push({ jobId: j.jobId, status: j.status, sceneCount: j.sceneCount, createdAt: j.createdAt,
+        durationActual: j.durationActual, visualMode: j.visualMode, whiteboardGenre: j.whiteboardGenre, mp4Url });
+    }
+    res.json({ jobs });
+  });
+
   app.post("/api/video/assemble", auth, async (req, res) => {
     let _slotTenant = null, _slotJob = null;   // for releasing the concurrency slot on early failure
     try {

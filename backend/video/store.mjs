@@ -141,6 +141,27 @@ export async function getMeta(jobId) {
   return raw ? JSON.parse(raw) : null;
 }
 
+/** List a tenant's recent video jobs (newest first) for the server-backed "Video saya" history.
+ * Scans vjob:* (bounded by TTL) + filters by tenant. Fine at launch volume; add a per-tenant index
+ * if it grows. */
+export async function listTenantJobs(tenantId, limit = 24) {
+  let keys = [];
+  try { keys = await r().keys("vjob:*"); } catch { return []; }
+  const metaKeys = keys.filter((k) => /^vjob:[^:]+$/.test(k)); // skip :scene:/:stitch/:dispatched/…
+  const out = [];
+  for (const k of metaKeys) {
+    let raw; try { raw = await r().get(k); } catch { continue; }
+    if (!raw) continue;
+    let m; try { m = JSON.parse(raw); } catch { continue; }
+    if (m.tenantId !== tenantId) continue;
+    out.push({ jobId: k.slice("vjob:".length), status: m.status, sceneCount: m.sceneCount,
+      createdAt: m.createdAt, mp4Key: m.mp4Key, durationActual: m.durationActual,
+      visualMode: m.visualMode, whiteboardGenre: m.whiteboardGenre });
+  }
+  out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return out.slice(0, limit);
+}
+
 /** Merge a partial into the job JSON (orchestrator/check only). */
 export async function patchMeta(jobId, partial) {
   const cur = (await getMeta(jobId)) || {};
