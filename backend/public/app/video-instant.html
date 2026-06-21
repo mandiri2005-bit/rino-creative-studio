@@ -767,6 +767,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
     const [c,l]=map[status]||["run",status]; return '<span class="stbadge '+c+'">'+l+'</span>';
   }
   function renderJob(j,asm){
+    // STICKY DONE: once this job is shown completed, ignore any later/stale non-done update (e.g. an
+    // in-flight GET that started before completion and resolves with "stitching" after) — it must
+    // never flip the finished video back to a progress view. (Rino: "balik ke page merangkai")
+    if(state.shownDoneFor===state.jobId && j.status!=="done") return;
     const scenes=j.scenes||[];
     const total=scenes.length||asm.sceneCount||0;
     const doneN=scenes.filter(s=>(s.audioStatus==="done"||s.audioStatus==="fallback")&&(s.visualStatus==="done"||s.visualStatus==="fallback")).length;
