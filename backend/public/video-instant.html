@@ -788,8 +788,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       stage.innerHTML=head+'<div class="player">'+
         (src?'<video src="'+src+'" controls autoplay playsinline></video>':'<div class="stage-empty" style="min-height:200px"><div class="big">✅</div><h3>Video jadi</h3><p>File tersimpan. URL pratinjau butuh penyimpanan objek (R2) aktif.</p></div>')+
         '<div class="p-actions">'+(src?'<button class="dl" onclick="window.__dlVideo()">Unduh MP4</button>':'')+
-        '<button class="again" onclick="window.__viNew()">Buat lagi</button></div></div>'+
-        '<div class="note">Durasi ≈ '+(j.durationActual||"?")+' dtk · suara jadi penentu tempo.</div>';
+        '<button class="again" onclick="window.__viNew()">Buat lagi</button></div></div>';
       return;
     }
     if(j.status==="failed"){
