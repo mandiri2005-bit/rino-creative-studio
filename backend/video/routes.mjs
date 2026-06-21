@@ -198,7 +198,11 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
     res.set("Cache-Control", "no-store");   // status poll must never be cached (would freeze the UI on a stale "stitching")
     const meta = await store.getMeta(req.params.jobId);
     if (!meta) return res.status(404).json({ error: "job not found" });
-    const scenes = await store.getScenes(req.params.jobId, meta.sceneCount || 0);
+    const scenesRaw = await store.getScenes(req.params.jobId, meta.sceneCount || 0);
+    // STRIP planJson from the POLL response: it's the worker's render data (hero raster b64 +
+    // maskShapes, up to ~2.5MB/scene for a recraft mask), and the UI only needs status/text. Returning
+    // it for every scene OOM'd the API on long jobs (39 × ~2.5MB ≈ 98MB per poll @ 1.5s). Worker keeps it.
+    const scenes = scenesRaw.map((s) => { if (!s) return s; const { planJson, ...rest } = s; return rest; });
     // hand the browser a playable URL for the finished MP4 (signed, short-lived)
     let mp4Url = null;
     if (meta.mp4Key && storage.isConfigured?.()) {
