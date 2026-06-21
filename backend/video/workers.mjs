@@ -486,6 +486,11 @@ export async function stitchProcessor(job, deps) {
   const { jobId } = job.data;
   const meta = await deps.store.getMeta(jobId);
   if (!meta) return { skipped: true };
+  // Honest queue UX (Change 3): orchestrator flips status to "stitching" the moment all assets are
+  // ready, but the stitch queue is only 2-wide — so a job can sit "stitching" while merely WAITING
+  // behind other renders. Stamp renderStartedAt when the processor ACTUALLY starts → the UI shows an
+  // honest "Antre" view until now, then the render bar (no more frozen-looking 4% bar for waiting jobs).
+  await deps.store.patchMeta(jobId, { renderStartedAt: Date.now() }).catch(() => {});
   const tmpDir = jobTmpDir(jobId);
   try {
     await mkdir(tmpDir, { recursive: true });
@@ -589,10 +594,14 @@ export async function stitchProcessor(job, deps) {
         const clipQA = await validateRenderedClip(outPath, { expectedDuration: result?.duration || 0 });
         if (!clipQA.ok || clipQA.warnings.length) console.warn(`[stitch ${jobId}] rendered-clip QA: ${[...clipQA.errors, ...clipQA.warnings].slice(0, 4).join("; ")} (streams: ${clipQA.streams})`);
       } catch (qe) { console.warn(`[stitch ${jobId}] clip QA skipped: ${qe.message}`); }
-      // flat render fee — 3 credits/sec of output video (post-hoc, tagged for refund)
+      // flat render fee — 3 credits/sec of output video (post-hoc, tagged for refund). STABLE op_id
+      // keyed to the job → idempotent: a stitch re-run (BullMQ attempts:2 after a post-render crash,
+      // or a recovery re-stitch) re-meters with the SAME op_id, which charge() dedups → the user is
+      // charged the render fee exactly ONCE per job, never double. (was a uuid4 per call → double-charge)
       await deps.generationClient?.meterUsage?.(
         { jobId, tenantId: meta.tenantId, userId: meta.userId },
-        "video", "whiteboard", { seconds: Math.max(1, Math.round(result.duration || 0)) });
+        "video", "whiteboard", { seconds: Math.max(1, Math.round(result.duration || 0)) },
+        `video-renderfee:${jobId}`);
     } else {
       try {
         result = await stitch(scenes, outPath, stitchOpts);

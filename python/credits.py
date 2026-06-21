@@ -240,11 +240,19 @@ async def charge(tenant_id: str, amount: int, op_id: str, *,
     if cl is not None:
         try:
             await _ensure_cached(tenant_id)
+        except Exception as e:
+            log.warning("charge pre-seed redis(%s): %s", op_id, e)
+    _applied, dbal = await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
+                                         user_id=user_id, metadata=metadata)
+    # Decrement the live cache ONLY when the durable charge actually applied — so a deduped duplicate
+    # (idempotent op_id, e.g. a recovery re-stitch render fee with op_id "charge:video-renderfee:<job>")
+    # leaves the cache untouched instead of drifting it down. Mirrors grant()'s applied-gated incrby;
+    # the durable ledger is already idempotent on op_id (credit_apply ON CONFLICT DO NOTHING).
+    if cl is not None and _applied:
+        try:
             newbal = await cl.decrby(_bal_key(tenant_id), amount)
         except Exception as e:
             log.warning("charge redis(%s): %s", op_id, e)
-    _applied, dbal = await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
-                                         user_id=user_id, metadata=metadata)
     # ROOT-CAUSE GUARD for the "negative cache" bug: a post-hoc debit must never
     # leave the live cache below zero. The cache only goes negative when it had
     # already drifted BELOW the durable — e.g. someone hand-edited credit_balances

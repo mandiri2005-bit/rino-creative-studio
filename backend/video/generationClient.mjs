@@ -353,12 +353,15 @@ export function httpGenerationClient(opts = {}) {
     // carries { jobId, tenantId, userId } for the internal-auth + video-job tag.
     // Best-effort: a metering hiccup must never fail the render (balance was
     // pre-checked at /assemble).
-    async meterUsage(ctx, operation, model, units) {
+    async meterUsage(ctx, operation, model, units, opId) {
       try {
         const r = await fetch(`${PYTHON_API}/video/meter`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
-          body: JSON.stringify({ operation, model, units: units || {} }),
+          // opId (optional): a STABLE id makes the charge idempotent on the Python side so a
+          // stitch re-run (BullMQ retry / recovery re-stitch) never double-charges (e.g. the flat
+          // render fee). Omitted → each call is a distinct charge (per-scene asset meters).
+          body: JSON.stringify({ operation, model, units: units || {}, ...(opId ? { op_id: opId } : {}) }),
         });
         if (!r.ok) { console.warn(`[meter] ${operation}/${model} ${r.status}`); return { credits: 0 }; }
         return await r.json();

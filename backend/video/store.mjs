@@ -176,8 +176,11 @@ export async function setStatus(jobId, status, extra = {}) {
   // setStatus is the single status chokepoint, so this covers EVERY path (orchestrator
   // done/fail + the cancel endpoint). release() is idempotent, so double-fire is safe.
   if (next?.tenantId && (status === "done" || status === "failed" || status === "canceled")) {
-    try { const { release } = await import("./concurrency.mjs"); await release(next.tenantId, jobId); }
-    catch { /* non-fatal — a stranded slot self-heals via its TTL */ }
+    try {
+      const { release, releaseGlobal } = await import("./concurrency.mjs");
+      await release(next.tenantId, jobId);   // per-tenant slot
+      await releaseGlobal(jobId);            // global admission slot (Change 2)
+    } catch { /* non-fatal — a stranded slot self-heals via its TTL */ }
   }
   return next;
 }

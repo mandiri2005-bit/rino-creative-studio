@@ -7037,6 +7037,7 @@ class VideoMeterReq(BaseModel):
     model: str
     units: dict = {}                # {"count":1} | {"seconds":N} | {"chars":N}
     gate_only: bool = False         # True = pre-check balance ONLY (no debit) → {"ok": bool}
+    op_id: Optional[str] = None     # STABLE id for an idempotent (retry-safe) charge, e.g. "video-renderfee:<jobId>"
 
 
 @app.post("/video/meter")
@@ -7069,7 +7070,7 @@ async def video_meter(req: VideoMeterReq,
     credits = 0
     try:
         credits = await metering.debit(user.tenant_id, _uid, op, req.model, req.units or {},
-                                       byok=_byok, video_job=x_video_job, log=True)
+                                       byok=_byok, video_job=x_video_job, log=True, op_id=req.op_id)
     except Exception as _e:
         print(f"[video/meter] debit failed (non-fatal): {_e}")
     return {"metered": True, "credits": credits}

@@ -135,6 +135,17 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
           message: `Kamu lagi menjalankan ${lim} render video paralel (paket ${_plan}). Tunggu salah satu selesai, atau upgrade buat lebih banyak job bersamaan.` });
       }
       _slotTenant = tenantId; _slotJob = jobId;
+      // Global admission cap (Change 2): bound TOTAL in-flight assemblies across ALL tenants so a
+      // launch spike queues at the door with a friendly message instead of 100 jobs piling onto the
+      // single worker and starving each other behind the 2-wide stitch queue. Default-off
+      // (VIDEO_MAX_INFLIGHT_JOBS unset on the API service). Release the per-tenant slot we just took.
+      if (!(await conc.acquireGlobal(jobId))) {
+        try { await conc.release(tenantId, jobId); } catch {}
+        _slotTenant = null; _slotJob = null;
+        res.set("Retry-After", "90");
+        return res.status(429).json({ error: "server_busy", retryAfter: 90,
+          message: "Lagi ramai banget 🙏 Antrean render lagi penuh — video kamu belum bisa diproses sekarang. Coba lagi 1-2 menit ya." });
+      }
       // Reference-image consistency: generate ONE anchor from the brief up front, so
       // every scene (rendered in PARALLEL) can use it as ref_image — the anchor is
       // ready before the fan-out, so parallelism is preserved.
@@ -156,8 +167,8 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
       }, deps());
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {
-      // release the slot if it was acquired but the job never started running (e.g. 402 credits)
-      if (_slotTenant && _slotJob) { try { await conc.release(_slotTenant, _slotJob); } catch {} }
+      // release BOTH slots (per-tenant + global) if acquired but the job never started (e.g. 402 credits)
+      if (_slotTenant && _slotJob) { try { await conc.release(_slotTenant, _slotJob); await conc.releaseGlobal(_slotJob); } catch {} }
       res.status(e.status || 500).json({ error: e.message, creditsNeeded: e.creditsNeeded });
     }
   });
@@ -193,6 +204,13 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
     if (meta.mp4Key && storage.isConfigured?.()) {
       try { mp4Url = await storage.signedUrl(meta.mp4Key, 3600); } catch { /* ignore */ }
     }
-    res.json({ ...meta, scenes, mp4Url });
+    // Honest queue UX (Change 3): if status="stitching" but the processor hasn't started
+    // (renderStartedAt unset), the job is WAITING behind the 2-wide stitch queue → surface how many
+    // renders are queued so the UI shows "Antre ≈N" instead of a frozen 4% bar. Best-effort + cheap.
+    let renderQueued = null;
+    if (meta.status === "stitching" && !meta.renderStartedAt) {
+      try { renderQueued = await deps().queues?.stitch?.getWaitingCount?.(); } catch { /* ignore */ }
+    }
+    res.json({ ...meta, scenes, mp4Url, renderQueued });
   });
 }

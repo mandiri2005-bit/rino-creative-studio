@@ -871,6 +871,14 @@ select option{ background:#111019!important; color:var(--t)!important; }
       return;
     }
     if(j.status==="stitching"){
+      // QUEUED sub-state (Change 3): status is "stitching" but render hasn't actually started
+      // (waiting behind the 2-wide stitch queue) → honest "Antre" view, NOT a frozen 4% bar.
+      if(!j.renderStartedAt){
+        const q=Number(j.renderQueued)||0;
+        const qmsg = q>1 ? ('Antre render · ~'+q+' video di depan') : 'Menyiapkan render…';
+        stage.innerHTML=head+'<div class="stage-empty">'+CLOADER+'<h3>'+qmsg+'</h3><p>Aset video sudah siap, lagi nunggu giliran render. Nggak perlu refresh — otomatis lanjut.</p></div>';
+        return;
+      }
       // RENDER phase: assets done; backend writes renderProgress per scene as it renders.
       if(!state.stitchT0) state.stitchT0=Date.now();
       let rp=Number(j.renderProgress)||0;

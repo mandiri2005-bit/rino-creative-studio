@@ -57,3 +57,32 @@ export async function release(tenantId, slotId) {
   try { await sharedConnection().eval(_RELEASE, 1, _slotKey(tenantId), slotId); }
   catch (e) { console.warn("[conc] release:", e?.message); }
 }
+
+// ── GLOBAL admission cap (Change 2) ──────────────────────────────────────────
+// The per-tenant cap above is PER TENANT, so 100 DISTINCT users each hold their own
+// slot and ALL get admitted → a launch spike piles 100 assemblies onto the single
+// worker and they starve each other behind the 2-wide stitch queue (a hours-deep,
+// frozen-looking backlog). This is ONE global in-flight-assembly cap: above it,
+// /assemble returns a friendly 429 ("lagi ramai") so the spike queues at the door
+// instead. Same reap/per-slot-TTL/FAIL-OPEN semantics as the per-tenant limiter.
+// Default 0 = DISABLED — set VIDEO_MAX_INFLIGHT_JOBS (e.g. 20) on the API service.
+const GLOBAL_MAX = Number(process.env.VIDEO_MAX_INFLIGHT_JOBS ?? 0);
+const _globalKey = () => `conc:global:slots`;
+export function globalMax() { return GLOBAL_MAX; }
+
+export async function acquireGlobal(slotId) {
+  if (!GLOBAL_MAX || GLOBAL_MAX < 1 || !slotId) return true;     // disabled → always admit
+  try {
+    const r = sharedConnection();
+    const now = Math.floor(Date.now() / 1000);
+    const ok = await r.eval(_ACQUIRE, 1, _globalKey(), GLOBAL_MAX, slotId, now, SLOT_TTL);
+    return Number(ok) === 1;
+  } catch (e) { console.warn("[conc] global acquire fail-open:", e?.message); return true; }  // fail OPEN
+}
+// Idempotent (HDEL). Released alongside the per-tenant slot when a job goes terminal.
+// Early-return when the cap is off → the feature is fully Redis-silent by default (no stray HDEL).
+export async function releaseGlobal(slotId) {
+  if (!slotId || GLOBAL_MAX < 1) return;
+  try { await sharedConnection().eval(_RELEASE, 1, _globalKey(), slotId); }
+  catch (e) { console.warn("[conc] global release:", e?.message); }
+}

@@ -237,10 +237,14 @@ async def gate(tenant_id: str, operation: str, model: str,
 async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: str,
                 units: Union[int, float, dict], *, byok: bool = False, log: bool = True,
                 session_id=None, job_id=None, video_job=None, tok_in: int = 0, tok_out: int = 0,
-                provider: Optional[str] = None) -> int:
+                provider: Optional[str] = None, op_id: Optional[str] = None) -> int:
     """Post-hoc charge for a completed op. With log=True also writes a usage_logs
     row carrying the credits; set log=False when the caller already logs the usage
     row itself (e.g. image flows via _capture_image_flow) to avoid a duplicate.
+    Pass a STABLE op_id (e.g. "video-renderfee:<jobId>") for a charge that may be
+    retried/re-run — charge() is idempotent on op_id, so a stitch re-run (BullMQ
+    retry or recovery re-stitch) never double-charges. Default = fresh uuid (each
+    call a distinct charge, the right behaviour for per-scene asset meters).
     Returns credits charged (0 for BYOK / unauthenticated / disabled)."""
     if not tenant_id or not METERING_ENABLED:
         return 0
@@ -253,7 +257,7 @@ async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: s
             md = {"op": operation, "model": model}
             if video_job:
                 md["video_job"] = str(video_job)
-            await _credits.charge(tenant_id, credits, op_id=str(uuid.uuid4()),
+            await _credits.charge(tenant_id, credits, op_id=op_id or str(uuid.uuid4()),
                                   user_id=user_id, metadata=md)
         except Exception as e:
             log.warning("debit(%s) failed: %s", operation, e)
