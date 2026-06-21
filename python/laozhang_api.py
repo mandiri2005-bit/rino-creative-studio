@@ -7360,7 +7360,7 @@ async def video_whiteboard_raster(req: VideoWhiteboardRasterReq,
         # hero is always illustrated, never photoreal. Pick the look via WB_HERO_STYLE (default = the
         # Golpo ink+watercolor).
         _HERO_STYLES = {
-            "ink_watercolor": "Hand-drawn ink line illustration with loose watercolor wash, fine thin delicate ink outlines, light airy linework",
+            "ink_watercolor": "Watercolor illustration, every subject and element FULLY painted with rich saturated colour (NO bare line-only areas — colour the whole scene), thin delicate ink linework, clean white background",
             "caricature": "Hand-drawn caricature illustration, bold clean outlines, light flat shading, expressive",
             "comic": "Comic-book ink illustration, bold black outlines, flat cel shading",
             "flat_vector": "Flat vector illustration, clean bold outlines, simple solid colours",

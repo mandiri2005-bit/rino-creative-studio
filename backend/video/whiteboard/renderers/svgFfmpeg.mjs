@@ -225,7 +225,8 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       // the pen TRACES its ink outline then its colour fills. The pen rides the actual line being
       // drawn (pointOnPath), so it follows the artwork like a hand — NOT a mechanical sweep.
       const SPAN = 0.92, N = units.length;
-      const inkW = Math.max(1.6, mvw / 340);
+      const inkW = Math.max(1.0, mvw / 700);   // thinner pen overlay (was /340≈3px → ~1.5px): the
+      // overlay re-strokes the raster's own outlines, so a fat one made lines look doubled/too thick
       // each form's draw TIME ∝ its outline length → big forms take longer (natural) + EVEN area
       // pacing (no front-loading from a few big shapes filling the canvas early).
       const lens = units.map((u) => pathLen(u.d));
@@ -246,7 +247,7 @@ export function buildSceneSvg(plan, frame, fps = 30) {
         const sp = spOf(i); if (sp <= 0) return;
         const traceP = clamp(sp / 0.5, 0, 1);
         const L = pathLen(u.d);
-        out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.82"/>`);
+        out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.55"/>`);
       });
       out.push(`</g>`);
       // pen rides the LEADING form being traced (real point on its line) → follows the NN path
