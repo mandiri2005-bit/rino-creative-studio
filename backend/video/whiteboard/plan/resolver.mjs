@@ -33,9 +33,16 @@ export function coveredByLibrary(query, manifest) {
 
 export function scoreAsset(query, asset) {
   const q = String(query || "").toLowerCase();
+  const qWords = new Set(q.split(/[^a-z0-9]+/).filter(Boolean));
   let score = 0;
   for (const tag of asset.tags || []) {
-    if (q.includes(String(tag).toLowerCase())) score += 5;
+    const t = String(tag || "").toLowerCase().trim();
+    if (!t) continue;
+    // WHOLE-WORD match. A naive q.includes(tag) made the short ai_agent tags "ai" and "bot" match as
+    // SUBSTRINGS of common words — tr-AI-n, moun-TAI-n, br-AI-n, ch-AI-n, AI-rplane, bot-TLE — so the
+    // robot (ai_agent) hijacked train/mountain/brain/chain/airplane/bottle. (Rino: "masih ada robot")
+    const hit = t.includes(" ") ? q.includes(t) : qWords.has(t);
+    if (hit) score += 5;
   }
   const idWords = String(asset.id || "").replaceAll("_", " ");
   if (idWords && q.includes(idWords)) score += 10;

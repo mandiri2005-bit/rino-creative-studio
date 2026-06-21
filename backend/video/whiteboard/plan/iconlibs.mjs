@@ -64,6 +64,8 @@ const QUERY_ALIASES = {
   gerobak: "cart", barrow: "cart",
   // food / soup (a bakso/broth scene) — these miss; a bowl reads correctly and is free.
   broth: "bowl", soup: "bowl", stock: "bowl", stew: "bowl", "noodle soup": "bowl",
+  // skewered street food (sate/tusuk sate) — "skewer"/"satay" miss → Recraft; kebab is a free skewer.
+  skewer: "kebab", satay: "kebab", sate: "kebab", "food skewer": "kebab", "satay skewer": "kebab",
 };
 const aliasQuery = (q) => QUERY_ALIASES[String(q || "").trim().toLowerCase()] || q;
 
