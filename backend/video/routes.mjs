@@ -83,6 +83,16 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
   app.post("/api/video/params", auth, (req, res) => pyForward(req, res, "/video/params"));
   app.post("/api/video/decide", auth, (req, res) => pyForward(req, res, "/video/decide"));
 
+  // Operator-driven defaults (Rino sets these in Railway; the UI hides the model selectors and just
+  // consumes these). Generic for ALL Video Instant modes, not only whiteboard.
+  app.get("/api/video/config", auth, (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json({
+      genModel: process.env.VI_GEN_MODEL || "deepseek-chat",
+      ttsModel: process.env.VI_TTS_MODEL || "tts-1",
+    });
+  });
+
   app.post("/api/video/assemble", auth, async (req, res) => {
     let _slotTenant = null, _slotJob = null;   // for releasing the concurrency slot on early failure
     try {

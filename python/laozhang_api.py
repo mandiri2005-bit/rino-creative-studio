@@ -6936,8 +6936,10 @@ def _gemini_tts_oauth(model: str, voice: str, text: str) -> bytes:
         raise RuntimeError("vertex/oauth not configured (GCP_* env missing)")
     from google.genai import types as _gt
     vname = voice or "Zephyr"
+    _temp = float(os.environ.get("GEMINI_TTS_TEMPERATURE") or 1.0)   # Rino-tunable expressiveness (Railway)
     try:
         cfg = _gt.GenerateContentConfig(
+            temperature=_temp,
             response_modalities=["AUDIO"],
             speech_config=_gt.SpeechConfig(
                 voice_config=_gt.VoiceConfig(
@@ -6946,7 +6948,7 @@ def _gemini_tts_oauth(model: str, voice: str, text: str) -> bytes:
     except Exception:                                  # types/version mismatch → plain dict config
         resp = client.models.generate_content(
             model=model, contents=text,
-            config={"response_modalities": ["AUDIO"],
+            config={"temperature": _temp, "response_modalities": ["AUDIO"],
                     "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": vname}}}})
     part = resp.candidates[0].content.parts[0]
     inline = getattr(part, "inline_data", None)

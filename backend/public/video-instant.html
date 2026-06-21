@@ -396,7 +396,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
               <option value="ar">Arab</option>
             </select>
           </div>
-          <div>
+          <div id="llmWrap" style="display:none">
             <label class="lbl">Model narasi</label>
             <select id="llmSel">
               <option value="deepseek-chat">DeepSeek (default)</option>
@@ -432,7 +432,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
           </div>
         </div>
         <div class="row">
-          <div>
+          <div id="ttsWrap" style="display:none">
             <label class="lbl">Model suara (TTS)</label>
             <select id="ttsSel">
               <optgroup label="OpenAI">
@@ -601,9 +601,21 @@ select option{ background:#111019!important; color:var(--t)!important; }
   // prebuilt voices (Zephyr/Puck/…). Sending an OpenAI voice to a Gemini model makes the
   // worker's geminiTts reject it → silent fallback to tts-1. So repopulate #voiceSel to
   // match the chosen TTS model's provider (keeps the user's voice within the same provider).
+  // gendered labels (Rino): "Pria/Wanita · sifat". Gender from perceived pitch + the anchors Rino
+  // approved (Enceladus=Pria, Leda=Wanita…). Easy to swap a label if a gender feels off.
   const VOICES={
-    openai:[["alloy","Alloy (netral)"],["echo","Echo (pria)"],["fable","Fable (hangat)"],["onyx","Onyx (pria, dalam)"],["nova","Nova (wanita)"],["shimmer","Shimmer (wanita, lembut)"]],
-    gemini:[["Zephyr","Zephyr (cerah)"],["Puck","Puck (ceria)"],["Charon","Charon (informatif)"],["Kore","Kore (tegas)"],["Fenrir","Fenrir (semangat)"],["Leda","Leda (muda)"],["Aoede","Aoede (santai)"],["Enceladus","Enceladus (lembut)"]],
+    openai:[["alloy","Netral"],["echo","Pria"],["fable","Pria · hangat"],["onyx","Pria · dalam"],["nova","Wanita"],["shimmer","Wanita · lembut"]],
+    gemini:[
+      ["Zephyr","Wanita · cerah"],["Leda","Wanita · muda"],["Kore","Wanita · tegas"],["Aoede","Wanita · santai"],
+      ["Enceladus","Pria · lembut"],["Charon","Pria · informatif"],["Puck","Pria · ceria"],["Fenrir","Pria · semangat"],
+      ["Achernar","Wanita · lembut"],["Autonoe","Wanita · cerah"],["Callirrhoe","Wanita · santai"],["Despina","Wanita · halus"],
+      ["Erinome","Wanita · jernih"],["Laomedeia","Wanita · ceria"],["Pulcherrima","Wanita · lugas"],["Sulafat","Wanita · hangat"],
+      ["Vindemiatrix","Wanita · lembut"],
+      ["Achird","Pria · ramah"],["Algenib","Pria · serak"],["Algieba","Pria · halus"],["Alnilam","Pria · tegas"],
+      ["Gacrux","Pria · matang"],["Iapetus","Pria · jernih"],["Orus","Pria · tegas"],["Rasalgethi","Pria · informatif"],
+      ["Sadachbia","Pria · hidup"],["Sadaltager","Pria · berwawasan"],["Schedar","Pria · kalem"],["Umbriel","Pria · santai"],
+      ["Zubenelgenubi","Pria · kasual"],
+    ],
   };
   function syncVoiceOptions(){
     const sel=$("#voiceSel"); if(!sel) return;
@@ -618,6 +630,16 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#ttsSel")&&($("#ttsSel").onchange=e=>{ state.ttsModel=e.target.value; syncVoiceOptions(); });
   $("#voiceSel")&&($("#voiceSel").onchange=e=>state.voice=e.target.value);
   syncVoiceOptions();   // align the voice list with the default TTS model on load
+  // Model narasi + Model TTS are env-driven (Railway: VI_GEN_MODEL / VI_TTS_MODEL) — Rino drives them,
+  // the selectors are hidden. Fetch the configured models so the UI sends them + shows the right voices.
+  (async function loadVideoConfig(){
+    try{
+      const c=await api("/api/video/config",{method:"GET"});
+      if(c&&c.genModel) state.genModel=c.genModel;
+      if(c&&c.ttsModel) state.ttsModel=c.ttsModel;
+      syncVoiceOptions();   // re-align the voice list to the env TTS provider
+    }catch(e){ /* keep defaults if config unavailable */ }
+  })();
 
   // ── live estimate via /api/video/params ──
   let estTimer=null;
