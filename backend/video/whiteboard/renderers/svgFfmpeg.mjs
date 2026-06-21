@@ -491,6 +491,8 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
       const r = await renderSceneSvgFfmpeg(plan, mp4, { fps, crf: tier.crf, audioPath: sc.audioPath || null });
       totalFrames += r.frames; // ACTUAL frames (may be > planned when narration drove a window extension)
       sceneMp4s.push(mp4);
+      // live render progress (best-effort; the worker writes it to the job meta for the UI bar)
+      if (opts.onProgress) { try { await opts.onProgress(i + 1, scenes.length); } catch { /* non-fatal */ } }
     }
     // concat via the FILTER (decode + sample-accurate join), NOT the demuxer: the demuxer left an AAC
     // encoder-priming gap/click at EVERY scene boundary ("audio patah di pergantian scene"). The

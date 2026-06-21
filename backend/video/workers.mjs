@@ -551,7 +551,8 @@ export async function stitchProcessor(job, deps) {
         if (backend === "svg_ffmpeg") {
           try {
             const { renderWhiteboardPlanSvg } = await import("./whiteboard/renderers/svgFfmpeg.mjs");
-            result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir });
+            result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir,
+              onProgress: (d, t) => deps.store.patchMeta(jobId, { renderProgress: Math.round(d / t * 100), renderScenesDone: d, renderScenesTotal: t }).catch(() => {}) });
           } catch (be) {
             console.warn(`[stitch ${jobId}] svg_ffmpeg backend failed (${be.message}) → Remotion fallback`);
             const { renderWhiteboardPlan } = await import("./whiteboard/render.mjs");
@@ -567,7 +568,8 @@ export async function stitchProcessor(job, deps) {
             // a browser crash). → Remotion stays the fast default; this is its safety net.
             console.warn(`[stitch ${jobId}] Remotion backend failed (${be.message}) → svg_ffmpeg fallback`);
             const { renderWhiteboardPlanSvg } = await import("./whiteboard/renderers/svgFfmpeg.mjs");
-            result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir });
+            result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir,
+              onProgress: (d, t) => deps.store.patchMeta(jobId, { renderProgress: Math.round(d / t * 100), renderScenesDone: d, renderScenesTotal: t }).catch(() => {}) });
           }
         }
       } else {
