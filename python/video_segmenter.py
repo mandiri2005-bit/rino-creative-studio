@@ -102,7 +102,13 @@ def wpm_for(language: str | None) -> int:
         scale = 1.0
     return max(40, round(base * scale))
 WORDS_PER_SCENE = 45            # scene_count = round(target_words / WORDS_PER_SCENE)
-IMAGE_SCENE_SECONDS = 8         # full_images pacing: ~one fresh image every 8s
+# full_images (whiteboard/detail) pacing: ~one fresh image/scene every N seconds. WB_SCENE_SECONDS env
+# (default 8) → BIGGER = FEWER, LONGER scenes (e.g. 12 → ~15 scenes/3min instead of ~22) → more room per
+# scene for the drawing + colour wash. Affects scene_count for full_images mode ONLY (clip/hybrid unchanged).
+try:
+    IMAGE_SCENE_SECONDS = max(1.0, float(os.environ.get("WB_SCENE_SECONDS") or 8))
+except (TypeError, ValueError):
+    IMAGE_SCENE_SECONDS = 8.0
 MIN_SCENES = 2                  # a video is at least two scenes (so there's a cut)
 BATCH_SIZE = 10                 # full-parallel <= BATCH_SIZE scenes, batched above
 PROGRESS_CARD_LIMIT = 10        # scene cards <= this many scenes, progress bar above
