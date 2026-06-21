@@ -61,10 +61,28 @@ export function slotBox(slot) {
 export function layoutWhiteboardPlan(plan) {
   const els = plan.elements || [];
   const n = els.length;
-  return {
-    ...plan,
-    elements: els.map((element, i) => ({ ...element, box: SLOT_MAP_16_9[element.slot] || fallbackBox(i, n) })),
-  };
+  let boxed = els.map((element, i) => ({ ...element, box: SLOT_MAP_16_9[element.slot] || fallbackBox(i, n) }));
+  // Overprint guard (Rino: "label ditimpa"): the VD sometimes assigns the SAME slot to 2+ elements
+  // (e.g. two "center" → both get SLOT_MAP.center) or a fallback lands on a slotted box, so icons AND
+  // labels stack on the identical spot. If any two boxes clearly overlap, re-grid the WHOLE scene into
+  // an even auto-grid so every element gets a distinct cell. Runs at resolve time → fixes cached plans.
+  if (hasBoxCollision(boxed)) {
+    boxed = els.map((element, i) => ({ ...element, box: fallbackBox(i, n) }));
+  }
+  return { ...plan, elements: boxed };
+}
+
+// true if any two element boxes clearly intersect (centres closer than ~60% of the combined half-extent
+// on BOTH axes). Identical boxes (duplicate slot) trivially collide; lightly-touching slots don't.
+function hasBoxCollision(els) {
+  for (let i = 0; i < els.length; i++) {
+    for (let j = i + 1; j < els.length; j++) {
+      const a = els[i].box, b = els[j].box;
+      if (!a || !b) continue;
+      if (Math.abs(a.x - b.x) < (a.w + b.w) / 2 * 0.6 && Math.abs(a.y - b.y) < (a.h + b.h) / 2 * 0.6) return true;
+    }
+  }
+  return false;
 }
 
 // even centred grid across the 16:9 canvas for elements whose slot isn't in the map

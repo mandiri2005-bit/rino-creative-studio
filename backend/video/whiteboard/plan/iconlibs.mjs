@@ -58,6 +58,12 @@ const QUERY_ALIASES = {
   eucalyptus: "leaf", "gum leaves": "leaf", "gum tree": "tree", foliage: "leaf", herb: "leaf",
   // vineyard
   vineyard: "grape", grapevine: "grape", grapes: "grape",
+  // street-vendor / carts — compound words the tokenizer doesn't split miss the libs and fall to
+  // (paid) Recraft (Rino: "pushcart diambil dari recraft"); route them to the free cart icon.
+  pushcart: "cart", handcart: "cart", "hand cart": "cart", "food cart": "cart", "street cart": "cart",
+  gerobak: "cart", barrow: "cart",
+  // food / soup (a bakso/broth scene) — these miss; a bowl reads correctly and is free.
+  broth: "bowl", soup: "bowl", stock: "bowl", stew: "bowl", "noodle soup": "bowl",
 };
 const aliasQuery = (q) => QUERY_ALIASES[String(q || "").trim().toLowerCase()] || q;
 
