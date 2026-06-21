@@ -632,7 +632,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     l.unshift({id, ts:Date.now(), scenes:(meta&&meta.scenes)||0, title:((meta&&meta.title)||"").trim()}); viSaveList(l); }
   function viForget(id){ viSaveList(viLoad().filter(x=>x.id!==id)); }
   async function resumeJob(id){   // re-attach to an existing job: show it (done→video, running→resume poll)
-    if(!id) return; state.jobId=id;
+    if(!id) return; clearInterval(state.poll); state.shownDoneFor=null; state.jobId=id;
     try{
       const j=await api("/api/video/assemble/"+id,{method:"GET"});
       renderJob(j,{sceneCount:j.sceneCount});
@@ -640,7 +640,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }catch(e){ if(e&&e.status===404) viForget(id); } // expired/gone → drop quietly
   }
   window.__viOpen=(id)=>resumeJob(id);
-  window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; setBusy(false);
+  window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; state.shownDoneFor=null; setBusy(false);
     stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Siap bikin video baru</h3><p>Atur pengaturan di kiri, lalu tekan Buat video.</p></div>'; };
   window.__viHistory=()=>{
     const l=viLoad();
@@ -698,7 +698,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   };
 
   function pollJob(asm){
-    clearInterval(state.poll);
+    clearInterval(state.poll); state.shownDoneFor=null;
     state.poll=setInterval(async()=>{
       try{
         const j=await api("/api/video/assemble/"+state.jobId,{method:"GET"});
@@ -758,7 +758,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
     let head='<div class="stage-head"><div><div class="st-t">'+(j.status==="done"?"Video selesai":"Merangkai video")+'</div>'+
       '<div class="st-s">'+total+' scene · '+(j.dispatch_mode==="batch"?"batch":"paralel")+'</div></div><div class="head-right">'+loadC+badge(j.status)+'</div></div>';
 
-    if(j.status==="done"&&(j.mp4Url||j.mp4Path)){
+    if(j.status==="done"){
+      clearInterval(state.poll);                      // terminal → stop ANY poll (kills the done↔progress loop)
+      if(state.shownDoneFor===state.jobId) return;    // already showing this video → DON'T rewrite stage (no remount/restart/flicker)
+      state.shownDoneFor=state.jobId;
       const src=j.mp4Url||"";
       window.__lastMp4=src;
       stage.innerHTML=head+'<div class="player">'+
