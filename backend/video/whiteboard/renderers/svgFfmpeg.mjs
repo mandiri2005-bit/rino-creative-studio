@@ -8,8 +8,8 @@
 //
 // Opt-in: the dispatcher / WB_RENDER_BACKEND routes here; Remotion stays the default (roadmap §B).
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, copyFileSync } from "node:fs";
+import { tmpdir, cpus } from "node:os";
 import { join, dirname, extname } from "node:path";
 import { resolvePlan } from "../plan/resolvePlan.mjs";
 import { validateResolvedScene } from "../qa.mjs";
@@ -336,6 +336,33 @@ async function rasterizeSvg(svg, width, outPng) {
   });
 }
 
+// Rasterize a list of {svg,outPng} frames. PARALLEL via a bounded worker pool when worthwhile, else
+// sequential. Output is identical either way (resvg is deterministic). Bounded by WB_RASTER_CONCURRENCY
+// (default ~min(4, cores-2)) so concurrent renders don't oversubscribe the worker's CPUs (the encoder-
+// semaphore lesson). ANY pool failure → fall back to the proven sequential path (never breaks a render).
+async function rasterizeMany(jobs, width) {
+  const def = Math.min(4, Math.max(2, (cpus().length || 4) - 2));
+  const K = Math.max(1, Number(process.env.WB_RASTER_CONCURRENCY || def));
+  if (K <= 1 || jobs.length < 2) { for (const j of jobs) await rasterizeSvg(j.svg, width, j.outPng); return; }
+  try {
+    const { Worker } = await import("node:worker_threads");
+    const workerUrl = new URL("./raster-worker.mjs", import.meta.url);
+    const pool = Array.from({ length: Math.min(K, jobs.length) }, () => new Worker(workerUrl));
+    let next = 0, done = 0;
+    await new Promise((resolve, reject) => {
+      const feed = (w) => { if (next < jobs.length) { const j = jobs[next++]; w.postMessage({ svg: j.svg, width, outPng: j.outPng }); } };
+      for (const w of pool) {
+        w.on("message", (m) => { if (!m.ok) return reject(new Error(m.err)); if (++done === jobs.length) resolve(); else feed(w); });
+        w.on("error", reject);
+      }
+      for (const w of pool) feed(w);
+    }).finally(async () => { await Promise.all(pool.map((w) => w.terminate().catch(() => {}))); });
+  } catch (e) {
+    console.warn(`[wb-svg] parallel raster fell back to sequential: ${e.message}`);
+    for (const j of jobs) await rasterizeSvg(j.svg, width, j.outPng);
+  }
+}
+
 const ff = (args) => new Promise((res, rej) => {
   const p = spawn("ffmpeg", args);
   let err = "";
@@ -373,10 +400,24 @@ export async function renderSceneSvgFfmpeg(plan, outMp4, { fps = 30, crf = 23, a
   await ensurePathLib().catch(() => {}); // for the following-hand pen tip (graceful if absent)
   const dir = mkdtempSync(join(tmpdir(), "wbsvg-"));
   try {
+    // Build each frame's SVG on the main thread (cheap, deterministic) and DEDUP: a frame whose SVG is
+    // byte-identical to the previous one (the freeze tail once all draws/camera finish — especially the
+    // audio-extension frames) is COPIED, not re-rasterized. The remaining UNIQUE frames are rasterized
+    // in PARALLEL via a bounded worker pool (resvg is CPU-bound + synchronous → plain async can't
+    // parallelise). Output is byte-identical to the old sequential path (resvg is deterministic) — this
+    // only makes producing the PNGs faster, and falls back to sequential on any pool issue.
+    const pad = (f) => join(dir, `f${String(f).padStart(5, "0")}.png`);
+    const renders = []; // unique frames to rasterize: {svg, outPng}
+    const copies = [];  // dedup'd frames: {from, to}
+    let prevSvg = null, prevPng = null;
     for (let f = 0; f < frames; f++) {
-      // f beyond planFrames → progress()/cameraSvg() clamp to 1 → a clean freeze of the finished board
-      await rasterizeSvg(buildSceneSvg(plan, f, fps), plan.canvas.width, join(dir, `f${String(f).padStart(5, "0")}.png`));
+      const svg = buildSceneSvg(plan, f, fps);
+      const out = pad(f);
+      if (svg === prevSvg) { copies.push({ from: prevPng, to: out }); }
+      else { renders.push({ svg, outPng: out }); prevSvg = svg; prevPng = out; }
     }
+    await rasterizeMany(renders, plan.canvas.width);    // parallel pool (+ sequential fallback)
+    for (const c of copies) copyFileSync(c.from, c.to); // freeze frames: cheap file copy, no resvg
     // every scene mp4 carries an audio track (real TTS, or a silent one) so the concat is uniform
     const args = ["-y", "-framerate", String(fps), "-i", join(dir, "f%05d.png")];
     if (audioPath) args.push("-i", audioPath);
