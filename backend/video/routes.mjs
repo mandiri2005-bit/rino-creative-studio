@@ -155,6 +155,7 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
   });
 
   app.get("/api/video/assemble/:jobId", auth, async (req, res) => {
+    res.set("Cache-Control", "no-store");   // status poll must never be cached (would freeze the UI on a stale "stitching")
     const meta = await store.getMeta(req.params.jobId);
     if (!meta) return res.status(404).json({ error: "job not found" });
     const scenes = await store.getScenes(req.params.jobId, meta.sceneCount || 0);

@@ -699,16 +699,25 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }
   };
 
-  function pollJob(asm){
-    clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null; state.rMax=null;
-    state.poll=setInterval(async()=>{
-      try{
-        const j=await api("/api/video/assemble/"+state.jobId,{method:"GET"});
-        renderJob(j,asm);
-        if(j.status==="done"||j.status==="failed"||j.status==="canceled"){ clearInterval(state.poll); setBusy(false); refreshCredits(); }
-      }catch(e){ /* transient; keep polling */ }
-    },1500);
+  async function pollOnce(){
+    if(!state.jobId) return;
+    try{
+      // cache-bust (?t) so no proxy/CDN can serve a stale "stitching" forever → the poll always sees done
+      const j=await api("/api/video/assemble/"+state.jobId+"?t="+Date.now(),{method:"GET"});
+      renderJob(j, state.pollAsm || {sceneCount:j.sceneCount});
+      if(j.status==="done"||j.status==="failed"||j.status==="canceled"){ clearInterval(state.poll); state.poll=null; setBusy(false); refreshCredits(); }
+    }catch(e){ /* transient; keep polling */ }
   }
+  function pollJob(asm){
+    clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; state.pollAsm=asm;
+    state.poll=setInterval(pollOnce,1500);
+  }
+  // AUTO-RECOVER the UI with NO manual refresh: background tabs throttle setInterval, so a job that
+  // finished while you were away can look stuck. The instant the tab regains focus we fetch fresh
+  // status AND re-arm the poll if it had died → it flips to "Video selesai" by itself.
+  function _recheck(){ if(state.jobId && state.shownDoneFor!==state.jobId){ pollOnce(); if(!state.poll) state.poll=setInterval(pollOnce,1500); } }
+  document.addEventListener("visibilitychange",()=>{ if(!document.hidden) _recheck(); });
+  window.addEventListener("focus",_recheck);
 
   // ── stage rendering ──
   // breathing ceritaAI "C" loader (grows/shrinks like the Claude prompt loader)
