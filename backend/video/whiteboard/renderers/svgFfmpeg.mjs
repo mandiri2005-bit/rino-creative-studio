@@ -106,18 +106,27 @@ function centroidY(d) {
 
 // the marker hand (forearm + fist + pen), nib at the draw point — ported from components/Hand.tsx
 // (the HAND_IMAGE=null inline branch the plan composition uses). px,py = canvas pen-tip; size px.
+// Cursor that follows the pen tip. WB_HAND_STYLE: "marker" (default — a slim floating pen/marker,
+// no hand; cleanest against the watercolour art) | "none" (no cursor) | "hand" (legacy cartoon
+// forearm+fist+pen). px,py = canvas pen-tip; size px.
 function handSvg(px, py, size, nib) {
+  const style = (process.env.WB_HAND_STYLE || "marker").toLowerCase();
+  if (style === "none") return "";
   const s = size / 256, ox = px - size * 0.03, oy = py - size * 0.03;
-  return `<g transform="translate(${ox.toFixed(1)} ${oy.toFixed(1)}) scale(${s.toFixed(4)})">`
-    + `<path d="M132 150 C165 180 195 205 225 228 C238 238 256 242 256 256 L150 256 C128 244 116 212 119 180 C121 165 125 156 132 150 Z" fill="#E6B089"/>`
+  const g = (inner) => `<g transform="translate(${ox.toFixed(1)} ${oy.toFixed(1)}) scale(${s.toFixed(4)})">${inner}</g>`;
+  // the pen/marker itself (nib at the draw point)
+  const pen = `<path d="M21 11 L156 146 L146 156 L11 21 Z" fill="#303030"/>`
+    + `<path d="M31 19 L150 138" stroke="#5a5a5a" stroke-width="2" stroke-linecap="round"/>`
+    + `<path d="M21 11 L7 7 L11 21 Z" fill="${nib}"/>`;
+  if (style !== "hand") return g(pen);   // "marker"/default: slim floating pen, no hand
+  // legacy cartoon hand (forearm + sleeve + fist + thumb) under the pen
+  return g(`<path d="M132 150 C165 180 195 205 225 228 C238 238 256 242 256 256 L150 256 C128 244 116 212 119 180 C121 165 125 156 132 150 Z" fill="#E6B089"/>`
     + `<path d="M256 256 L150 256 C176 240 192 214 201 193 L256 220 Z" fill="#3F6FB2"/>`
     + `<path d="M104 110 C108 92 132 86 148 96 C166 86 188 98 190 120 C206 128 209 154 193 166 C189 190 159 203 134 192 C112 199 92 180 94 158 C86 146 90 122 104 110 Z" fill="#E6B089"/>`
     + `<path d="M100 118 C86 112 75 126 85 140 C93 151 110 149 116 136 C114 126 108 120 100 118 Z" fill="#E6B089"/>`
     + `<path d="M120 116 C134 108 152 112 164 124" stroke="#C98F66" stroke-width="2.5" fill="none" stroke-linecap="round"/>`
     + `<path d="M116 134 C132 127 150 130 162 140" stroke="#C98F66" stroke-width="2.5" fill="none" stroke-linecap="round"/>`
-    + `<path d="M21 11 L156 146 L146 156 L11 21 Z" fill="#303030"/>`
-    + `<path d="M31 19 L150 138" stroke="#5a5a5a" stroke-width="2" stroke-linecap="round"/>`
-    + `<path d="M21 11 L7 7 L11 21 Z" fill="${nib}"/></g>`;
+    + pen);
 }
 
 // camera: mirror WhiteboardPlan.tsx cameraTransform, expressed as an SVG group transform
