@@ -7320,6 +7320,156 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
     return {"plan": plan}                  # plan may be null → Node degrades that scene to handwriting
 
 
+# ── NON-WB per-scene Visual Director (Visual Worker) ─────────────────────────
+# Mirrors the WB plan-engine pattern (whiteboard-plan route above), but for the NON-WB visualModes
+# (full_images / hybrid / full_clips). Replaces the regex-based per-scene visualPrompt built by
+# python.video_segmenter.build_visual_prompt — which entity-extracted poorly on Indonesian and let
+# the SHARED brief lock characters across all scenes (the "Chastelein in every scene" bug).
+#
+# Design: per-scene LLM call (default Sonnet 4.6, env VI_VISUAL_WORKER_MODEL) grounded on the
+# shared art-direction brief (passed in as `brief`), the scene's OWN narration text, and the
+# scene KIND (image vs clip — motion/camera verbs only when clip). Explicitly metered as a
+# `chat` debit tagged with X-Video-Job-Id (mirror /video/meter) → refundable on job fail/cancel.
+# Internal-service auth only. Default-off in the WORKER (env VI_VISUAL_WORKER_ENABLED=0) → if not
+# enabled, the worker keeps using the existing build_visual_prompt regex output.
+class VideoVisualPromptReq(BaseModel):
+    narration: str                       # THIS scene's narration text (NOT the full video)
+    brief: str = ""                      # shared art-direction brief from /video/segment (era/setting/mood)
+    language: str = "id"
+    visual_style: str = ""               # cinematic | photorealistic | comic | … (UI dropdown)
+    scene_kind: str = "image"            # "image" or "clip" — adjusts prompt for nano-banana vs Veo
+    scene_index: int = 0
+    scene_total: int = 1
+
+
+@app.post("/video/visual-prompt")
+async def video_visual_prompt(req: VideoVisualPromptReq,
+                              x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
+                              user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: per-scene visual prompt for NON-WB modes (full_images/hybrid/full_clips). Returns a
+    crafted prompt that the image/clip generator (nano-banana/Veo/Sora/Kling) consumes. Metered as
+    a `chat` op tagged with the video job. The model is OPEN via VI_VISUAL_WORKER_MODEL env (default
+    claude-sonnet-4-6 — strong at structured JSON without paying Opus prose rates)."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    narr = (req.narration or "").strip()
+    if not narr:
+        raise HTTPException(400, "narration required")
+    brief = (req.brief or "").strip()
+    lang_name = LANGUAGE_NAMES.get((req.language or "id").strip().lower(), (req.language or "").strip() or "Bahasa Indonesia") if hasattr(_vseg, "wpm_for") else (req.language or "id")
+    is_clip = (req.scene_kind or "image").lower() == "clip"
+
+    # COHERENCE RULES (Dalang-style) — explicit contract that names the failure modes we observed.
+    # Lock-character bug → rule #1; tone drift / contradiction → rules #2/#3.
+    sys = (
+        "You are a per-scene cinematographer for an AI image/clip generator. Convert ONE scene's "
+        "narration into a vivid, concrete visual prompt that DEPICTS what the narration literally says.\n\n"
+        "Return STRICT JSON only, this exact shape: "
+        '{"visual_prompt":"<200-560 char cinematic description>",'
+        '"characters":["named person ONLY if explicitly mentioned in THIS scene"],'
+        '"setting":"<short location/era>","mood":"<one-line tone>"}\n\n'
+        "RULES (read carefully — these prevent cross-scene contamination):\n"
+        "1. CHARACTER FIDELITY: Mention named characters ONLY when this scene's narration NAMES them. "
+        "Do NOT pad with characters from the BRIEF unless the scene's text mentions them. The brief sets "
+        "the WORLD (era/setting/palette/ethnicity), NOT a fixed character roster. If the scene is about "
+        "the city's modern era, the colonial founder from the brief MUST NOT appear.\n"
+        "2. CONTENT FIDELITY: Visualise ONLY what THIS scene literally says — extract subject + action + "
+        "setting from the narration. Do not invent unmentioned objects or symbols.\n"
+        "3. WORLD CONSISTENCY: Respect the shared BRIEF for era, location, architecture, palette, and "
+        "general ethnicity/clothing of crowds — so all scenes feel like the same documentary.\n"
+        "4. PROMPT CRAFT: Concrete nouns + visible action + composition cue + lighting. Avoid abstract "
+        "words (love/idea/freedom) — choose a concrete object that DEPICTS the abstract (love→two hands; "
+        "freedom→open door). Avoid lists/bullets; one flowing description.\n"
+        + ("5. CLIP MODE: This scene becomes an 8-second motion clip. INCLUDE motion verbs (walking, "
+           "panning, drifting, rising) and ONE camera move (slow push-in, gentle pan, static medium "
+           "shot). Subject must move or scene must breathe.\n"
+           if is_clip else
+           "5. IMAGE MODE: This scene becomes a static photo. Emphasise composition (rule of thirds, "
+           "depth), lighting (golden hour, soft window light), and focal subject. No motion verbs.\n")
+        + f"6. LANGUAGE: The visual_prompt itself MUST be in ENGLISH (the image/clip generator is "
+           "English-keyed). Setting/mood may be brief English noun phrases. The user-facing narration "
+           f"is in {lang_name} but THAT is not the generator's input.\n"
+        "7. LENGTH: visual_prompt is 200-560 characters. Too short = generic. Too long = generator "
+        "trims and key details are lost.\n"
+        "OUTPUT: STRICT JSON only. No prose preamble, no markdown fences."
+    )
+
+    usr_parts = []
+    if brief:
+        usr_parts.append(f"SHARED BRIEF (world/era/setting — DO NOT lock characters from here):\n{brief}")
+    usr_parts.append(f"SCENE {req.scene_index + 1} of {req.scene_total} — NARRATION (this scene only):\n{narr}")
+    if (req.visual_style or "").strip():
+        usr_parts.append(f"VISUAL STYLE: {req.visual_style}")
+    usr_parts.append("Return the JSON object now.")
+    usr = "\n\n".join(usr_parts)
+
+    _byok = _byok_active()
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    _model = os.environ.get("VI_VISUAL_WORKER_MODEL") or "claude-sonnet-4-6"
+
+    def _extract(text):
+        t = (text or "").strip()
+        if t.startswith("```"):
+            t = _re.sub(r"^```[a-zA-Z]*\n?", "", t)
+            t = _re.sub(r"\n?```\s*$", "", t).strip()
+        try:
+            return json.loads(t)
+        except Exception:
+            m = _re.search(r"\{.*\}", t, _re.S)
+            if not m:
+                raise
+            return json.loads(m.group(0))
+
+    parsed = None
+    usage = None
+    try:
+        _client = make_client(_model)
+        msgs = [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
+
+        def _call(use_fmt):
+            kw = dict(model=_model, messages=msgs, temperature=0.5, max_tokens=1200)
+            if use_fmt:
+                kw["response_format"] = {"type": "json_object"}
+            return _client.chat.completions.create(**kw)
+
+        for attempt in range(2):
+            try:
+                resp = await asyncio.to_thread(lambda: _call(True))
+            except Exception as fmt_err:
+                print(f"[video/visual-prompt] json_object rejected ({fmt_err}); retrying plain")
+                resp = await asyncio.to_thread(lambda: _call(False))
+            content = (resp.choices[0].message.content or "")
+            try:
+                cand = _extract(content)
+            except Exception:
+                cand = None
+            if cand and isinstance(cand.get("visual_prompt"), str) and len(cand["visual_prompt"]) >= 80:
+                parsed = cand
+                usage = getattr(resp, "usage", None)
+                break
+            if attempt == 0:
+                msgs.append({"role": "assistant", "content": content or ""})
+                msgs.append({"role": "user", "content":
+                    "That was not a valid JSON with a usable visual_prompt. Return ONLY the full JSON object now."})
+                print(f"[video/visual-prompt] {_model} attempt 1 invalid → repair retry")
+    except Exception as e:
+        print(f"[video/visual-prompt] {_model} path failed: {e}")
+
+    # Metering: ONLY charge when we got a usable result. Mirror the chat-debit pattern used by
+    # _video_visual_brief — chat operation, video_job tagged for refund on job-fail.
+    if parsed and user and _uid:
+        try:
+            tok_in = getattr(usage, "prompt_tokens", None) or (len(sys) + len(usr)) // 4
+            tok_out = getattr(usage, "completion_tokens", None) or len(parsed.get("visual_prompt", "")) // 4
+            await metering.debit(user.tenant_id, _uid, "chat", _model,
+                                 {"tokens_in": tok_in, "tokens_out": tok_out},
+                                 byok=_byok, video_job=x_video_job, log=True)
+        except Exception as _e:
+            print(f"[video/visual-prompt] metering failed (non-fatal): {_e}")
+
+    return {"prompt": parsed}            # null when both attempts failed → Node falls back to existing visualPrompt
+
+
 class VideoWhiteboardRasterReq(BaseModel):
     query: str
     provider: str = "flux"               # flux (flux-kontext-pro via laozhang) | recraft (Node handles recraft itself)

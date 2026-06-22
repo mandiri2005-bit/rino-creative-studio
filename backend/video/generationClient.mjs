@@ -435,5 +435,32 @@ export function httpGenerationClient(opts = {}) {
       if (!r.ok) throw new Error(`whiteboard-raster ${r.status}`);
       return (await r.json()).raster_b64 || null;
     },
+    // NON-WB visual worker (full_images / hybrid / full_clips): per-scene LLM call that produces
+    // a tightly-scoped visual prompt for nano-banana (image) or Veo/Sora/Kling (clip). Mirrors the
+    // WB whiteboard-plan pattern. Returns parsed object {visual_prompt, characters[], setting, mood}
+    // or null on any failure → caller falls back to scene.visualPrompt (regex from segmenter).
+    // Metered as a chat debit on the Python side (video_job tag).
+    async generateVisualPrompt(ctx, { narration, brief, language, visualStyle, sceneKind, sceneIndex, sceneTotal } = {}) {
+      try {
+        const r = await fetch(`${PYTHON_API}/video/visual-prompt`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
+          body: JSON.stringify({
+            narration: narration || "",
+            brief: brief || "",
+            language: language || "id",
+            visual_style: visualStyle || "",
+            scene_kind: sceneKind || "image",
+            scene_index: Number(sceneIndex) || 0,
+            scene_total: Number(sceneTotal) || 1,
+          }),
+        });
+        if (!r.ok) { console.warn(`[visual-prompt] ${r.status}`); return null; }
+        return (await r.json()).prompt || null;
+      } catch (e) {
+        console.warn(`[visual-prompt] failed: ${e.message}`);
+        return null;
+      }
+    },
   };
 }

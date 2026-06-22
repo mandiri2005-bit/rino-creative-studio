@@ -436,6 +436,34 @@ export async function visualProcessor(job, deps) {
     }
     const tmpDir = jobTmpDir(jobId);
     await mkdir(tmpDir, { recursive: true });
+    // VI_VISUAL_WORKER_ENABLED (default off): mirror of the WB plan worker for NON-WB visualModes
+    // (full_images / hybrid / full_clips). The pre-built scene.visualPrompt is the regex-based
+    // segmenter output that lets the SHARED brief lock characters across every scene (the
+    // "Chastelein in every scene" bug). When this flag is on, a per-scene LLM (Sonnet by default,
+    // env VI_VISUAL_WORKER_MODEL) writes a tightly-scoped prompt grounded on THIS scene's
+    // narration only + the brief as WORLD context (era/setting/palette — NOT a character roster).
+    // Metered as a chat debit tagged with this video job → refundable. Any failure keeps the
+    // existing visualPrompt (graceful fallback; no scene is ever lost to a worker LLM error).
+    if (process.env.VI_VISUAL_WORKER_ENABLED === "1") {
+      try {
+        const fresh = await deps.generationClient?.generateVisualPrompt?.(
+          { jobId, tenantId: meta.tenantId, userId: meta.userId },
+          { narration: scene.text || "",
+            brief: meta.brief || "",
+            language: meta.language || "id",
+            visualStyle: meta.visualStyle || "",
+            sceneKind: scene.kind || "image",
+            sceneIndex, sceneTotal: Number(meta.sceneCount) || 1 });
+        if (fresh && typeof fresh.visual_prompt === "string" && fresh.visual_prompt.length >= 80) {
+          scene.visualPrompt = fresh.visual_prompt;
+          console.log(`[visual-prompt ${jobId}/${sceneIndex}] LLM prompt OK (${fresh.visual_prompt.length} chars)`);
+        } else {
+          console.warn(`[visual-prompt ${jobId}/${sceneIndex}] LLM returned invalid → keep regex prompt`);
+        }
+      } catch (e) {
+        console.warn(`[visual-prompt ${jobId}/${sceneIndex}] LLM failed (${e.message}) → keep regex prompt`);
+      }
+    }
     const refImage = await resolveAnchor(jobId, tmpDir, meta);  // per-video reference (or null)
     const base = {
       jobId, sceneIndex, kind: scene.kind, visualPrompt: scene.visualPrompt,
