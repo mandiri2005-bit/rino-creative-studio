@@ -164,7 +164,7 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
         voice: b.voice, imageModel: b.imageModel,
         ttsModel: b.ttsModel, language: b.language, genModel: b.genModel, aspectRatio: b.aspectRatio,
         captionFont: b.captionFont, anchorKey, anchorB64, heroStyle: b.heroStyle,
-        brief: b.brief, visualStyle: b.visualStyle, style: b.style, culturalPalette: b.culturalPalette,   // for the NON-WB visual worker (workers.mjs) — style = gaya narasi, culturalPalette = Nusantara cues
+        brief: b.brief, visualStyle: b.visualStyle, style: b.style, culturalPalette: b.culturalPalette, visualCast: b.visualCast,   // NON-WB visual worker: style=gaya narasi, culturalPalette=Nusantara cues, visualCast=SharedContext registry
       }, deps());
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {

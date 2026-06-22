@@ -6744,6 +6744,55 @@ async def _video_visual_brief(content: str, model: str, user, byok: bool) -> str
         return ""
 
 
+async def _video_visual_cast(content: str, model: str) -> str:
+    """Visual SharedContext (the #1 port from Dalang). From the FULL narration, extract a casting
+    sheet: NAMED recurring characters + recurring named locations, each with a SINGLE fixed visual
+    description so they look identical every time. Returned as a JSON STRING and stored in job meta.
+
+    The Chastelein-safety lives DOWNSTREAM, not here: the per-scene visual worker only injects a cast
+    entry whose NAME literally appears in THAT scene's narration (see /video/visual-prompt). So a
+    recurring protagonist stays visually consistent across the scenes that name them, and a colonial
+    founder NEVER bleeds into a modern-era scene. Best-effort: returns '' on any failure.
+
+    Distinct from _video_visual_brief (a free-form WORLD brief) — this is a STRUCTURED, per-character
+    registry, only consumed by the non-WB visual worker. NOT used by WB."""
+    content = (content or "").strip()
+    if not content:
+        return ""
+    prompt = (
+        "From the narration below, extract a VISUAL CASTING SHEET for an image/clip generator. List ONLY:\n"
+        "1. NAMED characters who RECUR (the narration refers to them by a proper name in 2+ moments) — "
+        "give each a SINGLE fixed visual description: age, build, face, hair, signature clothing & colour, "
+        "so an artist draws them identically every time. Use the EXACT name as written in the narration.\n"
+        "2. RECURRING named places — each with a fixed visual description (architecture, palette, "
+        "lighting, defining features).\n"
+        "STRICT RULES: skip one-off background characters and generic crowds; skip anyone referred to "
+        "ONLY by pronoun; if nothing recurs, return empty arrays. Output ONLY strict JSON, this exact "
+        'shape: {"characters":[{"name":"...","description":"..."}],"locations":[{"name":"...","description":"..."}]}'
+        "\n\nNarration:\n" + content[:4000]
+    )
+    try:
+        cl = make_client(model)
+        mt = min(1500, MODEL_MAX_TOKENS.get(MODELS.get(model, model), DEFAULT_MAX_TOKENS))
+        r = await asyncio.to_thread(lambda: cl.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}],
+            temperature=0.3, max_tokens=mt,
+            response_format={"type": "json_object"}))
+        raw = (r.choices[0].message.content or "").strip()
+        # tolerate fenced/loose JSON
+        if raw.startswith("```"):
+            raw = _re.sub(r"^```[a-zA-Z]*\n?", "", raw); raw = _re.sub(r"\n?```\s*$", "", raw).strip()
+        cast = json.loads(raw)
+        chars = [c for c in (cast.get("characters") or []) if isinstance(c, dict) and (c.get("name") or "").strip()]
+        locs = [l for l in (cast.get("locations") or []) if isinstance(l, dict) and (l.get("name") or "").strip()]
+        if not chars and not locs:
+            return ""
+        return json.dumps({"characters": chars[:8], "locations": locs[:6]}, ensure_ascii=False)
+    except Exception as _e:
+        print(f"[video/segment] visual cast failed (non-fatal): {_e}")
+        return ""
+
+
 async def _req_canceled(request) -> bool:
     """True if the client disconnected (pressed Batalkan). Used to SKIP charges + downstream LLM work
     so a cancelled generation never bills the user. Best-effort — if the platform proxy doesn't
@@ -6848,6 +6897,11 @@ async def video_segment(req: VideoSegmentReq,
                         f"{(h.get('subject') or '').strip()}: {(h.get('visual_facts') or '').strip()[:120]}"
                         for h in _hits[:4] if h.get("visual_facts"))[:600]
             except Exception: pass
+        # Visual SharedContext (cast registry) — only built when the non-WB visual worker is enabled
+        # on THIS (python) service too. 1 cheap LLM call per video; used per-scene (name-filtered).
+        _visual_cast = ""
+        if os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1":
+            _visual_cast = await _video_visual_cast(narration, os.environ.get("VI_VISUAL_WORKER_MODEL") or "claude-sonnet-4-6")
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
                                visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
@@ -6875,6 +6929,9 @@ async def video_segment(req: VideoSegmentReq,
                         f"{(h.get('subject') or '').strip()}: {(h.get('visual_facts') or '').strip()[:120]}"
                         for h in _hits[:4] if h.get("visual_facts"))[:600]
             except Exception: pass
+        _visual_cast = ""
+        if os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1":
+            _visual_cast = await _video_visual_cast(req.text, os.environ.get("VI_VISUAL_WORKER_MODEL") or "claude-sonnet-4-6")
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
                                visual_mode=req.visual_mode or "hybrid", visual_style=req.visual_style,
@@ -6883,6 +6940,7 @@ async def video_segment(req: VideoSegmentReq,
     out = result.to_dict()
     out["brief"] = _brief   # the art-direction brief → the UI builds a reference anchor from it
     out["cultural_palette"] = _cultural_palette   # clean Nusantara cues for the non-WB visual worker (no character names)
+    out["visual_cast"] = _visual_cast   # Visual SharedContext: JSON cast registry (name-filtered per-scene downstream)
     if await _req_canceled(request):   # canceled before the (metered) decide stage → no charge
         print("[video/segment] canceled before decide → skip decide (no charge)")
         return {"canceled": True, "scenes": []}
@@ -7358,6 +7416,7 @@ class VideoVisualPromptReq(BaseModel):
     visual_style: str = ""               # cinematic | photorealistic | comic | … (UI dropdown)
     style: str = ""                      # GAYA NARASI (storytelling/harari/natgeo/...) → cinematography tone via STYLE_TONE
     cultural_palette: str = ""           # NUSANTARA corpus-derived cues (clean subject:visual_facts list, no character names)
+    visual_cast: str = ""                # Visual SharedContext: JSON cast registry; injected per-scene ONLY for names in THIS narration
     scene_kind: str = "image"            # "image" or "clip" — adjusts prompt for nano-banana vs Veo
     scene_index: int = 0
     scene_total: int = 1
@@ -7427,7 +7486,28 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
         "OUTPUT: STRICT JSON only. No prose preamble, no markdown fences."
     )
 
+    # Visual SharedContext: inject ONLY the cast entries whose NAME literally appears in THIS scene's
+    # narration (the Chastelein-safety boundary). A recurring protagonist stays visually identical
+    # across the scenes that name them; a character absent from this scene's text is never injected.
+    _cast_lines = []
+    if (req.visual_cast or "").strip():
+        try:
+            _cast = json.loads(req.visual_cast)
+            _narr_lc = narr.lower()
+            for _c in (_cast.get("characters") or []):
+                _nm = (_c.get("name") or "").strip()
+                if len(_nm) >= 3 and _nm.lower() in _narr_lc and (_c.get("description") or "").strip():
+                    _cast_lines.append(f"- {_nm}: {(_c.get('description') or '').strip()[:200]}")
+            for _l in (_cast.get("locations") or []):
+                _nm = (_l.get("name") or "").strip()
+                if len(_nm) >= 3 and _nm.lower() in _narr_lc and (_l.get("description") or "").strip():
+                    _cast_lines.append(f"- {_nm} (place): {(_l.get('description') or '').strip()[:200]}")
+        except Exception as _e:
+            print(f"[video/visual-prompt] cast parse skipped: {_e}")
+
     usr_parts = [f"SCENE {req.scene_index + 1} of {req.scene_total} — NARRATION (this scene only):\n{narr}"]
+    if _cast_lines:
+        usr_parts.append("RECURRING CAST IN THIS SCENE (depict EXACTLY as described — identical appearance every time, for cross-scene continuity):\n" + "\n".join(_cast_lines[:6]))
     if (req.visual_style or "").strip():
         usr_parts.append(f"VISUAL STYLE: {req.visual_style}")
     if (req.cultural_palette or "").strip():

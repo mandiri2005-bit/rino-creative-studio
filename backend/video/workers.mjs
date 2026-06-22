@@ -456,6 +456,7 @@ export async function visualProcessor(job, deps) {
             visualStyle: meta.visualStyle || "",
             style: meta.style || "",   // gaya narasi → per-style cinematography tone (STYLE_TONE)
             culturalPalette: meta.culturalPalette || "",   // Nusantara cues (clean, no character names)
+            visualCast: meta.visualCast || "",   // Visual SharedContext registry (name-filtered per scene)
             sceneKind: scene.kind || "image",
             sceneIndex, sceneTotal: Number(meta.sceneCount) || 1 });
         if (fresh && typeof fresh.visual_prompt === "string" && fresh.visual_prompt.length >= 80) {
