@@ -234,31 +234,39 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       // the pen TRACES its ink outline then its colour fills. The pen rides the actual line being
       // drawn (pointOnPath), so it follows the artwork like a hand — NOT a mechanical sweep.
       const SPAN = 0.92, N = units.length;
-      // COLOUR-LAG knobs (defaults = the proven SMOOTH look — interleaved, no phase-split → no stalls).
-      // Raise BOTH to make the LINE clearly LEAD the colour, smoothly: BAND_LAG = how far the top→bottom
-      // colour catch-up band trails the pen; FILL_START = how late each form's colour fills within its own
-      // draw window. e.g. WB_DETAIL_BAND_LAG=0.4 + WB_DETAIL_FILL_START=0.7 = line well ahead of colour.
-      // Ink stays THIN 1.5px/0.55 — bolding it doubled the raster's own outlines.
-      const BAND_LAG = clamp(Number(process.env.WB_DETAIL_BAND_LAG) || 0.15, 0, 0.6);
-      const FILL_START = clamp(Number(process.env.WB_DETAIL_FILL_START) || 0.4, 0, 0.85);
-      const inkW = Math.max(1.0, mvw / 700);   // thin pen overlay (~1.5px) — it re-strokes the raster's own outlines
-      // each form's draw TIME ∝ its outline length → big forms take longer (natural) + EVEN area pacing.
+      // COLOUR timing (per-form; no phase-split, no sweep). The SENSITIVE lever is COLOR_LAG = how far the
+      // colour trails the DRAW as a fraction of the WHOLE SCENE (0.1 = close behind, 0.4 = far behind).
+      // It's GLOBAL, so 0.1→0.4 is a BIG visible change — unlike the old within-form FILL_START (~1/N of
+      // the scene, barely visible — "kurang sensitif"). FADE = each form's fade-in duration. The draw
+      // schedule is compressed into [0, 1-LAG-FADE] so the lagged colour still finishes by the scene end.
+      const COLOR_LAG = clamp(Number(process.env.WB_DETAIL_COLOR_LAG ?? 0.18), 0, 0.85);
+      const FADE = clamp(Number(process.env.WB_DETAIL_FADE ?? 0.1), 0.02, 0.4);
+      const BAND = process.env.WB_DETAIL_BAND === "1";   // opt-in top→bottom sweep (legacy/potrace gap-fill); default OFF
+      const inkW = Math.max(1.0, mvw / 700);   // thin pen overlay (~1.5px) — re-strokes the raster's own outlines
       const lens = units.map((u) => pathLen(u.d));
       const totLen = lens.reduce((a, c) => a + c, 0) || 1;
-      let _cum = 0; const startF = lens.map((l) => { const s = (_cum / totLen) * SPAN; _cum += l; return s; });
-      const durF = lens.map((l) => Math.max(0.012, (l / totLen) * SPAN) * 1.6); // *1.6 = slight overlap
-      const spOf = (i) => clamp((p - startF[i]) / durF[i], 0, 1);
+      const DRAWSPAN = clamp(1 - COLOR_LAG - FADE, 0.25, SPAN);   // draw fits here; colour = draw + LAG, ends by ~1
+      let _cum = 0; const startF = lens.map((l) => { const s = (_cum / totLen) * DRAWSPAN; _cum += l; return s; });
+      const durF = lens.map((l) => Math.max(0.012, (l / totLen) * DRAWSPAN) * 1.6); // *1.6 = slight overlap
+      const spDraw = (i) => clamp((p - startF[i]) / durF[i], 0, 1);   // ink trace + pen
       const id = `rv${clipId++}`;
       out.push(`<g transform="translate(${mgx} ${mgy}) scale(${ms})">`);
       out.push(`<mask id="${id}" maskUnits="userSpaceOnUse">`);
-      // catch-up band trails the draw → fills LIGHT regions trace misses (pale koala), so nothing
-      // stays empty; the per-form fills give the leading edge near the pen.
-      const catchH = Math.max(0, clamp(p / SPAN, 0, 1) - BAND_LAG) * mvh;
-      if (catchH > 0) out.push(`<rect x="${mvx}" y="${mvy}" width="${mvw}" height="${catchH.toFixed(1)}" fill="white"/>`);
-      units.forEach((u, i) => { const op = clamp((spOf(i) - FILL_START) / (1 - FILL_START), 0, 1); if (op > 0) out.push(`<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`); });
+      // opt-in catch-up sweep (default OFF; legacy/potrace light-region gap-fill). recraft masks cover the
+      // whole image so the per-form fills are enough — no sweep needed.
+      if (BAND) {
+        const catchH = Math.max(0, clamp((p - COLOR_LAG) / DRAWSPAN, 0, 1)) * mvh;
+        if (catchH > 0) out.push(`<rect x="${mvx}" y="${mvy}" width="${mvw}" height="${catchH.toFixed(1)}" fill="white"/>`);
+      }
+      // per-form colour: each shape fades in starting COLOR_LAG (scene fraction) AFTER it was drawn → the
+      // already-drawn shapes colour while the pen moves on. The lag is GLOBAL → clearly tunable/sensitive.
+      units.forEach((u, i) => {
+        const op = clamp((p - startF[i] - COLOR_LAG) / FADE, 0, 1);
+        if (op > 0) out.push(`<path d="${u.d}" fill="white" opacity="${op.toFixed(3)}"/>`);
+      });
       out.push(`</mask><image href="${el.raster}" x="${mvx}" y="${mvy}" width="${mvw}" height="${mvh}" preserveAspectRatio="xMidYMid meet" mask="url(#${id})"/>`);
       units.forEach((u, i) => {
-        const sp = spOf(i); if (sp <= 0) return;
+        const sp = spDraw(i); if (sp <= 0) return;
         const traceP = clamp(sp / 0.5, 0, 1);
         const L = pathLen(u.d);
         out.push(`<path d="${u.d}" fill="none" stroke="${ink}" stroke-width="${inkW}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${L.toFixed(1)}" stroke-dashoffset="${((1 - traceP) * L).toFixed(1)}" opacity="0.55"/>`);
@@ -267,8 +275,8 @@ export function buildSceneSvg(plan, frame, fps = 30) {
       // pen rides the LEADING form being traced (real point on its line) → follows the NN path
       if (p > 0.005 && p < 0.985) {
         let act = -1;
-        for (let i = 0; i < N; i++) { const sp = spOf(i); if (sp > 0.01 && sp < 0.99) act = i; }
-        if (act >= 0) { const u = units[act]; const pt = pointOnPath(u.d, clamp(spOf(act) / 0.5, 0, 1)) || { x: u.x, y: u.y }; hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink }); }
+        for (let i = 0; i < N; i++) { const sp = spDraw(i); if (sp > 0.01 && sp < 0.99) act = i; }
+        if (act >= 0) { const u = units[act]; const pt = pointOnPath(u.d, clamp(spDraw(act) / 0.5, 0, 1)) || { x: u.x, y: u.y }; hands.push({ x: mgx + pt.x * ms, y: mgy + pt.y * ms, size: Math.max(120, iconH * 0.5), nib: ink }); }
       }
     } else {
       // color genre: soft colour chip behind the icon (icon stroke is the same colour)
@@ -420,6 +428,17 @@ const ffprobeDur = (file) => new Promise((res) => {
 
 // Render ONE resolved scene → MP4 (frames → rasterize → ffmpeg, optional audio).
 export async function renderSceneSvgFfmpeg(plan, outMp4, { fps = 30, crf = 23, audioPath = null } = {}) {
+  // WB_HERO_MASK_SHAPES: cap the reveal-mask FORM count at render time. recraft vectorize can emit ~70
+  // very complex paths → raster is glacial on long videos. Keep the N LARGEST forms in their original
+  // NN draw order (the catch-up band fills the rest); default 999 = no cap (unchanged). Big speedup for
+  // recraft renders — and works on ALREADY-CACHED planJson (re-stitch salvages a stuck job, no re-pay).
+  const MASK_CAP = Math.max(1, Number(process.env.WB_HERO_MASK_SHAPES) || 999);
+  for (const el of (plan.elements || [])) {
+    if (Array.isArray(el.maskShapes) && el.maskShapes.length > MASK_CAP) {
+      const keep = new Set([...el.maskShapes].sort((a, b) => pathLen(b.d) - pathLen(a.d)).slice(0, MASK_CAP));
+      el.maskShapes = el.maskShapes.filter((s) => keep.has(s));
+    }
+  }
   const planFrames = plan.durationInFrames || Math.round((plan.duration || 4) * fps);
   // The video window MUST cover the actual narration. Measure the very file we're about to mux and
   // EXTEND the window (freeze the finished board for the extra frames) when the narration is longer
