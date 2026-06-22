@@ -758,6 +758,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
       if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
       state.narrationText=scenes.map(s=>s.text||"").join("  ");   // for the teleprompter
       state.brief=seg.brief||"";   // art-direction brief → reference anchor (when refMode)
+      state.culturalPalette=seg.cultural_palette||"";   // Nusantara cues → non-WB visual worker (clean, no character names)
       renderStage({status:"dispatching",scenes});
       // 2) assemble
       const asm=await api("/api/video/assemble",{method:"POST",signal:state.abort.signal,body:JSON.stringify({
@@ -767,6 +768,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         ttsModel:state.ttsModel, voice:state.voice, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
         imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
         heroStyle:state.heroStyle, visualStyle:state.visualStyle, style:state.style,   // visual worker → per-style cinematography tone
+        culturalPalette:state.culturalPalette||"",   // Nusantara corpus cues for non-WB visual worker
       })});
       state.jobId=asm.jobId;
       viRemember(asm.jobId,{scenes:asm.sceneCount,title:(state.narrationText||"").slice(0,60)});

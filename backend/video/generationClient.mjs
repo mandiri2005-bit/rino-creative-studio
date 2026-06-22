@@ -440,7 +440,7 @@ export function httpGenerationClient(opts = {}) {
     // WB whiteboard-plan pattern. Returns parsed object {visual_prompt, characters[], setting, mood}
     // or null on any failure → caller falls back to scene.visualPrompt (regex from segmenter).
     // Metered as a chat debit on the Python side (video_job tag).
-    async generateVisualPrompt(ctx, { narration, language, visualStyle, style, sceneKind, sceneIndex, sceneTotal } = {}) {
+    async generateVisualPrompt(ctx, { narration, language, visualStyle, style, culturalPalette, sceneKind, sceneIndex, sceneTotal } = {}) {
       // MIRROR WB whiteboard-plan: NO brief field. Per-scene narration alone drives the prompt;
       // the gaya-narasi `style` provides cross-scene cinematography consistency (curated 1-liner,
       // not free-form character description, so it can never lock a named character every scene).
@@ -453,6 +453,7 @@ export function httpGenerationClient(opts = {}) {
             language: language || "",       // empty → LLM follows narration's language (WB-style)
             visual_style: visualStyle || "",
             style: style || "",             // GAYA NARASI → cinematography tone (STYLE_TONE)
+            cultural_palette: culturalPalette || "",   // Nusantara corpus cues (clean, no character names)
             scene_kind: sceneKind || "image",
             scene_index: Number(sceneIndex) || 0,
             scene_total: Number(sceneTotal) || 1,

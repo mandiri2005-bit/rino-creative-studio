@@ -6836,8 +6836,17 @@ async def video_segment(req: VideoSegmentReq,
         # narration/brief/decide LLM cost is absorbed into the video price (render fee + per-scene
         # markup), which only applies once the user COMMITS at /assemble. (user=None → skip metering.)
         _brief = await _video_visual_brief(narration, req.gen_model, None, _byok)
+        _cultural_palette = ""
         if req.nusantara_corpus:
-            try: _brief, _, _ = _corpus_enhance(_brief)
+            try:
+                _brief, _hits, _ = _corpus_enhance(_brief)
+                # Build a CLEAN cultural palette from corpus hits — just subject + concise visual_facts
+                # (top 4, truncated). This is what the non-WB visual worker uses to keep Nusantara
+                # nuance without inheriting any character/name from the full brief (Chastelein bug).
+                if _hits:
+                    _cultural_palette = "; ".join(
+                        f"{(h.get('subject') or '').strip()}: {(h.get('visual_facts') or '').strip()[:120]}"
+                        for h in _hits[:4] if h.get("visual_facts"))[:600]
             except Exception: pass
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
@@ -6857,8 +6866,14 @@ async def video_segment(req: VideoSegmentReq,
             print("[video/segment] canceled (mode B) → skip brief/segment/decide (no charge)")
             return {"canceled": True, "scenes": []}
         _brief = await _video_visual_brief(req.text, req.gen_model, None, _byok_active())   # gate-only segment → no charge until /assemble
+        _cultural_palette = ""
         if req.nusantara_corpus:
-            try: _brief, _, _ = _corpus_enhance(_brief)
+            try:
+                _brief, _hits, _ = _corpus_enhance(_brief)
+                if _hits:
+                    _cultural_palette = "; ".join(
+                        f"{(h.get('subject') or '').strip()}: {(h.get('visual_facts') or '').strip()[:120]}"
+                        for h in _hits[:4] if h.get("visual_facts"))[:600]
             except Exception: pass
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
@@ -6867,6 +6882,7 @@ async def video_segment(req: VideoSegmentReq,
 
     out = result.to_dict()
     out["brief"] = _brief   # the art-direction brief → the UI builds a reference anchor from it
+    out["cultural_palette"] = _cultural_palette   # clean Nusantara cues for the non-WB visual worker (no character names)
     if await _req_canceled(request):   # canceled before the (metered) decide stage → no charge
         print("[video/segment] canceled before decide → skip decide (no charge)")
         return {"canceled": True, "scenes": []}
@@ -7341,6 +7357,7 @@ class VideoVisualPromptReq(BaseModel):
     language: str = ""                   # WB-style: empty default ("the same language as the narration")
     visual_style: str = ""               # cinematic | photorealistic | comic | … (UI dropdown)
     style: str = ""                      # GAYA NARASI (storytelling/harari/natgeo/...) → cinematography tone via STYLE_TONE
+    cultural_palette: str = ""           # NUSANTARA corpus-derived cues (clean subject:visual_facts list, no character names)
     scene_kind: str = "image"            # "image" or "clip" — adjusts prompt for nano-banana vs Veo
     scene_index: int = 0
     scene_total: int = 1
@@ -7413,6 +7430,11 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
     usr_parts = [f"SCENE {req.scene_index + 1} of {req.scene_total} — NARRATION (this scene only):\n{narr}"]
     if (req.visual_style or "").strip():
         usr_parts.append(f"VISUAL STYLE: {req.visual_style}")
+    if (req.cultural_palette or "").strip():
+        # CLEAN Nusantara cues — subject:visual_facts pairs from corpus, NO character names.
+        # Treat as lightweight CULTURAL ATMOSPHERE hints (props, palette, clothing, architecture)
+        # to weave into the prompt where relevant. Never replaces the per-scene narration as source.
+        usr_parts.append("CULTURAL PALETTE (Nusantara cues — weave naturally where they fit; ignore if scene doesn't call for them):\n" + req.cultural_palette)
     usr_parts.append("Return the JSON object now.")
     usr = "\n\n".join(usr_parts)
 

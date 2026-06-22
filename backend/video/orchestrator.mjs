@@ -99,6 +99,7 @@ export async function startAssembly(ctx, deps) {
             // (workers.mjs ELSE branch) to ground each per-scene visualPrompt LLM call
     visualStyle,   // UI dropdown (cinematic/photorealistic/...) — also fed to the visual worker
     style,         // GAYA NARASI (storytelling/harari/natgeo/...) → per-style cinematography tone in worker
+    culturalPalette,  // Nusantara corpus cues (clean subject:visual_facts list, no character names) — for non-WB visual worker
   } = ctx;
   if (!jobId) throw new Error("startAssembly: jobId required");
   if (!scenes?.length) throw new Error("startAssembly: scenes required");
@@ -125,6 +126,7 @@ export async function startAssembly(ctx, deps) {
     captionFont: captionFont || "",
     anchorKey: anchorKey || "", anchorB64: anchorB64 || "", heroStyle: heroStyle || "",
     brief: brief || "", visualStyle: visualStyle || "", style: style || "",   // for the non-WB visual worker (workers.mjs) — `style` = gaya narasi for cinematography tone
+    culturalPalette: culturalPalette || "",   // Nusantara corpus cues for the non-WB visual worker
     sceneCount: scenes.length, batchSize: DISPATCH_BATCH_SIZE, batchPlan,
     status: "running", progress: 0, creditsEstimate: creditsNeeded,
     scenes,
