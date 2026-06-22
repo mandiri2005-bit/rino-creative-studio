@@ -262,10 +262,18 @@ export function httpGenerationClient(opts = {}) {
       const h = authHeaders(scene);
       if (scene.kind !== "clip") {
         const out = join(tmpDir, `img_${scene.sceneIndex}.png`);
+        const imageModel = scene.imageModel || "nano-banana-hd";
+        // Stable op_id → Python debits idempotently (credit_ledger is ON CONFLICT DO
+        // NOTHING on op_id), so a BullMQ re-delivery after a Python-2xx-but-Node-side
+        // failure (writeFile/download throw post-response) can't double-charge a scene
+        // that ultimately succeeds. Includes the model so an alt-model fallback still
+        // bills once for the model that actually landed.
+        const opId = scene.jobId != null
+          ? `vi-img:${scene.jobId}:${scene.sceneIndex}:${imageModel}` : undefined;
         const r = await fetchT(`${PYTHON_API}/generate-image`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...h },
-          body: JSON.stringify({ model: scene.imageModel || "nano-banana-hd", prompt: scene.visualPrompt, aspect_ratio: scene.aspectRatio || "16:9", seed: scene.seed || 0, ref_image: scene.refImage || "" }),
+          headers: { "Content-Type": "application/json", ...(opId ? { "X-Op-Id": opId } : {}), ...h },
+          body: JSON.stringify({ model: imageModel, prompt: scene.visualPrompt, aspect_ratio: scene.aspectRatio || "16:9", seed: scene.seed || 0, ref_image: scene.refImage || "" }),
         });
         if (!r.ok) throw new Error(`image ${r.status}: ${(await r.text()).slice(0, 150)}`);
         const data = await r.json();

@@ -782,7 +782,8 @@ except Exception:
 _request_id_ctx: ContextVar[str] = ContextVar("_request_id_ctx", default="")
 
 _SENSITIVE_HEADERS = {"authorization", "cookie", "x-laozhang-api-key",
-                      "x-veo-api-key", "x-sora-api-key"}
+                      "x-image-api-key", "x-veo-api-key", "x-sora-api-key",
+                      "x-internal-secret", "x-admin-secret"}
 
 
 def _sentry_before_send(event, hint):
@@ -799,10 +800,19 @@ def _sentry_before_send(event, hint):
         pass
     # Redact sensitive request headers (never ship API keys / cookies to Sentry).
     try:
-        headers = (event.get("request") or {}).get("headers") or {}
+        req = event.get("request") or {}
+        headers = req.get("headers") or {}
         for h in list(headers.keys()):
-            if h.lower() in _SENSITIVE_HEADERS:
+            hl = h.lower()
+            # explicit denylist + pattern net so a future *-api-key/*-secret alias
+            # (e.g. x-image-api-key, the one this net was added for) can't leak.
+            if (hl in _SENSITIVE_HEADERS or hl.endswith("-api-key")
+                    or hl.endswith("-secret") or hl.endswith("-token")):
                 headers[h] = "[redacted]"
+        # defensive parity with the Node SDK: never ship a query string (no inbound
+        # route carries a secret there today, but keep it symmetric + future-proof).
+        if req.get("query_string"):
+            req["query_string"] = "[redacted]"
     except Exception:
         pass
     return event
@@ -2527,6 +2537,7 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
 async def generate_image(req: ImageRequest,
                          x_image_api_key: str = Header(None, alias="X-Image-API-Key"),
                          x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
+                         x_op_id: Optional[str] = Header(None, alias="X-Op-Id"),
                          user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     cfg = IMAGE_MODELS.get(req.model)
     if not cfg:
@@ -2592,8 +2603,13 @@ async def generate_image(req: ImageRequest,
 
         _cr = 0
         if user:
+            # Stable op_id (sent by the video worker as vi-img:<job>:<scene>:<model>)
+            # makes this debit idempotent — a worker re-delivery after a Python-2xx
+            # but Node-side failure can't double-charge a scene that ultimately lands.
+            # Absent (Studio one-shots) → debit() falls back to a fresh uuid as before.
             _cr = await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
-                                       byok=_byok, video_job=x_video_job, log=False) or 0
+                                       byok=_byok, video_job=x_video_job,
+                                       op_id=x_op_id or None, log=False) or 0
         await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt, credits=_cr)
         return {
             "image_b64": b64,
