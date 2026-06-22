@@ -476,11 +476,6 @@ select option{ background:#111019!important; color:var(--t)!important; }
         </div>
       </details>
 
-      <div class="estimate">
-        <div class="e-l"><b id="estScenes">—</b> scene · <span id="estDur">—</span></div>
-        <div class="e-cr">≈ <b id="estCredits">—</b> kredit<span id="estRange" style="color:var(--td);font-size:12px;margin-left:4px"></span></div>
-      </div>
-
       <button class="produce" id="produceBtn">Buat video ⚡</button>
       <div class="err" id="err"></div>
     </div>
@@ -670,24 +665,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }catch(e){ /* keep defaults if config unavailable */ }
   })();
 
-  // ── live estimate via /api/video/params ──
-  let estTimer=null;
-  async function refreshEstimate(){
-    if(state.mode!=="A"){ $("#estScenes").textContent="—"; $("#estDur").textContent="dari narasi"; $("#estCredits").textContent="—"; return; }
-    clearTimeout(estTimer);
-    estTimer=setTimeout(async()=>{
-      try{
-        const p=await api("/api/video/params",{method:"POST",body:JSON.stringify({minutes:state.minutes,tier:state.tier,visual_mode:state.visualMode,clip_model:state.clipModel,image_model:state.imageModel})});
-        $("#estScenes").textContent=p.scene_count;
-        $("#estDur").textContent=DURATIONS.find(d=>d[1]===state.minutes)?.[0]||state.minutes+" mnt";
-        $("#estCredits").textContent=p.credits;
-        // a range only makes sense for hybrid (the clip/image split is uncertain);
-        // full_clips / full_images are a single deterministic number.
-        const showRange = state.visualMode==="hybrid" && p.credits_min!=null && p.credits_max!=null && p.credits_min!==p.credits_max;
-        $("#estRange").textContent = showRange ? `(gambar ${p.credits_min} ↔ klip ${p.credits_max})` : "";
-      }catch(e){ /* leave dashes */ }
-    },150);
-  }
+  // Live estimate pill REMOVED (was misleading: huge credit range "gambar ↔ klip" for hybrid
+  // confused users — actual charge is per real usage, not pre-computed). Stubbed so the many
+  // callsites below stay valid without surgery.
+  function refreshEstimate(){ /* no-op */ }
 
   // ── produce ──
   const stage=$("#stage"), errBox=$("#err"), btn=$("#produceBtn");
