@@ -664,6 +664,30 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }catch(e){ /* keep defaults if config unavailable */ }
   })();
 
+  // Mirror Studio's Narasi-AI dropdown: load the PAKEM style catalog dynamically from
+  // /api/narration/styles. Preserves the Whiteboard optgroup (those are VI-specific genre triggers,
+  // not PAKEM styles). Falls back to the hardcoded options on any error.
+  (async function loadNarrationStyles(){
+    try{
+      const r=await api("/api/narration/styles",{method:"GET"});
+      const styles=Array.isArray(r&&r.styles)?r.styles:[];
+      if(!styles.length) return;
+      const sel=$("#style"); if(!sel) return;
+      const cur=sel.value;
+      const wbGroup=sel.querySelector('optgroup[label*="Whiteboard"]');   // keep WB genre options
+      [...sel.children].forEach(c=>{ if(c!==wbGroup) sel.removeChild(c); });
+      styles.forEach(s=>{
+        const opt=document.createElement("option");
+        opt.value=s.value; opt.textContent=s.label||s.value;
+        wbGroup?sel.insertBefore(opt,wbGroup):sel.appendChild(opt);
+      });
+      // restore previous selection if still valid (incl. WB genres), else pick a sensible default
+      const valid=[...sel.querySelectorAll("option")].map(o=>o.value);
+      sel.value = valid.includes(cur) ? cur : (valid.includes("creative_nonfiction")?"creative_nonfiction":styles[0].value);
+      state.style=sel.value;
+    }catch(e){ /* keep hardcoded list */ }
+  })();
+
   // Live estimate pill REMOVED (was misleading: huge credit range "gambar ↔ klip" for hybrid
   // confused users — actual charge is per real usage, not pre-computed). Stubbed so the many
   // callsites below stay valid without surgery.
