@@ -440,17 +440,19 @@ export function httpGenerationClient(opts = {}) {
     // WB whiteboard-plan pattern. Returns parsed object {visual_prompt, characters[], setting, mood}
     // or null on any failure → caller falls back to scene.visualPrompt (regex from segmenter).
     // Metered as a chat debit on the Python side (video_job tag).
-    async generateVisualPrompt(ctx, { narration, brief, language, visualStyle, style, sceneKind, sceneIndex, sceneTotal } = {}) {
+    async generateVisualPrompt(ctx, { narration, language, visualStyle, style, sceneKind, sceneIndex, sceneTotal } = {}) {
+      // MIRROR WB whiteboard-plan: NO brief field. Per-scene narration alone drives the prompt;
+      // the gaya-narasi `style` provides cross-scene cinematography consistency (curated 1-liner,
+      // not free-form character description, so it can never lock a named character every scene).
       try {
         const r = await fetch(`${PYTHON_API}/video/visual-prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
           body: JSON.stringify({
             narration: narration || "",
-            brief: brief || "",
-            language: language || "id",
+            language: language || "",       // empty → LLM follows narration's language (WB-style)
             visual_style: visualStyle || "",
-            style: style || "",   // GAYA NARASI → per-style cinematography tone (STYLE_TONE)
+            style: style || "",             // GAYA NARASI → cinematography tone (STYLE_TONE)
             scene_kind: sceneKind || "image",
             scene_index: Number(sceneIndex) || 0,
             scene_total: Number(sceneTotal) || 1,

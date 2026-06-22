@@ -449,8 +449,10 @@ export async function visualProcessor(job, deps) {
         const fresh = await deps.generationClient?.generateVisualPrompt?.(
           { jobId, tenantId: meta.tenantId, userId: meta.userId },
           { narration: scene.text || "",
-            brief: meta.brief || "",
-            language: meta.language || "id",
+            // brief intentionally OMITTED — mirror WB (whiteboard-plan also has no brief field).
+            // The shared brief was poisoned by upstream _video_visual_brief naming a recurring
+            // character and dominating every scene. Cinematography consistency now rides on `style`.
+            language: meta.language || "",
             visualStyle: meta.visualStyle || "",
             style: meta.style || "",   // gaya narasi → per-style cinematography tone (STYLE_TONE)
             sceneKind: scene.kind || "image",

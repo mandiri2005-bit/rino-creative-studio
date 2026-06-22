@@ -7333,9 +7333,12 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
 # Internal-service auth only. Default-off in the WORKER (env VI_VISUAL_WORKER_ENABLED=0) → if not
 # enabled, the worker keeps using the existing build_visual_prompt regex output.
 class VideoVisualPromptReq(BaseModel):
+    # MIRROR WB whiteboard-plan: drop `brief` field entirely. The shared brief is poisoned by
+    # the upstream _video_visual_brief naming a recurring character → contaminated every scene.
+    # WB never had this problem because its worker schema doesn't include brief — narration
+    # alone drives the per-scene plan. Same discipline here: per-scene narration is enough.
     narration: str                       # THIS scene's narration text (NOT the full video)
-    brief: str = ""                      # shared art-direction brief from /video/segment (era/setting/mood)
-    language: str = "id"
+    language: str = ""                   # WB-style: empty default ("the same language as the narration")
     visual_style: str = ""               # cinematic | photorealistic | comic | … (UI dropdown)
     style: str = ""                      # GAYA NARASI (storytelling/harari/natgeo/...) → cinematography tone via STYLE_TONE
     scene_kind: str = "image"            # "image" or "clip" — adjusts prompt for nano-banana vs Veo
@@ -7356,43 +7359,12 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
     narr = (req.narration or "").strip()
     if not narr:
         raise HTTPException(400, "narration required")
-    # NEUTRALIZE the brief: the upstream _video_visual_brief + Nusantara-corpus expansion can produce a
-    # 1500+ char description that NAMES a recurring character (e.g. "Cornelis Chastelein, a Dutch …").
-    # Even a hardened anti-lock rule loses to a brief that explicit. Drop any SENTENCE that mentions a
-    # name from THIS scene's narration's people-set is NOT mentioned — i.e. names from the brief that
-    # don't appear in the narration. Keep world/setting/era sentences intact. Heuristic: extract
-    # Capitalized multi-word proper-noun candidates from the brief, then for each, if it does NOT
-    # appear in the narration, drop the SENTENCE containing it. Leaves era/palette/architecture cues.
-    raw_brief = (req.brief or "").strip()
-    if raw_brief:
-        # split into sentences
-        import re as _r2
-        _sents = _r2.split(r'(?<=[.!?])\s+', raw_brief)
-        # find proper-noun candidates: sequences of Capitalized Words (2+ words OR 1 word len>=4)
-        _props = set(_r2.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b', raw_brief))
-        # also single Capitalized words >=4 chars (catches "Chastelein", "Depok") but excludes 1-letter / "A"/"The"
-        _props |= {w for w in _r2.findall(r'\b[A-Z][a-z]{3,}\b', raw_brief) if w.lower() not in {"the","this","that","with","into","from","upon","amid","like","over","such","then","when","while","also","both","only","very","most","more","less","much","many","some","other","every","each","none","both","none","none"}}
-        # narration set (lowercased) to test containment — case-insensitive substring match
-        _narr_lc = narr.lower()
-        _kept = []
-        for s in _sents:
-            # find props in this sentence
-            _here = [p for p in _props if p in s]
-            # drop sentence if it mentions a proper noun NOT in the narration
-            if any(p.lower() not in _narr_lc for p in _here):
-                continue
-            _kept.append(s)
-        brief = " ".join(_kept).strip()
-        if not brief:
-            # all sentences dropped → fall back to a generic world-only stub
-            brief = "World context: respect era, setting, palette, lighting from the original brief; do not invent named characters."
-    else:
-        brief = ""
     # LANGUAGE_NAMES lives in video_segmenter, NOT laozhang_api scope → must use _vseg. (Bug shipped
      # d28a6ad: NameError → /video/visual-prompt always 500'd → worker fell back to the regex
      # build_visual_prompt prompt → Chastelein bug persisted. Rino caught it in the morning.)
     _LN = getattr(_vseg, "LANGUAGE_NAMES", {})
-    lang_name = _LN.get((req.language or "id").strip().lower(), (req.language or "").strip() or "Bahasa Indonesia")
+    # Mirror WB: empty language → "the SAME language as the narration" (LLM picks from narration text)
+    lang_name = _LN.get((req.language or "").strip().lower(), (req.language or "").strip() or "the SAME language as the narration")
     is_clip = (req.scene_kind or "image").lower() == "clip"
     # Per-style cinematography tone (Dalang's per-style pattern, adapted for visual). Maps the
     # GAYA NARASI (storytelling/harari/natgeo/bedtime_story/…) to a one-line tone the LLM must
@@ -7400,8 +7372,11 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
     # scenes, beyond just the shared world brief. Falls back to DEFAULT_TONE for unknown styles.
     style_tone = _vseg.STYLE_TONE.get(_vseg._normalize_style(req.style or ""), _vseg.DEFAULT_TONE) if (req.style or "").strip() else _vseg.DEFAULT_TONE
 
-    # COHERENCE RULES (Dalang-style) — explicit contract that names the failure modes we observed.
-    # Lock-character bug → rule #1; tone drift / contradiction → rules #2/#3.
+    # COHERENCE RULES — mirror WB Visual Director discipline: narration alone drives the per-scene
+    # prompt; there is no upstream shared "brief" smuggled in (WB doesn't accept brief either —
+    # see VideoWhiteboardPlanReq). The per-video CONSISTENCY across scenes is enforced by the
+    # gaya-narasi `style_tone` injection (rule #6) — that's a curated 1-line cinematography hint,
+    # not free-form character description, so it can never lock a named character into every scene.
     sys = (
         "You are a per-scene cinematographer for an AI image/clip generator. Convert ONE scene's "
         "narration into a vivid, concrete visual prompt that DEPICTS what the narration literally says.\n\n"
@@ -7409,49 +7384,33 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
         '{"visual_prompt":"<200-560 char cinematic description>",'
         '"characters":["named person ONLY if explicitly mentioned in THIS scene"],'
         '"setting":"<short location/era>","mood":"<one-line tone>"}\n\n'
-        "RULES (read carefully — these prevent cross-scene contamination):\n"
-        "1. CHARACTER FIDELITY (CRITICAL — read twice): Mention a named character ONLY if THIS scene's "
-        "narration EXPLICITLY NAMES them (a literal proper noun match in the narration text). The BRIEF "
-        "is WORLD context (era, setting, palette, architecture, generic ethnicity of crowds) — NEVER a "
-        "character roster. EVEN IF the brief describes 'a man named Cornelis Chastelein in VOC coat', do "
-        "NOT depict him in any scene whose narration does not contain the word 'Chastelein'. Pronouns "
-        "like 'ia' / 'dia' / 'he' / 'she' / 'they' are NOT a name — if the narration only refers by "
-        "pronoun, the subject is a generic figure (a Dutch official, a villager, a farmer, a child — "
-        "whichever fits the action), NEVER the named character from the brief.\n"
-        "WORKED EXAMPLE: brief says 'Cornelis Chastelein, a Dutch VOC official in West Java 1696'. Scene "
-        "narration says 'Selama berabad-abad, Depok tetap menjadi desa kecil' (no name). CORRECT prompt: "
-        "'A small Indonesian village over the centuries — wooden houses, banana trees, a quiet dirt path, "
-        "soft golden light…' (no Chastelein, no Dutch official — the scene is about a sleepy village, "
-        "depicted that way). WRONG: 'A Dutch man in a VOC coat standing in a village…' (smuggled the "
-        "brief's named character in even though the narration never mentioned him).\n"
-        "2. CONTENT FIDELITY: Visualise ONLY what THIS scene literally says — extract subject + action + "
-        "setting from the narration. Do not invent unmentioned objects or symbols.\n"
-        "3. WORLD CONSISTENCY: Respect the shared BRIEF for era, location, architecture, palette, and "
-        "general ethnicity/clothing of crowds — so all scenes feel like the same documentary.\n"
-        "4. PROMPT CRAFT: Concrete nouns + visible action + composition cue + lighting. Avoid abstract "
+        "RULES (read carefully):\n"
+        "1. CONTENT FIDELITY (CRITICAL): visualise ONLY what THIS scene's narration literally says — "
+        "extract subject + action + setting straight from the narration text. Do not invent named "
+        "characters not in the text. Pronouns ('ia', 'dia', 'he', 'they') are NOT a name → depict a "
+        "generic figure that fits (a villager, a farmer, an official) — NEVER a specific named person "
+        "unless the narration spells out the name. Do not pad with extra objects or characters.\n"
+        "2. PROMPT CRAFT: Concrete nouns + visible action + composition cue + lighting. Avoid abstract "
         "words (love/idea/freedom) — choose a concrete object that DEPICTS the abstract (love→two hands; "
         "freedom→open door). Avoid lists/bullets; one flowing description.\n"
-        + ("5. CLIP MODE: This scene becomes an 8-second motion clip. INCLUDE motion verbs (walking, "
+        + ("3. CLIP MODE: This scene becomes an 8-second motion clip. INCLUDE motion verbs (walking, "
            "panning, drifting, rising) and ONE camera move (slow push-in, gentle pan, static medium "
            "shot). Subject must move or scene must breathe.\n"
            if is_clip else
-           "5. IMAGE MODE: This scene becomes a static photo. Emphasise composition (rule of thirds, "
+           "3. IMAGE MODE: This scene becomes a static photo. Emphasise composition (rule of thirds, "
            "depth), lighting (golden hour, soft window light), and focal subject. No motion verbs.\n")
-        + f"6. LANGUAGE: The visual_prompt itself MUST be in ENGLISH (the image/clip generator is "
+        + f"4. LANGUAGE: The visual_prompt itself MUST be in ENGLISH (the image/clip generator is "
            "English-keyed). Setting/mood may be brief English noun phrases. The user-facing narration "
            f"is in {lang_name} but THAT is not the generator's input.\n"
-        f"7. STYLE TONE (gaya narasi → cinematography): the WHOLE video uses ONE consistent cinematography "
+        f"5. STYLE TONE (gaya narasi → cinematography): the WHOLE video uses ONE consistent cinematography "
         f"tone — '{style_tone}'. INCLUDE this tone in every visual_prompt (lighting, palette, framing) so the "
         f"scenes feel like the SAME film, not stitched-from-different-aesthetics. Do NOT contradict the tone.\n"
-        "8. LENGTH: visual_prompt is 200-560 characters. Too short = generic. Too long = generator "
+        "6. LENGTH: visual_prompt is 200-560 characters. Too short = generic. Too long = generator "
         "trims and key details are lost.\n"
         "OUTPUT: STRICT JSON only. No prose preamble, no markdown fences."
     )
 
-    usr_parts = []
-    if brief:
-        usr_parts.append(f"SHARED BRIEF (world/era/setting — DO NOT lock characters from here):\n{brief}")
-    usr_parts.append(f"SCENE {req.scene_index + 1} of {req.scene_total} — NARRATION (this scene only):\n{narr}")
+    usr_parts = [f"SCENE {req.scene_index + 1} of {req.scene_total} — NARRATION (this scene only):\n{narr}"]
     if (req.visual_style or "").strip():
         usr_parts.append(f"VISUAL STYLE: {req.visual_style}")
     usr_parts.append("Return the JSON object now.")
