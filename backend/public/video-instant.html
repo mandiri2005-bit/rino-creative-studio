@@ -74,9 +74,6 @@
   .seg button{flex:1;background:none;border:none;color:var(--td);font-family:var(--fb);font-size:13px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer;transition:.2s}
   .seg button.on{background:var(--as);color:var(--t)}
   textarea,select,input{width:100%;background:var(--bg);border:1px solid var(--br);border-radius:11px;color:var(--t);font-family:var(--fb);font-size:14px;padding:11px 13px;transition:.2s}
-  /* select-enhance dropdown a touch smaller (voice labels carry gender+sifat+pitch now) */
-  .cs-panel .cs-opt,.cs-panel .cs-grp{font-size:12.5px}
-  .cs .cs-btn{font-size:13px}
   textarea:focus,select:focus,input:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3px var(--as)}
   textarea{resize:vertical;min-height:88px;line-height:1.5}
   .pills{display:flex;flex-wrap:wrap;gap:7px}
@@ -207,7 +204,6 @@ select option{ background:#111019!important; color:var(--t)!important; }
     <div class="brand"><img src="/app/assets/ceritaai-mark.png" alt="" onerror="this.style.display='none'"/>Video Instant <span class="zap">⚡</span></div>
     <div class="top-r">
       <span class="credit-pill" id="creditPill" title="Sisa kredit" style="display:none">⬡ <b id="creditVal">—</b></span>
-      <button class="lnk" style="background:none;cursor:pointer" onclick="window.__viHistory&&window.__viHistory()">🎬 Video saya</button>
       <button class="lnk" style="background:none;cursor:pointer" onclick="window.__tpOpen&&window.__tpOpen()">📜 Teleprompter</button>
       <a class="lnk" href="/start.html">← Ganti jalur</a>
       <a class="lnk" href="/app/">Studio</a>
@@ -335,7 +331,6 @@ select option{ background:#111019!important; color:var(--t)!important; }
         </optgroup>
       </select>
 
-      <div id="imageModelWrap">
       <label class="lbl">Model gambar</label>
       <select id="imageModel">
         <option value="nano-banana-hd">Nano Banana HD ★ (16:9)</option>
@@ -350,20 +345,6 @@ select option{ background:#111019!important; color:var(--t)!important; }
         <option value="seedream-4-0">SeeDream 4.0</option>
         <option value="seedream-4-5">SeeDream 4.5</option>
       </select>
-      </div>
-      <!-- WB detail-realistis ONLY: replaces "Model gambar" (the hero uses a fixed raster provider,
-           not this image-model picker). Always-mounted + display-toggled (select-enhance gotcha). -->
-      <div id="heroStyleWrap" style="display:none">
-      <label class="lbl">Gaya hero</label>
-      <select id="heroStyle">
-        <option value="ink_watercolor">Ink watercolor</option>
-        <option value="flat_vector">Flat vector</option>
-        <option value="comic">Comic</option>
-        <option value="caricature">Caricature</option>
-        <option value="pencil">Pencil</option>
-        <option value="engraving">Engraving</option>
-      </select>
-      </div>
 
       <label class="lbl">Rasio</label>
       <div class="pills" id="arPills">
@@ -383,7 +364,8 @@ select option{ background:#111019!important; color:var(--t)!important; }
       <label class="chk"><input type="checkbox" id="refMode"/> Karakter konsisten (reference image)</label>
       <label class="chk"><input type="checkbox" id="nusantaraCorpus"/> 🇮🇩 Nusantara Corpus — perkaya nuansa Indonesia</label>
 
-      <div class="adv">
+      <details class="adv">
+        <summary>Lanjutan — bahasa, model</summary>
         <div class="row">
           <div>
             <label class="lbl">Bahasa output</label>
@@ -396,22 +378,9 @@ select option{ background:#111019!important; color:var(--t)!important; }
               <option value="ms">Melayu</option>
               <option value="en">English</option>
               <option value="ar">Arab</option>
-              <option value="zh">中文 (Mandarin)</option>
-              <option value="ja">日本語 (Japanese)</option>
-              <option value="es">Español (Spanish)</option>
-              <option value="fr">Français (French)</option>
-              <option value="de">Deutsch (German)</option>
-              <option value="nl">Nederlands (Dutch)</option>
-              <option value="pt">Português (Portuguese)</option>
-              <option value="hi">हिन्दी (Hindi)</option>
-              <option value="th">ภาษาไทย (Thai)</option>
-              <option value="vi">Tiếng Việt (Vietnamese)</option>
-              <option value="tl">Tagalog (Filipino)</option>
-              <option value="other">✏️ Lainnya (ketik bahasa…)</option>
             </select>
-            <input id="langOther" placeholder="cth: Jerman, Batak Toba, Português…" style="display:none;margin-top:6px"/>
           </div>
-          <div id="llmWrap" style="display:none">
+          <div>
             <label class="lbl">Model narasi</label>
             <select id="llmSel">
               <option value="deepseek-chat">DeepSeek (default)</option>
@@ -447,7 +416,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
           </div>
         </div>
         <div class="row">
-          <div id="ttsWrap" style="display:none">
+          <div>
             <label class="lbl">Model suara (TTS)</label>
             <select id="ttsSel">
               <optgroup label="OpenAI">
@@ -473,6 +442,11 @@ select option{ background:#111019!important; color:var(--t)!important; }
             </select>
           </div>
         </div>
+      </details>
+
+      <div class="estimate">
+        <div class="e-l"><b id="estScenes">—</b> scene · <span id="estDur">—</span></div>
+        <div class="e-cr">≈ <b id="estCredits">—</b> kredit<span id="estRange" style="color:var(--td);font-size:12px;margin-left:4px"></span></div>
       </div>
 
       <button class="produce" id="produceBtn">Buat video ⚡</button>
@@ -505,7 +479,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   "use strict";
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["3 mnt",3],["5 mnt",5],["10 mnt",10]];
-  const state={mode:"A",minutes:1,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",heroStyle:"ink_watercolor",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
+  const state={mode:"A",minutes:1,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
 
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
@@ -572,20 +546,18 @@ select option{ background:#111019!important; color:var(--t)!important; }
     // #7 Quality pills: lock interaction + dim the non-selected ones.
     $("#tierPills").style.pointerEvents=wb?"none":"";
     $$("#tierPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
-    // #8 aspect: whiteboard now supports BOTH 16:9 and 9:16 (portrait) → no longer forced/locked.
-    // Leave the arPills fully interactive (default stays 16:9 via the markup; user can pick 9:16).
-    $("#arPills").style.pointerEvents="";
-    $$("#arPills .pill").forEach(p=>{ p.style.opacity=""; });
+    // #8 aspect: whiteboard is 16:9 only — force state + active pill + lock.
+    if(wb){
+      state.aspectRatio="16:9";
+      $$("#arPills .pill").forEach(p=>p.classList.toggle("on",p.dataset.ar==="16:9"));
+    }
+    $("#arPills").style.pointerEvents=wb?"none":"";
+    $$("#arPills .pill").forEach(p=>{ p.style.opacity=wb&&!p.classList.contains("on")?".4":""; });
     if(wb){ const v="wb_"+state.whiteboardGenre; setSel("#style",v); setSel("#visualStyle",v); }
     // WB defines BOTH narration + visual → lock the dropdown the user did NOT pick WB from, so the
     // two can't conflict (Rino: WB on via Gaya narasi → Gaya visual disabled, and vice versa).
     lockEnhancedSelect($("#style"), wb && state.wbSource!=="style");
     lockEnhancedSelect($("#visualStyle"), wb && state.wbSource!=="visualStyle");
-    // WB detail-realistis: swap "Model gambar" (irrelevant — hero uses a fixed raster provider) for
-    // the "Gaya hero" style picker. Toggle WRAPPER display (selects stay mounted → select-enhance safe).
-    const isDetail = state.whiteboardGenre==="detail";
-    $("#heroStyleWrap").style.display = isDetail ? "" : "none";
-    $("#imageModelWrap").style.display = isDetail ? "none" : "";
   }
   $("#style").onchange=e=>{
     const g=wbGenreOf(e.target.value);
@@ -600,52 +572,26 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#visualMode").onchange=e=>{ state.visualMode=e.target.value; $("#clipModelWrap").style.display=state.visualMode==="full_images"?"none":""; refreshEstimate(); };
   $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
   $("#imageModel").onchange=e=>state.imageModel=e.target.value;
-  $("#heroStyle").onchange=e=>state.heroStyle=e.target.value;
   $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
   $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
   $("#captionFont").onchange=e=>state.captionFont=e.target.value;
   $("#refMode").onchange=e=>state.refMode=e.target.checked;
-  // "Lainnya" → reveal a free-text box; the typed language is sent as-is (backend writes in it).
-  $("#langSel")&&($("#langSel").onchange=e=>{
-    const v=e.target.value, other=$("#langOther");
-    if(v==="other"){ if(other){ other.style.display=""; other.focus(); } state.language=(other&&other.value.trim())||""; }
-    else{ if(other) other.style.display="none"; state.language=v; }
-  });
-  $("#langOther")&&($("#langOther").oninput=e=>state.language=e.target.value.trim());
+  $("#langSel")&&($("#langSel").onchange=e=>state.language=e.target.value);
   $("#llmSel")&&($("#llmSel").onchange=e=>state.genModel=e.target.value);
   // Voice sets differ by provider: OpenAI uses alloy/echo/…; Gemini TTS needs its OWN
   // prebuilt voices (Zephyr/Puck/…). Sending an OpenAI voice to a Gemini model makes the
   // worker's geminiTts reject it → silent fallback to tts-1. So repopulate #voiceSel to
   // match the chosen TTS model's provider (keeps the user's voice within the same provider).
-  // Authoritative Gemini voice → gendered label mapping (Rino's exact translation). All 30 voices.
   const VOICES={
-    openai:[["alloy","Netral"],["echo","Pria"],["fable","Pria · hangat"],["onyx","Pria · dalam"],["nova","Wanita"],["shimmer","Wanita · lembut"]],
-    gemini:[
-      ["Achernar","Pria · Lembut, nada tinggi"],["Achird","Wanita · Ramah, nada sedang-rendah"],
-      ["Algenib","Pria · Serak, nada rendah"],["Algieba","Pria · Halus, nada rendah"],
-      ["Alnilam","Pria · Tegas, nada sedang-rendah"],["Aoede","Wanita · Modern & santai, nada sedang"],
-      ["Autonoe","Wanita · Cerah, nada sedang"],["Callirrhoe","Wanita · Santai, nada sedang"],
-      ["Charon","Pria · Informatif, nada rendah"],["Despina","Wanita · Halus, nada sedang"],
-      ["Enceladus","Pria · Lembut berdesah, nada rendah"],["Erinome","Wanita · Jernih, nada sedang"],
-      ["Fenrir","Pria · Bersemangat, nada sedang-rendah"],["Gacrux","Pria · Dewasa, nada sedang"],
-      ["Iapetus","Pria · Jernih, nada sedang-rendah"],["Kore","Wanita · Tegas, nada sedang"],
-      ["Laomedeia","Wanita · Ceria, nada tinggi"],["Leda","Wanita · Muda/energik, nada tinggi"],
-      ["Orus","Pria · Tegas, nada sedang-rendah"],["Puck","Pria · Ceria, nada sedang"],
-      ["Pulcherrima","Pria · Tegas, nada sedang"],["Rasalgethi","Pria · Informatif, nada sedang"],
-      ["Sadachbia","Wanita · Lincah, nada rendah"],["Sadaltager","Pria · Berwawasan, nada sedang"],
-      ["Schedar","Pria · Stabil/datar, nada sedang-rendah"],["Sulafat","Wanita · Hangat, nada sedang"],
-      ["Umbriel","Pria · Santai, nada sedang-rendah"],["Vindemiatrix","Wanita · Lembut/kalem, nada sedang"],
-      ["Zephyr","Pria · Cerah, nada tinggi"],["Zubenelgenubi","Pria · Santai/kasual, nada sedang-rendah"],
-    ],
+    openai:[["alloy","Alloy (netral)"],["echo","Echo (pria)"],["fable","Fable (hangat)"],["onyx","Onyx (pria, dalam)"],["nova","Nova (wanita)"],["shimmer","Shimmer (wanita, lembut)"]],
+    gemini:[["Zephyr","Zephyr (cerah)"],["Puck","Puck (ceria)"],["Charon","Charon (informatif)"],["Kore","Kore (tegas)"],["Fenrir","Fenrir (semangat)"],["Leda","Leda (muda)"],["Aoede","Aoede (santai)"],["Enceladus","Enceladus (lembut)"]],
   };
   function syncVoiceOptions(){
     const sel=$("#voiceSel"); if(!sel) return;
     const prov=/gemini/i.test(state.ttsModel)?"gemini":"openai";
     if(sel.dataset.prov===prov) return;                 // same provider → keep current voice
     sel.dataset.prov=prov;
-    // Prepend the REAL voice name (Achernar / Enceladus / …) so the label is auditable when the
-    // gender mapping looks wrong (Rino: "Pria padahal suara wanita"). e.g. "Enceladus · Pria · Lembut…"
-    sel.innerHTML=VOICES[prov].map(([v,l])=>`<option value="${v}">${v} · ${l}</option>`).join("");
+    sel.innerHTML=VOICES[prov].map(([v,l])=>`<option value="${v}">${l}</option>`).join("");
     state.voice=VOICES[prov][0][0];
     sel.value=state.voice;
     sel.dispatchEvent(new Event("change",{bubbles:true}));   // refresh enhanced widget + state
@@ -653,86 +599,31 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#ttsSel")&&($("#ttsSel").onchange=e=>{ state.ttsModel=e.target.value; syncVoiceOptions(); });
   $("#voiceSel")&&($("#voiceSel").onchange=e=>state.voice=e.target.value);
   syncVoiceOptions();   // align the voice list with the default TTS model on load
-  // Model narasi + Model TTS are env-driven (Railway: VI_GEN_MODEL / VI_TTS_MODEL) — Rino drives them,
-  // the selectors are hidden. Fetch the configured models so the UI sends them + shows the right voices.
-  (async function loadVideoConfig(){
-    try{
-      const c=await api("/api/video/config",{method:"GET"});
-      if(c&&c.genModel) state.genModel=c.genModel;
-      if(c&&c.ttsModel) state.ttsModel=c.ttsModel;
-      syncVoiceOptions();   // re-align the voice list to the env TTS provider
-    }catch(e){ /* keep defaults if config unavailable */ }
-  })();
 
-  // Mirror Studio's Narasi-AI dropdown: load the PAKEM style catalog dynamically from
-  // /api/narration/styles. Preserves the Whiteboard optgroup (those are VI-specific genre triggers,
-  // not PAKEM styles). Falls back to the hardcoded options on any error.
-  (async function loadNarrationStyles(){
-    try{
-      const r=await api("/api/narration/styles",{method:"GET"});
-      const styles=Array.isArray(r&&r.styles)?r.styles:[];
-      if(!styles.length) return;
-      const sel=$("#style"); if(!sel) return;
-      const cur=sel.value;
-      const wbGroup=sel.querySelector('optgroup[label*="Whiteboard"]');   // keep WB genre options
-      [...sel.children].forEach(c=>{ if(c!==wbGroup) sel.removeChild(c); });
-      styles.forEach(s=>{
-        const opt=document.createElement("option");
-        opt.value=s.value; opt.textContent=s.label||s.value;
-        wbGroup?sel.insertBefore(opt,wbGroup):sel.appendChild(opt);
-      });
-      // restore previous selection if still valid (incl. WB genres), else pick a sensible default
-      const valid=[...sel.querySelectorAll("option")].map(o=>o.value);
-      sel.value = valid.includes(cur) ? cur : (valid.includes("creative_nonfiction")?"creative_nonfiction":styles[0].value);
-      state.style=sel.value;
-    }catch(e){ /* keep hardcoded list */ }
-  })();
-
-  // Live estimate pill REMOVED (was misleading: huge credit range "gambar ↔ klip" for hybrid
-  // confused users — actual charge is per real usage, not pre-computed). Stubbed so the many
-  // callsites below stay valid without surgery.
-  function refreshEstimate(){ /* no-op */ }
+  // ── live estimate via /api/video/params ──
+  let estTimer=null;
+  async function refreshEstimate(){
+    if(state.mode!=="A"){ $("#estScenes").textContent="—"; $("#estDur").textContent="dari narasi"; $("#estCredits").textContent="—"; return; }
+    clearTimeout(estTimer);
+    estTimer=setTimeout(async()=>{
+      try{
+        const p=await api("/api/video/params",{method:"POST",body:JSON.stringify({minutes:state.minutes,tier:state.tier,visual_mode:state.visualMode,clip_model:state.clipModel,image_model:state.imageModel})});
+        $("#estScenes").textContent=p.scene_count;
+        $("#estDur").textContent=DURATIONS.find(d=>d[1]===state.minutes)?.[0]||state.minutes+" mnt";
+        $("#estCredits").textContent=p.credits;
+        // a range only makes sense for hybrid (the clip/image split is uncertain);
+        // full_clips / full_images are a single deterministic number.
+        const showRange = state.visualMode==="hybrid" && p.credits_min!=null && p.credits_max!=null && p.credits_min!==p.credits_max;
+        $("#estRange").textContent = showRange ? `(gambar ${p.credits_min} ↔ klip ${p.credits_max})` : "";
+      }catch(e){ /* leave dashes */ }
+    },150);
+  }
 
   // ── produce ──
   const stage=$("#stage"), errBox=$("#err"), btn=$("#produceBtn");
   function showErr(m){ errBox.textContent=m; errBox.style.display="block"; }
   function clearErr(){ errBox.style.display="none"; }
   function setBusy(b){ btn.disabled=b; btn.textContent=b?"Sedang dibuat…":"Buat video ⚡"; }
-
-  // ── persistence: a hard-refresh must NEVER lose a finished video (it lives in R2). We keep the
-  // last jobs in localStorage and re-hydrate the newest on load + offer a "Video saya" list. ──
-  const VI_LS="vi:jobs"; let viHandoff=false;
-  function viLoad(){ try{ return JSON.parse(localStorage.getItem(VI_LS)||"[]"); }catch{ return []; } }
-  function viSaveList(l){ try{ localStorage.setItem(VI_LS, JSON.stringify(l.slice(0,20))); }catch{} }
-  function viRemember(id, meta){ if(!id) return; const l=viLoad().filter(x=>x.id!==id);
-    l.unshift({id, ts:Date.now(), scenes:(meta&&meta.scenes)||0, title:((meta&&meta.title)||"").trim()}); viSaveList(l); }
-  function viForget(id){ viSaveList(viLoad().filter(x=>x.id!==id)); }
-  async function resumeJob(id){   // re-attach to an existing job: show it (done→video, running→resume poll)
-    if(!id) return; clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; state.jobId=id;
-    try{
-      const j=await api("/api/video/assemble/"+id,{method:"GET"});
-      renderJob(j,{sceneCount:j.sceneCount});
-      if(j.status==="running"||j.status==="stitching"||j.status==="queued"){ setBusy(true); pollJob({sceneCount:j.sceneCount}); }
-    }catch(e){ if(e&&e.status===404) viForget(id); } // expired/gone → drop quietly
-  }
-  window.__viOpen=(id)=>resumeJob(id);
-  window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; setBusy(false);
-    stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Siap bikin video baru</h3><p>Atur pengaturan di kiri, lalu tekan Buat video.</p></div>'; };
-  // Server-backed history (cross-device): the tenant's recent videos from /api/video/jobs, not this
-  // browser's localStorage. Click → __viOpen (re-fetches fresh status → plays the finished video).
-  window.__viHistory=async()=>{
-    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>Memuat video saya…</h3></div>';
-    let jobs=[]; try{ jobs=(await api("/api/video/jobs",{method:"GET"})).jobs||[]; }catch(e){}
-    if(!jobs.length){ stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Belum ada video</h3><p>Video yang kamu buat muncul di sini (tersimpan ±7 hari).</p></div>'; return; }
-    const badge=s=>s==="done"?'<span style="color:#7ee0a8">Selesai</span>':s==="failed"?'<span style="color:#e88">Gagal</span>':'<span style="color:#caa6ff">Proses</span>';
-    stage.innerHTML='<div class="stage-head"><div><div class="st-t">Video saya</div><div class="st-s">'+jobs.length+' terakhir</div></div>'+
-      '<div class="head-right"><button class="lnk" style="background:none;cursor:pointer" onclick="window.__viNew()">+ Baru</button></div></div>'+
-      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">'+jobs.map(x=>{
-        const t=x.createdAt?new Date(x.createdAt).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):"";
-        const dur=x.durationActual?(' · '+Math.round(x.durationActual)+'s'):'';
-        return '<button onclick="window.__viOpen(\''+x.jobId+'\')" style="text-align:left;padding:12px 14px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);color:inherit;cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center"><span>🎬 '+(x.sceneCount||"?")+' scene'+dur+' · '+badge(x.status)+'</span><span style="opacity:.55;white-space:nowrap;font-size:12px">'+t+'</span></button>';
-      }).join("")+'</div>';
-  };
 
   $("#produceBtn").onclick=async()=>{
     clearErr();
@@ -744,39 +635,31 @@ select option{ background:#111019!important; color:var(--t)!important; }
       if(wc>cap) return showErr(`Narasi kepanjangan: ~${wc} kata (≈ ${Math.round(wc/wpm)} menit). Maksimal 10 menit (~${cap} kata) — kurangi sekitar ${wc-cap} kata dulu.`);
     }
     setBusy(true);
-    state.abort=new AbortController();   // so "Batalkan" can abort the narasi/segment phase (before a job exists)
     renderStage({status:"segmenting"});
     try{
       // 1) segment (+ generate narration for Mode A) + decide visual treatment
-      const seg=await api("/api/video/segment",{method:"POST",signal:state.abort.signal,body:JSON.stringify({
+      const seg=await api("/api/video/segment",{method:"POST",body:JSON.stringify({
         mode:state.mode, topic, text:narration, minutes:state.minutes, style:state.style, tier:state.tier,
         clip_model:state.clipModel, visual_mode:state.whiteboardGenre?"full_images":state.visualMode, clip_ratio:0.3,
         visual_style:state.whiteboardGenre?"":state.visualStyle, language:state.language, gen_model:state.genModel,
         nusantara_corpus:(document.getElementById('nusantaraCorpus')||{}).checked||false,
-        whiteboard:!!state.whiteboardGenre,   // #5: WB job → python skips the non-WB visual-cast LLM call
       })});
       const scenes=seg.scenes||[];
       if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
       state.narrationText=scenes.map(s=>s.text||"").join("  ");   // for the teleprompter
       state.brief=seg.brief||"";   // art-direction brief → reference anchor (when refMode)
-      state.culturalPalette=seg.cultural_palette||"";   // Nusantara cues → non-WB visual worker (clean, no character names)
-      state.visualCast=seg.visual_cast||"";   // Visual SharedContext registry → non-WB visual worker (name-filtered per scene)
       renderStage({status:"dispatching",scenes});
       // 2) assemble
-      const asm=await api("/api/video/assemble",{method:"POST",signal:state.abort.signal,body:JSON.stringify({
+      const asm=await api("/api/video/assemble",{method:"POST",body:JSON.stringify({
         scenes, tier:state.tier, clipModel:state.clipModel,
         visualMode:state.whiteboardGenre?"whiteboard":state.visualMode, whiteboardGenre:state.whiteboardGenre||undefined,
         captions:state.captions, genModel:state.genModel,
         ttsModel:state.ttsModel, voice:state.voice, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
         imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
-        heroStyle:state.heroStyle, visualStyle:state.visualStyle, style:state.style,   // visual worker → per-style cinematography tone
-        culturalPalette:state.culturalPalette||"", visualCast:state.visualCast||"",   // Nusantara cues + Visual SharedContext registry for non-WB visual worker
       })});
       state.jobId=asm.jobId;
-      viRemember(asm.jobId,{scenes:asm.sceneCount,title:(state.narrationText||"").slice(0,60)});
       pollJob(asm);
     }catch(e){
-      if(e&&(e.name==="AbortError"||e.code===20)) return; // user pressed Batalkan → __cancelStage already reset the UI
       setBusy(false);
       if(e.status===402) showErr("Kredit tidak cukup ("+(e.data?.detail?.needed ?? e.data?.creditsNeeded ?? "?")+" diperlukan). Top up dulu di Studio.");
       else showErr(e.message||"Gagal membuat video.");
@@ -784,25 +667,30 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }
   };
 
-  async function pollOnce(){
-    if(!state.jobId) return;
-    try{
-      // cache-bust (?t) so no proxy/CDN can serve a stale "stitching" forever → the poll always sees done
-      const j=await api("/api/video/assemble/"+state.jobId+"?t="+Date.now(),{method:"GET"});
-      renderJob(j, state.pollAsm || {sceneCount:j.sceneCount});
-      if(j.status==="done"||j.status==="failed"||j.status==="canceled"){ clearInterval(state.poll); state.poll=null; setBusy(false); refreshCredits(); }
-    }catch(e){ /* transient; keep polling */ }
-  }
   function pollJob(asm){
-    clearInterval(state.poll); state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; state.pollAsm=asm;
-    state.poll=setInterval(pollOnce,1500);
+    clearInterval(state.poll);
+    let fails=0;                              // consecutive failed polls (network/5xx/429)
+    const startedAt=Date.now();
+    const MAX_FAILS=6;                        // ~9s of consecutive failures → give up
+    const MAX_MS=30*60*1000;                  // wall-clock backstop so it can NEVER spin forever
+    const stop=(msg,kind)=>{ clearInterval(state.poll); setBusy(false); refreshCredits(); if(msg) showErr(msg); };
+    state.poll=setInterval(async()=>{
+      if(Date.now()-startedAt>MAX_MS){ stop("Pembuatan masih berjalan lama. Berhenti memantau — cek hasilnya di Studio nanti."); return; }
+      try{
+        const j=await api("/api/video/assemble/"+state.jobId,{method:"GET"});
+        fails=0;                              // a successful poll clears the failure streak
+        renderJob(j,asm);
+        if(j.status==="done"||j.status==="failed"||j.status==="canceled"){ clearInterval(state.poll); setBusy(false); refreshCredits(); }
+      }catch(e){
+        const s=e&&e.status;
+        // TERMINAL — the job is gone or we're not allowed to see it → stop now (was: spin forever)
+        if(s===401||s===403){ stop("Sesi berakhir — silakan masuk lagi."); return; }
+        if(s===404||s===410){ stop("Job tidak ditemukan (mungkin kedaluwarsa). Coba buat ulang."); return; }
+        // TRANSIENT (5xx / 429 / network) — keep polling, but bounded so it can't hang the UI
+        if(++fails>=MAX_FAILS){ stop("Koneksi ke server bermasalah. Coba lagi sebentar."); }
+      }
+    },1500);
   }
-  // AUTO-RECOVER the UI with NO manual refresh: background tabs throttle setInterval, so a job that
-  // finished while you were away can look stuck. The instant the tab regains focus we fetch fresh
-  // status AND re-arm the poll if it had died → it flips to "Video selesai" by itself.
-  function _recheck(){ if(state.jobId && state.shownDoneFor!==state.jobId){ pollOnce(); if(!state.poll) state.poll=setInterval(pollOnce,1500); } }
-  document.addEventListener("visibilitychange",()=>{ if(!document.hidden) _recheck(); });
-  window.addEventListener("focus",_recheck);
 
   // ── stage rendering ──
   // breathing ceritaAI "C" loader (grows/shrinks like the Claude prompt loader)
@@ -823,9 +711,6 @@ select option{ background:#111019!important; color:var(--t)!important; }
     $("#stage").innerHTML='<div class="stage-empty"><div class="big">⏹️</div><h3>Dibatalkan</h3><p>Job dihentikan. Kredit yang belum terpakai dikembalikan.</p></div>';
   }
   window.__cancelVideo=cancelJob;
-  // cancel the PRE-job phase (narasi/segment, before a jobId exists): abort the in-flight fetch + reset.
-  // (The narration LLM may still finish server-side — a small charge — but no render job is created.)
-  window.__cancelStage=()=>{ try{ state.abort&&state.abort.abort(); }catch(e){} clearInterval(state.poll); setBusy(false); window.__viNew(); };
   // download the MP4 as a blob so it actually downloads (the cross-origin signed
   // R2 URL ignores <a download> and just plays in the tab otherwise).
   window.__dlVideo=async()=>{
@@ -842,94 +727,33 @@ select option{ background:#111019!important; color:var(--t)!important; }
   function renderStage(s){
     const msg = s.status==="dispatching" ? "Merangkai tiap scene…"
       : (state.mode==="A" ? "Menulis narasi & memotong scene…" : "Memotong scene…");
-    // Cancel ONLY during the narasi/segment phase (before a job exists + before any charge). Once
-    // "merangkai" starts (dispatching/running/stitching) the work is committed → NO cancel. (Rino)
-    const _cx = s.status==="segmenting" ? '<div class="prog-actions" style="margin-top:18px"><button class="cancel-btn" onclick="window.__cancelStage()">Batalkan</button></div>' : '';
-    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>'+msg+'</h3><p>Sebentar, mesin paralel kami sedang bekerja.</p>'+_cx+'</div>';
+    stage.innerHTML='<div class="stage-empty">'+CLOADER+'<h3>'+msg+'</h3><p>Sebentar, mesin paralel kami sedang bekerja.</p></div>';
   }
   function badge(status){
     const map={running:["run","Berjalan"],stitching:["run","Merangkai"],done:["done","Selesai"],failed:["fail","Gagal"],queued:["run","Antre"]};
     const [c,l]=map[status]||["run",status]; return '<span class="stbadge '+c+'">'+l+'</span>';
   }
   function renderJob(j,asm){
-    // STICKY DONE: once this job is shown completed, ignore any later/stale non-done update (e.g. an
-    // in-flight GET that started before completion and resolves with "stitching" after) — it must
-    // never flip the finished video back to a progress view. (Rino: "balik ke page merangkai")
-    if(state.shownDoneFor===state.jobId && j.status!=="done") return;
     const scenes=j.scenes||[];
     const total=scenes.length||asm.sceneCount||0;
-    const doneN=scenes.filter(s=>(s.audioStatus==="done"||s.audioStatus==="fallback")&&(s.visualStatus==="done"||s.visualStatus==="fallback")).length;
+    const doneN=scenes.filter(s=>s.audioStatus==="done"&&(s.visualStatus==="done"||s.visualStatus==="fallback")).length;
     const useBar=total>10;
     const loadC=(j.status==="running"||j.status==="stitching"||j.status==="queued")?'<span class="bc-sm"><img src="/assets/ceritaai-mark.png" alt="memuat"/></span>':'';
     let head='<div class="stage-head"><div><div class="st-t">'+(j.status==="done"?"Video selesai":"Merangkai video")+'</div>'+
       '<div class="st-s">'+total+' scene · '+(j.dispatch_mode==="batch"?"batch":"paralel")+'</div></div><div class="head-right">'+loadC+badge(j.status)+'</div></div>';
 
-    if(j.status==="done"){
-      clearInterval(state.poll);                      // terminal → stop ANY poll (kills the done↔progress loop)
-      if(state.shownDoneFor===state.jobId) return;    // already showing this video → DON'T rewrite stage (no remount/restart/flicker)
-      state.shownDoneFor=state.jobId; state.stitchT0=null; state.rMax=null; state.rSamples=null;
+    if(j.status==="done"&&(j.mp4Url||j.mp4Path)){
       const src=j.mp4Url||"";
       window.__lastMp4=src;
       stage.innerHTML=head+'<div class="player">'+
         (src?'<video src="'+src+'" controls autoplay playsinline></video>':'<div class="stage-empty" style="min-height:200px"><div class="big">✅</div><h3>Video jadi</h3><p>File tersimpan. URL pratinjau butuh penyimpanan objek (R2) aktif.</p></div>')+
         '<div class="p-actions">'+(src?'<button class="dl" onclick="window.__dlVideo()">Unduh MP4</button>':'')+
-        '<button class="again" onclick="window.__viNew()">Buat lagi</button></div></div>';
+        '<button class="again" onclick="location.reload()">Buat lagi</button></div></div>'+
+        '<div class="note">Durasi ≈ '+(j.durationActual||"?")+' dtk · suara jadi penentu tempo.</div>';
       return;
     }
     if(j.status==="failed"){
       stage.innerHTML=head+'<div class="stage-empty"><div class="big">😕</div><h3>Gagal merangkai</h3><p>'+(j.error||"Coba lagi.")+'</p></div>';
-      return;
-    }
-    if(j.status==="stitching"){
-      // QUEUED sub-state (Change 3): status is "stitching" but render hasn't actually started
-      // (waiting behind the 2-wide stitch queue) → honest "Antre" view, NOT a frozen 4% bar.
-      if(!j.renderStartedAt){
-        const q=Number(j.renderQueued)||0;
-        const qmsg = q>1 ? ('Antre render · ~'+q+' video di depan') : 'Menyiapkan render…';
-        stage.innerHTML=head+'<div class="stage-empty">'+CLOADER+'<h3>'+qmsg+'</h3><p>Aset video sudah siap, lagi nunggu giliran render. Nggak perlu refresh — otomatis lanjut.</p></div>';
-        return;
-      }
-      // RENDER phase: assets done; backend writes renderProgress per scene as it renders.
-      if(!state.stitchT0){ state.stitchT0=Date.now(); state.rSamples=[]; }
-      let rp=Number(j.renderProgress)||0;
-      let rd=j.renderScenesDone||0; const rt=j.renderScenesTotal||total||0;
-      // render progress is MONOTONIC — clamp the display so a backend patchMeta race (concurrent
-      // read-modify-write of the job JSON) can't make scene/% jump backward (4→5→4).
-      state.rMax=state.rMax||{done:0,pct:0};
-      rd=Math.max(rd,state.rMax.done); rp=Math.max(rp,state.rMax.pct);
-      state.rMax.done=rd; state.rMax.pct=rp;
-      const el=Math.round((Date.now()-state.stitchT0)/1000);
-      const mmss=s=>Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
-      // all scenes rendered but still stitching = final concat + upload → distinct ticking message
-      // (so it doesn't look "stuck at 6/6"); elapsed keeps moving.
-      const finalizing = rt>0 && rd>=rt;
-      // ETA from RECENT scene-completion pace — NOT cumulative el/rp, which the slow cold-start first
-      // scene (+ the pre-render wait baked into stitchT0) poisons into a wildly pessimistic "~15 min".
-      // Sample (rd,t) on each scene change, keep a sliding window, DROP the rd=0 cold-start anchor,
-      // and extrapolate the remaining scenes from the recent rate. No samples yet → show no ETA (honest).
-      state.rSamples=state.rSamples||[];
-      if(!state.rSamples.length || state.rSamples[state.rSamples.length-1].rd!==rd) state.rSamples.push({rd,t:Date.now()});
-      if(state.rSamples.length>6) state.rSamples=state.rSamples.slice(-6);
-      let eta=0;
-      const _sp=state.rSamples.filter(s=>s.rd>=1);   // exclude the cold-start (rd=0) sample
-      if(!finalizing && rt>0 && _sp.length>=2){
-        const f=_sp[0], l=_sp[_sp.length-1];
-        if(l.rd>f.rd && l.t>f.t){ const pace=(l.rd-f.rd)/((l.t-f.t)/1000); if(pace>0) eta=Math.round((rt-rd)/pace); }
-      }
-      // Non-WB visualModes (full_images / hybrid / clips) render via the stitch ffmpeg.mjs path which
-      // does NOT emit per-scene progress → renderScenesDone stays 0 throughout → UI used to show a
-      // misleading "0/12 scene" for the entire stitch. Detect non-WB and show an indeterminate
-      // "Menggabungkan video…" label without the fake counter. WB path UNCHANGED.
-      const isWB = j.visualMode === "whiteboard";
-      const label = !isWB
-        ? ('Menggabungkan video… '+mmss(el))
-        : finalizing
-          ? ('Menggabungkan & menyimpan… '+mmss(el))
-          : ('Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):''));
-      const barW = !isWB ? 30 : (finalizing?100:(rp||4));   // non-WB: fixed indeterminate-ish width
-      const meta = !isWB ? '⌛' : (finalizing?'…':(rp?rp+'%':'…'));
-      stage.innerHTML=head+'<div class="bar-wrap"><div class="bar"><i style="width:'+barW+'%;transition:width .5s"></i></div>'+
-        '<div class="bar-meta"><span>'+label+'</span><span>'+meta+'</span></div></div>';
       return;
     }
     // in progress
@@ -947,7 +771,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
           '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+(s.text||"").slice(0,90)+'</div></div>';
       }).join("")+'</div>';
     }
-    stage.innerHTML=head+body;   // merangkai phase = committed → no cancel button (Rino)
+    stage.innerHTML=head+body+'<div class="prog-actions"><button class="cancel-btn" onclick="window.__cancelVideo()">Batalkan</button></div>';
   }
 
   // ── handoff from Studio (Flow Storyboard / Script→TTS "Send to Video Instant") ──
@@ -957,7 +781,6 @@ select option{ background:#111019!important; color:var(--t)!important; }
       localStorage.removeItem("rc_vi_handoff");
       const h=JSON.parse(raw);
       if(h&&h.text&&(!h.ts||Date.now()-h.ts<30*60*1000)){
-        viHandoff=true; // came from Studio to make a NEW video → don't auto-rehydrate the old one
         state.mode="B";
         $$("#modeSeg button").forEach(x=>x.classList.toggle("on",x.dataset.mode==="B"));
         $("#modeA").style.display="none"; $("#modeB").style.display="";
@@ -967,10 +790,6 @@ select option{ background:#111019!important; color:var(--t)!important; }
       }
     }catch{}
   })();
-
-  // ── rehydrate: on load, re-attach to the most recent job so a refresh keeps your video.
-  // Skipped when a Studio handoff just prefilled the form for a NEW video. ──
-  (function rehydrate(){ if(viHandoff) return; const last=viLoad()[0]; if(last) resumeJob(last.id); })();
 
   // init
   // ── teleprompter ──
