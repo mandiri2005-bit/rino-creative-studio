@@ -457,7 +457,10 @@ export async function visualProcessor(job, deps) {
             sceneIndex, sceneTotal: Number(meta.sceneCount) || 1 });
         if (fresh && typeof fresh.visual_prompt === "string" && fresh.visual_prompt.length >= 80) {
           scene.visualPrompt = fresh.visual_prompt;
-          console.log(`[visual-prompt ${jobId}/${sceneIndex}] LLM prompt OK (${fresh.visual_prompt.length} chars)`);
+          // Persist the LLM prompt to Redis so the status poll + reaper see the new prompt, not the
+          // pre-built regex one (otherwise audits look like the worker did nothing — Rino's morning bug).
+          await deps.store.setSceneFields(jobId, sceneIndex, { visualPrompt: fresh.visual_prompt }).catch(() => {});
+          console.log(`[visual-prompt ${jobId}/${sceneIndex}] LLM prompt OK (${fresh.visual_prompt.length} chars) :: ${fresh.visual_prompt.slice(0, 140)}`);
         } else {
           console.warn(`[visual-prompt ${jobId}/${sceneIndex}] LLM returned invalid → keep regex prompt`);
         }
