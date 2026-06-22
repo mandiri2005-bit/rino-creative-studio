@@ -154,30 +154,82 @@ export async function audioProcessor(job, deps) {
 // The per-video reference anchor (base64), resolved once per job and cached. It
 // comes inline in meta (no R2) or is downloaded from meta.anchorKey. Each scene
 // passes it as ref_image so every image shares the anchor's character/look.
-const _anchorCache = new Map(); // jobId -> base64 | null
-async function resolveAnchor(jobId, tmpDir, meta) {
+// Snapshot the visual-worker flag ONCE at worker startup (#10) — reading process.env per-scene could
+// otherwise let two scenes of one video pick different strategies across a rolling restart mid-render.
+// A process's env is fixed for its lifetime, so one read suffices.
+const VI_VISUAL_WORKER_ON = process.env.VI_VISUAL_WORKER_ENABLED === "1";
+
+// Memoize the PROMISE (not the result) so concurrent scenes of ONE job share a SINGLE download
+// instead of racing on the per-job temp file / re-downloading. The inner fn catches every error and
+// returns b64|null, so the cached promise ALWAYS resolves (never a cached rejection).
+const _anchorCache = new Map(); // jobId -> Promise<base64 | null>
+// Backstop bound: cleanupJobTmp (#8) evicts on the stitch success/failure paths, but a job that fails
+// or is canceled BEFORE stitch (and a stitch-success with no R2) never reaches it — cap the map so
+// those can't leak unboundedly. Evicting a still-active entry only forces a cheap re-resolve.
+const _ANCHOR_CACHE_MAX = 200;
+function resolveAnchor(jobId, tmpDir, meta) {
   if (_anchorCache.has(jobId)) return _anchorCache.get(jobId);
-  let b64 = null;
-  try {
-    if (meta.anchorB64) {
-      b64 = meta.anchorB64;
-    } else if (meta.anchorKey) {
-      const local = join(tmpDir, "anchor.png");
-      if (!existsSync(local)) {
-        const s = await storage();
-        if (s) {
-          const { writeFile } = await import("node:fs/promises");
-          await writeFile(local, await s.downloadBytes(meta.anchorKey));
+  if (_anchorCache.size >= _ANCHOR_CACHE_MAX) _anchorCache.delete(_anchorCache.keys().next().value);
+  const p = (async () => {
+    let b64 = null;
+    try {
+      if (meta.anchorB64) {
+        b64 = meta.anchorB64;
+      } else if (meta.anchorKey) {
+        const local = join(tmpDir, "anchor.png");
+        if (!existsSync(local)) {
+          const s = await storage();
+          if (s) {
+            const { writeFile } = await import("node:fs/promises");
+            await writeFile(local, await s.downloadBytes(meta.anchorKey));
+          }
+        }
+        if (existsSync(local)) {
+          const { readFile } = await import("node:fs/promises");
+          b64 = (await readFile(local)).toString("base64");
         }
       }
-      if (existsSync(local)) {
-        const { readFile } = await import("node:fs/promises");
-        b64 = (await readFile(local)).toString("base64");
-      }
-    }
-  } catch (e) { console.warn(`[anchor ${jobId}] resolve failed: ${e.message}`); }
-  _anchorCache.set(jobId, b64);
-  return b64;
+    } catch (e) { console.warn(`[anchor ${jobId}] resolve failed: ${e.message}`); }
+    return b64;
+  })();
+  _anchorCache.set(jobId, p);
+  return p;
+}
+
+// Generic vocabulary that often forms part of a multi-word cast/place name ("Gunung Salak") but is
+// NOT distinctive — mirrors python _CAST_TOKEN_STOPWORDS so the JS anchor gate agrees with the python
+// text filter (a token here must never proxy for the whole name → no generic-word bleed).
+const _CAST_TOKEN_STOPWORDS = new Set([
+  "gunung","pantai","danau","sungai","laut","hutan","istana","rumah","jalan","kota","desa","pulau",
+  "kampung","pasar","candi","masjid","benteng","menara","lembah","bukit","wilayah","daerah","negeri",
+  "kerajaan","wanita","manusia","orang","anak","perempuan","lelaki","besar","kecil","tinggi","tua",
+  "muda","agung","raya","utama","tempat","warga","raja","ratu","putri","pangeran","sultan","tanah",
+  "kebun","ladang","tepi","lereng","gedung","pelabuhan","stasiun","teluk","selat","telaga","sawah",
+  "jembatan","taman","makam","keraton","pendopo","balai","puncak","kawah","muara","dusun","nagari",
+  "benua","samudra","samudera","pohon","gerbang","pintu","alun","pasir","rawa","sumur",
+  "mountain","river","village","palace","temple","castle","forest",
+  "island","great","little","young","old","city","town","house","place","king","queen","prince",
+  "woman","man","people","child","land","field",
+]);
+
+// #2: does this scene's narration NAME a recurring cast member? Mirrors the python word-boundary
+// name-filter (laozhang_api /video/visual-prompt): whole-word, plus a distinctive token (len>=4, not
+// a stopword) for partial refs. Returns true/false, or null when there's no cast registry to judge by.
+function _sceneNamesCast(sceneText, visualCastJson) {
+  if (!sceneText || !visualCastJson) return null;
+  let cast;
+  try { cast = JSON.parse(visualCastJson); } catch { return null; }
+  const names = [...(cast.characters || []), ...(cast.locations || [])]
+    .map((c) => ((c && c.name) || "").trim()).filter((n) => n.length >= 3);
+  if (!names.length) return null;
+  const lc = sceneText.toLowerCase();
+  const wb = (s) => {
+    const e = s.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    try { return new RegExp(`(?<![\\p{L}\\p{N}'])${e}(?![\\p{L}\\p{N}'])`, "u").test(lc); }
+    catch { return lc.includes(s.toLowerCase()); }
+  };
+  return names.some((n) => wb(n) || n.toLowerCase().split(/\s+/)
+    .some((t) => t.length >= 4 && !_CAST_TOKEN_STOPWORDS.has(t) && wb(t)));
 }
 
 // Diverse-provider image fallbacks: if the chosen model's provider is flaky or
@@ -444,7 +496,7 @@ export async function visualProcessor(job, deps) {
     // narration only + the brief as WORLD context (era/setting/palette — NOT a character roster).
     // Metered as a chat debit tagged with this video job → refundable. Any failure keeps the
     // existing visualPrompt (graceful fallback; no scene is ever lost to a worker LLM error).
-    if (process.env.VI_VISUAL_WORKER_ENABLED === "1") {
+    if (VI_VISUAL_WORKER_ON) {   // #10: snapshot read, not per-scene process.env
       try {
         const fresh = await deps.generationClient?.generateVisualPrompt?.(
           { jobId, tenantId: meta.tenantId, userId: meta.userId },
@@ -463,22 +515,33 @@ export async function visualProcessor(job, deps) {
           scene.visualPrompt = fresh.visual_prompt;
           // Persist the LLM prompt to Redis so the status poll + reaper see the new prompt, not the
           // pre-built regex one (otherwise audits look like the worker did nothing — Rino's morning bug).
-          await deps.store.setSceneFields(jobId, sceneIndex, { visualPrompt: fresh.visual_prompt }).catch(() => {});
+          await deps.store.setSceneFields(jobId, sceneIndex, { visualPrompt: fresh.visual_prompt })
+            .catch((e) => console.warn(`[visual-prompt ${jobId}/${sceneIndex}] Redis persist failed (#9, non-fatal; this render uses the in-memory LLM prompt, but Redis still holds the stale regex one): ${e.message}`));
           console.log(`[visual-prompt ${jobId}/${sceneIndex}] LLM prompt OK (${fresh.visual_prompt.length} chars) :: ${fresh.visual_prompt.slice(0, 140)}`);
         } else {
-          console.warn(`[visual-prompt ${jobId}/${sceneIndex}] LLM returned invalid → keep regex prompt`);
+          console.warn(`[visual-prompt ${jobId}/${sceneIndex}] no usable LLM prompt (visual worker disabled on python [409] or invalid output) → keep regex prompt (#7)`);
         }
       } catch (e) {
         console.warn(`[visual-prompt ${jobId}/${sceneIndex}] LLM failed (${e.message}) → keep regex prompt`);
       }
     }
     const refImage = await resolveAnchor(jobId, tmpDir, meta);  // per-video reference (or null)
+    // #2: gate the character anchor to scenes that actually NAME a recurring cast member. The anchor
+    // is built from the brief (which depicts the main character), so applying it to a character-absent
+    // scene (e.g. a modern-era scene) re-introduces the Chastelein bleed through the PIXEL channel —
+    // bypassing the text-side name-filter. null = no cast registry to judge by → keep prior behavior.
+    const _namesCast = _sceneNamesCast(scene.text || "", meta.visualCast || "");
+    // A pronoun-only scene still depicts the recurring protagonist — Indonesian biography names them
+    // once then uses dia/ia/beliau/mereka (#2 pronoun fix). Keep the anchor on those; only drop it on
+    // a true topic shift (no cast name AND no referring pronoun). null = no registry → prior behavior.
+    const _hasPronoun = /(?<![\p{L}\p{N}'])(?:dia|ia|beliau|mereka|he|she|they|him|her)(?![\p{L}\p{N}'])/iu.test(scene.text || "");
+    const _useAnchor = (_namesCast === null) ? true : (_namesCast || _hasPronoun);
     const base = {
       jobId, sceneIndex, kind: scene.kind, visualPrompt: scene.visualPrompt,
       estSeconds: Number(scene.estSeconds), clipModel: meta.clipModel,
       imageModel: meta.imageModel || undefined, aspectRatio: meta.aspectRatio || "16:9",
       seed: hashSeed(jobId),   // same seed for all scenes of this video → steadier look
-      refImage: refImage || undefined,   // anchor → ref_image on image gen (consistent character)
+      refImage: (_useAnchor ? refImage : null) || undefined,   // anchor → ref_image, gated per-scene (#2)
       tenantId: meta.tenantId, userId: meta.userId,
     };
     let v;
@@ -763,5 +826,6 @@ export function startWorkers(deps) {
 }
 
 export async function cleanupJobTmp(jobId) {
+  _anchorCache.delete(jobId);   // #8: evict the per-job anchor entry so the Map can't grow unbounded
   await rm(jobTmpDir(jobId), { recursive: true, force: true }).catch(() => {});
 }

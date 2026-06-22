@@ -6554,6 +6554,7 @@ class VideoSegmentReq(BaseModel):
     clip_ratio: float = 0.3
     visual_style: str = ""              # art style suffix (caricature|comic|cinematic|…) for every scene prompt
     nusantara_corpus: bool = False      # enrich the visual brief (→ anchor → scenes) with Nusantara facts
+    whiteboard: bool = False            # WB job → skip the non-WB visual-cast LLM call (#5): WB never reads it
 
 class VideoDecideReq(BaseModel):
     scenes: list
@@ -6774,10 +6775,19 @@ async def _video_visual_cast(content: str, model: str) -> str:
     try:
         cl = make_client(model)
         mt = min(1500, MODEL_MAX_TOKENS.get(MODELS.get(model, model), DEFAULT_MAX_TOKENS))
-        r = await asyncio.to_thread(lambda: cl.chat.completions.create(
-            model=model, messages=[{"role": "user", "content": prompt}],
-            temperature=0.3, max_tokens=mt,
-            response_format={"type": "json_object"}))
+        _msgs = [{"role": "user", "content": prompt}]
+        def _cast_call(use_fmt):
+            kw = dict(model=model, messages=_msgs, temperature=0.3, max_tokens=mt)
+            if use_fmt:
+                kw["response_format"] = {"type": "json_object"}
+            return cl.chat.completions.create(**kw)
+        try:
+            r = await asyncio.to_thread(lambda: _cast_call(True))
+        except Exception as _fmt:
+            # some models/providers reject response_format=json_object → retry plain (mirror the
+            # /video/visual-prompt + brief routes). The fence-tolerant json.loads below handles it.
+            print(f"[video/segment] visual cast json_object rejected ({_fmt}); retrying plain")
+            r = await asyncio.to_thread(lambda: _cast_call(False))
         raw = (r.choices[0].message.content or "").strip()
         # tolerate fenced/loose JSON
         if raw.startswith("```"):
@@ -6825,11 +6835,18 @@ async def video_segment(req: VideoSegmentReq,
         print("[video/segment] cache DISABLED (WB_SEGMENT_CACHE=0) → LLM runs every call")
     else:
         import hashlib
+        # Fold the visual-worker flag + model into the key (#3) so toggling VI_VISUAL_WORKER_ENABLED
+        # (or swapping the cast model) re-keys → no stale empty/old visual_cast served for the 30-day
+        # TTL. Include req.whiteboard too (it gates whether the cast is built). v2→v3 = one-time flush
+        # of all flag-unaware entries so the fix takes effect without waiting out the old TTL.
+        _vw_on = os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1"
+        _vw_model = (os.environ.get("VI_VISUAL_WORKER_MODEL") or "claude-sonnet-4-6") if _vw_on else ""
         _sig = json.dumps([req.text, req.topic, req.minutes, mode, req.style, req.clip_model,
                            req.tier, req.gen_model, req.language, req.visual_mode, req.clip_ratio,
-                           req.visual_style, req.nusantara_corpus], sort_keys=True)
+                           req.visual_style, req.nusantara_corpus, _vw_on, _vw_model, req.whiteboard],
+                          sort_keys=True)
         _tenant = str(getattr(user, "tenant_id", "anon")) if user else "anon"
-        _seg_key = f"vseg:v2:{_tenant}:{hashlib.sha256(_sig.encode()).hexdigest()[:24]}"
+        _seg_key = f"vseg:v3:{_tenant}:{hashlib.sha256(_sig.encode()).hexdigest()[:24]}"
         try:
             _cli = rc.client()
             if _cli:
@@ -6893,14 +6910,18 @@ async def video_segment(req: VideoSegmentReq,
                 # (top 4, truncated). This is what the non-WB visual worker uses to keep Nusantara
                 # nuance without inheriting any character/name from the full brief (Chastelein bug).
                 if _hits:
+                    # Strip named-person corpus entries (#4) — a face like "Gajah Mada: wajah jowly…"
+                    # must NOT ride into every scene as "atmosphere"; named people belong only in the
+                    # cast registry (rendered when the scene actually names them).
+                    _ppl_safe = [h for h in _hits if not _palette_is_person(h)]
                     _cultural_palette = "; ".join(
                         f"{(h.get('subject') or '').strip()}: {(h.get('visual_facts') or '').strip()[:120]}"
-                        for h in _hits[:4] if h.get("visual_facts"))[:600]
+                        for h in _ppl_safe[:4] if h.get("visual_facts"))[:600]
             except Exception: pass
         # Visual SharedContext (cast registry) — only built when the non-WB visual worker is enabled
         # on THIS (python) service too. 1 cheap LLM call per video; used per-scene (name-filtered).
         _visual_cast = ""
-        if os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1":
+        if os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1" and not req.whiteboard:   # #5: WB never reads the cast
             _visual_cast = await _video_visual_cast(narration, os.environ.get("VI_VISUAL_WORKER_MODEL") or "claude-sonnet-4-6")
         result = _vseg.segment(narration, mode="A", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
@@ -6925,12 +6946,16 @@ async def video_segment(req: VideoSegmentReq,
             try:
                 _brief, _hits, _ = _corpus_enhance(_brief)
                 if _hits:
+                    # Strip named-person corpus entries (#4) — a face like "Gajah Mada: wajah jowly…"
+                    # must NOT ride into every scene as "atmosphere"; named people belong only in the
+                    # cast registry (rendered when the scene actually names them).
+                    _ppl_safe = [h for h in _hits if not _palette_is_person(h)]
                     _cultural_palette = "; ".join(
                         f"{(h.get('subject') or '').strip()}: {(h.get('visual_facts') or '').strip()[:120]}"
-                        for h in _hits[:4] if h.get("visual_facts"))[:600]
+                        for h in _ppl_safe[:4] if h.get("visual_facts"))[:600]
             except Exception: pass
         _visual_cast = ""
-        if os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1":
+        if os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1" and not req.whiteboard:   # #5: WB never reads the cast
             _visual_cast = await _video_visual_cast(req.text, os.environ.get("VI_VISUAL_WORKER_MODEL") or "claude-sonnet-4-6")
         result = _vseg.segment(req.text, mode="B", minutes=req.minutes,
                                style=req.style, clip_model=req.clip_model, tier=req.tier,
@@ -7422,6 +7447,46 @@ class VideoVisualPromptReq(BaseModel):
     scene_total: int = 1
 
 
+# Generic vocabulary that frequently forms part of a multi-word cast/place name ("Gunung Salak",
+# "Wanita Tua", "Istana Besar") but is NOT distinctive — a token here must never act as a proxy for
+# the whole name in the per-scene cast filter (_name_in_narr), else an unrelated scene that merely
+# uses the common word injects the wrong cast member (the Chastelein bleed via vocabulary). Excludes
+# real first names (Dewi/Budi/Andi) on purpose so they still resolve.
+_CAST_TOKEN_STOPWORDS = frozenset({
+    "gunung", "pantai", "danau", "sungai", "laut", "hutan", "istana", "rumah", "jalan", "kota",
+    "desa", "pulau", "kampung", "pasar", "candi", "masjid", "benteng", "menara", "lembah", "bukit",
+    "wilayah", "daerah", "negeri", "kerajaan", "wanita", "manusia", "orang", "anak", "perempuan",
+    "lelaki", "besar", "kecil", "tinggi", "tua", "muda", "agung", "raya", "utama", "tempat", "warga",
+    "raja", "ratu", "putri", "pangeran", "sultan", "tanah", "kebun", "ladang", "tepi", "lereng",
+    "gedung", "pelabuhan", "stasiun", "teluk", "selat", "telaga", "sawah", "jembatan", "taman",
+    "makam", "keraton", "pendopo", "balai", "puncak", "kawah", "muara", "dusun", "nagari", "benua",
+    "samudra", "samudera", "pohon", "gerbang", "pintu", "alun", "pasir", "rawa", "sumur",
+    "mountain", "river", "village", "palace", "temple", "castle", "forest", "island", "great",
+    "little", "young", "old", "city", "town", "house", "place", "king", "queen", "prince",
+    "woman", "man", "people", "child", "land", "field",
+})
+
+
+def _palette_is_person(h):
+    """True if a corpus hit describes a NAMED PERSON (face/identity), which must NOT enter
+    cultural_palette (#4). That channel is material/environmental atmosphere; a named person belongs
+    ONLY in the cast registry (rendered when the scene names them). Otherwise e.g.
+    "Gajah Mada: wajah jowly… mahkota emas" rides into every scene as 'atmosphere'."""
+    try:
+        cat = (h.get("category") or h.get("kategori") or "").lower()
+        _t = h.get("tags")
+        tags = " ".join(_t).lower() if isinstance(_t, list) else str(_t or "").lower()
+        vf = (h.get("visual_facts") or "").lower()
+        if any(k in cat or k in tags for k in ("tokoh", "pahlawan", "person", "figure")):
+            return True
+        # named individual carrying a biographical face description
+        return ("wajah" in vf and any(k in vf for k in (
+            "mahapatih", "abad ke-", "sultan ", "raden ", "pangeran", "presiden",
+            "proklamator", "raja ", "ratu ", "patih", "panglima")))
+    except Exception:
+        return False
+
+
 @app.post("/video/visual-prompt")
 async def video_visual_prompt(req: VideoVisualPromptReq,
                               x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
@@ -7432,6 +7497,13 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
     claude-sonnet-4-6 — strong at structured JSON without paying Opus prose rates)."""
     if not user or not getattr(user, "is_internal", False):
         raise HTTPException(403, "internal only")
+    # Fail-closed half-enabled guard (#7): if THIS (python) service has the visual worker disabled,
+    # the cast registry was never built at segment time (visual_cast="") so running here would charge
+    # a chat debit with no cross-scene SharedContext benefit. Refuse → the Node worker's
+    # generateVisualPrompt gets a non-OK response, returns null, and keeps the existing regex
+    # visualPrompt (graceful fallback, no scene lost). Feature is all-on or all-off across services.
+    if os.environ.get("VI_VISUAL_WORKER_ENABLED") != "1":
+        raise HTTPException(409, "visual worker disabled on this service")
     narr = (req.narration or "").strip()
     if not narr:
         raise HTTPException(400, "narration required")
@@ -7494,14 +7566,47 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
         try:
             _cast = json.loads(req.visual_cast)
             _narr_lc = narr.lower()
-            for _c in (_cast.get("characters") or []):
-                _nm = (_c.get("name") or "").strip()
-                if len(_nm) >= 3 and _nm.lower() in _narr_lc and (_c.get("description") or "").strip():
-                    _cast_lines.append(f"- {_nm}: {(_c.get('description') or '').strip()[:200]}")
-            for _l in (_cast.get("locations") or []):
-                _nm = (_l.get("name") or "").strip()
-                if len(_nm) >= 3 and _nm.lower() in _narr_lc and (_l.get("description") or "").strip():
-                    _cast_lines.append(f"- {_nm} (place): {(_l.get('description') or '').strip()[:200]}")
+
+            def _name_in_narr(_nm_lc):
+                # WHOLE-WORD match, NOT substring (#1). Indonesian is agglutinative, so a bare
+                # `in` test fires 'Ana' inside 'berencana', 'Budi' inside 'membudidayakan', 'Siti'
+                # inside 'positif' → wrong character injected = the Chastelein bug returns. \w is
+                # Unicode-aware for str patterns, so affixes (ber-/me-/-kan/-an) act as boundaries.
+                if _re.search(r"(?<![\w'])" + _re.escape(_nm_lc) + r"(?![\w'])", _narr_lc):
+                    return True
+                # Multi-word names: resolve a PARTIAL reference ('Dewi'→'Dewi Sartika', 'Pak Cornelis'
+                # →'Cornelis Chastelein') via a DISTINCTIVE token (len>=4 whole word, NOT a generic
+                # stopword). The stopword guard is essential: without it 'Gunung Salak'→'gunung',
+                # 'Wanita Tua'→'wanita', 'Istana Besar'→'besar' would re-open the bleed on common
+                # vocabulary. len>=4 (not >=5) so 4-char first names ('Dewi'/'Budi') still resolve.
+                return any(
+                    _re.search(r"(?<![\w'])" + _re.escape(_t) + r"(?![\w'])", _narr_lc)
+                    for _t in _nm_lc.split() if len(_t) >= 4 and _t not in _CAST_TOKEN_STOPWORDS
+                )
+
+            # Longest name first; skip a name whose TOKENS are a subset of an already-added name's
+            # tokens (drops a redundant short form like 'Dewi' when 'Dewi Sartika' is in, AND an exact
+            # duplicate name) — a whole-word/token test (<=), NOT substring, so 'Ali' is NOT dropped by
+            # 'Khalil' and the location 'Demak' is NOT dropped by the character 'Demakusuma'. Longest-
+            # first guarantees a superset is always added before its (strictly shorter) subset.
+            _added = []
+            def _emit(_nm, _desc, _suffix=""):
+                _nm_lc = _nm.lower()
+                if len(_nm) < 3 or not (_desc or "").strip():
+                    return
+                _toks = set(_nm_lc.split())
+                if any(_toks and _toks <= set(_a.split()) for _a in _added):
+                    return
+                if _name_in_narr(_nm_lc):
+                    _added.append(_nm_lc)
+                    _cast_lines.append(f"- {_nm}{_suffix}: {_desc.strip()[:200]}")
+
+            for _c in sorted((_cast.get("characters") or []),
+                             key=lambda c: -len((c.get("name") or "").strip())):
+                _emit((_c.get("name") or "").strip(), _c.get("description") or "")
+            for _l in sorted((_cast.get("locations") or []),
+                             key=lambda l: -len((l.get("name") or "").strip())):
+                _emit((_l.get("name") or "").strip(), _l.get("description") or "", " (place)")
         except Exception as _e:
             print(f"[video/visual-prompt] cast parse skipped: {_e}")
 
@@ -7514,7 +7619,7 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
         # CLEAN Nusantara cues — subject:visual_facts pairs from corpus, NO character names.
         # Treat as lightweight CULTURAL ATMOSPHERE hints (props, palette, clothing, architecture)
         # to weave into the prompt where relevant. Never replaces the per-scene narration as source.
-        usr_parts.append("CULTURAL PALETTE (Nusantara cues — weave naturally where they fit; ignore if scene doesn't call for them):\n" + req.cultural_palette)
+        usr_parts.append("CULTURAL PALETTE (Nusantara MATERIAL/ENVIRONMENTAL cues only — props, textiles, palette, architecture, landscape. Weave naturally where they fit; ignore if the scene doesn't call for them. NEVER render any of these as a specific named person/character — this list is atmosphere, not cast (#4)):\n" + req.cultural_palette)
     usr_parts.append("Return the JSON object now.")
     usr = "\n\n".join(usr_parts)
 
@@ -7536,7 +7641,9 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
             return json.loads(m.group(0))
 
     parsed = None
-    usage = None
+    _tok_in_acc = 0
+    _tok_out_acc = 0
+    _calls = 0
     try:
         _client = make_client(_model)
         msgs = [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
@@ -7553,6 +7660,12 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
             except Exception as fmt_err:
                 print(f"[video/visual-prompt] json_object rejected ({fmt_err}); retrying plain")
                 resp = await asyncio.to_thread(lambda: _call(False))
+            _calls += 1
+            # Accumulate usage from EVERY attempt incl. a failed/repaired first try (#6) — the
+            # upstream call really burned those tokens, so bill them, not just the final success.
+            _u = getattr(resp, "usage", None)
+            _tok_in_acc += (getattr(_u, "prompt_tokens", 0) or 0)
+            _tok_out_acc += (getattr(_u, "completion_tokens", 0) or 0)
             content = (resp.choices[0].message.content or "")
             try:
                 cand = _extract(content)
@@ -7560,7 +7673,6 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
                 cand = None
             if cand and isinstance(cand.get("visual_prompt"), str) and len(cand["visual_prompt"]) >= 80:
                 parsed = cand
-                usage = getattr(resp, "usage", None)
                 break
             if attempt == 0:
                 msgs.append({"role": "assistant", "content": content or ""})
@@ -7571,11 +7683,14 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
         print(f"[video/visual-prompt] {_model} path failed: {e}")
 
     # Metering: ONLY charge when we got a usable result. Mirror the chat-debit pattern used by
-    # _video_visual_brief — chat operation, video_job tagged for refund on job-fail.
+    # _video_visual_brief — chat operation, video_job tagged for refund on job-fail. Bill the
+    # ACCUMULATED tokens (all attempts), not just the final one (#6).
     if parsed and user and _uid:
         try:
-            tok_in = getattr(usage, "prompt_tokens", None) or (len(sys) + len(usr)) // 4
-            tok_out = getattr(usage, "completion_tokens", None) or len(parsed.get("visual_prompt", "")) // 4
+            # Fallback estimate when the provider returns no usage: scale by the number of upstream
+            # calls actually made (a repair retry = 2 calls) so it isn't ~half-billed (#8).
+            tok_in = _tok_in_acc or ((len(sys) + len(usr)) // 4) * max(_calls, 1)
+            tok_out = _tok_out_acc or (len(parsed.get("visual_prompt", "")) // 4) * max(_calls, 1)
             await metering.debit(user.tenant_id, _uid, "chat", _model,
                                  {"tokens_in": tok_in, "tokens_out": tok_out},
                                  byok=_byok, video_job=x_video_job, log=True)

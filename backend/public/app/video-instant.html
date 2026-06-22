@@ -753,6 +753,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         clip_model:state.clipModel, visual_mode:state.whiteboardGenre?"full_images":state.visualMode, clip_ratio:0.3,
         visual_style:state.whiteboardGenre?"":state.visualStyle, language:state.language, gen_model:state.genModel,
         nusantara_corpus:(document.getElementById('nusantaraCorpus')||{}).checked||false,
+        whiteboard:!!state.whiteboardGenre,   // #5: WB job → python skips the non-WB visual-cast LLM call
       })});
       const scenes=seg.scenes||[];
       if(!scenes.length) throw new Error("Segmenter tidak menghasilkan scene.");
