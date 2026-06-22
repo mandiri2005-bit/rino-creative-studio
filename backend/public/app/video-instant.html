@@ -649,7 +649,9 @@ select option{ background:#111019!important; color:var(--t)!important; }
     const prov=/gemini/i.test(state.ttsModel)?"gemini":"openai";
     if(sel.dataset.prov===prov) return;                 // same provider → keep current voice
     sel.dataset.prov=prov;
-    sel.innerHTML=VOICES[prov].map(([v,l])=>`<option value="${v}">${l}</option>`).join("");
+    // Prepend the REAL voice name (Achernar / Enceladus / …) so the label is auditable when the
+    // gender mapping looks wrong (Rino: "Pria padahal suara wanita"). e.g. "Enceladus · Pria · Lembut…"
+    sel.innerHTML=VOICES[prov].map(([v,l])=>`<option value="${v}">${v} · ${l}</option>`).join("");
     state.voice=VOICES[prov][0][0];
     sel.value=state.voice;
     sel.dispatchEvent(new Event("change",{bubbles:true}));   // refresh enhanced widget + state
