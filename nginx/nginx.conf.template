@@ -12,6 +12,10 @@ http {
   server {
     listen ${PORT};
     server_name _;
+    # Emit RELATIVE Location headers. TLS is terminated upstream (Railway edge), so $scheme is http
+    # and $server_port is the internal ${PORT} (8080) — an ABSOLUTE redirect would wrongly point the
+    # browser at http://host:8080/… (unreachable). Relative → browser keeps https://host. (2026-06-22)
+    absolute_redirect off;
     root /usr/share/nginx/html; index index.html;
 
     # /index.html (stale failover shell) → redirect to the canonical studio /app/. 302 = un-sticky so
