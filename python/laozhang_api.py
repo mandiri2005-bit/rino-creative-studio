@@ -7356,7 +7356,38 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
     narr = (req.narration or "").strip()
     if not narr:
         raise HTTPException(400, "narration required")
-    brief = (req.brief or "").strip()
+    # NEUTRALIZE the brief: the upstream _video_visual_brief + Nusantara-corpus expansion can produce a
+    # 1500+ char description that NAMES a recurring character (e.g. "Cornelis Chastelein, a Dutch …").
+    # Even a hardened anti-lock rule loses to a brief that explicit. Drop any SENTENCE that mentions a
+    # name from THIS scene's narration's people-set is NOT mentioned — i.e. names from the brief that
+    # don't appear in the narration. Keep world/setting/era sentences intact. Heuristic: extract
+    # Capitalized multi-word proper-noun candidates from the brief, then for each, if it does NOT
+    # appear in the narration, drop the SENTENCE containing it. Leaves era/palette/architecture cues.
+    raw_brief = (req.brief or "").strip()
+    if raw_brief:
+        # split into sentences
+        import re as _r2
+        _sents = _r2.split(r'(?<=[.!?])\s+', raw_brief)
+        # find proper-noun candidates: sequences of Capitalized Words (2+ words OR 1 word len>=4)
+        _props = set(_r2.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b', raw_brief))
+        # also single Capitalized words >=4 chars (catches "Chastelein", "Depok") but excludes 1-letter / "A"/"The"
+        _props |= {w for w in _r2.findall(r'\b[A-Z][a-z]{3,}\b', raw_brief) if w.lower() not in {"the","this","that","with","into","from","upon","amid","like","over","such","then","when","while","also","both","only","very","most","more","less","much","many","some","other","every","each","none","both","none","none"}}
+        # narration set (lowercased) to test containment — case-insensitive substring match
+        _narr_lc = narr.lower()
+        _kept = []
+        for s in _sents:
+            # find props in this sentence
+            _here = [p for p in _props if p in s]
+            # drop sentence if it mentions a proper noun NOT in the narration
+            if any(p.lower() not in _narr_lc for p in _here):
+                continue
+            _kept.append(s)
+        brief = " ".join(_kept).strip()
+        if not brief:
+            # all sentences dropped → fall back to a generic world-only stub
+            brief = "World context: respect era, setting, palette, lighting from the original brief; do not invent named characters."
+    else:
+        brief = ""
     # LANGUAGE_NAMES lives in video_segmenter, NOT laozhang_api scope → must use _vseg. (Bug shipped
      # d28a6ad: NameError → /video/visual-prompt always 500'd → worker fell back to the regex
      # build_visual_prompt prompt → Chastelein bug persisted. Rino caught it in the morning.)
