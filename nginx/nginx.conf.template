@@ -14,15 +14,25 @@ http {
     server_name _;
     root /usr/share/nginx/html; index index.html;
 
-    # index.html files must always revalidate so deploys show up without a hard refresh
-    location = /index.html { add_header Cache-Control "no-cache"; }
+    # /index.html (stale failover shell) → redirect to the canonical studio /app/. 302 = un-sticky so
+    # it can never permanently pin a stale state in a browser. (studio hardening 2026-06-22)
+    location = /index.html { return 302 /app/; }
+    # the canonical app shell must always revalidate so deploys show up without a hard refresh
     location = /app/index.html { add_header Cache-Control "no-cache"; }
 
     # public marketing landing (ceritaAI) is the site root; studio app stays at /index.html
     location = / { add_header Cache-Control "no-cache"; try_files /landing.html =404; }
     location = /landing.html { add_header Cache-Control "no-cache"; }
 
-    location / { try_files $uri $uri/ /index.html; }
+    # A MISSING build asset must 404 CLEANLY — never fall through to the SPA index.html, whose
+    # text/html breaks <script type=module> ("'text/html' is not a valid JavaScript MIME type") and
+    # hangs the loader forever. Regex locations take precedence over the `/` fallback below.
+    # (studio hardening 2026-06-22)
+    location ~* ^/(app/)?assets/ { try_files $uri =404; }
+    location ~* \.(?:js|mjs|css|map)$ { try_files $uri =404; }
+
+    # SPA fallback serves the CANONICAL app shell (/app/index.html), never the stale root index.html.
+    location / { try_files $uri $uri/ /app/index.html; }
 
     location /webhooks/ {
       set $backend_upstream "${BACKEND_URL}";
