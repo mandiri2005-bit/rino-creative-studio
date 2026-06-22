@@ -888,11 +888,20 @@ select option{ background:#111019!important; color:var(--t)!important; }
         const f=_sp[0], l=_sp[_sp.length-1];
         if(l.rd>f.rd && l.t>f.t){ const pace=(l.rd-f.rd)/((l.t-f.t)/1000); if(pace>0) eta=Math.round((rt-rd)/pace); }
       }
-      const label = finalizing
-        ? ('Menggabungkan & menyimpan… '+mmss(el))
-        : ('Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):''));
-      stage.innerHTML=head+'<div class="bar-wrap"><div class="bar"><i style="width:'+(finalizing?100:(rp||4))+'%;transition:width .5s"></i></div>'+
-        '<div class="bar-meta"><span>'+label+'</span><span>'+(finalizing?'…':(rp?rp+'%':'…'))+'</span></div></div>';
+      // Non-WB visualModes (full_images / hybrid / clips) render via the stitch ffmpeg.mjs path which
+      // does NOT emit per-scene progress → renderScenesDone stays 0 throughout → UI used to show a
+      // misleading "0/12 scene" for the entire stitch. Detect non-WB and show an indeterminate
+      // "Menggabungkan video…" label without the fake counter. WB path UNCHANGED.
+      const isWB = j.visualMode === "whiteboard";
+      const label = !isWB
+        ? ('Menggabungkan video… '+mmss(el))
+        : finalizing
+          ? ('Menggabungkan & menyimpan… '+mmss(el))
+          : ('Merangkai (render) '+(rt?rd+'/'+rt+' scene · ':'')+mmss(el)+(eta?(' · ≈ '+mmss(eta)+' lagi'):''));
+      const barW = !isWB ? 30 : (finalizing?100:(rp||4));   // non-WB: fixed indeterminate-ish width
+      const meta = !isWB ? '⌛' : (finalizing?'…':(rp?rp+'%':'…'));
+      stage.innerHTML=head+'<div class="bar-wrap"><div class="bar"><i style="width:'+barW+'%;transition:width .5s"></i></div>'+
+        '<div class="bar-meta"><span>'+label+'</span><span>'+meta+'</span></div></div>';
       return;
     }
     // in progress
