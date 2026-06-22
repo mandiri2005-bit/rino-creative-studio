@@ -7337,6 +7337,7 @@ class VideoVisualPromptReq(BaseModel):
     brief: str = ""                      # shared art-direction brief from /video/segment (era/setting/mood)
     language: str = "id"
     visual_style: str = ""               # cinematic | photorealistic | comic | … (UI dropdown)
+    style: str = ""                      # GAYA NARASI (storytelling/harari/natgeo/...) → cinematography tone via STYLE_TONE
     scene_kind: str = "image"            # "image" or "clip" — adjusts prompt for nano-banana vs Veo
     scene_index: int = 0
     scene_total: int = 1
@@ -7358,6 +7359,11 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
     brief = (req.brief or "").strip()
     lang_name = LANGUAGE_NAMES.get((req.language or "id").strip().lower(), (req.language or "").strip() or "Bahasa Indonesia") if hasattr(_vseg, "wpm_for") else (req.language or "id")
     is_clip = (req.scene_kind or "image").lower() == "clip"
+    # Per-style cinematography tone (Dalang's per-style pattern, adapted for visual). Maps the
+    # GAYA NARASI (storytelling/harari/natgeo/bedtime_story/…) to a one-line tone the LLM must
+    # bake into every visual_prompt — so the WHOLE video feels stylistically coherent across
+    # scenes, beyond just the shared world brief. Falls back to DEFAULT_TONE for unknown styles.
+    style_tone = _vseg.STYLE_TONE.get(_vseg._normalize_style(req.style or ""), _vseg.DEFAULT_TONE) if (req.style or "").strip() else _vseg.DEFAULT_TONE
 
     # COHERENCE RULES (Dalang-style) — explicit contract that names the failure modes we observed.
     # Lock-character bug → rule #1; tone drift / contradiction → rules #2/#3.
@@ -7389,7 +7395,10 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
         + f"6. LANGUAGE: The visual_prompt itself MUST be in ENGLISH (the image/clip generator is "
            "English-keyed). Setting/mood may be brief English noun phrases. The user-facing narration "
            f"is in {lang_name} but THAT is not the generator's input.\n"
-        "7. LENGTH: visual_prompt is 200-560 characters. Too short = generic. Too long = generator "
+        f"7. STYLE TONE (gaya narasi → cinematography): the WHOLE video uses ONE consistent cinematography "
+        f"tone — '{style_tone}'. INCLUDE this tone in every visual_prompt (lighting, palette, framing) so the "
+        f"scenes feel like the SAME film, not stitched-from-different-aesthetics. Do NOT contradict the tone.\n"
+        "8. LENGTH: visual_prompt is 200-560 characters. Too short = generic. Too long = generator "
         "trims and key details are lost.\n"
         "OUTPUT: STRICT JSON only. No prose preamble, no markdown fences."
     )

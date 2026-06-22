@@ -766,7 +766,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
         captions:state.captions, genModel:state.genModel,
         ttsModel:state.ttsModel, voice:state.voice, language:state.language, aspectRatio:state.aspectRatio, captionFont:state.captionFont,
         imageModel:state.imageModel, refMode:state.refMode, brief:state.brief,
-        heroStyle:state.heroStyle, visualStyle:state.visualStyle,   // visualStyle → non-WB visual worker
+        heroStyle:state.heroStyle, visualStyle:state.visualStyle, style:state.style,   // visual worker → per-style cinematography tone
       })});
       state.jobId=asm.jobId;
       viRemember(asm.jobId,{scenes:asm.sceneCount,title:(state.narrationText||"").slice(0,60)});

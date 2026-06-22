@@ -156,6 +156,17 @@ STYLE_TONE: dict[str, str] = {
     "business":                "measured editorial lighting, restrained palette, authoritative composition",
     "literary_essay":          "contemplative muted tones, painterly stillness, generous negative space",
     "philosophical":           "contemplative muted tones, painterly stillness, generous negative space",
+    # PAKEM (Studio Narasi-AI) styles that were missing from the tone catalog — added so the
+    # NON-WB visual worker (/video/visual-prompt) gets a per-style cinematography hint instead of
+    # falling back to DEFAULT_TONE.
+    "journalistic":            "verité documentary lighting, candid available-light framing, real-people authenticity",
+    "journalistic_long_form":  "verité documentary lighting, candid available-light framing, real-people authenticity",
+    "narrative_nonfiction":    "noir-ish investigative palette, mood-driven low-key lighting, cinematic mystery",
+    "podcast_narrative":       "intimate sit-with-me framing, warm available light, conversational closeness",
+    "cinematic_voiceover":     "highly stylised cinematic, dramatic key light, anamorphic widescreen mood",
+    "youtube":                 "clean bright explanatory lighting, vivid diagrammatic clarity",
+    "fiction":                 "fully imagined cinematic aesthetic, expressive lighting, free creative palette",
+    "pov":                     "intimate first-person perspective, eye-level handheld, personal detail",
 }
 DEFAULT_TONE = "cinematic natural lighting, documentary realism, balanced composition"
 

@@ -440,7 +440,7 @@ export function httpGenerationClient(opts = {}) {
     // WB whiteboard-plan pattern. Returns parsed object {visual_prompt, characters[], setting, mood}
     // or null on any failure → caller falls back to scene.visualPrompt (regex from segmenter).
     // Metered as a chat debit on the Python side (video_job tag).
-    async generateVisualPrompt(ctx, { narration, brief, language, visualStyle, sceneKind, sceneIndex, sceneTotal } = {}) {
+    async generateVisualPrompt(ctx, { narration, brief, language, visualStyle, style, sceneKind, sceneIndex, sceneTotal } = {}) {
       try {
         const r = await fetch(`${PYTHON_API}/video/visual-prompt`, {
           method: "POST",
@@ -450,6 +450,7 @@ export function httpGenerationClient(opts = {}) {
             brief: brief || "",
             language: language || "id",
             visual_style: visualStyle || "",
+            style: style || "",   // GAYA NARASI → per-style cinematography tone (STYLE_TONE)
             scene_kind: sceneKind || "image",
             scene_index: Number(sceneIndex) || 0,
             scene_total: Number(sceneTotal) || 1,
