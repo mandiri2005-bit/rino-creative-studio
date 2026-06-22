@@ -716,6 +716,12 @@ export function startWorkers(deps) {
       // generous lock (renewal fires at lockDuration/2, so 5min headroom tolerates multi-second stalls).
       lockDuration: Number(process.env.WB_LOCK_DURATION_MS) || 600000,
       stalledInterval: 60000,
+      // Idle cost: a Worker re-arms a blocking BZPOPMIN every drainDelay (BullMQ default 5s)
+      // even with ZERO jobs → continuous billable commands on a per-command Redis (Upstash).
+      // queue.add() writes a marker that wakes a blocked worker instantly, so a larger
+      // drainDelay only stretches the IDLE re-arm — it never adds latency to real job pickup.
+      // 60s cuts the dominant idle poll ~12× (4 workers × 1/5s → 1/60s).
+      drainDelay: Number(process.env.VIDEO_DRAIN_DELAY) || 60,
     });
   const audio = mk(QUEUE.AUDIO, audioProcessor);
   const visual = mk(QUEUE.VISUAL, visualProcessor);
