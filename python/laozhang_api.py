@@ -7357,7 +7357,11 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
     if not narr:
         raise HTTPException(400, "narration required")
     brief = (req.brief or "").strip()
-    lang_name = LANGUAGE_NAMES.get((req.language or "id").strip().lower(), (req.language or "").strip() or "Bahasa Indonesia") if hasattr(_vseg, "wpm_for") else (req.language or "id")
+    # LANGUAGE_NAMES lives in video_segmenter, NOT laozhang_api scope → must use _vseg. (Bug shipped
+     # d28a6ad: NameError → /video/visual-prompt always 500'd → worker fell back to the regex
+     # build_visual_prompt prompt → Chastelein bug persisted. Rino caught it in the morning.)
+    _LN = getattr(_vseg, "LANGUAGE_NAMES", {})
+    lang_name = _LN.get((req.language or "id").strip().lower(), (req.language or "").strip() or "Bahasa Indonesia")
     is_clip = (req.scene_kind or "image").lower() == "clip"
     # Per-style cinematography tone (Dalang's per-style pattern, adapted for visual). Maps the
     # GAYA NARASI (storytelling/harari/natgeo/bedtime_story/…) to a one-line tone the LLM must
