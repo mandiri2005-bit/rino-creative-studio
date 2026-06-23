@@ -119,6 +119,24 @@ UPDATE gl_accounts SET normal_side =
 UPDATE gl_accounts SET normal_side = 'credit' WHERE code = '1600';   -- contra-asset
 COMMENT ON COLUMN gl_accounts.normal_side IS 'debit/credit normal balance — authoritative for reports; CONTRA accounts (e.g. 1600) carry the side opposite their type.';
 
+-- AUDIT-v3 FIX (MEDIUM): normal_side was nullable with no default, so a FUTURE
+-- account insert (a later migration) would silently store NULL and silently break
+-- reports. Auto-derive it from type on any insert/update that leaves it NULL
+-- (contras still set it explicitly), then enforce NOT NULL so the gap can't recur.
+CREATE OR REPLACE FUNCTION gl_accounts_default_normal_side()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.normal_side IS NULL THEN
+        NEW.normal_side := CASE WHEN NEW.type IN ('asset','cogs','opex') THEN 'debit' ELSE 'credit' END;
+    END IF;
+    RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS trg_gl_accounts_normal_side ON gl_accounts;
+CREATE TRIGGER trg_gl_accounts_normal_side
+    BEFORE INSERT OR UPDATE ON gl_accounts
+    FOR EACH ROW EXECUTE FUNCTION gl_accounts_default_normal_side();
+ALTER TABLE gl_accounts ALTER COLUMN normal_side SET NOT NULL;
+
 -- =====================================================================
 -- 2. JOURNAL ENTRIES -- one header per posted economic event.
 --    GLOBAL (owner-posted by the derive engine). source_op_id is the
@@ -183,13 +201,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_tenant
     ON journal_entries (tenant_id, source_type, source_op_id) WHERE tenant_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_company
     ON journal_entries (source_type, source_op_id) WHERE tenant_id IS NULL;
--- AUDIT-v2 FIX (LOW): operator-entered types (manual, tax) can be posted either
--- tenant-scoped OR company-level, so the two partial indexes above would let the
--- SAME (type, op_id) exist once per side. Force these globally unique so a manual
--- adjusting entry's op_id can't be reused across the tenant/company boundary.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_operator
-    ON journal_entries (source_type, source_op_id)
-    WHERE source_type IN ('manual','tax');
+-- AUDIT-v3 FIX (regression, confirmed live): a prior round added a GLOBAL unique
+-- index on (source_type, source_op_id) for manual/tax to stop tenant-vs-company
+-- op_id reuse — but being tenant-agnostic it WRONGLY rejected two DIFFERENT
+-- tenants each posting a legit manual/tax entry that reused the same operator
+-- op_id (e.g. both 'adj-2026-03'). Per-tenant double-post protection is already
+-- given by uq_journal_entries_source_tenant + uq_journal_entries_source_company;
+-- the cross-boundary case is a harmless operator nicety not worth blocking real
+-- postings. Index dropped (idempotent on a DB that ran the prior version).
+DROP INDEX IF EXISTS uq_journal_entries_source_operator;
 CREATE INDEX IF NOT EXISTS idx_journal_entries_period
     ON journal_entries (period, entry_date);
 -- per-tenant statements / deferred-revenue derivable from the ledger:
