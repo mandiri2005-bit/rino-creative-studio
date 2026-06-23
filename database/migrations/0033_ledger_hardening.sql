@@ -1,5 +1,8 @@
 -- =====================================================================
--- 0032_ledger_hardening.sql
+-- 0033_ledger_hardening.sql
+-- (renumbered from 0032 — the payment-rail branch feat/dodo-payments owns
+--  0032_payment_events.sql, already applied on staging. Merge order on main:
+--  0031 accounting-foundation → 0032 payment_events → 0033 ledger-hardening.)
 -- Hardens the credit ledger the accounting posting engine reads from.
 -- These are the audit-confirmed PREREQUISITES for a sound posting engine:
 -- the derive engine assumes a non-negative, tenant-isolated, append-correct
