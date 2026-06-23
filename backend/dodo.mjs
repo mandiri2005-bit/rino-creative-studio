@@ -22,7 +22,7 @@
 //   DODO_CHECKOUT_RETURN_URL / DODO_CHECKOUT_CANCEL_URL  (optional explicit overrides)
 // ============================================================================
 import DodoPayments from "dodopayments";
-import { grant_entitlement, recordPaymentEvent } from "./payments_core.mjs";
+import { grant_entitlement, recordPaymentEvent, reverse_entitlement } from "./payments_core.mjs";
 
 const API_KEY = process.env.DODO_PAYMENTS_API_KEY || "";
 // Default to test_mode unless explicitly live — never accidentally go live.
@@ -139,10 +139,28 @@ export async function handleEvent({ payload, webhookId, rawEvent }) {
     return { handled: true, status: "failed" };
   }
 
-  // refund.* / dispute.* / subscription.* / unknown → acknowledge + log.
-  // Credit reversal on refunds and subscription lifecycle are deferred (out of
-  // scope); the Dodo dashboard is the source of truth meanwhile. 200 prevents
-  // pointless retries for events we don't act on.
+  // Refund → reverse the granted credits (idempotent per webhook-id).
+  if (type === "refund.succeeded") {
+    const res = await reverse_entitlement({
+      provider: "dodo", providerPaymentId: data.payment_id || null,
+      refundOpId: `refund:dodo:${webhookId}`, kind: "refund", rawEvent,
+    });
+    console.log(`[dodo] refund id=${webhookId} payment=${data.payment_id || "?"} ->`, JSON.stringify(res));
+    return { handled: true, ...res };
+  }
+  // Chargeback finalized AGAINST the merchant (money returned) → reverse. Only
+  // terminal money-lost states; dispute.won keeps the money (no reversal).
+  if (type === "dispute.lost" || type === "dispute.accepted") {
+    const res = await reverse_entitlement({
+      provider: "dodo", providerPaymentId: data.payment_id || null,
+      refundOpId: `dispute:dodo:${webhookId}`, kind: "chargeback", rawEvent,
+    });
+    console.log(`[dodo] chargeback(${type}) id=${webhookId} payment=${data.payment_id || "?"} ->`, JSON.stringify(res));
+    return { handled: true, ...res };
+  }
+
+  // dispute.opened/challenged/won/expired, subscription.*, unknown → ack + log
+  // (no money movement to act on). 200 prevents pointless retries.
   console.log(`[dodo] recorded (no-op) event=${type} id=${webhookId} payment=${data.payment_id || "?"}`);
   return { handled: true, recorded: true, type };
 }

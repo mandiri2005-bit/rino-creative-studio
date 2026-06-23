@@ -512,9 +512,11 @@ app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
     const url = await dodo.createCheckout({ tenantId, userId, planKey });
     res.json({ url });
   } catch (e) {
-    const code = e.message === "dodo_not_configured" ? 503
-               : e.message === "unknown_plan" ? 400 : 500;
-    res.status(code).json({ error: e.message });
+    // Only echo KNOWN, safe error codes; never leak raw DB/SDK exception text.
+    if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
+    if (e.message === "unknown_plan") return res.status(400).json({ error: "unknown_plan" });
+    console.error("[dodo/create-checkout] unexpected:", e);
+    return res.status(500).json({ error: "internal_error" });
   }
 });
 // ── Midtrans (IDR rail): create a hosted Snap transaction (Clerk-authed) ──────
@@ -533,9 +535,11 @@ app.post("/payments/midtrans/create-transaction", requireAuth, async (req, res) 
     const out = await midtrans.createTransaction({ tenantId, userId, planKey });
     res.json({ ...out, ...midtrans.publicConfig() }); // token, redirectUrl, orderId, clientKey, isProduction
   } catch (e) {
-    const code = e.message === "midtrans_not_configured" ? 503
-               : e.message === "unknown_plan" ? 400 : 500;
-    res.status(code).json({ error: e.message });
+    // Only echo KNOWN, safe error codes; never leak raw DB/SDK exception text.
+    if (e.message === "midtrans_not_configured") return res.status(503).json({ error: "midtrans_not_configured" });
+    if (e.message === "unknown_plan") return res.status(400).json({ error: "unknown_plan" });
+    console.error("[midtrans/create-transaction] unexpected:", e);
+    return res.status(500).json({ error: "internal_error" });
   }
 });
 // ── Midtrans Notification — POST /midtrans/notification ───────────────────────

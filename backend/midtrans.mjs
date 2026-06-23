@@ -26,7 +26,7 @@
 import midtransClient from "midtrans-client";
 import crypto from "node:crypto";
 import { query } from "./db.js";
-import { grant_entitlement, recordPaymentEvent, creditsForPlan, VALID_PLAN_KEYS } from "./payments_core.mjs";
+import { grant_entitlement, recordPaymentEvent, reverse_entitlement, creditsForPlan, VALID_PLAN_KEYS } from "./payments_core.mjs";
 
 const SERVER_KEY = process.env.MIDTRANS_SERVER_KEY || "";
 const CLIENT_KEY = process.env.MIDTRANS_CLIENT_KEY || "";
@@ -137,6 +137,17 @@ export async function handleNotification(body) {
   if (!row) {
     console.warn(`[midtrans] notification for unknown order_id=${orderId}`);
     return { handled: false, reason: "unknown_order" };
+  }
+
+  // Refund / chargeback → reverse the granted credits (idempotent per order_id).
+  // Note: a partial refund reverses the FULL grant (partial refunds out of scope).
+  const REVERSAL = { refund: "refund", partial_refund: "refund", chargeback: "chargeback", partial_chargeback: "chargeback" };
+  if (REVERSAL[txStatus]) {
+    const res = await reverse_entitlement({
+      provider: "midtrans", idempotencyKey: orderId,
+      refundOpId: `refund:midtrans:${orderId}`, kind: REVERSAL[txStatus], rawEvent: body,
+    });
+    return { handled: true, reversed: true, ...res };
   }
 
   const grantWorthy = txStatus === "settlement" || (txStatus === "capture" && fraud === "accept");

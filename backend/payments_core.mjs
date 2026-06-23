@@ -190,3 +190,64 @@ export async function recordPaymentEvent({
     tenantId,
   );
 }
+
+// ── Reverse a grant on refund / chargeback ────────────────────────────────────
+// Negative credit_apply (reason='refund'), idempotent on refundOpId so a
+// re-delivered refund never double-reverses; flips payment_events status +
+// reversed_at. Finds the ORIGINAL credited row via the SECURITY-DEFINER resolver
+// (the refund webhook has no tenant context): Midtrans → idempotency_key (order_id
+// echoed on the refund notification); Dodo → provider_payment_id (data.payment_id
+// on the refund/dispute event). Reverses the EXACT credits_granted recorded at
+// grant time (immune to pricing-config drift).
+export async function reverse_entitlement({
+  provider, idempotencyKey = null, providerPaymentId = null,
+  refundOpId, kind = "refund", rawEvent = {},
+}) {
+  if (!refundOpId) throw new Error("missing_refund_op");
+  const look = await query(
+    `SELECT id, tenant_id, user_id, credits_granted, credited, status
+       FROM payment_event_for_reversal($1, $2, $3)`,
+    [provider, idempotencyKey, providerPaymentId],
+  );
+  const row = look.rows[0];
+  if (!row) {
+    console.warn(`[reverse] no original payment for ${provider} ${idempotencyKey || providerPaymentId}`);
+    return { reversed: false, reason: "not_found" };
+  }
+  if (!row.credited || !(row.credits_granted > 0)) {
+    return { reversed: false, reason: "not_credited", status: row.status };
+  }
+
+  const credits = Math.trunc(row.credits_granted);
+  const client = await pool.connect();
+  let applied = false, balance = 0;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(row.tenant_id)]);
+    // Negative grant, idempotent on refundOpId. credit_apply has no floor → a
+    // refund after the credits were spent yields a negative balance (correct:
+    // the tenant consumed credits they ultimately did not pay for).
+    const cr = await client.query(
+      `SELECT applied, balance FROM credit_apply($1,$2,$3,$4,$5,$6::jsonb)`,
+      [row.tenant_id, row.user_id, -credits, "refund", refundOpId,
+       JSON.stringify({ provider, kind, reversal_of: idempotencyKey || providerPaymentId, payment_event_id: row.id })],
+    );
+    applied = !!cr.rows[0]?.applied;
+    balance = Number(cr.rows[0]?.balance ?? 0);
+    await client.query(
+      `UPDATE payment_events SET status=$2, reversed_at=now(), updated_at=now() WHERE id=$1`,
+      [row.id, kind === "chargeback" ? "disputed" : "refunded"],
+    );
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+  if (applied) {
+    try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${row.tenant_id}:credits`, String(-credits)); }
+    catch (e) { console.warn("[reverse] redis mirror failed:", e.message); }
+  }
+  return { reversed: true, applied, balance, credits };
+}
