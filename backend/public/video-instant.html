@@ -82,6 +82,7 @@
   .pills{display:flex;flex-wrap:wrap;gap:7px}
   .pill{background:var(--bg);border:1px solid var(--br);color:var(--td);font-family:var(--fm);font-size:12px;padding:7px 12px;border-radius:9px;cursor:pointer;transition:.2s}
   .pill:hover{border-color:color-mix(in srgb,var(--ac) 50%,var(--br));color:var(--t)}
+  .pill:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ac);border-color:var(--ac)}
   .pill.on{background:linear-gradient(135deg,var(--ac),var(--ac2));border-color:transparent;color:#fff}
   .row{display:flex;gap:10px}
   .row>*{flex:1}
@@ -254,11 +255,11 @@ select option{ background:#111019!important; color:var(--t)!important; }
       <label class="lbl" id="durLbl">Durasi</label>
       <div class="pills" id="durPills"></div>
 
-      <label class="lbl">Kualitas</label>
-      <div class="pills" id="tierPills">
-        <div class="pill" data-tier="fast">Fast · 720p</div>
-        <div class="pill on" data-tier="hd">HD · 1080p</div>
-        <div class="pill" data-tier="hd_plus">HD+ · 4K</div>
+      <label class="lbl" id="tierLbl">Kualitas</label>
+      <div class="pills" id="tierPills" role="radiogroup" aria-labelledby="tierLbl">
+        <div class="pill" data-tier="fast" role="radio" tabindex="0" aria-checked="false">Fast · 720p</div>
+        <div class="pill on" data-tier="hd" role="radio" tabindex="0" aria-checked="true">HD · 1080p</div>
+        <div class="pill" data-tier="hd_plus" role="radio" tabindex="0" aria-checked="false">HD+ · 4K</div>
       </div>
 
       <div class="row">
@@ -365,10 +366,10 @@ select option{ background:#111019!important; color:var(--t)!important; }
       </select>
       </div>
 
-      <label class="lbl">Rasio</label>
-      <div class="pills" id="arPills">
-        <div class="pill on" data-ar="16:9">16:9 · Lanskap</div>
-        <div class="pill" data-ar="9:16">9:16 · Potret</div>
+      <label class="lbl" id="arLbl">Rasio</label>
+      <div class="pills" id="arPills" role="radiogroup" aria-labelledby="arLbl">
+        <div class="pill on" data-ar="16:9" role="radio" tabindex="0" aria-checked="true">16:9 · Lanskap</div>
+        <div class="pill" data-ar="9:16" role="radio" tabindex="0" aria-checked="false">9:16 · Potret</div>
       </div>
 
       <label class="chk"><input type="checkbox" id="captions"/> Bakar caption ke video</label>
@@ -507,6 +508,31 @@ select option{ background:#111019!important; color:var(--t)!important; }
   const DURATIONS=[["30 dtk",0.5],["1 mnt",1],["3 mnt",3],["5 mnt",5],["10 mnt",10]];
   const state={mode:"A",minutes:1,tier:"hd",style:"creative_nonfiction",visualMode:"hybrid",clipModel:"veo3",visualStyle:"",whiteboardGenre:null,imageModel:"nano-banana-hd",heroStyle:"ink_watercolor",aspectRatio:"16:9",language:"id",genModel:"deepseek-chat",ttsModel:"tts-1",voice:"alloy",captions:false,captionFont:"",refMode:false,brief:"",jobId:null,poll:null};
 
+  // Escape untrusted server strings before they go into innerHTML (job error text, scene text,
+  // scene number, status label). Prevents stored/DOM XSS via crafted job payloads.
+  // Pure string-replace serializer escapes & < > " ' so output is safe in BOTH
+  // element-content AND quoted-attribute contexts. (Old textContent->innerHTML form
+  // ran the HTML text-mode serializer, which never escapes " or ' -> attribute-unsafe.)
+  function escapeHtml(v){ return (v==null?"":String(v))
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+
+  // Keyboard support for a role="radiogroup" of .pill role="radio" controls: Enter/Space activates
+  // the focused pill via its existing onclick (.click()), arrows move focus + select. Non-destructive:
+  // selection logic stays in the per-group onclick handlers — this only routes keys to .click().
+  function wirePillKeys(group){
+    if(!group) return;
+    group.addEventListener("keydown",e=>{
+      const pills=[...group.querySelectorAll(".pill")];
+      const i=pills.indexOf(document.activeElement);
+      if(e.key==="Enter"||e.key===" "||e.key==="Spacebar"){ e.preventDefault(); if(i>=0) pills[i].click(); return; }
+      let ni=-1;
+      if(e.key==="ArrowRight"||e.key==="ArrowDown") ni=(i+1+pills.length)%pills.length;
+      else if(e.key==="ArrowLeft"||e.key==="ArrowUp") ni=(i-1+pills.length)%pills.length;
+      if(ni>=0){ e.preventDefault(); pills[ni].focus(); pills[ni].click(); }
+    });
+  }
+
   async function token(){ try{ return await (window.__clerkAuth?.getAuthToken?.()); }catch{ return null; } }
   async function api(path,opts={}){
     const t=await token();
@@ -518,11 +544,15 @@ select option{ background:#111019!important; color:var(--t)!important; }
 
   // ── duration pills ──
   const durPills=$("#durPills");
+  durPills.setAttribute("role","radiogroup"); durPills.setAttribute("aria-labelledby","durLbl");
   DURATIONS.forEach(([lbl,min])=>{
-    const d=document.createElement("div"); d.className="pill"+(min===state.minutes?" on":""); d.textContent=lbl; d.dataset.min=min;
-    d.onclick=()=>{ state.minutes=min; $$("#durPills .pill").forEach(p=>p.classList.toggle("on",+p.dataset.min===min)); refreshEstimate(); };
+    const on=min===state.minutes;
+    const d=document.createElement("div"); d.className="pill"+(on?" on":""); d.textContent=lbl; d.dataset.min=min;
+    d.setAttribute("role","radio"); d.setAttribute("tabindex","0"); d.setAttribute("aria-checked",on?"true":"false");
+    d.onclick=()=>{ state.minutes=min; $$("#durPills .pill").forEach(p=>{ const sel=+p.dataset.min===min; p.classList.toggle("on",sel); p.setAttribute("aria-checked",sel?"true":"false"); }); refreshEstimate(); };
     durPills.appendChild(d);
   });
+  wirePillKeys(durPills);
 
   // ── segmented mode ──
   $$("#modeSeg button").forEach(b=>b.onclick=()=>{
@@ -533,7 +563,8 @@ select option{ background:#111019!important; color:var(--t)!important; }
     durPills.style.opacity=state.mode==="A"?"1":".5"; durPills.style.pointerEvents=state.mode==="A"?"":"none";
   });
 
-  $$("#tierPills .pill").forEach(p=>p.onclick=()=>{ state.tier=p.dataset.tier; $$("#tierPills .pill").forEach(x=>x.classList.toggle("on",x===p)); refreshEstimate(); });
+  $$("#tierPills .pill").forEach(p=>p.onclick=()=>{ state.tier=p.dataset.tier; $$("#tierPills .pill").forEach(x=>{ const sel=x===p; x.classList.toggle("on",sel); x.setAttribute("aria-checked",sel?"true":"false"); }); refreshEstimate(); });
+  wirePillKeys($("#tierPills"));
   // ── whiteboard genre: selectable in BOTH Gaya narasi (#style) and Gaya visual
   // (#visualStyle). Picking one LOCKS both to that genre + disables Mode visual / Model
   // klip. state.style/visualStyle keep their REAL (non-wb) values; the wb genre rides on
@@ -601,7 +632,8 @@ select option{ background:#111019!important; color:var(--t)!important; }
   $("#clipModel").onchange=e=>{ state.clipModel=e.target.value; refreshEstimate(); };
   $("#imageModel").onchange=e=>state.imageModel=e.target.value;
   $("#heroStyle").onchange=e=>state.heroStyle=e.target.value;
-  $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>x.classList.toggle("on",x===p)); });
+  $$("#arPills .pill").forEach(p=>p.onclick=()=>{ state.aspectRatio=p.dataset.ar; $$("#arPills .pill").forEach(x=>{ const sel=x===p; x.classList.toggle("on",sel); x.setAttribute("aria-checked",sel?"true":"false"); }); });
+  wirePillKeys($("#arPills"));
   $("#captions").onchange=e=>{ state.captions=e.target.checked; $("#captionFont").style.display=e.target.checked?"":"none"; };
   $("#captionFont").onchange=e=>state.captionFont=e.target.value;
   $("#refMode").onchange=e=>state.refMode=e.target.checked;
@@ -716,7 +748,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
     }catch(e){ if(e&&e.status===404) viForget(id); } // expired/gone → drop quietly
   }
   window.__viOpen=(id)=>resumeJob(id);
-  window.__viNew=()=>{ clearInterval(state.poll); state.jobId=null; state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; setBusy(false);
+  window.__viNew=()=>{ clearInterval(state.poll); state.poll=null; state.jobId=null; state.shownDoneFor=null; state.stitchT0=null; state.rMax=null; setBusy(false);
     stage.innerHTML='<div class="stage-empty"><div class="big">🎬</div><h3>Siap bikin video baru</h3><p>Atur pengaturan di kiri, lalu tekan Buat video.</p></div>'; };
   // Server-backed history (cross-device): the tenant's recent videos from /api/video/jobs, not this
   // browser's localStorage. Click → __viOpen (re-fetches fresh status → plays the finished video).
@@ -727,11 +759,14 @@ select option{ background:#111019!important; color:var(--t)!important; }
     const badge=s=>s==="done"?'<span style="color:#7ee0a8">Selesai</span>':s==="failed"?'<span style="color:#e88">Gagal</span>':'<span style="color:#caa6ff">Proses</span>';
     stage.innerHTML='<div class="stage-head"><div><div class="st-t">Video saya</div><div class="st-s">'+jobs.length+' terakhir</div></div>'+
       '<div class="head-right"><button class="lnk" style="background:none;cursor:pointer" onclick="window.__viNew()">+ Baru</button></div></div>'+
-      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">'+jobs.map(x=>{
+      '<div id="viHistList" style="display:flex;flex-direction:column;gap:8px;margin-top:10px">'+jobs.map(x=>{
         const t=x.createdAt?new Date(x.createdAt).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):"";
         const dur=x.durationActual?(' · '+Math.round(x.durationActual)+'s'):'';
-        return '<button onclick="window.__viOpen(\''+x.jobId+'\')" style="text-align:left;padding:12px 14px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);color:inherit;cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center"><span>🎬 '+(x.sceneCount||"?")+' scene'+dur+' · '+badge(x.status)+'</span><span style="opacity:.55;white-space:nowrap;font-size:12px">'+t+'</span></button>';
+        // jobId -> escaped data-attribute (no JS-string/attr breakout); sceneCount/status/time escaped.
+        // Click wired via addEventListener below so the value is never parsed as code.
+        return '<button class="vi-hist-item" data-job="'+escapeHtml(x.jobId)+'" style="text-align:left;padding:12px 14px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);color:inherit;cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center"><span>🎬 '+escapeHtml(x.sceneCount||"?")+' scene'+escapeHtml(dur)+' · '+badge(x.status)+'</span><span style="opacity:.55;white-space:nowrap;font-size:12px">'+escapeHtml(t)+'</span></button>';
       }).join("")+'</div>';
+    stage.querySelectorAll('#viHistList .vi-hist-item').forEach(b=>{ b.addEventListener('click',()=>window.__viOpen(b.dataset.job)); });
   };
 
   $("#produceBtn").onclick=async()=>{
@@ -789,15 +824,23 @@ select option{ background:#111019!important; color:var(--t)!important; }
   function _pollStop(msg){ clearInterval(state.poll); state.poll=null; setBusy(false); refreshCredits(); if(msg) showErr(msg); }
   async function pollOnce(){
     if(!state.jobId) return;
+    // STALE-POLL GUARD: pin the job this tick is for. If "Buat lagi"/a new job swaps state.jobId
+    // while we're awaiting, this poll for the OLD job must NOT render-as-new or kill the new
+    // job's interval (it would freeze the new job). Re-check id===state.jobId after every await.
+    const id=state.jobId;
     // anti-hang wall-clock backstop so the poller can NEVER spin forever
     if(state.pollT0 && Date.now()-state.pollT0>POLL_MAX_MS){ return _pollStop("Pembuatan masih berjalan lama. Berhenti memantau — cek hasilnya di Studio nanti."); }
     try{
-      // cache-bust (?t) so no proxy/CDN can serve a stale "stitching" forever → the poll always sees done
-      const j=await api("/api/video/assemble/"+state.jobId+"?t="+Date.now(),{method:"GET"});
+      // cache-bust (?t) so no proxy/CDN can serve a stale "stitching" forever → the poll always sees done.
+      // 8s AbortController timeout so a stuck connection fails fast → counts toward POLL_MAX_FAILS instead of hanging.
+      const _ac=new AbortController(); const _to=setTimeout(()=>_ac.abort(),8000);
+      let j; try{ j=await api("/api/video/assemble/"+id+"?t="+Date.now(),{method:"GET",signal:_ac.signal}); }finally{ clearTimeout(_to); }
+      if(id!==state.jobId) return;          // job changed mid-poll → this result is stale; don't render/stop the newer job
       state.pollFails=0;                   // a successful poll clears the failure streak
       renderJob(j, state.pollAsm || {sceneCount:j.sceneCount});
       if(j.status==="done"||j.status==="failed"||j.status==="canceled"){ clearInterval(state.poll); state.poll=null; setBusy(false); refreshCredits(); }
     }catch(e){
+      if(id!==state.jobId) return;          // job changed mid-poll → don't apply this old job's error/fail-streak to the newer job
       const s=e&&e.status;
       // TERMINAL — job gone / not allowed to see it → stop now (was: swallow + spin forever)
       if(s===401||s===403){ return _pollStop("Sesi berakhir — silakan masuk lagi."); }
@@ -863,7 +906,7 @@ select option{ background:#111019!important; color:var(--t)!important; }
   }
   function badge(status){
     const map={running:["run","Berjalan"],stitching:["run","Merangkai"],done:["done","Selesai"],failed:["fail","Gagal"],queued:["run","Antre"]};
-    const [c,l]=map[status]||["run",status]; return '<span class="stbadge '+c+'">'+l+'</span>';
+    const [c,l]=map[status]||["run",status]; return '<span class="stbadge '+c+'">'+escapeHtml(l)+'</span>';
   }
   function renderJob(j,asm){
     // STICKY DONE: once this job is shown completed, ignore any later/stale non-done update (e.g. an
@@ -885,13 +928,13 @@ select option{ background:#111019!important; color:var(--t)!important; }
       const src=j.mp4Url||"";
       window.__lastMp4=src;
       stage.innerHTML=head+'<div class="player">'+
-        (src?'<video src="'+src+'" controls autoplay playsinline></video>':'<div class="stage-empty" style="min-height:200px"><div class="big">✅</div><h3>Video jadi</h3><p>File tersimpan. URL pratinjau butuh penyimpanan objek (R2) aktif.</p></div>')+
+        (src?'<video src="'+escapeHtml(src)+'" controls autoplay playsinline></video>':'<div class="stage-empty" style="min-height:200px"><div class="big">✅</div><h3>Video jadi</h3><p>File tersimpan. URL pratinjau butuh penyimpanan objek (R2) aktif.</p></div>')+
         '<div class="p-actions">'+(src?'<button class="dl" onclick="window.__dlVideo()">Unduh MP4</button>':'')+
         '<button class="again" onclick="window.__viNew()">Buat lagi</button></div></div>';
       return;
     }
     if(j.status==="failed"){
-      stage.innerHTML=head+'<div class="stage-empty"><div class="big">😕</div><h3>Gagal merangkai</h3><p>'+(j.error||"Coba lagi.")+'</p></div>';
+      stage.innerHTML=head+'<div class="stage-empty"><div class="big">😕</div><h3>Gagal merangkai</h3><p>'+escapeHtml(j.error||"Coba lagi.")+'</p></div>';
       return;
     }
     if(j.status==="stitching"){
@@ -957,8 +1000,8 @@ select option{ background:#111019!important; color:var(--t)!important; }
         const sdone=s.audioStatus==="done"&&(s.visualStatus==="done"||s.visualStatus==="fallback");
         const cls=sdone?"done":(s.audioStatus==="done"||s.visualStatus==="done"?"run":"");
         const kind=(s.visualKind||s.kind)==="clip"?"🎞️":"🖼️";
-        return '<div class="scard '+cls+'"><div class="sc-top"><span class="sc-n">#'+s.number+'</span><span class="dot"></span></div>'+
-          '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+(s.text||"").slice(0,90)+'</div></div>';
+        return '<div class="scard '+cls+'"><div class="sc-top"><span class="sc-n">#'+escapeHtml(s.number)+'</span><span class="dot"></span></div>'+
+          '<div class="sc-kind">'+kind+'</div><div class="sc-txt">'+escapeHtml((s.text||"").slice(0,90))+'</div></div>';
       }).join("")+'</div>';
     }
     stage.innerHTML=head+body;   // merangkai phase = committed → no cancel button (Rino)
