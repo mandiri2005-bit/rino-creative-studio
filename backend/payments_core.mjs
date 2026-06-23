@@ -234,10 +234,26 @@ export async function reverse_entitlement({
     );
     applied = !!cr.rows[0]?.applied;
     balance = Number(cr.rows[0]?.balance ?? 0);
-    await client.query(
-      `UPDATE payment_events SET status=$2, reversed_at=now(), updated_at=now() WHERE id=$1`,
-      [row.id, kind === "chargeback" ? "disputed" : "refunded"],
-    );
+    const newStatus = kind === "chargeback" ? "disputed" : "refunded";
+    if (applied) {
+      // First reversal: capture the refund/dispute event payload (refund_id,
+      // settlement_amount/currency, fee/tax, dispute details) for NET contra-
+      // revenue (clawback ≠ net under MSA §9.7).
+      await client.query(
+        `UPDATE payment_events
+            SET status=$2, reversed_at=now(),
+                reversal_events = reversal_events || $3::jsonb, updated_at=now()
+          WHERE id=$1`,
+        [row.id, newStatus, JSON.stringify(rawEvent || {})],
+      );
+    } else {
+      // Duplicate reversal (credits already reversed) — keep status idempotent,
+      // do NOT re-append the event.
+      await client.query(
+        `UPDATE payment_events SET status=$2, updated_at=now() WHERE id=$1`,
+        [row.id, newStatus],
+      );
+    }
     await client.query("COMMIT");
   } catch (e) {
     await client.query("ROLLBACK");

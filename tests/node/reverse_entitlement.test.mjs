@@ -28,19 +28,24 @@ test("reverse_entitlement reverses the grant, flips status, and is idempotent",
     await q("INSERT INTO payment_events (tenant_id,provider,idempotency_key,plan_key,amount,currency,status,credited,credits_granted) VALUES ($1,'midtrans',$2,'pro',500,'IDR','succeeded',true,500)", [tid, key]);
     await q("SELECT applied,balance FROM credit_apply($1,NULL,500,'topup',$2,'{}'::jsonb)", [tid, "test:setup:" + key]);
     try {
-      const r = await reverse_entitlement({ provider: "midtrans", idempotencyKey: key, refundOpId: refundOp, kind: "refund" });
+      const r = await reverse_entitlement({ provider: "midtrans", idempotencyKey: key, refundOpId: refundOp, kind: "refund", rawEvent: { refund_id: "rf_test", settlement_amount: 9900 } });
       assert.equal(r.reversed, true);
       assert.equal(r.applied, true);
       assert.equal(r.credits, 500);
+      const rev = (await q("SELECT reversal_events FROM payment_events WHERE idempotency_key=$1", [key])).rows[0].reversal_events;
+      assert.equal(rev.length, 1, "refund event payload captured");
+      assert.equal(rev[0].refund_id, "rf_test");
       assert.equal(Number((await q("SELECT balance b FROM credit_balances WHERE tenant_id=$1", [tid])).rows[0].b), bal0, "balance returns to start");
       const pe = (await q("SELECT status, reversed_at IS NOT NULL rv FROM payment_events WHERE idempotency_key=$1", [key])).rows[0];
       assert.equal(pe.status, "refunded");
       assert.equal(pe.rv, true);
       assert.equal(Number((await q("SELECT delta FROM credit_ledger WHERE op_id=$1", [refundOp])).rows[0].delta), -500);
       // idempotent: a re-delivered refund must NOT double-decrement
-      const r2 = await reverse_entitlement({ provider: "midtrans", idempotencyKey: key, refundOpId: refundOp, kind: "refund" });
+      const r2 = await reverse_entitlement({ provider: "midtrans", idempotencyKey: key, refundOpId: refundOp, kind: "refund", rawEvent: { refund_id: "rf_test_dup" } });
       assert.equal(r2.applied, false);
       assert.equal(Number((await q("SELECT balance b FROM credit_balances WHERE tenant_id=$1", [tid])).rows[0].b), bal0, "no double-reverse");
+      const rev2 = (await q("SELECT reversal_events FROM payment_events WHERE idempotency_key=$1", [key])).rows[0].reversal_events;
+      assert.equal(rev2.length, 1, "idempotent reverse does not re-append");
     } finally {
       await q("DELETE FROM credit_ledger WHERE op_id IN ($1,$2)", ["test:setup:" + key, refundOp]);
       await q("DELETE FROM payment_events WHERE idempotency_key=$1", [key]);
