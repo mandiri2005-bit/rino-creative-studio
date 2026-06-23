@@ -26,6 +26,8 @@ import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
 import * as billing from "./billing.mjs";
+import * as dodo from "./dodo.mjs";
+import * as midtrans from "./midtrans.mjs";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
 import * as storage from "./storage.mjs";
 import { isGoogleVeo, googleVeoSubmit, googleVeoStatus, googleVeoResult, getGoogleVeoJob, markGoogleVeoR2 } from "./googleVeo.mjs";
@@ -375,6 +377,45 @@ app.post(
   }
 );
 
+// ── Dodo Payments Webhook — POST /dodo/webhook ────────────────────────────────
+// PUBLIC (no Clerk). MUST be before express.json — Standard-Webhooks signature
+// verification needs the RAW body. Idempotent (dodo_payments.webhook_event_id);
+// credits the durable balance on payment.succeeded. Runs parallel to Stripe.
+app.post(
+  "/dodo/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    if (!dodo.isConfigured() || !dodo.WEBHOOK_SECRET) {
+      console.error("[dodo] webhook hit but Dodo not configured");
+      return res.status(500).json({ error: "dodo_not_configured" });
+    }
+    const webhookId = String(req.headers["webhook-id"] || "");
+    if (!webhookId) return res.status(400).json({ error: "missing_webhook_id" });
+    // Replay window (±5 min) on webhook-timestamp (the SDK also enforces tolerance).
+    if (!dodo._freshTimestamp(req.headers["webhook-timestamp"])) {
+      console.warn("[dodo] stale/invalid webhook-timestamp:", req.headers["webhook-timestamp"]);
+      return res.status(403).json({ error: "stale_timestamp" });
+    }
+    // Verify the Standard-Webhooks signature over the RAW body via the SDK.
+    let payload;
+    try {
+      payload = dodo.verifyEvent(req.body.toString("utf8"), req.headers);
+    } catch (err) {
+      console.warn("[dodo] invalid signature:", err.message);
+      return res.status(403).json({ error: "invalid_signature" });
+    }
+    try {
+      const r = await dodo.handleEvent({ payload, webhookId, rawEvent: payload });
+      console.log(`[dodo] event=${payload.type} id=${webhookId} ->`, JSON.stringify(r));
+      return res.status(200).json({ received: true, ...r });
+    } catch (e) {
+      // 500 → Dodo retries; idempotency (webhook_event_id + op_id) makes that safe.
+      console.error(`[dodo] handler error for ${payload?.type}:`, e.message);
+      return res.status(500).json({ error: "handler_error" });
+    }
+  }
+);
+
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
@@ -443,6 +484,72 @@ app.post("/api/billing/portal", async (req, res) => {
     const code = e.message === "stripe_not_configured" ? 503
                : e.message === "no_customer" ? 400 : 500;
     res.status(code).json({ error: e.message });
+  }
+});
+// ── Dodo Payments: create a hosted checkout (global / card rail, MoR) ─────────
+// Parallel to /api/billing/checkout (Stripe). Server is authoritative on the
+// plan→product mapping and what each plan grants; the client only sends a
+// plan_key. Credits are granted by the webhook, never here. Not under /api, so
+// it carries an explicit requireAuth (the /api auth gate doesn't cover it).
+app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId = await resolveUserId(req, tenantId);
+    const planKey = String((req.body || {}).plan_key || "").trim();
+    if (!["starter", "pro", "studio"].includes(planKey)) {
+      return res.status(400).json({ error: "plan_key must be one of starter|pro|studio" });
+    }
+    const url = await dodo.createCheckout({ tenantId, userId, planKey });
+    res.json({ url });
+  } catch (e) {
+    const code = e.message === "dodo_not_configured" ? 503
+               : e.message === "unknown_plan" ? 400 : 500;
+    res.status(code).json({ error: e.message });
+  }
+});
+// ── Midtrans (IDR rail): create a hosted Snap transaction (Clerk-authed) ──────
+// Parallel to the Dodo checkout. Server is authoritative on plan→price; the
+// client sends only plan_key. Credits are granted by /midtrans/notification.
+app.post("/payments/midtrans/create-transaction", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId = await resolveUserId(req, tenantId);
+    const planKey = String((req.body || {}).plan_key || "").trim();
+    if (!["starter", "pro", "studio"].includes(planKey)) {
+      return res.status(400).json({ error: "plan_key must be one of starter|pro|studio" });
+    }
+    const out = await midtrans.createTransaction({ tenantId, userId, planKey });
+    res.json({ ...out, ...midtrans.publicConfig() }); // token, redirectUrl, orderId, clientKey, isProduction
+  } catch (e) {
+    const code = e.message === "midtrans_not_configured" ? 503
+               : e.message === "unknown_plan" ? 400 : 500;
+    res.status(code).json({ error: e.message });
+  }
+});
+// ── Midtrans Notification — POST /midtrans/notification ───────────────────────
+// PUBLIC (no Clerk). Unlike Dodo's raw-body webhook, Midtrans verifies via SHA512
+// over FIELDS, so the PARSED JSON body is fine — this route sits AFTER
+// express.json (NOT the raw-body region) and the two MUST NOT be conflated.
+// Idempotent (payment_events UNIQUE on order_id); grants on settlement / accepted
+// capture via the shared grant_entitlement. Runs parallel to Stripe + Dodo.
+app.post("/midtrans/notification", async (req, res) => {
+  if (!midtrans.isConfigured()) {
+    console.error("[midtrans] notification hit but Midtrans not configured");
+    return res.status(500).json({ error: "midtrans_not_configured" });
+  }
+  const body = req.body || {};
+  if (!midtrans.verifyNotification(body)) {
+    console.warn("[midtrans] invalid signature for order_id=", body.order_id);
+    return res.status(403).json({ error: "invalid_signature" });
+  }
+  try {
+    const r = await midtrans.handleNotification(body);
+    console.log(`[midtrans] order=${body.order_id} status=${body.transaction_status} ->`, JSON.stringify(r));
+    return res.status(200).json({ received: true, ...r });
+  } catch (e) {
+    // 500 → Midtrans retries; idempotency (order_id + credit_apply op_id) makes that safe.
+    console.error(`[midtrans] handler error for order=${body.order_id}:`, e.message);
+    return res.status(500).json({ error: "handler_error" });
   }
 });
 // ── Step 4: manual credit grant (no Stripe at bootstrap) ──────────────────────
