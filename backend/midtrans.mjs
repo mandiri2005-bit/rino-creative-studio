@@ -37,6 +37,13 @@ export const snap = SERVER_KEY
   : null;
 
 export function isConfigured() { return !!snap; }
+
+// Kill switch (per-rail). Default ACTIVE when unset; only an explicit "false"
+// disables. Global PAYMENTS_ENABLED overrides. Enforced at the CREATE endpoint,
+// never the notification webhook (in-flight payments must still settle).
+export function railEnabled() {
+  return process.env.PAYMENTS_ENABLED !== "false" && process.env.MIDTRANS_ENABLED !== "false";
+}
 // The frontend needs the client key + env to load the correct snap.js.
 export function publicConfig() {
   return { clientKey: CLIENT_KEY, isProduction: IS_PRODUCTION, configured: isConfigured() };

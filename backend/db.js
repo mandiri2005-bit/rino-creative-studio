@@ -134,7 +134,11 @@ async function query(text, params = [], tenantId = null) {
 //     return res.rows;
 //   } finally { client.release(); }
 async function setTenantContext(client, tenantId) {
-  await client.query("SET LOCAL app.current_tenant_id = $1", [tenantId || ""]);
+  // set_config (NOT `SET LOCAL x = $1` — Postgres rejects bind params in SET:
+  // "syntax error at or near $1"). is_local=true → transaction-scoped, resets on
+  // COMMIT/ROLLBACK so it never leaks across pooled (Neon/PgBouncer) connections.
+  // Must run on the SAME client + same txn as the queries it guards.
+  await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId || ""]);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

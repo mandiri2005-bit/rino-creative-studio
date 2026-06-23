@@ -491,8 +491,18 @@ app.post("/api/billing/portal", async (req, res) => {
 // plan→product mapping and what each plan grants; the client only sends a
 // plan_key. Credits are granted by the webhook, never here. Not under /api, so
 // it carries an explicit requireAuth (the /api auth gate doesn't cover it).
+// ── Payments status (public) — frontend renders rail buttons from these flags ──
+// Reflects the kill switch live (env flip = service restart, no rebuild).
+app.get("/payments/status", (req, res) => {
+  res.json({
+    payments_enabled: process.env.PAYMENTS_ENABLED !== "false",
+    rails: { dodo: dodo.railEnabled(), midtrans: midtrans.railEnabled() },
+  });
+});
 app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
   try {
+    // Kill switch — gate the ENTRANCE (create) only; webhooks still settle.
+    if (!dodo.railEnabled()) return res.status(503).json({ error: "payments_disabled", rail: "dodo" });
     const tenantId = resolveTenantId(req);
     const userId = await resolveUserId(req, tenantId);
     const planKey = String((req.body || {}).plan_key || "").trim();
@@ -512,6 +522,8 @@ app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
 // client sends only plan_key. Credits are granted by /midtrans/notification.
 app.post("/payments/midtrans/create-transaction", requireAuth, async (req, res) => {
   try {
+    // Kill switch — gate the ENTRANCE (create) only; notifications still settle.
+    if (!midtrans.railEnabled()) return res.status(503).json({ error: "payments_disabled", rail: "midtrans" });
     const tenantId = resolveTenantId(req);
     const userId = await resolveUserId(req, tenantId);
     const planKey = String((req.body || {}).plan_key || "").trim();

@@ -35,6 +35,13 @@ export const dodo = API_KEY
 
 export function isConfigured() { return !!dodo; }
 
+// Kill switch (per-rail). Default ACTIVE when unset — a forgotten var must NOT
+// cause an outage. Only an explicit "false" disables. Global PAYMENTS_ENABLED
+// overrides. Enforced at the CREATE endpoint, never the webhook.
+export function railEnabled() {
+  return process.env.PAYMENTS_ENABLED !== "false" && process.env.DODO_ENABLED !== "false";
+}
+
 // Plan key → Dodo product id (per-environment; created in the dashboard).
 const PLAN_PRODUCT = {
   starter: process.env.DODO_PRODUCT_ID_STARTER || "",
