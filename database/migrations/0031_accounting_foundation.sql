@@ -78,9 +78,24 @@ INSERT INTO gl_accounts (code, name, type) VALUES
     ('6750','Beban Pemasaran & Iklan',                         'opex'),
     ('6760','Beban Jasa Profesional (akuntan/legal/KAP)',      'opex'),
     ('6790','Beban Operasional Lain-lain',                     'opex'),
-    ('6800','Beban Penyusutan (Depreciation)',                 'opex')
+    ('6800','Beban Penyusutan (Depreciation)',                 'opex'),
+    -- AUDIT FIX (coa/HIGH): depreciation (6800) needs a fixed-asset + contra
+    -- partner or it cannot post balanced; add Aset Tetap + Akumulasi Penyusutan
+    -- (contra-asset, normal-credit) + prepaid-expense + accrued-liability + PPN
+    -- clearing so accrual accounting + asset depreciation are representable.
+    ('1200','Biaya Dibayar Dimuka (Prepaid Expenses)',         'asset'),
+    ('1500','Aset Tetap - Harga Perolehan (Fixed Assets)',     'asset'),
+    ('1600','Akumulasi Penyusutan (Accumulated Depreciation, contra-asset)', 'asset'),
+    ('2500','Beban yang Masih Harus Dibayar (Accrued Liabilities)', 'liability'),
+    ('2600','Utang PPN / PPN Kurang Bayar (VAT clearing)',     'liability')
 ON CONFLICT (code) DO NOTHING;
 -- (6300 Selisih Kurs already seeded by 0029; not re-inserted.)
+
+-- AUDIT FIX (coa/HIGH): 2100 'Utang / Prepaid Provider' conflated a PAYABLE and a
+-- PREPAID ASSET in one liability code. 1400 is now the prepaid asset; 2100 is the
+-- POSTPAID payable only. Rename for clarity (idempotent; ON CONFLICT seed kept it).
+UPDATE gl_accounts SET name = 'Utang Provider Upstream (postpaid payable)'
+ WHERE code = '2100';
 
 -- =====================================================================
 -- 2. JOURNAL ENTRIES -- one header per posted economic event.
@@ -96,6 +111,14 @@ ON CONFLICT (code) DO NOTHING;
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS journal_entries (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- AUDIT FIX (encoding/CRITICAL + HIGH): tenant_id makes the global idempotency
+    -- key tenant-safe (two tenants can reuse the same op_id without one silently
+    -- dropping the other) AND makes per-tenant financials derivable from the
+    -- ledger. NULL = company-level entry (fx_reval, period close, depreciation).
+    -- ON DELETE RESTRICT: posted books must survive a tenant delete (you anonymize
+    -- a tenant, you do NOT erase their journal history) — also blunts the
+    -- pre-live-reset CASCADE hazard for any tenant that already has postings.
+    tenant_id     UUID        REFERENCES tenants(id) ON DELETE RESTRICT,
     entry_date    DATE        NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Jakarta')::date,
     period        DATE        NOT NULL,                 -- month bucket = date_trunc('month')::date
     source_type   TEXT        NOT NULL,                 -- enum enforced below
@@ -130,11 +153,19 @@ BEGIN
     END IF;
 END $$;
 
--- one posting per source event (the heart of idempotent derive/replay)
-CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source
-    ON journal_entries (source_type, source_op_id);
+-- one posting per source event (the heart of idempotent derive/replay).
+-- AUDIT FIX (encoding/CRITICAL): the key must be tenant-SCOPED for tenant events
+-- (else tenant B's posting with the same op_id as tenant A is silently dropped),
+-- but still globally unique for company-level events (tenant_id IS NULL).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_tenant
+    ON journal_entries (tenant_id, source_type, source_op_id) WHERE tenant_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_company
+    ON journal_entries (source_type, source_op_id) WHERE tenant_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_journal_entries_period
     ON journal_entries (period, entry_date);
+-- per-tenant statements / deferred-revenue derivable from the ledger:
+CREATE INDEX IF NOT EXISTS idx_journal_entries_tenant
+    ON journal_entries (tenant_id, period) WHERE tenant_id IS NOT NULL;
 
 -- =====================================================================
 -- 3. JOURNAL LINES -- the debit/credit legs. Sum(debit) = Sum(credit) per entry,
@@ -147,9 +178,13 @@ CREATE TABLE IF NOT EXISTS journal_lines (
     account_code TEXT         NOT NULL REFERENCES gl_accounts(code),
     debit_idr    NUMERIC(18,2) NOT NULL DEFAULT 0,
     credit_idr   NUMERIC(18,2) NOT NULL DEFAULT 0,
+    source_ref   TEXT,          -- AUDIT FIX (encoding): line-level drill-back to the
+                                -- source row (e.g. 'credit_ledger:<id>','payment:<id>',
+                                -- 'lot:<id>') so the audit-trail report can trace a leg.
     memo         TEXT,
-    -- a leg is either a debit or a credit, never both, never negative
-    CONSTRAINT journal_lines_one_side  CHECK (NOT (debit_idr > 0 AND credit_idr > 0)),
+    -- AUDIT FIX (trigger/LOW): EXACTLY one positive side. The old NOT(both>0) check
+    -- accepted a 0/0 phantom line (passed >=2-lines + balanced) — now rejected.
+    CONSTRAINT journal_lines_one_side  CHECK ((debit_idr > 0) <> (credit_idr > 0)),
     CONSTRAINT journal_lines_nonneg    CHECK (debit_idr >= 0 AND credit_idr >= 0)
 );
 COMMENT ON TABLE journal_lines IS 'Debit/credit legs of a journal_entry. One side per row; balance enforced per entry at COMMIT.';
@@ -164,18 +199,28 @@ CREATE OR REPLACE FUNCTION enforce_journal_balanced()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
     v_entry  UUID;
+    v_lines  BIGINT;
     v_debit  NUMERIC(18,2);
     v_credit NUMERIC(18,2);
 BEGIN
     v_entry := COALESCE(NEW.entry_id, OLD.entry_id);
-    -- entry may have been deleted (ON DELETE CASCADE) -- nothing to balance then.
+    -- entry may have been deleted (ON DELETE CASCADE) -- nothing to assert then.
     IF NOT EXISTS (SELECT 1 FROM journal_entries WHERE id = v_entry) THEN
         RETURN NULL;
     END IF;
-    SELECT COALESCE(sum(debit_idr),0), COALESCE(sum(credit_idr),0)
-      INTO v_debit, v_credit
+    SELECT count(*), COALESCE(sum(debit_idr),0), COALESCE(sum(credit_idr),0)
+      INTO v_lines, v_debit, v_credit
       FROM journal_lines
      WHERE entry_id = v_entry;
+    -- AUDIT FIX (schema/HIGH): re-assert COMPLETENESS on every line DML, not just
+    -- header DML — else DELETE-ing lines could strip a committed entry to 0/1 lines
+    -- (0 lines is vacuously balanced and slipped past the old balance-only check).
+    IF v_lines < 2 THEN
+        RAISE EXCEPTION
+            'journal_entry % left with % line(s): a posting must keep >=2 lines',
+            v_entry, v_lines
+            USING ERRCODE = 'check_violation';
+    END IF;
     IF v_debit <> v_credit THEN
         RAISE EXCEPTION
             'journal_entry % is unbalanced: debit=% credit=% (Sum(debit) must equal Sum(credit))',
@@ -269,6 +314,38 @@ CREATE TRIGGER trg_journal_entries_period_open
     BEFORE INSERT OR UPDATE OF period ON journal_entries
     FOR EACH ROW EXECUTE FUNCTION enforce_period_open();
 
+-- AUDIT FIX (schema/CRITICAL + trigger/HIGH): the header guard above only covers
+-- journal_entries INSERT / period-reassignment. A closed/audited month's GL could
+-- still be RESTATED by INSERT/UPDATE/DELETE of journal_lines on an entry that
+-- already sits in a closed period. Guard the lines too. Same as-of-statement read
+-- semantics: the close tx posts its adjusting lines while the period is still open,
+-- then flips status='closed', so legitimate close postings pass; afterwards any
+-- line mutation in the closed period is rejected (postings are immutable once closed).
+CREATE OR REPLACE FUNCTION enforce_period_open_lines()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    v_period DATE;
+    v_status TEXT;
+BEGIN
+    SELECT period INTO v_period FROM journal_entries
+     WHERE id = COALESCE(NEW.entry_id, OLD.entry_id);
+    IF v_period IS NULL THEN          -- parent gone in same tx; nothing to guard
+        RETURN COALESCE(NEW, OLD);
+    END IF;
+    SELECT status INTO v_status FROM accounting_periods WHERE period = v_period;
+    IF v_status = 'closed' THEN
+        RAISE EXCEPTION 'cannot modify journal_lines of a CLOSED period %', v_period
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_journal_lines_period_open ON journal_lines;
+CREATE TRIGGER trg_journal_lines_period_open
+    BEFORE INSERT OR UPDATE OR DELETE ON journal_lines
+    FOR EACH ROW EXECUTE FUNCTION enforce_period_open_lines();
+
 -- =====================================================================
 -- 4. PAYMENTS -- cash-in events (Midtrans/Stripe/manual top-up). Source of
 --    truth for E1 (DR Kas / CR Deferred-Rev + CR PPN Keluaran). Tenant-scoped.
@@ -283,10 +360,16 @@ CREATE TABLE IF NOT EXISTS payments (
     provider        TEXT        NOT NULL,                       -- 'midtrans'|'stripe'|'manual'|'admin'
     external_ref    TEXT        UNIQUE,                         -- gateway txn id (idempotency vs double webhook)
     gross_idr       NUMERIC(18,2) NOT NULL,                     -- amount charged to customer (incl PPN)
-    dpp_idr         NUMERIC(18,2) NOT NULL,                     -- Dasar Pengenaan Pajak (gross - ppn) = recognizable base
     ppn_idr         NUMERIC(18,2) NOT NULL DEFAULT 0,           -- output VAT portion (0 pre-PKP)
     fee_idr         NUMERIC(18,2) NOT NULL DEFAULT 0,           -- gateway processing fee (-> 6200)
-    net_idr         NUMERIC(18,2),                              -- cash actually settled (gross - fee)
+    -- AUDIT FIX (numeric/MEDIUM): dpp + net are GENERATED, not stored+CHECK'd. The
+    -- old exact-equality CHECK (gross = dpp + ppn) on three independently-rounded
+    -- NUMERICs could reject a legit e-faktur off by 0.01, and (net = gross - fee)
+    -- wrongly rejected partial refunds. Deriving them makes the tie hold BY
+    -- CONSTRUCTION — set gross/ppn/fee, dpp & net follow exactly. App must not
+    -- insert dpp_idr/net_idr (generated).
+    dpp_idr         NUMERIC(18,2) GENERATED ALWAYS AS (gross_idr - ppn_idr) STORED,  -- recognizable base
+    net_idr         NUMERIC(18,2) GENERATED ALWAYS AS (gross_idr - fee_idr) STORED,  -- cash settled
     currency        TEXT        NOT NULL DEFAULT 'IDR',
     fx_rate         NUMERIC(18,6),                              -- idr_per_usd if charged in USD (else NULL)
     credits_granted BIGINT      NOT NULL DEFAULT 0,             -- credits this payment funded (-> lot)
@@ -294,13 +377,10 @@ CREATE TABLE IF NOT EXISTS payments (
     status          TEXT        NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending','paid','failed','refunded','partial_refund')),
     paid_at         TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- FIX #3: tax base + cash split must be internally consistent.
-    CONSTRAINT payments_gross_eq_dpp_ppn CHECK (gross_idr = dpp_idr + ppn_idr),
-    CONSTRAINT payments_net_eq_gross_fee CHECK (net_idr IS NULL OR net_idr = gross_idr - fee_idr)
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 COMMENT ON TABLE  payments IS 'Cash-in events. Drives E1 posting (DR Kas / CR Deferred-Rev / CR PPN) and the paid credit_lot.';
-COMMENT ON COLUMN payments.dpp_idr      IS 'Dasar Pengenaan Pajak = gross - ppn; the revenue base recognized on consumption. CHECK gross = dpp + ppn keeps it tied to cash.';
+COMMENT ON COLUMN payments.dpp_idr      IS 'Dasar Pengenaan Pajak = gross - ppn (GENERATED). Revenue base recognized on consumption; ties to cash by construction.';
 COMMENT ON COLUMN payments.ledger_op_id IS 'Links the payment to the credit_ledger topup row (idempotent derive join).';
 
 CREATE INDEX IF NOT EXISTS idx_payments_tenant ON payments (tenant_id, created_at DESC);
@@ -316,27 +396,41 @@ CREATE INDEX IF NOT EXISTS idx_payments_ledger_op ON payments (ledger_op_id) WHE
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS credit_lots (
     id                   UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- AUDIT FIX (derive/CRITICAL): a monotonic seq gives FIFO a DETERMINISTIC
+    -- tiebreak when two lots share granted_at — without it, two derive runs could
+    -- order lots differently and recognize different revenue. FIFO = ORDER BY
+    -- granted_at, lot_seq.
+    lot_seq              BIGINT       GENERATED ALWAYS AS IDENTITY,
     tenant_id            UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     source               TEXT         NOT NULL,                 -- 'topup'|'monthly_grant'|'signup_grant'|'daily_claim'|'period_grant'|'admin_adjust'
     is_paid              BOOLEAN      NOT NULL DEFAULT FALSE,   -- true -> revenue lot; false -> free/acquisition lot
     credits_granted      BIGINT       NOT NULL,
     credits_remaining    BIGINT       NOT NULL,
-    price_per_credit_idr NUMERIC(14,4) NOT NULL DEFAULT 0,      -- DPP/credits for paid; 0 for free (E3)
+    price_per_credit_idr NUMERIC(14,4) NOT NULL DEFAULT 0,      -- DPP/credits for paid; 0 for free (E3); reference only
+    -- AUDIT FIX (numeric/MEDIUM): store the lot's EXACT total recognizable revenue
+    -- (the payment DPP) + revenue recognized so far, so the engine relieves the
+    -- 2000 liability to EXACTLY zero on full spend (last spend = dpp_total -
+    -- recognized), instead of credits x rounded-per-credit leaving residual dust.
+    dpp_total_idr        NUMERIC(18,2) NOT NULL DEFAULT 0,      -- exact revenue to recognize over the lot (0 = free)
+    recognized_idr       NUMERIC(18,2) NOT NULL DEFAULT 0,      -- revenue recognized so far (engine-maintained)
     fx_rate_at_grant     NUMERIC(18,6),                         -- kurs snapshot at grant (audit vs ENV drift)
     payment_id           UUID         REFERENCES payments(id) ON DELETE SET NULL,
     ledger_op_id         TEXT,                                  -- the credit_ledger op_id that created this lot
     granted_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
     expires_at           TIMESTAMPTZ,                           -- NULL = no expiry; drives breakage (E5)
     CONSTRAINT credit_lots_remaining_bounds CHECK (credits_remaining >= 0
-                                               AND credits_remaining <= credits_granted)
+                                               AND credits_remaining <= credits_granted),
+    CONSTRAINT credit_lots_recognized_bounds CHECK (recognized_idr >= 0
+                                               AND recognized_idr <= dpp_total_idr)
 );
 COMMENT ON TABLE  credit_lots IS 'FIFO inventory of granted credits. Paid lots relieve deferred revenue on spend (E2); free lots book only acquisition cost (E3).';
 COMMENT ON COLUMN credit_lots.price_per_credit_idr IS 'Revenue recognized per credit on consumption (DPP/credits). 0 for free lots -- structural E4/audit-#2 over-recognition fix.';
 COMMENT ON COLUMN credit_lots.ledger_op_id         IS 'Source credit_ledger op_id; makes lot derivation idempotent on replay.';
 
--- FIFO spend: oldest lot with remaining>0 first, per tenant.
+-- FIFO spend: oldest lot with remaining>0 first, per tenant. lot_seq breaks
+-- granted_at ties deterministically (AUDIT FIX derive/CRITICAL).
 CREATE INDEX IF NOT EXISTS idx_credit_lots_fifo
-    ON credit_lots (tenant_id, granted_at)
+    ON credit_lots (tenant_id, granted_at, lot_seq)
     WHERE credits_remaining > 0;
 CREATE INDEX IF NOT EXISTS idx_credit_lots_tenant ON credit_lots (tenant_id, granted_at DESC);
 -- one lot per source ledger row (idempotent derive)
@@ -513,7 +607,11 @@ CREATE POLICY tenant_isolation ON credit_lots
 -- =====================================================================
 -- Tenant-scoped, RLS-confined -> full DML:
 GRANT SELECT, INSERT, UPDATE, DELETE ON payments    TO app_user;
-GRANT SELECT, INSERT, UPDATE, DELETE ON credit_lots TO app_user;
+-- credit_lots: app may CREATE lots (grant path) + READ, but the FIFO draw-down
+-- (UPDATE credits_remaining/recognized) is OWNER/engine-only so the app cannot
+-- edit a lot to over-relieve deferred revenue (AUDIT FIX derive/LOW immutability).
+REVOKE UPDATE, DELETE ON credit_lots FROM app_user;
+GRANT  SELECT, INSERT ON credit_lots TO   app_user;
 
 -- Global posted ledger + reference -> app reads only (owner writes).
 -- Strip the auto-inherited write grants on EVERY table, then grant SELECT
