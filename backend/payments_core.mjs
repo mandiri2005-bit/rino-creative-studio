@@ -16,7 +16,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { query, pool, setTenantContext } from "./db.js";
+import { query, pool } from "./db.js";
 import { redis } from "./redis.js";
 
 // ── Plan → credits map (single source, same as billing.mjs / python) ──────────
@@ -79,7 +79,10 @@ export async function grant_entitlement({
   let applied = false, balance = 0;
   try {
     await client.query("BEGIN");
-    await setTenantContext(client, tenantId);
+    // Set the RLS tenant context for this txn. MUST use set_config() (accepts a
+    // bind param), NOT `SET LOCAL x = $1` — Postgres rejects params in SET
+    // ("syntax error at or near $1"), which silently 500'd every grant.
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(tenantId)]);
 
     // 1. Insert-or-find the event row. ON CONFLICT covers Midtrans's pre-written
     //    pending row and any double-delivery.
