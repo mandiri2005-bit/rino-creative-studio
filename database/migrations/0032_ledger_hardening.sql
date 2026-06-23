@@ -7,11 +7,12 @@
 --
 --   #37 (HIGH)  credit_apply()/credit_grant_capped() are additive UPDATEs with
 --               NO balance floor -> a TOCTOU race past the gate drove the durable
---               balance to -547 in prod. Add CHECK(balance >= 0) as the durable
---               backstop (NOT VALID so it applies even if a negative row exists
---               today; it still rejects every NEW write that would go negative),
---               plus an atomic guarded-debit primitive the hot path/engine can
---               adopt to fail gracefully (applied=false) instead of raising.
+--               balance to -547 in prod. Fix = the atomic guarded-debit primitive
+--               credit_debit_guarded() (self-guarding UPDATE ... WHERE balance >=
+--               amount; returns applied=false, never negative). A CHECK(balance>=0)
+--               is intentionally NOT added here (the v2 audit confirmed it would
+--               make the live additive credit_apply RAISE on a raced charge); it
+--               lands with the Phase-2 hot-path cutover to the guarded primitive.
 --   #39 (LOW)   credit_balances / credit_ledger RLS shipped USING-only (0023/0025)
 --               -> a tenant could INSERT/UPDATE a row carrying ANOTHER tenant_id.
 --               Add WITH CHECK to both policies (write-side isolation).
@@ -36,17 +37,16 @@ ALTER TABLE credit_ledger ADD  CONSTRAINT credit_ledger_reason_check
                       'breakage'));
 
 -- 2. #37 durable balance floor -----------------------------------------------------
--- NOT VALID: do not fail the migration if a legacy negative row exists; the
--- constraint still rejects every subsequent INSERT/UPDATE that would go negative.
--- Run `ALTER TABLE credit_balances VALIDATE CONSTRAINT credit_balances_nonneg;`
--- once any historical negatives are reconciled to fully enforce retroactively.
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'credit_balances_nonneg') THEN
-        ALTER TABLE credit_balances
-            ADD CONSTRAINT credit_balances_nonneg CHECK (balance >= 0) NOT VALID;
-    END IF;
-END $$;
+-- DELIBERATELY NOT a CHECK(balance >= 0) on credit_balances. The v2 audit
+-- (CRITICAL, confirmed live) showed that constraint would make the EXISTING
+-- hot-path credit_apply() (0023) RAISE on any charge that races past the gate
+-- (its additive `balance = balance + delta` would violate the CHECK and abort
+-- the whole settle tx), turning a benign overspend into a 500 AFTER the provider
+-- already delivered. The floor is instead delivered by credit_debit_guarded()
+-- below (a self-guarding UPDATE ... WHERE balance >= amount that can never go
+-- negative). The durable floor becomes a hard invariant when Phase 2 SWITCHES
+-- the hot path from credit_apply() to credit_debit_guarded(); only THEN is a
+-- CHECK(balance >= 0) safe to add. Tracked as a Phase-2 cutover step, not here.
 
 -- Atomic guarded debit: decrement only if affordable, in ONE statement (no
 -- read-then-write TOCTOU). Returns applied=false + the unchanged balance when the

@@ -87,7 +87,15 @@ INSERT INTO gl_accounts (code, name, type) VALUES
     ('1500','Aset Tetap - Harga Perolehan (Fixed Assets)',     'asset'),
     ('1600','Akumulasi Penyusutan (Accumulated Depreciation, contra-asset)', 'asset'),
     ('2500','Beban yang Masih Harus Dibayar (Accrued Liabilities)', 'liability'),
-    ('2600','Utang PPN / PPN Kurang Bayar (VAT clearing)',     'liability')
+    ('2600','Utang PPN / PPN Kurang Bayar (VAT clearing)',     'liability'),
+    -- AUDIT-v2 FIX: a mid-year Neraca cannot balance and the year-end close has no
+    -- transit account without current-year-earnings + income-summary equity lines;
+    -- FX gains have no income home (6300 is opex-only); unmatched cash needs a
+    -- suspense parking account. All pure additive.
+    ('3200','Laba/Rugi Tahun Berjalan (Current-Year Earnings)', 'equity'),
+    ('3900','Ikhtisar Laba Rugi (Income Summary)',             'equity'),
+    ('4700','Keuntungan Selisih Kurs (FX Gain - other income)','revenue'),
+    ('1900','Rekening Sementara (Suspense / Clearing)',        'asset')
 ON CONFLICT (code) DO NOTHING;
 -- (6300 Selisih Kurs already seeded by 0029; not re-inserted.)
 
@@ -96,6 +104,20 @@ ON CONFLICT (code) DO NOTHING;
 -- POSTPAID payable only. Rename for clarity (idempotent; ON CONFLICT seed kept it).
 UPDATE gl_accounts SET name = 'Utang Provider Upstream (postpaid payable)'
  WHERE code = '2100';
+
+-- AUDIT-v2 FIX (coa/MEDIUM): a CONTRA account (1600 Akumulasi Penyusutan) is a
+-- credit-normal account stored under type 'asset' — reports that infer normal
+-- balance from `type` (asset=debit) would add it on the wrong side and overstate
+-- net assets. Add an explicit normal_side discriminator and seed it for every
+-- account: asset/cogs/opex default debit, liability/equity/revenue default credit,
+-- then override the contras (1600 accumulated depreciation = credit).
+ALTER TABLE gl_accounts ADD COLUMN IF NOT EXISTS normal_side TEXT
+    CHECK (normal_side IN ('debit','credit'));
+UPDATE gl_accounts SET normal_side =
+    CASE WHEN type IN ('asset','cogs','opex') THEN 'debit' ELSE 'credit' END
+ WHERE normal_side IS NULL;
+UPDATE gl_accounts SET normal_side = 'credit' WHERE code = '1600';   -- contra-asset
+COMMENT ON COLUMN gl_accounts.normal_side IS 'debit/credit normal balance — authoritative for reports; CONTRA accounts (e.g. 1600) carry the side opposite their type.';
 
 -- =====================================================================
 -- 2. JOURNAL ENTRIES -- one header per posted economic event.
@@ -161,6 +183,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_tenant
     ON journal_entries (tenant_id, source_type, source_op_id) WHERE tenant_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_company
     ON journal_entries (source_type, source_op_id) WHERE tenant_id IS NULL;
+-- AUDIT-v2 FIX (LOW): operator-entered types (manual, tax) can be posted either
+-- tenant-scoped OR company-level, so the two partial indexes above would let the
+-- SAME (type, op_id) exist once per side. Force these globally unique so a manual
+-- adjusting entry's op_id can't be reused across the tenant/company boundary.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_source_operator
+    ON journal_entries (source_type, source_op_id)
+    WHERE source_type IN ('manual','tax');
 CREATE INDEX IF NOT EXISTS idx_journal_entries_period
     ON journal_entries (period, entry_date);
 -- per-tenant statements / deferred-revenue derivable from the ledger:
@@ -294,24 +323,46 @@ CREATE CONSTRAINT TRIGGER trg_journal_entries_complete
 -- closed period is rejected at its own INSERT. A period with no
 -- accounting_periods row is treated as OPEN (permissive) so first-touch of a
 -- fresh month works before the close job has seeded the row.
+-- AUDIT-v2 FIX (4× HIGH, confirmed live): the first cut fired only on INSERT and
+-- UPDATE OF period and checked only NEW.period, leaving three closed-period holes:
+--   (a) DELETE of a closed-period header succeeded and CASCADE-erased its lines;
+--   (b) UPDATE period could MOVE an entry OUT of a closed month (only the
+--       destination NEW.period was checked, never the closed source OLD.period);
+--   (c) UPDATE of non-period columns (memo, source_op_id) bypassed entirely —
+--       and mutating source_op_id frees the idempotency slot → double-posting.
+-- Consolidated: fire on INSERT/UPDATE/DELETE and reject if EITHER the OLD period
+-- (the row being changed/erased) OR the NEW period (the destination) is closed.
+-- A closed posting is then wholly immutable: no edit, no period-move, no delete.
+-- The legitimate close flow is unaffected (adjusting entries are INSERTed while
+-- the period is still open, then status flips; no later UPDATE/DELETE of them).
 CREATE OR REPLACE FUNCTION enforce_period_open()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
     v_status TEXT;
 BEGIN
-    SELECT status INTO v_status FROM accounting_periods WHERE period = NEW.period;
-    IF v_status = 'closed' THEN
-        RAISE EXCEPTION
-            'cannot post journal_entry % into CLOSED period %', NEW.id, NEW.period
-            USING ERRCODE = 'check_violation';
+    -- source side: a CLOSED period the row currently lives in cannot be changed/erased.
+    IF TG_OP IN ('UPDATE','DELETE') THEN
+        SELECT status INTO v_status FROM accounting_periods WHERE period = OLD.period;
+        IF v_status = 'closed' THEN
+            RAISE EXCEPTION 'cannot % a journal_entry in CLOSED period %', TG_OP, OLD.period
+                USING ERRCODE = 'check_violation';
+        END IF;
     END IF;
-    RETURN NEW;
+    -- destination side: cannot post/move INTO a CLOSED period.
+    IF TG_OP IN ('INSERT','UPDATE') THEN
+        SELECT status INTO v_status FROM accounting_periods WHERE period = NEW.period;
+        IF v_status = 'closed' THEN
+            RAISE EXCEPTION 'cannot post journal_entry % into CLOSED period %', NEW.id, NEW.period
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 END;
 $$;
 
 DROP TRIGGER IF EXISTS trg_journal_entries_period_open ON journal_entries;
 CREATE TRIGGER trg_journal_entries_period_open
-    BEFORE INSERT OR UPDATE OF period ON journal_entries
+    BEFORE INSERT OR UPDATE OR DELETE ON journal_entries
     FOR EACH ROW EXECUTE FUNCTION enforce_period_open();
 
 -- AUDIT FIX (schema/CRITICAL + trigger/HIGH): the header guard above only covers
@@ -607,11 +658,13 @@ CREATE POLICY tenant_isolation ON credit_lots
 -- =====================================================================
 -- Tenant-scoped, RLS-confined -> full DML:
 GRANT SELECT, INSERT, UPDATE, DELETE ON payments    TO app_user;
--- credit_lots: app may CREATE lots (grant path) + READ, but the FIFO draw-down
--- (UPDATE credits_remaining/recognized) is OWNER/engine-only so the app cannot
--- edit a lot to over-relieve deferred revenue (AUDIT FIX derive/LOW immutability).
-REVOKE UPDATE, DELETE ON credit_lots FROM app_user;
-GRANT  SELECT, INSERT ON credit_lots TO   app_user;
+-- credit_lots: OWNER/engine-written ONLY. The v2 audit (MEDIUM) showed app INSERT
+-- lets the app birth a semantically-bogus lot (arbitrary is_paid / dpp_total /
+-- recognized, no source CHECK) → mis-recognized revenue. Phase 3 writes lots via
+-- an owner SECURITY DEFINER grant fn (recognized=0 at birth, validated price +
+-- payment link). Until then the app is READ-ONLY (nothing writes lots yet).
+REVOKE INSERT, UPDATE, DELETE ON credit_lots FROM app_user;
+GRANT  SELECT ON credit_lots TO app_user;
 
 -- Global posted ledger + reference -> app reads only (owner writes).
 -- Strip the auto-inherited write grants on EVERY table, then grant SELECT
