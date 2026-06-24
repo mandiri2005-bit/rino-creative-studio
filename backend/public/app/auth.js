@@ -30,6 +30,36 @@
     else { window.addEventListener("app:ready", _revealApp, { once: true }); }
   }
   function showGate() { hide($loading); show($gate); if ($root) $root.style.visibility = "hidden"; }
+  // Fail-closed helper: keep #root hidden (like the normal gate) but surface a
+  // clear 'auth unavailable' message + reload affordance when Clerk can't run
+  // (missing publishable key, CDN load failure, or _clerk.load() throwing).
+  // This is a COSMETIC client-side gate only — the authoritative control is the
+  // backend rejecting every /api/* request without a valid Clerk session and
+  // row-level tenant scoping, which CANNOT be enforced from this file.
+  function showAuthUnavailable(msg) {
+    showGate();
+    if (!$gate) return;
+    let $err = document.getElementById("clerk-gate-error");
+    if (!$err) {
+      $err = document.createElement("div");
+      $err.id = "clerk-gate-error";
+      $err.setAttribute("role", "alert");
+      $err.style.cssText = "margin-top:16px;text-align:center;color:#b91c1c;font-size:14px;line-height:1.5;";
+      const $reload = document.createElement("button");
+      $reload.type = "button";
+      $reload.textContent = "Reload";
+      $reload.style.cssText = "display:block;margin:12px auto 0;padding:8px 20px;border:1px solid #6366f1;border-radius:8px;background:#6366f1;color:#fff;cursor:pointer;font-size:14px;";
+      $reload.addEventListener("click", () => window.location.reload());
+      const $msg = document.createElement("p");
+      $msg.id = "clerk-gate-error-msg";
+      $msg.style.cssText = "margin:0;";
+      $err.appendChild($msg);
+      $err.appendChild($reload);
+      $gate.appendChild($err);
+    }
+    const $msgEl = document.getElementById("clerk-gate-error-msg");
+    if ($msgEl) $msgEl.textContent = msg || "Sign-in is currently unavailable. Please reload.";
+  }
   function closeAllModals() {
     [$siModal, $suModal].forEach(m => m && m.classList.remove("open"));
   }
@@ -135,8 +165,12 @@
 
     const pk = window.__CLERK_PK;
     if (!pk || pk.startsWith("YOUR_CLERK")) {
-      console.warn("[auth] window.__CLERK_PK not set — running without auth.");
-      showApp();
+      // FAIL CLOSED: a missing/placeholder publishable key means auth cannot run.
+      // Previously this called showApp(), revealing #root and every fetch()-able
+      // control unauthenticated (every /api/* call would then 401). Keep #root
+      // hidden and surface a config error in the gate instead.
+      console.error("[auth] window.__CLERK_PK not set — auth unavailable, refusing to reveal app.");
+      showAuthUnavailable("Sign-in is not configured. Please reload, or contact support if this persists.");
       return;
     }
 
@@ -176,8 +210,12 @@
       _clerk.user ? showApp() : showGate();
 
     } catch (e) {
+      // FAIL CLOSED: CDN load failure or _clerk.load() throwing means we cannot
+      // establish a session. Previously this called showApp(), revealing the app
+      // with no token — users then hit scattered per-feature 401s. Keep #root
+      // hidden and show a single clear retry message in the gate instead.
       console.error("[auth] init error:", e);
-      showApp();
+      showAuthUnavailable("Sign-in service unavailable. Please reload the page.");
     }
   }
 
