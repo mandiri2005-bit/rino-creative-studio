@@ -415,6 +415,12 @@ export async function visualProcessor(job, deps) {
                       el.assetSource = "recraft-cache"; el.license = hit.license || "recraft-v3-vector:provider-terms"; continue;
                     }
                     if (coveredByLibrary(q) || (labelQ && coveredByLibrary(labelQ))) continue; // free lib fallback
+                    // Lineart (free tier, priced "icons0") NEVER pays for Recraft → fall through
+                    // to the free-lib / bohlam fallback. Recraft icon-fill is a PAID-mode
+                    // differentiator (Color=starter+, Realistis=plus+, both mode-gated at submit).
+                    // Supersedes the old icon-ladder→Recraft step (48201cb), now that mode gating
+                    // exists. Closes the margin leak where a Free user spent credits on Recraft. (Rino)
+                    if (genre === "lineart") continue;
                     // GATE before the paid Recraft gen → at balance 0 skip it (free fallback) instead
                     // of debiting into the negative (same guard as flux/TTS).
                     if (!(await deps.generationClient?.gateUsage?.({ jobId, tenantId: meta.tenantId, userId: meta.userId }, "image", "recraft-v3-vector", { count: 1 }))) {

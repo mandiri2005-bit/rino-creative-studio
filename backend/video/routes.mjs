@@ -17,6 +17,7 @@ import { startAssembly } from "./orchestrator.mjs";
 import * as storage from "../storage.mjs";
 import { query } from "../db.js";
 import * as conc from "./concurrency.mjs";   // per-plan parallel-job cap (Phase 3)
+import { modeRequiredTier, tierAtLeast } from "./mode_gate.mjs";   // global VI mode tier gate
 
 const PYTHON_API = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 
@@ -129,6 +130,16 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
       // goes terminal (store.setStatus). 429 if the tenant is already at its cap.
       const _planRow = await query(`SELECT plan FROM tenants WHERE id=$1`, [tenantId], tenantId).catch(() => null);
       const _plan = _planRow?.rows?.[0]?.plan || "free";
+      // ── MODE tier gate (SECURITY) — global deployment only. Reject a below-tier
+      //    mode BEFORE taking a concurrency slot or placing a credit hold (no
+      //    hold→refund roundtrip). No-op on Indonesia (no mode_min_tier in config).
+      //    This is where Recraft is gated: Color=starter+, Realistis(detail)=plus+.
+      const _reqTier = modeRequiredTier(b.visualMode || "hybrid", b.whiteboardGenre);
+      if (_reqTier && !tierAtLeast(_plan, _reqTier)) {
+        const _modeKey = b.visualMode === "whiteboard" ? ("wb:" + (b.whiteboardGenre || "lineart")) : (b.visualMode || "hybrid");
+        return res.status(403).json({ error: "feature_not_available", required_plan: _reqTier, mode: _modeKey, plan: _plan,
+          message: `This mode needs the ${_reqTier} plan or higher — upgrade to unlock it.` });
+      }
       if (!(await conc.acquire(tenantId, _plan, jobId))) {
         const lim = conc.capFor(_plan);
         return res.status(429).json({ error: "concurrency_limit", limit: lim, plan: _plan,

@@ -17,22 +17,33 @@
     "boost_100": { "credits": 60000, "price_usd": 100, "product_env": "DODO_PRODUCT_BOOST100" }
   },
 
-  "_tier_rank_note": "The GLOBAL 5-tier ladder (feeds python credit_catalog.tier_at_least). Higher rank unlocks more models. WITHOUT this override the code keeps the Indonesia 4-tier ladder (free/starter/pro/enterprise). tenants.plan is set to the plan_key on subscribe; tier_at_least compares ranks. Top-up does NOT change tier.",
-  "tier_rank": { "free": 0, "starter": 1, "plus": 2, "pro": 3, "ultra": 4 },
+  "_tier_rank_note": "GLOBAL 5-tier ladder (feeds python credit_catalog.tier_at_least AND the Node mode-gate). 'enterprise' is ALIASED to rank 4 (= ultra) so the hardcoded 4K resolution-lock (video_min_tier returns 'enterprise' for 2160/3840) maps to Ultra on this deployment. tenants.plan is set to the plan_key on subscribe; tier_at_least compares ranks. Top-up does NOT change tier.",
+  "tier_rank": { "free": 0, "starter": 1, "plus": 2, "pro": 3, "ultra": 4, "enterprise": 4 },
 
-  "_model_min_tier_note": "REQUIRED for correct global gating: which tier unlocks each model, using the tier names above. The code defaults use free/starter/pro/enterprise (Indonesia) — for the global ladder you MUST restate the model→tier map with global tier names (Rino's product call). Free MUST stay on cheap models only (no Veo/Sora/4K). The example below is a STARTING POINT, not a final pricing decision.",
+  "_model_min_tier_note": "LOCKED 2026-06-25 (Rino ketok, spec §FEATURE GATING global > registry Indonesia). Which tier unlocks each REGISTRY model (only models that actually exist in credit_catalog.py — Imagen/DALL·E/Recraft are NOT user-facing models, dropped). Unmapped model → 'pro' (fail-closed). Recraft is NOT a picker model — it is gated by MODE (mode_min_tier), see below.",
   "model_min_tier": {
     "image": {
-      "nano-banana": "free", "nano-banana-hd": "free", "seedream-4-0": "free", "gpt-image-1": "free",
-      "nano-banana-2": "starter", "gpt-image-2": "starter",
-      "flux-kontext-pro": "plus", "flux-kontext-max": "plus", "sora-image": "plus",
-      "nano-banana-pro": "pro", "gemini-3-pro-image": "ultra"
+      "seedream-4-0": "free", "seedream-4-5": "free", "nano-banana": "free", "gpt-image-1": "free", "gemini-2.5-flash-image": "free",
+      "nano-banana-2": "starter", "nano-banana-2-hd": "starter", "gpt-image-2": "starter", "gpt-image-2-vip": "starter", "gpt-image-2-official": "starter", "gemini-3.1-flash-image": "starter",
+      "nano-banana-hd": "plus", "flux-kontext-pro": "plus", "sora-image": "plus",
+      "flux-kontext-max": "pro", "nano-banana-pro": "pro", "nano-banana-pro-hd": "pro", "gemini-3-pro-image": "pro"
     },
     "video": {
-      "veo-3.1-fast": "plus", "kling": "starter", "wan": "starter",
-      "veo-3.1": "pro", "veo": "pro", "sora-2-character": "pro",
+      "kling": "pro", "wan": "pro", "veo-fast": "pro", "veo-3-fast": "pro", "veo-3.1-fast": "pro", "veo-3.1-lite": "pro", "veo-lite": "pro",
+      "veo-3.1": "pro", "veo-3": "pro", "veo": "pro", "sora-2-character": "pro", "sora-character": "pro",
       "sora-2-pro": "ultra", "runway-aleph": "ultra"
     }
+  },
+
+  "_mode_min_tier_note": "LOCKED 2026-06-25 (Rino ketok). SEPARATE map from model_min_tier — gates the VIDEO-INSTANT MODE (not a registry model). Enforced BACKEND at /api/video/assemble BEFORE hold/charge (403 feature_not_available) + mirrored in the UI (disable+tooltip). Recraft access is gated HERE (Color=starter+, Realistis/detail=plus+) — there is no Recraft model picker. Lineart=free NEVER calls Recraft (worker skips it). Unmapped mode → 'pro' (fail-closed). Keys: visualMode (full_images/hybrid/full_clips) + whiteboard genres prefixed 'wb:' (wb:lineart/wb:color/wb:detail/wb:diagram).",
+  "mode_min_tier": {
+    "full_images": "free",
+    "hybrid": "plus",
+    "full_clips": "pro",
+    "wb:lineart": "free",
+    "wb:color": "starter",
+    "wb:detail": "plus",
+    "wb:diagram": "pro"
   },
 
   "_concurrency_note": "Optional per-tier concurrent-render caps for the 5-tier ladder.",
