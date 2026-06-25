@@ -606,6 +606,17 @@ app.post("/subscription/create", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "internal_error" });
   }
 });
+// Current subscription state (Account page + post-checkout return poll). Read-only.
+app.get("/subscription/status", requireAuth, async (req, res) => {
+  try {
+    if (!subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_subscription_mode" });
+    const tenantId = resolveTenantId(req);
+    res.json(await subscriptions.getSubscriptionStatus({ tenantId }));
+  } catch (e) {
+    console.error("[subscription/status] unexpected:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
 // Hosted Customer Portal (cancel / change card / invoices) — redirect to Dodo.
 app.get("/subscription/portal", requireAuth, async (req, res) => {
   try {

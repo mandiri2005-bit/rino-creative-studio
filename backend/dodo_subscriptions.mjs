@@ -354,6 +354,32 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
   }
 }
 
+// ── TASK 2/3 (UI): the tenant's current subscription state ────────────────────
+// Read-only view for the Account page + the post-checkout return poll. Returns the
+// latest dodo_subscriptions row (status/plan/period/cancel flag). Credit balance +
+// sub/topup breakdown come separately from /credits/balance. has_subscription=false
+// for a Free / never-subscribed tenant.
+export async function getSubscriptionStatus({ tenantId }) {
+  const r = await query(
+    `SELECT plan_key, status, current_period_start, current_period_end, cancel_at_period_end,
+            dodo_customer_id IS NOT NULL AS has_customer
+       FROM dodo_subscriptions
+      WHERE tenant_id=$1
+      ORDER BY updated_at DESC LIMIT 1`,
+    [tenantId], tenantId,
+  );
+  const row = r.rows[0] || null;
+  return {
+    has_subscription: !!row,
+    plan_key: row?.plan_key || null,
+    status: row?.status || null,
+    current_period_start: row?.current_period_start || null,
+    current_period_end: row?.current_period_end || null,
+    cancel_at_period_end: row?.cancel_at_period_end || false,
+    has_customer: row?.has_customer || false,
+  };
+}
+
 // ── TASK 5: hosted Customer Portal (cancel / update card / invoices) ──────────
 // Resolves the tenant's Dodo customer id, then asks Dodo for a portal session link.
 // No self-built manage UI — the frontend just redirects to this link.
