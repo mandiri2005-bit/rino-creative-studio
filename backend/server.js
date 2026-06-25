@@ -27,6 +27,7 @@ import { Webhook } from "svix";
 import { pool } from "./db.js";
 import * as billing from "./billing.mjs";
 import * as dodo from "./dodo.mjs";
+import * as subscriptions from "./dodo_subscriptions.mjs";
 import * as midtrans from "./midtrans.mjs";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
 import * as storage from "./storage.mjs";
@@ -310,6 +311,18 @@ app.post(
 
         console.log(`[webhook] user.created → tenant=${tenantId} email=${email} display=${displayName}`);
 
+        // GLOBAL deployment (BILLING_MODE=subscription): grant Free credits ONCE per
+        // email (lifetime, cross-account) + disposable-domain guard. The Indonesia
+        // one-time deployment skips this (subscriptionMode()=false). Best-effort —
+        // a free-grant failure must never break user provisioning.
+        if (subscriptions.subscriptionMode() && email) {
+          try {
+            const uRes = await pool.query(`SELECT id FROM users WHERE external_id=$1 LIMIT 1`, [data.id]);
+            const fg = await subscriptions.grantFreeOnce({ email, userId: uRes.rows[0]?.id || null, tenantId });
+            console.log(`[free] ${email} → ${fg.status} bal=${fg.balance}`);
+          } catch (fgErr) { console.warn("[free] grant failed:", fgErr.message); }
+        }
+
       } else if (type === "user.updated") {
         const email = data.email_addresses?.[0]?.email_address || "";
         if (email) {
@@ -405,7 +418,34 @@ app.post(
       return res.status(403).json({ error: "invalid_signature" });
     }
     try {
-      const r = await dodo.handleEvent({ payload, webhookId, rawEvent: payload });
+      // Global deployment (BILLING_MODE=subscription) routes two new shapes to the
+      // dedicated handlers; everything else (one-time package payment/refund/dispute)
+      // stays on the shared grant core. Kill switch NOT checked here — in-flight
+      // payments must keep settling. Indonesia (subscriptionMode()=false) falls through.
+      const _type = String(payload?.type || "");
+      const _data = payload?.data || {};
+      const _isSub = _type.startsWith("subscription.");
+      const _isTopup = _type === "payment.succeeded" && _data?.metadata?.kind === "topup";
+      // A recurring SUBSCRIPTION charge arrives as payment.succeeded WITH a
+      // subscription_id (and no topup kind). Its credits are granted by the
+      // subscription.active/renewed RESET — routing it to the additive one-time
+      // grant (dodo.handleEvent → grant_entitlement) would STACK credits on top of
+      // the reset every cycle. Ack it without crediting. (Global only; Indonesia
+      // one-time payments carry no subscription_id, so this never fires there.)
+      const _isSubPayment = subscriptions.subscriptionMode() && !_isTopup
+        && (_type === "payment.succeeded" || _type === "payment.failed")
+        && !!_data?.subscription_id;
+      let r;
+      if (subscriptions.subscriptionMode() && _isTopup) {
+        r = await subscriptions.handleTopupPayment({ payload, webhookId, rawEvent: payload });
+      } else if (_isSubPayment) {
+        console.log(`[dodo] subscription-borne ${_type} sub=${_data.subscription_id} id=${webhookId} — credited via subscription.* (no additive grant)`);
+        r = { handled: true, recorded: true, reason: "subscription_payment_ignored", type: _type };
+      } else if (subscriptions.subscriptionMode() && _isSub) {
+        r = await subscriptions.handleSubscriptionEvent({ payload, webhookId, rawEvent: payload });
+      } else {
+        r = await dodo.handleEvent({ payload, webhookId, rawEvent: payload });
+      }
       console.log(`[dodo] event=${payload.type} id=${webhookId} ->`, JSON.stringify(r));
       return res.status(200).json({ received: true, ...r });
     } catch (e) {
@@ -494,9 +534,14 @@ app.post("/api/billing/portal", async (req, res) => {
 // ── Payments status (public) — frontend renders rail buttons from these flags ──
 // Reflects the kill switch live (env flip = service restart, no rebuild).
 app.get("/payments/status", (req, res) => {
+  const subMode = subscriptions.subscriptionMode();
   res.json({
     payments_enabled: process.env.PAYMENTS_ENABLED !== "false",
     rails: { dodo: dodo.railEnabled(), midtrans: midtrans.railEnabled() },
+    // GLOBAL deployment: 'subscription' (recurring Dodo) → the frontend renders the
+    // subscription plans + "Manage subscription" portal button. Indonesia: 'one_time'.
+    billing_mode: subMode ? "subscription" : "one_time",
+    ...(subMode ? { subscription_plans: subscriptions.VALID_SUB_PLANS, topup_packs: subscriptions.VALID_TOPUP_PACKS } : {}),
   });
 });
 app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
@@ -516,6 +561,93 @@ app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
     if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
     if (e.message === "unknown_plan") return res.status(400).json({ error: "unknown_plan" });
     console.error("[dodo/create-checkout] unexpected:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// ── Subscription (GLOBAL deployment, BILLING_MODE=subscription) ───────────────
+// Recurring monthly via Dodo. Parallel to the one-time /payments/dodo/create-checkout;
+// these routes 404-as-503 ('not_subscription_mode') on the Indonesia one-time deployment.
+// Credits are RESET (not added) by the webhook; these endpoints never grant.
+app.post("/subscription/create", requireAuth, async (req, res) => {
+  try {
+    if (!subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_subscription_mode" });
+    // Kill switch — gate the ENTRANCE only; webhooks still settle in-flight subs.
+    if (!dodo.railEnabled()) return res.status(503).json({ error: "payments_disabled", rail: "dodo" });
+    const tenantId = resolveTenantId(req);
+    const userId = await resolveUserId(req, tenantId);
+    const body = req.body || {};
+    const planKey = String(body.plan_key || "").trim();
+    if (!subscriptions.VALID_SUB_PLANS.includes(planKey)) {
+      return res.status(400).json({ error: `plan_key must be one of ${subscriptions.VALID_SUB_PLANS.join("|")}` });
+    }
+    // Email is server-authoritative (the verified user/tenant record), not the request body.
+    let email = null, name = null;
+    try {
+      if (userId) {
+        const u = await query("SELECT display_name, email FROM users WHERE id=$1", [userId], tenantId);
+        email = u.rows[0]?.email || null; name = u.rows[0]?.display_name || null;
+      }
+      if (!email) {
+        const t = await query("SELECT email FROM tenants WHERE id=$1", [tenantId], tenantId);
+        email = t.rows[0]?.email || null;
+      }
+    } catch { /* fall through to body */ }
+    email = email || String(body.email || "").trim() || null;
+    const out = await subscriptions.createSubscription({
+      tenantId, userId, planKey, email, name: name || body.name, country: body.country,
+    });
+    res.json({ payment_link: out.paymentLink, subscription_id: out.subscriptionId });
+  } catch (e) {
+    if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
+    if (e.message === "unknown_plan") return res.status(400).json({ error: "unknown_plan" });
+    if (e.message === "missing_email") return res.status(400).json({ error: "missing_email" });
+    console.error("[subscription/create] unexpected:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+// Hosted Customer Portal (cancel / change card / invoices) — redirect to Dodo.
+app.get("/subscription/portal", requireAuth, async (req, res) => {
+  try {
+    if (!subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_subscription_mode" });
+    const tenantId = resolveTenantId(req);
+    const out = await subscriptions.customerPortal({ tenantId });
+    res.json({ url: out.link });
+  } catch (e) {
+    if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
+    if (e.message === "no_customer") return res.status(404).json({ error: "no_customer" });
+    console.error("[subscription/portal] unexpected:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+// ── Top-up (one-time credit purchase, PAID plans only) ────────────────────────
+// Adds credits to the topup bucket (does NOT change tier). Free is rejected — a Free
+// user who wants more credits must subscribe first. Credits granted by the webhook.
+app.post("/topup/create", requireAuth, async (req, res) => {
+  try {
+    if (!subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_subscription_mode" });
+    if (!dodo.railEnabled()) return res.status(503).json({ error: "payments_disabled", rail: "dodo" });
+    const tenantId = resolveTenantId(req);
+    const userId = await resolveUserId(req, tenantId);
+    // Top-up is for paid plans only — reject Free (gate by the tenant's current plan).
+    let plan = "free";
+    try {
+      const t = await query("SELECT plan FROM tenants WHERE id=$1", [tenantId], tenantId);
+      plan = t.rows[0]?.plan || "free";
+    } catch { /* default free → rejected below */ }
+    if (plan === "free") {
+      return res.status(403).json({ error: "subscription_required", message: "Subscribe to add credits" });
+    }
+    const packKey = String((req.body || {}).pack_key || "").trim();
+    if (!subscriptions.VALID_TOPUP_PACKS.includes(packKey)) {
+      return res.status(400).json({ error: `pack_key must be one of ${subscriptions.VALID_TOPUP_PACKS.join("|")}` });
+    }
+    const out = await subscriptions.createTopup({ tenantId, userId, packKey });
+    res.json({ payment_link: out.checkoutUrl });
+  } catch (e) {
+    if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
+    if (e.message === "unknown_pack") return res.status(400).json({ error: "unknown_pack" });
+    console.error("[topup/create] unexpected:", e);
     return res.status(500).json({ error: "internal_error" });
   }
 });

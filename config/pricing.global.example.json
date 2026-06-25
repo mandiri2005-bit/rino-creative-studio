@@ -1,0 +1,40 @@
+{
+  "_comment": "EXAMPLE pricing config for the GLOBAL subscription deployment (BILLING_MODE=subscription). The repo's config/pricing.json is the Indonesia (one_time, IDR) config; the global deployment supplies THIS shape via PRICING_CONFIG_JSON env or PRICING_CONFIG_PATH pointing here. Loaders fall back per-key to code defaults, so anything omitted keeps the dodo_subscriptions.mjs / credit_catalog.py defaults. Edit values to re-price without a code change.",
+
+  "_subscription_plans_note": "Per-period RESET target (credits) + USD price + the env var holding the Dodo product id. Matches the locked global plan table. 'free' is grant-only (500 once per email at signup, no product). These DEFAULT-match dodo_subscriptions.mjs; listed here so the deployment owns them as config.",
+  "subscription_plans": {
+    "free":    { "credits": 500,    "price_usd": 0.0,    "product_env": null },
+    "starter": { "credits": 5000,   "price_usd": 9.99,   "product_env": "DODO_PRODUCT_STARTER" },
+    "plus":    { "credits": 20000,  "price_usd": 39.99,  "product_env": "DODO_PRODUCT_PLUS" },
+    "pro":     { "credits": 50000,  "price_usd": 99.99,  "product_env": "DODO_PRODUCT_PRO" },
+    "ultra":   { "credits": 100000, "price_usd": 199.99, "product_env": "DODO_PRODUCT_ULTRA" }
+  },
+
+  "_topup_packs_note": "One-time top-up packs (ADD to the topup bucket; PAID plans only — Free is rejected at /topup/create). credits + USD price + the env var holding the Dodo ONE-TIME product id. DEFAULT-match dodo_subscriptions.mjs.",
+  "topup_packs": {
+    "boost_10":  { "credits": 5000,  "price_usd": 10,  "product_env": "DODO_PRODUCT_BOOST10" },
+    "boost_50":  { "credits": 28000, "price_usd": 50,  "product_env": "DODO_PRODUCT_BOOST50" },
+    "boost_100": { "credits": 60000, "price_usd": 100, "product_env": "DODO_PRODUCT_BOOST100" }
+  },
+
+  "_tier_rank_note": "The GLOBAL 5-tier ladder (feeds python credit_catalog.tier_at_least). Higher rank unlocks more models. WITHOUT this override the code keeps the Indonesia 4-tier ladder (free/starter/pro/enterprise). tenants.plan is set to the plan_key on subscribe; tier_at_least compares ranks. Top-up does NOT change tier.",
+  "tier_rank": { "free": 0, "starter": 1, "plus": 2, "pro": 3, "ultra": 4 },
+
+  "_model_min_tier_note": "REQUIRED for correct global gating: which tier unlocks each model, using the tier names above. The code defaults use free/starter/pro/enterprise (Indonesia) — for the global ladder you MUST restate the model→tier map with global tier names (Rino's product call). Free MUST stay on cheap models only (no Veo/Sora/4K). The example below is a STARTING POINT, not a final pricing decision.",
+  "model_min_tier": {
+    "image": {
+      "nano-banana": "free", "nano-banana-hd": "free", "seedream-4-0": "free", "gpt-image-1": "free",
+      "nano-banana-2": "starter", "gpt-image-2": "starter",
+      "flux-kontext-pro": "plus", "flux-kontext-max": "plus", "sora-image": "plus",
+      "nano-banana-pro": "pro", "gemini-3-pro-image": "ultra"
+    },
+    "video": {
+      "veo-3.1-fast": "plus", "kling": "starter", "wan": "starter",
+      "veo-3.1": "pro", "veo": "pro", "sora-2-character": "pro",
+      "sora-2-pro": "ultra", "runway-aleph": "ultra"
+    }
+  },
+
+  "_concurrency_note": "Optional per-tier concurrent-render caps for the 5-tier ladder.",
+  "concurrency_caps": { "free": 1, "starter": 2, "plus": 3, "pro": 5, "ultra": 8 }
+}

@@ -22,6 +22,7 @@ import midtransClient from "midtrans-client";
 import { query } from "./db.js";
 import * as midtrans from "./midtrans.mjs";
 import { dodo } from "./dodo.mjs";
+import * as subscriptions from "./dodo_subscriptions.mjs";
 
 const FIX = process.argv.includes("--fix");
 const MINS = Number((process.argv.find((a) => a.startsWith("--minutes=")) || "").split("=")[1] || 60);
@@ -78,10 +79,30 @@ async function reconcileDodo() {
   console.log(`[recon] dodo: checked=${checked} orphans=${orphans} (alert-only; no auto-grant)`);
 }
 
+// SUBSCRIPTION (global): the dunning-exhaustion fallback. Dodo may leave a sub in
+// on_hold forever with no terminal event; this downgrades on_hold/cancelled subs
+// whose period end is well past (verified live via the API). Self-gates: a no-op
+// unless BILLING_MODE=subscription. SAFE to auto-run — idempotent (expired op_id).
+async function reconcileSubscriptions() {
+  if (!subscriptions.subscriptionMode()) { console.log("[recon] subscription mode off — skip subs"); return; }
+  if (!FIX) { console.log("[recon] subs: dry-run (pass --fix to downgrade stuck on_hold/cancelled subs)"); return; }
+  try {
+    const r = await subscriptions.reconcileStuckSubscriptions({ graceDays: Number(process.env.SUB_RECONCILE_GRACE_DAYS || 3) });
+    console.log(`[recon] subs:`, JSON.stringify(r));
+  } catch (e) { console.warn(`[recon] subs error: ${e.message}`); }
+  // Optional drift-safety: forfeit any expired top-up (covers a downgraded user whose
+  // paid top-up outlived the sub, + general drift). Subscriber renewals already sweep.
+  try {
+    const s = await subscriptions.sweepExpiredTopup({});
+    console.log(`[recon] topup-sweep:`, JSON.stringify({ swept: s.swept }));
+  } catch (e) { console.warn(`[recon] topup-sweep error: ${e.message}`); }
+}
+
 (async () => {
   console.log(`[recon] start ${FIX ? "(FIX)" : "(dry-run)"} minutes=${MINS}`);
   await reconcileMidtrans();
   await reconcileDodo();
+  await reconcileSubscriptions();
   console.log("[recon] done");
   process.exit(0);
 })().catch((e) => { console.error("[recon] fatal:", e); process.exit(1); });

@@ -187,6 +187,27 @@ async def get_balance(tenant_id: str) -> int:
     return await _ensure_cached(tenant_id)
 
 
+async def balance_breakdown(tenant_id: str) -> dict:
+    """Durable {sub_balance, topup_balance, topup_expires_at} for display. The live
+    spendable total is get_balance() (Redis). For the one-time / Indonesia deployment
+    topup_balance is always 0 → sub_balance == balance. sub_balance is a generated
+    column (balance - topup_balance), so it can never drift."""
+    row = await db._q_fetchrow(
+        "SELECT sub_balance, topup_balance, topup_expires_at FROM credit_balances WHERE tenant_id=$1",
+        db._uid(tenant_id), tenant=str(tenant_id))
+    if not row:
+        return {"sub_balance": 0, "topup_balance": 0, "topup_expires_at": None}
+    exp = row["topup_expires_at"]
+    # sub_balance is generated (balance - topup_balance); it can go NEGATIVE when a
+    # refund drives the total balance below zero (intentional, no floor). That's a
+    # durable-truth detail, not something to show a user — clamp the DISPLAY to >= 0.
+    return {
+        "sub_balance": max(0, int(row["sub_balance"] or 0)),
+        "topup_balance": int(row["topup_balance"] or 0),
+        "topup_expires_at": exp.isoformat() if exp else None,
+    }
+
+
 async def hold(tenant_id: str, amount: int, op_id: str) -> int:
     """Reserve `amount` credits for op_id. Returns the new live balance.
     Raises InsufficientCredits if the balance can't cover it. amount<=0 is a

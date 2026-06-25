@@ -227,6 +227,12 @@ IMAGE_MODEL_MIN_TIER.update(_mmt.get("image") or {})
 VIDEO_MODEL_MIN_TIER.update(_mmt.get("video") or {})
 CONCURRENCY_CAPS.update(_PRICING.get("concurrency_caps") or {})
 TIER_PRICE_IDR.update(_PRICING.get("tier_price_idr") or {})
+# Config-driven tier ladder. Default = the Indonesia 4-tier ranks; the GLOBAL
+# subscription deployment overrides via pricing.json `tier_rank` to express its
+# 5-tier ladder, e.g. {"free":0,"starter":1,"plus":2,"pro":3,"ultra":4}. Without an
+# override the existing free/starter/pro/enterprise behaviour is unchanged. Pair it
+# with model_min_tier entries that use the same tier names (Rino's product call).
+TIER_RANK.update(_PRICING.get("tier_rank") or {})
 
 # ── Monthly credit allowance per plan (config-driven, per-key fallback) ────────
 TIER_MONTHLY_CREDITS: dict[str, int] = {

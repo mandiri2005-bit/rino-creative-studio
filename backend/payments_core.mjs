@@ -267,3 +267,110 @@ export async function reverse_entitlement({
   }
   return { reversed: true, applied, balance, credits };
 }
+
+// ── Reset credits to a plan target (use-it-or-lose-it) — subscription billing ──
+// The RESET counterpart to grant_entitlement's ADD. Used ONLY by the GLOBAL
+// subscription rail (BILLING_MODE=subscription, dodo_subscriptions.mjs); the
+// Indonesia one-time path (grant_entitlement → credit_apply ADD) is UNTOUCHED.
+//
+// Atomic, mirroring grant_entitlement's pattern exactly:
+//   pool.connect → BEGIN → set tenant ctx → credit_reset (SET balance=target) →
+//   COMMIT → mirror the SIGNED delta into Redis (INCRBY-if-present, preserving holds).
+//
+// Idempotent on opId — one reset per subscription period (replay = NO-OP). The
+// caller resolves targetCredits from the global subscription plan config and keeps
+// payments_core decoupled from that config (so this stays a pure credit primitive).
+//
+// Implemented via credit_reset_subscription (0041): the SUB portion is SET to the
+// target (use-it-or-lose-it); the TOPUP bucket survives unless already past its own
+// expiry — or forfeitTopup=true (refund/abuse only; NOT on subscription.expired, since
+// a paid top-up outlives a sub lapse). balance = target + surviving topup.
+// Returns { applied, balance, delta } where delta = new total − pre total (signed).
+export async function reset_entitlement({
+  userId, tenantId, targetCredits, opId, reason = "monthly_grant", meta = {}, forfeitTopup = false,
+}) {
+  if (!tenantId) throw new Error("missing_tenant");
+  if (!opId) throw new Error("missing_op_id");
+  if (!(targetCredits >= 0)) throw new Error("invalid_target_credits");
+  const target = Math.trunc(targetCredits);
+
+  const client = await pool.connect();
+  let applied = false, balance = 0, delta = 0;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(tenantId)]);
+    // SET sub := target, keep non-expired topup. Idempotent on (tenant_id, opId).
+    const r = await client.query(
+      `SELECT applied, balance, delta FROM credit_reset_subscription($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+      [tenantId, userId || null, target, !!forfeitTopup, opId, reason, JSON.stringify(meta || {})],
+    );
+    applied = !!r.rows[0]?.applied;
+    balance = Number(r.rows[0]?.balance ?? 0);
+    delta   = Number(r.rows[0]?.delta ?? 0);
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+  // Mirror the SIGNED delta into the live Redis balance ONLY when present (never
+  // clobber holds). delta can be negative (downgrade / unspent forfeiture).
+  if (applied && delta !== 0) {
+    try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${tenantId}:credits`, String(delta)); }
+    catch (e) { console.warn("[reset] redis mirror failed:", e.message); }
+  }
+  return { applied, balance, delta };
+}
+
+// ── Grant one-time top-up credits (the SECOND bucket) — subscription rail ──────
+// ADD `amount` to the topup bucket (balance + topup_balance), set topup_expires_at
+// to the FURTHEST of the existing and the new expiry (extend, never shorten). The
+// total `balance` grows by `amount` so the existing gate/Redis see it immediately.
+// Idempotent on opId (the Dodo webhook-id). Returns { applied, balance, delta }.
+// expiresAt is an ISO string / Date — the caller computes it (= renewal after the
+// imminent one for subscribers; +30d for Free).
+export async function topup_grant({
+  userId, tenantId, amount, opId, expiresAt, meta = {},
+}) {
+  if (!tenantId) throw new Error("missing_tenant");
+  if (!opId) throw new Error("missing_op_id");
+  if (!(amount > 0)) throw new Error("invalid_topup_amount");
+  const amt = Math.trunc(amount);
+
+  const client = await pool.connect();
+  let applied = false, balance = 0, delta = 0;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(tenantId)]);
+    const r = await client.query(
+      `SELECT applied, balance, delta FROM credit_topup_grant($1,$2,$3,$4,$5,$6::jsonb)`,
+      [tenantId, userId || null, amt, opId, expiresAt || null, JSON.stringify(meta || {})],
+    );
+    applied = !!r.rows[0]?.applied;
+    balance = Number(r.rows[0]?.balance ?? 0);
+    delta   = Number(r.rows[0]?.delta ?? 0);
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+  // Mirror the added credits into the live Redis balance (only if present).
+  if (applied && delta !== 0) {
+    try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${tenantId}:credits`, String(delta)); }
+    catch (e) { console.warn("[topup] redis mirror failed:", e.message); }
+  }
+  return { applied, balance, delta };
+}
+
+// Mirror a signed credit delta into the live Redis balance cache, only when the key
+// already exists (never clobber holds or seed a cold cache). Used by the topup
+// expiry sweep cron, which forfeits credits durably and must reflect that live.
+export async function mirrorCreditDelta(tenantId, delta) {
+  const d = Math.trunc(Number(delta) || 0);
+  if (!tenantId || d === 0) return;
+  try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${tenantId}:credits`, String(d)); }
+  catch (e) { console.warn("[mirror] redis delta failed:", e.message); }
+}

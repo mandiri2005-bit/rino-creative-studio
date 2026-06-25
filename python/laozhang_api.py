@@ -1626,9 +1626,13 @@ async def quote_cost(body: dict, user: CurrentUser = Depends(get_current_user)):
 
 @app.get("/credits/balance")
 async def credits_balance(user: CurrentUser = Depends(get_current_user)):
-    """Live spendable credit balance for the authenticated tenant."""
+    """Live spendable credit balance + sub/topup breakdown for the authenticated
+    tenant. `balance` is the live spendable total (Redis); sub_balance/topup_balance
+    are the durable breakdown. On the one-time deployment topup_balance is always 0
+    (sub_balance == balance)."""
     bal = await credits_lib.get_balance(user.tenant_id)
-    return {"balance": bal, "tier": user.tier}
+    bd = await credits_lib.balance_breakdown(user.tenant_id)
+    return {"balance": bal, "tier": user.tier, **bd}
 
 
 # -- Main chat stream ------------------------------------------------------
