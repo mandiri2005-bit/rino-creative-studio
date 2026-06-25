@@ -541,7 +541,13 @@ app.get("/payments/status", (req, res) => {
     // GLOBAL deployment: 'subscription' (recurring Dodo) → the frontend renders the
     // subscription plans + "Manage subscription" portal button. Indonesia: 'one_time'.
     billing_mode: subMode ? "subscription" : "one_time",
-    ...(subMode ? { subscription_plans: subscriptions.VALID_SUB_PLANS, topup_packs: subscriptions.VALID_TOPUP_PACKS } : {}),
+    // Full plan/pack objects (key, price_usd, credits) so the studio cards render from
+    // the SAME config source as the webhook grants — no hardcoded-price drift if Rino
+    // re-prices via pricing.json. The studio keeps its labels/features locally.
+    ...(subMode ? {
+      subscription_plans: Object.entries(subscriptions.SUBSCRIPTION_PLANS).map(([key, v]) => ({ key, price_usd: v.price_usd ?? 0, credits: v.credits ?? 0 })),
+      topup_packs: Object.entries(subscriptions.TOPUP_PACKS).map(([key, v]) => ({ key, price_usd: v.price_usd ?? 0, credits: v.credits ?? 0 })),
+    } : {}),
   });
 });
 app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
