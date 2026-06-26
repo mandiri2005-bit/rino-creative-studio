@@ -17,6 +17,23 @@
     "boost_100": { "credits": 60000, "price_usd": 100, "product_env": "DODO_PRODUCT_BOOST100" }
   },
 
+  "_metering_economics_note": "DUAL-BILLING per deployment (Rino ketok 2026-06-26). credit_usd_value: USD value of 1 credit for METERING (global sells credits at $0.002/cr vs Indonesia $0.01) — so every metered op charges 5x more credits on global, restoring margin after the cheaper credit price. vid_markup_lo/hi: Veo/Sora video markup = 1.5 (50% margin) on global, vs Indonesia 2.5. ENV (CREDIT_USD_VALUE / VID_MARKUP_*) still overrides. Image markup stays ×3/×2.5 (IMG_MARKUP). WB render stays markup-exempt (pure margin).",
+  "credit_usd_value": 0.002,
+  "vid_markup_lo": 1.5,
+  "vid_markup_hi": 1.5,
+
+  "_video_usd_per_sec_by_res_note": "RESOLUTION-AWARE upstream COGS, USD per second of generated video, per Veo variant (Rino ketok 2026-06-26, @ credit_usd_value=0.002 + 1.5x markup → the locked credit table). Lookup = longest model-prefix → resolution bucket (720p/1080p/2160p) → _default (its 1080p rate, used when a request omits resolution). Resulting credits/sec: Veo Std 1080p=300 / 4K=450; Fast 720p=75 / 1080p=90 / 4K=225; Lite 720p=38 / 1080p=60. An 8s Veo-Std-1080p clip = 2400cr. SORA-2 is resolution-invariant → stays on the flat video_usd_per_sec map (0.50/s → 375cr/s), intentionally NOT here. KLING is billed per-CLIP not per-second (no-audio $0.112/audio $0.168/turbo $0.14/4K $0.42 → 84/126/105/315cr) — needs a per-generation cost path + audio/turbo variant threading, NOT YET WIRED (still flat). WAN COGS = TBD (awaiting Alibaba console) — stays flat until filled.",
+  "video_usd_per_sec_by_res": {
+    "veo-3.1-fast": { "720p": 0.10, "1080p": 0.12, "2160p": 0.30, "_default": 0.12 },
+    "veo-3-fast":   { "720p": 0.10, "1080p": 0.12, "2160p": 0.30, "_default": 0.12 },
+    "veo-fast":     { "720p": 0.10, "1080p": 0.12, "2160p": 0.30, "_default": 0.12 },
+    "veo-3.1-lite": { "720p": 0.05, "1080p": 0.08, "_default": 0.08 },
+    "veo-lite":     { "720p": 0.05, "1080p": 0.08, "_default": 0.08 },
+    "veo-3.1":      { "1080p": 0.40, "2160p": 0.60, "_default": 0.40 },
+    "veo-3":        { "1080p": 0.40, "2160p": 0.60, "_default": 0.40 },
+    "veo":          { "1080p": 0.40, "2160p": 0.60, "_default": 0.40 }
+  },
+
   "_tier_rank_note": "GLOBAL 5-tier ladder (feeds python credit_catalog.tier_at_least AND the Node mode-gate). 'enterprise' is ALIASED to rank 4 (= ultra) so the hardcoded 4K resolution-lock (video_min_tier returns 'enterprise' for 2160/3840) maps to Ultra on this deployment. tenants.plan is set to the plan_key on subscribe; tier_at_least compares ranks. Top-up does NOT change tier.",
   "tier_rank": { "free": 0, "starter": 1, "plus": 2, "pro": 3, "ultra": 4, "enterprise": 4 },
 

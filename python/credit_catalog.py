@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 from typing import Union
 
@@ -185,6 +186,48 @@ _DEFAULT_VIDEO_USD_PER_SEC_DEFAULT = 0.50
 _DEFAULT_VIDEO_DEFAULT_SECONDS = 8     # a Veo/Sora clip is ~8s when length unknown
 _DEFAULT_TTS_USD_PER_1K_CHARS = 0.10
 
+# ── Resolution-aware video COGS (OPT-IN, additive) ─────────────────────────────
+# Per-second upstream USD that varies by OUTPUT RESOLUTION, for models whose cost
+# scales with resolution (Veo Standard / Fast / Lite). The flat _VIDEO_USD_PER_SEC
+# above stays the fallback; a model becomes resolution-aware ONLY when it appears
+# here or in pricing.json `video_usd_per_sec_by_res`. DEFAULT IS EMPTY {} → no model
+# is resolution-aware unless the deployment opts in, so Indonesia (flat) is
+# byte-for-byte unchanged. The GLOBAL config supplies the real per-resolution rates.
+#   shape: { "<model-prefix>": { "720p": usd, "1080p": usd, "2160p": usd, "_default": usd } }
+# Lookup: longest model-prefix match → normalised resolution bucket → "_default" →
+# (no by-res hit) flat map. `_default` lets a deployment price a model even when the
+# request omits a resolution (we fall to its 1080p rate). NOTE: Sora is resolution-
+# invariant (stays on the flat map). Kling is per-CLIP not per-second, and Wan COGS
+# is TBD — both intentionally absent here; see the global config notes.
+_DEFAULT_VIDEO_USD_PER_SEC_BY_RES: dict[str, dict[str, float]] = {}
+
+
+def _norm_video_res(size) -> str:
+    """Normalise a size/resolution hint to a canonical bucket — '720p' | '1080p' |
+    '1440p' | '2160p' — or '' when unknown. Accepts '1920x1080', '720x1280',
+    '1080p', '1080', 1080, '4k', '2160', '3840x2160', 'uhd', etc. Order matters:
+    the higher-res / compound tokens (uhd, fhd) are tested before the bare 'hd'."""
+    s = str(size or "").strip().lower()
+    if not s:
+        return ""
+    if "2160" in s or "3840" in s or "4k" in s or "uhd" in s:
+        return "2160p"
+    if "1440" in s or "2560" in s or "qhd" in s or "2k" in s:
+        return "1440p"
+    if "1080" in s or "1920" in s or "fhd" in s:
+        return "1080p"
+    if "720" in s or "1280" in s:
+        return "720p"
+    # bare numeric (e.g. "1080" already caught above; this catches odd "x"-forms):
+    nums = [int(n) for n in re.findall(r"\d+", s)]
+    if nums:
+        h = min(nums) if len(nums) >= 2 else nums[0]   # WxH → the smaller is the height
+        if h >= 2000: return "2160p"
+        if h >= 1300: return "1440p"
+        if h >= 1000: return "1080p"
+        if h >= 600:  return "720p"
+    return ""
+
 
 # ── Pricing config loader ─────────────────────────────────────────────────────
 # config/pricing.json is the single source of truth shared with backend/billing.mjs.
@@ -234,6 +277,19 @@ TIER_PRICE_IDR.update(_PRICING.get("tier_price_idr") or {})
 # with model_min_tier entries that use the same tier names (Rino's product call).
 TIER_RANK.update(_PRICING.get("tier_rank") or {})
 
+# ── Per-deployment metering economics (config-driven; ENV still WINS) ──────────
+# Dual-billing: the GLOBAL subscription deployment sells credits at $0.002 (vs
+# Indonesia $0.01) and charges Veo/Sora at a 1.5× markup (50% margin) instead of
+# 2.5×. These differ PER DEPLOYMENT by config (the global pricing.json sets them),
+# mirroring how BILLING_MODE differs per deployment — no code branch. An explicit
+# env var still overrides the config. Indonesia (no override) keeps $0.01 / 2.5×.
+if not os.getenv("CREDIT_USD_VALUE") and _PRICING.get("credit_usd_value") is not None:
+    CREDIT_USD_VALUE = float(_PRICING["credit_usd_value"])
+if not os.getenv("VID_MARKUP_LO") and _PRICING.get("vid_markup_lo") is not None:
+    VID_MARKUP_LO = float(_PRICING["vid_markup_lo"])
+if not os.getenv("VID_MARKUP_HI") and _PRICING.get("vid_markup_hi") is not None:
+    VID_MARKUP_HI = float(_PRICING["vid_markup_hi"])
+
 # ── Monthly credit allowance per plan (config-driven, per-key fallback) ────────
 TIER_MONTHLY_CREDITS: dict[str, int] = {
     **_DEFAULT_TIER_MONTHLY_CREDITS,
@@ -249,6 +305,12 @@ _VIDEO_USD_PER_SEC_DEFAULT = float(
     _PRICING.get("video_usd_per_sec_default", _DEFAULT_VIDEO_USD_PER_SEC_DEFAULT))
 _VIDEO_DEFAULT_SECONDS = int(
     _PRICING.get("video_default_seconds", _DEFAULT_VIDEO_DEFAULT_SECONDS))
+# Resolution-aware override map (opt-in; empty default → flat behaviour). The GLOBAL
+# deployment supplies per-resolution Veo rates here via pricing.json.
+_VIDEO_USD_PER_SEC_BY_RES: dict[str, dict[str, float]] = {
+    **_DEFAULT_VIDEO_USD_PER_SEC_BY_RES,
+    **(_PRICING.get("video_usd_per_sec_by_res") or {}),
+}
 
 # ── TTS upstream cost, USD per 1k characters (env wins; JSON supplies default) ─
 _TTS_USD_PER_1K_CHARS = float(
@@ -268,12 +330,26 @@ def usd_to_credits(usd: float) -> int:
     positive cost (you never charge 0 for real work), exactly 0 for free ops."""
     if not usd or usd <= 0:
         return 0
-    raw = usd * CREDIT_MARGIN / CREDIT_USD_VALUE
+    # round to 6 dp BEFORE ceil: float dust (e.g. 0.40*1.5 = 0.6000000000000001)
+    # otherwise pushes an exact boundary like 300.0 to 300.0000…6 → ceil 301. The
+    # rounding only collapses sub-1e-6 noise; any real fractional credit is preserved.
+    raw = round(usd * CREDIT_MARGIN / CREDIT_USD_VALUE, 6)
     return max(1, math.ceil(raw))
 
 
-def _video_usd_per_sec(model: str) -> float:
+def _video_usd_per_sec(model: str, size: str = "") -> float:
     m = (model or "").lower()
+    # Resolution-aware override (opt-in): longest model-prefix match into BY_RES.
+    # On a hit, prefer the request's resolution bucket, else the model's "_default"
+    # rate; only if neither is present do we fall through to the flat map.
+    rkey = max((k for k in _VIDEO_USD_PER_SEC_BY_RES if m.startswith(k)), key=len, default=None)
+    if rkey:
+        by = _VIDEO_USD_PER_SEC_BY_RES[rkey]
+        bucket = _norm_video_res(size)
+        if bucket and bucket in by:
+            return float(by[bucket])
+        if "_default" in by:
+            return float(by["_default"])
     key = max((k for k in _VIDEO_USD_PER_SEC if m.startswith(k)), key=len, default=None)
     return _VIDEO_USD_PER_SEC[key] if key else _VIDEO_USD_PER_SEC_DEFAULT
 
@@ -303,9 +379,13 @@ def operation_usd(operation: str, model: str, units: Union[int, float, dict]) ->
         return _calc_image_cost(model, count)
 
     if op == "video":
-        secs = float(units.get("seconds", _VIDEO_DEFAULT_SECONDS)) if isinstance(units, dict) \
-            else float(units or _VIDEO_DEFAULT_SECONDS)
-        return round(_video_usd_per_sec(model) * max(0.0, secs), 6)
+        if isinstance(units, dict):
+            secs = float(units.get("seconds", _VIDEO_DEFAULT_SECONDS))
+            size = units.get("size") or units.get("resolution") or ""
+        else:
+            secs = float(units or _VIDEO_DEFAULT_SECONDS)
+            size = ""
+        return round(_video_usd_per_sec(model, size) * max(0.0, secs), 6)
 
     if op == "tts":
         chars = int(units.get("chars", 0)) if isinstance(units, dict) else int(units or 0)
@@ -330,7 +410,8 @@ def _op_markup(operation: str, model: str, units: Union[int, float, dict], usd: 
         # not a COGS to mark up) → no markup so credits == 3/sec exactly.
         if (model or "").lower().startswith("whiteboard"):
             return 1.0
-        return VID_MARKUP_LO if _video_usd_per_sec(model) <= VID_MARKUP_USD_GATE else VID_MARKUP_HI
+        size = (units.get("size") or units.get("resolution") or "") if isinstance(units, dict) else ""
+        return VID_MARKUP_LO if _video_usd_per_sec(model, size) <= VID_MARKUP_USD_GATE else VID_MARKUP_HI
     if op == "golpo":
         return GOLPO_MARKUP
     return 1.0   # chat / tts / narasi / embedding → break-even

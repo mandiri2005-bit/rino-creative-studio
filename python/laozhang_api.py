@@ -2694,7 +2694,8 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
         metering.ensure_tier(user, catalog.video_min_tier(req.model, str(preset.get("size") or "")), req.model)
-        await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
+        await metering.gate(user.tenant_id, "video", req.model,
+                            {"seconds": _secs, "size": str(preset.get("size") or "")}, byok=_byok)
 
     # Nusantara corpus: enrich the TEXT prompt before Veo (best-effort, never breaks gen).
     _prompt = req.prompt
@@ -2740,7 +2741,8 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
             try:
                 _jid = await db.save_media_task(user.tenant_id, user.user_id, "veo", task_id, prompt=req.prompt)
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
-                                     {"seconds": _secs}, byok=_byok, job_id=_jid,
+                                     {"seconds": _secs, "size": str(preset.get("size") or "")},
+                                     byok=_byok, job_id=_jid,
                                      video_job=x_video_job, log=True)
             except Exception as _e:
                 print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
@@ -2961,7 +2963,8 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
     if user:
         metering.ensure_tier(user, catalog.video_min_tier(req.model, str(getattr(req, "size", "") or "")), req.model)
-        await metering.gate(user.tenant_id, "video", req.model, {"seconds": _secs}, byok=_byok)
+        await metering.gate(user.tenant_id, "video", req.model,
+                            {"seconds": _secs, "size": str(getattr(req, "size", "") or "")}, byok=_byok)
 
     # Nusantara corpus: enrich the TEXT prompt before Sora (best-effort, never breaks gen).
     _prompt = req.prompt
@@ -3004,7 +3007,8 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
             try:
                 _jid = await db.save_media_task(user.tenant_id, user.user_id, "sora", task_id, prompt=req.prompt)
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
-                                     {"seconds": _secs}, byok=_byok, job_id=_jid,
+                                     {"seconds": _secs, "size": str(getattr(req, "size", "") or "")},
+                                     byok=_byok, job_id=_jid,
                                      video_job=x_video_job, log=True)
             except Exception as _e:
                 print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")

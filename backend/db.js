@@ -14,9 +14,27 @@ import { Pool }    from "pg";
 import { drizzle }  from "drizzle-orm/node-postgres";
 import { sql }      from "drizzle-orm";
 import { redis }    from "./redis.js";   // Step 4: mirror credit debits into the live balance cache
+import fs           from "fs";
+import path         from "path";
+import { fileURLToPath } from "url";
 
-// Step 4 credit economics (mirror python credit_catalog; env-overridable)
-const _CREDIT_USD    = Number(process.env.CREDIT_USD_VALUE || 0.01);
+// credit_usd_value is config-aware PER DEPLOYMENT (ENV still wins): the GLOBAL
+// subscription deployment's pricing.json sets 0.002 (vs Indonesia $0.01) so this
+// Node-side metering matches the cheaper global credit — mirrors python credit_catalog.
+function _pricingCreditUsd(){
+  const raw = process.env.PRICING_CONFIG_JSON;
+  let cfg = {};
+  if (raw) { try { cfg = JSON.parse(raw) || {}; } catch { /* ignore */ } }
+  else {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    for (const p of [process.env.PRICING_CONFIG_PATH, path.join(here, "..", "config", "pricing.json"), "/app/config/pricing.json", path.join(process.cwd(), "config", "pricing.json")]) {
+      try { if (p && fs.existsSync(p)) { cfg = JSON.parse(fs.readFileSync(p, "utf8")) || {}; break; } } catch { /* ignore */ }
+    }
+  }
+  return cfg.credit_usd_value;
+}
+// Step 4 credit economics (mirror python credit_catalog; ENV > pricing.json > default)
+const _CREDIT_USD    = Number(process.env.CREDIT_USD_VALUE || _pricingCreditUsd() || 0.01);
 const _CREDIT_MARGIN = Number(process.env.CREDIT_MARGIN || 1.0);
 const _METERING_ON   = String(process.env.METERING_ENABLED ?? "true").toLowerCase() !== "false";
 function _usdToCredits(usd){ return usd > 0 ? Math.max(1, Math.ceil(usd * _CREDIT_MARGIN / _CREDIT_USD)) : 0; }
