@@ -22,7 +22,7 @@
   "vid_markup_lo": 1.5,
   "vid_markup_hi": 1.5,
 
-  "_video_usd_per_sec_by_res_note": "RESOLUTION-AWARE upstream COGS, USD per second of generated video, per Veo variant (Rino ketok 2026-06-26, @ credit_usd_value=0.002 + 1.5x markup → the locked credit table). Lookup = longest model-prefix → resolution bucket (720p/1080p/2160p) → _default (its 1080p rate, used when a request omits resolution). Resulting credits/sec: Veo Std 1080p=300 / 4K=450; Fast 720p=75 / 1080p=90 / 4K=225; Lite 720p=38 / 1080p=60. An 8s Veo-Std-1080p clip = 2400cr. SORA-2 is resolution-invariant → stays on the flat video_usd_per_sec map (0.50/s → 375cr/s), intentionally NOT here. KLING is billed per-CLIP not per-second (no-audio $0.112/audio $0.168/turbo $0.14/4K $0.42 → 84/126/105/315cr) — needs a per-generation cost path + audio/turbo variant threading, NOT YET WIRED (still flat). WAN COGS = TBD (awaiting Alibaba console) — stays flat until filled.",
+  "_video_usd_per_sec_by_res_note": "RESOLUTION-AWARE upstream COGS, USD per SECOND of generated video, per model prefix (Rino ketok 2026-06-26, @ credit_usd_value=0.002 + 1.5x markup → the locked credit table). Lookup = longest model-prefix → resolution bucket (720p/1080p/2160p) → _default (used when a request omits resolution). Resulting credits/sec — VEO Std 1080p=300 / 4K=450; Fast 720p=75 / 1080p=90 / 4K=225; Lite 720p=38 / 1080p=60 (8s Veo-Std-1080p clip = 2400cr). KLING (per-SECOND, corrected from earlier per-clip note): base=no-audio 84 (_default, the only LIVE path — model 'kling-v1.6' routes via /veo/submit, size already threaded into gate+debit) + 4K=315 (resolution-driven, 2160p bucket). Kling audio($0.168→126) and turbo($0.14→105) variants are NOT wired — no pipeline path selects them (req.audio is a prompt cue, not a variant; no turbo model id). To wire later: give each a DISTINCT model id (e.g. 'kling-v1.6-audio') + add a prefix entry here. VI full-clip strips audio (generationClient.mjs:302) → Kling clips already bill the no-audio base (84), correct, no variant field needed. WAN = DUMMY PLACEHOLDER = Kling no-audio (84, _default); NO 4K (no pipeline path); NO submit route yet (pricing-only, binds when a 'wan*' model id + route are added). The 'kling'/'wan' keys are model-prefix DUMMIES — remap to the real provider model-id prefix before launch if it doesn't start with 'kling'/'wan'. SORA-2 stays resolution-invariant on the flat video_usd_per_sec map (0.50/s → 375cr/s), intentionally NOT here.",
   "video_usd_per_sec_by_res": {
     "veo-3.1-fast": { "720p": 0.10, "1080p": 0.12, "2160p": 0.30, "_default": 0.12 },
     "veo-3-fast":   { "720p": 0.10, "1080p": 0.12, "2160p": 0.30, "_default": 0.12 },
@@ -31,7 +31,9 @@
     "veo-lite":     { "720p": 0.05, "1080p": 0.08, "_default": 0.08 },
     "veo-3.1":      { "1080p": 0.40, "2160p": 0.60, "_default": 0.40 },
     "veo-3":        { "1080p": 0.40, "2160p": 0.60, "_default": 0.40 },
-    "veo":          { "1080p": 0.40, "2160p": 0.60, "_default": 0.40 }
+    "veo":          { "1080p": 0.40, "2160p": 0.60, "_default": 0.40 },
+    "kling":        { "2160p": 0.42, "_default": 0.112 },
+    "wan":          { "_default": 0.112, "_audit": "PLACEHOLDER — Wan = Kling no-audio (84). RE-VERIFY vs source asli (Alibaba console US / aggregator fal·AIML ~$0.05) SEBELUM launch. DUMMY model-prefix 'wan' — remap to real provider model-id + add /wan submit route before launch." }
   },
 
   "_tier_rank_note": "GLOBAL 5-tier ladder (feeds python credit_catalog.tier_at_least AND the Node mode-gate). 'enterprise' is ALIASED to rank 4 (= ultra) so the hardcoded 4K resolution-lock (video_min_tier returns 'enterprise' for 2160/3840) maps to Ultra on this deployment. tenants.plan is set to the plan_key on subscribe; tier_at_least compares ranks. Top-up does NOT change tier.",
