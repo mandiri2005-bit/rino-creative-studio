@@ -38,6 +38,33 @@ import { query } from "./db.js";
 // missing var on the Indonesia deployment can never accidentally arm subscriptions.
 export function subscriptionMode() { return process.env.BILLING_MODE === "subscription"; }
 
+// Fail-loud guard: when BILLING_MODE=subscription (global product), the config that
+// actually LOADED must carry the global markers. If not, the loader silently fell
+// back to the Indonesia config (config/pricing.json) → $0.01 economics + empty
+// by-res map → ~80% silent margin leak. Refuse to start instead. Indonesia
+// (BILLING_MODE != subscription) is a no-op. Presence-only checks (NO hardcoded
+// $0.002) — these three keys are absent / Indonesia-default in config/pricing.json,
+// so they cleanly detect a fallback. Call once at server startup (before listen).
+// (_loadPricing is a hoisted function declaration below.)
+export function assertGlobalConfigLoaded() {
+  if (!subscriptionMode()) return;
+  const cfg = _loadPricing();
+  const missing = [];
+  const sp = cfg.subscription_plans;
+  if (!sp || typeof sp !== "object" || Object.keys(sp).length === 0) missing.push("subscription_plans (absent/empty)");
+  const byres = cfg.video_usd_per_sec_by_res;
+  if (!byres || typeof byres !== "object" || Object.keys(byres).length === 0) missing.push("video_usd_per_sec_by_res (absent/empty)");
+  const cuv = cfg.credit_usd_value;
+  if (cuv == null || Number(cuv) === 0.01) missing.push("credit_usd_value (absent or ==0.01 Indonesia default)");
+  if (missing.length) {
+    throw new Error(
+      "GLOBAL CONFIG NOT LOADED — PRICING_CONFIG_JSON stale/unset, fallback ke ekonomi Indonesia. " +
+      "Refusing start. Missing/invalid global config keys: " + missing.join("; ") +
+      ". Fix: set PRICING_CONFIG_JSON (or PRICING_CONFIG_PATH) on this service to the current config/pricing.global.example.json."
+    );
+  }
+}
+
 // ── Global plan config (config-driven; defaults = the locked USD/monthly table) ──
 // Overridable via pricing.json `subscription_plans` (or PRICING_CONFIG_JSON env) so
 // the global deployment re-prices without a code change. credits are the per-period

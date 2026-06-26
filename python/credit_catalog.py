@@ -196,9 +196,11 @@ _DEFAULT_TTS_USD_PER_1K_CHARS = 0.10
 #   shape: { "<model-prefix>": { "720p": usd, "1080p": usd, "2160p": usd, "_default": usd } }
 # Lookup: longest model-prefix match → normalised resolution bucket → "_default" →
 # (no by-res hit) flat map. `_default` lets a deployment price a model even when the
-# request omits a resolution (we fall to its 1080p rate). NOTE: Sora is resolution-
-# invariant (stays on the flat map). Kling is per-CLIP not per-second, and Wan COGS
-# is TBD — both intentionally absent here; see the global config notes.
+# request omits a resolution. NOTE: Sora is resolution-invariant (stays on the flat
+# map). Kling (per-second: no-audio base 84 + 4K 315) and Wan (placeholder = Kling
+# no-audio 84) live in the GLOBAL config's video_usd_per_sec_by_res, NOT in this code
+# default — this stays empty so Indonesia keeps flat per-second pricing. See the
+# global config note for the deferred Kling audio/turbo variants.
 _DEFAULT_VIDEO_USD_PER_SEC_BY_RES: dict[str, dict[str, float]] = {}
 
 
@@ -289,6 +291,43 @@ if not os.getenv("VID_MARKUP_LO") and _PRICING.get("vid_markup_lo") is not None:
     VID_MARKUP_LO = float(_PRICING["vid_markup_lo"])
 if not os.getenv("VID_MARKUP_HI") and _PRICING.get("vid_markup_hi") is not None:
     VID_MARKUP_HI = float(_PRICING["vid_markup_hi"])
+
+
+# ── Fail-loud guard: the GLOBAL deployment MUST load the global config ──────────
+# When BILLING_MODE=subscription (the global product), the config that actually got
+# LOADED must carry the global markers. If it doesn't, the loader silently fell back
+# to the Indonesia config (config/pricing.json) → $0.01 economics + empty by-res map
+# → ~80% silent margin leak (sell $0.002, charge calibrated $0.01) + Kling/Wan/Veo
+# flat. Refuse to start instead of bleeding margin in silence. Indonesia
+# (BILLING_MODE != subscription) skips this entirely. Presence-only checks (NO
+# hardcoded $0.002) so re-pricing never trips the guard — these three keys are
+# absent / Indonesia-default in config/pricing.json, so they cleanly detect a
+# fallback. Requires BILLING_MODE=subscription to be set on THIS service.
+def _assert_global_config_loaded(pricing: dict) -> None:
+    if os.getenv("BILLING_MODE") != "subscription":
+        return
+    missing = []
+    sp = pricing.get("subscription_plans")
+    if not (isinstance(sp, dict) and sp):
+        missing.append("subscription_plans (absent/empty)")
+    byres = pricing.get("video_usd_per_sec_by_res")
+    if not (isinstance(byres, dict) and byres):
+        missing.append("video_usd_per_sec_by_res (absent/empty)")
+    cuv = pricing.get("credit_usd_value")
+    if cuv is None or float(cuv) == 0.01:
+        missing.append("credit_usd_value (absent or ==0.01 Indonesia default)")
+    if missing:
+        raise RuntimeError(
+            "GLOBAL CONFIG NOT LOADED — PRICING_CONFIG_JSON stale/unset, fallback ke "
+            "ekonomi Indonesia. Refusing start. Missing/invalid global config keys: "
+            + "; ".join(missing)
+            + ". Fix: set PRICING_CONFIG_JSON (or PRICING_CONFIG_PATH) on this service "
+            "to the current config/pricing.global.example.json."
+        )
+
+
+_assert_global_config_loaded(_PRICING)
+
 
 # ── Monthly credit allowance per plan (config-driven, per-key fallback) ────────
 TIER_MONTHLY_CREDITS: dict[str, int] = {

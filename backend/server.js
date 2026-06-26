@@ -2827,6 +2827,12 @@ if (SENTRY_ON) {
   Sentry.setupExpressErrorHandler(app);
 }
 
+// Fail-loud: on the GLOBAL deployment (BILLING_MODE=subscription), refuse to start
+// if the global pricing config didn't actually load (PRICING_CONFIG_JSON stale/unset
+// → silent fallback to Indonesia $0.01 economics = ~80% margin leak). No-op on the
+// Indonesia one_time deployment. Throwing here aborts boot before listen.
+subscriptions.assertGlobalConfigLoaded();
+
 const server = app.listen(PORT,()=>{ console.log(`🎬 Cerita AI Studio :${PORT}`); console.log(`   Gemini: ${GEMINI_KEY?"set ✅":"MISSING ⚠️"}`); console.log(`   Python: ${PYTHON_API}`); });
 // Vault retention: daily sweep + once shortly after boot (tier-based, see cleanup_expired_assets).
 setInterval(runAssetRetention, 24*60*60*1000);
