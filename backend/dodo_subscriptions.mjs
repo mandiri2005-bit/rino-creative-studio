@@ -30,7 +30,7 @@ import path from "path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "url";
 import { dodo, isConfigured, railEnabled, verifyEvent } from "./dodo.mjs";
-import { reset_entitlement, topup_grant, mirrorCreditDelta } from "./payments_core.mjs";
+import { reset_entitlement, topup_grant, mirrorCreditDelta, recordCreditedPaymentEvent } from "./payments_core.mjs";
 import { query } from "./db.js";
 
 // ── Billing mode (deployment switch) ──────────────────────────────────────────
@@ -180,11 +180,21 @@ export async function createSubscription({ tenantId, userId, planKey, email, nam
 // uses this to decide whether to CHANGE the existing plan vs create a brand-new one —
 // preventing the duplicate parallel subscriptions that repeated Upgrade clicks produced.
 export async function getActiveSubscription(tenantId) {
+  // Match active/on_hold AND a RECENT 'pending' row (a checkout created but not yet
+  // completed). Including pending closes the two-click race where a user clicks
+  // Subscribe, returns, and clicks again before the first checkout activates — which
+  // otherwise minted a SECOND parallel Dodo subscription (double-billing). A 1-hour
+  // window prevents an abandoned checkout from permanently blocking future subscribes.
+  // Live subs rank first (period_end/recency) so an active row always beats a stray pending.
   const r = await query(
     `SELECT dodo_subscription_id, plan_key, status
        FROM dodo_subscriptions
-      WHERE tenant_id=$1 AND status IN ('active','on_hold')
-      ORDER BY current_period_end DESC NULLS LAST, updated_at DESC
+      WHERE tenant_id=$1 AND (
+              status IN ('active','on_hold')
+              OR (status='pending' AND updated_at > now() - interval '1 hour'))
+      ORDER BY (status IN ('active','on_hold')) DESC,
+               current_period_end DESC NULLS LAST,
+               updated_at DESC
       LIMIT 1`,
     [tenantId], tenantId,
   );
@@ -307,15 +317,15 @@ async function _upsertSub({ tenantId, userId, planKey, subId, customerId, status
 // / until period end). With config-driven TIER_RANK, the plan name IS the tier name.
 async function _setTenantPlan(tenantId, plan) {
   if (!tenantId || !plan) return;
-  try {
-    const r = await query(`UPDATE tenants SET plan=$2 WHERE id=$1`, [tenantId, plan], tenantId);
-    if (r.rowCount === 0) console.error(`[dodo_sub] tenants.plan NOT updated (no row) t=${tenantId} plan=${plan}`);
-  } catch (e) {
-    // Loud, not swallowed: a CHECK violation here (e.g. an unmapped plan name) means
-    // the paying user's tier never updates → wrong model gating. Surfacing it as an
-    // error makes that fail visibly instead of silently locking the customer out.
-    console.error(`[dodo_sub] tenants.plan update FAILED t=${tenantId} plan=${plan}: ${e.message}`);
-  }
+  // Do NOT swallow a DB exception here. A CHECK violation (unmapped plan name) or a
+  // transient deadlock used to be caught + logged, letting the handler still RESET the
+  // credits and return 200 — Dodo never retried, leaving a paying user CREDITED but on
+  // a stale tier (locked out of the models they paid for), permanently. Let it throw so
+  // the webhook 500s and Dodo retries the whole event; the reset op_id + upsert ON
+  // CONFLICT make that replay-safe. (rowCount===0 is a missing-tenant data issue, not an
+  // exception — log loudly but don't throw, to avoid an infinite retry on a real gap.)
+  const r = await query(`UPDATE tenants SET plan=$2 WHERE id=$1`, [tenantId, plan], tenantId);
+  if (r.rowCount === 0) console.error(`[dodo_sub] tenants.plan NOT updated (no row) t=${tenantId} plan=${plan}`);
 }
 
 // ── TASK 4: handle a verified subscription event (the INTI) ───────────────────
@@ -362,7 +372,12 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
                          status: status || "active", periodStart, periodEnd, cancelAtEnd });
       await _setTenantPlan(tenantId, plan);
       let reset = null;
-      if (plan && periodKey) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey}`, "monthly_grant");
+      // Do NOT silently skip the credit grant when periodKey is null (Dodo payload
+      // missing both billing dates): that left a paying customer on the paid tier with
+      // ZERO credits, 200-acked, no retry. Credit under a stable :noperiod op_id and log
+      // loudly so it's visible. (Reset is set-to-target → safe even if it ever re-runs.)
+      if (plan && !periodKey) console.error(`[dodo_sub] active sub=${subId} MISSING billing dates → crediting under :noperiod, investigate id=${webhookId}`);
+      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || "noperiod"}`, "monthly_grant");
       return { handled: true, type, action: "active", plan, reset };
     }
     case "subscription.renewed": {
@@ -372,19 +387,37 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
                          status: status || "active", periodStart, periodEnd, cancelAtEnd });
       await _setTenantPlan(tenantId, plan);
       let reset = null;
-      if (plan && periodKey) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey}`, "monthly_grant");
+      if (plan && !periodKey) console.error(`[dodo_sub] renewed sub=${subId} MISSING billing dates → crediting under :noperiod, investigate id=${webhookId}`);
+      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || "noperiod"}`, "monthly_grant");
       return { handled: true, type, action: "renewed", plan, reset };
     }
     case "subscription.plan_changed": {
-      // Upgrade/downgrade → set new plan + RESET credits to the NEW plan amount.
-      // Distinct op_id (new plan + period) so it applies even if this period was
-      // already reset by active/renewed. Dodo handles proration billing.
+      // Determine direction vs the plan currently stored (read BEFORE the upsert).
       const plan = eventPlan || metaPlan;
+      const priorRow = await query(`SELECT plan_key FROM dodo_subscriptions WHERE dodo_subscription_id=$1`, [subId], tenantId);
+      const priorPlan = priorRow.rows[0]?.plan_key || null;
+      const isDowngrade = !!(plan && priorPlan && subPlanCredits(plan) < subPlanCredits(priorPlan));
+      if (isDowngrade) {
+        // DOWNGRADE → DEFER to period end (Rino's policy): the user keeps the paid tier
+        // AND the credits they already paid for THIS cycle; the lower plan + its credit
+        // allowance take effect at the next subscription.renewed. So here we touch NEITHER
+        // tenants.plan NOR the balance, and we KEEP the sub row's plan_key = the current
+        // (higher) plan until renewal so the UI reflects what the user actually has now.
+        // (Dodo handles the proration credit on its side.)
+        await _upsertSub({ tenantId, userId, planKey: priorPlan, subId, customerId: data?.customer?.customer_id || null,
+                           status: status || "active", periodStart, periodEnd, cancelAtEnd });
+        console.log(`[dodo_sub] plan_changed DOWNGRADE deferred sub=${subId} ${priorPlan}->${plan} (effective next renewal) id=${webhookId}`);
+        return { handled: true, type, action: "plan_changed", deferred_downgrade: true, from: priorPlan, to: plan };
+      }
+      // UPGRADE (or reprice up) → apply immediately: new tier + RESET up to the new plan.
+      // op_id keyed on the unique webhookId (not period+plan) so a genuine re-change back
+      // to a plan held earlier in the period still re-resets, while a true replay of THIS
+      // event collapses. (Reset is set-to-target → over-credit on A→B→A is prevented.)
       await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
                          status: status || "active", periodStart, periodEnd, cancelAtEnd });
       await _setTenantPlan(tenantId, plan);
       let reset = null;
-      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:planchg:${periodKey || "na"}:${plan}`, "monthly_grant");
+      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:planchg:${webhookId}`, "monthly_grant");
       return { handled: true, type, action: "plan_changed", plan, reset };
     }
     case "subscription.on_hold": {
@@ -518,7 +551,10 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
       await _setTenantPlan(row.tenant_id, "free");
       await reset_entitlement({
         userId: row.user_id, tenantId: row.tenant_id, targetCredits: 0,
-        opId: `dodo_sub:${row.dodo_subscription_id}:reconcile_expired`, reason: "lapse",
+        // SAME op_id as the webhook subscription.expired path so a webhook+cron race for
+        // the same lapse collapses to ONE ledger 'lapse' row (was :reconcile_expired,
+        // which double-counted the lapse in the accounting journal).
+        opId: `dodo_sub:${row.dodo_subscription_id}:expired`, reason: "lapse",
         meta: { provider: "dodo_sub", subscription_id: row.dodo_subscription_id, source: "reconcile", live_status: liveStatus },
       });
       downgraded++;
@@ -543,12 +579,54 @@ export async function handleTopupPayment({ payload, webhookId, rawEvent }) {
   const amount = topupPackCredits(packKey);
   if (!(amount > 0)) return { handled: false, reason: "zero_credits", packKey };
   const expiresAt = await _computeTopupExpiry(tenantId);
+  // Idempotency keyed on the IMMUTABLE payment_id (not the per-delivery webhook-id):
+  // a redelivery of the same payment under a new webhook-id can no longer double-credit.
+  const payId = data.payment_id || webhookId;
   const res = await topup_grant({
     userId: md.user_id || null, tenantId, amount,
-    opId: `dodo_topup:${webhookId}`, expiresAt,
+    opId: `dodo_topup:${payId}`, expiresAt,
     meta: { provider: "dodo", pack_key: packKey, payment_id: data.payment_id || null, webhook_id: webhookId },
   });
+  // Record a credited payment_events row so a later refund/chargeback on this top-up
+  // can be resolved (by provider_payment_id) and clawed back. Does NOT move credits.
+  if (res.applied !== false && data.payment_id) {
+    try {
+      await recordCreditedPaymentEvent({
+        userId: md.user_id || null, tenantId, provider: "dodo", idempotencyKey: `topup:${payId}`,
+        providerPaymentId: data.payment_id, planKey: packKey,
+        amount: data.total_amount ?? null, currency: data.currency ?? null,
+        creditsGranted: amount, rawEvent: payload,
+      });
+    } catch (e) { console.warn(`[dodo_topup] payment_events record failed id=${webhookId}: ${e.message}`); }
+  }
   return { handled: true, action: "topup", packKey, amount, expiresAt, ...res };
+}
+
+// Record (audit-only) the settling charge behind a subscription so a later refund /
+// chargeback on that payment can be resolved and clawed back. Called from the webhook
+// for a subscription-borne payment.succeeded (which does NOT itself move credits — the
+// subscription.active/renewed RESET does). Writes a credited payment_events row keyed
+// by (provider 'dodo', idempotency_key webhook-id) with provider_payment_id +
+// credits_granted = the plan's period allowance (the "forfeit a period" amount).
+export async function recordSubscriptionPayment({ payload, webhookId }) {
+  const data = payload?.data || {};
+  if (!data.payment_id) return { recorded: false, reason: "no_payment_id" };
+  const { tenantId, userId, planKey: metaPlan } = await _resolveTenant(data);
+  if (!tenantId) return { recorded: false, reason: "no_tenant" };
+  const plan = planForProduct(data?.product_id) || metaPlan || null;
+  const credits = plan ? subPlanCredits(plan) : 0;
+  try {
+    await recordCreditedPaymentEvent({
+      userId, tenantId, provider: "dodo", idempotencyKey: webhookId,
+      providerPaymentId: data.payment_id, planKey: plan,
+      amount: data.total_amount ?? null, currency: data.currency ?? null,
+      creditsGranted: credits, rawEvent: payload,
+    });
+    return { recorded: true, plan, credits };
+  } catch (e) {
+    console.warn(`[dodo_sub] subscription payment_events record failed id=${webhookId}: ${e.message}`);
+    return { recorded: false, reason: "record_failed" };
+  }
 }
 
 // ── Top-up expiry sweep (cron, OPTIONAL drift-safety) ─────────────────────────

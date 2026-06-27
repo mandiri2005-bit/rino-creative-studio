@@ -191,6 +191,32 @@ export async function recordPaymentEvent({
   );
 }
 
+// ── Record an ALREADY-credited payment (audit trail for reversal) ─────────────
+// Subscription period RESETs (reset_entitlement) and top-up grants (topup_grant)
+// move credits WITHOUT writing a payment_events row — so a later refund/chargeback
+// (reverse_entitlement → payment_event_for_reversal) had no row to find and clawed
+// back ZERO. This writes a credited row keyed by (provider, idempotency_key) with the
+// provider_payment_id + credits_granted, so reverse_entitlement can resolve and debit
+// it. It does NOT move credits (they already moved via reset/topup_grant). Idempotent:
+// a re-delivery DO-NOTHINGs and never resurrects a row a refund already flipped.
+export async function recordCreditedPaymentEvent({
+  userId, tenantId, provider, idempotencyKey, providerPaymentId = null,
+  planKey = null, amount = null, currency = null, creditsGranted, rawEvent = {},
+}) {
+  if (!tenantId || !provider || !idempotencyKey) throw new Error("missing_record_fields");
+  const credits = Math.trunc(Number(creditsGranted) || 0);
+  await query(
+    `INSERT INTO payment_events
+       (tenant_id, user_id, provider, idempotency_key, provider_payment_id,
+        plan_key, amount, currency, status, credited, credits_granted, raw_event)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'succeeded',TRUE,$9,$10::jsonb)
+     ON CONFLICT (provider, idempotency_key) DO NOTHING`,
+    [tenantId, userId, provider, idempotencyKey, providerPaymentId,
+     planKey, amount, currency, credits, JSON.stringify(rawEvent)],
+    tenantId,
+  );
+}
+
 // ── Reverse a grant on refund / chargeback ────────────────────────────────────
 // Negative credit_apply (reason='refund'), idempotent on refundOpId so a
 // re-delivered refund never double-reverses; flips payment_events status +

@@ -417,6 +417,14 @@ app.post(
       console.warn("[dodo] invalid signature:", err.message);
       return res.status(403).json({ error: "invalid_signature" });
     }
+    // Defense-in-depth: bind the (verified) event to OUR Dodo business. The signature only
+    // proves it was signed with our webhook secret; asserting business_id stops a sibling/
+    // test business that ever shared the secret from crediting our tenants. Optional —
+    // skipped when DODO_BUSINESS_ID is unset so it can't break a not-yet-configured env.
+    if (process.env.DODO_BUSINESS_ID && payload?.business_id && payload.business_id !== process.env.DODO_BUSINESS_ID) {
+      console.warn(`[dodo] business_id mismatch ${payload.business_id} != ${process.env.DODO_BUSINESS_ID} id=${webhookId}`);
+      return res.status(403).json({ error: "business_mismatch" });
+    }
     try {
       // Global deployment (BILLING_MODE=subscription) routes two new shapes to the
       // dedicated handlers; everything else (one-time package payment/refund/dispute)
@@ -439,8 +447,16 @@ app.post(
       if (subscriptions.subscriptionMode() && _isTopup) {
         r = await subscriptions.handleTopupPayment({ payload, webhookId, rawEvent: payload });
       } else if (_isSubPayment) {
-        console.log(`[dodo] subscription-borne ${_type} sub=${_data.subscription_id} id=${webhookId} — credited via subscription.* (no additive grant)`);
-        r = { handled: true, recorded: true, reason: "subscription_payment_ignored", type: _type };
+        // A recurring SUBSCRIPTION charge: credits are granted by subscription.active/
+        // renewed (RESET), so NO additive grant here. But RECORD the succeeded charge in
+        // payment_events so a later refund/chargeback on this payment_id can be resolved
+        // and clawed back (was the critical gap: refunds reversed zero credits).
+        if (_type === "payment.succeeded") {
+          const rec = await subscriptions.recordSubscriptionPayment({ payload, webhookId });
+          r = { handled: true, recorded: true, reason: "subscription_payment_recorded", type: _type, ...rec };
+        } else {
+          r = { handled: true, recorded: true, reason: "subscription_payment_ignored", type: _type };
+        }
       } else if (subscriptions.subscriptionMode() && _isSub) {
         r = await subscriptions.handleSubscriptionEvent({ payload, webhookId, rawEvent: payload });
       } else {
@@ -552,6 +568,10 @@ app.get("/payments/status", (req, res) => {
 });
 app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
   try {
+    // ONE-TIME (Indonesia) package checkout — credits come from the LEGACY tier map.
+    // In subscription mode (global/Wimba) this MUST be off, else a stray payment.succeeded
+    // credits the wrong amount from the Indonesia table. Use /subscription/create + /topup/create.
+    if (subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_one_time_mode" });
     // Kill switch — gate the ENTRANCE (create) only; webhooks still settle.
     if (!dodo.railEnabled()) return res.status(503).json({ error: "payments_disabled", rail: "dodo" });
     const tenantId = resolveTenantId(req);
@@ -592,6 +612,10 @@ app.post("/subscription/create", requireAuth, async (req, res) => {
     // the prorated difference on the card on file and fires subscription.plan_changed.
     const _active = await subscriptions.getActiveSubscription(tenantId);
     if (_active) {
+      // A checkout already in flight → don't mint a second parallel subscription.
+      if (_active.status === "pending") {
+        return res.status(409).json({ error: "checkout_in_progress", message: "Selesaikan atau batalkan checkout yang sedang berjalan dulu." });
+      }
       if (_active.plan_key === planKey) {
         return res.status(409).json({ error: "already_on_plan", plan_key: planKey });
       }
@@ -752,7 +776,13 @@ app.post("/api/admin/grant", async (req, res) => {
     }
     if (!tenantId) return res.status(404).json({ error: "tenant not found (pass tenant_id or a known email)" });
     const reason = ["admin_adjust", "topup", "monthly_grant"].includes(b.reason) ? b.reason : "admin_adjust";
-    const out = await billing.creditTenant(tenantId, credits, reason, b.op_id || null, { metadata: { source: "admin_api" } });
+    // Idempotency: never pass a NULL op_id (credit_apply's null branch has no uniqueness
+    // gate → a double-submit stacks credits). Namespace an explicit op_id; when omitted,
+    // derive a deterministic key (tenant+reason+amount+UTC-day) so an accidental same-day
+    // resubmit collapses. Pass a unique op_id to intentionally grant again.
+    const _dayKey = new Date().toISOString().slice(0, 10);
+    const opId = b.op_id ? `admin:${String(b.op_id)}` : `admin:auto:${tenantId}:${reason}:${credits}:${_dayKey}`;
+    const out = await billing.creditTenant(tenantId, credits, reason, opId, { metadata: { source: "admin_api" } });
     res.json({ tenant_id: tenantId, credits_added: credits, applied: out.applied, balance: out.balance });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
