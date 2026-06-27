@@ -38,6 +38,18 @@ http {
     # SPA fallback serves the CANONICAL app shell (/app/index.html), never the stale root index.html.
     location / { try_files $uri $uri/ /app/index.html; }
 
+    location /credits/ {
+      set $backend_upstream "${BACKEND_URL}";
+      proxy_pass $backend_upstream; proxy_http_version 1.1;
+      proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
+      proxy_read_timeout 30s; proxy_buffering off; }
+
+    location /topup/ {
+      set $backend_upstream "${BACKEND_URL}";
+      proxy_pass $backend_upstream; proxy_http_version 1.1;
+      proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
+      proxy_read_timeout 30s; proxy_buffering off; }
+
     location /webhooks/ {
       set $backend_upstream "${BACKEND_URL}";
       proxy_pass $backend_upstream; proxy_http_version 1.1;

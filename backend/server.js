@@ -612,6 +612,9 @@ app.post("/subscription/create", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "internal_error" });
   }
 });
+// Credits balance + bucket breakdown (Python metering service).
+app.get("/credits/balance", requireAuth, (req, res) => pyProxy(req, res, "/credits/balance"));
+
 // Current subscription state (Account page + post-checkout return poll). Read-only.
 app.get("/subscription/status", requireAuth, async (req, res) => {
   try {
