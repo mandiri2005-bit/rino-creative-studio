@@ -33,6 +33,12 @@ export const dodo = API_KEY
   ? new DodoPayments({ bearerToken: API_KEY, webhookKey: WEBHOOK_SECRET || null, environment: ENVIRONMENT })
   : null;
 
+// L4: the API key prefix must match the environment (live_ ↔ live_mode, test_ ↔ test_mode)
+// or every Dodo call fails with an opaque auth error. Warn loudly at load (a go-live trap).
+if (API_KEY && ((ENVIRONMENT === "live_mode") !== API_KEY.startsWith("live_"))) {
+  console.error(`[dodo] DODO_ENVIRONMENT=${ENVIRONMENT} but API key starts "${API_KEY.slice(0, 5)}" — MISMATCH; Dodo calls will fail auth. Align the key with the environment.`);
+}
+
 export function isConfigured() { return !!dodo; }
 
 // Kill switch (per-rail). Default ACTIVE when unset — a forgotten var must NOT

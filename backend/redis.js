@@ -54,4 +54,23 @@ async function delLiveJob(jobId) {
   await redis.del(KEY(jobId));
 }
 
-export { redis, setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob };
+// ── Lightweight rate-limit + per-key lock ────────────────────────────────────
+// FAIL-OPEN by design: a Redis hiccup must never block a legitimate paying user.
+// rateLimitOk: true if this call is within `limit` per rolling `windowSec`.
+async function rateLimitOk(key, limit, windowSec) {
+  try {
+    const n = await redis.incr(`rl:${key}`);
+    if (n === 1) await redis.expire(`rl:${key}`, windowSec);
+    return n <= limit;
+  } catch { return true; }
+}
+// acquireLock: SET NX EX — true if acquired. Release with releaseLock (or let the TTL expire).
+async function acquireLock(key, ttlSec) {
+  try { return (await redis.set(`lock:${key}`, "1", "EX", ttlSec, "NX")) === "OK"; }
+  catch { return true; }
+}
+async function releaseLock(key) {
+  try { await redis.del(`lock:${key}`); } catch { /* TTL will expire it */ }
+}
+
+export { redis, setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob, rateLimitOk, acquireLock, releaseLock };

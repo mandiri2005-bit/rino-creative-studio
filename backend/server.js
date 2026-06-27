@@ -29,7 +29,7 @@ import * as billing from "./billing.mjs";
 import * as dodo from "./dodo.mjs";
 import * as subscriptions from "./dodo_subscriptions.mjs";
 import * as midtrans from "./midtrans.mjs";
-import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob } from "./redis.js";
+import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob, rateLimitOk, acquireLock, releaseLock } from "./redis.js";
 import * as storage from "./storage.mjs";
 import { isGoogleVeo, googleVeoSubmit, googleVeoStatus, googleVeoResult, getGoogleVeoJob, markGoogleVeoR2 } from "./googleVeo.mjs";
 import { randomUUID } from "crypto";
@@ -317,7 +317,7 @@ app.post(
         // a free-grant failure must never break user provisioning.
         if (subscriptions.subscriptionMode() && email) {
           try {
-            const uRes = await pool.query(`SELECT id FROM users WHERE external_id=$1 LIMIT 1`, [data.id]);
+            const uRes = await query(`SELECT id FROM users WHERE external_id=$1 AND tenant_id=$2 LIMIT 1`, [data.id, tenantId], tenantId);
             const fg = await subscriptions.grantFreeOnce({ email, userId: uRes.rows[0]?.id || null, tenantId });
             console.log(`[free] ${email} → ${fg.status} bal=${fg.balance}`);
           } catch (fgErr) { console.warn("[free] grant failed:", fgErr.message); }
@@ -326,18 +326,16 @@ app.post(
       } else if (type === "user.updated") {
         const email = data.email_addresses?.[0]?.email_address || "";
         if (email) {
-          await pool.query(
-            `UPDATE users SET email=$1 WHERE external_id=$2`,
-            [email, data.id]
-          );
+          // SECURITY DEFINER fn: cross-tenant identity update by external_id (RLS-safe
+          // under app_user — no tenant context available here). Migration 0046.
+          await pool.query(`SELECT clerk_user_update_email($1,$2)`, [data.id, email]);
           console.log(`[webhook] user.updated → external_id=${data.id} email=${email}`);
         }
 
       } else if (type === "user.deleted") {
-        await pool.query(
-          `UPDATE users SET is_active=false WHERE external_id=$1`,
-          [data.id]
-        );
+        // SECURITY DEFINER fn: cross-tenant deactivate by external_id (RLS-safe under
+        // app_user — no tenant context here). Migration 0046.
+        await pool.query(`SELECT clerk_user_deactivate($1)`, [data.id]);
         console.log(`[webhook] user.deleted → external_id=${data.id} deactivated`);
 
       } else if (type === "organization.created") {
@@ -519,7 +517,7 @@ app.use("/api", (req, res, next) => {
 app.get("/api/billing/status", async (req, res) => {
   try {
     res.json(await billing.getBillingStatus(resolveTenantId(req)));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { console.error("[billing/status]", e); res.status(500).json({ error: "internal_error" }); }
 });
 app.post("/api/billing/checkout", async (req, res) => {
   try {
@@ -599,11 +597,18 @@ app.post("/payments/dodo/create-checkout", requireAuth, async (req, res) => {
 // these routes 404-as-503 ('not_subscription_mode') on the Indonesia one-time deployment.
 // Credits are RESET (not added) by the webhook; these endpoints never grant.
 app.post("/subscription/create", requireAuth, async (req, res) => {
+  let _lockTenant = null;
   try {
     if (!subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_subscription_mode" });
     // Kill switch — gate the ENTRANCE only; webhooks still settle in-flight subs.
     if (!dodo.railEnabled()) return res.status(503).json({ error: "payments_disabled", rail: "dodo" });
     const tenantId = resolveTenantId(req);
+    // M5: rate-limit checkout creation per tenant. M7: serialize concurrent create/change
+    // for this tenant (TOCTOU double-create guard; also blocked at Dodo via "Allow Multiple
+    // Subscriptions"=off). Both fail-OPEN on Redis trouble.
+    if (!(await rateLimitOk(`checkout:${tenantId}`, 10, 60))) return res.status(429).json({ error: "rate_limited", message: "Terlalu banyak percobaan, coba lagi sebentar." });
+    if (!(await acquireLock(`sub-create:${tenantId}`, 20))) return res.status(409).json({ error: "create_in_progress", message: "Permintaan langganan lain sedang diproses." });
+    _lockTenant = tenantId;
     const userId = await resolveUserId(req, tenantId);
     const body = req.body || {};
     const planKey = String(body.plan_key || "").trim();
@@ -650,6 +655,8 @@ app.post("/subscription/create", requireAuth, async (req, res) => {
     if (e.message === "missing_email") return res.status(400).json({ error: "missing_email" });
     console.error("[subscription/create] unexpected:", e);
     return res.status(500).json({ error: "internal_error" });
+  } finally {
+    if (_lockTenant) await releaseLock(`sub-create:${_lockTenant}`);
   }
 });
 // Credits balance + bucket breakdown (Python metering service).
@@ -688,6 +695,7 @@ app.post("/topup/create", requireAuth, async (req, res) => {
     if (!subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_subscription_mode" });
     if (!dodo.railEnabled()) return res.status(503).json({ error: "payments_disabled", rail: "dodo" });
     const tenantId = resolveTenantId(req);
+    if (!(await rateLimitOk(`checkout:${tenantId}`, 10, 60))) return res.status(429).json({ error: "rate_limited", message: "Terlalu banyak percobaan, coba lagi sebentar." });   // M5
     const userId = await resolveUserId(req, tenantId);
     // Top-up is for paid plans only — reject Free (gate by the tenant's current plan).
     let plan = "free";

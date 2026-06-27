@@ -47,9 +47,19 @@ export function subscriptionMode() { return process.env.BILLING_MODE === "subscr
 // so they cleanly detect a fallback. Call once at server startup (before listen).
 // (_loadPricing is a hoisted function declaration below.)
 export function assertGlobalConfigLoaded() {
+  // L1: a typo'd BILLING_MODE (anything but the exact "subscription") silently disables
+  // subscription mode. Warn LOUDLY if it's set to an unrecognised value.
+  const bm = process.env.BILLING_MODE;
+  if (bm && bm !== "subscription" && bm !== "one_time") {
+    console.error(`[config] BILLING_MODE="${bm}" not recognised (expect "subscription"|"one_time") → subscription mode is OFF. Typo?`);
+  }
   if (!subscriptionMode()) return;
   const cfg = _loadPricing();
   const missing = [];
+  // L2: a paid plan with no Dodo product id (DODO_PRODUCT_* unset) is silently unpurchasable
+  // at runtime (createSubscription → unknown_plan). Surface it at boot (warn, non-fatal).
+  const unmapped = VALID_SUB_PLANS.filter((k) => !subProductId(k));
+  if (unmapped.length) console.error(`[config] paid plans with NO Dodo product id (set DODO_PRODUCT_*): ${unmapped.join(", ")} — unpurchasable until mapped.`);
   const sp = cfg.subscription_plans;
   if (!sp || typeof sp !== "object" || Object.keys(sp).length === 0) missing.push("subscription_plans (absent/empty)");
   const byres = cfg.video_usd_per_sec_by_res;
@@ -253,13 +263,14 @@ async function _computeTopupExpiry(tenantId) {
     [tenantId], tenantId,
   );
   const cpe = r.rows[0]?.current_period_end;
-  // expiry = max(period_end, now) + 30d. The now() floor stops a STALE period_end
-  // (e.g. a stuck on_hold sub whose next_billing_date is in the past) from shortening
-  // the top-up below the ~30-day guarantee; +30d (not setMonth) avoids JS month-
-  // overflow. Matches the spec example (period ends 30 Jun → expiry 30 Jul).
-  if (!cpe) console.warn(`[dodo_topup] no subscription period for tenant=${tenantId} — using now()+30d`);
-  const base = cpe ? new Date(cpe).getTime() : Date.now();
-  return new Date(Math.max(base, Date.now()) + _MS_30D).toISOString();
+  // Top-up expires WITH the subscription period: topup_expires_at = next_billing_date
+  // (= current_period_end = the plan-credit RESET date), so boost + plan credits share ONE
+  // clock — buy within a period, use within that period; the renewal reset forfeits leftover.
+  // Rino's call 2026-06-27 (was period_end + 30d). Floor at now() so a stale/past period_end
+  // never makes the top-up born-expired. No active period (shouldn't happen — only paid users
+  // can top up): 30-day safety net.
+  if (!cpe) { console.warn(`[dodo_topup] no subscription period for tenant=${tenantId} — using now()+30d`); return new Date(Date.now() + _MS_30D).toISOString(); }
+  return new Date(Math.max(new Date(cpe).getTime(), Date.now())).toISOString();
 }
 
 // ── Period key (idempotency): epoch-seconds of the period END (next_billing_date) ─
@@ -356,7 +367,14 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
 
   // The authoritative plan for this event: a plan change names a new product;
   // otherwise use our stored/metadata plan.
-  const eventPlan = planForProduct(data?.product_id) || metaPlan || null;
+  const _productPlan = planForProduct(data?.product_id);
+  const eventPlan = _productPlan || metaPlan || null;
+  // A plan_changed / renewed that names a product_id we DON'T recognise must NOT silently
+  // fall back to the OLD plan's credits (audit MEDIUM x2: M1 renewed-diff-product,
+  // M2 plan_changed-unknown-product). Flag it so the credit-granting paths log LOUDLY and
+  // SKIP the grant instead of guessing — an unmapped product is an ops error (DODO_PRODUCT_*
+  // missing), not a silent same-plan renewal.
+  const unknownProduct = !!data?.product_id && !_productPlan;
   const status = data?.status || null;
   const periodStart = _toTs(data?.previous_billing_date);
   const periodEnd = _toTs(data?.next_billing_date);
@@ -398,24 +416,33 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
       await _setTenantPlan(tenantId, plan);
       let reset = null;
       if (plan && !periodKey) console.error(`[dodo_sub] renewed sub=${subId} MISSING billing dates → crediting under :noperiod:${webhookId}, investigate`);
-      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || ("noperiod:" + webhookId)}`, "monthly_grant");
-      return { handled: true, type, action: "renewed", plan, reset };
+      if (unknownProduct) console.error(`[dodo_sub] renewed sub=${subId} UNKNOWN product_id=${data?.product_id} → NOT crediting (map the product in DODO_PRODUCT_*); keeping current credits`);
+      else if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || ("noperiod:" + webhookId)}`, "monthly_grant");
+      return { handled: true, type, action: "renewed", plan, reset, unknownProduct: unknownProduct || undefined };
     }
     case "subscription.plan_changed": {
-      // Up OR down → apply IMMEDIATELY (tier + plan_key). Credits → MAX(current sub credits,
-      // new plan allowance): an upgrade bumps UP to the new allowance; a downgrade KEEPS what
-      // the user already has (never strips paid credits — Rino's "keep credits" policy).
-      // The reset op_id is period+TARGET-PLAN (NOT per-webhook): re-reaching a plan within one
-      // period is idempotent, which BOUNDS the spend→toggle→refill farming vector (each plan
-      // can grant its allowance at most once per period) AND makes A→B→A a no-op (no strip).
+      // Up OR down → apply IMMEDIATELY (tier + plan_key). Credits → ADD: the user pays the
+      // new plan's FULL price and the cycle resets, so they KEEP their leftover sub credits
+      // AND get the new plan's allowance on top (target = sisa + new). Rino's call 2026-06-27.
+      // op_id = period + TARGET-PLAN: a redelivery of the SAME change is idempotent (no
+      // double-add — reset_entitlement is ON-CONFLICT on op_id); a genuinely new paid change
+      // (cycle reset → new periodKey) adds again. GUARD against A→B→A toggle accumulation:
+      // this ADD is the ONLY path that grows sub credits — every billing boundary RESETS
+      // (active/renewed → doReset SETs sub to the plan amount; expired → SET to 0), so any
+      // within-period accumulation is WIPED at the next renewal/expiry. Toggle-farming is
+      // therefore bounded to a single period AND costs a full payment per toggle.
       const plan = eventPlan || metaPlan;
       await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
                          status: status || "active", periodStart, periodEnd, cancelAtEnd });
       await _setTenantPlan(tenantId, plan);
       let reset = null;
-      if (plan) {
+      if (unknownProduct) {
+        // Unknown new product → can't know its credit allowance. Log loudly + DON'T grant
+        // (was: silently applied the OLD plan's credits). Tier/plan_key stay at the old value.
+        console.error(`[dodo_sub] plan_changed sub=${subId} UNKNOWN product_id=${data?.product_id} → NOT applying credits (map the product in DODO_PRODUCT_* first)`);
+      } else if (plan) {
         const sb = await query(`SELECT GREATEST(COALESCE(sub_balance,0),0) AS sub FROM credit_balances WHERE tenant_id=$1`, [tenantId], tenantId);
-        const target = Math.max(Number(sb.rows[0]?.sub || 0), subPlanCredits(plan));   // MAX: keep on downgrade, bump on upgrade
+        const target = Number(sb.rows[0]?.sub || 0) + subPlanCredits(plan);   // ADD: keep leftover + new plan allowance
         reset = await reset_entitlement({
           userId, tenantId, targetCredits: target,
           opId: `dodo_sub:${subId}:planchg:${periodKey || ("nb:" + webhookId)}:${plan}`,
@@ -529,7 +556,8 @@ export async function customerPortal({ tenantId }) {
 export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 } = {}) {
   if (!subscriptionMode()) return { skipped: "not_subscription_mode" };
   if (!isConfigured()) return { skipped: "dodo_not_configured" };
-  const cutoffMs = Date.now() - graceDays * 24 * 60 * 60 * 1000;
+  const graceDaysSafe = Math.max(1, Number(graceDays) || 3);   // L6: floor at 1 day — graceDays=0/neg would downgrade on_hold subs mid-dunning
+  const cutoffMs = Date.now() - graceDaysSafe * 24 * 60 * 60 * 1000;
   // Cross-tenant scan via the SECURITY-DEFINER fn (the table is FORCE-RLS so a plain
   // app_user query would see nothing). The fn only reads; the per-row downgrade below
   // re-enters per-tenant (RLS-scoped) through _upsertSub/reset_entitlement.
@@ -538,7 +566,7 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
        FROM dodo_subscriptions_due_for_reconcile($1, $2)`,
     [Math.floor(cutoffMs / 1000), limit],
   );
-  let downgraded = 0, checked = 0;
+  let downgraded = 0, checked = 0, errored = 0;
   for (const row of r.rows) {
     checked++;
     try {
@@ -548,6 +576,10 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
       // one of pending|active|on_hold|cancelled|failed|expired ('renewed' is a webhook
       // type, never a status). Skip active (paying) and pending (mid-reactivation).
       if (liveStatus === "active" || liveStatus === "pending") continue;
+      // L5: re-read the local row (RLS-scoped) right before downgrading — a concurrent webhook
+      // may have re-activated it since the unlocked cross-tenant scan. Skip if no longer dead.
+      const cur = await query(`SELECT status FROM dodo_subscriptions WHERE dodo_subscription_id=$1 AND tenant_id=$2`, [row.dodo_subscription_id, row.tenant_id], row.tenant_id);
+      if (cur.rows[0]?.status === "active" || cur.rows[0]?.status === "pending") continue;
       await _upsertSub({
         tenantId: row.tenant_id, userId: row.user_id, planKey: "free",
         subId: row.dodo_subscription_id, customerId: null, status: "expired",
@@ -564,10 +596,11 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
       });
       downgraded++;
     } catch (e) {
+      errored++;   // L7: surface failures in the return so the caller/cron can alert (was silent console.warn only)
       console.warn(`[dodo_sub] reconcile failed sub=${row.dodo_subscription_id}: ${e.message}`);
     }
   }
-  return { checked, downgraded, scanned: r.rows.length };
+  return { checked, downgraded, errored, scanned: r.rows.length };
 }
 
 // ── TASK 4 (top-up branch): handle a ONE-TIME payment.succeeded with kind=topup ─
@@ -675,7 +708,14 @@ function _disposableSet() {
 }
 export function isDisposableDomain(domain) {
   if (!domain) return true;                        // no domain → treat as disposable (reject)
-  return _disposableSet().has(String(domain).toLowerCase());
+  const set = _disposableSet();
+  const parts = String(domain).toLowerCase().split(".");
+  // L3: match subdomain variants too (mail.yopmail.com → yopmail.com), so a subdomain can't
+  // bypass an exact-match entry. Checks the full domain down to the registrable (2-label) form.
+  for (let i = 0; i <= parts.length - 2; i++) {
+    if (set.has(parts.slice(i).join("."))) return true;
+  }
+  return false;
 }
 
 // Canonicalise + hash an email so dot/+tag Gmail variants collapse to ONE identity.

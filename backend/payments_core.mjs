@@ -160,7 +160,7 @@ export async function grant_entitlement({
   // 4. Mirror into the live Redis balance ONLY when newly applied (never clobber holds).
   if (applied) {
     try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${tenantId}:credits`, String(Math.trunc(credits))); }
-    catch (e) { console.warn("[payments_core] redis mirror failed:", e.message); }
+    catch (e) { console.warn("[payments_core] redis mirror failed:", e.message); try { await redis.del(`bal:${tenantId}:credits`); } catch { /* Redis down → DB-fallback read path heals it */ } }
   }
   return { applied, balance, credited: credits > 0 };
 }
@@ -344,7 +344,7 @@ export async function reverse_entitlement({
   }
   if (applied && actualDelta !== 0) {
     try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${row.tenant_id}:credits`, String(actualDelta)); }
-    catch (e) { console.warn("[reverse] redis mirror failed:", e.message); }
+    catch (e) { console.warn("[reverse] redis mirror failed:", e.message); try { await redis.del(`bal:${row.tenant_id}:credits`); } catch { /* Redis down → DB-fallback read path heals it */ } }
   }
   return { reversed: applied, applied, balance, credits: toReverse };
 }
@@ -399,7 +399,7 @@ export async function reset_entitlement({
   // clobber holds). delta can be negative (downgrade / unspent forfeiture).
   if (applied && delta !== 0) {
     try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${tenantId}:credits`, String(delta)); }
-    catch (e) { console.warn("[reset] redis mirror failed:", e.message); }
+    catch (e) { console.warn("[reset] redis mirror failed:", e.message); try { await redis.del(`bal:${tenantId}:credits`); } catch { /* Redis down → DB-fallback read path heals it */ } }
   }
   return { applied, balance, delta };
 }
@@ -441,7 +441,7 @@ export async function topup_grant({
   // Mirror the added credits into the live Redis balance (only if present).
   if (applied && delta !== 0) {
     try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${tenantId}:credits`, String(delta)); }
-    catch (e) { console.warn("[topup] redis mirror failed:", e.message); }
+    catch (e) { console.warn("[topup] redis mirror failed:", e.message); try { await redis.del(`bal:${tenantId}:credits`); } catch { /* Redis down → DB-fallback read path heals it */ } }
   }
   return { applied, balance, delta };
 }
@@ -453,5 +453,5 @@ export async function mirrorCreditDelta(tenantId, delta) {
   const d = Math.trunc(Number(delta) || 0);
   if (!tenantId || d === 0) return;
   try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${tenantId}:credits`, String(d)); }
-  catch (e) { console.warn("[mirror] redis delta failed:", e.message); }
+  catch (e) { console.warn("[mirror] redis delta failed:", e.message); try { await redis.del(`bal:${tenantId}:credits`); } catch { /* Redis down → DB-fallback read path heals it */ } }
 }
