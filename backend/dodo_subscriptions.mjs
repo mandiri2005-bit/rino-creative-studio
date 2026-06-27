@@ -187,7 +187,7 @@ export async function getActiveSubscription(tenantId) {
   // window prevents an abandoned checkout from permanently blocking future subscribes.
   // Live subs rank first (period_end/recency) so an active row always beats a stray pending.
   const r = await query(
-    `SELECT dodo_subscription_id, plan_key, status
+    `SELECT dodo_subscription_id, plan_key, status, pending_plan_key
        FROM dodo_subscriptions
       WHERE tenant_id=$1 AND (
               status IN ('active','on_hold')
@@ -317,15 +317,22 @@ async function _upsertSub({ tenantId, userId, planKey, subId, customerId, status
 // / until period end). With config-driven TIER_RANK, the plan name IS the tier name.
 async function _setTenantPlan(tenantId, plan) {
   if (!tenantId || !plan) return;
-  // Do NOT swallow a DB exception here. A CHECK violation (unmapped plan name) or a
-  // transient deadlock used to be caught + logged, letting the handler still RESET the
-  // credits and return 200 — Dodo never retried, leaving a paying user CREDITED but on
-  // a stale tier (locked out of the models they paid for), permanently. Let it throw so
-  // the webhook 500s and Dodo retries the whole event; the reset op_id + upsert ON
-  // CONFLICT make that replay-safe. (rowCount===0 is a missing-tenant data issue, not an
-  // exception — log loudly but don't throw, to avoid an infinite retry on a real gap.)
-  const r = await query(`UPDATE tenants SET plan=$2 WHERE id=$1`, [tenantId, plan], tenantId);
-  if (r.rowCount === 0) console.error(`[dodo_sub] tenants.plan NOT updated (no row) t=${tenantId} plan=${plan}`);
+  try {
+    const r = await query(`UPDATE tenants SET plan=$2 WHERE id=$1`, [tenantId, plan], tenantId);
+    if (r.rowCount === 0) console.error(`[dodo_sub] tenants.plan NOT updated (no row) t=${tenantId} plan=${plan}`);
+  } catch (e) {
+    // PERMANENT vs TRANSIENT. A CHECK violation (code 23514 — a plan name not in
+    // tenants_plan_check) can NEVER succeed on retry, so re-throwing would make the
+    // webhook 500 forever (infinite retry storm) and never credit the customer. Swallow
+    // it LOUDLY (tier left stale until the plan is added to the constraint — see
+    // assertGlobalConfigLoaded). Any OTHER error (deadlock, pool exhaustion) is transient
+    // → re-throw so the webhook 500s and Dodo retries the (idempotent) event.
+    if (e.code === "23514") {
+      console.error(`[dodo_sub] tenants.plan CHECK rejected plan='${plan}' t=${tenantId} — NON-RETRYABLE, tier left stale; add '${plan}' to tenants_plan_check.`);
+      return;
+    }
+    throw e;
+  }
 }
 
 // ── TASK 4: handle a verified subscription event (the INTI) ───────────────────
@@ -376,8 +383,11 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
       // missing both billing dates): that left a paying customer on the paid tier with
       // ZERO credits, 200-acked, no retry. Credit under a stable :noperiod op_id and log
       // loudly so it's visible. (Reset is set-to-target → safe even if it ever re-runs.)
-      if (plan && !periodKey) console.error(`[dodo_sub] active sub=${subId} MISSING billing dates → crediting under :noperiod, investigate id=${webhookId}`);
-      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || "noperiod"}`, "monthly_grant");
+      if (plan && !periodKey) console.error(`[dodo_sub] active sub=${subId} MISSING billing dates → crediting under :noperiod:${webhookId}, investigate`);
+      // Per-delivery fallback op_id (not a constant :noperiod) so two genuine periods that
+      // both arrive without billing dates DON'T collapse to one grant (under-credit); a
+      // true replay of THIS event reuses the same webhookId and stays idempotent.
+      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || ("noperiod:" + webhookId)}`, "monthly_grant");
       return { handled: true, type, action: "active", plan, reset };
     }
     case "subscription.renewed": {
@@ -386,9 +396,11 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
       await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
                          status: status || "active", periodStart, periodEnd, cancelAtEnd });
       await _setTenantPlan(tenantId, plan);
+      // Any scheduled (deferred) downgrade is realized by THIS renewal's actual plan → clear it.
+      await query(`UPDATE dodo_subscriptions SET pending_plan_key=NULL, updated_at=now() WHERE dodo_subscription_id=$1`, [subId], tenantId);
       let reset = null;
-      if (plan && !periodKey) console.error(`[dodo_sub] renewed sub=${subId} MISSING billing dates → crediting under :noperiod, investigate id=${webhookId}`);
-      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || "noperiod"}`, "monthly_grant");
+      if (plan && !periodKey) console.error(`[dodo_sub] renewed sub=${subId} MISSING billing dates → crediting under :noperiod:${webhookId}, investigate`);
+      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || ("noperiod:" + webhookId)}`, "monthly_grant");
       return { handled: true, type, action: "renewed", plan, reset };
     }
     case "subscription.plan_changed": {
@@ -398,24 +410,25 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
       const priorPlan = priorRow.rows[0]?.plan_key || null;
       const isDowngrade = !!(plan && priorPlan && subPlanCredits(plan) < subPlanCredits(priorPlan));
       if (isDowngrade) {
-        // DOWNGRADE → DEFER to period end (Rino's policy): the user keeps the paid tier
-        // AND the credits they already paid for THIS cycle; the lower plan + its credit
-        // allowance take effect at the next subscription.renewed. So here we touch NEITHER
-        // tenants.plan NOR the balance, and we KEEP the sub row's plan_key = the current
-        // (higher) plan until renewal so the UI reflects what the user actually has now.
-        // (Dodo handles the proration credit on its side.)
+        // DOWNGRADE → DEFER to period end (Rino's policy): keep the paid tier AND the
+        // credits paid for THIS cycle; the lower plan + allowance take effect at the next
+        // renewal. Touch NEITHER tenants.plan NOR the balance; KEEP plan_key = the current
+        // (higher) plan, and PARK the lower plan in pending_plan_key (NOT in plan_key —
+        // overloading plan_key corrupted the next change-plan's direction + blocked cancel).
         await _upsertSub({ tenantId, userId, planKey: priorPlan, subId, customerId: data?.customer?.customer_id || null,
                            status: status || "active", periodStart, periodEnd, cancelAtEnd });
+        await query(`UPDATE dodo_subscriptions SET pending_plan_key=$2, updated_at=now() WHERE dodo_subscription_id=$1`, [subId, plan], tenantId);
         console.log(`[dodo_sub] plan_changed DOWNGRADE deferred sub=${subId} ${priorPlan}->${plan} (effective next renewal) id=${webhookId}`);
         return { handled: true, type, action: "plan_changed", deferred_downgrade: true, from: priorPlan, to: plan };
       }
-      // UPGRADE (or reprice up) → apply immediately: new tier + RESET up to the new plan.
-      // op_id keyed on the unique webhookId (not period+plan) so a genuine re-change back
-      // to a plan held earlier in the period still re-resets, while a true replay of THIS
-      // event collapses. (Reset is set-to-target → over-credit on A→B→A is prevented.)
+      // UPGRADE (or reprice up, or CANCEL a pending downgrade by re-selecting current) →
+      // apply immediately: new tier + RESET up + CLEAR any pending downgrade. op_id keyed
+      // on the unique webhookId so a genuine re-change re-resets while a true replay of THIS
+      // event collapses (reset is set-to-target → over-credit on A→B→A is prevented).
       await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
                          status: status || "active", periodStart, periodEnd, cancelAtEnd });
       await _setTenantPlan(tenantId, plan);
+      await query(`UPDATE dodo_subscriptions SET pending_plan_key=NULL, updated_at=now() WHERE dodo_subscription_id=$1`, [subId], tenantId);
       let reset = null;
       if (plan) reset = await doReset(plan, `dodo_sub:${subId}:planchg:${webhookId}`, "monthly_grant");
       return { handled: true, type, action: "plan_changed", plan, reset };
@@ -595,7 +608,7 @@ export async function handleTopupPayment({ payload, webhookId, rawEvent }) {
         userId: md.user_id || null, tenantId, provider: "dodo", idempotencyKey: `topup:${payId}`,
         providerPaymentId: data.payment_id, planKey: packKey,
         amount: data.total_amount ?? null, currency: data.currency ?? null,
-        creditsGranted: amount, rawEvent: payload,
+        creditsGranted: amount, bucket: "topup", rawEvent: payload,
       });
     } catch (e) { console.warn(`[dodo_topup] payment_events record failed id=${webhookId}: ${e.message}`); }
   }
@@ -615,18 +628,17 @@ export async function recordSubscriptionPayment({ payload, webhookId }) {
   if (!tenantId) return { recorded: false, reason: "no_tenant" };
   const plan = planForProduct(data?.product_id) || metaPlan || null;
   const credits = plan ? subPlanCredits(plan) : 0;
-  try {
-    await recordCreditedPaymentEvent({
-      userId, tenantId, provider: "dodo", idempotencyKey: webhookId,
-      providerPaymentId: data.payment_id, planKey: plan,
-      amount: data.total_amount ?? null, currency: data.currency ?? null,
-      creditsGranted: credits, rawEvent: payload,
-    });
-    return { recorded: true, plan, credits };
-  } catch (e) {
-    console.warn(`[dodo_sub] subscription payment_events record failed id=${webhookId}: ${e.message}`);
-    return { recorded: false, reason: "record_failed" };
-  }
+  // Do NOT swallow a DB failure here: if the clawback anchor can't be recorded, THROW →
+  // the webhook 500s → Dodo retries (recordCreditedPaymentEvent is ON CONFLICT DO NOTHING
+  // = replay-safe). Swallowing left the sub charge with no row → a later refund/chargeback
+  // would claw back ZERO (the original critical gap). bucket='sub' so reversal hits the total.
+  await recordCreditedPaymentEvent({
+    userId, tenantId, provider: "dodo", idempotencyKey: webhookId,
+    providerPaymentId: data.payment_id, planKey: plan,
+    amount: data.total_amount ?? null, currency: data.currency ?? null,
+    creditsGranted: credits, bucket: "sub", rawEvent: payload,
+  });
+  return { recorded: true, plan, credits };
 }
 
 // ── Top-up expiry sweep (cron, OPTIONAL drift-safety) ─────────────────────────

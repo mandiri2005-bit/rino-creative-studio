@@ -139,13 +139,18 @@ export async function handleEvent({ payload, webhookId, rawEvent }) {
     return { handled: true, status: "failed" };
   }
 
-  // Refund → reverse the granted credits (idempotent per webhook-id).
+  // Refund → reverse PROPORTIONALLY to the refunded amount (partial refunds reverse a
+  // fraction; full refunds reverse the remaining). data.amount = the refunded minor-unit
+  // amount; reverse_entitlement scales credits_granted by amount/original and caps the
+  // cumulative reversal at credits_granted (so a 2nd partial / refund-then-dispute can't
+  // over-claw). Idempotent per webhook-id.
   if (type === "refund.succeeded") {
     const res = await reverse_entitlement({
       provider: "dodo", providerPaymentId: data.payment_id || null,
-      refundOpId: `refund:dodo:${webhookId}`, kind: "refund", rawEvent,
+      refundOpId: `refund:dodo:${webhookId}`, kind: "refund",
+      refundAmount: Number.isFinite(data.amount) ? data.amount : null, rawEvent,
     });
-    console.log(`[dodo] refund id=${webhookId} payment=${data.payment_id || "?"} ->`, JSON.stringify(res));
+    console.log(`[dodo] refund id=${webhookId} payment=${data.payment_id || "?"} amt=${data.amount ?? "?"} ->`, JSON.stringify(res));
     return { handled: true, ...res };
   }
   // Chargeback finalized AGAINST the merchant (money returned) → reverse. Only
@@ -153,9 +158,10 @@ export async function handleEvent({ payload, webhookId, rawEvent }) {
   if (type === "dispute.lost" || type === "dispute.accepted") {
     const res = await reverse_entitlement({
       provider: "dodo", providerPaymentId: data.payment_id || null,
-      refundOpId: `dispute:dodo:${webhookId}`, kind: "chargeback", rawEvent,
+      refundOpId: `dispute:dodo:${webhookId}`, kind: "chargeback",
+      refundAmount: Number.isFinite(data.amount) ? data.amount : null, rawEvent,
     });
-    console.log(`[dodo] chargeback(${type}) id=${webhookId} payment=${data.payment_id || "?"} ->`, JSON.stringify(res));
+    console.log(`[dodo] chargeback(${type}) id=${webhookId} payment=${data.payment_id || "?"} amt=${data.amount ?? "?"} ->`, JSON.stringify(res));
     return { handled: true, ...res };
   }
 
