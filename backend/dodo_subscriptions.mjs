@@ -403,12 +403,20 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
 // sub/topup breakdown come separately from /credits/balance. has_subscription=false
 // for a Free / never-subscribed tenant.
 export async function getSubscriptionStatus({ tenantId }) {
+  // Prefer the LIVE subscription, not merely the most-recently-touched row: a tenant
+  // can hold several rows (plan changes, or — pre-launch — repeated Subscribe clicks).
+  // A later subscription.cancelled webhook bumps a dead row's updated_at, so ordering
+  // by updated_at alone would surface a cancelled plan. Rank active/on_hold first,
+  // then the furthest period end (the most current cycle), then recency.
   const r = await query(
     `SELECT plan_key, status, current_period_start, current_period_end, cancel_at_period_end,
             dodo_customer_id IS NOT NULL AS has_customer
        FROM dodo_subscriptions
       WHERE tenant_id=$1
-      ORDER BY updated_at DESC LIMIT 1`,
+      ORDER BY (status IN ('active','on_hold')) DESC,
+               current_period_end DESC NULLS LAST,
+               updated_at DESC
+      LIMIT 1`,
     [tenantId], tenantId,
   );
   const row = r.rows[0] || null;
