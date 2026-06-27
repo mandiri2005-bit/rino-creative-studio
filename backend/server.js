@@ -587,6 +587,17 @@ app.post("/subscription/create", requireAuth, async (req, res) => {
     if (!subscriptions.VALID_SUB_PLANS.includes(planKey)) {
       return res.status(400).json({ error: `plan_key must be one of ${subscriptions.VALID_SUB_PLANS.join("|")}` });
     }
+    // Already subscribed? CHANGE the existing plan in place rather than creating a
+    // parallel subscription (the bug that produced duplicate active subs). Dodo bills
+    // the prorated difference on the card on file and fires subscription.plan_changed.
+    const _active = await subscriptions.getActiveSubscription(tenantId);
+    if (_active) {
+      if (_active.plan_key === planKey) {
+        return res.status(409).json({ error: "already_on_plan", plan_key: planKey });
+      }
+      await subscriptions.changeSubscriptionPlan({ tenantId, planKey, subId: _active.dodo_subscription_id });
+      return res.json({ changed: true, plan_key: planKey, from_plan: _active.plan_key });
+    }
     // Email is server-authoritative (the verified user/tenant record), not the request body.
     let email = null, name = null;
     try {

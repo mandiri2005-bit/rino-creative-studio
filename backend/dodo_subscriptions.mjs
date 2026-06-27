@@ -176,6 +176,39 @@ export async function createSubscription({ tenantId, userId, planKey, email, nam
   };
 }
 
+// The tenant's current LIVE subscription (active or dunning), if any. /subscription/create
+// uses this to decide whether to CHANGE the existing plan vs create a brand-new one —
+// preventing the duplicate parallel subscriptions that repeated Upgrade clicks produced.
+export async function getActiveSubscription(tenantId) {
+  const r = await query(
+    `SELECT dodo_subscription_id, plan_key, status
+       FROM dodo_subscriptions
+      WHERE tenant_id=$1 AND status IN ('active','on_hold')
+      ORDER BY current_period_end DESC NULLS LAST, updated_at DESC
+      LIMIT 1`,
+    [tenantId], tenantId,
+  );
+  return r.rows[0] || null;
+}
+
+// Switch an EXISTING subscription to a new plan in place (no parallel subscription).
+// Dodo bills the prorated difference against the card on file and fires
+// subscription.plan_changed, which handleSubscriptionEvent turns into the new
+// tenants.plan + a credit RESET to the new plan's amount. Returns the changed sub id.
+export async function changeSubscriptionPlan({ tenantId, planKey, subId }) {
+  if (!dodo) throw new Error("dodo_not_configured");
+  if (planKey === "free" || !VALID_SUB_PLANS.includes(planKey)) throw new Error("unknown_plan");
+  const productId = subProductId(planKey);
+  if (!productId) throw new Error("unknown_plan");      // product env not set for this plan
+  if (!subId) throw new Error("no_active_subscription");
+  await dodo.subscriptions.changePlan(subId, {
+    product_id: productId,
+    proration_billing_mode: "prorated_immediately",     // charge/credit the difference now, switch immediately
+    quantity: 1,
+  });
+  return { subscriptionId: subId, planKey };
+}
+
 // ── TASK 3b: create a ONE-TIME top-up checkout (NOT a subscription) ───────────
 // Hosted one-time checkout for a boost pack. metadata.kind='topup' so the
 // payment.succeeded webhook routes to handleTopupPayment (not a package grant).
