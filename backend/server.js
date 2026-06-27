@@ -417,6 +417,9 @@ app.post(
       console.warn("[dodo] invalid signature:", err.message);
       return res.status(403).json({ error: "invalid_signature" });
     }
+    // Surface the verified envelope's business_id so we can read the EXACT value to set
+    // DODO_BUSINESS_ID to (test now, live at go-live) before activating the assert below.
+    console.log(`[dodo] rx type=${payload?.type} business_id=${payload?.business_id || "-"} id=${webhookId}`);
     // Defense-in-depth: bind the (verified) event to OUR Dodo business. The signature only
     // proves it was signed with our webhook secret; asserting business_id stops a sibling/
     // test business that ever shared the secret from crediting our tenants. Optional —
