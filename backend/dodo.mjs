@@ -147,7 +147,9 @@ export async function handleEvent({ payload, webhookId, rawEvent }) {
   if (type === "refund.succeeded") {
     const res = await reverse_entitlement({
       provider: "dodo", providerPaymentId: data.payment_id || null,
-      refundOpId: `refund:dodo:${webhookId}`, kind: "refund",
+      // Key on the IMMUTABLE refund_id (not the per-delivery webhook-id) so a redelivery
+      // under a new webhook-id can't double-claw the same refund.
+      refundOpId: `refund:dodo:${data.refund_id || webhookId}`, kind: "refund",
       refundAmount: Number.isFinite(data.amount) ? data.amount : null, rawEvent,
     });
     console.log(`[dodo] refund id=${webhookId} payment=${data.payment_id || "?"} amt=${data.amount ?? "?"} ->`, JSON.stringify(res));
@@ -158,7 +160,7 @@ export async function handleEvent({ payload, webhookId, rawEvent }) {
   if (type === "dispute.lost" || type === "dispute.accepted") {
     const res = await reverse_entitlement({
       provider: "dodo", providerPaymentId: data.payment_id || null,
-      refundOpId: `dispute:dodo:${webhookId}`, kind: "chargeback",
+      refundOpId: `dispute:dodo:${data.dispute_id || webhookId}`, kind: "chargeback",
       refundAmount: Number.isFinite(data.amount) ? data.amount : null, rawEvent,
     });
     console.log(`[dodo] chargeback(${type}) id=${webhookId} payment=${data.payment_id || "?"} amt=${data.amount ?? "?"} ->`, JSON.stringify(res));

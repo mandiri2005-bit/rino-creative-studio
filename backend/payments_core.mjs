@@ -215,6 +215,26 @@ export async function recordCreditedPaymentEvent({
      planKey, amount, currency, credits, bucket === "topup" ? "topup" : "sub", JSON.stringify(rawEvent)],
     tenantId,
   );
+  // Out-of-order recovery: if a refund/chargeback for this payment arrived BEFORE this
+  // anchor existed, it was queued in orphan_reversals — apply each now that we can resolve it.
+  if (providerPaymentId) {
+    try {
+      const orph = await query(
+        `SELECT id, refund_op_id, kind, refund_amount, raw_event FROM orphan_reversals
+          WHERE provider=$1 AND provider_payment_id=$2 AND applied_at IS NULL`,
+        [provider, providerPaymentId],
+      );
+      for (const o of orph.rows) {
+        const r = await reverse_entitlement({
+          provider, providerPaymentId, refundOpId: o.refund_op_id, kind: o.kind,
+          refundAmount: o.refund_amount, rawEvent: o.raw_event || {},
+        });
+        if (r.reversed || ["already_reversed", "not_credited"].includes(r.reason)) {
+          await query(`UPDATE orphan_reversals SET applied_at=now() WHERE id=$1`, [o.id]);
+        }
+      }
+    } catch (e) { console.warn(`[record] orphan-reversal apply failed for ${providerPaymentId}: ${e.message}`); }
+  }
 }
 
 // ── Reverse a grant on refund / chargeback ────────────────────────────────────
@@ -238,26 +258,36 @@ export async function reverse_entitlement({
   );
   const row = look.rows[0];
   if (!row) {
-    // OUT-OF-ORDER: the charge's payment_events row may not be recorded yet (refund
-    // delivered before payment.succeeded). THROW so the webhook 500s and Dodo retries
-    // (bounded) — by the retry the charge row should exist. A truly orphan refund just
-    // exhausts Dodo's retries. Never 200-ack a reversal we couldn't apply (that silently
-    // re-opened the clawback gap).
-    throw new Error(`reversal_target_not_found:${provider}:${idempotencyKey || providerPaymentId}`);
+    // OUT-OF-ORDER: the charge's payment_events row isn't recorded yet (refund delivered
+    // before payment.succeeded). QUEUE the reversal intent — recordCreditedPaymentEvent
+    // applies it when the anchor lands. (Throwing-to-retry was bounded to ~5min by the
+    // webhook timestamp freshness check — retries reuse the original timestamp — so the
+    // clawback could be permanently lost.)
+    if (providerPaymentId) {
+      await query(
+        `INSERT INTO orphan_reversals (provider, provider_payment_id, refund_op_id, kind, refund_amount, raw_event)
+         VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (provider, refund_op_id) DO NOTHING`,
+        [provider, providerPaymentId, refundOpId, kind, Number(refundAmount) || null, JSON.stringify(rawEvent || {})],
+      ).catch((e) => console.warn("[reverse] orphan queue failed:", e.message));
+      console.warn(`[reverse] orphan queued — no anchor yet for ${provider} ${providerPaymentId} op=${refundOpId}`);
+      return { reversed: false, reason: "orphan_queued" };
+    }
+    console.warn(`[reverse] no original payment + no payment_id for ${provider} ${idempotencyKey}`);
+    return { reversed: false, reason: "not_found" };
   }
   if (!row.credited || !(row.credits_granted > 0)) {
     return { reversed: false, reason: "not_credited", status: row.status };
   }
 
   const client = await pool.connect();
-  let applied = false, balance = 0, toReverse = 0;
+  let applied = false, balance = 0, toReverse = 0, actualDelta = 0;
   try {
     await client.query("BEGIN");
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(row.tenant_id)]);
     // Lock the payment_events row + read FRESH cumulative state (concurrency-safe cap).
     const fr = await client.query(
       `SELECT user_id, credits_granted, COALESCE(reversed_credits,0) AS reversed_credits,
-              COALESCE(bucket,'sub') AS bucket, amount
+              COALESCE(bucket,'sub') AS bucket, amount, status
          FROM payment_events WHERE id=$1 FOR UPDATE`,
       [row.id],
     );
@@ -269,28 +299,33 @@ export async function reverse_entitlement({
       await client.query("COMMIT");
       return { reversed: false, reason: "already_reversed", credits: 0 };
     }
-    // AMOUNT-AWARE: a PARTIAL refund reverses only its proportion of the grant; a full
-    // refund / chargeback reverses the remaining. Always capped at `remaining` so the
-    // cumulative reversal across multiple events can never exceed credits_granted.
+    // AMOUNT-AWARE: a PARTIAL refund reverses only its proportion of the grant. A CHARGEBACK
+    // (lost dispute) returns the ENTIRE payment → always reverse the remaining (ignore the
+    // proportional amount). Always capped at `remaining` so cumulative reversal ≤ credits_granted.
     const origAmt = Number(pe.amount) || 0;
     const refAmt = Number(refundAmount) || 0;
     toReverse = remaining;
-    if (refAmt > 0 && origAmt > 0 && refAmt < origAmt) {
+    if (kind !== "chargeback" && refAmt > 0 && origAmt > 0 && refAmt < origAmt) {
       toReverse = Math.min(remaining, Math.max(1, Math.round(granted * (refAmt / origAmt))));
     }
     // BUCKET-AWARE: a topup reversal decrements topup_balance (else the refunded credits
-    // get resurrected by the next subscription reset); a sub/package reversal hits total.
+    // get resurrected by the next subscription reset); a sub reversal claws only the sub
+    // portion (the SQL fn returns the ACTUAL delta — may be less when the sub is spent down).
     const cr = await client.query(
-      `SELECT applied, balance FROM credit_reverse_grant($1,$2,$3,$4,$5,$6::jsonb)`,
+      `SELECT applied, balance, delta FROM credit_reverse_grant($1,$2,$3,$4,$5,$6::jsonb)`,
       [row.tenant_id, pe.user_id, toReverse, pe.bucket, refundOpId,
        JSON.stringify({ provider, kind, reversal_of: idempotencyKey || providerPaymentId, payment_event_id: row.id, refund_amount: refAmt || null })],
     );
     applied = !!cr.rows[0]?.applied;
     balance = Number(cr.rows[0]?.balance ?? 0);
+    actualDelta = Number(cr.rows[0]?.delta ?? 0);          // negative; the credits actually removed
     if (applied) {
-      const newReversed = already + toReverse;
+      const newReversed = already + toReverse;             // track INTENT for the cap (even if less clawed)
       const fully = newReversed >= granted;
-      const newStatus = kind === "chargeback" ? "disputed" : (fully ? "refunded" : "succeeded");
+      // STICKY status: never downgrade a terminal-bad state. A partial refund after a
+      // chargeback stays 'disputed'; only escalate to disputed/refunded.
+      const newStatus = kind === "chargeback" ? "disputed"
+        : (pe.status === "disputed" ? "disputed" : (fully ? "refunded" : "succeeded"));
       await client.query(
         `UPDATE payment_events
             SET reversed_credits=$2, status=$3,
@@ -307,8 +342,8 @@ export async function reverse_entitlement({
   } finally {
     client.release();
   }
-  if (applied) {
-    try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${row.tenant_id}:credits`, String(-toReverse)); }
+  if (applied && actualDelta !== 0) {
+    try { await redis.eval(_INCR_IF_PRESENT, 1, `bal:${row.tenant_id}:credits`, String(actualDelta)); }
     catch (e) { console.warn("[reverse] redis mirror failed:", e.message); }
   }
   return { reversed: applied, applied, balance, credits: toReverse };

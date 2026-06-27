@@ -620,15 +620,10 @@ app.post("/subscription/create", requireAuth, async (req, res) => {
         return res.status(409).json({ error: "checkout_in_progress", message: "Selesaikan atau batalkan checkout yang sedang berjalan dulu." });
       }
       if (_active.plan_key === planKey) {
-        // Re-selecting the current plan while a downgrade is scheduled = CANCEL the
-        // downgrade: switch Dodo back to the current plan's product so the next renewal
-        // bills it (not the parked lower plan).
-        if (_active.pending_plan_key && _active.pending_plan_key !== planKey) {
-          await subscriptions.changeSubscriptionPlan({ tenantId, planKey, subId: _active.dodo_subscription_id });
-          return res.json({ changed: true, plan_key: planKey, canceled_downgrade: _active.pending_plan_key });
-        }
         return res.status(409).json({ error: "already_on_plan", plan_key: planKey });
       }
+      // Up or down → change in place immediately (Dodo prorates; the plan_changed webhook
+      // applies the new tier + MAX-keep credits). No deferred/pending state.
       await subscriptions.changeSubscriptionPlan({ tenantId, planKey, subId: _active.dodo_subscription_id });
       return res.json({ changed: true, plan_key: planKey, from_plan: _active.plan_key });
     }
