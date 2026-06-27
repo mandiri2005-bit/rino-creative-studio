@@ -185,14 +185,14 @@
         // default "Sign in to <app name>".
         appearance: {
           layout: {
-            logoImageUrl: window.location.origin + "/assets/ceritaai-mark-black.png",
+            logoImageUrl: window.location.origin + (window.__BRAND === "wimba" ? "/assets/wimba-mark.svg" : "/assets/ceritaai-mark-black.png"),
             logoPlacement: "inside",
           },
           variables: { colorPrimary: "#6366f1" },
         },
         localization: {
-          signIn: { start: { title: "Sign in to Cerita AI", subtitle: "Welcome back! Please sign in to continue" } },
-          signUp: { start: { title: "Create your Cerita AI account", subtitle: "Welcome! Please fill in the details to get started" } },
+          signIn: { start: { title: window.__BRAND === "wimba" ? "Sign in to Wimba" : "Sign in to Cerita AI", subtitle: "Welcome back! Please sign in to continue" } },
+          signUp: { start: { title: window.__BRAND === "wimba" ? "Create your Wimba account" : "Create your Cerita AI account", subtitle: "Welcome! Please fill in the details to get started" } },
         },
       });
 

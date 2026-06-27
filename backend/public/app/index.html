@@ -427,13 +427,21 @@ window.__CLERK_PK = "__CLERK_PK_ENV__";
 
 <!-- Clerk: sign-in gate (shown when user is not authenticated) -->
 <div id="clerk-gate" style="display:none">
-  <img src="/app/assets/ceritaai-logo.png" alt="Cerita AI Studio" style="height:120px;width:auto"/>
+  <img id="gate-logo" src="/app/assets/ceritaai-logo.png" alt="Cerita AI Studio" style="height:120px;width:auto"/>
   <p>Sign in to access your AI creative tools.</p>
   <div class="gate-btns">
     <button class="pri" onclick="window.__clerkAuth.openSignIn()">Sign in</button>
     <button class="sec" onclick="window.__clerkAuth.openSignUp()">Create account</button>
   </div>
 </div>
+<!-- Brand the loading splash + sign-in gate for Wimba (window.__BRAND set in <head>). Runs
+     synchronously during body parse — the elements above already exist, so no flash. -->
+<script>(function(){if(window.__BRAND!=="wimba")return;
+  var lp=document.querySelector("#clerk-loading p");if(lp)lp.textContent="Loading Wimba…";
+  var gl=document.getElementById("gate-logo");
+  if(gl){gl.src="/app/assets/wimba-mark.svg";gl.alt="Wimba";gl.style.height="84px";
+    gl.insertAdjacentHTML("afterend","<div style=\"font-family:var(--fd,sans-serif);font-weight:700;font-size:34px;letter-spacing:-.02em;line-height:1;margin-top:-12px\">Wimba</div>");}
+}());</script>
 
 <!-- Clerk: sign-in modal portal -->
 <div id="clerk-sign-in-modal"><div id="clerk-sign-in-mount"></div></div>

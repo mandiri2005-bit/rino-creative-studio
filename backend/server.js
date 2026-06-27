@@ -758,7 +758,11 @@ function adminGate(req, res) {
 
 // Edit a tenant's plan and/or active flag. Body: {tenant_id, plan?, is_active?}.
 // Plan changes do NOT grant credits — use /api/admin/grant for that (kept independent).
-const _ADMIN_PLANS = ["free", "starter", "pro", "enterprise"];
+// Union of both rails' plan names — Indonesia (free/starter/pro/enterprise) +
+// Global subscription (free/starter/plus/pro/ultra). MUST match the tenants_plan_check
+// CHECK constraint (migration 0042); the DB is the final guard. Without plus/ultra here
+// an admin could not move a Wimba tenant onto its paid tiers.
+const _ADMIN_PLANS = ["free", "starter", "plus", "pro", "ultra", "enterprise"];
 app.patch("/api/admin/tenant", async (req, res) => {
   if (!adminGate(req, res)) return;
   try {
