@@ -156,9 +156,22 @@ export async function createSubscription({ tenantId, userId, planKey, email, nam
       plan_key: String(planKey),
     },
   });
+  // Seed a pending row so the webhook can always find the tenant by subscription_id —
+  // even if Dodo's webhook payload doesn't propagate the metadata we set above.
+  const subId = sub.subscription_id || null;
+  if (subId) {
+    await query(
+      `INSERT INTO dodo_subscriptions
+         (tenant_id, user_id, plan_key, dodo_subscription_id, dodo_customer_id, status)
+       VALUES ($1,$2,$3,$4,$5,'pending')
+       ON CONFLICT (dodo_subscription_id) DO NOTHING`,
+      [tenantId, userId || null, planKey, subId, sub.customer?.customer_id || null],
+      tenantId,
+    ).catch(err => console.warn("[subscription/create] pending row seed failed:", err.message));
+  }
   return {
     paymentLink: sub.payment_link || null,
-    subscriptionId: sub.subscription_id || null,
+    subscriptionId: subId,
     customerId: sub.customer?.customer_id || null,
   };
 }
@@ -223,8 +236,11 @@ async function _resolveTenant(data) {
   if (md.tenant_id) return { tenantId: md.tenant_id, userId: md.user_id || null, planKey: md.plan_key || null };
   const subId = data?.subscription_id;
   if (!subId) return { tenantId: null, userId: null, planKey: null };
+  // metadata missing — fall back to DB lookup (seeded at checkout creation time).
+  console.warn(`[dodo_sub] no metadata.tenant_id for sub=${subId}; metadata_keys=${JSON.stringify(Object.keys(md))}`);
   const r = await query(`SELECT tenant_id, user_id, plan_key, status FROM dodo_subscription_lookup($1)`, [subId]);
   const row = r.rows[0];
+  if (row) console.log(`[dodo_sub] resolved tenant from DB: t=${row.tenant_id} plan=${row.plan_key}`);
   return row
     ? { tenantId: row.tenant_id, userId: row.user_id, planKey: row.plan_key }
     : { tenantId: null, userId: null, planKey: null };
