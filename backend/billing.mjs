@@ -189,7 +189,13 @@ export async function getBillingStatus(tenantId) {
              WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 1`, [tenantId], tenantId),
     query(`SELECT plan FROM tenants WHERE id=$1`, [tenantId], tenantId),
   ]);
-  const plan = sub.rows[0]?.plan || tenant.rows[0]?.plan || "free";
+  // tenants.plan is the authoritative spend-gate tier source, written by BOTH rails
+  // (Stripe handler + Dodo _setTenantPlan). Prefer it over the Stripe `subscriptions`
+  // row: for a Wimba (Dodo) tenant that table is empty or holds a stale 'free' seed,
+  // which must NOT shadow a real paid tenants.plan (the bug that pinned the tier badge
+  // to "Free" after a Dodo upgrade). period_end/status still come from the Stripe row;
+  // the Wimba UI overrides those from /subscription/status.
+  const plan = tenant.rows[0]?.plan || sub.rows[0]?.plan || "free";
   await seedIfEmpty(tenantId, plan);
   const bal = await query(`SELECT balance FROM credit_balances WHERE tenant_id=$1`, [tenantId], tenantId);
   return {
