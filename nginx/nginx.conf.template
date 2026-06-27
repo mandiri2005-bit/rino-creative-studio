@@ -24,8 +24,8 @@ http {
     # the canonical app shell must always revalidate so deploys show up without a hard refresh
     location = /app/index.html { add_header Cache-Control "no-cache"; }
 
-    # public marketing landing (ceritaAI) is the site root; studio app stays at /index.html
-    location = / { add_header Cache-Control "no-cache"; try_files /landing.html =404; }
+    # Wimba deploy: root redirects to studio. No separate marketing landing on app.wimba.ai.
+    location = / { return 302 /app/; }
     location = /landing.html { add_header Cache-Control "no-cache"; }
 
     # A MISSING build asset must 404 CLEANLY — never fall through to the SPA index.html, whose
@@ -64,6 +64,12 @@ http {
       proxy_pass $backend_upstream; proxy_http_version 1.1;
       proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
       proxy_read_timeout 300s; proxy_buffering off; }
+
+    location /subscription/ {
+      set $backend_upstream "${BACKEND_URL}";
+      proxy_pass $backend_upstream; proxy_http_version 1.1;
+      proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
+      proxy_read_timeout 30s; proxy_buffering off; }
 
     location /api/narasi/ {
       set $backend_upstream "${BACKEND_URL}";
