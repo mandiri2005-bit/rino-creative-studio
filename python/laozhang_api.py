@@ -2934,8 +2934,9 @@ async def image_op(op: str, req: ImageOpRequest,
     finally:
         _img_inflight -= 1
 
-    resp = {"ok": True, "op": op, "feature": feature, "model": model,
-            "provider": provider, "credits": _charged}
+    # `provider` is INTENTIONALLY omitted from the response — it's persisted server-side (usage_logs via
+    # commit_credits + asset metadata) but never exposed to the client (don't reveal the routing target).
+    resp = {"ok": True, "op": op, "feature": feature, "model": model, "credits": _charged}
     if data is not None:
         resp["image_b64"] = base64.b64encode(data).decode(); resp["mime"] = mime or "image/png"
     if ref_key:
