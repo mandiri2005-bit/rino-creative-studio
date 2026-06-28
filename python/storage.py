@@ -91,6 +91,9 @@ def build_key(tenant_id: str, job_id: str, asset_type: str, filename: str) -> st
 
 # ── Sync core ────────────────────────────────────────────────────────────────
 def upload_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+    """Upload bytes to R2; returns the object KEY (NOT a URL). R2 = source of truth — callers
+    persist the key (e.g. assets.s3_key) and mint a signed URL on read via signed_url/asigned_url.
+    Never hand this return value to an HTTP fetch; it has no scheme."""
     _c().put_object(Bucket=BUCKET, Key=key, Body=data, ContentType=content_type)
     return key
 
@@ -131,6 +134,7 @@ def delete(key: str) -> None:
 
 # ── Async wrappers (don't block the event loop) ──────────────────────────────
 async def aupload_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+    """Async upload_bytes — returns the object KEY (not a URL). See upload_bytes."""
     return await asyncio.to_thread(upload_bytes, key, data, content_type)
 
 

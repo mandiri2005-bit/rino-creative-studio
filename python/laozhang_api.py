@@ -2474,9 +2474,7 @@ def _generate_chat_image(prompt: str, model: str, aspect_ratio: str,
         m = re.search(r'!\[.*?\]\((https?://[^)]+)\)', body)
         if not m:
             raise HTTPException(500, f"No image URL in response: {body[:300]}")
-        img_r = _requests.get(m.group(1), timeout=60)
-        img_r.raise_for_status()
-        return _b64.b64encode(img_r.content).decode()
+        return _b64.b64encode(_img_get_capped(m.group(1))).decode()   # M6: streamed + size-capped
 
     m = re.search(r'data:image/[^;]+;base64,([A-Za-z0-9+/=]+)', body)
     if m:
@@ -2574,9 +2572,7 @@ def _generate_openai_image(prompt: str, model: str, aspect_ratio: str,
         raise HTTPException(502, f"image provider returned no data (openai): {str(_j)[:250]}")
 
     if returns_url:
-        img_r = _requests.get(item["url"], timeout=60)
-        img_r.raise_for_status()
-        return _b64.b64encode(img_r.content).decode()
+        return _b64.b64encode(_img_get_capped(item["url"])).decode()   # M6: streamed + size-capped
 
     if item.get("b64_json"):
         val = item["b64_json"]
@@ -2586,9 +2582,7 @@ def _generate_openai_image(prompt: str, model: str, aspect_ratio: str,
         return val
 
     # Fallback: URL returned
-    img_r = _requests.get(item["url"], timeout=60)
-    img_r.raise_for_status()
-    return _b64.b64encode(img_r.content).decode()
+    return _b64.b64encode(_img_get_capped(item["url"])).decode()   # M6: streamed + size-capped
 
 
 class ImageRequest(BaseModel):
@@ -2625,6 +2619,338 @@ async def list_image_models():
     return {"models": list(IMAGE_MODELS.keys())}
 
 
+@app.get("/image/catalog")
+async def image_catalog():
+    """Picker metadata for the new Image page (atlabs-style): per-model label/sublabel/
+    icon + feature support + the credit badge ('xx cr' = what's debited per image). Badge ==
+    metering charge: both = image_credits_for_usd(official_usd) = first-party (most-expensive
+    in chain) price x IMG_SELL_MARKUP(1.10) -> credits -> round-up-5. cogs_usd (cheapest
+    aggregator we actually source from) drives REAL margin, not the price shown."""
+    import image_providers as _ip
+    models = []
+    for m in _ip.model_catalog():
+        # credits_for is the SINGLE source shared with the /image/<op> debit → badge == charge
+        cr = _ip.credits_for("create_raster", m["id"])
+        models.append({"id": m["id"], "label": m["label"], "sublabel": m.get("sublabel", ""),
+                       "icon": m.get("icon", ""), "features": m.get("features", []),
+                       "transparent": m.get("transparent", False), "credits": cr})
+    tools = {}
+    for op in ("upscale_crisp", "upscale_creative", "vectorize", "bg_remove"):
+        cr = _ip.credits_for(op, "")
+        if cr:
+            tools[op] = cr
+    return {"models": models, "tool_credits": tools,
+            "features": _ip._REG.get("_features", []),
+            "tool_defaults": _ip._REG.get("tool_defaults", {}),
+            "credit_usd_value": catalog.CREDIT_USD_VALUE}
+
+
+# ── New atlabs-style Image page: one endpoint per op via failover registry ──────
+class ImageOpRequest(BaseModel):
+    model: str = "nano-banana"
+    prompt: Optional[str] = ""
+    ref_image_b64: Optional[str] = None       # single ref (raw b64 or data-uri)
+    ref_images: Optional[list] = None          # multiple refs (http urls or b64/data-uris)
+    aspect: Optional[str] = "1:1"
+    image_size: Optional[str] = "1K"           # legacy-fallback size token
+    size: Optional[str] = None                 # provider size token (aggregator adapters)
+    transparent: Optional[bool] = False
+    upscale_factor: Optional[int] = None
+    strength: Optional[float] = None
+    expand: Optional[dict] = None
+    seed: Optional[int] = 0
+    quality: Optional[str] = None
+
+    @validator("prompt")
+    def _cap_prompt(cls, v):
+        if v and len(v) > 4000:
+            raise ValueError("prompt too long (max 4000 chars)")
+        return v
+
+
+# op (URL) → registry feature. "create" = smart raster default; "upscale" = crisp default.
+_IMAGE_OP_FEATURE = {
+    "create": "create_raster", "create_raster": "create_raster", "create_vector": "create_vector",
+    "edit": "edit", "reframe": "reframe", "upscale": "upscale_crisp",
+    "upscale_crisp": "upscale_crisp", "upscale_creative": "upscale_creative",
+    "vectorize": "vectorize", "bg_remove": "bg_remove",
+}
+_IMAGE_PROMPT_OPS = {"create", "create_raster", "create_vector", "edit", "reframe"}
+_IMG_LOG = _logging.getLogger("image_op")   # module-level (laozhang_api has no module `_log`)
+IMAGE_MAX_INFLIGHT = int(os.getenv("IMAGE_MAX_INFLIGHT", "8"))   # admission cap (single-process backend)
+_img_inflight = 0
+IMAGE_MAX_REF_BYTES = int(os.getenv("IMAGE_MAX_REF_BYTES", str(12 * 1024 * 1024)))   # 12MB decoded ref cap (OOM guard)
+IMAGE_MAX_REF_TOTAL = int(os.getenv("IMAGE_MAX_REF_TOTAL", str(24 * 1024 * 1024)))   # aggregate decoded-ref cap across all refs (OOM)
+IMAGE_DISPATCH_DEADLINE = float(os.getenv("IMAGE_DISPATCH_DEADLINE", "120"))   # overall wall-clock per dispatch() → release admission slot
+
+
+def _img_get_capped(url: str, timeout: int = 60) -> bytes:
+    """M6: sync GET → bytes under a hard running-total cap (OOM guard for the legacy provider-result
+    fetches that are the ACTIVE create/edit path until aggregator keys are set). Streams + aborts past
+    IMAGE_MAX_REF_BYTES*3 so a provider/CDN can't stream an unbounded body into the single-process
+    backend (mirrors _bytes_from_url's async streamed cap)."""
+    _cap = IMAGE_MAX_REF_BYTES * 3
+    with _requests.get(url, timeout=timeout, stream=True) as r:
+        r.raise_for_status()
+        if int(r.headers.get("content-length") or 0) > _cap:
+            raise HTTPException(413, "image too large")
+        buf, total = bytearray(), 0
+        for chunk in r.iter_content(65536):
+            total += len(chunk)
+            if total > _cap:
+                raise HTTPException(413, "image too large")
+            buf += chunk
+        return bytes(buf)
+
+
+def _is_public_http_url(url: str) -> bool:
+    """SSRF guard: only http(s) to a PUBLIC host. Rejects private/loopback/link-local/reserved/
+    multicast/CGNAT/metadata IPs after DNS resolution (defeats direct-IP SSRF to 127.0.0.1,
+    169.254.169.254 cloud-metadata, 10/172.16/192.168, and Railway's 100.64/10 internal range)."""
+    import ipaddress as _ip, socket as _sock
+    from urllib.parse import urlparse as _urlparse
+    try:
+        u = _urlparse(url)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return False
+        cgnat = (_ip.ip_address("100.64.0.0"), _ip.ip_address("100.127.255.255"))
+        for info in _sock.getaddrinfo(u.hostname, u.port or (443 if u.scheme == "https" else 80),
+                                      proto=_sock.IPPROTO_TCP):
+            ip = _ip.ip_address(info[4][0])
+            m = getattr(ip, "ipv4_mapped", None)      # ::ffff:a.b.c.d → re-classify on the embedded v4, else
+            if m is not None:                          # an internal target wrapped as v6 skips the v4-gated
+                ip = m                                 # CGNAT check below (all is_* flags False on the v6 form)
+            if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                    or ip.is_multicast or ip.is_unspecified):
+                return False
+            if ip.version == 6 and ip in _ip.ip_network("64:ff9b::/96"):   # NAT64 embeds a v4 target → reject
+                return False
+            if ip.version == 4 and cgnat[0] <= ip <= cgnat[1]:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _b64_within_cap(b64s: str) -> bool:
+    """decoded size of a base64 string ≤ IMAGE_MAX_REF_BYTES (≈ len*3/4), without decoding it."""
+    return (len(b64s) * 3 // 4) <= IMAGE_MAX_REF_BYTES
+
+
+def _img_refs_for_params(req: "ImageOpRequest") -> list:
+    """Normalise request refs → [{'url'|'b64': ...}]. User http(s) refs are SSRF-validated (adapters
+    fetch them server-side) → 400; b64 refs are capped per-ref AND in AGGREGATE (H3: 6×12MB would OOM
+    the shared single-process backend before the inflight cap is even checked) and the count is capped."""
+    out = []
+    _total = 0
+    def _acc(b64s: str):
+        nonlocal _total
+        if not _b64_within_cap(b64s):
+            raise HTTPException(413, "reference image too large")
+        _total += len(b64s) * 3 // 4                 # decoded-size estimate, no decode
+        if _total > IMAGE_MAX_REF_TOTAL:
+            raise HTTPException(413, "reference images too large in total")
+    for s in (req.ref_images or [])[:6]:   # cap ref count (DoS / cost)
+        if not s:
+            continue
+        if str(s).startswith("http"):
+            if not _is_public_http_url(s):
+                raise HTTPException(400, "reference image URL not allowed")
+            out.append({"url": s})
+        else:
+            b64 = str(s).split(",")[-1]
+            _acc(b64)
+            out.append({"b64": b64})
+    if req.ref_image_b64:
+        b64 = req.ref_image_b64.split(",")[-1]
+        _acc(b64)
+        out.append({"b64": b64})
+    return out
+
+
+async def _bytes_from_url(url: str):
+    """(bytes, mime) for an http(s) url or a data: URI. follow_redirects=False so a provider/result
+    URL can't 30x-bounce into an internal target (SSRF); the body is STREAMED with a hard running-total
+    cap so a chunked / no-Content-Length oversized response can't be buffered into memory (OOM guard)."""
+    if url.startswith("data:"):
+        head, _, b64 = url.partition(",")
+        mime = head[5:].split(";")[0] or "image/png"
+        if not _b64_within_cap(b64):
+            raise HTTPException(413, "image too large")
+        return base64.b64decode(b64), mime
+    import httpx as _httpx
+    _cap = IMAGE_MAX_REF_BYTES * 3
+    async with _httpx.AsyncClient(timeout=60, follow_redirects=False) as c:
+        async with c.stream("GET", url) as r:
+            r.raise_for_status()
+            if int(r.headers.get("content-length") or 0) > _cap:
+                raise HTTPException(413, "image too large")   # honest oversized declaration → reject early
+            buf, total = bytearray(), 0
+            async for chunk in r.aiter_bytes():
+                total += len(chunk)
+                if total > _cap:
+                    raise HTTPException(413, "image too large")   # chunked / lying CL → abort mid-stream
+                buf += chunk
+            return bytes(buf), r.headers.get("content-type", "image/png")
+
+
+@app.post("/image/{op}")
+async def image_op(op: str, req: ImageOpRequest,
+                   x_op_id: Optional[str] = Header(None, alias="X-Op-Id"),
+                   user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Unified generate endpoint for the new Image page. Routes `feature` through the model's
+    failover chain (image_providers.dispatch), falls back to the proven LaoZhang/Vertex path
+    for create/edit when no aggregator key served, prices via the SINGLE source (credits_for —
+    badge == charge), debits the precomputed amount, logs usage with the REAL winning-provider
+    COGS, and persists the asset (moat). op ∈ create|create_raster|create_vector|edit|reframe|
+    upscale|upscale_creative|vectorize|bg_remove."""
+    import image_providers as _ip
+    feature = _IMAGE_OP_FEATURE.get((op or "").lower())
+    if not feature:
+        raise HTTPException(400, f"Unknown image op: {op}")
+    is_tool = feature in _ip._OP_TOOL_FEATURES
+    model = req.model
+    if not is_tool and model not in _ip._MODELS:
+        raise HTTPException(400, f"Unknown image model: {model}")
+    # the model MUST actually support the requested feature — else dispatch silently falls back to
+    # an op-chain (e.g. reframe→Recraft outpaint, real ~$0.04) while we price+book off the cheap
+    # model (5cr) → negative margin. Reject instead of leaking.
+    if not is_tool and feature not in ((_ip._MODELS.get(model) or {}).get("features") or []):
+        raise HTTPException(400, f"Model '{model}' does not support '{op}'")
+    if feature in ("edit", "reframe", "upscale_crisp", "upscale_creative", "vectorize", "bg_remove") \
+            and not (req.ref_images or req.ref_image_b64):
+        raise HTTPException(400, f"op '{op}' needs a reference image")
+
+    if user is None:
+        # fail CLOSED: this endpoint is user-facing only (the Node /api gate already requires auth).
+        # Never run paid upstream for an anonymous caller — defense-in-depth vs a future gate bypass.
+        raise HTTPException(401, "authentication required")
+    # H1: image_op ALWAYS runs on PLATFORM keys — aggregator adapters read os.getenv (registry _env) and
+    # even the legacy LaoZhang/Vertex tail uses the platform key; the user's X-LaoZhang-API-Key is NOT
+    # threaded into image dispatch. So BYOK must NOT zero the charge here, else any authed user could send
+    # `X-LaoZhang-API-Key: <anything>` and mint unlimited FREE images while the platform pays the COGS.
+    _byok = False
+    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    if not is_tool:   # tier-lock (prompt-ops gated by the chosen model; pure tools ungated)
+        metering.ensure_tier(user, catalog.image_min_tier(model), model)
+
+    # price = picker badge (single source). Transparent on an OPAQUE model runs a 2nd paid op
+    # (Recraft bg-remove) → fold its price into the hold/charge so it isn't given away (the frontend
+    # adds the same bg-remove credit to the badge for transparent-on-opaque → badge == charge).
+    needs_autobg = (bool(req.transparent) and feature == "create_raster"
+                    and not (_ip._MODELS.get(model) or {}).get("transparent"))
+    cr = _ip.credits_for(feature, model) or 0
+    _autobg_cr = 0                     # the transparency surcharge, tracked so we can refund it if bg fails
+    if needs_autobg:
+        _autobg_cr = _ip.credits_for("bg_remove", "") or 0
+        cr += _autobg_cr
+
+    params = {"prompt": req.prompt or "", "aspect": req.aspect or "1:1",
+              "ref_images": _img_refs_for_params(req), "transparent": bool(req.transparent)}
+    for k, v in (("size", req.size), ("upscale_factor", req.upscale_factor),
+                 ("strength", req.strength), ("expand", req.expand), ("quality", req.quality)):
+        if v is not None:
+            params[k] = v
+    # ALWAYS server-minted op_id — never from a client header (charge() is idempotent on op_id, so a
+    # replayed X-Op-Id would re-run paid generation while the debit no-ops → free images).
+    op_id = f"img-{uuid.uuid4().hex[:12]}"
+
+    # admission cap (single-process backend) + ATOMIC credit HOLD before any paid upstream call. The
+    # HOLD (not a balance read) is what stops concurrent requests overspending into a negative
+    # balance; it's refunded on ANY failure and committed only on confirmed output.
+    global _img_inflight
+    if _img_inflight >= IMAGE_MAX_INFLIGHT:
+        raise HTTPException(429, "image service busy — try again in a moment")
+    _img_inflight += 1   # reserve the slot SYNCHRONOUSLY (check+increment have no await between → atomic
+                         # in asyncio, so the cap is strictly enforced; the hold await is inside try)
+    data = mime = provider = ref_key = None
+    cost_usd = None
+    _charged = 0
+    try:
+        await metering.hold_credits(user.tenant_id, cr, op_id, byok=_byok)   # raises 402 if it can't cover cr
+        # ── generate: aggregator failover chain, then legacy LaoZhang/Vertex tail ──
+        try:
+            # M7: overall wall-clock deadline so a hung provider chain (POST+retry+poll × 3 steps, each up
+            # to _TIMEOUT.read=180s) can't pin its admission slot for ~9-18min and lock out image-gen.
+            r = await asyncio.wait_for(_ip.dispatch(feature, model, params, op_id),
+                                       timeout=IMAGE_DISPATCH_DEADLINE)
+            # dispatch threads the rendered bytes back; we DON'T re-fetch r["ref"] — it's a bare R2
+            # object key (aupload_bytes returns a key, not a signed URL), so fetching it would 404 and
+            # leave data=None → user charged for a broken image. Bytes in hand = single source of truth.
+            ref_key = r["ref"]; data, mime = r["data"], r["mime"]
+            provider = r["provider"]; cost_usd = r.get("cost_usd")
+        except _ip.ProviderError as e:
+            if feature in ("create_raster", "create_vector", "edit"):
+                _ref_b64 = (params["ref_images"][0].get("b64") if params["ref_images"] else "") or ""
+                b64 = await _legacy_image_b64(model, req.prompt or "", req.aspect or "1:1",
+                                              req.image_size or "1K", _ref_b64, req.seed or 0)
+                data = base64.b64decode(b64); mime, _ = _sniff_image(data)
+                provider = _provider_for(model)
+                cost_usd = (_ip._MODELS.get(model) or {}).get("cogs_usd") or _calc_image_cost(model)
+            else:
+                raise HTTPException(502, f"image {op} unavailable (no provider key yet): {e}")
+
+        # ── transparent toggle: opaque-only model → auto bg-removal (Recraft); price folded into cr ──
+        autobg_failed = False
+        if needs_autobg and data is not None:
+            try:
+                r2 = await asyncio.wait_for(_ip.dispatch("bg_remove", "recraft-v3",
+                                        {"ref_images": [{"b64": base64.b64encode(data).decode()}]},
+                                        op_id + "-bg"), timeout=IMAGE_DISPATCH_DEADLINE)
+                ref_key = r2["ref"]; data, mime = r2["data"], r2["mime"]   # bytes threaded back (no re-fetch)
+                cost_usd = (cost_usd or 0) + (r2.get("cost_usd") or 0)
+            except Exception as _be:
+                autobg_failed = True   # L1: opaque image still delivered → don't bill the transparency surcharge
+                _IMG_LOG.warning("[image_op] auto bg-remove failed (non-fatal, returning opaque): %s", _be)
+
+        # nothing usable to return → treat as failure so the hold is refunded (never charge for nothing).
+        # `data` is the SOLE truth: every success path (dispatch OR legacy) sets it. M4: `not data` (not
+        # `is None`) so a 200 with a 0-byte body (b'') is also treated as failure, never charged as success.
+        if not data:
+            raise HTTPException(502, f"image {op} produced no output")
+
+        # ── persist asset (moat, best-effort; never fail the generation on a storage hiccup) ──
+        if data is not None:
+            try:
+                _ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
+                        "image/svg+xml": "svg"}.get(mime or "image/png", "png")
+                await _persist_asset(user.tenant_id, asset_type="image", source_job_type="image_op",
+                                     filename=f"{feature}_{op_id}.{_ext}", data=data, content_type=mime or "image/png",
+                                     user_id=_uid, metadata={"model": model, "op": op, "provider": provider},
+                                     source_prompt=(req.prompt or None))
+            except Exception as _pe:
+                _IMG_LOG.warning("[image_op] persist failed (non-fatal): %s", _pe)
+
+        # ── COMMIT the hold (only now, on confirmed output) + usage row carrying REAL provider COGS ──
+        # L1: if bg-removal failed we deliver an OPAQUE image → bill the base price only (drop the held
+        # transparency surcharge); committing < the hold refunds the difference.
+        _commit_cr = cr - (_autobg_cr if autobg_failed else 0)
+        _charged = await metering.commit_credits(
+            user.tenant_id, _uid, "image", model, _commit_cr, op_id, byok=_byok,
+            cost_usd=cost_usd, provider=provider, write_log=True) or 0
+    except BaseException:
+        await metering.refund_credits(user.tenant_id, op_id)   # release the hold on ANY failure → no charge
+        raise
+    finally:
+        _img_inflight -= 1
+
+    resp = {"ok": True, "op": op, "feature": feature, "model": model,
+            "provider": provider, "credits": _charged}
+    if data is not None:
+        resp["image_b64"] = base64.b64encode(data).decode(); resp["mime"] = mime or "image/png"
+    if ref_key:
+        # a data: URI is already loadable; an R2 object key must be SIGNED — never hand the client a
+        # bare key (it'd 404). Best-effort: the b64 above already carries the image if signing fails.
+        if ref_key.startswith("data:"):
+            resp["image_url"] = ref_key
+        else:
+            try:
+                resp["image_url"] = await storage.asigned_url(ref_key)
+            except Exception as _se:
+                _IMG_LOG.warning("[image_op] sign result url failed (non-fatal, b64 returned): %s", _se)
+    return resp
+
+
 def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
     """
     Seedream via /v1/images/generations.
@@ -2650,9 +2976,55 @@ def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
         image_url = _j["data"][0]["url"]
     except (KeyError, IndexError, TypeError):
         raise HTTPException(502, f"image provider returned no data (seedream): {str(_j)[:250]}")
-    img_r = _requests.get(image_url, timeout=60)
-    img_r.raise_for_status()
-    return _b64.b64encode(img_r.content).decode()
+    return _b64.b64encode(_img_get_capped(image_url)).decode()   # M6: streamed + size-capped
+
+
+async def _legacy_image_b64(model: str, prompt: str, aspect_ratio: str = "1:1",
+                            image_size: str = "1K", ref_image: str = "", seed: int = 0,
+                            key: str = None) -> str:
+    """Proven LaoZhang/Vertex/etc image core (cfg-switched on IMAGE_MODELS) with the 3×
+    transient-retry loop. Returns image b64; raises HTTPException on hard failure. Shared by
+    /generate-image AND the new /image/<op> failover tail (when no aggregator key served)."""
+    cfg = IMAGE_MODELS.get(model)
+    if not cfg:
+        raise HTTPException(400, f"Unknown image model: {model}")
+    key = key or IMAGE_API_KEY
+    api = cfg["api"]; mdl = cfg["model"]; ep = cfg.get("extra_params") or {}; smap = cfg.get("size_map_vip")
+
+    def _dispatch():
+        if api == "chat-image-url":
+            return _generate_chat_image(prompt, mdl, aspect_ratio, ref_image, returns_url=True, key=key)
+        elif api == "chat-image-b64":
+            return _generate_chat_image(prompt, mdl, aspect_ratio, ref_image, returns_url=False, key=key)
+        elif api == "google":
+            return _generate_google(prompt, mdl, aspect_ratio, image_size, ref_image, key=key, seed=seed)
+        elif api == "seedream":
+            return _generate_seedream(prompt, mdl, ref_image)
+        elif api in ("openai-image", "openai-image-url"):
+            return _generate_openai_image(prompt, mdl, aspect_ratio, image_size, ref_image,
+                                          extra_params=ep, size_map_vip=smap,
+                                          returns_url=(api == "openai-image-url"), key=key, seed=seed)
+        else:
+            raise HTTPException(400, f"Unknown API type: {api}")
+
+    b64 = None; last_exc = None
+    for _attempt in range(3):
+        try:
+            # _dispatch() is SYNC (requests-based) — run it off the event loop so a slow upstream
+            # can't freeze the single-process backend (chat/video/billing share this loop). Matches
+            # the Veo/Sora to_thread pattern. With no aggregator keys, 100% of create/edit lands here.
+            b64 = await asyncio.to_thread(_dispatch); break
+        except HTTPException as he:
+            last_exc = he
+            if he.status_code in (400, 401, 402, 403):
+                raise  # not transient — bad request / auth / quota
+            await asyncio.sleep(0.6 * (_attempt + 1))
+        except _requests.RequestException as rexc:
+            last_exc = HTTPException(502, f"image upstream error: {str(rexc)[:200]}")
+            await asyncio.sleep(0.6 * (_attempt + 1))
+    if b64 is None:
+        raise last_exc or HTTPException(502, "image generation failed after retries")
+    return b64
 
 
 @app.post("/generate-image")
@@ -2677,51 +3049,8 @@ async def generate_image(req: ImageRequest,
 
     try:
         api = cfg["api"]
-        mdl = cfg["model"]
-        ep = cfg.get("extra_params") or {}
-        smap = cfg.get("size_map_vip")
-
-        def _dispatch():
-            if api == "chat-image-url":
-                return _generate_chat_image(req.prompt, mdl, req.aspect_ratio,
-                                            req.ref_image, returns_url=True, key=key)
-            elif api == "chat-image-b64":
-                return _generate_chat_image(req.prompt, mdl, req.aspect_ratio,
-                                            req.ref_image, returns_url=False, key=key)
-            elif api == "google":
-                return _generate_google(req.prompt, mdl, req.aspect_ratio,
-                                        req.image_size, req.ref_image, key=key, seed=req.seed)
-            elif api == "seedream":
-                return _generate_seedream(req.prompt, mdl, req.ref_image)
-            elif api in ("openai-image", "openai-image-url"):
-                return _generate_openai_image(
-                    req.prompt, mdl, req.aspect_ratio, req.image_size,
-                    req.ref_image, extra_params=ep, size_map_vip=smap,
-                    returns_url=(api == "openai-image-url"), key=key, seed=req.seed,
-                )
-            else:
-                raise HTTPException(400, f"Unknown API type: {api}")
-
-        # Flaky upstream (a transient 5xx, a SAFETY/recitation block that clears on
-        # a reword-free re-try) is common — attempt up to 3x with light backoff
-        # before surfacing the error. The video worker degrades the scene to a
-        # placeholder on a hard failure, but a retry usually avoids that entirely.
-        b64 = None
-        last_exc = None
-        for _attempt in range(3):
-            try:
-                b64 = _dispatch()
-                break
-            except HTTPException as he:
-                last_exc = he
-                if he.status_code in (400, 401, 402, 403):
-                    raise  # not transient — bad request / auth / quota
-                await asyncio.sleep(0.6 * (_attempt + 1))
-            except _requests.RequestException as rexc:
-                last_exc = HTTPException(502, f"image upstream error: {str(rexc)[:200]}")
-                await asyncio.sleep(0.6 * (_attempt + 1))
-        if b64 is None:
-            raise last_exc or HTTPException(502, "image generation failed after retries")
+        b64 = await _legacy_image_b64(req.model, req.prompt, req.aspect_ratio,
+                                      req.image_size, req.ref_image, req.seed, key=key)
 
         _cr = 0
         if user:
@@ -2731,7 +3060,7 @@ async def generate_image(req: ImageRequest,
             # Absent (Studio one-shots) → debit() falls back to a fresh uuid as before.
             _cr = await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
                                        byok=_byok, video_job=x_video_job,
-                                       op_id=x_op_id or None, log=False) or 0
+                                       op_id=x_op_id or None, write_log=False) or 0
         await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt, credits=_cr)
         return {
             "image_b64": b64,
@@ -2861,7 +3190,7 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
                                      {"seconds": _secs, "size": str(preset.get("size") or "")},
                                      byok=_byok, job_id=_jid,
-                                     video_job=x_video_job, log=True)
+                                     video_job=x_video_job, write_log=True)
             except Exception as _e:
                 print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -3127,7 +3456,7 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
                                      {"seconds": _secs, "size": str(getattr(req, "size", "") or "")},
                                      byok=_byok, job_id=_jid,
-                                     video_job=x_video_job, log=True)
+                                     video_job=x_video_job, write_log=True)
             except Exception as _e:
                 print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -3450,7 +3779,7 @@ async def whisk_generate(
 
         await _capture_image_flow(user, req.model, "whisk", [b64], prompts=combined_prompt)
         if user:
-            await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1}, byok=_byok, log=False)
+            await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1}, byok=_byok, write_log=False)
         return {
             "image_b64": b64,
             "model": req.model,
@@ -3566,7 +3895,7 @@ async def flow_images_only(
                                        for s in req.scenes])
     if user:
         _n = sum(1 for im in images if im.get("image_b64"))
-        await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": _n}, byok=_byok, log=False)
+        await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": _n}, byok=_byok, write_log=False)
     return {"images": images}
 
 
@@ -5230,6 +5559,7 @@ async def narasi_generate(body: dict,
     return {"ok": True, "job_id": job_id, "status": "started"}
 
 
+_PERSIST_LOG = _logging.getLogger("persist_asset")   # module-level (laozhang_api has no module `_log`)
 async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
                          content_type, source_job_type=None, job_id=None,
                          user_id=None, metadata=None, source_prompt=None):
@@ -5239,7 +5569,7 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
       asset_type     ∈ video|audio|image|document|archive|other
       source_job_type∈ batch_image|tts|imagen|veo|sora | None"""
     if not storage.is_configured():
-        _log.warning("[persist_asset] storage not configured — skipped %s", filename)
+        _PERSIST_LOG.warning("[persist_asset] storage not configured — skipped %s", filename)
         return None
     try:
         key = storage.build_key(tenant_id, job_id, asset_type, filename)
@@ -5251,7 +5581,7 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
             user_id=user_id, job_id=job_id, original_filename=filename,
             metadata=metadata or {}, source_prompt=source_prompt)
     except Exception as e:
-        _log.warning("[persist_asset] %s failed (non-fatal): %s", filename, e)
+        _PERSIST_LOG.warning("[persist_asset] %s failed (non-fatal): %s", filename, e)
         return None
 
 
@@ -6196,7 +6526,7 @@ async def script_to_tts(body: dict,
         _to = int(getattr(getattr(resp, "usage", None), "completion_tokens", 0) or 0)
         await metering.debit(_cu.tenant_id, _uid, "chat", model,
                              {"tokens_in": _ti, "tokens_out": _to}, byok=_byok,
-                             tok_in=_ti, tok_out=_to, log=True)
+                             tok_in=_ti, tok_out=_to, write_log=True)
     return {"ok": True, "transcript": result, "paragraphs": paragraphs, "count": len(paragraphs)}
 
 
@@ -6362,7 +6692,7 @@ async def flow_storyboard(
     if user:
         await metering.debit(user.tenant_id, _uid, "chat", req.chat_model,
                              {"tokens_in": len(req.script) // 4, "tokens_out": total * 300},
-                             byok=_byok, log=True)
+                             byok=_byok, write_log=True)
     else:
         await _track_usage(user, req.chat_model, "other", job_type="flow_storyboard")
 
@@ -6449,7 +6779,7 @@ async def flow_storyboard(
                 if user:
                     _n = sum(1 for s in scenes if s.get("image_b64"))
                     await metering.debit(user.tenant_id, _uid, "image", req.model,
-                                         {"count": _n}, byok=_byok, log=True)
+                                         {"count": _n}, byok=_byok, write_log=True)
             finally:
                 pass  # key no longer mutated globally — nothing to restore
 
@@ -6768,7 +7098,7 @@ async def _decide(scenes: list, visual_mode: str, clip_model: str, clip_ratio: f
             if user:
                 try:
                     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
-                    await metering.debit(user.tenant_id, _uid, "chat", merit_model, units, byok=_byok, log=True)
+                    await metering.debit(user.tenant_id, _uid, "chat", merit_model, units, byok=_byok, write_log=True)
                 except Exception as _e:
                     print(f"[video/decide] merit metering debit failed (non-fatal): {_e}")
     return _vseg.decide_visual_modes(scenes, visual_mode, clip_model, clip_ratio, merit)
@@ -6878,7 +7208,7 @@ async def _video_visual_brief(content: str, model: str, user, byok: bool) -> str
                 await metering.debit(user.tenant_id, _uid, "chat", model,
                                      {"tokens_in": getattr(_u, "prompt_tokens", None) or len(prompt) // 4,
                                       "tokens_out": getattr(_u, "completion_tokens", None) or 50},
-                                     byok=byok, log=True)
+                                     byok=byok, write_log=True)
             except Exception:
                 pass
         return brief
@@ -7220,7 +7550,7 @@ async def video_tts_scene(req: VideoTtsSceneReq,
         if user:
             try:
                 await metering.debit(user.tenant_id, _uid, "tts", req.model,
-                                     {"chars": len(synth)}, byok=_byok, video_job=x_video_job, log=True)
+                                     {"chars": len(synth)}, byok=_byok, video_job=x_video_job, write_log=True)
             except Exception as _e:
                 print(f"[video/tts/scene] meter_only debit failed (non-fatal): {_e}")
         return {"metered": True}
@@ -7267,7 +7597,7 @@ async def video_tts_scene(req: VideoTtsSceneReq,
     if user:
         try:
             await metering.debit(user.tenant_id, _uid, "tts", req.model,
-                                 {"chars": len(synth)}, byok=_byok, video_job=x_video_job, log=True)
+                                 {"chars": len(synth)}, byok=_byok, video_job=x_video_job, write_log=True)
         except Exception as _e:
             print(f"[video/tts/scene] metering debit failed (non-fatal): {_e}")
     return {"audio_b64": audio_b64}
@@ -7311,7 +7641,7 @@ async def video_meter(req: VideoMeterReq,
     credits = 0
     try:
         credits = await metering.debit(user.tenant_id, _uid, op, req.model, req.units or {},
-                                       byok=_byok, video_job=x_video_job, log=True, op_id=req.op_id)
+                                       byok=_byok, video_job=x_video_job, write_log=True, op_id=req.op_id)
     except Exception as _e:
         print(f"[video/meter] debit failed (non-fatal): {_e}")
     return {"metered": True, "credits": credits}
@@ -7835,7 +8165,7 @@ async def video_visual_prompt(req: VideoVisualPromptReq,
             tok_out = _tok_out_acc or (len(parsed.get("visual_prompt", "")) // 4) * max(_calls, 1)
             await metering.debit(user.tenant_id, _uid, "chat", _model,
                                  {"tokens_in": tok_in, "tokens_out": tok_out},
-                                 byok=_byok, video_job=x_video_job, log=True)
+                                 byok=_byok, video_job=x_video_job, write_log=True)
         except Exception as _e:
             print(f"[video/visual-prompt] metering failed (non-fatal): {_e}")
 
@@ -8110,7 +8440,7 @@ async def generate_image_vertex(req: VertexImageRequest,
     _cr = 0
     if user:
         _cr = await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": 1},
-                                   byok=_byok, video_job=x_video_job, log=False) or 0
+                                   byok=_byok, video_job=x_video_job, write_log=False) or 0
     await _capture_image_flow(user, req.model, "generate_image", [b64], prompts=req.prompt, credits=_cr)
     return {"image_b64": b64, "model": req.model}
 

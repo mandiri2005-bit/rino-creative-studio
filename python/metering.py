@@ -235,11 +235,11 @@ async def gate(tenant_id: str, operation: str, model: str,
 
 
 async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: str,
-                units: Union[int, float, dict], *, byok: bool = False, log: bool = True,
+                units: Union[int, float, dict], *, byok: bool = False, write_log: bool = True,
                 session_id=None, job_id=None, video_job=None, tok_in: int = 0, tok_out: int = 0,
                 provider: Optional[str] = None, op_id: Optional[str] = None) -> int:
-    """Post-hoc charge for a completed op. With log=True also writes a usage_logs
-    row carrying the credits; set log=False when the caller already logs the usage
+    """Post-hoc charge for a completed op. With write_log=True also writes a usage_logs
+    row carrying the credits; set write_log=False when the caller already logs the usage
     row itself (e.g. image flows via _capture_image_flow) to avoid a duplicate.
     Pass a STABLE op_id (e.g. "video-renderfee:<jobId>") for a charge that may be
     retried/re-run — charge() is idempotent on op_id, so a stitch re-run (BullMQ
@@ -261,7 +261,7 @@ async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: s
                                   user_id=user_id, metadata=md)
         except Exception as e:
             log.warning("debit(%s) failed: %s", operation, e)
-    if log:
+    if write_log:
         try:
             usd = _cat.operation_usd(operation, model, units)
             _ep = _OP_ENDPOINT.get(operation, "other")
@@ -273,3 +273,120 @@ async def debit(tenant_id: str, user_id: Optional[str], operation: str, model: s
         except Exception as e:
             log.warning("debit(%s) log failed: %s", operation, e)
     return credits
+
+
+# ── Raw precomputed-amount gate/debit (for the new Image page) ──────────────────
+# The new Image page prices via catalog.image_credits_for_usd (first-party × markup,
+# max-50%-margin floor, round-up-5) — NOT credit_cost's legacy 3×/_IMAGE_COSTS path.
+# These two helpers gate/charge an ALREADY-COMPUTED credit amount so the picker badge
+# == the debit, WITHOUT rerouting credit_cost (which would also move legacy /generate-image
+# and Video-Instant per-scene image pricing — they MUST stay on the old path). `write_log`
+# is named to avoid shadowing the module `log` logger (see debit()'s param footgun).
+async def gate_credits(tenant_id: str, credits: int, *, byok: bool = False) -> int:
+    """Raise HTTP 402 if the tenant can't cover a PRECOMPUTED credit amount. Returns it.
+    No-op for BYOK / disabled metering / unauthenticated / non-positive."""
+    credits = int(credits or 0)
+    if byok or not METERING_ENABLED or not tenant_id or credits <= 0:
+        return 0
+    await _free_prep(tenant_id)          # free: top up daily claim + global kill-switch
+    bal = await _credits.get_balance(tenant_id)
+    if bal < credits:
+        raise insufficient_credits(credits, bal)
+    return credits
+
+
+async def debit_credits(tenant_id: str, user_id: Optional[str], operation: str, model: str,
+                        credits: int, *, byok: bool = False, write_log: bool = True,
+                        cost_usd: Optional[float] = None, session_id=None, job_id=None,
+                        video_job=None, tok_in: int = 0, tok_out: int = 0,
+                        provider: Optional[str] = None, op_id: Optional[str] = None) -> int:
+    """Charge a PRECOMPUTED credit amount for a completed op (idempotent on op_id). With
+    write_log=True also writes a usage_logs row carrying `credits` AND an explicit `cost_usd`
+    (the REAL winning-provider upstream cost — accurate COGS / margin, not a catalog estimate).
+    Returns credits charged (0 for BYOK / unauthenticated / disabled)."""
+    if not tenant_id or not METERING_ENABLED:
+        return 0
+    credits = 0 if byok else int(credits or 0)
+    if credits > 0:
+        try:
+            md = {"op": operation, "model": model}
+            if video_job:
+                md["video_job"] = str(video_job)
+            await _credits.charge(tenant_id, credits, op_id=op_id or str(uuid.uuid4()),
+                                  user_id=user_id, metadata=md)
+        except Exception as e:
+            log.warning("debit_credits(%s) failed: %s", operation, e)
+    if write_log:
+        try:
+            usd = float(cost_usd) if cost_usd is not None else _cat.operation_usd(operation, model, {"count": 1})
+            _ep = _OP_ENDPOINT.get(operation, "other")
+            if video_job:
+                _ep = f"{_ep}-VI"
+            await _db.log_usage(tenant_id, user_id, model, _ep,
+                                int(tok_in), int(tok_out), usd, session_id=session_id, job_id=job_id,
+                                provider=provider or _provider_for(model), credits=credits)
+        except Exception as e:
+            log.warning("debit_credits(%s) log failed: %s", operation, e)
+    return credits
+
+
+# ── Atomic HOLD → COMMIT/REFUND for a PRECOMPUTED amount (fixes the gate_credits read-then-charge
+# TOCTOU: a balance READ lets K concurrent requests all pass on a one-image balance and overspend
+# into a negative durable balance — see migration 0033 #37, hit -547 in prod). hold_credits reserves
+# atomically up front (Redis Lua check+DECRBY); commit_credits finalises on success; refund_credits
+# releases on failure. Same precomputed-amount contract as gate_credits/debit_credits. ─────────────
+async def hold_credits(tenant_id: str, credits: int, op_id: str, *, byok: bool = False) -> int:
+    """Atomically RESERVE a precomputed credit amount (HTTP 402 if it can't cover it). No-op for
+    BYOK / disabled / unauthenticated / non-positive. Pair with commit_credits / refund_credits."""
+    credits = int(credits or 0)
+    if byok or not METERING_ENABLED or not tenant_id or credits <= 0:
+        return 0
+    await _free_prep(tenant_id)
+    try:
+        await _credits.hold(tenant_id, credits, op_id)
+    except _credits.InsufficientCredits as e:
+        raise insufficient_credits(e.needed, e.balance)
+    return credits
+
+
+async def commit_credits(tenant_id: str, user_id: Optional[str], operation: str, model: str,
+                         credits: int, op_id: str, *, byok: bool = False, write_log: bool = True,
+                         cost_usd: Optional[float] = None, session_id=None, job_id=None,
+                         video_job=None, tok_in: int = 0, tok_out: int = 0,
+                         provider: Optional[str] = None) -> int:
+    """Finalise a hold_credits reservation (commit the actual; refunds any unused portion of the
+    hold) + write the usage_logs row carrying `credits` and the REAL cost_usd. Idempotent on op_id."""
+    if not tenant_id or not METERING_ENABLED:
+        return 0
+    credits = 0 if byok else int(credits or 0)
+    if credits > 0:
+        try:
+            md = {"op": operation, "model": model}
+            if video_job:
+                md["video_job"] = str(video_job)
+            await _credits.commit(tenant_id, op_id, credits, user_id=user_id, metadata=md)
+        except Exception as e:
+            log.warning("commit_credits(%s) failed: %s", operation, e)
+    if write_log:
+        try:
+            usd = float(cost_usd) if cost_usd is not None else _cat.operation_usd(operation, model, {"count": 1})
+            _ep = _OP_ENDPOINT.get(operation, "other")
+            if video_job:
+                _ep = f"{_ep}-VI"
+            await _db.log_usage(tenant_id, user_id, model, _ep,
+                                int(tok_in), int(tok_out), usd, session_id=session_id, job_id=job_id,
+                                provider=provider or _provider_for(model), credits=credits)
+        except Exception as e:
+            log.warning("commit_credits(%s) log failed: %s", operation, e)
+    return credits
+
+
+async def refund_credits(tenant_id: str, op_id: str) -> int:
+    """Release a hold_credits reservation when the op fails (charge nothing). Idempotent."""
+    if not tenant_id or not METERING_ENABLED:
+        return 0
+    try:
+        return await _credits.refund(tenant_id, op_id)
+    except Exception as e:
+        log.warning("refund_credits(%s) failed: %s", op_id, e)
+        return 0

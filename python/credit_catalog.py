@@ -127,6 +127,14 @@ _DEFAULT_IMAGE_MIN_TIER = {
     "gpt-image-2": "starter", "gpt-image-2-vip": "starter", "gpt-image-2-official": "starter",
     "flux-kontext-pro": "pro", "flux-kontext-max": "pro", "sora-image": "pro",
     "nano-banana-pro": "enterprise", "nano-banana-pro-hd": "enterprise",
+    # NEW image-page registry models (atlabs picker) — tiered by COGS. The fail-closed 'pro' default was
+    # INVERTING the gate: nano-banana-pro-ultra ($0.15) reachable at Pro while cheap models ($0.003) were
+    # over-locked. Re-tier via pricing.json model_min_tier.image (no code change) if the product call differs.
+    "flux-schnell": "free", "gpt-image-1-mini": "free", "ernie-image-turbo": "free", "z-image-turbo": "free",
+    "flux-dev": "starter", "grok-imagine": "starter", "qwen-image": "starter", "seedream-5": "starter",
+    "mai-image-2-5": "starter",
+    "imagen-4": "pro", "recraft-v3": "pro",
+    "youchuan-v8": "enterprise", "nano-banana-pro-ultra": "enterprise",
     # Vertex (google route) ids — nano-banana family via /generate-image/vertex.
     "gemini-2.5-flash-image": "free", "gemini-3.1-flash-image": "starter",
     "gemini-3-pro-image": "enterprise",
@@ -335,6 +343,29 @@ TIER_MONTHLY_CREDITS: dict[str, int] = {
     **(_PRICING.get("tier_monthly_credits") or {}),
 }
 
+# ── GLOBAL revenue recognition: derive per-plan list price + allowance from the
+# subscription_plans block so credit_sale_price_idr() recognises the REAL plan price.
+# Without this, the global deployment's plans (starter/plus/pro/ultra) are absent from
+# TIER_PRICE_IDR (Indonesia defaults only have starter/pro/enterprise) → plus/ultra fell
+# back to the blended CREDIT_SALE_PRICE_IDR (Rp248 ≈ 7× the real Rp36/cr) and pro/starter
+# used Indonesia IDR list prices ÷ global allowance → revenue mis-stated every direction.
+# subscription_plans prices are in USD (Dodo) → convert at KURS_IDR_USD so revenue_idr stays
+# the IDR presentation of cash collected. Only fires when subscription_plans is present
+# (the global product); Indonesia (config/pricing.json, no subscription_plans) is untouched.
+# NOTE (functional-currency, roadmap): for USD-native books the accounting engine should read
+# credits × CREDIT_USD_VALUE (or cost_usd) directly; revenue_idr here is the IDR view at KURS.
+_SUB_PLANS = _PRICING.get("subscription_plans") or {}
+if isinstance(_SUB_PLANS, dict) and _SUB_PLANS:
+    for _pk, _pv in _SUB_PLANS.items():
+        if not isinstance(_pv, dict):
+            continue
+        _pcr = _pv.get("credits")
+        _pusd = _pv.get("price_usd")
+        if _pcr:                                   # allowance drives both the grant and the /cr price
+            TIER_MONTHLY_CREDITS[_pk] = int(_pcr)
+        if _pusd and _pcr:                         # paid plan → IDR list price = USD price × KURS
+            TIER_PRICE_IDR[_pk] = round(float(_pusd) * KURS_IDR_USD, 2)
+
 # ── Video upstream cost, USD per second of generated video (config-driven) ─────
 _VIDEO_USD_PER_SEC: dict[str, float] = {
     **_DEFAULT_VIDEO_USD_PER_SEC,
@@ -456,12 +487,57 @@ def _op_markup(operation: str, model: str, units: Union[int, float, dict], usd: 
     return 1.0   # chat / tts / narasi / embedding → break-even
 
 
+# Round the SELL price (credits) UP to the next multiple of IMG_CREDIT_ROUNDUP (5):
+# 9→10, 13→15, 17→20, 137→140, 171→175. Cleaner pricing + a sliver more margin.
+# SCOPED TO op=="image" only (in credit_cost) so it never bumps the live whiteboard
+# render fee (3cr/sec), TTS, chat, or video pricing. Set IMG_CREDIT_ROUNDUP=1 to disable.
+IMG_CREDIT_ROUNDUP = int(os.getenv("IMG_CREDIT_ROUNDUP", "5"))
+def _roundup_credits(c: int, step: int = IMG_CREDIT_ROUNDUP) -> int:
+    if c <= 0 or step <= 1:
+        return c
+    return ((c + step - 1) // step) * step
+
 def credit_cost(operation: str, model: str, units: Union[int, float, dict]) -> int:
     """Credits to charge for `operation` on `model` consuming `units`.
     This is the function the metering middleware calls. See operation_usd for the
-    meaning of `units` per operation. Image/video carry a harga-jual markup."""
+    meaning of `units` per operation. Image/video carry a harga-jual markup; image
+    sell price is additionally rounded UP to the next multiple of IMG_CREDIT_ROUNDUP."""
     usd = operation_usd(operation, model, units)
-    return usd_to_credits(usd * _op_markup(operation, model, units, usd))
+    credits = usd_to_credits(usd * _op_markup(operation, model, units, usd))
+    if (operation or "").lower() == "image":
+        credits = _roundup_credits(credits)
+    return credits
+
+
+# New Image-page sell rule (Rino 2026-06-28): price off the FIRST-PARTY price (the MOST
+# EXPENSIVE provider in the failover chain — e.g. Vertex/OpenAI/BFL) × a thin markup, NOT
+# the cheapest aggregator × 3×. The real margin then comes from sourcing a cheaper aggregator
+# at runtime (failover never loses money — worst case = first-party = the markup itself).
+# Banner badge == this == what's debited.
+IMG_SELL_MARKUP    = float(os.getenv("IMG_SELL_MARKUP",    "1.10"))  # arbitrage-floor markup (first-party × this)
+IMG_MIN_MARGIN     = float(os.getenv("IMG_MIN_MARGIN",     "0.50"))  # real-margin floor (sell >= cogs/(1-floor))
+IMG_PREMIUM_MARKUP = float(os.getenv("IMG_PREMIUM_MARKUP", "1.30"))  # fixed markup for margin-floor-EXEMPT ops (creative upscale)
+def image_credits_for_usd(firstparty_usd: float, cogs_usd: float = None, markup: float = None) -> int:
+    """Credits for ONE image = first-party (most-expensive-source) USD priced by a DOUBLE FLOOR,
+    converted at CREDIT_USD_VALUE, rounded UP to IMG_CREDIT_ROUNDUP. Single source of truth so the
+    picker badge == the debit. Sell = max(arbitrage floor, margin floor):
+      • arbitrage floor = first-party × IMG_SELL_MARKUP (1.10) — keeps the fat margin on models
+        where the cheapest aggregator (cogs_usd) is far below first-party (e.g. GPT-Image 93%).
+      • margin floor    = cogs_usd / (1 - IMG_MIN_MARGIN) (= 2×cogs at 50%) — guarantees ≥50% real
+        margin even on near-zero-arbitrage models (Recraft/Imagen, where cogs≈first-party).
+    Round-up only RAISES margin, so the floor holds. cogs_usd omitted → arbitrage floor only.
+    `markup` set → fixed first-party×markup, BYPASSING the margin floor (premium-op exemption,
+    e.g. creative upscale via IMG_PREMIUM_MARKUP). e.g. Nano Banana $0.039×1.10→25cr (62%);
+    Recraft $0.04: max($0.044, $0.08)=$0.08→40cr (50%). (Legacy /generate-image 3× path untouched.)"""
+    if not firstparty_usd or firstparty_usd <= 0:
+        return 0
+    if markup is not None:
+        return _roundup_credits(usd_to_credits(firstparty_usd * markup))
+    cr = _roundup_credits(usd_to_credits(firstparty_usd * IMG_SELL_MARKUP))   # arbitrage floor
+    if cogs_usd and cogs_usd > 0 and IMG_MIN_MARGIN < 1.0:
+        cr_floor = _roundup_credits(usd_to_credits(cogs_usd / (1.0 - IMG_MIN_MARGIN)))  # margin floor
+        cr = max(cr, cr_floor)
+    return cr
 
 
 # ── Pre-call estimate helpers (for the HOLD before real units are known) ───────

@@ -1,0 +1,663 @@
+{
+  "_comment": "Wimba image provider registry. Each model: picker meta (label/sublabel/icon), feature support, cogs_usd (cheapest aggregator = Wimba COGS, drives credit banner via credit_cost), and an ordered failover chain [cheapest aggregator -> 2nd -> first-party source]. Runtime: try chain[i] with 1 call + 1 retry; on failure advance. Providers keyed to adapters in image_providers.py; API keys = Railway env (see _env). Slugs per provider from ~/docs/wimba-image-providers-adapter-spec.md (2026-06-28).",
+  "_env": {
+    "atlascloud": "ATLASCLOUD_API_KEY",
+    "kie": "KIE_API_KEY",
+    "fal": "FAL_API_KEY",
+    "aiml": "AIMLAPI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "bfl": "BFL_API_KEY",
+    "byteplus": "BYTEPLUS_API_KEY",
+    "recraft": "RECRAFT_API_KEY",
+    "vectorizer": "VECTORIZER_API_ID + VECTORIZER_API_SECRET",
+    "laozhang": "DEEPSEEK_LAOZHANG_API_KEY (shared LaoZhang key)",
+    "vertex": "GCP_REFRESH_TOKEN (already wired)"
+  },
+  "_features": [
+    "create_raster",
+    "create_vector",
+    "edit",
+    "reframe",
+    "upscale",
+    "vectorize",
+    "bg_remove"
+  ],
+  "_transparent_note": "Transparent = toggle on Create, not a model. ON -> route to a model whose .transparent=true (gpt-image-1, recraft) with native transparent param, else auto-run bg_remove after generate.",
+  "models": [
+    {
+      "id": "nano-banana",
+      "label": "Nano Banana",
+      "sublabel": "Gemini 2.5 Flash Image",
+      "icon": "google",
+      "features": [
+        "create_raster",
+        "edit",
+        "reframe"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.019,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "google/nano-banana/text-to-image-developer",
+          "edit": "google/nano-banana/edit-developer"
+        },
+        {
+          "provider": "laozhang",
+          "create": "nano-banana",
+          "edit": "nano-banana"
+        },
+        {
+          "provider": "vertex",
+          "create": "gemini-2.5-flash-image",
+          "edit": "gemini-2.5-flash-image"
+        }
+      ],
+      "official_usd": 0.039
+    },
+    {
+      "id": "nano-banana-2",
+      "label": "Nano Banana 2",
+      "sublabel": "Gemini 3.1 Flash Image",
+      "icon": "google",
+      "features": [
+        "create_raster",
+        "edit",
+        "reframe"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.04,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "google/nano-banana-2/text-to-image-developer",
+          "edit": "google/nano-banana-2/edit-developer"
+        },
+        {
+          "provider": "kie",
+          "create": "google/nano-banana-2",
+          "edit": "google/nano-banana-2-edit"
+        },
+        {
+          "provider": "vertex",
+          "create": "gemini-3.1-flash-image",
+          "edit": "gemini-3.1-flash-image"
+        }
+      ],
+      "official_usd": 0.067
+    },
+    {
+      "id": "nano-banana-pro",
+      "label": "Nano Banana Pro",
+      "sublabel": "Gemini 3 Pro Image",
+      "icon": "google",
+      "features": [
+        "create_raster",
+        "edit",
+        "reframe"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.04,
+      "chain": [
+        {
+          "provider": "fal",
+          "create": "fal-ai/nano-banana-pro",
+          "edit": "fal-ai/nano-banana-pro/edit"
+        },
+        {
+          "provider": "atlascloud",
+          "create": "google/nano-banana-pro/text-to-image-developer",
+          "edit": "google/nano-banana-pro/edit-developer"
+        },
+        {
+          "provider": "vertex",
+          "create": "gemini-3-pro-image",
+          "edit": "gemini-3-pro-image"
+        }
+      ],
+      "official_usd": 0.134
+    },
+    {
+      "id": "gpt-image-2",
+      "label": "GPT Image 2",
+      "sublabel": "OpenAI \u00b7 gen + edit",
+      "icon": "openai",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": true,
+      "cogs_usd": 0.004,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "openai/gpt-image-2-developer/text-to-image",
+          "edit": "openai/gpt-image-2-developer/edit"
+        },
+        {
+          "provider": "laozhang",
+          "create": "gpt-image-2",
+          "edit": "gpt-image-2"
+        },
+        {
+          "provider": "openai",
+          "create": "gpt-image-2",
+          "edit": "gpt-image-2"
+        }
+      ],
+      "official_usd": 0.047
+    },
+    {
+      "id": "gpt-image-1",
+      "label": "GPT Image 1",
+      "sublabel": "OpenAI \u00b7 transparent-capable",
+      "icon": "openai",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": true,
+      "cogs_usd": 0.009,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "openai/gpt-image-1/text-to-image",
+          "edit": "openai/gpt-image-1/edit"
+        },
+        {
+          "provider": "aiml",
+          "create": "gpt-image-1",
+          "edit": "gpt-image-1"
+        },
+        {
+          "provider": "openai",
+          "create": "gpt-image-1",
+          "edit": "gpt-image-1"
+        }
+      ],
+      "official_usd": 0.04
+    },
+    {
+      "id": "seedream-4-5",
+      "label": "Seedream 4.5",
+      "sublabel": "ByteDance \u00b7 up to 4K",
+      "icon": "bytedance",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.0325,
+      "chain": [
+        {
+          "provider": "kie",
+          "create": "bytedance/seedream",
+          "edit": "bytedance/seedream-v4-edit"
+        },
+        {
+          "provider": "laozhang",
+          "create": "seedream-4-5",
+          "edit": "seedream-4-5"
+        },
+        {
+          "provider": "byteplus",
+          "create": "seedream-4-5-251128",
+          "edit": "seedream-4-5-251128"
+        }
+      ],
+      "official_usd": 0.045
+    },
+    {
+      "id": "seedream-5",
+      "label": "Seedream 5",
+      "sublabel": "ByteDance",
+      "icon": "bytedance",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.0275,
+      "chain": [
+        {
+          "provider": "kie",
+          "create": "bytedance/seedream",
+          "edit": "bytedance/seedream-v4-edit"
+        },
+        {
+          "provider": "laozhang",
+          "create": "seedream-5",
+          "edit": "seedream-5"
+        },
+        {
+          "provider": "byteplus",
+          "create": "seedream-5-0-260128",
+          "edit": "seedream-5-0-260128"
+        }
+      ],
+      "official_usd": 0.035
+    },
+    {
+      "id": "flux-kontext-pro",
+      "label": "FLUX Kontext Pro",
+      "sublabel": "Black Forest \u00b7 edit specialist",
+      "icon": "bfl",
+      "features": [
+        "create_raster",
+        "edit",
+        "reframe"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.035,
+      "chain": [
+        {
+          "provider": "laozhang",
+          "create": "flux-kontext-pro",
+          "edit": "flux-kontext-pro"
+        },
+        {
+          "provider": "aiml",
+          "create": "flux/kontext-pro/text-to-image",
+          "edit": "flux/kontext-pro/image-to-image"
+        },
+        {
+          "provider": "bfl",
+          "create": "/v1/flux-kontext-pro",
+          "edit": "/v1/flux-kontext-pro"
+        }
+      ],
+      "official_usd": 0.04
+    },
+    {
+      "id": "flux-kontext-max",
+      "label": "FLUX Kontext Max",
+      "sublabel": "Black Forest \u00b7 best ref-follow",
+      "icon": "bfl",
+      "features": [
+        "create_raster",
+        "edit",
+        "reframe"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.07,
+      "chain": [
+        {
+          "provider": "laozhang",
+          "create": "flux-kontext-max",
+          "edit": "flux-kontext-max"
+        },
+        {
+          "provider": "aiml",
+          "create": "flux/kontext-max/text-to-image",
+          "edit": "flux/kontext-max/image-to-image"
+        },
+        {
+          "provider": "bfl",
+          "create": "/v1/flux-kontext-max",
+          "edit": "/v1/flux-kontext-max"
+        }
+      ],
+      "official_usd": 0.08
+    },
+    {
+      "id": "flux-dev",
+      "label": "FLUX.1 Dev",
+      "sublabel": "Black Forest \u00b7 fast creative",
+      "icon": "bfl",
+      "features": [
+        "create_raster"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.012,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "black-forest-labs/flux-dev"
+        },
+        {
+          "provider": "aiml",
+          "create": "flux-1-dev-api"
+        },
+        {
+          "provider": "bfl",
+          "create": "/v1/flux-dev"
+        }
+      ],
+      "official_usd": 0.025
+    },
+    {
+      "id": "imagen-4",
+      "label": "Imagen 4",
+      "sublabel": "Google",
+      "icon": "google",
+      "features": [
+        "create_raster"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.04,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "google/imagen4"
+        },
+        {
+          "provider": "kie",
+          "create": "google/imagen4"
+        },
+        {
+          "provider": "vertex",
+          "create": "imagen-4.0-generate-001"
+        }
+      ],
+      "official_usd": 0.04
+    },
+    {
+      "id": "qwen-image",
+      "label": "Qwen Image",
+      "sublabel": "Alibaba",
+      "icon": "alibaba",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.021,
+      "chain": [
+        {
+          "provider": "kie",
+          "create": "qwen/text-to-image",
+          "edit": "qwen/image-edit"
+        },
+        {
+          "provider": "atlascloud",
+          "create": "alibaba/qwen-image/text-to-image-plus",
+          "edit": "alibaba/qwen-image/edit-plus"
+        },
+        {
+          "provider": "alibaba",
+          "create": "qwen-image",
+          "edit": "qwen-image-edit"
+        }
+      ],
+      "official_usd": 0.035
+    },
+    {
+      "id": "recraft-v3",
+      "label": "Recraft V3",
+      "sublabel": "Recraft \u00b7 raster + vector + tools",
+      "icon": "recraft",
+      "features": [
+        "create_raster",
+        "create_vector",
+        "edit",
+        "reframe",
+        "upscale",
+        "vectorize",
+        "bg_remove"
+      ],
+      "transparent": true,
+      "cogs_usd": 0.04,
+      "chain": [
+        {
+          "provider": "recraft",
+          "create": "recraftv3",
+          "create_vector": "recraftv3_vector",
+          "edit": "imageToImage",
+          "reframe": "outpaint",
+          "upscale": "crispUpscale",
+          "vectorize": "vectorize",
+          "bg_remove": "removeBackground"
+        }
+      ],
+      "official_usd": 0.04
+    },
+    {
+      "id": "flux-schnell",
+      "label": "Flux Schnell",
+      "sublabel": "Black Forest \u00b7 ultra-fast",
+      "icon": "bfl",
+      "features": [
+        "create_raster"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.003,
+      "official_usd": 0.003,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "black-forest-labs/flux-schnell"
+        }
+      ]
+    },
+    {
+      "id": "gpt-image-1-mini",
+      "label": "GPT Image 1 Mini",
+      "sublabel": "OpenAI \u00b7 cheap + fast",
+      "icon": "openai",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": true,
+      "cogs_usd": 0.004,
+      "official_usd": 0.004,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "openai/gpt-image-1-mini/text-to-image",
+          "edit": "openai/gpt-image-1-mini/edit"
+        }
+      ]
+    },
+    {
+      "id": "ernie-image-turbo",
+      "label": "ERNIE Image Turbo",
+      "sublabel": "Baidu \u00b7 fast & light",
+      "icon": "baidu",
+      "features": [
+        "create_raster"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.003,
+      "official_usd": 0.003,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "baidu/ERNIE-Image-Turbo/text-to-image"
+        }
+      ]
+    },
+    {
+      "id": "z-image-turbo",
+      "label": "Z-Image Turbo",
+      "sublabel": "Fast raster",
+      "icon": "z-image",
+      "features": [
+        "create_raster"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.005,
+      "official_usd": 0.005,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "z-image/turbo"
+        }
+      ]
+    },
+    {
+      "id": "grok-imagine",
+      "label": "Grok Imagine",
+      "sublabel": "xAI",
+      "icon": "xai",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.02,
+      "official_usd": 0.02,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "xai/grok-imagine-image/text-to-image",
+          "edit": "xai/grok-imagine-image/edit"
+        }
+      ]
+    },
+    {
+      "id": "mai-image-2-5",
+      "label": "MAI Image 2.5",
+      "sublabel": "Microsoft \u00b7 flash",
+      "icon": "microsoft",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.03,
+      "official_usd": 0.03,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "microsoft/mai-image-2.5-flash/text-to-image",
+          "edit": "microsoft/mai-image-2.5-flash/edit"
+        }
+      ]
+    },
+    {
+      "id": "nano-banana-pro-ultra",
+      "label": "Nano Banana Pro Ultra",
+      "sublabel": "Gemini 3 Pro Image \u00b7 Ultra",
+      "icon": "google",
+      "features": [
+        "create_raster",
+        "edit",
+        "reframe"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.15,
+      "official_usd": 0.15,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "google/nano-banana-pro/text-to-image-ultra",
+          "edit": "google/nano-banana-pro/edit-ultra"
+        }
+      ]
+    },
+    {
+      "id": "youchuan-v8",
+      "label": "Youchuan V8.1",
+      "sublabel": "Premium \u00b7 style transfer",
+      "icon": "youchuan",
+      "features": [
+        "create_raster",
+        "edit"
+      ],
+      "transparent": false,
+      "cogs_usd": 0.086,
+      "official_usd": 0.129,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "create": "youchuan/v8.1/text-to-image",
+          "edit": "youchuan/v8.1/image-to-image"
+        }
+      ]
+    }
+  ],
+  "tool_defaults": {
+    "create_raster": "nano-banana",
+    "create_vector": "recraft-v3",
+    "edit": "nano-banana",
+    "reframe": "recraft-v3",
+    "upscale": "recraft-v3",
+    "vectorize": "recraft-v3",
+    "bg_remove": "recraft-v3"
+  },
+  "op_chains": {
+    "_comment": "Operation-level failover for the processing tools (reframe/upscale/vectorize/bg) where the model picker collapses to a capability, not a named gen model.",
+    "reframe": [
+      {
+        "provider": "recraft",
+        "slug": "outpaint",
+        "official_usd": null
+      },
+      {
+        "provider": "fal",
+        "slug": "fal-ai/ideogram/v3/reframe"
+      },
+      {
+        "provider": "bfl",
+        "slug": "/v1/flux-pro-1.0-expand"
+      }
+    ],
+    "upscale_crisp": [
+      {
+        "provider": "recraft",
+        "slug": "crispUpscale",
+        "cogs_usd": 0.004,
+        "official_usd": 0.004
+      },
+      {
+        "provider": "atlascloud",
+        "slug": "atlascloud/image-upscaler",
+        "cogs_usd": 0.01,
+        "official_usd": 0.01
+      }
+    ],
+    "_op_pricing_note": "Every op_chain step carries cogs_usd/official_usd so the tool SELL is priced off the chain-MAX (price_basis\u2192_op_chain_basis), guaranteeing the charge covers the most expensive failover (no negative margin on a step[0] outage). DROPPED from upscale_crisp: fal-ai/clarity-upscaler (unconfirmed crisp price + it is a creative-tier upscaler \u2014 kept in upscale_creative). DROPPED from vectorize: vectorizer.ai (~$0.20 \u2192 would force a ~200cr badge; Recraft is the SVG source-of-truth + fal is a cheap backup). fal/atlascloud prices verified in ~/Claude/{fal,atlascloud}-models.xlsx 2026-06-28 (atlascloud upscaler $0.01, fal birefnet $0.022); fal clarity-upscaler creative cogs is a conservative estimate pending live verify.",
+    "upscale_creative": [
+      {
+        "provider": "recraft",
+        "slug": "creativeUpscale",
+        "cogs_usd": 0.25,
+        "official_usd": 0.25,
+        "sell_markup": 1.3,
+        "_pricing_note": "exempt from 50% margin floor (would be 250cr); fixed x1.30 = 165cr. chain-max stays $0.25 (fal clarity below) so sell unchanged."
+      },
+      {
+        "provider": "fal",
+        "slug": "fal-ai/clarity-upscaler",
+        "cogs_usd": 0.1,
+        "official_usd": 0.1
+      }
+    ],
+    "vectorize": [
+      {
+        "provider": "recraft",
+        "slug": "vectorize",
+        "cogs_usd": 0.01,
+        "official_usd": 0.01
+      },
+      {
+        "provider": "fal",
+        "slug": "fal-ai/recraft/vectorize",
+        "cogs_usd": 0.02,
+        "official_usd": 0.02
+      }
+    ],
+    "bg_remove": [
+      {
+        "provider": "recraft",
+        "slug": "removeBackground",
+        "cogs_usd": 0.01,
+        "official_usd": 0.01
+      },
+      {
+        "provider": "fal",
+        "slug": "fal-ai/birefnet/v2",
+        "cogs_usd": 0.022,
+        "official_usd": 0.022
+      },
+      {
+        "provider": "atlascloud",
+        "slug": "atlascloud/image-background-remover",
+        "cogs_usd": 0.01,
+        "official_usd": 0.01
+      }
+    ]
+  },
+  "_pricing_note": "Prompt-ops (create*/edit): banner/charge = model official_usd (first-party, most-expensive in chain) \u00d7 IMG_SELL_MARKUP(1.10) \u2192 credits \u2192 round-up-5. Op-tools (upscale/vectorize/bg): priced off the op-chain MAX cogs/official across ALL steps (no negative margin on failover). cogs_usd (cheapest aggregator) is the REAL-margin reference + the per-step COGS booked in usage_logs."
+}

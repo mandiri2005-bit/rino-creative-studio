@@ -473,6 +473,12 @@ app.post(
   }
 );
 
+// H3: image ops get a TIGHTER body cap than the 200mb global (storyboard needs the big limit; image
+// refs don't). Mounted BEFORE the global parser so /api/image/* parses here first and rejects >24mb at
+// the edge (413) — bounding both the Python-side resident body AND pyProxy's JSON.stringify copy, so one
+// authed tenant can't OOM the shared single-process backend with 6×16MB b64 refs. express.json no-ops
+// once a body is parsed, so the global parser below skips these routes.
+app.use("/api/image", express.json({ limit:"24mb" }));
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
@@ -932,6 +938,22 @@ app.get("/", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "public", "landing.html"));
 });
+
+// ── Wimba Image app (separate Next.js static export at public/image/, built with
+// IMAGE_BASE_PATH=/image). Served SAME-ORIGIN so it shares the Clerk session and calls the
+// API relatively (/api/image/*). Inject the Clerk publishable key + brand at request time
+// from this backend's existing env → the Image app ships with NO key/config of its own. ──
+const IMAGE_INDEX = path.join(__dirname, "public", "image", "index.html");
+function serveImageApp(_req, res) {
+  fs.readFile(IMAGE_INDEX, "utf8", (err, html) => {
+    if (err) return res.status(404).send("Wimba Image app not deployed yet");
+    const inject = `<script>window.__CLERK_PK=${JSON.stringify(process.env.CLERK_PUBLISHABLE_KEY || "")};window.__BRAND="wimba";</script>`;
+    res.setHeader("Cache-Control", "no-cache");
+    res.type("html").send(html.includes("</head>") ? html.replace("</head>", inject + "</head>") : inject + html);
+  });
+}
+app.get(["/image", "/image/"], serveImageApp);
+
 app.use(express.static(path.join(__dirname,"public"),{
   setHeaders:(res,p)=>{ if(p.endsWith("index.html")) res.setHeader("Cache-Control","no-cache"); }
 }));
@@ -1081,8 +1103,26 @@ app.post("/api/upload", upload.single("file"), async(req,res)=>{
 // IMAGE GENERATION  (proxy → Python)
 // ══════════════════════════════════════════════════════════════════════════════
 app.get ("/api/image-models",    (req,res)=>pyProxy(req,res,"/image-models"));
+app.get ("/api/image/catalog",   (req,res)=>pyProxy(req,res,"/image/catalog"));   // picker meta + credit badges
 app.post("/api/generate-image",  (req,res)=>pyProxy(req,res,"/generate-image"));
 app.post("/api/whisk",           (req,res)=>pyProxy(req,res,"/whisk"));
+
+// New atlabs-style Image page — one POST per feature op. Auth is enforced by the /api gate
+// above (requireAuth); Python tier-gates the model, balance-gates + debits the badge credits
+// (single source = credits_for → badge == charge), logs real-provider COGS, and persists the
+// asset. Whitelist the op so we never proxy an arbitrary Python path.
+const IMAGE_OPS = new Set(["create","create_raster","create_vector","edit","reframe",
+                           "upscale","upscale_creative","vectorize","bg_remove"]);
+app.post("/api/image/:op", async (req,res) => {
+  const op = String(req.params.op || "");
+  if (!IMAGE_OPS.has(op)) return res.status(400).json({ error: `Unknown image op: ${op}` });
+  // Per-tenant rate limit: a failed op debits nothing (charge-on-success), so without this an
+  // authed free account could hammer ref-URL ops unbounded (SSRF scan / provider DoS amplifier).
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`image:${tenantId}`, 30, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many image requests — give it a moment." });
+  return pyProxy(req, res, `/image/${op}`);
+});
 
 // ── Nano-banana model → Google native model name ────────────────────────────
 const NANO_TO_GOOGLE_MODEL = {
