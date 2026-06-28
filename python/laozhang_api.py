@@ -1737,6 +1737,22 @@ async def credits_history(start: Optional[str] = None, end: Optional[str] = None
     return {"history": out}
 
 
+@app.get("/credits/gating")
+async def credits_gating():
+    """Effective model-gating config for the studio UI — the config-merged tier ranking,
+    per-model min tiers, and tier display labels (all from PRICING_CONFIG / credit_catalog).
+    The client mirrors this so locked options EXACTLY match the backend 403 — single source
+    of truth, no hardcoded drift (e.g. Wimba's free<starter<plus<pro<ultra ladder vs the
+    legacy free/starter/pro/enterprise one). Non-sensitive config; the Node proxy gates auth."""
+    ranks = dict(catalog.TIER_RANK)
+    labels = {t: (metering._TIER_LABEL.get(t) or t.capitalize()) for t in ranks}
+    return {
+        "tier_rank": ranks,
+        "model_min_tier": {"image": dict(catalog.IMAGE_MODEL_MIN_TIER)},
+        "tier_label": labels,
+    }
+
+
 # -- Main chat stream ------------------------------------------------------
 def _to_uuid(s: str) -> str:
     """Convert any string to a deterministic UUID v5 (idempotent)."""
