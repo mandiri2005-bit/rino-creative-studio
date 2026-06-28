@@ -33,6 +33,9 @@ COPY orchestrator/ ./orchestrator/
 COPY pakem/ ./pakem/
 COPY eval/ ./eval/
 COPY review_personas.json ./
+# Wimba Image provider registry (model meta + COGS + failover chains). NOT matched by `COPY *.py`,
+# so without this `import image_providers` raises FileNotFoundError → /image/catalog + /image/<op> 500.
+COPY image_registry.json ./
 # Nusantara Corpus seed + ref images. NOT matched by `COPY *.py`, so without this
 # data/nusantara_seed.json is absent at runtime → _load_seed() empty → BM25 retrieval
 # returns nothing (the corpus silently does nothing on the BM25 path).

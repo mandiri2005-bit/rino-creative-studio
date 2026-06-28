@@ -1,7 +1,7 @@
 """
 image_providers.py — multi-provider image backend with per-model failover.
 
-Registry: config/image_registry.json (model -> picker meta + COGS + ordered chain
+Registry: image_registry.json beside this module (model -> picker meta + COGS + ordered chain
 [cheapest aggregator -> 2nd -> first-party source]). dispatch() walks the chain:
 each provider gets 1 call + 1 retry; on failure it advances to the next. Output bytes are
 re-hosted to R2 (provider URLs expire: BFL ~10min, kie ~14d); dispatch() returns the bytes
@@ -31,7 +31,22 @@ except Exception:  # pragma: no cover
     storage = None
 
 log = logging.getLogger("image_providers")
-_REG = json.loads((Path(__file__).resolve().parent.parent / "config" / "image_registry.json").read_text())
+
+
+def _load_registry() -> dict:
+    """Locate image_registry.json robustly. It lives NEXT TO this module (python/image_registry.json) so
+    it is inside the Python service's Docker build context (`COPY *.py` + an explicit COPY); the repo-root
+    config/ copy is NOT in that context. Falls back to ../config for any legacy/dev layout + an env override."""
+    here = Path(__file__).resolve().parent
+    for c in (os.getenv("IMAGE_REGISTRY_PATH"),
+              str(here / "image_registry.json"),                      # bundled beside this module (prod image + repo)
+              str(here.parent / "config" / "image_registry.json")):   # legacy: config/ at repo root
+        if c and Path(c).exists():
+            return json.loads(Path(c).read_text())
+    raise FileNotFoundError("image_registry.json not found beside image_providers.py or in ../config/")
+
+
+_REG = _load_registry()
 _MODELS = {m["id"]: m for m in _REG["models"]}
 _OP_CHAINS = _REG.get("op_chains", {})
 
