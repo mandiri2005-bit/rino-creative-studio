@@ -509,6 +509,10 @@ const PUBLIC_API = new Set([
   // non-sensitive reference data the UI fetches on mount to populate dropdowns.
   "/api/narration/styles",
   "/api/narration/languages",
+  // Wimba Image picker metadata (model list + credit badges) — non-sensitive, NO user data.
+  // The /image app fetches it on mount; public so the catalog loads even before the Clerk token
+  // is ready (else the app falls back to "Demo data"). Generation (/api/image/:op) stays authed.
+  "/api/image/catalog",
 ]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
