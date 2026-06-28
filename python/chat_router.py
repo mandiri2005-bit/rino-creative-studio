@@ -192,6 +192,7 @@ _SPEC: list[tuple] = [
     # ── Claude ──
     ("claude-opus-4-7",           "Claude Opus 4.7",           "claude", "⭐⭐", "laozhang", "anthropic", "Anthropic's most capable current model"),
     ("claude-opus-4-7-thinking",  "Claude Opus 4.7 Thinking",  "claude", "⭐⭐", "laozhang", "anthropic", "Deep reasoning mode"),
+    ("claude-opus-4-6",           "Claude Opus 4.6",           "claude", "⭐⭐", "laozhang", "anthropic", "High-capability Opus model"),
     ("claude-sonnet-4-6",         "Claude Sonnet 4.6",         "claude", "⭐⭐", "laozhang", "anthropic", "Balanced speed, cost, and intelligence"),
     ("claude-sonnet-4-6-thinking","Claude Sonnet 4.6 Thinking","claude", "⭐",  "laozhang", "anthropic", "Reasoning mode"),
     ("claude-haiku-4-5",          "Claude Haiku 4.5",          "claude", "",   "laozhang", "anthropic", "Lightweight fast"),
