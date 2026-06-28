@@ -1,5 +1,8 @@
 .env
-data/
+# ANCHORED to repo root only (leading /). Unanchored `data/` also matched python/data/ (the Nusantara
+# corpus, COPY'd by python/Dockerfile) and made Railway's fresh build-snapshot EXCLUDE it → `COPY data/`
+# failed ("/data not found"). python/data/ is tracked + needed in the image, so ignore ONLY ./data.
+/data/
 mcp-folder/
 node_modules/
 __pycache__/
