@@ -661,6 +661,8 @@ app.post("/subscription/create", requireAuth, async (req, res) => {
 });
 // Credits balance + bucket breakdown (Python metering service).
 app.get("/credits/balance", requireAuth, (req, res) => pyProxy(req, res, "/credits/balance"));
+// Usage history (date · job · credit · balance), date-range filtered. Forwards ?start&end.
+app.get("/credits/history", requireAuth, (req, res) => pyProxy(req, res, "/credits/history" + (req.url.indexOf("?") >= 0 ? req.url.slice(req.url.indexOf("?")) : "")));
 
 // Current subscription state (Account page + post-checkout return poll). Read-only.
 app.get("/subscription/status", requireAuth, async (req, res) => {

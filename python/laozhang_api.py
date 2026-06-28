@@ -1636,6 +1636,63 @@ async def credits_balance(user: CurrentUser = Depends(get_current_user)):
     return {"balance": bal, "tier": user.tier, **bd}
 
 
+# ── Usage history: per-transaction credit ledger for the account page ─────────
+_HIST_OP_LABELS = {
+    "chat": "Chat", "image": "Image", "imagen": "Image", "batch": "Batch Images",
+    "veo": "Video (Veo)", "sora": "Video (Sora)", "video": "Video", "render": "Video render",
+    "tts": "Voice", "whisk": "Whisk", "flow": "Storyboard",
+    "narasi": "Script", "narasi_review": "Script Review", "whiteboard": "Whiteboard",
+}
+_HIST_REASON_LABELS = {
+    "topup": "Top-up", "daily_claim": "Daily credits", "refund": "Refund",
+    "admin_adjust": "Adjustment", "lapse": "Expired", "breakage": "Breakage",
+}
+def _history_label(reason: str, md) -> str:
+    if isinstance(md, str):
+        try:
+            md = json.loads(md)
+        except Exception:
+            md = {}
+    if not isinstance(md, dict):
+        md = {}
+    if reason == "charge":
+        op = str(md.get("op") or "").lower()
+        return _HIST_OP_LABELS.get(op) or (op.replace("_", " ").title() if op else "Usage")
+    if reason in ("signup_grant", "monthly_grant", "period_grant"):
+        plan = md.get("plan")
+        if plan:
+            return str(plan).title()
+        return "Welcome bonus" if reason == "signup_grant" else "Plan renewal"
+    return _HIST_REASON_LABELS.get(reason, reason.replace("_", " ").title())
+
+@app.get("/credits/history")
+async def credits_history(start: Optional[str] = None, end: Optional[str] = None,
+                          user: CurrentUser = Depends(get_current_user)):
+    """Per-transaction credit history (date · job · credit delta · running balance)
+    for the authenticated tenant, optionally bounded by [start, end] dates
+    (YYYY-MM-DD, inclusive). RLS-scoped; newest first; capped at 1000 rows."""
+    rows = await db._q_fetch(
+        """
+        SELECT created_at, reason, delta, balance_after, metadata
+          FROM credit_ledger
+         WHERE tenant_id = $1
+           AND ($2::date IS NULL OR created_at >= $2::date)
+           AND ($3::date IS NULL OR created_at < ($3::date + INTERVAL '1 day'))
+         ORDER BY created_at DESC
+         LIMIT 1000
+        """,
+        db._uid(user.tenant_id), (start or None), (end or None),
+        tenant=str(user.tenant_id),
+    )
+    return {"history": [{
+        "date": r["created_at"].isoformat(),
+        "job": _history_label(r["reason"], r["metadata"]),
+        "reason": r["reason"],
+        "delta": int(r["delta"]),
+        "balance": (int(r["balance_after"]) if r["balance_after"] is not None else None),
+    } for r in rows]}
+
+
 # -- Main chat stream ------------------------------------------------------
 def _to_uuid(s: str) -> str:
     """Convert any string to a deterministic UUID v5 (idempotent)."""
