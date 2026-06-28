@@ -90,8 +90,9 @@ if not API_KEY:
 # Separate key for image generation (can be same or different)
 IMAGE_API_KEY = os.environ.get("LAOZHANG_IMAGE_API_KEY", API_KEY)
 
-# API key for deepseek-v4-pro and deepseek-r1 — same BASE_URL (LaoZhang), different key
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+# API key for deepseek-v4-pro and deepseek-r1 — same BASE_URL (LaoZhang), different key.
+# Wimba stores it as DEEPSEEK_LAOZHANG_API_KEY; fall back to DEEPSEEK_API_KEY (ceritaAI / legacy).
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_LAOZHANG_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_DIRECT_MODELS = {"deepseek-v4-pro", "deepseek-r1"}
 
 BASE_URL = "https://api.laozhang.ai/v1"
@@ -887,7 +888,7 @@ def make_client(model: str = "") -> OpenAI:
         key = DEEPSEEK_API_KEY
         if not key:
             raise ValueError(
-                "DEEPSEEK_API_KEY is not set. Add DEEPSEEK_API_KEY to your .env file."
+                "No DeepSeek key set. Add DEEPSEEK_LAOZHANG_API_KEY (or DEEPSEEK_API_KEY) to the env."
             )
         return OpenAI(api_key=key, base_url=BASE_URL)
     return OpenAI(api_key=_req_key.get() or API_KEY, base_url=BASE_URL)
