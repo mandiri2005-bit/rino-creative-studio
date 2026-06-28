@@ -1647,14 +1647,18 @@ _HIST_REASON_LABELS = {
     "topup": "Top-up", "daily_claim": "Daily credits", "refund": "Refund",
     "admin_adjust": "Adjustment", "lapse": "Expired", "breakage": "Breakage",
 }
-def _history_label(reason: str, md) -> str:
+def _as_md(md):
+    """Normalize a credit_ledger.metadata value to a dict — tolerant of the historical
+    double-encoded jsonb-string rows (mirrors the refund endpoint's encoding tolerance)."""
     if isinstance(md, str):
         try:
             md = json.loads(md)
         except Exception:
             md = {}
-    if not isinstance(md, dict):
-        md = {}
+    return md if isinstance(md, dict) else {}
+
+def _history_label(reason: str, md) -> str:
+    md = _as_md(md)
     if reason == "charge":
         op = str(md.get("op") or "").lower()
         return _HIST_OP_LABELS.get(op) or (op.replace("_", " ").title() if op else "Usage")
@@ -1692,13 +1696,45 @@ async def credits_history(start: Optional[str] = None, end: Optional[str] = None
         db._uid(user.tenant_id), _s, _e,
         tenant=str(user.tenant_id),
     )
-    return {"history": [{
-        "date": r["created_at"].isoformat(),
-        "job": _history_label(r["reason"], r["metadata"]),
-        "reason": r["reason"],
-        "delta": int(r["delta"]),
-        "balance": (int(r["balance_after"]) if r["balance_after"] is not None else None),
-    } for r in rows]}
+    # Roll up every ledger line that belongs to the SAME video job into ONE "package" row.
+    # A whiteboard/Instant video is SOLD as one deliverable but BILLED per component (flat
+    # render fee + per-scene TTS + per-scene image all share metadata.video_job), so the raw
+    # ledger shows many lines per video. This is DISPLAY-ONLY — the per-line debits stay in
+    # the DB untouched; we just net them into a single row. Non-video rows pass through as-is,
+    # and order is preserved (rows are newest-first; each job surfaces at its newest line).
+    enriched = [(r, _as_md(r["metadata"])) for r in rows]
+    job_delta: dict = {}     # video_job → net credit delta across all its lines
+    job_is_wb: dict = {}     # video_job → True if any line is the whiteboard render fee
+    for r, md in enriched:
+        jid = md.get("video_job")
+        if not jid:
+            continue
+        job_delta[jid] = job_delta.get(jid, 0) + int(r["delta"])
+        if str(md.get("model") or "").lower() == "whiteboard" or str(md.get("op") or "").lower() == "whiteboard":
+            job_is_wb[jid] = True
+    out, seen_jobs = [], set()
+    for r, md in enriched:
+        jid = md.get("video_job")
+        if not jid:
+            out.append({
+                "date": r["created_at"].isoformat(),
+                "job": _history_label(r["reason"], md),
+                "reason": r["reason"],
+                "delta": int(r["delta"]),
+                "balance": (int(r["balance_after"]) if r["balance_after"] is not None else None),
+            })
+            continue
+        if jid in seen_jobs:
+            continue   # already emitted the rolled-up row at this job's newest line
+        seen_jobs.add(jid)
+        out.append({
+            "date": r["created_at"].isoformat(),                       # newest charge in the group
+            "job": "Whiteboard video" if job_is_wb.get(jid) else "Video",
+            "reason": "charge",
+            "delta": job_delta[jid],                                   # net package cost (incl. any refund line)
+            "balance": (int(r["balance_after"]) if r["balance_after"] is not None else None),
+        })
+    return {"history": out}
 
 
 # -- Main chat stream ------------------------------------------------------
