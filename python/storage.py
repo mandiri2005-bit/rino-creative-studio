@@ -33,11 +33,15 @@ from typing import Optional
 log = logging.getLogger("storage")
 
 # ── Config from env ──────────────────────────────────────────────────────────
-ENDPOINT   = os.getenv("STORAGE_ENDPOINT", "").strip()
-ACCESS_KEY = os.getenv("STORAGE_ACCESS_KEY", "").strip()
-SECRET_KEY = os.getenv("STORAGE_SECRET_KEY", "").strip()
-BUCKET     = os.getenv("STORAGE_BUCKET", "").strip()
-REGION     = os.getenv("STORAGE_REGION", "auto").strip() or "auto"
+# Accept the STORAGE_* names first, then fall back to the R2_* names the Railway env
+# actually uses (R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET).
+# Without this fallback is_configured() was False → every asset persist was silently
+# skipped (image gen never reached R2). 2026-06-28.
+ENDPOINT   = (os.getenv("STORAGE_ENDPOINT")   or os.getenv("R2_ENDPOINT")          or "").strip()
+ACCESS_KEY = (os.getenv("STORAGE_ACCESS_KEY") or os.getenv("R2_ACCESS_KEY_ID")     or "").strip()
+SECRET_KEY = (os.getenv("STORAGE_SECRET_KEY") or os.getenv("R2_SECRET_ACCESS_KEY") or "").strip()
+BUCKET     = (os.getenv("STORAGE_BUCKET")     or os.getenv("R2_BUCKET")            or "").strip()
+REGION     = (os.getenv("STORAGE_REGION")     or os.getenv("R2_REGION")            or "auto").strip() or "auto"
 
 _DEFAULT_EXPIRY = 600  # 10 minutes — signed-URL lifetime
 

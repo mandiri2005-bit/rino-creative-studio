@@ -21,11 +21,14 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-const ENDPOINT   = (process.env.STORAGE_ENDPOINT   || "").trim();
-const ACCESS_KEY = (process.env.STORAGE_ACCESS_KEY || "").trim();
-const SECRET_KEY = (process.env.STORAGE_SECRET_KEY || "").trim();
-const BUCKET     = (process.env.STORAGE_BUCKET     || "").trim();
-const REGION     = (process.env.STORAGE_REGION     || "auto").trim() || "auto";
+// STORAGE_* names first, then fall back to the R2_* names the Railway env actually uses
+// (mirrors python/storage.py). Without this, isConfigured() was false → signed-URL
+// serving of stored assets failed. 2026-06-28.
+const ENDPOINT   = (process.env.STORAGE_ENDPOINT   || process.env.R2_ENDPOINT          || "").trim();
+const ACCESS_KEY = (process.env.STORAGE_ACCESS_KEY || process.env.R2_ACCESS_KEY_ID     || "").trim();
+const SECRET_KEY = (process.env.STORAGE_SECRET_KEY || process.env.R2_SECRET_ACCESS_KEY || "").trim();
+const BUCKET     = (process.env.STORAGE_BUCKET     || process.env.R2_BUCKET            || "").trim();
+const REGION     = (process.env.STORAGE_REGION     || process.env.R2_REGION            || "auto").trim() || "auto";
 
 const DEFAULT_EXPIRY = 600; // 10 minutes
 
