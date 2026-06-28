@@ -1671,17 +1671,25 @@ async def credits_history(start: Optional[str] = None, end: Optional[str] = None
     """Per-transaction credit history (date · job · credit delta · running balance)
     for the authenticated tenant, optionally bounded by [start, end] dates
     (YYYY-MM-DD, inclusive). RLS-scoped; newest first; capped at 1000 rows."""
+    def _as_date(s):
+        try:
+            import datetime as _dt
+            y, m, d = str(s).split("-")
+            return _dt.date(int(y), int(m), int(d))
+        except Exception:
+            return None
+    _s, _e = _as_date(start), _as_date(end)   # asyncpg needs date objects, not ISO strings
     rows = await db._q_fetch(
         """
         SELECT created_at, reason, delta, balance_after, metadata
           FROM credit_ledger
          WHERE tenant_id = $1
-           AND ($2::date IS NULL OR created_at >= $2::date)
-           AND ($3::date IS NULL OR created_at < ($3::date + INTERVAL '1 day'))
+           AND ($2::date IS NULL OR created_at::date >= $2::date)
+           AND ($3::date IS NULL OR created_at::date <= $3::date)
          ORDER BY created_at DESC
          LIMIT 1000
         """,
-        db._uid(user.tenant_id), (start or None), (end or None),
+        db._uid(user.tenant_id), _s, _e,
         tenant=str(user.tenant_id),
     )
     return {"history": [{
