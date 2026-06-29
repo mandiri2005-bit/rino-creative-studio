@@ -244,23 +244,99 @@ async def _atlascloud(client, op, slug, params):
     return await _fetch(client, out)
 
 
+# ── KIE per-slug input contracts (unified POST /jobs/createTask). Each KIE model declares its OWN
+# input schema; sending a field a slug doesn't declare 400s the createTask (a 400 just fails over,
+# but the whole point of adding KIE is that the step actually serves). So we emit ONLY the fields a
+# slug declares. Verified field-by-field against the KIE OpenAPI paste (2026-06-29). Entry keys:
+#   af      "ar" → ratio string in field `aspect_ratio` (guarded by `ars`); "qs" → Qwen's NAMED
+#           `image_size` enum (mapped from the ratio, NOT a ratio string); absent → no aspect knob.
+#   ars     the slug's EXACT declared aspect-ratio enum — when the request's ratio isn't in it we
+#           clamp to "1:1" (a member of every slug's enum) rather than 400ing on an unsupported ratio.
+#   outfmt  send output_format="png".
+#   quality send quality basic|high (Seedream; basic≈2K matches the priced COGS, high on params.hd).
+#   ref     EDIT ref-image field → (name, "array"|"single"). Absent → create-only slug.
+#   tool    op-tool shape: "topaz"=image_url+upscale_factor; "recraft"=image. (Keyed by SLUG, not op,
+#           so it's robust to the op string — feature is passed as op, so upscale_creative→"topaz".)
+# Per-slug aspect enums are the EXACT KIE-declared sets (2026-06-29 paste). They must be the slug's
+# real enum, not a permissive superset: a ratio that is outside the slug's enum but inside a broader
+# set would pass the clamp at _kie() and get POSTed verbatim → KIE 400 → the failover step silently
+# dies (wasted redundancy). _STD_AR is used only where the slug's enum is genuinely that broad.
+_STD_AR = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2",
+           "21:9", "9:21", "5:4", "4:5", "3:1", "1:3", "auto"}            # = gpt-image-2's full enum
+_GROK_AR = {"2:3", "3:2", "1:1", "16:9", "9:16"}
+_IMAGEN4_AR = {"1:1", "16:9", "9:16", "3:4", "4:3", "auto"}
+_ZIMAGE_AR = {"1:1", "4:3", "3:4", "16:9", "9:16"}
+_NB_AR = {"1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"}  # google/nano-banana(+edit)
+_NB2_AR = {"1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1",
+           "9:16", "16:9", "21:9", "auto"}                               # nano-banana-2 (Nano Banana Pro)
+_SEEDREAM_AR = {"1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"}  # seedream 4.5 t2i/edit + 5-lite
+_FLUX_AR = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}                 # flux-kontext dedicated endpoint
+# Wimba ratio → Qwen named image_size enum (square/portrait_*/landscape_*; Qwen takes NO ratio string).
+_QWEN_SIZE = {"1:1": "square_hd", "4:3": "landscape_4_3", "3:4": "portrait_4_3",
+              "16:9": "landscape_16_9", "9:16": "portrait_16_9"}
+_KIE_SPEC = {
+    # create + edit share the slug:
+    "nano-banana-2":                {"af": "ar", "ars": _NB2_AR, "outfmt": True, "ref": ("image_input", "array")},
+    # create-only:
+    "google/nano-banana":           {"af": "ar", "ars": _NB_AR, "outfmt": True},
+    "google/imagen4":               {"af": "ar", "ars": _IMAGEN4_AR},
+    "seedream/4.5-text-to-image":   {"af": "ar", "ars": _SEEDREAM_AR, "quality": True},
+    "seedream/5-lite-text-to-image": {"af": "ar", "ars": _SEEDREAM_AR, "quality": True},
+    "qwen/text-to-image":           {"af": "qs", "outfmt": True},
+    "gpt-image-2-text-to-image":    {"af": "ar", "ars": _STD_AR},
+    "grok-imagine/text-to-image":   {"af": "ar", "ars": _GROK_AR},
+    "z-image":                      {"af": "ar", "ars": _ZIMAGE_AR},
+    # edit-only:
+    "google/nano-banana-edit":      {"af": "ar", "ars": _NB_AR, "outfmt": True, "ref": ("image_urls", "array")},
+    "seedream/4.5-edit":            {"af": "ar", "ars": _SEEDREAM_AR, "quality": True, "ref": ("image_urls", "array")},
+    "qwen/image-edit":              {"af": "qs", "ref": ("image_url", "single")},
+    "gpt-image-2-image-to-image":   {"af": "ar", "ars": _STD_AR, "ref": ("input_urls", "array")},
+    "grok-imagine/image-to-image":  {"ref": ("image_urls", "array")},  # NO aspect_ratio field on this slug
+    # tool ops:
+    "topaz/image-upscale":          {"tool": "topaz"},
+    "recraft/crisp-upscale":        {"tool": "recraft"},
+    "recraft/remove-background":    {"tool": "recraft"},
+}
+
+
 async def _kie(client, op, slug, params):
     h = {"Authorization": f"Bearer {_key('KIE_API_KEY')}", "Content-Type": "application/json"}
     base = "https://api.kie.ai/api/v1"
-    inp = {}
-    if op in ("create_raster", "create_vector"):
-        inp = {"prompt": params["prompt"], "aspect_ratio": _aspect(params)}
-        if slug.startswith("seedream/"):
-            # Seedream 4.5 / 5-lite take `quality` (basic=2K, high=4K) and define NO output_format —
-            # sending output_format 400s the createTask. Default 2K to match the priced COGS.
-            inp["quality"] = "high" if params.get("hd") else "basic"
-        else:
-            inp["output_format"] = "png"
-    elif op == "edit":
-        inp = {"prompt": params["prompt"], "image_urls": [_img_url(i) for i in params.get("ref_images", [])],
-               "output_format": "png"}
-    elif op in ("upscale", "bg_remove"):
+    # FLUX Kontext is a DEDICATED endpoint, NOT on the unified /jobs queue — split it off.
+    if slug in ("flux-kontext-pro", "flux-kontext-max"):
+        return await _kie_flux_kontext(client, base, h, op, slug, params)
+    spec = _KIE_SPEC.get(slug)
+    tool = (spec or {}).get("tool")
+    if tool == "topaz":
+        # Topaz upscaler: singular image_url + STRING factor (doc enum '1'/'2'/'4'/'8'; a JSON number
+        # is rejected by the string-enum validator → 400). 2K≈factor "2" matches the priced COGS.
+        _uf = str(params.get("upscale_factor") or 2)
+        inp = {"image_url": _img_url(params["ref_images"][0]),
+               "upscale_factor": _uf if _uf in {"1", "2", "4", "8"} else "2"}
+    elif tool == "recraft":
+        # Recraft crisp-upscale / remove-background: a single `image` field.
         inp = {"image": _img_url(params["ref_images"][0])}
+    else:
+        # Prompt ops (create*/edit): emit ONLY the fields this slug's spec declares.
+        spec = spec or {"af": "ar", "ars": _STD_AR, "ref": ("image_urls", "array")}  # safe default for any
+        inp = {"prompt": params.get("prompt") or ""}                                  # future un-spec'd slug
+        af = spec.get("af")
+        if af == "qs":
+            inp["image_size"] = _QWEN_SIZE.get(_aspect(params), "square_hd")
+        elif af == "ar":
+            allowed = spec.get("ars", _STD_AR)
+            ar = _aspect(params)
+            if ar not in allowed:                        # unsupported ratio → 1:1 (in every enum), NOT
+                ar = "1:1"                                # omit — seedream/z-image REQUIRE aspect_ratio
+            inp["aspect_ratio"] = ar
+        if spec.get("outfmt"):
+            inp["output_format"] = "png"
+        if spec.get("quality"):
+            inp["quality"] = "high" if params.get("hd") else "basic"
+        if op == "edit":
+            name, arity = spec.get("ref") or ("image_urls", "array")
+            urls = [_img_url(i) for i in params.get("ref_images", [])]
+            inp[name] = (urls[0] if urls else None) if arity == "single" else urls
     r = await client.post(f"{base}/jobs/createTask", headers=h, json={"model": slug, "input": inp}); r.raise_for_status()
     tid = r.json()["data"]["taskId"]
     def _res(j):
@@ -270,6 +346,34 @@ async def _kie(client, op, slug, params):
                       done=lambda j: j["data"].get("state") == "success",
                       err=lambda j: j["data"].get("state") == "fail",
                       result=_res)
+    return await _fetch(client, out)
+
+
+async def _kie_flux_kontext(client, base, h, op, slug, params):
+    """KIE's FLUX Kontext is a DEDICATED endpoint (not the unified /jobs queue):
+    POST /flux/kontext/generate {prompt, model, aspectRatio, inputImage?} → data.taskId; then
+    GET /flux/kontext/record-info?taskId= → data.successFlag (1/"SUCCESS"=done, *_FAILED=fail),
+    image at data.response.resultImageUrl. Worth wiring because the flux-kontext models' only other
+    failover (bfl) is a dead key — KIE is the live source. Note the camelCase fields (createTask is
+    snake_case) and that successFlag is numeric OR a status string, so we match both."""
+    # The dedicated FLUX endpoint enforces a NARROW aspectRatio enum (no 3:2, which the Wimba UI
+    # offers) — clamp out-of-enum ratios to 1:1 here, mirroring the unified _kie path, so a UI-reachable
+    # 3:2 doesn't 400 and silently kill this (only-live) failover step.
+    _ar = _aspect(params)
+    body = {"prompt": params.get("prompt") or "", "model": slug,
+            "aspectRatio": _ar if _ar in _FLUX_AR else "1:1"}
+    if op in ("edit", "reframe"):
+        refs = params.get("ref_images") or []
+        if refs:
+            body["inputImage"] = _img_url(refs[0])
+    r = await client.post(f"{base}/flux/kontext/generate", headers=h, json=body); r.raise_for_status()
+    tid = r.json()["data"]["taskId"]
+    _DONE = {1, "1", "SUCCESS"}
+    _FAIL = {2, 3, "2", "3", "CREATE_TASK_FAILED", "GENERATE_FAILED"}
+    out = await _poll(client, f"{base}/flux/kontext/record-info?taskId={tid}", h,
+                      done=lambda j: j["data"].get("successFlag") in _DONE,
+                      err=lambda j: j["data"].get("successFlag") in _FAIL,
+                      result=lambda j: j["data"]["response"]["resultImageUrl"])
     return await _fetch(client, out)
 
 

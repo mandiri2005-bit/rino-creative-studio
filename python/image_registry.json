@@ -48,6 +48,11 @@
           "edit": "nano-banana"
         },
         {
+          "provider": "kie",
+          "create": "google/nano-banana",
+          "edit": "google/nano-banana-edit"
+        },
+        {
           "provider": "vertex",
           "create": "gemini-2.5-flash-image",
           "edit": "gemini-2.5-flash-image"
@@ -75,8 +80,8 @@
         },
         {
           "provider": "kie",
-          "create": "google/nano-banana-2",
-          "edit": "google/nano-banana-2-edit"
+          "create": "nano-banana-2",
+          "edit": "nano-banana-2"
         },
         {
           "provider": "vertex",
@@ -140,6 +145,11 @@
           "edit": "gpt-image-2"
         },
         {
+          "provider": "kie",
+          "create": "gpt-image-2-text-to-image",
+          "edit": "gpt-image-2-image-to-image"
+        },
+        {
           "provider": "openai",
           "create": "gpt-image-2",
           "edit": "gpt-image-2"
@@ -192,7 +202,7 @@
         {
           "provider": "kie",
           "create": "seedream/4.5-text-to-image",
-          "edit": "bytedance/seedream-v4-edit"
+          "edit": "seedream/4.5-edit"
         },
         {
           "provider": "laozhang",
@@ -222,7 +232,8 @@
         {
           "provider": "kie",
           "create": "seedream/5-lite-text-to-image",
-          "edit": "bytedance/seedream-v4-edit"
+          "edit": "seedream/4.5-edit",
+          "_note": "KIE has no seedream/5-lite EDIT endpoint; edit falls back to seedream/4.5-edit (newest available)."
         },
         {
           "provider": "laozhang",
@@ -261,6 +272,11 @@
           "edit": "flux/kontext-pro/image-to-image"
         },
         {
+          "provider": "kie",
+          "create": "flux-kontext-pro",
+          "edit": "flux-kontext-pro"
+        },
+        {
           "provider": "bfl",
           "create": "/v1/flux-kontext-pro",
           "edit": "/v1/flux-kontext-pro"
@@ -290,6 +306,11 @@
           "provider": "aiml",
           "create": "flux/kontext-max/text-to-image",
           "edit": "flux/kontext-max/image-to-image"
+        },
+        {
+          "provider": "kie",
+          "create": "flux-kontext-max",
+          "edit": "flux-kontext-max"
         },
         {
           "provider": "bfl",
@@ -482,6 +503,10 @@
         {
           "provider": "atlascloud",
           "create": "z-image/turbo"
+        },
+        {
+          "provider": "kie",
+          "create": "z-image"
         }
       ]
     },
@@ -502,6 +527,11 @@
           "provider": "atlascloud",
           "create": "xai/grok-imagine-image/text-to-image",
           "edit": "xai/grok-imagine-image/edit"
+        },
+        {
+          "provider": "kie",
+          "create": "grok-imagine/text-to-image",
+          "edit": "grok-imagine/image-to-image"
         }
       ]
     },
@@ -601,6 +631,12 @@
         "official_usd": 0.004
       },
       {
+        "provider": "kie",
+        "slug": "recraft/crisp-upscale",
+        "cogs_usd": 0.0025,
+        "official_usd": 0.0025
+      },
+      {
         "provider": "atlascloud",
         "slug": "atlascloud/image-upscaler",
         "cogs_usd": 0.01,
@@ -622,6 +658,13 @@
         "slug": "fal-ai/clarity-upscaler",
         "cogs_usd": 0.1,
         "official_usd": 0.1
+      },
+      {
+        "provider": "kie",
+        "slug": "topaz/image-upscale",
+        "cogs_usd": 0.05,
+        "official_usd": 0.05,
+        "_note": "KIE Topaz upscaler at upscale_factor=2 (2K). chain-max stays $0.25 (recraft creative) so the 165cr badge is unchanged; this is a cheap deep-failover."
       }
     ],
     "vectorize": [
@@ -644,6 +687,12 @@
         "slug": "removeBackground",
         "cogs_usd": 0.01,
         "official_usd": 0.01
+      },
+      {
+        "provider": "kie",
+        "slug": "recraft/remove-background",
+        "cogs_usd": 0.005,
+        "official_usd": 0.005
       },
       {
         "provider": "fal",
