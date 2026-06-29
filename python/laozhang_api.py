@@ -5579,12 +5579,31 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
     try:
         key = storage.build_key(tenant_id, job_id, asset_type, filename)
         await storage.aupload_bytes(key, data, content_type)
-        return await db.insert_asset(
-            tenant_id, bucket=storage.BUCKET, s3_key=key,
-            content_type=content_type, size_bytes=len(data),
-            asset_type=asset_type, source_job_type=source_job_type,
-            user_id=user_id, job_id=job_id, original_filename=filename,
-            metadata=metadata or {}, source_prompt=source_prompt)
+        try:
+            return await db.insert_asset(
+                tenant_id, bucket=storage.BUCKET, s3_key=key,
+                content_type=content_type, size_bytes=len(data),
+                asset_type=asset_type, source_job_type=source_job_type,
+                user_id=user_id, job_id=job_id, original_filename=filename,
+                metadata=metadata or {}, source_prompt=source_prompt)
+        except Exception as _ie:
+            # assets.user_id has an FK → users(id) (0008_create_assets.sql). _resolve_user_uuid can
+            # return a DETERMINISTIC FALLBACK uuid for a user not yet in the table (Clerk webhook lag /
+            # JIT-provision miss); inserting it raises ForeignKeyViolation (SQLSTATE 23503), which would
+            # silently drop the WHOLE asset row → image orphaned from Media Vault (same failure class as
+            # the old image_op enum bug). Retry ONCE unattributed so the asset is still captured — the R2
+            # upload already succeeded, same key. Only when a user_id was actually supplied; every other
+            # error (enum, etc.) re-raises to the outer best-effort handler unchanged.
+            _is_fk = getattr(_ie, "sqlstate", "") == "23503" or "user_id_fkey" in str(_ie)
+            if user_id is not None and _is_fk:
+                _PERSIST_LOG.warning("[persist_asset] user_id FK miss for %s — persisting unattributed", filename)
+                return await db.insert_asset(
+                    tenant_id, bucket=storage.BUCKET, s3_key=key,
+                    content_type=content_type, size_bytes=len(data),
+                    asset_type=asset_type, source_job_type=source_job_type,
+                    user_id=None, job_id=job_id, original_filename=filename,
+                    metadata=metadata or {}, source_prompt=source_prompt)
+            raise
     except Exception as e:
         _PERSIST_LOG.warning("[persist_asset] %s failed (non-fatal): %s", filename, e)
         return None
