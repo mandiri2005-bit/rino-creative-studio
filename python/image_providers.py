@@ -50,9 +50,15 @@ _REG = _load_registry()
 _MODELS = {m["id"]: m for m in _REG["models"]}
 _OP_CHAINS = _REG.get("op_chains", {})
 
+# Inner provider poll-loop bound. MUST stay BELOW the caller's overall
+# IMAGE_DISPATCH_DEADLINE (laozhang_api) so a slow-but-alive provider trips THIS
+# (a ProviderError → graceful failover/legacy fallback) before the outer
+# asyncio.wait_for fires its hard TimeoutError (which skips the fallback). The
+# ordering was inverted (inner 180 > outer 120) → seedream-5 (~125s) always died
+# on the hard deadline. Now: inner 240 < outer 270. Both env-tunable.
 _TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
-_POLL_EVERY = 2.0
-_POLL_MAX = 180.0
+_POLL_EVERY = float(os.getenv("IMAGE_POLL_EVERY", "2.0"))
+_POLL_MAX = float(os.getenv("IMAGE_POLL_MAX", "240.0"))
 
 
 class ProviderError(RuntimeError):

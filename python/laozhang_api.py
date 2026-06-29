@@ -711,7 +711,20 @@ from auth_middleware import (get_current_user, get_current_user_optional, Curren
 async def lifespan(application):
     await db.init_db()
     await rc.init_redis()
+    # Async image-job orphan sweep: reap 'running' jobs left by a process restart (refund their held
+    # credits + mark failed). Defined far below; resolved at runtime here (module fully imported).
+    _img_sweep_task = None
+    try:
+        _img_sweep_task = asyncio.create_task(_image_jobs_sweep_loop())
+    except Exception as _se:
+        _IMG_LOG.warning("[image_jobs] sweep loop failed to start: %s", _se)
     yield
+    if _img_sweep_task:
+        _img_sweep_task.cancel()
+        try:
+            await _img_sweep_task
+        except BaseException:
+            pass
     await rc.close_redis()
     await db.close_db()
 
@@ -2681,7 +2694,20 @@ IMAGE_MAX_INFLIGHT = int(os.getenv("IMAGE_MAX_INFLIGHT", "8"))   # admission cap
 _img_inflight = 0
 IMAGE_MAX_REF_BYTES = int(os.getenv("IMAGE_MAX_REF_BYTES", str(12 * 1024 * 1024)))   # 12MB decoded ref cap (OOM guard)
 IMAGE_MAX_REF_TOTAL = int(os.getenv("IMAGE_MAX_REF_TOTAL", str(24 * 1024 * 1024)))   # aggregate decoded-ref cap across all refs (OOM)
-IMAGE_DISPATCH_DEADLINE = float(os.getenv("IMAGE_DISPATCH_DEADLINE", "120"))   # overall wall-clock per dispatch() → release admission slot
+IMAGE_DISPATCH_DEADLINE = float(os.getenv("IMAGE_DISPATCH_DEADLINE", "270"))   # overall wall-clock per dispatch() → release admission slot
+# MUST stay ABOVE image_providers._POLL_MAX (240) so a slow-but-alive provider trips the inner
+# poll-timeout (ProviderError → graceful failover/legacy fallback) before THIS hard asyncio
+# TimeoutError (which skips the fallback). seedream-5 (~125s) sits comfortably under both.
+# The client no longer waits on this — the background job owns the wall-clock (submit+poll).
+IMAGE_JOB_STALE_SECS = float(os.getenv("IMAGE_JOB_STALE_SECS", "1200"))   # a 'running' job older than this ⟹ the
+# process died mid-dispatch. MUST exceed the MAX a live background task can run. Every sub-step is now hard-bounded
+# by wait_for(IMAGE_DISPATCH_DEADLINE=270): main dispatch (≤270) + legacy fallback tail (≤270, was UNBOUNDED — 3×
+# requests(180) ≈ 540) + autobg dispatch (≤270) + persist (~30) ≈ 840s worst case. 1200 sits safely above that, so
+# a live task ALWAYS flips status off 'running' before the reap. DEFENCE-IN-DEPTH: even if a reap DID race a live
+# task, _run_image_job's commit is gated on WINNING the running→success transition (the same atomic UPDATE the
+# sweep uses), so the loser never commits — no durable-charge-vs-refunded-cache divergence is possible by
+# construction. Reaped (failed + hold refunded) by the startup sweep AND lazily on poll.
+IMAGE_JOB_SWEEP_EVERY = float(os.getenv("IMAGE_JOB_SWEEP_EVERY", "300"))   # periodic orphan-sweep cadence (s)
 
 
 def _img_get_capped(url: str, timeout: int = 60) -> bytes:
@@ -2794,16 +2820,17 @@ async def _bytes_from_url(url: str):
             return bytes(buf), r.headers.get("content-type", "image/png")
 
 
-@app.post("/image/{op}")
-async def image_op(op: str, req: ImageOpRequest,
-                   x_op_id: Optional[str] = Header(None, alias="X-Op-Id"),
-                   user: Optional[CurrentUser] = Depends(get_current_user_optional)):
-    """Unified generate endpoint for the new Image page. Routes `feature` through the model's
-    failover chain (image_providers.dispatch), falls back to the proven LaoZhang/Vertex path
-    for create/edit when no aggregator key served, prices via the SINGLE source (credits_for —
-    badge == charge), debits the precomputed amount, logs usage with the REAL winning-provider
-    COGS, and persists the asset (moat). op ∈ create|create_raster|create_vector|edit|reframe|
-    upscale|upscale_creative|vectorize|bg_remove."""
+# ──────────────────────────────────────────────────────────────────────────────
+# Image generation — shared core. Split out of the endpoint so the SYNC path and
+# the ASYNC submit+poll job runner execute the EXACT same validate→price→hold→
+# dispatch→persist→commit flow (DRY: one source of truth for pricing/refund).
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _image_prepare(op: str, req: ImageOpRequest, user) -> dict:
+    """Validate + resolve feature/model/pricing for one image request. Side-effects limited to the
+    ref-image SSRF/size checks in _img_refs_for_params. Raises HTTPException on bad input / wrong tier
+    / unauthenticated. Mints the server-side op_id (NEVER a client header → charge() is idempotent on
+    op_id, so a replayed X-Op-Id would re-run paid generation while the debit no-ops = free images)."""
     import image_providers as _ip
     feature = _IMAGE_OP_FEATURE.get((op or "").lower())
     if not feature:
@@ -2820,17 +2847,10 @@ async def image_op(op: str, req: ImageOpRequest,
     if feature in ("edit", "reframe", "upscale_crisp", "upscale_creative", "vectorize", "bg_remove") \
             and not (req.ref_images or req.ref_image_b64):
         raise HTTPException(400, f"op '{op}' needs a reference image")
-
     if user is None:
         # fail CLOSED: this endpoint is user-facing only (the Node /api gate already requires auth).
         # Never run paid upstream for an anonymous caller — defense-in-depth vs a future gate bypass.
         raise HTTPException(401, "authentication required")
-    # H1: image_op ALWAYS runs on PLATFORM keys — aggregator adapters read os.getenv (registry _env) and
-    # even the legacy LaoZhang/Vertex tail uses the platform key; the user's X-LaoZhang-API-Key is NOT
-    # threaded into image dispatch. So BYOK must NOT zero the charge here, else any authed user could send
-    # `X-LaoZhang-API-Key: <anything>` and mint unlimited FREE images while the platform pays the COGS.
-    _byok = False
-    _uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
     if not is_tool:   # tier-lock (prompt-ops gated by the chosen model; pure tools ungated)
         metering.ensure_tier(user, catalog.image_min_tier(model), model)
 
@@ -2840,10 +2860,10 @@ async def image_op(op: str, req: ImageOpRequest,
     needs_autobg = (bool(req.transparent) and feature == "create_raster"
                     and not (_ip._MODELS.get(model) or {}).get("transparent"))
     cr = _ip.credits_for(feature, model) or 0
-    _autobg_cr = 0                     # the transparency surcharge, tracked so we can refund it if bg fails
+    autobg_cr = 0                      # the transparency surcharge, tracked so we can refund it if bg fails
     if needs_autobg:
-        _autobg_cr = _ip.credits_for("bg_remove", "") or 0
-        cr += _autobg_cr
+        autobg_cr = _ip.credits_for("bg_remove", "") or 0
+        cr += autobg_cr
 
     params = {"prompt": req.prompt or "", "aspect": req.aspect or "1:1",
               "ref_images": _img_refs_for_params(req), "transparent": bool(req.transparent)}
@@ -2851,87 +2871,164 @@ async def image_op(op: str, req: ImageOpRequest,
                  ("strength", req.strength), ("expand", req.expand), ("quality", req.quality)):
         if v is not None:
             params[k] = v
-    # ALWAYS server-minted op_id — never from a client header (charge() is idempotent on op_id, so a
-    # replayed X-Op-Id would re-run paid generation while the debit no-ops → free images).
     op_id = f"img-{uuid.uuid4().hex[:12]}"
+    return {"feature": feature, "is_tool": is_tool, "model": model, "needs_autobg": needs_autobg,
+            "cr": cr, "autobg_cr": autobg_cr, "params": params, "op_id": op_id,
+            "prompt": req.prompt or "", "aspect": req.aspect or "1:1",
+            "image_size": req.image_size or "1K", "seed": req.seed or 0}
+
+
+async def _image_generate_core(*, tenant_id, uid, op: str, prep: dict, do_commit: bool = True) -> dict:
+    """The PAID path (the hold is ALREADY taken by the caller). dispatch (aggregator failover chain →
+    legacy LaoZhang/Vertex tail for create/edit) → optional auto bg-removal → persist asset (moat) →
+    COMMIT. Every failure raises BEFORE commit so the caller refunds the whole hold; commit is the LAST
+    awaited step so nothing after it can raise and strand a charge.
+
+    do_commit=True  (sync /image/<op>): commit the hold INSIDE here, as the final step → `charged`.
+    do_commit=False (async submit+poll): DON'T commit; return `commit_cr` (the amount the caller must
+      charge) + `cost_usd`/`provider` so the background runner can commit ONLY after it wins the atomic
+      running→success transition (transition-gated charge — see _run_image_job). This is what makes the
+      orphan-reap incapable of producing a durable-charge-vs-refunded-cache divergence.
+
+    Returns {data, mime, ref_key, result_key, charged, commit_cr, cost_usd, provider}. result_key is what
+    the client/poll resolves to image_url (R2 key or data:)."""
+    import image_providers as _ip
+    feature = prep["feature"]; model = prep["model"]; params = prep["params"]
+    op_id = prep["op_id"]; cr = prep["cr"]; autobg_cr = prep["autobg_cr"]; needs_autobg = prep["needs_autobg"]
+    data = mime = provider = ref_key = None
+    cost_usd = None
+    # ── generate: aggregator failover chain, then legacy LaoZhang/Vertex tail ──
+    try:
+        # M7: overall wall-clock deadline so a hung provider chain (POST+retry+poll × 3 steps, each up
+        # to _TIMEOUT.read) can't pin its admission slot for many minutes and lock out image-gen.
+        r = await asyncio.wait_for(_ip.dispatch(feature, model, params, op_id),
+                                   timeout=IMAGE_DISPATCH_DEADLINE)
+        # dispatch threads the rendered bytes back; we DON'T re-fetch r["ref"] — it's a bare R2
+        # object key (aupload_bytes returns a key, not a signed URL), so fetching it would 404 and
+        # leave data=None → user charged for a broken image. Bytes in hand = single source of truth.
+        ref_key = r["ref"]; data, mime = r["data"], r["mime"]
+        provider = r["provider"]; cost_usd = r.get("cost_usd")
+    except _ip.ProviderError as e:
+        if feature in ("create_raster", "create_vector", "edit"):
+            _ref_b64 = (params["ref_images"][0].get("b64") if params["ref_images"] else "") or ""
+            # M7 (legacy tail): the proven LaoZhang/Vertex loop is 3× requests(timeout=180) ≈ up to 540s
+            # UNBOUNDED — that pinned the admission slot AND could push a live job past IMAGE_JOB_STALE_SECS,
+            # racing the orphan-reap. Bound it to the SAME wall-clock as dispatch so every sub-step is hard-
+            # capped and the live task is always terminal before the reap. wait_for cancels the await; the in-
+            # flight to_thread request drains harmlessly (it commits nothing — commit is gated downstream).
+            b64 = await asyncio.wait_for(
+                _legacy_image_b64(model, prep["prompt"], prep["aspect"],
+                                  prep["image_size"], _ref_b64, prep["seed"]),
+                timeout=IMAGE_DISPATCH_DEADLINE)
+            data = base64.b64decode(b64); mime, _ = _sniff_image(data)
+            provider = _provider_for(model)
+            cost_usd = (_ip._MODELS.get(model) or {}).get("cogs_usd") or _calc_image_cost(model)
+        else:
+            raise HTTPException(502, f"image {op} unavailable (no provider key yet): {e}")
+
+    # ── transparent toggle: opaque-only model → auto bg-removal (Recraft); price folded into cr ──
+    autobg_failed = False
+    if needs_autobg and data is not None:
+        try:
+            r2 = await asyncio.wait_for(_ip.dispatch("bg_remove", "recraft-v3",
+                                    {"ref_images": [{"b64": base64.b64encode(data).decode()}]},
+                                    op_id + "-bg"), timeout=IMAGE_DISPATCH_DEADLINE)
+            ref_key = r2["ref"]; data, mime = r2["data"], r2["mime"]   # bytes threaded back (no re-fetch)
+            cost_usd = (cost_usd or 0) + (r2.get("cost_usd") or 0)
+        except Exception as _be:
+            autobg_failed = True   # L1: opaque image still delivered → don't bill the transparency surcharge
+            _IMG_LOG.warning("[image_op] auto bg-remove failed (non-fatal, returning opaque): %s", _be)
+
+    # nothing usable to return → treat as failure so the hold is refunded (never charge for nothing).
+    # `data` is the SOLE truth: every success path (dispatch OR legacy) sets it. M4: `not data` (not
+    # `is None`) so a 200 with a 0-byte body (b'') is also treated as failure, never charged as success.
+    if not data:
+        raise HTTPException(502, f"image {op} produced no output")
+
+    # ── persist asset (moat, best-effort; never fail the generation on a storage hiccup) ──
+    _ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
+            "image/svg+xml": "svg"}.get(mime or "image/png", "png")
+    _fname = f"{feature}_{op_id}.{_ext}"
+    persisted = None
+    try:
+        # source_job_type MUST be a value in job_type_enum (migrations 0006+0020) or the INSERT raises
+        # "invalid input value for enum" → caught below → asset row never written → image uploads to R2
+        # but is orphaned (absent from Media Vault). "generate_image" is the exact enum label (0020).
+        persisted = await _persist_asset(tenant_id, asset_type="image", source_job_type="generate_image",
+                             filename=_fname, data=data, content_type=mime or "image/png",
+                             user_id=uid, metadata={"model": model, "op": op, "provider": provider, "feature": feature},
+                             source_prompt=(prep["prompt"] or None))
+    except Exception as _pe:
+        _IMG_LOG.warning("[image_op] persist failed (non-fatal): %s", _pe)
+
+    # ── COMMIT the hold (only now, on confirmed output) + usage row carrying REAL provider COGS ──
+    # L1: if bg-removal failed we deliver an OPAQUE image → bill the base price only (drop the held
+    # transparency surcharge); committing < the hold refunds the difference.
+    _commit_cr = cr - (autobg_cr if autobg_failed else 0)
+    charged = 0
+    if do_commit:
+        charged = await metering.commit_credits(
+            tenant_id, uid, "image", model, _commit_cr, op_id, byok=False,
+            cost_usd=cost_usd, provider=provider, write_log=True) or 0
+    # else: the async runner commits AFTER winning the running→success transition (see _run_image_job),
+    # using commit_cr/cost_usd/provider returned below. The hold stays held until then.
+
+    # result_key: what the poll/client signs into image_url. Prefer the in-hand ref (R2 key OR data:
+    # URI — what the sync path already signs). The legacy tail has NO ref → fall back to the durable
+    # key _persist_asset wrote (deterministic build_key, job_id=None), then to an inline data: URI so
+    # the async poll ALWAYS has a renderable result even if storage is down.
+    if ref_key:
+        result_key = ref_key
+    elif persisted and storage.is_configured():
+        result_key = storage.build_key(tenant_id, None, "image", _fname)
+    else:
+        result_key = f"data:{mime or 'image/png'};base64,{base64.b64encode(data).decode()}"
+    return {"data": data, "mime": mime or "image/png", "ref_key": ref_key,
+            "result_key": result_key, "charged": charged, "commit_cr": _commit_cr,
+            "cost_usd": cost_usd, "provider": provider}
+
+
+async def _sign_result_key(result_key: Optional[str]) -> Optional[str]:
+    """A data: URI is already loadable; an R2 object key must be SIGNED (a bare key would 404)."""
+    if not result_key:
+        return None
+    if str(result_key).startswith("data:"):
+        return result_key
+    try:
+        return await storage.asigned_url(result_key)
+    except Exception as _se:
+        _IMG_LOG.warning("[image_op] sign result url failed (non-fatal): %s", _se)
+        return None
+
+
+@app.post("/image/{op}")
+async def image_op(op: str, req: ImageOpRequest,
+                   x_op_id: Optional[str] = Header(None, alias="X-Op-Id"),
+                   user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """SYNC generate endpoint (kept for stragglers / non-polling callers). The new Image page uses
+    the async /image/<op>/submit + poll path instead. Routes `feature` through the model's failover
+    chain (image_providers.dispatch), falls back to the proven LaoZhang/Vertex path for create/edit,
+    prices via the SINGLE source (credits_for — badge == charge), debits the precomputed amount, logs
+    usage with the REAL winning-provider COGS, and persists the asset (moat)."""
+    prep = _image_prepare(op, req, user)
+    # H1: image_op ALWAYS runs on PLATFORM keys — aggregator adapters read os.getenv and even the
+    # legacy LaoZhang/Vertex tail uses the platform key; the user's X-LaoZhang-API-Key is NOT threaded
+    # into image dispatch. So BYOK must NOT zero the charge (else `X-LaoZhang-API-Key: anything` mints
+    # unlimited FREE images while the platform pays COGS). byok is hardcoded False throughout.
+    uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    op_id = prep["op_id"]
 
     # admission cap (single-process backend) + ATOMIC credit HOLD before any paid upstream call. The
-    # HOLD (not a balance read) is what stops concurrent requests overspending into a negative
-    # balance; it's refunded on ANY failure and committed only on confirmed output.
+    # HOLD (not a balance read) is what stops concurrent requests overspending into a negative balance.
     global _img_inflight
     if _img_inflight >= IMAGE_MAX_INFLIGHT:
         raise HTTPException(429, "image service busy — try again in a moment")
     _img_inflight += 1   # reserve the slot SYNCHRONOUSLY (check+increment have no await between → atomic
                          # in asyncio, so the cap is strictly enforced; the hold await is inside try)
-    data = mime = provider = ref_key = None
-    cost_usd = None
-    _charged = 0
+    out = None
     try:
-        await metering.hold_credits(user.tenant_id, cr, op_id, byok=_byok)   # raises 402 if it can't cover cr
-        # ── generate: aggregator failover chain, then legacy LaoZhang/Vertex tail ──
-        try:
-            # M7: overall wall-clock deadline so a hung provider chain (POST+retry+poll × 3 steps, each up
-            # to _TIMEOUT.read=180s) can't pin its admission slot for ~9-18min and lock out image-gen.
-            r = await asyncio.wait_for(_ip.dispatch(feature, model, params, op_id),
-                                       timeout=IMAGE_DISPATCH_DEADLINE)
-            # dispatch threads the rendered bytes back; we DON'T re-fetch r["ref"] — it's a bare R2
-            # object key (aupload_bytes returns a key, not a signed URL), so fetching it would 404 and
-            # leave data=None → user charged for a broken image. Bytes in hand = single source of truth.
-            ref_key = r["ref"]; data, mime = r["data"], r["mime"]
-            provider = r["provider"]; cost_usd = r.get("cost_usd")
-        except _ip.ProviderError as e:
-            if feature in ("create_raster", "create_vector", "edit"):
-                _ref_b64 = (params["ref_images"][0].get("b64") if params["ref_images"] else "") or ""
-                b64 = await _legacy_image_b64(model, req.prompt or "", req.aspect or "1:1",
-                                              req.image_size or "1K", _ref_b64, req.seed or 0)
-                data = base64.b64decode(b64); mime, _ = _sniff_image(data)
-                provider = _provider_for(model)
-                cost_usd = (_ip._MODELS.get(model) or {}).get("cogs_usd") or _calc_image_cost(model)
-            else:
-                raise HTTPException(502, f"image {op} unavailable (no provider key yet): {e}")
-
-        # ── transparent toggle: opaque-only model → auto bg-removal (Recraft); price folded into cr ──
-        autobg_failed = False
-        if needs_autobg and data is not None:
-            try:
-                r2 = await asyncio.wait_for(_ip.dispatch("bg_remove", "recraft-v3",
-                                        {"ref_images": [{"b64": base64.b64encode(data).decode()}]},
-                                        op_id + "-bg"), timeout=IMAGE_DISPATCH_DEADLINE)
-                ref_key = r2["ref"]; data, mime = r2["data"], r2["mime"]   # bytes threaded back (no re-fetch)
-                cost_usd = (cost_usd or 0) + (r2.get("cost_usd") or 0)
-            except Exception as _be:
-                autobg_failed = True   # L1: opaque image still delivered → don't bill the transparency surcharge
-                _IMG_LOG.warning("[image_op] auto bg-remove failed (non-fatal, returning opaque): %s", _be)
-
-        # nothing usable to return → treat as failure so the hold is refunded (never charge for nothing).
-        # `data` is the SOLE truth: every success path (dispatch OR legacy) sets it. M4: `not data` (not
-        # `is None`) so a 200 with a 0-byte body (b'') is also treated as failure, never charged as success.
-        if not data:
-            raise HTTPException(502, f"image {op} produced no output")
-
-        # ── persist asset (moat, best-effort; never fail the generation on a storage hiccup) ──
-        if data is not None:
-            try:
-                _ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
-                        "image/svg+xml": "svg"}.get(mime or "image/png", "png")
-                # source_job_type MUST be a value in job_type_enum (migrations 0006+0020) or the INSERT
-                # raises "invalid input value for enum" → caught below → asset row never written → image
-                # uploads to R2 but is orphaned (absent from Media Vault). "image_op" is NOT in the enum;
-                # "generate_image" is (added 0020 for one-shot image flows) and is the exact right label.
-                await _persist_asset(user.tenant_id, asset_type="image", source_job_type="generate_image",
-                                     filename=f"{feature}_{op_id}.{_ext}", data=data, content_type=mime or "image/png",
-                                     user_id=_uid, metadata={"model": model, "op": op, "provider": provider, "feature": feature},
-                                     source_prompt=(req.prompt or None))
-            except Exception as _pe:
-                _IMG_LOG.warning("[image_op] persist failed (non-fatal): %s", _pe)
-
-        # ── COMMIT the hold (only now, on confirmed output) + usage row carrying REAL provider COGS ──
-        # L1: if bg-removal failed we deliver an OPAQUE image → bill the base price only (drop the held
-        # transparency surcharge); committing < the hold refunds the difference.
-        _commit_cr = cr - (_autobg_cr if autobg_failed else 0)
-        _charged = await metering.commit_credits(
-            user.tenant_id, _uid, "image", model, _commit_cr, op_id, byok=_byok,
-            cost_usd=cost_usd, provider=provider, write_log=True) or 0
+        await metering.hold_credits(user.tenant_id, prep["cr"], op_id, byok=False)   # raises 402 if it can't cover
+        out = await _image_generate_core(tenant_id=user.tenant_id, uid=uid, op=op, prep=prep)
     except BaseException:
         await metering.refund_credits(user.tenant_id, op_id)   # release the hold on ANY failure → no charge
         raise
@@ -2940,20 +3037,164 @@ async def image_op(op: str, req: ImageOpRequest,
 
     # `provider` is INTENTIONALLY omitted from the response — it's persisted server-side (usage_logs via
     # commit_credits + asset metadata) but never exposed to the client (don't reveal the routing target).
-    resp = {"ok": True, "op": op, "feature": feature, "model": model, "credits": _charged}
-    if data is not None:
-        resp["image_b64"] = base64.b64encode(data).decode(); resp["mime"] = mime or "image/png"
-    if ref_key:
-        # a data: URI is already loadable; an R2 object key must be SIGNED — never hand the client a
-        # bare key (it'd 404). Best-effort: the b64 above already carries the image if signing fails.
-        if ref_key.startswith("data:"):
-            resp["image_url"] = ref_key
-        else:
-            try:
-                resp["image_url"] = await storage.asigned_url(ref_key)
-            except Exception as _se:
-                _IMG_LOG.warning("[image_op] sign result url failed (non-fatal, b64 returned): %s", _se)
+    resp = {"ok": True, "op": op, "feature": prep["feature"], "model": prep["model"], "credits": out["charged"]}
+    if out["data"] is not None:
+        resp["image_b64"] = base64.b64encode(out["data"]).decode(); resp["mime"] = out["mime"]
+    _url = await _sign_result_key(out["result_key"])
+    if _url:
+        resp["image_url"] = _url
     return resp
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Async submit + poll: POST /image/<op>/submit holds credits, persists a 'running'
+# image_jobs row, spawns a background task running the SAME core, and returns
+# {job_id} in ~1s. The client polls GET /image/jobs/<id> every ~10s. The job
+# completes server-side even if the user navigates away (lands in Media Vault +
+# the Recent rail regardless). A process restart orphans the hold → the sweep
+# (startup + lazy on poll) marks it failed and refunds. See migration 0048.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _short_err(e: BaseException) -> str:
+    try:
+        d = getattr(e, "detail", None)
+        s = str(d) if d is not None else str(e)
+        return (s[:300] or "image generation failed")
+    except Exception:
+        return "image generation failed"
+
+
+async def _run_image_job(*, tenant_id, uid, job_id: str, op: str, prep: dict):
+    """Background runner (OUTSIDE request context — every DB/metering call passes tenant=). The hold is
+    already taken. The core runs with do_commit=False so NOTHING is charged until we win the atomic
+    running→success transition (db.finish_image_job — the SAME WHERE status='running' UPDATE the orphan-
+    sweep uses). This makes the charge transition-gated:
+
+      • won (status was 'running')  → we own the hold, the sweep can't have reaped us → commit.
+      • lost (already terminal)      → the sweep reaped us first and ALREADY refunded the hold → we must
+                                       NOT commit (a durable charge with no hold = ledger divergence);
+                                       refund again (idempotent no-op) and deliver the asset uncharged.
+
+    So a reap and a live finish can never BOTH take effect — exactly one wins the row, and only the
+    winner touches credits. On core failure: refund (no commit happened) + record the failed row."""
+    global _img_inflight
+    try:
+        try:
+            out = await _image_generate_core(tenant_id=tenant_id, uid=uid, op=op, prep=prep, do_commit=False)
+        except BaseException as e:
+            await metering.refund_credits(tenant_id, prep["op_id"])   # no commit happened → release the hold
+            await db.finish_image_job(tenant_id, job_id, status="failed", error=_short_err(e))
+            _IMG_LOG.info("[image_job] %s failed: %s", job_id, _short_err(e))
+            return
+        # gate the charge on winning the terminal transition (credits=commit_cr is the intended charge).
+        won = await db.finish_image_job(tenant_id, job_id, status="success",
+                                        result_key=out["result_key"], result_mime=out["mime"],
+                                        credits=out["commit_cr"])
+        if won:
+            await metering.commit_credits(tenant_id, uid, "image", prep["model"], out["commit_cr"],
+                                          prep["op_id"], byok=False, cost_usd=out.get("cost_usd"),
+                                          provider=out.get("provider"), write_log=True)
+        else:
+            # lost to a reap (sweep/lazy marked us failed + already refunded the hold while we ran). Do
+            # NOT commit. Refund is an idempotent no-op on the consumed/absent hold. The asset is already
+            # in Media Vault (persist ran inside core) → it's delivered free, which is correct for a job
+            # that overran IMAGE_JOB_STALE_SECS.
+            await metering.refund_credits(tenant_id, prep["op_id"])
+            _IMG_LOG.warning("[image_job] %s: lost finish race (reaped) — not charged, asset delivered free", job_id)
+    finally:
+        _img_inflight -= 1
+
+
+@app.post("/image/{op}/submit")
+async def image_op_submit(op: str, req: ImageOpRequest,
+                          user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Async sibling of POST /image/<op>: hold + persist a 'running' job + spawn the background core,
+    return {job_id} in ~1s. The connection is released immediately; the client polls /image/jobs/<id>."""
+    prep = _image_prepare(op, req, user)
+    uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    op_id = prep["op_id"]
+    job_id = str(uuid.uuid4())
+
+    global _img_inflight
+    if _img_inflight >= IMAGE_MAX_INFLIGHT:
+        raise HTTPException(429, "image service busy — try again in a moment")
+    _img_inflight += 1   # reserve SYNCHRONOUSLY; released by _run_image_job's finally (NOT here on success)
+    try:
+        await metering.hold_credits(user.tenant_id, prep["cr"], op_id, byok=False)   # raises 402 if it can't cover
+        # persist the job row BEFORE spawning — if this raises, the poll would 404 forever on a held
+        # credit. On failure here we refund + release the slot inline and surface the error.
+        await db.create_image_job(user.tenant_id, job_id=job_id, user_id=uid,
+                                  op_id=op_id, op=op, feature=prep["feature"], model=prep["model"])
+    except BaseException:
+        await metering.refund_credits(user.tenant_id, op_id)
+        _img_inflight -= 1
+        raise
+    # hand off to the background task (it owns the slot release + commit/refund + finish row). create_task
+    # copies the current contextvars, but the core passes tenant= explicitly so it never relies on them.
+    asyncio.create_task(_run_image_job(tenant_id=user.tenant_id, uid=uid, job_id=job_id, op=op, prep=prep))
+    return {"ok": True, "job_id": job_id, "status": "running", "op": op,
+            "feature": prep["feature"], "model": prep["model"], "credits_held": prep["cr"]}
+
+
+@app.get("/image/jobs/{job_id}")
+async def image_job_status(job_id: str,
+                           user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Poll one async image job (tenant-scoped). running → keep polling; success → signed image_url;
+    failed → error. LAZY REAP: a 'running' row older than IMAGE_JOB_STALE_SECS means the process died
+    mid-dispatch (a live task always flips off 'running' well before then), so refund the orphaned hold
+    + mark it failed. This can NEVER race a live commit (the threshold exceeds the max live task)."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    job = await db.get_image_job(user.tenant_id, job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    status = job.get("status")
+    if status == "running":
+        if float(job.get("age_secs") or 0) > IMAGE_JOB_STALE_SECS:
+            await metering.refund_credits(user.tenant_id, job.get("op_id"))
+            await db.finish_image_job(user.tenant_id, job_id, status="failed", error="timed out")
+            return {"ok": True, "job_id": job_id, "status": "failed", "error": "timed out"}
+        return {"ok": True, "job_id": job_id, "status": "running"}
+    if status == "failed":
+        return {"ok": True, "job_id": job_id, "status": "failed",
+                "error": job.get("error") or "image generation failed"}
+    # success
+    resp = {"ok": True, "job_id": job_id, "status": "success", "op": job.get("op"),
+            "feature": job.get("feature"), "model": job.get("model"), "credits": job.get("credits") or 0}
+    _url = await _sign_result_key(job.get("result_key"))
+    if _url:
+        resp["image_url"] = _url
+    if job.get("result_mime"):
+        resp["mime"] = job["result_mime"]
+    return resp
+
+
+async def _sweep_orphaned_image_jobs() -> int:
+    """Mark stale 'running' jobs failed + refund their held credits (idempotent). Runs at startup and
+    periodically — catches jobs orphaned by a process restart (the cross-tenant UPDATE goes through the
+    0048 SECURITY DEFINER fn). refund_credits is a no-op on an already-consumed/absent hold → safe."""
+    stale = await db.sweep_stale_image_jobs(int(IMAGE_JOB_STALE_SECS))
+    for row in stale:
+        try:
+            await metering.refund_credits(row.get("tenant_id"), row.get("op_id"))
+        except Exception as _e:
+            _IMG_LOG.warning("[image_jobs] sweep refund failed (%s): %s", row.get("op_id"), _e)
+    if stale:
+        _IMG_LOG.info("[image_jobs] sweep: failed+refunded %d orphaned job(s)", len(stale))
+    return len(stale)
+
+
+async def _image_jobs_sweep_loop():
+    """Immediate pass at startup (reap the last restart's orphans) then every IMAGE_JOB_SWEEP_EVERY s."""
+    while True:
+        try:
+            await _sweep_orphaned_image_jobs()
+        except Exception as _e:
+            _IMG_LOG.warning("[image_jobs] sweep loop error: %s", _e)
+        try:
+            await asyncio.sleep(IMAGE_JOB_SWEEP_EVERY)
+        except asyncio.CancelledError:
+            break
 
 
 def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:

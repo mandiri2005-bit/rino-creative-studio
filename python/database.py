@@ -321,6 +321,92 @@ async def log_sync_job(tenant_id, job_type, result=None) -> Optional[str]:
     except Exception as e:
         log.error("log_sync_job: %s", e); return None
 
+# ═════════════════════════════════════════════════════════════════════════════
+# IMAGE ASYNC JOBS — submit+poll for the Image page (see 0048_image_jobs.sql)
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def create_image_job(tenant_id, *, job_id, user_id, op_id, op, feature, model) -> None:
+    """Insert a 'running' image_jobs row at /image/<op>/submit time. FK-safe on
+    user_id: _resolve_user_uuid can hand back a DETERMINISTIC fallback uuid for a
+    user not yet in `users` (Clerk webhook lag); inserting it raises 23503 which
+    would drop the WHOLE job row → the poll then 404s and the held credit leaks.
+    Retry once unattributed so the job ALWAYS persists (poll keys on id+tenant,
+    not user). Raises only on a non-FK error (caller releases the hold)."""
+    async def _ins(uid):
+        await _q_exec(
+            """INSERT INTO image_jobs (id,tenant_id,user_id,op_id,op,feature,model,status)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,'running')""",
+            _uid(job_id), _uid(tenant_id), uid, op_id, op, feature, model,
+            tenant=str(tenant_id))
+    uid = None
+    try:
+        uid = _uid(user_id) if user_id else None
+    except Exception:
+        uid = None
+    try:
+        await _ins(uid)
+    except Exception as e:
+        is_fk = getattr(e, "sqlstate", "") == "23503" or "user_id_fkey" in str(e)
+        if uid is not None and is_fk:
+            log.warning("create_image_job: user_id FK miss for %s — unattributed", job_id)
+            await _ins(None)
+        else:
+            log.error("create_image_job: %s", e); raise
+
+async def get_image_job(tenant_id, job_id) -> Optional[dict]:
+    """Read one job row, tenant-scoped. Returns a dict incl. age_secs (now -
+    updated_at) for the poll's lazy stale-reap, or None if absent / wrong tenant.
+    The `AND tenant_id=$2` is explicit (NOT just the RLS predicate): the prod
+    runtime role is BYPASSRLS, so RLS alone wouldn't stop a cross-tenant id probe
+    (IDOR). Belt-and-suspenders with the 0048 RLS policy."""
+    try:
+        r = await _q_fetchrow(
+            """SELECT id, status, op, feature, model, credits, result_key, result_mime,
+                      error, op_id,
+                      EXTRACT(EPOCH FROM (now() - updated_at))::float8 AS age_secs
+                 FROM image_jobs WHERE id=$1 AND tenant_id=$2""",
+            _uid(job_id), _uid(tenant_id), tenant=str(tenant_id))
+        return _row(r) if r else None
+    except Exception as e:
+        log.error("get_image_job: %s", e); return None
+
+async def finish_image_job(tenant_id, job_id, *, status, result_key=None,
+                           result_mime=None, credits=0, error=None) -> bool:
+    """Terminal transition running→success|failed. Flips ONLY a row still
+    'running', so the background task and a lazy/sweep reap can both call it and
+    exactly one wins (idempotent). Returns True iff THIS call did the transition.
+    `AND tenant_id=$7` is explicit (prod role is BYPASSRLS — RLS alone wouldn't
+    scope it); a wrong-tenant call can never flip another tenant's row."""
+    try:
+        won = await _q_fetchval(
+            """UPDATE image_jobs
+                  SET status=$2, result_key=COALESCE($3,result_key),
+                      result_mime=COALESCE($4,result_mime), credits=$5, error=$6
+                WHERE id=$1 AND tenant_id=$7 AND status='running'
+                RETURNING 1""",
+            _uid(job_id), status, result_key, result_mime,
+            int(credits or 0), error, _uid(tenant_id), tenant=str(tenant_id))
+        return won is not None
+    except Exception as e:
+        log.error("finish_image_job: %s", e); return False
+
+async def sweep_stale_image_jobs(older_than_secs: int) -> list:
+    """Cross-tenant orphan sweep: mark stale 'running' jobs failed and return
+    their [{tenant_id, op_id}] so the app refunds each hold. Routes through the
+    SECURITY DEFINER fn (the UPDATE spans tenants → impossible under app_user RLS
+    otherwise). Each job is returned at most once (the UPDATE only matches still-
+    'running' rows), so refunds never double-fire."""
+    try:
+        # build the interval server-side from an int: asyncpg binds `interval` via the
+        # binary codec which requires a datetime.timedelta — a string like "720 seconds"
+        # raises "'str' object has no attribute 'days'". make_interval(secs => $1) sidesteps it.
+        rows = await _q_fetch(
+            "SELECT tenant_id, op_id FROM image_jobs_sweep_stale(make_interval(secs => $1::int))",
+            int(older_than_secs), tenant="")
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.error("sweep_stale_image_jobs: %s", e); return []
+
 async def job_tenant_by_task(task_id) -> Optional[str]:
     """Resolve the owning tenant of a veo/sora job by upstream task_id. Uses the
     SECURITY DEFINER fn job_tenant_by_task() (migration 0018), so it is safe to

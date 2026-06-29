@@ -140,7 +140,18 @@ async function pyProxy(req, res, pyPath, extraHeaders = {}) {
       headers,
       body: req.method !== "GET" ? JSON.stringify(req.body) : undefined,
     });
-    if (!pyRes.ok) { const e = await pyRes.json().catch(() => ({error: pyRes.statusText})); return res.status(pyRes.status).json({error: e.error || e.detail || pyRes.statusText}); }
+    if (!pyRes.ok) {
+      const e = await pyRes.json().catch(() => ({}));
+      // FastAPI nests the payload under `detail`, which for our gates is a STRUCTURED object
+      // (402 → {error:"insufficient_credits",needed,balance,topup_url}; 403 → {error:"tier_locked",
+      // required_plan,...}). Spread an object detail to the TOP LEVEL so the frontend reads
+      // `needed`/`required_plan` directly instead of a stringified blob. Fall back to a string message.
+      const d = e && e.detail;
+      const body = (d && typeof d === "object" && !Array.isArray(d))
+        ? { ...d, error: d.error || d.message || pyRes.statusText }
+        : { error: (typeof d === "string" && d) || e.error || pyRes.statusText };
+      return res.status(pyRes.status).json(body);
+    }
     res.json(await pyRes.json());
   } catch(e) { res.status(500).json({ error: e.message }); }
 }
@@ -1126,6 +1137,29 @@ app.post("/api/image/:op", async (req,res) => {
   if (tenantId && !(await rateLimitOk(`image:${tenantId}`, 30, 60)))
     return res.status(429).json({ error: "rate_limited", message: "Too many image requests — give it a moment." });
   return pyProxy(req, res, `/image/${op}`);
+});
+
+// Async submit + poll (atlabs-style page). /submit holds credits + spawns the SAME background
+// generation as the sync op above (a slow provider no longer dies on the long-poll), returning
+// {job_id} in ~1s; the client polls /jobs/<id> every ~10s. `:op/submit` has 3 path segments so it
+// never collides with the 1-segment `:op` route. /submit triggers paid work → SAME rate-limit
+// bucket as the sync op. The poll is a cheap tenant-scoped DB read → its own generous limit
+// (clients poll every ~10s, possibly several jobs in flight).
+app.post("/api/image/:op/submit", async (req,res) => {
+  const op = String(req.params.op || "");
+  if (!IMAGE_OPS.has(op)) return res.status(400).json({ error: `Unknown image op: ${op}` });
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`image:${tenantId}`, 30, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many image requests — give it a moment." });
+  return pyProxy(req, res, `/image/${op}/submit`);
+});
+
+app.get("/api/image/jobs/:id", async (req,res) => {
+  const id = String(req.params.id || "");
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`imgpoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  return pyProxy(req, res, `/image/jobs/${encodeURIComponent(id)}`);
 });
 
 // ── Nano-banana model → Google native model name ────────────────────────────
