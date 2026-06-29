@@ -490,6 +490,12 @@ app.post(
 // authed tenant can't OOM the shared single-process backend with 6×16MB b64 refs. express.json no-ops
 // once a body is parsed, so the global parser below skips these routes.
 app.use("/api/image", express.json({ limit:"24mb" }));
+// Video-tools ops can carry a b64 SOURCE VIDEO (modify/reframe/upscale/lip_sync) — larger than image
+// refs but bounded. Mounted BEFORE the global parser so /api/video-tools/* parses here first and rejects
+// oversized bodies at the edge (413), bounding the Python-side body + pyProxy's JSON.stringify copy.
+// Isolated from the VI assembly /api/video/* routes (those use the global parser). express.json no-ops
+// once parsed, so the global parser below skips these.
+app.use("/api/video-tools", express.json({ limit:"220mb" }));
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
@@ -524,6 +530,9 @@ const PUBLIC_API = new Set([
   // The /image app fetches it on mount; public so the catalog loads even before the Clerk token
   // is ready (else the app falls back to "Demo data"). Generation (/api/image/:op) stays authed.
   "/api/image/catalog",
+  // Wimba Video picker metadata (model list + per-second credit badges) — same rationale as the
+  // image catalog: non-sensitive reference data the /video app fetches on mount. Submit/poll stay authed.
+  "/api/video-tools/catalog",
 ]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
@@ -969,6 +978,21 @@ function serveImageApp(_req, res) {
 }
 app.get(["/image", "/image/"], serveImageApp);
 
+// ── Wimba Video app (separate Next.js static export at public/video/, built with
+// VIDEO_BASE_PATH=/video). Same recipe as the Image app above: served same-origin so it
+// shares the Clerk session + calls /api/video-tools/* relatively, Clerk key injected at
+// request time. Returns a friendly 404 until public/video/ is deployed. ──
+const VIDEO_INDEX = path.join(__dirname, "public", "video", "index.html");
+function serveVideoApp(_req, res) {
+  fs.readFile(VIDEO_INDEX, "utf8", (err, html) => {
+    if (err) return res.status(404).send("Wimba Video app not deployed yet");
+    const inject = `<script>window.__CLERK_PK=${JSON.stringify(process.env.CLERK_PUBLISHABLE_KEY || "")};window.__BRAND="wimba";</script>`;
+    res.setHeader("Cache-Control", "no-cache");
+    res.type("html").send(html.includes("</head>") ? html.replace("</head>", inject + "</head>") : inject + html);
+  });
+}
+app.get(["/video", "/video/"], serveVideoApp);
+
 app.use(express.static(path.join(__dirname,"public"),{
   setHeaders:(res,p)=>{ if(p.endsWith("index.html")) res.setHeader("Cache-Control","no-cache"); }
 }));
@@ -1160,6 +1184,39 @@ app.get("/api/image/jobs/:id", async (req,res) => {
   if (tenantId && !(await rateLimitOk(`imgpoll:${tenantId}`, 240, 60)))
     return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
   return pyProxy(req, res, `/image/jobs/${encodeURIComponent(id)}`);
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VIDEO TOOLS  (proxy → Python /video-tools/*) — atlabs-style single-clip video page.
+// ADDITIVE + ISOLATED: a NEW namespace, never touching the VI assembly /api/video/*
+// routes (mountVideoRoutes / video/routes.mjs), mode_gate, Flow, or Batch. Mirrors the
+// /api/image/* proxy: forward Authorization (Clerk JWT) via pyProxy, whitelist the op so
+// we never proxy an arbitrary Python path, per-tenant rate-limit the paid submit. Python
+// (laozhang_api /video-tools/*) tier-gates the model, holds/commits the per-second badge
+// credits (single source = video_providers.credits_for → badge == charge), logs real COGS,
+// and persists the MP4 to Media Vault.
+// ══════════════════════════════════════════════════════════════════════════════
+app.get("/api/video-tools/catalog", (req,res)=>pyProxy(req,res,"/video-tools/catalog"));  // picker meta + per-sec badges
+
+const VIDEO_OPS = new Set(["text_to_video","image_to_video","modify_video","reframe_video",
+                           "upscale_video","caption_video","lip_sync","motion_control","paparazzi_moment"]);
+app.post("/api/video-tools/:op/submit", async (req,res) => {
+  const op = String(req.params.op || "");
+  if (!VIDEO_OPS.has(op)) return res.status(400).json({ error: `Unknown video op: ${op}` });
+  // Per-tenant rate limit on the paid submit (a failed op debits nothing → without this an authed
+  // account could hammer ref ops unbounded). Video renders are heavier than image → tighter bucket.
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`video:${tenantId}`, 12, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many video requests — give it a moment." });
+  return pyProxy(req, res, `/video-tools/${op}/submit`);
+});
+
+app.get("/api/video-tools/jobs/:id", async (req,res) => {
+  const id = String(req.params.id || "");
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`vidpoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  return pyProxy(req, res, `/video-tools/jobs/${encodeURIComponent(id)}`);
 });
 
 // ── Nano-banana model → Google native model name ────────────────────────────

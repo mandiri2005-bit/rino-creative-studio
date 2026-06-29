@@ -718,11 +718,23 @@ async def lifespan(application):
         _img_sweep_task = asyncio.create_task(_image_jobs_sweep_loop())
     except Exception as _se:
         _IMG_LOG.warning("[image_jobs] sweep loop failed to start: %s", _se)
+    # In-process video-tools orphan sweep (refund holds left by a dead background dispatch task).
+    _vid_sweep_task = None
+    try:
+        _vid_sweep_task = asyncio.create_task(_video_jobs_sweep_loop())
+    except Exception as _se:
+        _VID_LOG.warning("[video_jobs] sweep loop failed to start: %s", _se)
     yield
     if _img_sweep_task:
         _img_sweep_task.cancel()
         try:
             await _img_sweep_task
+        except BaseException:
+            pass
+    if _vid_sweep_task:
+        _vid_sweep_task.cancel()
+        try:
+            await _vid_sweep_task
         except BaseException:
             pass
     await rc.close_redis()
@@ -3195,6 +3207,366 @@ async def _image_jobs_sweep_loop():
             await asyncio.sleep(IMAGE_JOB_SWEEP_EVERY)
         except asyncio.CancelledError:
             break
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIDEO TOOLS — the /video-tools/* namespace (atlabs-style single-clip video page).
+# ADDITIVE + ISOLATED: this does NOT touch the existing Video Instant /video/*
+# assembly pipeline, mode_gate, Flow, or Batch. It mirrors the async image
+# submit+poll path (image_op_submit / image_job_status) against the multi-provider
+# failover backend video_providers.dispatch, with the same billing discipline:
+#   ensure_tier (403) → hold_credits (402) → persist a 'running' job carrying op_id
+#   → asyncio.create_task(dispatch) → poll commits on success / refunds on fail.
+# The job ledger is IN-PROCESS (no schema change — additive only). A process
+# restart orphans in-flight jobs; their holds are reaped + refunded by the lazy
+# stale-sweep on the next poll AND a background sweep loop (same semantics as the
+# image jobs sweep, minus the cross-restart DB durability — acceptable because the
+# hold itself is durable in credit_ledger and refund_credits is idempotent).
+# ══════════════════════════════════════════════════════════════════════════════
+
+# op slug → registry feature (BUILD CONTRACT §1 featureForOp). Distinct from the
+# image map. modify_video→video_edit; motion_control/paparazzi_moment→image_to_video.
+_VIDEO_OP_FEATURE = {
+    "text_to_video": "text_to_video",
+    "image_to_video": "image_to_video",
+    "modify_video": "video_edit",
+    "reframe_video": "reframe_video",
+    "upscale_video": "upscale_video",
+    "caption_video": "caption_video",
+    "lip_sync": "lip_sync",
+    "motion_control": "image_to_video",
+    "paparazzi_moment": "image_to_video",
+}
+# ops whose dispatch sends a reference image seed (i2v family)
+_VIDEO_OPS_NEED_REF_IMAGE = {"image_to_video", "motion_control"}
+# ops whose dispatch operates on a source VIDEO (tool ops + edit)
+_VIDEO_OPS_NEED_REF_VIDEO = {"modify_video", "reframe_video", "upscale_video", "lip_sync"}
+
+_VID_LOG = _logging.getLogger("video_tools")
+VIDEO_MAX_INFLIGHT = int(os.getenv("VIDEO_MAX_INFLIGHT", "4"))   # admission cap (single-process backend; renders are heavy)
+_vid_inflight = 0
+# decoded ref caps (OOM guard) — a ref image is small, a ref VIDEO can be large.
+VIDEO_MAX_REF_IMG_BYTES = int(os.getenv("VIDEO_MAX_REF_IMG_BYTES", str(12 * 1024 * 1024)))    # 12MB image
+VIDEO_MAX_REF_VID_BYTES = int(os.getenv("VIDEO_MAX_REF_VID_BYTES", str(200 * 1024 * 1024)))   # 200MB source video b64
+VIDEO_MAX_REF_AUD_BYTES = int(os.getenv("VIDEO_MAX_REF_AUD_BYTES", str(40 * 1024 * 1024)))     # 40MB lip-sync audio
+# a 'running' job older than this ⟹ the task died (a live render flips off 'running' well before).
+# Video renders take MINUTES — generous. MUST exceed video_providers._POLL_MAX (900) + persist.
+VIDEO_JOB_STALE_SECS = float(os.getenv("VIDEO_JOB_STALE_SECS", "1800"))
+VIDEO_JOB_SWEEP_EVERY = float(os.getenv("VIDEO_JOB_SWEEP_EVERY", "300"))   # periodic orphan-sweep cadence (s)
+
+# in-process job ledger: job_id -> dict(tenant_id, op_id, status, op, feature, model,
+# credits, result_key, result_mime, duration, error, created, updated). Guarded by tenant
+# scoping on read (poll rejects a job_id owned by another tenant → no IDOR).
+_VID_JOBS: dict[str, dict] = {}
+
+
+def _vid_b64_within(b64s: str, cap: int) -> bool:
+    """decoded size of a base64 string ≤ cap (≈ len*3/4), without decoding it."""
+    return (len(b64s) * 3 // 4) <= cap
+
+
+def _video_params_from_body(feature: str, body: dict) -> dict:
+    """Build the video_providers.dispatch params from a validated request body. Normalises ref
+    inputs to dispatch's contract: ref_images=[{url|b64}] (i2v seed), ref_video={url|b64}
+    (edit/reframe/upscale/lip_sync source), audio={url|b64} (lip_sync). USER http(s) refs are
+    SSRF-validated here (adapters fetch them server-side); b64 refs are size-capped (OOM guard)."""
+    params: dict = {
+        "prompt": (body.get("prompt") or "")[:4000],
+        "aspect": body.get("aspect") or "16:9",
+        "seconds": body.get("seconds") or 5,
+    }
+    if body.get("resolution"):
+        params["resolution"] = body["resolution"]
+    if body.get("motion_strength") is not None:
+        params["motion_strength"] = body["motion_strength"]
+    if body.get("camera"):
+        params["camera"] = body["camera"]
+
+    # reference image (i2v / motion / paparazzi seed frame). paparazzi_moment ref is OPTIONAL.
+    ref_img = body.get("ref_image_b64")
+    if ref_img:
+        b64 = str(ref_img).split(",")[-1]
+        if not _vid_b64_within(b64, VIDEO_MAX_REF_IMG_BYTES):
+            raise HTTPException(413, "reference image too large")
+        params["ref_images"] = [{"b64": b64}]
+
+    # reference VIDEO source (edit / reframe / upscale / lip_sync). url XOR b64.
+    rv_url, rv_b64 = body.get("ref_video_url"), body.get("ref_video_b64")
+    if rv_url:
+        if not _is_public_http_url(rv_url):
+            raise HTTPException(400, "reference video URL not allowed")
+        params["ref_video"] = {"url": rv_url}
+    elif rv_b64:
+        b64 = str(rv_b64).split(",")[-1]
+        if not _vid_b64_within(b64, VIDEO_MAX_REF_VID_BYTES):
+            raise HTTPException(413, "reference video too large")
+        params["ref_video"] = {"b64": b64, "mime": "video/mp4"}
+
+    # lip-sync audio
+    aud = body.get("audio_b64")
+    if aud:
+        b64 = str(aud).split(",")[-1]
+        if not _vid_b64_within(b64, VIDEO_MAX_REF_AUD_BYTES):
+            raise HTTPException(413, "audio too large")
+        params["audio"] = {"b64": b64, "mime": "audio/mpeg"}
+    return params
+
+
+def _video_prepare(op: str, body: dict, user) -> dict:
+    """Validate + resolve feature/model/pricing for one video request (mirror of _image_prepare).
+    Raises HTTPException on bad input / wrong tier / unauthenticated / unpriced. Mints the
+    server-side op_id (NEVER a client header → hold/commit idempotent on op_id)."""
+    import video_providers as _vp
+    feature = _VIDEO_OP_FEATURE.get((op or "").lower())
+    if not feature:
+        raise HTTPException(400, f"Unknown video op: {op}")
+    if user is None:
+        raise HTTPException(401, "authentication required")   # fail CLOSED — never run paid upstream anon
+
+    is_tool = feature in _vp._OP_TOOL_FEATURES
+    model = (body.get("model") or "").strip()
+
+    # caption_video is backend-native (whisper+ffmpeg) — NOT a provider chain. The route must exist
+    # and not 500: prepare returns a marker so submit persists a job that resolves failed/coming_soon.
+    if feature == "caption_video":
+        return {"feature": feature, "is_tool": True, "model": "wimba-captions",
+                "coming_soon": True, "cr": 0, "params": {}, "op_id": f"vid-{uuid.uuid4().hex[:12]}",
+                "seconds": int(body.get("seconds") or 5)}
+
+    if not is_tool:
+        if model not in _vp._MODELS:
+            raise HTTPException(400, f"Unknown video model: {model}")
+        # the model MUST support the requested feature — else dispatch silently falls back to an
+        # op-chain while we price+book off the model → margin leak. Reject instead (mirror image).
+        if feature not in ((_vp._MODELS.get(model) or {}).get("features") or []):
+            raise HTTPException(400, f"Model '{model}' does not support '{op}'")
+        metering.ensure_tier(user, catalog.video_min_tier(model, body.get("resolution") or ""), model)
+    else:
+        # tool ops are model-independent (priced off the op-chain); still tier-gate by the op-chain
+        # min tier when one is configured, else they're ungated like image pure-tools.
+        model = model or "wimba-tool"
+
+    # ref-presence validation per op (matches the UI flags in BUILD CONTRACT §1)
+    if feature in _VIDEO_OPS_NEED_REF_VIDEO and not (body.get("ref_video_url") or body.get("ref_video_b64")):
+        raise HTTPException(400, f"op '{op}' needs a reference video")
+    if op == "image_to_video" and not body.get("ref_image_b64"):
+        raise HTTPException(400, "op 'image_to_video' needs a reference image")
+    if op == "lip_sync" and not body.get("audio_b64"):
+        raise HTTPException(400, "op 'lip_sync' needs an audio track")
+
+    seconds = int(body.get("seconds") or 5)
+    if seconds <= 0:
+        seconds = 5
+    # price = picker badge (single source). credits_for already multiplies per-sec × seconds.
+    cr = _vp.credits_for(feature, model if not is_tool else "", seconds) or 0
+    if cr <= 0:
+        raise HTTPException(400, f"'{op}' on '{model}' is not priced")
+
+    params = _video_params_from_body(feature, body)
+    return {"feature": feature, "is_tool": is_tool, "model": model, "coming_soon": False,
+            "cr": cr, "params": params, "op_id": f"vid-{uuid.uuid4().hex[:12]}", "seconds": seconds}
+
+
+async def _run_video_job(*, tenant_id, uid, job_id: str, op: str, prep: dict):
+    """Background runner (OUTSIDE request context — passes tenant= everywhere). The hold is already
+    taken. Runs video_providers.dispatch; on success persists the MP4 (Media Vault moat) + commits the
+    precomputed credits with the REAL winning-provider COGS (cost_usd × seconds); on ANY failure refunds
+    the whole hold. The in-process job row is the terminal-state ledger the poll reads. Releases the
+    admission slot in finally."""
+    import video_providers as _vp
+    global _vid_inflight
+    job = _VID_JOBS.get(job_id)
+    try:
+        try:
+            res = await asyncio.wait_for(
+                _vp.dispatch(prep["feature"], prep["model"] if not prep["is_tool"] else "",
+                             prep["params"], prep["op_id"]),
+                timeout=VIDEO_JOB_STALE_SECS)
+        except BaseException as e:
+            await metering.refund_credits(tenant_id, prep["op_id"])   # no commit happened → release hold
+            if job is not None and job.get("status") == "running":
+                job.update(status="failed", error=_short_err(e), updated=time.time())
+            _VID_LOG.info("[video_job] %s failed: %s", job_id, _short_err(e))
+            return
+
+        data = res.get("data")
+        # mirror image_op's `if data is None` guard: never commit for an empty result (a None payload
+        # means the provider returned nothing usable → treat as failure, refund, do not charge).
+        if data is None:
+            await metering.refund_credits(tenant_id, prep["op_id"])
+            if job is not None and job.get("status") == "running":
+                job.update(status="failed", error="provider returned no video", updated=time.time())
+            _VID_LOG.info("[video_job] %s: empty dispatch result — refunded", job_id)
+            return
+
+        mime = res.get("mime") or "video/mp4"
+        provider = res.get("provider")
+        # cost_usd from dispatch is the winning provider's PER-SECOND cost → absolute COGS = ×seconds.
+        cost_usd = res.get("cost_usd")
+        abs_cost = (float(cost_usd) * int(prep["seconds"])) if cost_usd is not None else None
+
+        # persist the MP4 to R2 + assets (moat). source_job_type = the winning provider (mirrors veo/sora).
+        result_key = None
+        try:
+            ext = "webm" if mime == "video/webm" else "mp4"
+            await _persist_asset(
+                tenant_id, asset_type="video", filename=f"{job_id}.{ext}", data=data,
+                content_type=mime, source_job_type=(provider or "video_tools"),
+                user_id=uid, source_prompt=(prep["params"].get("prompt") or None),
+                metadata={"model": prep["model"], "op": op, "feature": prep["feature"],
+                          "provider": provider, "duration": prep["seconds"], "job_id": job_id})
+            # the rehosted KEY from dispatch (data: URI passes straight through; an R2 key is signed on read)
+            result_key = res.get("ref")
+        except Exception as _pe:
+            _VID_LOG.warning("[video_job] %s persist failed (non-fatal): %s", job_id, _pe)
+            result_key = res.get("ref")
+
+        # COMMIT is the last awaited step — nothing after it can raise and strand a charge.
+        committed = await metering.commit_credits(
+            tenant_id, uid, "video", prep["model"], prep["cr"], prep["op_id"],
+            byok=False, cost_usd=abs_cost, provider=provider, video_job=job_id, write_log=True)
+        if job is not None:
+            job.update(status="success", result_key=result_key, result_mime=mime,
+                       credits=committed, duration=prep["seconds"], updated=time.time())
+    finally:
+        _vid_inflight -= 1
+
+
+@app.get("/video-tools/catalog")
+async def video_tools_catalog():
+    """Picker metadata for the Video page (BUILD CONTRACT §2/§3). Per-model label/sublabel/icon +
+    feature support + credits_per_sec (= what's debited PER SECOND; the frontend badge renders
+    credits_per_sec × duration). Badge == metering charge: both via video_providers.credits_for. Tool
+    ops expose tool_credits[op] (also per-second). Mirrors /image/catalog."""
+    import video_providers as _vp
+    models = []
+    for m in _vp.model_catalog():
+        feats = m.get("features", [])
+        # credits_per_sec uses the model's FIRST prompt feature as the price basis (all prompt features
+        # of a model share the model's per-sec basis; price_basis is model-keyed for non-tool features).
+        basis_feat = feats[0] if feats else "text_to_video"
+        cps = _vp.credits_for(basis_feat, m["id"], 1)   # seconds=1 → per-second credits
+        models.append({"id": m["id"], "label": m["label"], "sublabel": m.get("sublabel", ""),
+                       "icon": m.get("icon", ""), "features": feats,
+                       "credits_per_sec": cps, "credit_usd_value": catalog.CREDIT_USD_VALUE})
+    tool_credits = {}
+    for op in ("reframe_video", "upscale_video", "lip_sync"):   # caption_video is native/free (no chain)
+        cps = _vp.credits_for(op, "", 1)
+        if cps:
+            tool_credits[op] = cps
+    return {"models": models, "tool_credits": tool_credits,
+            "features": _vp._REG.get("_features", []),
+            "tool_defaults": _vp._REG.get("tool_defaults", {}),
+            "credit_usd_value": catalog.CREDIT_USD_VALUE}
+
+
+@app.post("/video-tools/{op}/submit")
+async def video_op_submit(op: str, body: dict,
+                          user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Async submit (mirror of /image/<op>/submit): ensure_tier → hold credits → persist a 'running'
+    in-process job carrying op_id → spawn the background dispatch task → return {job_id} in ~1s. The
+    client polls /video-tools/jobs/<id>. caption_video is backend-native (not yet built): its job is
+    persisted then immediately resolved failed/coming_soon (route exists, never 500s, no charge)."""
+    prep = _video_prepare(op, body or {}, user)
+    uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    op_id = prep["op_id"]
+    job_id = str(uuid.uuid4())
+    now = time.time()
+
+    # caption_video stub — route exists + does not 500: a job that resolves failed/coming_soon, no hold.
+    if prep.get("coming_soon"):
+        _VID_JOBS[job_id] = {"tenant_id": user.tenant_id, "op_id": op_id, "status": "failed",
+                             "op": op, "feature": prep["feature"], "model": prep["model"],
+                             "credits": 0, "result_key": None, "result_mime": None, "duration": 0,
+                             "error": "coming_soon", "created": now, "updated": now}
+        return {"ok": True, "job_id": job_id, "status": "running", "op": op,
+                "feature": prep["feature"], "model": prep["model"], "credits_held": 0}
+
+    global _vid_inflight
+    if _vid_inflight >= VIDEO_MAX_INFLIGHT:
+        raise HTTPException(429, "video service busy — try again in a moment")
+    _vid_inflight += 1   # reserve SYNCHRONOUSLY; released by _run_video_job's finally (NOT here on success)
+    try:
+        await metering.hold_credits(user.tenant_id, prep["cr"], op_id, byok=False)   # raises 402 if short
+        # persist the running job row BEFORE spawning — a held credit must always have a pollable row.
+        _VID_JOBS[job_id] = {"tenant_id": user.tenant_id, "op_id": op_id, "status": "running",
+                             "op": op, "feature": prep["feature"], "model": prep["model"],
+                             "credits": 0, "result_key": None, "result_mime": None,
+                             "duration": prep["seconds"], "error": None,
+                             "created": now, "updated": now}
+    except BaseException:
+        await metering.refund_credits(user.tenant_id, op_id)
+        _vid_inflight -= 1
+        raise
+    # hand off to the background task (it owns the slot release + commit/refund + terminal row).
+    asyncio.create_task(_run_video_job(tenant_id=user.tenant_id, uid=uid, job_id=job_id, op=op, prep=prep))
+    return {"ok": True, "job_id": job_id, "status": "running", "op": op,
+            "feature": prep["feature"], "model": prep["model"], "credits_held": prep["cr"]}
+
+
+@app.get("/video-tools/jobs/{job_id}")
+async def video_job_status(job_id: str,
+                           user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Poll one async video job (tenant-scoped — the explicit tenant check stops a cross-tenant id probe
+    even though the in-process map isn't RLS-bound). running → keep polling; success → signed video_url;
+    failed → error. LAZY REAP: a 'running' row older than VIDEO_JOB_STALE_SECS means the process died
+    mid-dispatch → refund the orphaned hold + mark it failed (idempotent; refund_credits no-ops a
+    consumed/absent hold)."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    job = _VID_JOBS.get(job_id)
+    if not job or job.get("tenant_id") != user.tenant_id:   # tenant-scope (IDOR guard)
+        raise HTTPException(404, "job not found")
+    status = job.get("status")
+    if status == "running":
+        if (time.time() - float(job.get("updated") or 0)) > VIDEO_JOB_STALE_SECS:
+            await metering.refund_credits(user.tenant_id, job.get("op_id"))
+            job.update(status="failed", error="timed out", updated=time.time())
+            return {"ok": True, "job_id": job_id, "status": "failed", "error": "timed out"}
+        return {"ok": True, "job_id": job_id, "status": "running"}
+    if status == "failed":
+        return {"ok": True, "job_id": job_id, "status": "failed",
+                "error": job.get("error") or "video generation failed"}
+    # success
+    resp = {"ok": True, "job_id": job_id, "status": "success", "op": job.get("op"),
+            "feature": job.get("feature"), "model": job.get("model"),
+            "credits": job.get("credits") or 0, "duration": job.get("duration") or 0}
+    _url = await _sign_result_key(job.get("result_key"))
+    if _url:
+        resp["video_url"] = _url
+    if job.get("result_mime"):
+        resp["mime"] = job["result_mime"]
+    return resp
+
+
+async def _sweep_orphaned_video_jobs() -> int:
+    """Mark stale in-process 'running' jobs failed + refund their held credits (idempotent). Catches
+    holds orphaned when a background task dies without flipping its row (the lazy poll-reap is the
+    primary path; this loop covers jobs no one polls). refund_credits no-ops a consumed/absent hold."""
+    n, now = 0, time.time()
+    for jid, job in list(_VID_JOBS.items()):
+        if job.get("status") == "running" and (now - float(job.get("updated") or 0)) > VIDEO_JOB_STALE_SECS:
+            try:
+                await metering.refund_credits(job.get("tenant_id"), job.get("op_id"))
+            except Exception as _e:
+                _VID_LOG.warning("[video_jobs] sweep refund failed (%s): %s", job.get("op_id"), _e)
+            job.update(status="failed", error="timed out", updated=now); n += 1
+    if n:
+        _VID_LOG.info("[video_jobs] sweep: failed+refunded %d orphaned job(s)", n)
+    return n
+
+
+async def _video_jobs_sweep_loop():
+    """Periodic in-process orphan-sweep (every VIDEO_JOB_SWEEP_EVERY s). Mirrors _image_jobs_sweep_loop."""
+    while True:
+        try:
+            await asyncio.sleep(VIDEO_JOB_SWEEP_EVERY)
+        except asyncio.CancelledError:
+            break
+        try:
+            await _sweep_orphaned_video_jobs()
+        except Exception as _e:
+            _VID_LOG.warning("[video_jobs] sweep loop error: %s", _e)
 
 
 def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:

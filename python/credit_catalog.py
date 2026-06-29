@@ -540,6 +540,46 @@ def image_credits_for_usd(firstparty_usd: float, cogs_usd: float = None, markup:
     return cr
 
 
+# Video-page sell rule (mirrors image_credits_for_usd, but PER-SECOND × seconds — video bills per
+# second, not per image). Same double floor [max(arbitrage, margin)] applied to the PER-SECOND USD,
+# rounded UP to IMG_CREDIT_ROUNDUP (5) on the per-second credit FIRST, THEN multiplied by the integer
+# duration — so the picker badge (`perSecCredits * seconds`) == the metered charge exactly. The video
+# multi-provider backend (video_providers.dispatch) fails over cheapest→source, so pricing off the
+# first-party / op-chain-MAX guarantees failover only ever RAISES margin (never negative). Distinct
+# markup default from image: VIDEO_SELL_MARKUP (1.10).
+VIDEO_SELL_MARKUP = float(os.getenv("VIDEO_SELL_MARKUP", "1.10"))   # first-party per-sec × this (arbitrage floor)
+def video_credits_for_usd(official_usd: float, cogs_usd: float = None,
+                          seconds: float = _VIDEO_DEFAULT_SECONDS, markup: float = None) -> int:
+    """SELL credits for a video clip = PER-SECOND double-floor price × the (integer) duration.
+
+    per-sec credits = max( official_usd × markup,  2 × cogs_usd )  → /CREDIT_USD_VALUE → round-up-5
+        • arbitrage floor = official_usd × markup (VIDEO_SELL_MARKUP, default 1.10) — keeps margin on
+          models where the cheapest aggregator (cogs) is far below the first-party/official price.
+        • margin floor    = cogs_usd / (1 - IMG_MIN_MARGIN) (= 2×cogs at the shared 50% floor) —
+          guarantees ≥50% real margin even on near-zero-arbitrage models.
+    The round-up-to-5 is applied to the PER-SECOND credit BEFORE multiplying by seconds (matches the
+    frontend `perSecCredits * seconds` badge so badge == charge). `markup` set → fixed first-party×markup,
+    bypassing the margin floor (premium-op exemption). `official_usd` falsey → 0. Round-up only raises
+    margin, so the floor always holds. This is the single source of truth shared by the picker badge and
+    the metered debit — video_providers.credits_for() calls through here at seconds=1 for the per-sec
+    badge and at the chosen duration for the charge."""
+    if not official_usd or official_usd <= 0:
+        return 0
+    if markup is None:
+        markup = VIDEO_SELL_MARKUP
+    per_sec = _roundup_credits(usd_to_credits(official_usd * markup))   # arbitrage floor (per second)
+    if markup == VIDEO_SELL_MARKUP and cogs_usd and cogs_usd > 0 and IMG_MIN_MARGIN < 1.0:
+        per_sec_floor = _roundup_credits(usd_to_credits(cogs_usd / (1.0 - IMG_MIN_MARGIN)))  # margin floor
+        per_sec = max(per_sec, per_sec_floor)
+    try:
+        secs = int(seconds or _VIDEO_DEFAULT_SECONDS)
+    except (TypeError, ValueError):
+        secs = int(_VIDEO_DEFAULT_SECONDS)
+    if secs <= 0:
+        secs = int(_VIDEO_DEFAULT_SECONDS)
+    return per_sec * secs
+
+
 # ── Pre-call estimate helpers (for the HOLD before real units are known) ───────
 def estimate_chat_credits(model: str, prompt_chars: int = 0, max_tokens: int = 0) -> int:
     """Conservative upfront hold for a chat/narasi turn. Output tokens are unknown
