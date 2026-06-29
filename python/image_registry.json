@@ -191,7 +191,7 @@
       "chain": [
         {
           "provider": "kie",
-          "create": "bytedance/seedream",
+          "create": "seedream/4.5-text-to-image",
           "edit": "bytedance/seedream-v4-edit"
         },
         {
@@ -221,7 +221,7 @@
       "chain": [
         {
           "provider": "kie",
-          "create": "bytedance/seedream",
+          "create": "seedream/5-lite-text-to-image",
           "edit": "bytedance/seedream-v4-edit"
         },
         {

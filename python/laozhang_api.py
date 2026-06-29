@@ -2914,9 +2914,13 @@ async def image_op(op: str, req: ImageOpRequest,
             try:
                 _ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
                         "image/svg+xml": "svg"}.get(mime or "image/png", "png")
-                await _persist_asset(user.tenant_id, asset_type="image", source_job_type="image_op",
+                # source_job_type MUST be a value in job_type_enum (migrations 0006+0020) or the INSERT
+                # raises "invalid input value for enum" → caught below → asset row never written → image
+                # uploads to R2 but is orphaned (absent from Media Vault). "image_op" is NOT in the enum;
+                # "generate_image" is (added 0020 for one-shot image flows) and is the exact right label.
+                await _persist_asset(user.tenant_id, asset_type="image", source_job_type="generate_image",
                                      filename=f"{feature}_{op_id}.{_ext}", data=data, content_type=mime or "image/png",
-                                     user_id=_uid, metadata={"model": model, "op": op, "provider": provider},
+                                     user_id=_uid, metadata={"model": model, "op": op, "provider": provider, "feature": feature},
                                      source_prompt=(req.prompt or None))
             except Exception as _pe:
                 _IMG_LOG.warning("[image_op] persist failed (non-fatal): %s", _pe)

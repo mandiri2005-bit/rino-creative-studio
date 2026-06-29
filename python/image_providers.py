@@ -243,7 +243,13 @@ async def _kie(client, op, slug, params):
     base = "https://api.kie.ai/api/v1"
     inp = {}
     if op in ("create_raster", "create_vector"):
-        inp = {"prompt": params["prompt"], "aspect_ratio": _aspect(params), "output_format": "png"}
+        inp = {"prompt": params["prompt"], "aspect_ratio": _aspect(params)}
+        if slug.startswith("seedream/"):
+            # Seedream 4.5 / 5-lite take `quality` (basic=2K, high=4K) and define NO output_format —
+            # sending output_format 400s the createTask. Default 2K to match the priced COGS.
+            inp["quality"] = "high" if params.get("hd") else "basic"
+        else:
+            inp["output_format"] = "png"
     elif op == "edit":
         inp = {"prompt": params["prompt"], "image_urls": [_img_url(i) for i in params.get("ref_images", [])],
                "output_format": "png"}
