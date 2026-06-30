@@ -493,6 +493,17 @@ app.post(
 // so it has no business under the 200mb global where a single tenant could pin 200MB of resident body.
 app.use("/api/image", express.json({ limit:"24mb" }));
 app.use("/api/whisk", express.json({ limit:"24mb" }));
+// Video-tools ops can carry a b64 SOURCE VIDEO (modify/reframe/upscale/lip_sync) — larger than image
+// refs but bounded. Mounted BEFORE the global parser so /api/video-tools/* parses here first and rejects
+// oversized bodies at the edge (413), bounding the Python-side body + pyProxy's JSON.stringify copy.
+// Isolated from the VI assembly /api/video/* routes (those use the global parser). express.json no-ops
+// once parsed, so the global parser below skips these.
+app.use("/api/video-tools", express.json({ limit:"220mb" }));
+// Recipes (one-click Formats, e.g. Product Ad) carry up to 4 b64 PRODUCT IMAGES (+ optional logo).
+// Same edge-bounding rationale as /api/video-tools: mounted BEFORE the global parser so /api/recipes/*
+// parses + 413-rejects oversized bodies here, bounding the Python body + pyProxy's JSON.stringify copy.
+// Isolated from the VI /api/video/* routes (those use the global parser).
+app.use("/api/recipes", express.json({ limit:"220mb" }));
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
@@ -527,6 +538,9 @@ const PUBLIC_API = new Set([
   // The /image app fetches it on mount; public so the catalog loads even before the Clerk token
   // is ready (else the app falls back to "Demo data"). Generation (/api/image/:op) stays authed.
   "/api/image/catalog",
+  // Wimba Video picker metadata (model list + per-second credit badges) — same rationale as the
+  // image catalog: non-sensitive reference data the /video app fetches on mount. Submit/poll stay authed.
+  "/api/video-tools/catalog",
 ]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API.has(req.path) || PUBLIC_API.has("/api" + req.path)) return next();
@@ -972,6 +986,21 @@ function serveImageApp(_req, res) {
 }
 app.get(["/image", "/image/"], serveImageApp);
 
+// ── Wimba Video app (separate Next.js static export at public/video/, built with
+// VIDEO_BASE_PATH=/video). Same recipe as the Image app above: served same-origin so it
+// shares the Clerk session + calls /api/video-tools/* relatively, Clerk key injected at
+// request time. Returns a friendly 404 until public/video/ is deployed. ──
+const VIDEO_INDEX = path.join(__dirname, "public", "video", "index.html");
+function serveVideoApp(_req, res) {
+  fs.readFile(VIDEO_INDEX, "utf8", (err, html) => {
+    if (err) return res.status(404).send("Wimba Video app not deployed yet");
+    const inject = `<script>window.__CLERK_PK=${JSON.stringify(process.env.CLERK_PUBLISHABLE_KEY || "")};window.__BRAND="wimba";</script>`;
+    res.setHeader("Cache-Control", "no-cache");
+    res.type("html").send(html.includes("</head>") ? html.replace("</head>", inject + "</head>") : inject + html);
+  });
+}
+app.get(["/video", "/video/"], serveVideoApp);
+
 app.use(express.static(path.join(__dirname,"public"),{
   setHeaders:(res,p)=>{ if(p.endsWith("index.html")) res.setHeader("Cache-Control","no-cache"); }
 }));
@@ -1196,6 +1225,75 @@ app.get("/api/image/jobs/:id", async (req,res) => {
   if (tenantId && !(await rateLimitOk(`imgpoll:${tenantId}`, 240, 60)))
     return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
   return pyProxy(req, res, `/image/jobs/${encodeURIComponent(id)}`);
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VIDEO TOOLS  (proxy → Python /video-tools/*) — atlabs-style single-clip video page.
+// ADDITIVE + ISOLATED: a NEW namespace, never touching the VI assembly /api/video/*
+// routes (mountVideoRoutes / video/routes.mjs), mode_gate, Flow, or Batch. Mirrors the
+// /api/image/* proxy: forward Authorization (Clerk JWT) via pyProxy, whitelist the op so
+// we never proxy an arbitrary Python path, per-tenant rate-limit the paid submit. Python
+// (laozhang_api /video-tools/*) tier-gates the model, holds/commits the per-second badge
+// credits (single source = video_providers.credits_for → badge == charge), logs real COGS,
+// and persists the MP4 to Media Vault.
+// ══════════════════════════════════════════════════════════════════════════════
+app.get("/api/video-tools/catalog", (req,res)=>pyProxy(req,res,"/video-tools/catalog"));  // picker meta + per-sec badges
+
+const VIDEO_OPS = new Set(["text_to_video","image_to_video","modify_video","reframe_video",
+                           "upscale_video","caption_video","lip_sync","motion_control","seamless_looping"]);
+app.post("/api/video-tools/:op/submit", async (req,res) => {
+  const op = String(req.params.op || "");
+  if (!VIDEO_OPS.has(op)) return res.status(400).json({ error: `Unknown video op: ${op}` });
+  // Per-tenant rate limit on the paid submit (a failed op debits nothing → without this an authed
+  // account could hammer ref ops unbounded). Video renders are heavier than image → tighter bucket.
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`video:${tenantId}`, 12, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many video requests — give it a moment." });
+  return pyProxy(req, res, `/video-tools/${op}/submit`);
+});
+
+app.get("/api/video-tools/jobs/:id", async (req,res) => {
+  const id = String(req.params.id || "");
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`vidpoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  return pyProxy(req, res, `/video-tools/jobs/${encodeURIComponent(id)}`);
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RECIPES  (proxy → Python /recipes/product-ad/*) — one-click "Format" wizard.
+// ADDITIVE + ISOLATED: a NEW namespace, never touching the VI /api/video/* routes,
+// /api/video-tools/*, Flow, or Batch. Mirrors the /api/video-tools/* proxy: forward
+// Authorization (Clerk JWT) via pyProxy, whitelist the recipe so we never proxy an
+// arbitrary Python path, per-tenant rate-limit the paid submit. The 220mb json mount
+// above carries the b64 product images. Python (laozhang_api /recipes/product-ad/*)
+// tier-gates (premium), takes the ONE umbrella hold inside the DAG (single source =
+// recipe_product_ad.estimate → badge == charge), commits the actual, and persists the
+// finished variants to Media Vault. estimate = no hold (live receipt).
+// ══════════════════════════════════════════════════════════════════════════════
+const RECIPES = new Set(["product-ad"]);
+app.post("/api/recipes/:recipe/estimate", async (req,res) => {
+  const recipe = String(req.params.recipe || "");
+  if (!RECIPES.has(recipe)) return res.status(400).json({ error: `Unknown recipe: ${recipe}` });
+  return pyProxy(req, res, `/recipes/${recipe}/estimate`);
+});
+app.post("/api/recipes/:recipe/submit", async (req,res) => {
+  const recipe = String(req.params.recipe || "");
+  if (!RECIPES.has(recipe)) return res.status(400).json({ error: `Unknown recipe: ${recipe}` });
+  // Per-tenant rate limit on the paid submit (a recipe is the heaviest paid op → tight bucket).
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`recipe:${tenantId}`, 6, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many recipe requests — give it a moment." });
+  return pyProxy(req, res, `/recipes/${recipe}/submit`);
+});
+app.get("/api/recipes/:recipe/jobs/:id", async (req,res) => {
+  const recipe = String(req.params.recipe || "");
+  if (!RECIPES.has(recipe)) return res.status(400).json({ error: `Unknown recipe: ${recipe}` });
+  const id = String(req.params.id || "");
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`recipepoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  return pyProxy(req, res, `/recipes/${recipe}/jobs/${encodeURIComponent(id)}`);
 });
 
 // ── Nano-banana model → Google native model name ────────────────────────────

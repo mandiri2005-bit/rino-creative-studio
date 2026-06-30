@@ -1,6 +1,13 @@
 FROM python:3.11-slim
 WORKDIR /app
 
+# ffmpeg/ffprobe — system binaries required by recipe_assembly.py (the Product Ad recipe stitches,
+# crops, ducks/muxes VO+music, and burns caption/CTA/logo overlays via ffmpeg). python:3.11-slim ships
+# without them, so without this every recipe assembly raises RuntimeError. Cleaned up to keep the layer small.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install CPU-only PyTorch first to avoid downloading CUDA (~500MB)
 RUN pip install --no-cache-dir \
     torch --index-url https://download.pytorch.org/whl/cpu
@@ -36,6 +43,10 @@ COPY review_personas.json ./
 # Wimba Image provider registry (model meta + COGS + failover chains). NOT matched by `COPY *.py`,
 # so without this `import image_providers` raises FileNotFoundError → /image/catalog + /image/<op> 500.
 COPY image_registry.json ./
+# Wimba Video provider registry (same story as image_registry.json). NOT matched by `COPY *.py`, so
+# without this `import video_providers` raises FileNotFoundError → every /video-tools + recipe video
+# dispatch 500s. (Same class of bug already fixed once for image_registry.json.)
+COPY video_registry.json ./
 # Nusantara Corpus seed + ref images. NOT matched by `COPY *.py`, so without this
 # data/nusantara_seed.json is absent at runtime → _load_seed() empty → BM25 retrieval
 # returns nothing (the corpus silently does nothing on the BM25 path).

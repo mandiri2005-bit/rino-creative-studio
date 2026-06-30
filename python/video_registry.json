@@ -1,0 +1,1035 @@
+{
+  "_comment": "Wimba Video failover registry — mirrors image_registry.json. Each model maps an ordered cheapest-first provider chain; dispatch() tries chain[0] first and fails over. Prices are USD PER SECOND of output video (video bills per-second, unlike image's per-image). credits_for_video(model,seconds,size) multiplies by duration. Slugs are the EXACT provider API model ids (verified from ~/Claude/*-models.xlsx 2026-06-29); kie video slugs were NOT confidently verifiable so kie is omitted from chains here — chains use atlascloud/fal/aiml which have clean verified slugs, plus laozhang/vertex as the no-adapter legacy tail (caller falls back). DO NOT add a provider slug you have not verified — a wrong slug 404s and the provider is billed for nothing (image kie-slug lesson).",
+  "_env": {
+    "atlascloud": "ATLASCLOUD_API_KEY",
+    "fal": "FAL_API_KEY",
+    "aiml": "AIMLAPI_API_KEY",
+    "kie": "KIE_API_KEY",
+    "laozhang": "LAOZHANG_IMAGE_API_KEY (live LaoZhang account key, shared with the image path)",
+    "vertex": "GCP_REFRESH_TOKEN (no adapter — caller legacy tail)"
+  },
+  "_features": [
+    "text_to_video",
+    "image_to_video",
+    "reference_to_video",
+    "video_edit"
+  ],
+  "_op_tool_features": [
+    "reframe_video",
+    "upscale_video",
+    "lip_sync",
+    "caption_video"
+  ],
+  "_price_unit": "usd_per_second",
+  "models": [
+    {
+      "id": "veo-3-1-fast",
+      "label": "Google Veo 3.1 Fast",
+      "sublabel": "Fast frontier model with audio",
+      "icon": "google",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        4,
+        6,
+        8
+      ],
+      "default_duration": 8,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.08,
+          "official_usd": 0.1
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.08,
+          "official_usd": 0.12
+        },
+        {
+          "res": "4K",
+          "cogs_usd": 0.1125,
+          "official_usd": 0.3
+        }
+      ],
+      "default_resolution": "1080p",
+      "audio": "always",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.08,
+      "official_usd": 0.12,
+      "chain": [
+        {
+          "provider": "kie",
+          "text_to_video": "veo3_fast",
+          "image_to_video": "veo3_fast",
+          "cogs_usd": 0.0375
+        },
+        {
+          "provider": "laozhang",
+          "text_to_video": "veo-3.1-fast-generate-preview",
+          "image_to_video": "veo-3.1-fast-generate-preview",
+          "cogs_usd": 0.0375
+        },
+        {
+          "provider": "atlascloud",
+          "text_to_video": "google/veo3.1-fast/text-to-video",
+          "image_to_video": "google/veo3.1-fast/image-to-video"
+        },
+        {
+          "provider": "aiml",
+          "text_to_video": "google/veo-3.1-t2v-fast",
+          "image_to_video": "google/veo-3.1-i2v-fast"
+        },
+        {
+          "provider": "fal",
+          "image_to_video": "fal-ai/veo3.1/fast/image-to-video"
+        }
+      ]
+    },
+    {
+      "id": "veo-3-1",
+      "label": "Google Veo 3.1",
+      "sublabel": "Quality · audio-native",
+      "icon": "google",
+      "features": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video"
+      ],
+      "durations": [
+        4,
+        6,
+        8
+      ],
+      "default_duration": 8,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.2,
+          "official_usd": 0.4
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.2,
+          "official_usd": 0.4
+        },
+        {
+          "res": "4K",
+          "cogs_usd": 0.231,
+          "official_usd": 0.6
+        }
+      ],
+      "default_resolution": "1080p",
+      "audio": "always",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.2,
+      "official_usd": 0.4,
+      "chain": [
+        {
+          "provider": "laozhang",
+          "text_to_video": "veo-3.1-generate-preview",
+          "image_to_video": "veo-3.1-generate-preview",
+          "cogs_usd": 0.15
+        },
+        {
+          "provider": "kie",
+          "text_to_video": "veo3",
+          "image_to_video": "veo3",
+          "reference_to_video": "veo3",
+          "cogs_usd": 0.156
+        },
+        {
+          "provider": "atlascloud",
+          "text_to_video": "google/veo3.1/text-to-video",
+          "image_to_video": "google/veo3.1/image-to-video",
+          "reference_to_video": "google/veo3.1/reference-to-video"
+        },
+        {
+          "provider": "aiml",
+          "text_to_video": "google/veo-3.1-t2v"
+        },
+        {
+          "provider": "fal",
+          "image_to_video": "fal-ai/veo3.1/image-to-video",
+          "reference_to_video": "fal-ai/veo3.1/reference-to-video"
+        },
+        {
+          "provider": "vertex",
+          "text_to_video": "veo-3.1-generate-preview"
+        }
+      ]
+    },
+    {
+      "id": "veo-3-1-lite",
+      "label": "Veo 3.1 Lite",
+      "sublabel": "Cheapest Veo · 720p",
+      "icon": "google",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        4,
+        6,
+        8
+      ],
+      "default_duration": 8,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.05,
+          "official_usd": 0.08
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.05,
+          "official_usd": 0.104
+        },
+        {
+          "res": "4K",
+          "cogs_usd": 0.09375,
+          "official_usd": 0.15
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "always",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.05,
+      "official_usd": 0.08,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "google/veo3.1-lite/text-to-video",
+          "image_to_video": "google/veo3.1-lite/image-to-video"
+        },
+        {
+          "provider": "kie",
+          "text_to_video": "veo3_lite",
+          "image_to_video": "veo3_lite"
+        }
+      ]
+    },
+    {
+      "id": "veo-3-fast",
+      "label": "Veo 3 Fast",
+      "sublabel": "Google · prior-gen fast",
+      "icon": "google",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        4,
+        6,
+        8
+      ],
+      "default_duration": 8,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.105,
+          "official_usd": 0.15
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.105,
+          "official_usd": 0.15
+        }
+      ],
+      "default_resolution": "1080p",
+      "audio": "always",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.105,
+      "official_usd": 0.15,
+      "chain": [
+        {
+          "provider": "aiml",
+          "text_to_video": "google/veo-3.0-fast",
+          "image_to_video": "google/veo-3.0-i2v"
+        }
+      ]
+    },
+    {
+      "id": "sora-2",
+      "label": "Sora 2",
+      "sublabel": "OpenAI",
+      "icon": "openai",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        4,
+        8,
+        12
+      ],
+      "default_duration": 8,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.1,
+          "official_usd": 0.1
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "always",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.1,
+      "official_usd": 0.1,
+      "chain": [
+        {
+          "provider": "fal",
+          "text_to_video": "fal-ai/sora-2/text-to-video",
+          "image_to_video": "fal-ai/sora-2/image-to-video"
+        },
+        {
+          "provider": "aiml",
+          "text_to_video": "openai/sora-2-t2v",
+          "image_to_video": "openai/sora-2-i2v"
+        },
+        {
+          "provider": "laozhang",
+          "text_to_video": "sora-2",
+          "image_to_video": "sora-2"
+        }
+      ]
+    },
+    {
+      "id": "sora-2-pro",
+      "label": "Sora 2 Pro",
+      "sublabel": "OpenAI · top fidelity",
+      "icon": "openai",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        4,
+        8,
+        12
+      ],
+      "default_duration": 8,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.3,
+          "official_usd": 0.3
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.5,
+          "official_usd": 0.7
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "always",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.3,
+      "official_usd": 0.3,
+      "chain": [
+        {
+          "provider": "fal",
+          "text_to_video": "fal-ai/sora-2/text-to-video/pro"
+        },
+        {
+          "provider": "aiml",
+          "text_to_video": "openai/sora-2-pro-t2v",
+          "image_to_video": "openai/sora-2-pro-i2v"
+        },
+        {
+          "provider": "laozhang",
+          "text_to_video": "sora-2-pro",
+          "image_to_video": "sora-2-pro"
+        }
+      ]
+    },
+    {
+      "id": "seedance-1-5-pro",
+      "label": "Seedance 1.5 Pro",
+      "sublabel": "ByteDance · high quality, multi-shot",
+      "icon": "bytedance",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        4,
+        5,
+        6,
+        8,
+        10,
+        12
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "480p",
+          "cogs_usd": 0.00875,
+          "official_usd": 0.025
+        },
+        {
+          "res": "720p",
+          "cogs_usd": 0.0175,
+          "official_usd": 0.1
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.0375,
+          "official_usd": 0.12
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 2,
+      "cogs_usd": 0.0175,
+      "official_usd": 0.1,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "bytedance/seedance-v1.5-pro/text-to-video",
+          "image_to_video": "bytedance/seedance-v1.5-pro/image-to-video"
+        },
+        {
+          "provider": "fal",
+          "text_to_video": "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
+          "image_to_video": "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
+        }
+      ]
+    },
+    {
+      "id": "seedance-2",
+      "label": "Seedance 2.0",
+      "sublabel": "ByteDance · cinematic, references",
+      "icon": "bytedance",
+      "features": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video"
+      ],
+      "durations": [
+        4,
+        5,
+        6,
+        8,
+        10,
+        12,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "480p",
+          "cogs_usd": 0.057,
+          "official_usd": 0.1406
+        },
+        {
+          "res": "720p",
+          "cogs_usd": 0.112,
+          "official_usd": 0.3024
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.31,
+          "official_usd": 0.6804
+        },
+        {
+          "res": "4K",
+          "cogs_usd": 0.64,
+          "official_usd": 1.56
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.112,
+      "official_usd": 0.3024,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "bytedance/seedance-2.0/text-to-video",
+          "image_to_video": "bytedance/seedance-2.0/image-to-video",
+          "reference_to_video": "bytedance/seedance-2.0/reference-to-video"
+        },
+        {
+          "provider": "fal",
+          "text_to_video": "bytedance/seedance-2.0/text-to-video",
+          "image_to_video": "bytedance/seedance-2.0/image-to-video",
+          "reference_to_video": "bytedance/seedance-2.0/reference-to-video"
+        }
+      ]
+    },
+    {
+      "id": "seedance-2-mini",
+      "label": "Seedance 2.0 mini",
+      "sublabel": "ByteDance · fast & cheap references",
+      "icon": "bytedance",
+      "features": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video"
+      ],
+      "durations": [
+        4,
+        5,
+        6,
+        8,
+        10,
+        12,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "480p",
+          "cogs_usd": 0.03,
+          "official_usd": 0.0475
+        },
+        {
+          "res": "720p",
+          "cogs_usd": 0.0625,
+          "official_usd": 0.1025
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.0625,
+      "official_usd": 0.1025,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "bytedance/seedance-2.0-mini/text-to-video",
+          "image_to_video": "bytedance/seedance-2.0-mini/image-to-video",
+          "reference_to_video": "bytedance/seedance-2.0-mini/reference-to-video"
+        },
+        {
+          "provider": "fal",
+          "text_to_video": "bytedance/seedance-2.0/mini/text-to-video",
+          "image_to_video": "bytedance/seedance-2.0/mini/image-to-video",
+          "reference_to_video": "bytedance/seedance-2.0/mini/reference-to-video"
+        }
+      ]
+    },
+    {
+      "id": "happyhorse-1-0",
+      "label": "Happy Horse 1.0",
+      "sublabel": "1080p · native audio & lip-sync",
+      "icon": "alibaba",
+      "features": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video",
+        "video_edit"
+      ],
+      "durations": [
+        3,
+        5,
+        8,
+        10,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.112,
+          "official_usd": 0.2
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.24,
+          "official_usd": 0.28
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 2,
+      "cogs_usd": 0.112,
+      "official_usd": 0.2,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "alibaba/happyhorse-1.0/text-to-video",
+          "image_to_video": "alibaba/happyhorse-1.0/image-to-video",
+          "reference_to_video": "alibaba/happyhorse-1.0/reference-to-video",
+          "video_edit": "alibaba/happyhorse-1.0/video-edit"
+        },
+        {
+          "provider": "fal",
+          "text_to_video": "alibaba/happy-horse/text-to-video",
+          "image_to_video": "alibaba/happy-horse/image-to-video"
+        }
+      ]
+    },
+    {
+      "id": "happyhorse-1-1",
+      "label": "Happy Horse 1.1",
+      "sublabel": "Alibaba · cinematic from references",
+      "icon": "alibaba",
+      "features": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video"
+      ],
+      "durations": [
+        3,
+        5,
+        8,
+        10,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.1125,
+          "official_usd": 0.14
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.145,
+          "official_usd": 0.18
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "always",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.1125,
+      "official_usd": 0.14,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "alibaba/happyhorse-1.1/text-to-video",
+          "image_to_video": "alibaba/happyhorse-1.1/image-to-video",
+          "reference_to_video": "alibaba/happyhorse-1.1/reference-to-video"
+        },
+        {
+          "provider": "fal",
+          "text_to_video": "alibaba/happy-horse/v1.1/text-to-video",
+          "image_to_video": "alibaba/happy-horse/v1.1/image-to-video",
+          "reference_to_video": "alibaba/happy-horse/v1.1/reference-to-video"
+        }
+      ]
+    },
+    {
+      "id": "kling-o3",
+      "label": "Kling O3",
+      "sublabel": "Kuaishou · standard",
+      "icon": "kling",
+      "features": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video"
+      ],
+      "durations": [
+        5,
+        10,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.07,
+          "official_usd": 0.084
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.09,
+          "official_usd": 0.112
+        }
+      ],
+      "default_resolution": "1080p",
+      "audio": "toggle",
+      "audio_on_mult": 1.43,
+      "cogs_usd": 0.09,
+      "official_usd": 0.112,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "kwaivgi/kling-video-o3-std/text-to-video",
+          "image_to_video": "kwaivgi/kling-video-o3-std/image-to-video",
+          "reference_to_video": "kwaivgi/kling-video-o3-std/reference-to-video"
+        },
+        {
+          "provider": "fal",
+          "text_to_video": "fal-ai/kling-video/o3/standard/text-to-video",
+          "image_to_video": "fal-ai/kling-video/o3/standard/image-to-video"
+        }
+      ]
+    },
+    {
+      "id": "kling-o3-pro",
+      "label": "Kling O3 Pro",
+      "sublabel": "Kuaishou · pro + video edit",
+      "icon": "kling",
+      "features": [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video",
+        "video_edit"
+      ],
+      "durations": [
+        5,
+        10,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.07,
+          "official_usd": 0.095
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.095,
+          "official_usd": 0.135
+        }
+      ],
+      "default_resolution": "1080p",
+      "audio": "toggle",
+      "audio_on_mult": 1.43,
+      "cogs_usd": 0.095,
+      "official_usd": 0.135,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "kwaivgi/kling-video-o3-pro/text-to-video",
+          "image_to_video": "kwaivgi/kling-video-o3-pro/image-to-video",
+          "reference_to_video": "kwaivgi/kling-video-o3-pro/reference-to-video",
+          "video_edit": "kwaivgi/kling-video-o3-pro/video-edit"
+        },
+        {
+          "provider": "fal",
+          "image_to_video": "fal-ai/kling-video/o3/pro/image-to-video",
+          "reference_to_video": "fal-ai/kling-video/o3/pro/reference-to-video"
+        }
+      ]
+    },
+    {
+      "id": "kling-o3-4k",
+      "label": "Kling O3 4K",
+      "sublabel": "Kuaishou · native 4K",
+      "icon": "kling",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        5,
+        10,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "4K",
+          "cogs_usd": 0.335,
+          "official_usd": 0.42
+        }
+      ],
+      "default_resolution": "4K",
+      "audio": "toggle",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.335,
+      "official_usd": 0.42,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "text_to_video": "kwaivgi/kling-video-o3-4k/text-to-video",
+          "image_to_video": "kwaivgi/kling-video-o3-4k/image-to-video"
+        }
+      ]
+    },
+    {
+      "id": "wan-2-5",
+      "label": "Wan 2.5",
+      "sublabel": "Alibaba · all-in-one",
+      "icon": "wan",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        5,
+        10
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "480p",
+          "cogs_usd": 0.035,
+          "official_usd": 0.04
+        },
+        {
+          "res": "720p",
+          "cogs_usd": 0.035,
+          "official_usd": 0.06
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.05,
+          "official_usd": 0.1
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.035,
+      "official_usd": 0.06,
+      "chain": [
+        {
+          "provider": "aiml",
+          "text_to_video": "alibaba/wan2.5-t2v-preview",
+          "image_to_video": "alibaba/wan2.5-i2v-preview"
+        }
+      ]
+    },
+    {
+      "id": "wan-2-7",
+      "label": "Wan 2.7",
+      "sublabel": "Alibaba · latest",
+      "icon": "wan",
+      "features": [
+        "text_to_video",
+        "image_to_video"
+      ],
+      "durations": [
+        5,
+        10,
+        15
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.039,
+          "official_usd": 0.08
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.1,
+          "official_usd": 0.12
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 1.33,
+      "cogs_usd": 0.039,
+      "official_usd": 0.08,
+      "chain": [
+        {
+          "provider": "aiml",
+          "text_to_video": "alibaba/wan-2-7-t2v",
+          "image_to_video": "alibaba/wan-2-7-i2v"
+        },
+        {
+          "provider": "laozhang",
+          "text_to_video": "wan2.7-t2v",
+          "image_to_video": "wan2.7-i2v"
+        }
+      ]
+    },
+    {
+      "id": "hailuo-02",
+      "label": "Hailuo 02",
+      "sublabel": "MiniMax · expressive motion",
+      "icon": "minimax",
+      "features": [
+        "image_to_video"
+      ],
+      "durations": [
+        6,
+        10
+      ],
+      "default_duration": 6,
+      "resolutions": [
+        {
+          "res": "480p",
+          "cogs_usd": 0.01,
+          "official_usd": 0.017
+        },
+        {
+          "res": "720p",
+          "cogs_usd": 0.025,
+          "official_usd": 0.084
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.0475,
+          "official_usd": 0.08
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "none",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.025,
+      "official_usd": 0.084,
+      "chain": [
+        {
+          "provider": "fal",
+          "image_to_video": "fal-ai/minimax/hailuo-02/standard/image-to-video"
+        }
+      ]
+    },
+    {
+      "id": "wan-2-2-turbo",
+      "label": "Wan 2.2 Turbo",
+      "sublabel": "Alibaba · ultra-cheap i2v",
+      "icon": "wan",
+      "features": [
+        "image_to_video"
+      ],
+      "durations": [
+        5,
+        8
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "480p",
+          "cogs_usd": 0.02,
+          "official_usd": 0.02
+        },
+        {
+          "res": "720p",
+          "cogs_usd": 0.02,
+          "official_usd": 0.03
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "none",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.02,
+      "official_usd": 0.03,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "image_to_video": "atlascloud/wan-2.2-turbo/image-to-video"
+        }
+      ]
+    },
+    {
+      "_comment": "AVATAR / talking-head models for the Product Ad UGC path (recipe_product_ad ugc). Feature = image_to_video so the existing i2v dispatch path drives them (the avatar reference frame seeds ref_images[0]; lip-sync to a VO is layered AFTER via the lip_sync op-chain, which already exists). Cheapest-first: omnihuman (~$0.06/s) then kling-avatar. Slugs follow the verified atlascloud bytedance/* + kwaivgi/* families already used above; VERIFY each once its key is live (avatar endpoints not yet smoke-tested).",
+      "id": "omnihuman-avatar",
+      "label": "OmniHuman Avatar 1.5",
+      "sublabel": "ByteDance · talking-head UGC avatar",
+      "icon": "bytedance",
+      "features": [
+        "image_to_video"
+      ],
+      "durations": [
+        4,
+        5,
+        6,
+        8,
+        10
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "480p",
+          "cogs_usd": 0.045,
+          "official_usd": 0.06
+        },
+        {
+          "res": "720p",
+          "cogs_usd": 0.06,
+          "official_usd": 0.09
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.06,
+      "official_usd": 0.09,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "image_to_video": "bytedance/avatar-omni-human-v1.5/image-to-video"
+        }
+      ]
+    },
+    {
+      "_comment": "Kling avatar fallback for the UGC path (pricier source if omnihuman is down). Feature = image_to_video; kwaivgi/* slug family (UPPERCASE resolution casing handled by the atlascloud adapter). VERIFY slug once key is live.",
+      "id": "kling-avatar",
+      "label": "Kling Avatar",
+      "sublabel": "Kuaishou · expressive talking-head avatar",
+      "icon": "kling",
+      "features": [
+        "image_to_video"
+      ],
+      "durations": [
+        5,
+        10
+      ],
+      "default_duration": 5,
+      "resolutions": [
+        {
+          "res": "720p",
+          "cogs_usd": 0.105,
+          "official_usd": 0.14
+        },
+        {
+          "res": "1080p",
+          "cogs_usd": 0.14,
+          "official_usd": 0.18
+        }
+      ],
+      "default_resolution": "720p",
+      "audio": "toggle",
+      "audio_on_mult": 1,
+      "cogs_usd": 0.105,
+      "official_usd": 0.14,
+      "chain": [
+        {
+          "provider": "atlascloud",
+          "image_to_video": "kwaivgi/kling-avatar-std/image-to-video"
+        }
+      ]
+    }
+  ],
+  "op_chains": {
+    "_comment": "Model-independent tool ops. Each step carries its own per-second cogs_usd/official_usd so SELL is priced off the chain MAX (never negative-margin on a step[0] outage). caption_video has NO provider chain — it is a backend-native op (whisper transcript + ffmpeg burn-in), handled by the caller, NOT dispatch.",
+    "upscale_video": [
+      {
+        "provider": "atlascloud",
+        "slug": "atlascloud/video-upscaler",
+        "cogs_usd": 0.018,
+        "official_usd": 0.018
+      }
+    ],
+    "reframe_video": [
+      {
+        "provider": "aiml",
+        "slug": "wan-2-2-vace-fun-a14b-reframe",
+        "cogs_usd": 0.065,
+        "official_usd": 0.065
+      }
+    ],
+    "lip_sync": [
+      {
+        "provider": "fal",
+        "slug": "fal-ai/sync-lipsync/v3/image-to-video",
+        "cogs_usd": 0.1333,
+        "official_usd": 0.1333
+      },
+      {
+        "provider": "fal",
+        "slug": "fal-ai/kling-video/lipsync/audio-to-video",
+        "cogs_usd": 0.14,
+        "official_usd": 0.14
+      }
+    ]
+  },
+  "tool_defaults": {
+    "text_to_video": "veo-3-1-fast",
+    "image_to_video": "veo-3-1-fast",
+    "reference_to_video": "seedance-2",
+    "video_edit": "happyhorse-1-0"
+  },
+  "_pricing_note": "SELL credits = credit_catalog.video_credits_for_usd(official_usd, cogs_usd, seconds, markup=VIDEO_SELL_MARKUP default 1.10) → max(official*markup, 2*cogs) per-second * seconds / credit_usd_value, round-up-to-5. Tool ops price off op-chain MAX. credit_usd_value = 0.002 (shared with image). badge == charge."
+}

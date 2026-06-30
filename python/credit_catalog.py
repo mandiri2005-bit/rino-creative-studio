@@ -62,6 +62,13 @@ VID_MARKUP_HI       = float(os.getenv("VID_MARKUP_HI",        "2.5"))   # >$0.12
 VID_MARKUP_USD_GATE = float(os.getenv("VID_MARKUP_USD_GATE",  "0.12"))   # per-second threshold
 GOLPO_MARKUP        = float(os.getenv("GOLPO_MARKUP",         "3"))
 
+# ── Recipe (one-click Format) fee ─────────────────────────────────────────────
+# Flat orchestration fee added ON TOP of the Σ per-step meters (image keyframes +
+# video clips + TTS + music) for a one-click recipe like Product Ad. It is NOT a new
+# pricing primitive — recipe_product_ad.estimate() sums the existing per-step meters
+# and appends this fee; that same total is the umbrella hold (badge == charge).
+RECIPE_FEE = int(os.getenv("RECIPE_FEE_CREDITS", "25"))
+
 # ── Financial reporting / GL tagging (lightweight — tags on usage_logs, NO journal) ──
 # Single source for IDR translation + the weighted-average credit sale price used to
 # recognize revenue at consumption. KURS is the ONLY FX constant in the backend; translate
@@ -154,8 +161,9 @@ def image_min_tier(model: str) -> str:
     return IMAGE_MODEL_MIN_TIER.get(model, "pro")   # unknown model → locked, not free
 
 def video_min_tier(model: str, size: str = "") -> str:
-    if size and ("2160" in str(size) or "3840" in str(size)):
-        return "enterprise"        # 4K is resolution-locked to Studio, any base model
+    s = str(size or "").lower()
+    if s and ("2160" in s or "3840" in s or "4k" in s or "uhd" in s):
+        return "enterprise"        # 4K is resolution-locked to Studio, any base model (accepts "4K" label too)
     m = (model or "").lower()
     key = max((k for k in VIDEO_MODEL_MIN_TIER if m.startswith(k)), key=len, default=None)
     return VIDEO_MODEL_MIN_TIER[key] if key else "pro"   # unknown → locked
@@ -605,6 +613,61 @@ _IMAGE_BATCH_COGS_USD = {
 def image_batch_cogs_usd(model: str, count: int = 1) -> float:
     """True batch COGS (USD) for `count` delivered images of `model`."""
     return _IMAGE_BATCH_COGS_USD.get(model, 0.0) * max(0, int(count))
+# Video-page sell rule v2 (per-model caps + audio). Double floor [max(arbitrage, margin)] on the
+# PER-SECOND USD, multiplied by an audio multiplier and the (integer) duration, then the round-up-to-5
+# is applied ONCE to the FULL-CLIP credit total (NOT per-second). This matches the v2 BUILD CONTRACT:
+#   perSecUSD = max(official × markup, 2 × cogs) × audio_mult
+#   credits   = ceil5( perSecUSD × seconds / CREDIT_USD_VALUE )
+# So the frontend MUST display the TOTAL (ceil5 of the whole clip), not perSec×seconds — and the
+# backend debits the identical TOTAL (badge == charge). The video multi-provider backend
+# (video_providers.dispatch) fails over cheapest→source, so pricing off the first-party / op-chain-MAX
+# guarantees failover only ever RAISES margin (never negative). Distinct markup default from image:
+# VIDEO_SELL_MARKUP (1.10). audio_mult comes from the model's audio_on_mult when audio is on (or the
+# model emits native always-on audio); 1.0 otherwise. The margin floor uses the contract's literal
+# 2×cogs form (== cogs/(1-0.50) at the shared 50% floor).
+VIDEO_SELL_MARKUP = float(os.getenv("VIDEO_SELL_MARKUP", "1.10"))   # first-party per-sec × this (arbitrage floor)
+def video_credits_for_usd(official_usd: float, cogs_usd: float = None,
+                          seconds: float = _VIDEO_DEFAULT_SECONDS, markup: float = None,
+                          audio_mult: float = 1.0) -> int:
+    """SELL credits for a video clip (v2 per-model-caps + audio formula):
+
+        perSecUSD = max( official_usd × markup,  2 × cogs_usd ) × audio_mult
+        credits   = ceil5( perSecUSD × seconds / CREDIT_USD_VALUE )
+
+      • arbitrage floor = official_usd × markup (VIDEO_SELL_MARKUP, default 1.10) — keeps margin on
+        models where the cheapest aggregator (cogs) is far below the first-party/official price.
+      • margin floor    = 2 × cogs_usd (= cogs/(1 - IMG_MIN_MARGIN) at the shared 50% floor) —
+        guarantees ≥50% real margin even on near-zero-arbitrage models.
+      • audio_mult      = the model's audio_on_mult when audio is on / native-always, else 1.0.
+
+    ceil5 (round UP to nearest IMG_CREDIT_ROUNDUP=5) is applied ONCE to the FULL-CLIP credit total
+    (NOT per-second), so the displayed badge == the metered charge exactly. `markup` set → fixed
+    official×markup, bypassing the margin floor (premium-op exemption). `official_usd` falsey → 0.
+    Round-up only raises margin, so the floor always holds. Single source of truth shared by the picker
+    badge and the metered debit — video_providers.credits_for() calls through here at the chosen
+    duration (and seconds=1 for a per-second display figure)."""
+    if not official_usd or official_usd <= 0:
+        return 0
+    if markup is None:
+        markup = VIDEO_SELL_MARKUP
+    per_sec_usd = official_usd * markup                                  # arbitrage floor (per second, USD)
+    if markup == VIDEO_SELL_MARKUP and cogs_usd and cogs_usd > 0:
+        per_sec_usd = max(per_sec_usd, 2.0 * cogs_usd)                   # margin floor (2×cogs)
+    try:
+        am = float(audio_mult) if audio_mult else 1.0
+    except (TypeError, ValueError):
+        am = 1.0
+    if am <= 0:
+        am = 1.0
+    per_sec_usd *= am
+    try:
+        secs = int(seconds or _VIDEO_DEFAULT_SECONDS)
+    except (TypeError, ValueError):
+        secs = int(_VIDEO_DEFAULT_SECONDS)
+    if secs <= 0:
+        secs = int(_VIDEO_DEFAULT_SECONDS)
+    # ceil5 ONCE on the full-clip credit total: usd_to_credits ceils to whole credits, then round up to 5.
+    return _roundup_credits(usd_to_credits(per_sec_usd * secs))
 
 
 # ── Pre-call estimate helpers (for the HOLD before real units are known) ───────
