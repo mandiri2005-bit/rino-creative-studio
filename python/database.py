@@ -407,6 +407,135 @@ async def sweep_stale_image_jobs(older_than_secs: int) -> list:
     except Exception as e:
         log.error("sweep_stale_image_jobs: %s", e); return []
 
+# ═════════════════════════════════════════════════════════════════════════════
+# IMAGE BATCH JOBS — async Google Batch API (see 0050_image_batch_jobs.sql)
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def create_image_batch_job(tenant_id, *, job_id, user_id, op_id, model,
+                                 vertex_model, total, price_each, held_credits,
+                                 aspect, prompts) -> None:
+    """Insert a 'submitting' batch row BEFORE the Google call. FK-safe on user_id
+    (mirrors create_image_job): a deterministic fallback uuid for a not-yet-provisioned
+    user raises 23503, which would drop the WHOLE row → the poll 404s on a held credit.
+    Retry once unattributed so the row ALWAYS persists (reconcile keys on id+tenant).
+    `prompts` is a Python list → bound as jsonb by the pool's type codec (NEVER json.dumps
+    it first — that double-encodes). Raises only on a non-FK error (caller refunds)."""
+    async def _ins(uid):
+        await _q_exec(
+            """INSERT INTO image_batch_jobs
+                 (id, tenant_id, user_id, op_id, model, vertex_model, status,
+                  total, price_each, held_credits, aspect, prompts)
+               VALUES ($1,$2,$3,$4,$5,$6,'submitting',$7,$8,$9,$10,$11)""",
+            _uid(job_id), _uid(tenant_id), uid, op_id, model, vertex_model,
+            int(total), int(price_each), int(held_credits), aspect, list(prompts or []),
+            tenant=str(tenant_id))
+    try:
+        uid = _uid(user_id) if user_id else None
+    except Exception:
+        uid = None
+    try:
+        await _ins(uid)
+    except Exception as e:
+        is_fk = getattr(e, "sqlstate", "") == "23503" or "user_id_fkey" in str(e)
+        if uid is not None and is_fk:
+            log.warning("create_image_batch_job: user_id FK miss for %s — unattributed", job_id)
+            await _ins(None)
+        else:
+            log.error("create_image_batch_job: %s", e); raise
+
+async def set_batch_submitted(tenant_id, job_id, *, gemini_job_name, auth_mode) -> bool:
+    """Record the Google batch resource name + winning auth path and flip
+    'submitting'→'processing'. Win-gated on status='submitting' so a duplicate
+    submit can't re-arm a row. Returns True iff THIS call transitioned it."""
+    try:
+        won = await _q_fetchval(
+            """UPDATE image_batch_jobs
+                  SET gemini_job_name=$3, auth_mode=$4, status='processing'
+                WHERE id=$1 AND tenant_id=$2 AND status='submitting'
+                RETURNING 1""",
+            _uid(job_id), _uid(tenant_id), gemini_job_name, auth_mode,
+            tenant=str(tenant_id))
+        return won is not None
+    except Exception as e:
+        log.error("set_batch_submitted: %s", e); return False
+
+async def get_image_batch_job(tenant_id, job_id) -> Optional[dict]:
+    """One batch row, tenant-scoped (explicit AND tenant_id — prod role is BYPASSRLS,
+    so RLS alone wouldn't stop a cross-tenant id probe). Adds age_secs (now - created_at,
+    the IMMUTABLE hard-expire anchor) and since_update_secs (now - updated_at)."""
+    try:
+        r = await _q_fetchrow(
+            """SELECT id, tenant_id, user_id, op_id, gemini_job_name, auth_mode,
+                      model, vertex_model, status, total, delivered, failed,
+                      price_each, held_credits, aspect, prompts, result_keys, error,
+                      EXTRACT(EPOCH FROM (now() - created_at))::float8 AS age_secs,
+                      EXTRACT(EPOCH FROM (now() - updated_at))::float8 AS since_update_secs
+                 FROM image_batch_jobs WHERE id=$1 AND tenant_id=$2""",
+            _uid(job_id), _uid(tenant_id), tenant=str(tenant_id))
+        return _row(r) if r else None
+    except Exception as e:
+        log.error("get_image_batch_job: %s", e); return None
+
+async def touch_image_batch_job(tenant_id, job_id) -> None:
+    """Bump updated_at on a still-running batch (the reconcile loop spaces work off it).
+    No-op on a terminal row."""
+    try:
+        await _q_exec(
+            """UPDATE image_batch_jobs SET updated_at=now()
+                WHERE id=$1 AND tenant_id=$2 AND status IN ('submitting','processing')""",
+            _uid(job_id), _uid(tenant_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.error("touch_image_batch_job: %s", e)
+
+async def finish_image_batch_job(tenant_id, job_id, *, status, delivered=0, failed=0,
+                                 result_keys=None, error=None) -> bool:
+    """Terminal transition (submitting|processing)→succeeded|partial|failed|expired.
+    Flips ONLY a still-running row, so the reconcile loop and a lazy poll can both call
+    it and exactly one wins → the winner alone settles credits (no double-charge). Returns
+    True iff THIS call did the transition. `result_keys` (a Python list, possibly with
+    null entries) binds as jsonb via the codec; None leaves the column unchanged."""
+    try:
+        won = await _q_fetchval(
+            """UPDATE image_batch_jobs
+                  SET status=$3, delivered=$4, failed=$5,
+                      result_keys=COALESCE($6, result_keys),
+                      error=COALESCE($7, error), completed_at=now()
+                WHERE id=$1 AND tenant_id=$2 AND status IN ('submitting','processing')
+                RETURNING 1""",
+            _uid(job_id), _uid(tenant_id), status, int(delivered or 0), int(failed or 0),
+            (list(result_keys) if result_keys is not None else None), error,
+            tenant=str(tenant_id))
+        return won is not None
+    except Exception as e:
+        log.error("finish_image_batch_job: %s", e); return False
+
+async def list_batch_jobs(tenant_id, limit: int = 20) -> list:
+    """Recent batch jobs for the tenant (newest first) for the status rail."""
+    try:
+        rows = await _q_fetch(
+            """SELECT id, model, status, total, delivered, failed, price_each,
+                      aspect, error,
+                      EXTRACT(EPOCH FROM (now() - created_at))::float8 AS age_secs
+                 FROM image_batch_jobs WHERE tenant_id=$1
+                ORDER BY created_at DESC LIMIT $2""",
+            _uid(tenant_id), int(limit), tenant=str(tenant_id))
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.error("list_batch_jobs: %s", e); return []
+
+async def get_due_batch_jobs(max_age_secs: int) -> list:
+    """Cross-tenant: ids of batches still running and untouched for max_age_secs, so the
+    reconcile loop can poll them even if the owner never opens the page. Routes through the
+    0050 SECURITY DEFINER fn (cross-tenant SELECT is impossible under app_user RLS). The
+    loop re-reads each row tenant-scoped and does all writes under the owning tenant."""
+    try:
+        rows = await _q_fetch(
+            "SELECT id, tenant_id FROM image_batch_jobs_due(make_interval(secs => $1::int))",
+            int(max_age_secs), tenant="")
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.error("get_due_batch_jobs: %s", e); return []
+
 async def job_tenant_by_task(task_id) -> Optional[str]:
     """Resolve the owning tenant of a veo/sora job by upstream task_id. Uses the
     SECURITY DEFINER fn job_tenant_by_task() (migration 0018), so it is safe to

@@ -208,13 +208,21 @@ async def balance_breakdown(tenant_id: str) -> dict:
     }
 
 
-async def hold(tenant_id: str, amount: int, op_id: str) -> int:
+async def hold(tenant_id: str, amount: int, op_id: str, *, ttl: Optional[int] = None) -> int:
     """Reserve `amount` credits for op_id. Returns the new live balance.
     Raises InsufficientCredits if the balance can't cover it. amount<=0 is a
-    no-op (free / BYOK op) and returns the current balance without a hold."""
+    no-op (free / BYOK op) and returns the current balance without a hold.
+
+    `ttl` sets the hold marker's auto-release window (default `_HOLD_TTL`=6h). A
+    job that can outlive 6h (e.g. an async Google image-batch settling up to ~26h
+    later) MUST pass a ttl that exceeds its whole lifetime, otherwise the marker
+    key expires before settlement and commit/refund become Redis no-ops — the
+    unused hold is never returned and the live cache strands LOW (durable stays
+    correct, so it's an availability strand, not money-loss). See touch_hold()."""
     amount = int(amount)
     if amount <= 0:
         return await get_balance(tenant_id)
+    eff_ttl = _HOLD_TTL if ttl is None else max(1, int(ttl))
     await _ensure_cached(tenant_id)
     cl = rc.client()
     if cl is None:
@@ -225,11 +233,11 @@ async def hold(tenant_id: str, amount: int, op_id: str) -> int:
         return bal
     s = _script("hold", _LUA_HOLD)
     res = int(await s(keys=[_bal_key(tenant_id), _hold_key(tenant_id, op_id)],
-                      args=[amount, _HOLD_TTL]))
+                      args=[amount, eff_ttl]))
     if res == -2:                       # cache evaporated between seed and call
         await _ensure_cached(tenant_id)
         res = int(await s(keys=[_bal_key(tenant_id), _hold_key(tenant_id, op_id)],
-                          args=[amount, _HOLD_TTL]))
+                          args=[amount, eff_ttl]))
     if res == -1:
         raise InsufficientCredits(amount, await get_balance(tenant_id))
     return res

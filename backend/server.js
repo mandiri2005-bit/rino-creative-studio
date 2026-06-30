@@ -489,7 +489,10 @@ app.post(
 // the edge (413) — bounding both the Python-side resident body AND pyProxy's JSON.stringify copy, so one
 // authed tenant can't OOM the shared single-process backend with 6×16MB b64 refs. express.json no-ops
 // once a body is parsed, so the global parser below skips these routes.
+// /api/whisk takes the SAME tight cap: it's an image op (1 prompt + ≤3 b64 refs), never storyboard-sized,
+// so it has no business under the 200mb global where a single tenant could pin 200MB of resident body.
 app.use("/api/image", express.json({ limit:"24mb" }));
+app.use("/api/whisk", express.json({ limit:"24mb" }));
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
@@ -1120,7 +1123,40 @@ app.post("/api/upload", upload.single("file"), async(req,res)=>{
 app.get ("/api/image-models",    (req,res)=>pyProxy(req,res,"/image-models"));
 app.get ("/api/image/catalog",   (req,res)=>pyProxy(req,res,"/image/catalog"));   // picker meta + credit badges
 app.post("/api/generate-image",  (req,res)=>pyProxy(req,res,"/generate-image"));
-app.post("/api/whisk",           (req,res)=>pyProxy(req,res,"/whisk"));
+// /whisk does paid generation (holds + commits image credits in Python) → SAME per-tenant image
+// bucket as /api/image/* so an authed account can't hammer ref-driven gens (provider DoS / cost burn).
+app.post("/api/whisk", async (req,res) => {
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`image:${tenantId}`, 30, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many image requests — give it a moment." });
+  return pyProxy(req, res, "/whisk");
+});
+
+// ── Async Google BATCH (50%-price native-Google batch) ──────────────────────
+// Registered BEFORE the `/api/image/:op` + `/api/image/:op/submit` routes below: `batch/submit`
+// has 3 segments so Express would otherwise match it as `:op/submit` (op="batch"). Python holds
+// credits, submits one Gemini Batch job (Vertex OAuth → Developer API key), and settles on
+// terminal state (commit delivered / refund the rest). /submit = paid work → SAME image bucket;
+// the jobs reads are cheap tenant-scoped DB reads → the generous imgpoll bucket.
+app.post("/api/image/batch/submit", async (req,res) => {
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`image:${tenantId}`, 30, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many image requests — give it a moment." });
+  return pyProxy(req, res, "/image/batch/submit");
+});
+app.get("/api/image/batch/jobs", async (req,res) => {
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`imgpoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  return pyProxy(req, res, "/image/batch/jobs");
+});
+app.get("/api/image/batch/jobs/:id", async (req,res) => {
+  const id = String(req.params.id || "");
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`imgpoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  return pyProxy(req, res, `/image/batch/jobs/${encodeURIComponent(id)}`);
+});
 
 // New atlabs-style Image page — one POST per feature op. Auth is enforced by the /api gate
 // above (requireAuth); Python tier-gates the model, balance-gates + debits the badge credits

@@ -335,18 +335,36 @@ async def debit_credits(tenant_id: str, user_id: Optional[str], operation: str, 
 # into a negative durable balance — see migration 0033 #37, hit -547 in prod). hold_credits reserves
 # atomically up front (Redis Lua check+DECRBY); commit_credits finalises on success; refund_credits
 # releases on failure. Same precomputed-amount contract as gate_credits/debit_credits. ─────────────
-async def hold_credits(tenant_id: str, credits: int, op_id: str, *, byok: bool = False) -> int:
+async def hold_credits(tenant_id: str, credits: int, op_id: str, *, byok: bool = False,
+                       ttl: Optional[int] = None) -> int:
     """Atomically RESERVE a precomputed credit amount (HTTP 402 if it can't cover it). No-op for
-    BYOK / disabled / unauthenticated / non-positive. Pair with commit_credits / refund_credits."""
+    BYOK / disabled / unauthenticated / non-positive. Pair with commit_credits / refund_credits.
+    `ttl` (seconds) sets the hold's auto-release window — pass a value exceeding the op's whole
+    lifetime for jobs that can settle past the default 6h (e.g. async image batches), else the
+    marker expires and commit/refund strand the live cache low. Refresh mid-flight via touch_hold."""
     credits = int(credits or 0)
     if byok or not METERING_ENABLED or not tenant_id or credits <= 0:
         return 0
     await _free_prep(tenant_id)
     try:
-        await _credits.hold(tenant_id, credits, op_id)
+        await _credits.hold(tenant_id, credits, op_id, ttl=ttl)
     except _credits.InsufficientCredits as e:
         raise insufficient_credits(e.needed, e.balance)
     return credits
+
+
+async def touch_hold(tenant_id: str, op_id: str, *, ttl: Optional[int] = None) -> None:
+    """Refresh an outstanding hold's TTL so a long-running op never lets its reservation expire
+    mid-flight and strand the unused credits. No-op when disabled / unauthenticated / hold gone."""
+    if not tenant_id or not METERING_ENABLED:
+        return
+    try:
+        if ttl is None:
+            await _credits.touch_hold(tenant_id, op_id)
+        else:
+            await _credits.touch_hold(tenant_id, op_id, ttl=int(ttl))
+    except Exception as e:
+        log.warning("touch_hold(%s) failed: %s", op_id, e)
 
 
 async def commit_credits(tenant_id: str, user_id: Optional[str], operation: str, model: str,

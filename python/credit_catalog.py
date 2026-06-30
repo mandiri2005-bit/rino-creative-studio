@@ -540,6 +540,73 @@ def image_credits_for_usd(firstparty_usd: float, cogs_usd: float = None, markup:
     return cr
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Image BATCH pricing (async Google Batch API — the "Batch" tool only)
+# ══════════════════════════════════════════════════════════════════════════════
+# Google's Batch API genuinely costs ~50% of the online price, so we sell batch at
+# 50% of the regular sell price, rounded UP to IMG_CREDIT_ROUNDUP (5). These are
+# LOCKED values (Rino 2026-06-29) — NOT recomputed from cogs at runtime, because a
+# batch is priced before any image exists. Margin stays strongly positive on real
+# native-Google batch COGS (0.5×official): nano-banana 15cr, -2 25cr, -pro 40cr.
+# nano-banana-pro-ultra is EXCLUDED (no first-party Google batch model behind it).
+_IMAGE_BATCH_CREDITS = {
+    "nano-banana":     15,
+    "nano-banana-2":   25,
+    "nano-banana-pro": 40,
+}
+# Native-Google model id per auth path. Vertex (OAuth) uses the GA names; the
+# Developer API (API key) carries a `-preview` suffix on the Gemini-3 image models.
+# Both are FIRST-PARTY Google — no aggregator. (Source of truth: image_registry.json
+# `vertex` chain + the laozhang_api _IMG_MODEL Developer map.)
+_IMAGE_BATCH_VERTEX = {
+    "nano-banana":     "gemini-2.5-flash-image",
+    "nano-banana-2":   "gemini-3.1-flash-image",
+    "nano-banana-pro": "gemini-3-pro-image",
+}
+_IMAGE_BATCH_DEVELOPER = {
+    "nano-banana":     "gemini-2.5-flash-image",
+    "nano-banana-2":   "gemini-3.1-flash-image-preview",
+    "nano-banana-pro": "gemini-3-pro-image-preview",
+}
+
+
+def is_batch_eligible(model: str) -> bool:
+    """True iff `model` can run on the async Google Batch path (priced at 50%)."""
+    return (model or "") in _IMAGE_BATCH_CREDITS
+
+
+def image_batch_credits(model: str) -> int:
+    """Batch sell price (credits) for ONE image of `model`. Raises KeyError for an
+    ineligible model so a caller can't silently charge the wrong amount — the submit
+    endpoint guards with is_batch_eligible() and 400s first."""
+    return _IMAGE_BATCH_CREDITS[model]
+
+
+def image_batch_vertex_model(model: str) -> str:
+    """Google model id for the Vertex (OAuth) batch path."""
+    return _IMAGE_BATCH_VERTEX[model]
+
+
+def image_batch_developer_model(model: str) -> str:
+    """Google model id for the Developer (API-key) batch path (Gemini-3 = `-preview`)."""
+    return _IMAGE_BATCH_DEVELOPER[model]
+
+
+# Real batch COGS (USD) = 0.5 × Google's official online price (image_registry official_usd).
+# Passed to commit_credits.cost_usd so usage_logs/margin reports reflect true batch cost,
+# not the online single-image estimate. nano-banana 0.039→0.0195, -2 0.067→0.0335, -pro 0.134→0.067.
+_IMAGE_BATCH_COGS_USD = {
+    "nano-banana":     0.0195,
+    "nano-banana-2":   0.0335,
+    "nano-banana-pro": 0.0670,
+}
+
+
+def image_batch_cogs_usd(model: str, count: int = 1) -> float:
+    """True batch COGS (USD) for `count` delivered images of `model`."""
+    return _IMAGE_BATCH_COGS_USD.get(model, 0.0) * max(0, int(count))
+
+
 # ── Pre-call estimate helpers (for the HOLD before real units are known) ───────
 def estimate_chat_credits(model: str, prompt_chars: int = 0, max_tokens: int = 0) -> int:
     """Conservative upfront hold for a chat/narasi turn. Output tokens are unknown
