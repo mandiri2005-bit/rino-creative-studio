@@ -1235,7 +1235,7 @@ app.get("/api/video-tools/jobs/:id", async (req,res) => {
 // recipe_product_ad.estimate → badge == charge), commits the actual, and persists the
 // finished variants to Media Vault. estimate = no hold (live receipt).
 // ══════════════════════════════════════════════════════════════════════════════
-const RECIPES = new Set(["product-ad"]);
+const RECIPES = new Set(["product-ad", "spokesperson"]);
 app.post("/api/recipes/:recipe/estimate", async (req,res) => {
   const recipe = String(req.params.recipe || "");
   if (!RECIPES.has(recipe)) return res.status(400).json({ error: `Unknown recipe: ${recipe}` });
