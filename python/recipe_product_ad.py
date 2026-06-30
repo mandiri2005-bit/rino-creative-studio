@@ -613,16 +613,18 @@ async def _synth_vo(script: str, voice: str, language: str) -> Optional[bytes]:
         return None
 
 
-def _captions_from_script(script: str, total_seconds: int) -> list:
+def _captions_from_script(script: str, total_seconds: int, chunk: int = 8) -> list:
     """Deterministic, evenly-timed caption windows from the VO script (NEVER generative — burned by
-    ffmpeg). Splits the script into ~8-word chunks spread across the ad length."""
+    ffmpeg). Splits the script into ~`chunk`-word groups spread across the ad length. `chunk` defaults
+    to 8 (Product Ad block captions); narrow/social formats pass a smaller value (e.g. 5) so each line
+    fits a vertical frame without overflow."""
     script = (script or "").strip()
     if not script:
         return []
     words = script.split()
     if not words:
         return []
-    chunk = 8
+    chunk = max(1, int(chunk))
     groups = [" ".join(words[i:i + chunk]) for i in range(0, len(words), chunk)]
     n = len(groups)
     if n == 0:
