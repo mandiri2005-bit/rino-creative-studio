@@ -4256,6 +4256,9 @@ RECIPE_MIN_TIER = os.getenv("RECIPE_MIN_TIER", "starter")
 #   RECIPE_ENABLED_STYLES=showcase,in_scene
 RECIPE_ENABLED_STYLES = {s.strip() for s in
                          os.getenv("RECIPE_ENABLED_STYLES", "showcase,in_scene,ugc").split(",") if s.strip()}
+# The Spokesperson Format (talking-head AI presenter) is GATED OFF by default (Phase 1, pending a prod
+# smoke). Enable with SPK_ENABLED=1 on the python service once verified.
+SPK_ENABLED = os.getenv("SPK_ENABLED", "0").strip() in ("1", "true", "True", "yes")
 # 4 product images, b64, can be large — cap the decoded bytes (OOM guard; the Node
 # proxy already raises its json limit to 220mb to carry them).
 RECIPE_MAX_IMG_BYTES = int(os.getenv("RECIPE_MAX_IMG_BYTES", str(15 * 1024 * 1024)))   # 15MB/image decoded
@@ -4325,23 +4328,63 @@ def _recipe_validate_input(body: dict) -> dict:
     return body
 
 
-def _recipe_estimate(body: dict) -> dict:
-    """Compute the itemised receipt via recipe_product_ad.estimate() → {line_items, total}. The SAME
-    total is the umbrella hold the job takes (badge == charge)."""
-    import recipe_product_ad as _recipe
-    est = _recipe.estimate(body)
+def _spokesperson_validate_input(body: dict) -> dict:
+    """Validate + normalise a Spokesperson input. Requires a script OR a topic (the planner writes one),
+    a presenter (generate | upload | preset), and gates on SPK_ENABLED. Raises HTTPException on bad input."""
+    if not SPK_ENABLED:
+        raise HTTPException(409, "the Spokesperson format is coming soon — not yet available")
+    body = dict(body or {})
+    vo = body.get("voiceover") or {}
+    script = (vo.get("script") or "").strip()
+    topic = (body.get("topic") or "").strip()
+    if not script and not topic:
+        raise HTTPException(400, "a script or a topic is required")
+    body["voiceover"] = {**vo, "on": True}   # a spokesperson always speaks
+
+    p = body.get("presenter") or {}
+    src = (p.get("source") or "generate").lower()
+    if src not in ("generate", "upload", "preset"):
+        raise HTTPException(400, f"unknown presenter source: {src}")
+    if src == "upload":
+        img = p.get("image") or ""
+        if not isinstance(img, str) or not img.strip():
+            raise HTTPException(400, "presenter upload requires an image")
+        s = img.strip()
+        if s.startswith("http://") or s.startswith("https://"):
+            if not _is_public_http_url(s):
+                raise HTTPException(400, "presenter image URL not allowed")
+        elif not _vid_b64_within(s.split(",")[-1], RECIPE_MAX_IMG_BYTES):
+            raise HTTPException(413, "presenter image too large")
+    body["presenter"] = {**p, "source": src}
+
+    aspects = body.get("aspects") or ["9:16"]
+    if not isinstance(aspects, list):
+        raise HTTPException(400, "aspects must be a list")
+    body["aspects"] = [a for a in aspects if a in ("9:16", "1:1", "16:9")] or ["9:16"]
+    return body
+
+
+def _recipe_estimate(body: dict, estimate_fn=None) -> dict:
+    """Compute the itemised receipt via a recipe's estimate() → {line_items, total}. The SAME total is the
+    umbrella hold the job takes (badge == charge). estimate_fn defaults to the Product Ad recipe."""
+    if estimate_fn is None:
+        import recipe_product_ad as _recipe
+        estimate_fn = _recipe.estimate
+    est = estimate_fn(body)
     total = int(est.get("total") or 0)
     if total <= 0:
         raise HTTPException(400, "recipe is not priced (no live models resolved)")
     return {"line_items": est.get("line_items") or [], "total": total}
 
 
-async def _run_recipe_job(*, tenant_id, uid, byok: bool, job_id: str, body: dict, op_id: str):
-    """Background runner (OUTSIDE request context). recipe_product_ad.run_product_ad_job OWNS the
-    umbrella hold/commit/refund (op_id) — this wrapper only injects the billing context, feeds the poll
-    UI via set_progress, records the terminal state, and releases the admission slot. It NEVER holds or
-    commits itself (no double-charge)."""
-    import recipe_product_ad as _recipe
+async def _run_recipe_job(*, tenant_id, uid, byok: bool, job_id: str, body: dict, op_id: str, run_fn=None):
+    """Background runner (OUTSIDE request context). The recipe's run_*_job OWNS the umbrella
+    hold/commit/refund (op_id) — this wrapper only injects the billing context, feeds the poll UI via
+    set_progress, records the terminal state, and releases the admission slot. It NEVER holds or commits
+    itself (no double-charge). run_fn defaults to the Product Ad recipe."""
+    if run_fn is None:
+        import recipe_product_ad as _recipe
+        run_fn = _recipe.run_product_ad_job
     global _recipe_inflight
     job = _RECIPE_JOBS.get(job_id)
 
@@ -4359,7 +4402,7 @@ async def _run_recipe_job(*, tenant_id, uid, byok: bool, job_id: str, body: dict
     try:
         try:
             out = await asyncio.wait_for(
-                _recipe.run_product_ad_job(run_input, op_id, _set_progress),
+                run_fn(run_input, op_id, _set_progress),
                 timeout=RECIPE_JOB_STALE_SECS)
         except BaseException as e:
             # run_product_ad_job refunds its OWN hold on failure; this is a belt-and-suspenders refund in
@@ -4479,6 +4522,94 @@ async def recipe_product_ad_job_status(job_id: str,
         out_variants.append(item)
     return {"ok": True, "job_id": job_id, "status": "success",
             "variants": out_variants, "credits": job.get("credits") or 0}
+
+
+async def _recipe_job_status(job_id: str, user) -> dict:
+    """Shared, recipe-AGNOSTIC poll handler (reads _RECIPE_JOBS by id, signs the result keys). Tenant-
+    scoped (IDOR guard). running → {progress}; success → {variants, credits}; failed → {error}. Lazy-reaps
+    a stale 'running' row (refund the orphaned umbrella hold)."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    job = _RECIPE_JOBS.get(job_id)
+    if not job or job.get("tenant_id") != user.tenant_id:
+        raise HTTPException(404, "job not found")
+    status = job.get("status")
+    if status == "running":
+        if (time.time() - float(job.get("updated") or 0)) > RECIPE_JOB_STALE_SECS:
+            await metering.refund_credits(user.tenant_id, job.get("op_id"))
+            job.update(status="failed", error="timed out", updated=time.time())
+            return {"ok": True, "job_id": job_id, "status": "failed", "error": "timed out"}
+        return {"ok": True, "job_id": job_id, "status": "running",
+                "progress": job.get("progress") or {"phase": "running", "pct": 0, "label": ""}}
+    if status == "failed":
+        return {"ok": True, "job_id": job_id, "status": "failed",
+                "error": job.get("error") or "recipe generation failed"}
+    out_variants = []
+    for v in ((job.get("result") or {}).get("variants") or []):
+        signed = await _sign_result_key(v.get("key"))
+        item = {"aspect": v.get("aspect"), "seconds": v.get("seconds") or 0, "credits": v.get("credits") or 0}
+        if signed:
+            item["video_url"] = signed
+        out_variants.append(item)
+    return {"ok": True, "job_id": job_id, "status": "success",
+            "variants": out_variants, "credits": job.get("credits") or 0}
+
+
+@app.post("/recipes/spokesperson/estimate")
+async def recipe_spokesperson_estimate(body: dict,
+                                       user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Itemised cost receipt for the Spokesperson wizard (NO hold). total == the umbrella hold submit takes."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    clean = _spokesperson_validate_input(body or {})
+    import recipe_spokesperson as _spk
+    return {"ok": True, **_recipe_estimate(clean, _spk.estimate)}
+
+
+@app.post("/recipes/spokesperson/submit")
+async def recipe_spokesperson_submit(body: dict,
+                                     user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Async submit (mirror of the product-ad route). ensure_tier → estimate → gate → persist 'running'
+    job → spawn the spokesperson DAG → {job_id}. The umbrella hold is taken INSIDE run_spokesperson_job."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    clean = _spokesperson_validate_input(body or {})
+    metering.ensure_tier(user, RECIPE_MIN_TIER, "wimba-spokesperson")
+    import recipe_spokesperson as _spk
+    est = _recipe_estimate(clean, _spk.estimate)
+    total = est["total"]
+    await metering.gate_credits(user.tenant_id, total, byok=False)
+    uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    op_id = f"recipe-{uuid.uuid4().hex}"
+    job_id = str(uuid.uuid4())
+    now = time.time()
+    global _recipe_inflight
+    if _recipe_inflight >= RECIPE_MAX_INFLIGHT:
+        raise HTTPException(429, "recipe service busy — try again in a moment")
+    _recipe_inflight += 1
+    try:
+        _RECIPE_JOBS[job_id] = {
+            "tenant_id": user.tenant_id, "user_id": uid, "op_id": op_id, "status": "running",
+            "style": "spokesperson", "variants": clean.get("variants"),
+            "credits_held": total, "breakdown": est["line_items"],
+            "result": None, "credits": 0, "error": None,
+            "progress": {"phase": "queued", "pct": 0, "label": "Queued…"},
+            "created": now, "updated": now,
+        }
+    except BaseException:
+        _recipe_inflight -= 1
+        raise
+    asyncio.create_task(_run_recipe_job(
+        tenant_id=user.tenant_id, uid=uid, byok=False, job_id=job_id, body=clean, op_id=op_id,
+        run_fn=_spk.run_spokesperson_job))
+    return {"ok": True, "job_id": job_id, "status": "running",
+            "credits_held": total, "breakdown": est["line_items"]}
+
+
+@app.get("/recipes/spokesperson/jobs/{job_id}")
+async def recipe_spokesperson_job_status(job_id: str,
+                                         user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    return await _recipe_job_status(job_id, user)
 
 
 async def _sweep_orphaned_recipe_jobs() -> int:
