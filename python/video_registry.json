@@ -913,7 +913,7 @@
       ]
     },
     {
-      "_comment": "AVATAR / talking-head models for the Product Ad UGC path (recipe_product_ad ugc). Feature = image_to_video so the existing i2v dispatch path drives them (the avatar reference frame seeds ref_images[0]; lip-sync to a VO is layered AFTER via the lip_sync op-chain, which already exists). Cheapest-first: omnihuman (~$0.06/s) then kling-avatar. Slugs follow the verified atlascloud bytedance/* + kwaivgi/* families already used above; VERIFY each once its key is live (avatar endpoints not yet smoke-tested).",
+      "_comment": "AVATAR / talking-head models for the Product Ad UGC path. AUDIO-DRIVEN: the recipe hosts the portrait keyframe + the voiceover and feeds image_url+audio_ref — the avatar render IS the lip-sync (NO separate lip_sync pass). Multi-provider failover, CHEAPEST-FIRST PER MODEL: omnihuman = atlascloud($0.06/s)->kie->fal($0.16)->aiml($0.21); kling = fal($0.056/s)->atlascloud->aiml->kie. All 6 slugs LIVE-PROBED + dispatch-verified 2026-06-30 (adapters have an avatar branch keyed off _is_avatar). kie kling REQUIRES a non-empty prompt (defaulted in _kie_video).",
       "id": "omnihuman-avatar",
       "label": "OmniHuman Avatar 1.5",
       "sublabel": "ByteDance · talking-head UGC avatar",
@@ -948,20 +948,20 @@
       "official_usd": 0.09,
       "chain": [
         {
-          "provider": "fal",
-          "image_to_video": "fal-ai/bytedance/omnihuman/v1.5"
-        },
-        {
           "provider": "atlascloud",
           "image_to_video": "bytedance/avatar-omni-human-v1.5"
         },
         {
-          "provider": "aiml",
-          "image_to_video": "bytedance/omnihuman/v1.5"
-        },
-        {
           "provider": "kie",
           "image_to_video": "omnihuman-1-5"
+        },
+        {
+          "provider": "fal",
+          "image_to_video": "fal-ai/bytedance/omnihuman/v1.5"
+        },
+        {
+          "provider": "aiml",
+          "image_to_video": "bytedance/omnihuman/v1.5"
         }
       ]
     },
