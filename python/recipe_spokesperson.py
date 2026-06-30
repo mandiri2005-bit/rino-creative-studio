@@ -122,43 +122,200 @@ def _vo_credits(script: str, seconds: int) -> int:
 SPK_TTS_MODEL = os.getenv("SPK_TTS_MODEL", os.getenv("RECIPE_TTS_MODEL", "gemini-3.1-flash-tts-preview"))
 SPK_MUSIC_CREDITS = int(os.getenv("SPK_MUSIC_CREDITS", os.getenv("RECIPE_MUSIC_CREDITS", "5")))
 
+# ── Phase 2 (b-roll interleave) — additive, gated by input.broll.on (default OFF → Phase 1 preserved) ──
+SPK_BROLL_MODEL = os.getenv("SPK_BROLL_MODEL", "seedance-2-mini")        # cheap text_to_video cutaways
+SPK_PRESENTER_RATIO = float(os.getenv("SPK_PRESENTER_RATIO", "0.6"))     # estimate split presenter/b-roll
+SPK_MAX_SEGMENTS = int(os.getenv("SPK_MAX_SEGMENTS", "8"))
+# Margin guard: cap total rendered seconds at requested × tolerance so a planner that over-writes the
+# script can't drive actual COGS far past the held estimate (commit clamps to hold → WE'd eat the excess).
+SPK_DURATION_TOLERANCE = float(os.getenv("SPK_DURATION_TOLERANCE", "1.5"))
+
+
+def _broll_on(input: dict) -> bool:
+    return bool((input.get("broll") or {}).get("on"))
+
+
+def _broll_credits(seconds: int) -> int:
+    import video_providers as _vp
+    return int(_vp.credits_for("text_to_video", SPK_BROLL_MODEL, seconds=seconds,
+                               resolution=SPK_CLIP_RES, audio_on=False) or 0)
+
+
+def _wav_seconds(b: bytes) -> float:
+    try:
+        import io as _io, wave as _wave
+        with _wave.open(_io.BytesIO(b), "rb") as w:
+            return w.getnframes() / float(w.getframerate() or 1)
+    except Exception:
+        return 5.0
+
+
+async def _concat_audio(parts: list) -> Optional[bytes]:
+    """Concatenate per-segment WAV bytes into ONE continuous VO track (ffmpeg concat demuxer). The segment
+    audios all come from the SAME TTS path → same codec → -c copy concatenates losslessly. The concatenated
+    VO == the concatenated video timeline, so the per-segment lip-sync stays aligned. None → caller falls
+    back to the first part."""
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    import tempfile, subprocess
+    ff = os.getenv("FFMPEG_BIN", "ffmpeg")
+    with tempfile.TemporaryDirectory() as d:
+        listpath = os.path.join(d, "list.txt")
+        with open(listpath, "w") as lf:
+            for i, p in enumerate(parts):
+                fp = os.path.join(d, f"a{i}.wav")
+                with open(fp, "wb") as af:
+                    af.write(p)
+                lf.write(f"file '{fp}'\n")
+        outp = os.path.join(d, "out.wav")
+        try:
+            await asyncio.to_thread(lambda: subprocess.run(
+                [ff, "-y", "-f", "concat", "-safe", "0", "-i", listpath, "-c", "copy", outp],
+                check=True, capture_output=True, timeout=90))
+            with open(outp, "rb") as of:
+                return of.read()
+        except Exception as e:
+            log.info("_concat_audio failed (%s) → first segment only", e)
+            return parts[0]
+
+
+async def _render_segments(segments: list, portrait_url: str, voice: str, language: str, want_captions: bool,
+                           tenant_id, user_id, op_id: str, byok: bool, _api, v: int, budget_seconds: float = 0.0):
+    """Render each beat → a clip (presenter avatar | b-roll text_to_video), driven by its OWN VO slice.
+    Returns (clips, seg_audios, captions, committed). Only SUCCESSFUL beats are kept so clips ↔ audios stay
+    in sync (the concatenated VO then aligns with the concatenated video). Captions are SEGMENT-ACCURATE
+    (Phase 3): each beat's text is windowed to its exact [t, t+dur). `budget_seconds`>0 stops starting NEW
+    beats once the cumulative duration reaches it (margin guard: bounds COGS to ≈ the held estimate)."""
+    import video_providers as _vp
+    clips, seg_audios, captions, committed, t = [], [], [], 0, 0.0
+    for i, seg in enumerate(segments[:SPK_MAX_SEGMENTS]):
+        if budget_seconds and clips and t >= budget_seconds:
+            log.info("spokesperson b-roll hit duration budget %.1fs at beat %d/%d → trim remaining",
+                     budget_seconds, i, len(segments))
+            break
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        audio = await _synth_vo(text, voice, language)
+        if audio is None:
+            continue
+        dur = max(1.0, _wav_seconds(audio))
+        role = (seg.get("role") or "presenter").lower()
+        try:
+            if role == "broll":
+                brief = (seg.get("broll_brief") or seg.get("scene") or text)
+                r = await _vp.dispatch("text_to_video", SPK_BROLL_MODEL,
+                                       {"prompt": brief, "aspect": "9:16", "seconds": int(max(2, round(dur))),
+                                        "resolution": SPK_CLIP_RES}, f"{op_id}-v{v}-broll{i}")
+                ccost = _broll_credits(int(max(2, round(dur))))
+            else:
+                aud_url = await _host_bytes(audio, "audio/wav", f"{op_id}-v{v}-seg{i}vo")
+                if not aud_url:
+                    continue
+                r = await _vp.dispatch(SPK_AVATAR_FEATURE, SPK_AVATAR_MODEL,
+                                       {"prompt": "a presenter speaking naturally to the camera",
+                                        "resolution": SPK_CLIP_RES, "ref_images": [{"url": portrait_url}],
+                                        "audio_ref": {"url": aud_url}}, f"{op_id}-v{v}-pres{i}")
+                ccost = _avatar_credits(int(max(1, round(dur))))
+        except Exception as e:
+            log.info("spokesperson segment %d render failed (%s) → skip", i, e)
+            continue
+        if r is None or r.get("data") is None:
+            continue
+        clips.append({"bytes": r["data"]})
+        seg_audios.append(audio)
+        committed += _commit_tts(text, tenant_id, user_id, op_id, byok, _api) + ccost
+        if want_captions:
+            # segment-accurate captions (Phase 3): chunk THIS beat's words into ~8-word windows
+            # spread evenly across its exact [t, t+dur) slot, so captions read in lock-step with VO.
+            cap_words = text.split()
+            groups = [" ".join(cap_words[j:j + 8]) for j in range(0, len(cap_words), 8)] or [text]
+            cspan = dur / len(groups)
+            for gi, g in enumerate(groups):
+                cs = t + gi * cspan
+                captions.append({"t": round(cs, 2), "text": g, "end": round(cs + cspan, 2)})
+        t += dur
+    return clips, seg_audios, captions, committed
+
 
 # ── script planner (Phase 1: produce the spoken script) ────────────────────────────
 async def plan(input: dict) -> dict:
-    """Return {"script": <spoken words>}. If the user pasted a script, use it; else write one timed to
-    `seconds` from the topic (one capped LLM call). Best-effort: any failure → a minimal deterministic
-    script so the render is never blocked."""
+    """Return {"script"} (Phase 1) or {"script","segments":[{role,text,broll_brief}]} when b-roll is on
+    (Phase 2). Best-effort: any failure → a minimal deterministic script (+ a single presenter segment when
+    b-roll is on) so the render is never blocked."""
     seconds = _spk_seconds(input)
     vo = input.get("voiceover") or {}
     given = (vo.get("script") or "").strip()
-    if given:
-        return {"script": given[:4000]}
-
     topic = (input.get("topic") or input.get("product_desc") or "").strip()
     language = (input.get("language") or "English").strip()
     cta = (input.get("cta") or "").strip()
     vibe = (input.get("vibe") or "friendly").lower()
-    if not topic:
-        return {"script": ""}
+    words = int(seconds * 2.2)
+
+    if not _broll_on(input):
+        if given:
+            return {"script": given[:4000]}
+        if not topic:
+            return {"script": ""}
+        prompt = (
+            "You are a short-form video scriptwriter. Write ONLY the spoken words (no scene directions, no "
+            "labels, no quotes) for a single on-camera presenter, in " + language + ", " + vibe + " tone, "
+            "timed to about " + str(seconds) + " seconds of speech (~" + str(words) + " words). "
+            "Open with a strong hook in the first sentence" + (", end on this call-to-action: '" + cta + "'."
+            if cta else ".") + " Topic: " + topic + ".\nOutput ONLY the script text.")
+        try:
+            import laozhang_api as _api
+            cl = _api.make_client(RECIPE_PLAN_MODEL)
+            mt = min(700, _api.MODEL_MAX_TOKENS.get(_api.MODELS.get(RECIPE_PLAN_MODEL, RECIPE_PLAN_MODEL),
+                                                    _api.DEFAULT_MAX_TOKENS))
+            r = await asyncio.to_thread(lambda: cl.chat.completions.create(
+                model=RECIPE_PLAN_MODEL, messages=[{"role": "user", "content": prompt}],
+                temperature=0.7, max_tokens=mt))
+            txt = (r.choices[0].message.content or "").strip().strip('"')
+            return {"script": txt[:4000] if txt else (f"{topic}. {cta}".strip() if cta else topic)}
+        except Exception as e:
+            log.info("spokesperson plan LLM failed (%s) → minimal script", e)
+            return {"script": (f"{topic}. {cta}".strip() if cta else topic)[:4000]}
+
+    # ── b-roll ON → script + interleaved presenter/b-roll shot plan (JSON) ──
+    if not (given or topic):
+        return {"script": "", "segments": []}
+    basis = ("Base it on this exact script (keep the words): " + given) if given else ("Topic: " + topic)
     prompt = (
-        "You are a short-form video scriptwriter. Write ONLY the spoken words (no scene directions, no "
-        "labels, no quotes) for a single on-camera presenter, in " + language + ", " + vibe + " tone, "
-        "timed to about " + str(seconds) + " seconds of speech (~" + str(int(seconds * 2.2)) + " words). "
-        "Open with a strong hook in the first sentence" + (", end on this call-to-action: '" + cta + "'."
-        if cta else ".") + " Topic: " + topic + ".\nOutput ONLY the script text.")
+        "You are a short-form video director. Output STRICT JSON ONLY (no prose, no code fences):\n"
+        '{"script":"<full spoken voiceover>","segments":[{"role":"presenter"|"broll","text":"<spoken words '
+        'for THIS beat>","broll_brief":"<for broll only: what the cutaway visually shows>"}]}\n'
+        "RULES: the segments' texts IN ORDER must read as the full script. Alternate a talking-head "
+        "PRESENTER beat (hook, key points, the CTA) with short BROLL cutaways that visually illustrate the "
+        "line being spoken. 4-8 segments, ~" + str(words) + " words total, " + language + ", " + vibe +
+        " tone. " + basis + (" End on the CTA: '" + cta + "'." if cta else "") + "\nJSON only.")
     try:
         import laozhang_api as _api
+        import json as _json
         cl = _api.make_client(RECIPE_PLAN_MODEL)
-        mt = min(700, _api.MODEL_MAX_TOKENS.get(_api.MODELS.get(RECIPE_PLAN_MODEL, RECIPE_PLAN_MODEL),
-                                                _api.DEFAULT_MAX_TOKENS))
+        mt = min(1300, _api.MODEL_MAX_TOKENS.get(_api.MODELS.get(RECIPE_PLAN_MODEL, RECIPE_PLAN_MODEL),
+                                                 _api.DEFAULT_MAX_TOKENS))
         r = await asyncio.to_thread(lambda: cl.chat.completions.create(
             model=RECIPE_PLAN_MODEL, messages=[{"role": "user", "content": prompt}],
             temperature=0.7, max_tokens=mt))
-        txt = (r.choices[0].message.content or "").strip().strip('"')
-        return {"script": txt[:4000] if txt else (f"{topic}. {cta}".strip() if cta else topic)}
+        raw = (r.choices[0].message.content or "").strip()
+        if raw.startswith("```"):
+            import re as _re
+            raw = _re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+            raw = _re.sub(r"\n?```\s*$", "", raw).strip()
+        parsed = _json.loads(raw)
+        segs = [s for s in (parsed.get("segments") or [])
+                if isinstance(s, dict) and (s.get("text") or "").strip()][:SPK_MAX_SEGMENTS]
+        if segs:
+            script = (parsed.get("script") or " ".join(s.get("text", "") for s in segs)).strip()
+            return {"script": script[:4000], "segments": segs}
     except Exception as e:
-        log.info("spokesperson plan LLM failed (%s) → minimal script", e)
-        return {"script": (f"{topic}. {cta}".strip() if cta else topic)[:4000]}
+        log.info("spokesperson b-roll plan failed (%s) → single-presenter fallback", e)
+    fb = (given or (f"{topic}. {cta}".strip() if cta else topic))[:4000]
+    return {"script": fb, "segments": [{"role": "presenter", "text": fb}]}
 
 
 # ── estimate (single source for the /estimate receipt AND the umbrella hold) ────────
@@ -178,11 +335,25 @@ def estimate(input: dict, catalog: Any = None) -> dict:
             line_items.append({"label": "Presenter portrait", "credits": pc})
             total += pc
 
-    av = _avatar_credits(seconds)
-    if av:
-        line_items.append({"label": f"Presenter · {SPK_AVATAR_MODEL} ({seconds}s × {n_variants})",
-                           "credits": av * n_variants})
-        total += av * n_variants
+    if _broll_on(input):
+        pres_s = max(1, int(round(seconds * SPK_PRESENTER_RATIO)))
+        broll_s = max(1, seconds - pres_s)
+        av = _avatar_credits(pres_s)
+        if av:
+            line_items.append({"label": f"Presenter · {SPK_AVATAR_MODEL} (~{pres_s}s × {n_variants})",
+                               "credits": av * n_variants})
+            total += av * n_variants
+        bv = _broll_credits(broll_s)
+        if bv:
+            line_items.append({"label": f"B-roll · {SPK_BROLL_MODEL} (~{broll_s}s × {n_variants})",
+                               "credits": bv * n_variants})
+            total += bv * n_variants
+    else:
+        av = _avatar_credits(seconds)
+        if av:
+            line_items.append({"label": f"Presenter · {SPK_AVATAR_MODEL} ({seconds}s × {n_variants})",
+                               "credits": av * n_variants})
+            total += av * n_variants
 
     voc = _vo_credits(given_script, seconds)
     if voc:
@@ -230,6 +401,9 @@ async def run_spokesperson_job(input: dict, op_id: str, set_progress) -> dict:
     want_music = bool((input.get("music") or {}).get("on"))
     music_bed = (input.get("music") or {}).get("bed")
     want_captions = bool(input.get("captions", True))
+    cap_style = (input.get("captions_style") or "karaoke").strip().lower()  # spokesperson = karaoke by default
+    if cap_style not in ("karaoke", "block"):
+        cap_style = "karaoke"
     cta = (input.get("cta") or "").strip() or None
     brand = input.get("brand") or None
 
@@ -254,31 +428,54 @@ async def run_spokesperson_job(input: dict, op_id: str, set_progress) -> dict:
         for v in range(n_variants):
             base_pct = 18 + int(64 * v / max(1, n_variants))
 
-            # 2. script + voiceover (the spine).
+            # 2. script (+ optional b-roll shot plan). plan() returns {"script"} or, when b-roll is
+            #    on, {"script","segments":[…]} interleaving presenter beats with cutaways.
             await _progress("script", base_pct, f"Writing the script (variant {v + 1})…")
-            script = (await plan(input)).get("script") or ""
-            await _progress("voice", base_pct + 6, f"Recording the voiceover (variant {v + 1})…")
-            vo_bytes = await _synth_vo(script, voice, language)
-            if vo_bytes is None:
-                raise RuntimeError("voiceover synthesis failed (a spokesperson needs a voice)")
-            committed_total += _commit_tts(script, tenant_id, user_id, op_id, byok, _api)
-            vo_url = await _host_bytes(vo_bytes, "audio/wav", f"{op_id}-v{v}-vo")
-            if not vo_url:
-                raise RuntimeError("voiceover hosting unavailable (R2 off)")
+            plan_out = await plan(input)
+            script = (plan_out.get("script") or "").strip()
+            segments = plan_out.get("segments")
 
-            # 3. avatar render — the talking-head presenter (audio-driven; the avatar IS the lip-sync).
-            await _progress("render", base_pct + 14, f"Filming the presenter (variant {v + 1})…")
-            talk_prompt = "a presenter speaking naturally to the camera, subtle head and hand motion"
-            res = await _vp.dispatch(SPK_AVATAR_FEATURE, SPK_AVATAR_MODEL,
-                                     {"prompt": talk_prompt, "resolution": SPK_CLIP_RES,
-                                      "ref_images": [{"url": portrait_url}], "audio_ref": {"url": vo_url}},
-                                     f"{op_id}-v{v}-presenter")
-            if res is None or res.get("data") is None:
-                raise RuntimeError(f"variant {v + 1}: presenter render failed")
-            committed_total += _avatar_credits(seconds)
-            clip = res["data"]
+            if segments:
+                # ── Phase 2/3: per-segment render. Each beat is driven by ITS OWN VO slice — a
+                #    talking-head avatar for PRESENTER beats, a text_to_video cutaway for BROLL — so
+                #    the clips concatenate to the full VO with segment-accurate captions. Any failed
+                #    beat is dropped in lockstep (clip + its audio) to keep the timing exact.
+                await _progress("render", base_pct + 8, f"Filming the segments (variant {v + 1})…")
+                clips, seg_audios, captions, seg_committed = await _render_segments(
+                    segments, portrait_url, voice, language, want_captions,
+                    tenant_id, user_id, op_id, byok, _api, v, budget_seconds=seconds * SPK_DURATION_TOLERANCE)
+                if not clips:
+                    raise RuntimeError(f"variant {v + 1}: no segment rendered")
+                committed_total += seg_committed
+                vo_bytes = await _concat_audio(seg_audios)
+                if vo_bytes is None:
+                    raise RuntimeError(f"variant {v + 1}: voiceover concat failed")
+            else:
+                # ── Phase 1: a single talking-head clip driven by the whole VO. ──
+                await _progress("voice", base_pct + 6, f"Recording the voiceover (variant {v + 1})…")
+                vo_bytes = await _synth_vo(script, voice, language)
+                if vo_bytes is None:
+                    raise RuntimeError("voiceover synthesis failed (a spokesperson needs a voice)")
+                committed_total += _commit_tts(script, tenant_id, user_id, op_id, byok, _api)
+                vo_url = await _host_bytes(vo_bytes, "audio/wav", f"{op_id}-v{v}-vo")
+                if not vo_url:
+                    raise RuntimeError("voiceover hosting unavailable (R2 off)")
+                await _progress("render", base_pct + 14, f"Filming the presenter (variant {v + 1})…")
+                talk_prompt = "a presenter speaking naturally to the camera, subtle head and hand motion"
+                res = await _vp.dispatch(SPK_AVATAR_FEATURE, SPK_AVATAR_MODEL,
+                                         {"prompt": talk_prompt, "resolution": SPK_CLIP_RES,
+                                          "ref_images": [{"url": portrait_url}], "audio_ref": {"url": vo_url}},
+                                         f"{op_id}-v{v}-presenter")
+                if res is None or res.get("data") is None:
+                    raise RuntimeError(f"variant {v + 1}: presenter render failed")
+                committed_total += _avatar_credits(seconds)
+                clips = [{"bytes": res["data"]}]
+                # time captions to the ACTUAL VO length (not the requested seconds) so karaoke
+                # word-fill lands on the real clip — the avatar clip == the VO duration.
+                vo_secs = _wav_seconds(vo_bytes)
+                captions = _captions_from_script(script, vo_secs) if (want_captions and script) else None
 
-            # 4. music (optional) → ducked under the VO in assembly.
+            # 3. music (optional) → ducked under the VO in assembly.
             music_input = None
             if want_music:
                 if music_bed:
@@ -293,15 +490,14 @@ async def run_spokesperson_job(input: dict, op_id: str, set_progress) -> dict:
                 else:
                     log.info("music requested but unavailable → silent")
 
-            # 5. assemble per aspect — the avatar clip lip-syncs the VO; re-mux the SAME VO + burn
-            #    captions + brand (the avatar's baked audio is replaced by the identical master VO so
-            #    timing is exact). Phase 1 = the single presenter clip fills the frame.
-            captions = _captions_from_script(script, seconds) if (want_captions and script) else None
+            # 4. assemble per aspect — re-mux the SAME master VO (concatenated for b-roll) so the
+            #    lip-sync and cutaway timing stay exact; burn captions + brand. Phase 1 = one clip.
             for aspect in aspects:
                 await _progress("assemble", base_pct + 22, f"Editing {aspect} (variant {v + 1})…")
                 try:
-                    mp4 = await _asm.assemble([{"bytes": clip}], aspect, vo_audio=vo_bytes,
-                                              music_bed=music_input, captions=captions, cta=cta, brand=brand)
+                    mp4 = await _asm.assemble(clips, aspect, vo_audio=vo_bytes,
+                                              music_bed=music_input, captions=captions, cta=cta, brand=brand,
+                                              captions_style=cap_style)
                 except Exception as e:
                     log.warning("assemble %s v%d failed: %s", aspect, v, e)
                     continue
@@ -328,7 +524,10 @@ async def run_spokesperson_job(input: dict, op_id: str, set_progress) -> dict:
 async def _persist_variant(tenant_id, user_id, op_id, v: int, aspect: str, mp4: bytes,
                            input: dict, _api) -> Optional[str]:
     """Persist ONE finished mp4 to R2 + assets (Media Vault). source_job_type MUST be a valid
-    job_type_enum value ('veo' is used; the recipe identity lives in metadata). Best-effort → key | None."""
+    job_type_enum value ('veo' is used; the recipe identity lives in metadata). Returns the REAL R2
+    KEY (signed on read by the job-result endpoint) — built the SAME way _persist_asset stored it, NOT
+    a constructed path, or the signed URL 404s and the user is charged for an unretrievable video
+    (the dispatch KEY-not-URL bug class). Best-effort → key | None."""
     fname = f"{op_id}-v{v}-{aspect.replace(':', 'x')}.mp4"
     try:
         await _api._persist_asset(
@@ -339,5 +538,11 @@ async def _persist_variant(tenant_id, user_id, op_id, v: int, aspect: str, mp4: 
                       "variant": v, "seconds": _spk_seconds(input), "job_id": op_id})
     except Exception as e:
         log.info("spokesperson persist v%d %s failed (non-fatal): %s", v, aspect, e)
-        return None
-    return f"recipe/{fname}"
+    # The R2 KEY for the signed-on-read URL: build the SAME key _persist_asset used (job_id=None).
+    try:
+        import storage
+        if storage.is_configured():
+            return storage.build_key(tenant_id, None, "video", fname)
+    except Exception:
+        pass
+    return None

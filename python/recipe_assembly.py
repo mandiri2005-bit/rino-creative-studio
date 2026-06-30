@@ -58,6 +58,11 @@ MUSIC_BED_GAIN = float(os.getenv("RECIPE_MUSIC_BED_GAIN", "0.35"))     # bed lev
 # Caption / CTA styling (drawtext, deterministic).
 CAP_FONT_RATIO = float(os.getenv("RECIPE_CAP_FONT_RATIO", "0.045"))    # caption font px = ratio × frame H
 CTA_FONT_RATIO = float(os.getenv("RECIPE_CTA_FONT_RATIO", "0.060"))    # CTA font px = ratio × frame H
+# Karaoke captions (word-by-word fill via libass \kf): font, fill (active/sung) + dim (upcoming) colors.
+KARAOKE_FONT_RATIO = float(os.getenv("RECIPE_KARAOKE_FONT_RATIO", "0.052"))  # a touch larger for punch
+KARAOKE_HL = os.getenv("RECIPE_KARAOKE_HL", "#FFFFFF")                 # sung/active word color (fills to this)
+KARAOKE_DIM = os.getenv("RECIPE_KARAOKE_DIM", "#9AA0A6")              # upcoming (not-yet-sung) word color
+KARAOKE_MARGIN_RATIO = float(os.getenv("RECIPE_KARAOKE_MARGIN_RATIO", "0.14"))  # baseline ↑ from bottom
 CTA_SECONDS = float(os.getenv("RECIPE_CTA_SECONDS", "2.5"))            # end-card hold (clamped to total)
 LOGO_WIDTH_RATIO = float(os.getenv("RECIPE_LOGO_WIDTH_RATIO", "0.18")) # logo width = ratio × frame W
 TIMEOUT_S = int(os.getenv("RECIPE_FFMPEG_TIMEOUT", "600"))             # per-ffmpeg-invocation wall clock
@@ -183,6 +188,33 @@ async def _has_drawtext() -> bool:
 
     _HAS_DRAWTEXT = await asyncio.to_thread(_call)
     return _HAS_DRAWTEXT
+
+
+_HAS_SUBTITLES: Optional[bool] = None
+
+
+async def _has_subtitles() -> bool:
+    """Whether this ffmpeg build has the `subtitles` filter (libass) — required to burn
+    karaoke (`\\kf` word-fill) ASS. Cached. Absent on minimal builds → the karaoke path
+    falls back to block drawtext captions (never fails the render)."""
+    global _HAS_SUBTITLES
+    if _HAS_SUBTITLES is not None:
+        return _HAS_SUBTITLES
+    ff, _ = _require_ffmpeg()
+
+    def _call() -> bool:
+        try:
+            out = subprocess.run(
+                [ff, "-hide_banner", "-filters"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30,
+            ).stdout.decode("utf-8", "replace")
+            return any(line.split()[1:2] == ["subtitles"]
+                       for line in out.splitlines() if line.strip())
+        except Exception:
+            return False
+
+    _HAS_SUBTITLES = await asyncio.to_thread(_call)
+    return _HAS_SUBTITLES
 
 
 def _thread_args() -> list[str]:
@@ -327,6 +359,106 @@ def _hex_to_ff(color: Optional[str], default: str) -> str:
     return default
 
 
+# ── karaoke captions (libass \kf word-fill) ─────────────────────────────────────
+def _ass_color(hexstr: Optional[str], default: str = "&H00FFFFFF") -> str:
+    """#RRGGBB → ASS &HAABBGGRR (alpha 00 = opaque; ASS is BGR, reversed from RGB)."""
+    if not hexstr:
+        return default
+    c = str(hexstr).strip().lstrip("#")
+    if len(c) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in c):
+        return default
+    rr, gg, bb = c[0:2], c[2:4], c[4:6]
+    return f"&H00{bb}{gg}{rr}".upper()
+
+
+def _ass_ts(sec: float) -> str:
+    """Seconds → ASS timestamp H:MM:SS.cc (centisecond precision)."""
+    sec = max(0.0, float(sec))
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = sec % 60
+    return f"{h:d}:{m:02d}:{int(s):02d}.{int(round((s - int(s)) * 100)):02d}"
+
+
+def _ass_escape(text: str) -> str:
+    """Make a word safe inside an ASS Dialogue line: strip override-block braces and
+    backslashes (our own \\kf tags are added separately), collapse newlines."""
+    return (str(text or "").replace("\\", "/").replace("{", "(").replace("}", ")")
+            .replace("\r", " ").replace("\n", " ").strip())
+
+
+def _font_family(fontfile: Optional[str]) -> str:
+    """Best-effort family NAME (libass resolves by name, not path) from the chosen file."""
+    p = (fontfile or "").lower()
+    if "liberation" in p:
+        return "Liberation Sans"
+    if "dejavu" in p:
+        return "DejaVu Sans"
+    if "helvetica" in p:
+        return "Helvetica"
+    if "arial" in p:
+        return "Arial"
+    return "Sans"
+
+
+def _karaoke_word_cs(text: str, total_cs: int) -> list[tuple[str, int]]:
+    """Split a caption line into (word, centiseconds) weighted by word length so longer
+    words hold longer. Durations sum EXACTLY to total_cs (remainder → last word)."""
+    words = [w for w in str(text or "").split() if w]
+    if not words or total_cs <= 0:
+        return []
+    weights = [max(1, len(w)) for w in words]
+    wsum = sum(weights)
+    out: list[tuple[str, int]] = []
+    acc = 0
+    for i, (w, wt) in enumerate(zip(words, weights)):
+        cs = total_cs - acc if i == len(words) - 1 else max(1, int(round(total_cs * wt / wsum)))
+        acc += cs
+        out.append((w, cs))
+    # guard: if rounding overshot earlier words, clamp the last to keep the sum ≥0
+    if out and acc != total_cs:
+        w_last, _ = out[-1]
+        out[-1] = (w_last, max(1, out[-1][1] + (total_cs - acc)))
+    return out
+
+
+def _build_karaoke_ass(cap_wins: list[tuple[float, float, str]], w: int, h: int,
+                       fontfile: Optional[str]) -> str:
+    """Build a full ASS document where each caption window is one Dialogue line with
+    per-word `\\kf` fills (grey→white sweep in sync with the VO). PlayRes == frame px so
+    Fontsize/Margins map 1:1. Returns the ASS text (caller writes it next to the video)."""
+    fs = max(14, int(round(h * KARAOKE_FONT_RATIO)))
+    outline = max(2, int(round(fs * 0.07)))
+    marginv = int(round(h * KARAOKE_MARGIN_RATIO))
+    primary = _ass_color(KARAOKE_HL, "&H00FFFFFF")     # sung/active fill
+    secondary = _ass_color(KARAOKE_DIM, "&H009AA0A6")  # upcoming (pre-fill)
+    fam = _font_family(fontfile)
+    head = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        f"PlayResX: {w}\nPlayResY: {h}\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Kara,{fam},{fs},{primary},{secondary},&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,"
+        f"{outline},0,2,{int(round(w*0.06))},{int(round(w*0.06))},{marginv},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    lines: list[str] = []
+    for (s, e, text) in cap_wins:
+        total_cs = int(round((e - s) * 100))
+        words = _karaoke_word_cs(text, total_cs)
+        if not words:
+            continue
+        body = "".join(f"{{\\kf{cs}}}{_ass_escape(word)} " for (word, cs) in words).rstrip()
+        lines.append(f"Dialogue: 0,{_ass_ts(s)},{_ass_ts(e)},Kara,,0,0,0,,{body}")
+    return head + "\n".join(lines) + "\n"
+
+
 def _drawtext_caption(text: str, start: float, end: float, w: int, h: int,
                       fontfile: Optional[str]) -> str:
     """A single timed, bottom-centred caption window (deterministic overlay)."""
@@ -367,6 +499,7 @@ async def assemble(
     captions: Optional[list[dict]] = None,
     cta: Optional[str] = None,
     brand: Optional[dict] = None,
+    captions_style: str = "block",
 ) -> bytes:
     """Assemble per-beat clips → ONE mp4 (bytes) for `aspect`.
 
@@ -377,6 +510,9 @@ async def assemble(
     captions   : optional [{"t": start_sec, "text": str, "end"?: sec}] — burned via
                  drawtext (deterministic; NEVER generative). Window k ends at the
                  next caption's start (or `end`/total) if not given.
+    captions_style : "block" (default, single timed drawtext window — Product Ad) or
+                 "karaoke" (libass \\kf per-word fill — Spokesperson). Karaoke falls
+                 back to block when the ffmpeg build lacks the `subtitles` filter.
     cta        : optional call-to-action string — burned as an end-card.
     brand      : optional {"logo_b64"|"logo_path"|"logo_url"?, "colors"?:[hex], "name"?}.
 
@@ -439,7 +575,7 @@ async def assemble(
         logo_path = await _opt_logo(brand, work)
         final = os.path.join(work, "final.mp4")
         await _overlay(muxed, total, W, H, captions, cta, cta_color, logo_path,
-                       fontfile, final, work)
+                       fontfile, final, work, captions_style)
 
         with open(final, "rb") as f:
             return f.read()
@@ -598,18 +734,24 @@ def _caption_windows(captions: list[dict], total: float) -> list[tuple[float, fl
 async def _overlay(src: str, total: float, w: int, h: int,
                    captions: Optional[list[dict]], cta: Optional[str], cta_color: str,
                    logo: Optional[str], fontfile: Optional[str], out: str,
-                   cwd: str) -> None:
+                   cwd: str, captions_style: str = "block") -> None:
     """Burn the DETERMINISTIC overlays: optional logo (top-right), timed captions,
     CTA end-card. If nothing to overlay, passthrough-copy. NEVER generative.
 
-    Text overlays (captions/CTA) need the `drawtext` filter; when the ffmpeg build
-    lacks it we skip the text but still apply the logo (overlay is always present)
+    Captions render as either a per-window drawtext `block` (default) or, when
+    captions_style=="karaoke" AND the build has libass, a `subtitles` filter over a
+    `\\kf` word-fill ASS (Spokesperson's social-native look). Karaoke gracefully
+    DEGRADES to block when `subtitles` is absent. The CTA end-card + logo are
+    style-independent. When the build lacks `drawtext` we skip text but keep the logo
     rather than failing the render."""
     cap_wins = _caption_windows(captions or [], total)
-    want_text = bool(cap_wins) or bool(cta and cta.strip())
-    can_text = want_text and await _has_drawtext()
+    has_dt = await _has_drawtext()
+    # karaoke needs libass; fall back to block captions if unavailable.
+    karaoke = bool(cap_wins) and captions_style == "karaoke" and await _has_subtitles()
+    block_caps = bool(cap_wins) and not karaoke and has_dt
+    want_cta = bool(cta and cta.strip()) and has_dt
 
-    if not logo and not can_text:
+    if not logo and not karaoke and not block_caps and not want_cta:
         # nothing renderable (no logo, and no/unsupported text) → passthrough
         shutil.copyfile(src, out)
         return
@@ -626,19 +768,31 @@ async def _overlay(src: str, total: float, w: int, h: int,
         fc.append(f"[{vlab}][logo]overlay=W-w-{margin}:{margin}[vlogo]")
         vlab = "vlogo"
 
-    if can_text:
-        draws: list[str] = []
+    if karaoke:
+        # write the ASS next to the video so the filter can reference it by a bare,
+        # special-char-free relative name (ffmpeg runs with cwd=work) — avoids the
+        # notorious filtergraph path-escaping. libass resolves the font by family.
+        ass_name = "karaoke.ass"
+        with open(os.path.join(cwd, ass_name), "w", encoding="utf-8") as af:
+            af.write(_build_karaoke_ass(cap_wins, w, h, fontfile))
+        fontsdir = os.path.dirname(fontfile) if fontfile else None
+        sub = f"subtitles={ass_name}" + (f":fontsdir='{fontsdir}'" if fontsdir else "")
+        fc.append(f"[{vlab}]{sub}[vsub]")
+        vlab = "vsub"
+
+    draws: list[str] = []
+    if block_caps:
         for (s, e, text) in cap_wins:
             draws.append(_drawtext_caption(text, s, e, w, h, fontfile))
-        if cta and cta.strip():
-            draws.append(_drawtext_cta(cta.strip(), total, w, h, fontfile, cta_color))
-        if draws:
-            fc.append(f"[{vlab}]" + ",".join(draws) + "[vtxt]")
-            vlab = "vtxt"
+    if want_cta:
+        draws.append(_drawtext_cta(cta.strip(), total, w, h, fontfile, cta_color))
+    if draws:
+        fc.append(f"[{vlab}]" + ",".join(draws) + "[vtxt]")
+        vlab = "vtxt"
 
     # -map must reference a LABEL when it came from the filtergraph, but a bare
     # input specifier (0:v) when no filter ran. fc is always non-empty here
-    # (logo or text produced at least one stage).
+    # (logo, karaoke, or drawtext produced at least one stage).
     args += ["-filter_complex", ";".join(fc), "-map", f"[{vlab}]", "-map", "0:a?"]
     args += _enc_args(out)
     await _run(args, cwd=cwd)

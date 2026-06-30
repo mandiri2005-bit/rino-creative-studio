@@ -4,8 +4,13 @@ WORKDIR /app
 # ffmpeg/ffprobe — system binaries required by recipe_assembly.py (the Product Ad recipe stitches,
 # crops, ducks/muxes VO+music, and burns caption/CTA/logo overlays via ffmpeg). python:3.11-slim ships
 # without them, so without this every recipe assembly raises RuntimeError. Cleaned up to keep the layer small.
+# Fonts: Debian's ffmpeg has drawtext (libfreetype) + subtitles (libass), but BOTH need real font files
+# to render — drawtext caption/CTA text AND the Spokesperson karaoke (\kf word-fill ASS via libass).
+# With --no-install-recommends, no fonts are pulled, so install them explicitly (mirrors backend image);
+# _font_file() resolves Liberation/DejaVu and libass finds the family by name. Without this, captions
+# fail (drawtext: no default font) and karaoke renders blank.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-liberation fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CPU-only PyTorch first to avoid downloading CUDA (~500MB)
