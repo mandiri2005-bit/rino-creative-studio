@@ -3675,6 +3675,12 @@ RECIPE_JOB_STALE_SECS = float(os.getenv("RECIPE_JOB_STALE_SECS", "3600"))
 RECIPE_JOB_SWEEP_EVERY = float(os.getenv("RECIPE_JOB_SWEEP_EVERY", "300"))
 # premium gate: the recipe orchestrates paid renders → require at least this tier.
 RECIPE_MIN_TIER = os.getenv("RECIPE_MIN_TIER", "starter")
+# Ad styles currently EXPOSED. ugc is gated OFF: its talking-head avatar models (omnihuman-avatar /
+# kling-avatar) return 400 from the atlascloud avatar endpoint with no failover tail, so a ugc job can't
+# complete (it auto-refunds, but produces nothing). Re-enable once the avatar adapter is live-verified:
+#   RECIPE_ENABLED_STYLES=showcase,in_scene,ugc
+RECIPE_ENABLED_STYLES = {s.strip() for s in
+                         os.getenv("RECIPE_ENABLED_STYLES", "showcase,in_scene").split(",") if s.strip()}
 # 4 product images, b64, can be large — cap the decoded bytes (OOM guard; the Node
 # proxy already raises its json limit to 220mb to carry them).
 RECIPE_MAX_IMG_BYTES = int(os.getenv("RECIPE_MAX_IMG_BYTES", str(15 * 1024 * 1024)))   # 15MB/image decoded
@@ -3715,6 +3721,8 @@ def _recipe_validate_input(body: dict) -> dict:
     style = (body.get("style") or "showcase").lower()
     if style not in ("showcase", "in_scene", "ugc"):
         raise HTTPException(400, f"unknown style: {style}")
+    if style not in RECIPE_ENABLED_STYLES:
+        raise HTTPException(409, f"the '{style}' ad style is coming soon — not yet available")
     body["style"] = style
 
     # aspects: keep only the supported set; default ["9:16"].
