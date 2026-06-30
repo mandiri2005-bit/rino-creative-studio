@@ -256,6 +256,23 @@ def _loop_on(params) -> bool:
 # ══════════════════════════ adapters ══════════════════════════
 # Each is async submit→_poll→_fetch and returns (bytes, mime); dispatch() re-hosts.
 
+def _is_avatar(slug) -> bool:
+    """True for audio-driven talking-head avatar slugs across providers (ByteDance OmniHuman + Kling-avatar
+    on atlascloud/fal/aiml/kie). These take a hosted PORTRAIT + a hosted DRIVING-AUDIO and lip-sync — NOT
+    the generic clip params (no duration/aspect/resolution/audio-toggle). Our video models never otherwise
+    contain 'omnihuman' or 'avatar' in the slug, so this match is safe."""
+    s = (slug or "").lower()
+    return ("omnihuman" in s) or ("avatar" in s)
+
+
+def _avatar_audio_url(params):
+    """Hosted driving-audio URL for an avatar render (the recipe passes params['audio_ref'] = {url} | url)."""
+    aud = params.get("audio_ref")
+    if aud is None:
+        return None
+    return aud.get("url") if isinstance(aud, dict) else aud
+
+
 async def _atlascloud_video(client, op, slug, params):
     """AtlasCloud video generation — POST /model/generateVideo + poll /model/prediction/{id} (endpoint
     DOC-VERIFIED). The request BODY field names diverge BY MODEL FAMILY (slug prefix), so a generic body
@@ -358,36 +375,48 @@ async def _fal_video(client, op, slug, params):
         resolution param — passing one risks a 422)."""
     h = {"Authorization": f"Key {_key('FAL_API_KEY')}", "Content-Type": "application/json"}
     s = (slug or "").lower()
-    body = {}
-    if params.get("prompt"):
-        body["prompt"] = params["prompt"]
-    if op in ("image_to_video", "reference_to_video"):
+    if _is_avatar(slug):
+        # AUDIO-DRIVEN avatar (OmniHuman / Kling ai-avatar): hosted portrait + hosted voice → talking head.
+        # fal field names are image_url/audio_url; NO duration/aspect/resolution/generate_audio (length is
+        # driven by the audio). Optional prompt (kling avatar allows it).
         refs = params.get("ref_images") or []
-        if refs:
-            body["image_url"] = _img_url(refs[0])
-    if op in ("video_edit", "reframe_video", "lip_sync"):
-        rv = params.get("ref_video")
-        if rv:
-            body["video_url"] = _img_url(rv)
-    if op == "lip_sync":
-        aud = params.get("audio")
-        if aud:
-            body["audio_url"] = _img_url(aud)
-    body["aspect_ratio"] = _aspect(params)
-    # DURATION as STRING; veo3.1 family expects the 's'-suffixed enum, everything else bare seconds.
-    _secs = str(_seconds(params))
-    body["duration"] = f"{_secs}s" if "veo3.1" in s else _secs
-    # RESOLUTION — gated: kling-o3/standard + hailuo-02 have NO resolution param.
-    _no_res = ("fal-ai/kling-video/o3/standard" in s) or ("fal-ai/minimax/hailuo-02" in s)
-    if params.get("resolution") and not _no_res:
-        body["resolution"] = params["resolution"]
-    # fal audio toggle is `generate_audio` on audio-capable models + a `loop` flag on looping models.
-    # Pass defensively (only when set); fal ignores unknown input fields rather than 400-ing.
-    _a = _audio_on(params)
-    if _a is not None:
-        body["generate_audio"] = _a
-    if _loop_on(params):
-        body["loop"] = True
+        aud = _avatar_audio_url(params)
+        if not refs or not aud:
+            raise ProviderError("fal avatar requires ref_images[0] + audio_ref (hosted urls)")
+        body = {"image_url": _img_url(refs[0]), "audio_url": aud}
+        if params.get("prompt"):
+            body["prompt"] = params["prompt"]
+    else:
+        body = {}
+        if params.get("prompt"):
+            body["prompt"] = params["prompt"]
+        if op in ("image_to_video", "reference_to_video"):
+            refs = params.get("ref_images") or []
+            if refs:
+                body["image_url"] = _img_url(refs[0])
+        if op in ("video_edit", "reframe_video", "lip_sync"):
+            rv = params.get("ref_video")
+            if rv:
+                body["video_url"] = _img_url(rv)
+        if op == "lip_sync":
+            aud = params.get("audio")
+            if aud:
+                body["audio_url"] = _img_url(aud)
+        body["aspect_ratio"] = _aspect(params)
+        # DURATION as STRING; veo3.1 family expects the 's'-suffixed enum, everything else bare seconds.
+        _secs = str(_seconds(params))
+        body["duration"] = f"{_secs}s" if "veo3.1" in s else _secs
+        # RESOLUTION — gated: kling-o3/standard + hailuo-02 have NO resolution param.
+        _no_res = ("fal-ai/kling-video/o3/standard" in s) or ("fal-ai/minimax/hailuo-02" in s)
+        if params.get("resolution") and not _no_res:
+            body["resolution"] = params["resolution"]
+        # fal audio toggle is `generate_audio` on audio-capable models + a `loop` flag on looping models.
+        # Pass defensively (only when set); fal ignores unknown input fields rather than 400-ing.
+        _a = _audio_on(params)
+        if _a is not None:
+            body["generate_audio"] = _a
+        if _loop_on(params):
+            body["loop"] = True
     r = await client.post(f"https://queue.fal.run/{slug}", headers=h, json=body); r.raise_for_status()
     j = r.json(); status_url, resp_url = j["status_url"], j["response_url"]
     await _poll(client, status_url, h, done=lambda s: s.get("status") == "COMPLETED",
@@ -407,30 +436,41 @@ async def _aiml_video(client, op, slug, params):
     charging for a 404/garbage response."""
     h = {"Authorization": f"Bearer {_key('AIMLAPI_API_KEY')}", "Content-Type": "application/json"}
     base = "https://api.aimlapi.com/v2/video/generations"
-    body = {"model": slug, "prompt": params.get("prompt") or ""}
-    if op in ("image_to_video", "reference_to_video"):
+    if _is_avatar(slug):
+        # AUDIO-DRIVEN avatar (OmniHuman / klingai/avatar-*): hosted portrait + voice → talking head; NO
+        # duration/aspect/resolution/enable_audio (length follows the audio).
         refs = params.get("ref_images") or []
-        if refs:
-            body["image_url"] = _img_url(refs[0])
-    if op in ("video_edit", "reframe_video", "lip_sync"):
-        rv = params.get("ref_video")
-        if rv:
-            body["video_url"] = _img_url(rv)
-    if op == "lip_sync":
-        aud = params.get("audio")
-        if aud:
-            body["audio_url"] = _img_url(aud)
-    body["duration"] = _seconds(params)
-    body["aspect_ratio"] = _aspect(params)
-    if params.get("resolution"):
-        body["resolution"] = params["resolution"]
-    # AIML audio/loop support is per-model and under-documented — pass best-effort + defensively (only
-    # when set) so an audio-incapable model just ignores the unknown field instead of 400-ing.
-    _a = _audio_on(params)
-    if _a is not None:
-        body["enable_audio"] = _a
-    if _loop_on(params):
-        body["loop"] = True
+        aud = _avatar_audio_url(params)
+        if not refs or not aud:
+            raise ProviderError("aiml avatar requires ref_images[0] + audio_ref (hosted urls)")
+        body = {"model": slug, "image_url": _img_url(refs[0]), "audio_url": aud}
+        if params.get("prompt"):
+            body["prompt"] = params["prompt"]
+    else:
+        body = {"model": slug, "prompt": params.get("prompt") or ""}
+        if op in ("image_to_video", "reference_to_video"):
+            refs = params.get("ref_images") or []
+            if refs:
+                body["image_url"] = _img_url(refs[0])
+        if op in ("video_edit", "reframe_video", "lip_sync"):
+            rv = params.get("ref_video")
+            if rv:
+                body["video_url"] = _img_url(rv)
+        if op == "lip_sync":
+            aud = params.get("audio")
+            if aud:
+                body["audio_url"] = _img_url(aud)
+        body["duration"] = _seconds(params)
+        body["aspect_ratio"] = _aspect(params)
+        if params.get("resolution"):
+            body["resolution"] = params["resolution"]
+        # AIML audio/loop support is per-model and under-documented — pass best-effort + defensively (only
+        # when set) so an audio-incapable model just ignores the unknown field instead of 400-ing.
+        _a = _audio_on(params)
+        if _a is not None:
+            body["enable_audio"] = _a
+        if _loop_on(params):
+            body["loop"] = True
     r = await client.post(base, headers=h, json=body); r.raise_for_status()
     j = r.json()
     gid = (j.get("id") or j.get("generation_id")
@@ -576,7 +616,18 @@ async def _kie_video(client, op, slug, params):
         return await _fetch(client, out)
 
     # ── JOBS branch ──
-    inp = _kie_jobs_input(slug, op, params)
+    if _is_avatar(slug):
+        # AUDIO-DRIVEN avatar (omnihuman-1-5 / kling/ai-avatar-*): input.image_url + input.audio_url, NO
+        # duration/resolution. The kling avatar REQUIRES a non-empty prompt (probe: '' → 500 "prompt is
+        # required"), so default it.
+        refs = params.get("ref_images") or []
+        aud = _avatar_audio_url(params)
+        if not refs or not aud:
+            raise ProviderError("kie avatar requires ref_images[0] + audio_ref (hosted urls)")
+        inp = {"image_url": _img_url(refs[0]), "audio_url": aud,
+               "prompt": (params.get("prompt") or "a friendly presenter speaking to camera")}
+    else:
+        inp = _kie_jobs_input(slug, op, params)
     body = {"model": slug, "input": inp}
     r = await client.post(f"{base}/jobs/createTask", headers=h, json=body); r.raise_for_status()
     j = r.json()

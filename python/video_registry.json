@@ -948,8 +948,20 @@
       "official_usd": 0.09,
       "chain": [
         {
+          "provider": "fal",
+          "image_to_video": "fal-ai/bytedance/omnihuman/v1.5"
+        },
+        {
           "provider": "atlascloud",
           "image_to_video": "bytedance/avatar-omni-human-v1.5"
+        },
+        {
+          "provider": "aiml",
+          "image_to_video": "bytedance/omnihuman/v1.5"
+        },
+        {
+          "provider": "kie",
+          "image_to_video": "omnihuman-1-5"
         }
       ]
     },
@@ -986,8 +998,20 @@
       "official_usd": 0.14,
       "chain": [
         {
+          "provider": "fal",
+          "image_to_video": "fal-ai/kling-video/ai-avatar/v2/standard"
+        },
+        {
           "provider": "atlascloud",
           "image_to_video": "kwaivgi/kling-v2.6-std/avatar"
+        },
+        {
+          "provider": "aiml",
+          "image_to_video": "klingai/avatar-standard"
+        },
+        {
+          "provider": "kie",
+          "image_to_video": "kling/ai-avatar-standard"
         }
       ]
     }
