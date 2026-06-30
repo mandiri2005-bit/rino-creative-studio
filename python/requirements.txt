@@ -3,6 +3,7 @@ uvicorn[standard]
 openai
 requests
 numpy
+Pillow
 pdfplumber
 python-docx
 openpyxl

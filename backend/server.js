@@ -496,6 +496,11 @@ app.use("/api/image", express.json({ limit:"24mb" }));
 // Isolated from the VI assembly /api/video/* routes (those use the global parser). express.json no-ops
 // once parsed, so the global parser below skips these.
 app.use("/api/video-tools", express.json({ limit:"220mb" }));
+// Recipes (one-click Formats, e.g. Product Ad) carry up to 4 b64 PRODUCT IMAGES (+ optional logo).
+// Same edge-bounding rationale as /api/video-tools: mounted BEFORE the global parser so /api/recipes/*
+// parses + 413-rejects oversized bodies here, bounding the Python body + pyProxy's JSON.stringify copy.
+// Isolated from the VI /api/video/* routes (those use the global parser).
+app.use("/api/recipes", express.json({ limit:"220mb" }));
 app.use(express.json({ limit:"200mb" })); // storyboard 26 scenes+images can be 5-20MB
 
 app.use(clerkMiddleware()); // Clerk — must be after body-parser, before protected routes
@@ -1199,7 +1204,7 @@ app.get("/api/image/jobs/:id", async (req,res) => {
 app.get("/api/video-tools/catalog", (req,res)=>pyProxy(req,res,"/video-tools/catalog"));  // picker meta + per-sec badges
 
 const VIDEO_OPS = new Set(["text_to_video","image_to_video","modify_video","reframe_video",
-                           "upscale_video","caption_video","lip_sync","motion_control","paparazzi_moment"]);
+                           "upscale_video","caption_video","lip_sync","motion_control","seamless_looping"]);
 app.post("/api/video-tools/:op/submit", async (req,res) => {
   const op = String(req.params.op || "");
   if (!VIDEO_OPS.has(op)) return res.status(400).json({ error: `Unknown video op: ${op}` });
@@ -1217,6 +1222,42 @@ app.get("/api/video-tools/jobs/:id", async (req,res) => {
   if (tenantId && !(await rateLimitOk(`vidpoll:${tenantId}`, 240, 60)))
     return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
   return pyProxy(req, res, `/video-tools/jobs/${encodeURIComponent(id)}`);
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RECIPES  (proxy → Python /recipes/product-ad/*) — one-click "Format" wizard.
+// ADDITIVE + ISOLATED: a NEW namespace, never touching the VI /api/video/* routes,
+// /api/video-tools/*, Flow, or Batch. Mirrors the /api/video-tools/* proxy: forward
+// Authorization (Clerk JWT) via pyProxy, whitelist the recipe so we never proxy an
+// arbitrary Python path, per-tenant rate-limit the paid submit. The 220mb json mount
+// above carries the b64 product images. Python (laozhang_api /recipes/product-ad/*)
+// tier-gates (premium), takes the ONE umbrella hold inside the DAG (single source =
+// recipe_product_ad.estimate → badge == charge), commits the actual, and persists the
+// finished variants to Media Vault. estimate = no hold (live receipt).
+// ══════════════════════════════════════════════════════════════════════════════
+const RECIPES = new Set(["product-ad"]);
+app.post("/api/recipes/:recipe/estimate", async (req,res) => {
+  const recipe = String(req.params.recipe || "");
+  if (!RECIPES.has(recipe)) return res.status(400).json({ error: `Unknown recipe: ${recipe}` });
+  return pyProxy(req, res, `/recipes/${recipe}/estimate`);
+});
+app.post("/api/recipes/:recipe/submit", async (req,res) => {
+  const recipe = String(req.params.recipe || "");
+  if (!RECIPES.has(recipe)) return res.status(400).json({ error: `Unknown recipe: ${recipe}` });
+  // Per-tenant rate limit on the paid submit (a recipe is the heaviest paid op → tight bucket).
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`recipe:${tenantId}`, 6, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Too many recipe requests — give it a moment." });
+  return pyProxy(req, res, `/recipes/${recipe}/submit`);
+});
+app.get("/api/recipes/:recipe/jobs/:id", async (req,res) => {
+  const recipe = String(req.params.recipe || "");
+  if (!RECIPES.has(recipe)) return res.status(400).json({ error: `Unknown recipe: ${recipe}` });
+  const id = String(req.params.id || "");
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`recipepoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  return pyProxy(req, res, `/recipes/${recipe}/jobs/${encodeURIComponent(id)}`);
 });
 
 // ── Nano-banana model → Google native model name ────────────────────────────

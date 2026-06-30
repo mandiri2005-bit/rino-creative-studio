@@ -4,7 +4,7 @@ video_providers.py — multi-provider VIDEO backend with per-model failover.
 Mirror of image_providers.py for the Wimba Video tools (the /video-tools/* namespace), built
 against the BUILD CONTRACT (9 ops: text_to_video, image_to_video, modify_video→video_edit,
 reframe_video, upscale_video, caption_video [native], lip_sync, motion_control→image_to_video,
-paparazzi_moment→image_to_video).
+seamless_looping→text_to_video [loop=true]).
 
 Registry: video_registry.json beside this module (model -> picker meta + per-second COGS + ordered
 chain [cheapest aggregator -> 2nd -> first-party source]). dispatch() walks the chain: each provider
@@ -239,25 +239,60 @@ def _seconds(params) -> int:
     return s if s > 0 else 5
 
 
+def _audio_on(params) -> Optional[bool]:
+    """Tri-state audio flag from params: True/False when the caller set it, None when unspecified (so an
+    adapter can OMIT the field entirely rather than forcing a provider default)."""
+    a = params.get("audio")
+    if a is None:
+        return None
+    return bool(a)
+
+
+def _loop_on(params) -> bool:
+    """Seamless-looping flag (set only for the seamless_looping op). Defaults False."""
+    return bool(params.get("loop"))
+
+
 # ══════════════════════════ adapters ══════════════════════════
 # Each is async submit→_poll→_fetch and returns (bytes, mime); dispatch() re-hosts.
 
 async def _atlascloud_video(client, op, slug, params):
-    """AtlasCloud video generation — mirrors the image _atlascloud submit/poll shape. VERIFY endpoint:
-    the image path is POST /model/generateImage + poll /model/prediction/{id}; the video path here uses
-    /model/generateVideo with the same prediction-poll contract. If AtlasCloud names the video endpoint
-    differently, swap the path but keep this submit→prediction-poll→fetch contract."""
+    """AtlasCloud video generation — POST /model/generateVideo + poll /model/prediction/{id} (endpoint
+    DOC-VERIFIED). The request BODY field names diverge BY MODEL FAMILY (slug prefix), so a generic body
+    silently no-ops params to provider defaults. Mapped per FAILOVER-DOC-VERIFY:
+      • AUDIO field: 'generate_audio' for google/* + bytedance/*, 'sound' for kwaivgi/*, OMITTED for
+        alibaba/happyhorse* (no audio field).
+      • ASPECT field: 'aspect_ratio' for google/*, 'ratio' for bytedance/*, OMITTED for kwaivgi/* +
+        happyhorse (no aspect param).
+      • REFERENCE-TO-VIDEO on bytedance/* uses the array body['reference_images']=[urls]; image_to_video
+        uses the single body['image'].
+      • RESOLUTION casing: lowercase ('720p'/'1080p'/'4k') for google/* + bytedance/*; UPPERCASE
+        ('720P'/'1080P') for kwaivgi/* + happyhorse.
+    Done-check accepts 'completed' AND 'succeeded'."""
     h = {"Authorization": f"Bearer {_key('ATLASCLOUD_API_KEY')}", "Content-Type": "application/json"}
     base = "https://api.atlascloud.ai/api/v1"
-    body = {"model": slug, "enable_sync_mode": False,
-            "duration": _seconds(params), "aspect_ratio": _aspect(params)}
+    s = (slug or "").lower()
+    is_google = s.startswith("google/")
+    is_bytedance = s.startswith("bytedance/")
+    is_kling = s.startswith("kwaivgi/")
+    is_happyhorse = "happyhorse" in s
+    body = {"model": slug, "enable_sync_mode": False, "duration": _seconds(params)}
+    # ASPECT — field name + presence per family.
+    if is_google:
+        body["aspect_ratio"] = _aspect(params)
+    elif is_bytedance:
+        body["ratio"] = _aspect(params)
+    # kwaivgi/* + happyhorse take NO aspect param → omit.
     if op == "text_to_video":
         body["prompt"] = params.get("prompt") or ""
     elif op in ("image_to_video", "reference_to_video"):
         body["prompt"] = params.get("prompt") or ""
         refs = params.get("ref_images") or []
         if refs:
-            body["image"] = _img_url(refs[0])           # i2v/ref seed frame (URL or data: URI)
+            if op == "reference_to_video" and is_bytedance:
+                body["reference_images"] = [_img_url(r) for r in refs]   # Seedance ref → array
+            else:
+                body["image"] = _img_url(refs[0])                        # i2v seed frame (single)
     elif op == "video_edit":
         body["prompt"] = params.get("prompt") or ""
         rv = params.get("ref_video")
@@ -265,29 +300,45 @@ async def _atlascloud_video(client, op, slug, params):
             body["video"] = _img_url(rv)
     else:
         raise ProviderError(f"atlascloud_video: op {op} unsupported")
+    # RESOLUTION casing per family: lowercase for veo/seedance, UPPERCASE for kling/happyhorse.
     if params.get("resolution"):
-        body["resolution"] = params["resolution"]
-    r = await client.post(f"{base}/model/generateVideo", headers=h, json=body); r.raise_for_status()  # VERIFY endpoint
+        rsv = _norm_res(params["resolution"])           # canonical lowercase e.g. '1080p'/'4k'
+        body["resolution"] = rsv.upper() if (is_kling or is_happyhorse) else rsv
+    # AUDIO field name per family — omit entirely for happyhorse (no audio field).
+    _a = _audio_on(params)
+    if _a is not None and not is_happyhorse:
+        body["sound" if is_kling else "generate_audio"] = _a
+    if _loop_on(params):
+        body["loop"] = True
+    r = await client.post(f"{base}/model/generateVideo", headers=h, json=body); r.raise_for_status()
     d = r.json().get("data", r.json())
     if d.get("outputs"):                                 # rare inline-result fast path
         return await _fetch(client, d["outputs"][0])
     pid = d["id"]
+    _done = {"completed", "succeeded"}
     out = await _poll(client, f"{base}/model/prediction/{pid}", h,
-                      done=lambda j: (j.get("data") or j).get("status") == "completed",
+                      done=lambda j: (j.get("data") or j).get("status") in _done,
                       err=lambda j: (j.get("data") or j).get("status") == "failed",
                       result=lambda j: (j.get("data") or j)["outputs"][0])
     return await _fetch(client, out)
 
 
 async def _fal_video(client, op, slug, params):
-    """fal.ai queue video — mirrors the image _fal submit/poll shape: POST queue.fal.run/{slug} →
-    poll status_url (COMPLETED/FAILED) → GET response_url → output video.url. Per-op input fields:
-    image_url (i2v/ref seed), video_url (video_edit/reframe/lip_sync source), audio_url (lip_sync)."""
+    """fal.ai queue video — POST queue.fal.run/{slug} → poll status_url (COMPLETED) → GET response_url →
+    output video.url (DOC-VERIFIED queue contract). Per-op input fields: image_url (i2v/ref seed),
+    video_url (video_edit/reframe/lip_sync source), audio_url (lip_sync). Per FAILOVER-DOC-VERIFY:
+      • AUTH is 'Authorization: Key <key>' (NOT Bearer).
+      • AUDIO param is 'generate_audio' (NOT 'enable_audio').
+      • DURATION is a STRING enum: veo3.1* slugs need the 's'-suffixed form ('8s'/'6s'/'4s'); all others
+        send bare seconds ('8'/'5'/'6').
+      • RESOLUTION is OMITTED for fal-ai/kling-video/o3/standard* and fal-ai/minimax/hailuo-02* (no
+        resolution param — passing one risks a 422)."""
     h = {"Authorization": f"Key {_key('FAL_API_KEY')}", "Content-Type": "application/json"}
+    s = (slug or "").lower()
     body = {}
     if params.get("prompt"):
         body["prompt"] = params["prompt"]
-    if op in ("image_to_video", "reference_to_video", "motion_control", "paparazzi_moment"):
+    if op in ("image_to_video", "reference_to_video"):
         refs = params.get("ref_images") or []
         if refs:
             body["image_url"] = _img_url(refs[0])
@@ -300,9 +351,20 @@ async def _fal_video(client, op, slug, params):
         if aud:
             body["audio_url"] = _img_url(aud)
     body["aspect_ratio"] = _aspect(params)
-    body["duration"] = _seconds(params)
-    if params.get("resolution"):
+    # DURATION as STRING; veo3.1 family expects the 's'-suffixed enum, everything else bare seconds.
+    _secs = str(_seconds(params))
+    body["duration"] = f"{_secs}s" if "veo3.1" in s else _secs
+    # RESOLUTION — gated: kling-o3/standard + hailuo-02 have NO resolution param.
+    _no_res = ("fal-ai/kling-video/o3/standard" in s) or ("fal-ai/minimax/hailuo-02" in s)
+    if params.get("resolution") and not _no_res:
         body["resolution"] = params["resolution"]
+    # fal audio toggle is `generate_audio` on audio-capable models + a `loop` flag on looping models.
+    # Pass defensively (only when set); fal ignores unknown input fields rather than 400-ing.
+    _a = _audio_on(params)
+    if _a is not None:
+        body["generate_audio"] = _a
+    if _loop_on(params):
+        body["loop"] = True
     r = await client.post(f"https://queue.fal.run/{slug}", headers=h, json=body); r.raise_for_status()
     j = r.json(); status_url, resp_url = j["status_url"], j["response_url"]
     await _poll(client, status_url, h, done=lambda s: s.get("status") == "COMPLETED",
@@ -315,15 +377,15 @@ async def _fal_video(client, op, slug, params):
 
 
 async def _aiml_video(client, op, slug, params):
-    """AI/ML API video — submit returns a generation id, then poll by id. VERIFY endpoint: AIML video is
-    a 2-step generate→poll. The submit path here is POST /v2/generate/video/generation and the poll is
-    GET /v2/generate/video/generation?generation_id=… ; if AIML's live video path differs, swap the paths
-    but keep this submit→poll-by-id→fetch contract. Raises ProviderError on an unexpected shape so the
-    step fails over rather than charging for a 404/garbage response."""
+    """AI/ML API video — submit returns a generation id, then poll by id (endpoint DOC-VERIFIED):
+    POST https://api.aimlapi.com/v2/video/generations (submit) and GET the same path with
+    ?generation_id=<id> (poll). Submit id read from `id`; status done=='completed' / err=='error';
+    output video.url. Raises ProviderError on an unexpected shape so the step fails over rather than
+    charging for a 404/garbage response."""
     h = {"Authorization": f"Bearer {_key('AIMLAPI_API_KEY')}", "Content-Type": "application/json"}
-    base = "https://api.aimlapi.com/v2/generate/video"   # VERIFY endpoint
+    base = "https://api.aimlapi.com/v2/video/generations"
     body = {"model": slug, "prompt": params.get("prompt") or ""}
-    if op in ("image_to_video", "reference_to_video", "motion_control", "paparazzi_moment"):
+    if op in ("image_to_video", "reference_to_video"):
         refs = params.get("ref_images") or []
         if refs:
             body["image_url"] = _img_url(refs[0])
@@ -339,7 +401,14 @@ async def _aiml_video(client, op, slug, params):
     body["aspect_ratio"] = _aspect(params)
     if params.get("resolution"):
         body["resolution"] = params["resolution"]
-    r = await client.post(f"{base}/generation", headers=h, json=body); r.raise_for_status()  # VERIFY endpoint
+    # AIML audio/loop support is per-model and under-documented — pass best-effort + defensively (only
+    # when set) so an audio-incapable model just ignores the unknown field instead of 400-ing.
+    _a = _audio_on(params)
+    if _a is not None:
+        body["enable_audio"] = _a
+    if _loop_on(params):
+        body["loop"] = True
+    r = await client.post(base, headers=h, json=body); r.raise_for_status()
     j = r.json()
     gid = (j.get("id") or j.get("generation_id")
            or (j.get("data") or {}).get("id") or (j.get("data") or {}).get("generation_id"))
@@ -360,18 +429,293 @@ async def _aiml_video(client, op, slug, params):
             raise ProviderError(f"aiml_video: no video url in completed response: {str(j)[:200]}")
         return v
 
-    out = await _poll(client, f"{base}/generation?generation_id={gid}", h,   # VERIFY endpoint
+    out = await _poll(client, f"{base}?generation_id={gid}", h,
                       done=lambda j: _status(j) in ("completed", "succeeded", "success", "done"),
                       err=lambda j: _status(j) in ("failed", "error", "cancelled", "canceled"),
                       result=_result)
     return await _fetch(client, out)
 
 
+def _kie_jobs_input(slug, op, params):
+    """Build the per-model 'input' object for KIE's UNIFIED /jobs branch — field names + types DIVERGE
+    PER MODEL FAMILY (the core KIE adapter problem), so a small per-slug-family builder maps our generic
+    params onto each model's exact fields. All durations are model-specific (int vs string); image-input
+    field names differ (first_frame_url/last_frame_url/reference_image_urls[] vs image_urls[] vs
+    image_url single). Resolution/aspect/audio presence + casing differ per family."""
+    s = (slug or "").lower()
+    prompt = params.get("prompt") or ""
+    refs = params.get("ref_images") or []
+    ref_urls = [_img_url(r) for r in refs]
+    secs = _seconds(params)
+    res = _norm_res(params["resolution"]) if params.get("resolution") else None
+    aspect = _aspect(params)
+    a = _audio_on(params)
+    inp = {"prompt": prompt}
+
+    if "seedance" in s:                                   # bytedance/seedance-* → ints, generate_audio
+        if op in ("image_to_video", "reference_to_video") and ref_urls:
+            if op == "reference_to_video":
+                inp["reference_image_urls"] = ref_urls
+            else:
+                inp["first_frame_url"] = ref_urls[0]
+                if len(ref_urls) > 1:
+                    inp["last_frame_url"] = ref_urls[1]
+        if a is not None:
+            inp["generate_audio"] = a
+        inp["duration"] = secs                            # INT
+        if res:
+            inp["resolution"] = res                       # '480p'..'4k' lowercase
+        inp["aspect_ratio"] = aspect
+    elif "kling" in s:                                    # kling-3.0/video → image_urls[], sound, mode, str dur
+        if op in ("image_to_video", "reference_to_video") and ref_urls:
+            inp["image_urls"] = ref_urls
+        if a is not None:
+            inp["sound"] = a
+        # mode encodes tier/resolution: 4K→'4K', 1080p→'pro', else 'std'.
+        inp["mode"] = "4K" if res == "4k" else ("pro" if res == "1080p" else "std")
+        inp["duration"] = str(secs)                       # STRING
+    elif "hailuo" in s:                                   # hailuo/* → image_url single, str dur, UPPER res
+        if op in ("image_to_video", "reference_to_video") and ref_urls:
+            inp["image_url"] = ref_urls[0]                # SINGLE
+        inp["duration"] = str(secs)                       # STRING '6'|'10'
+        if res:
+            inp["resolution"] = "1080P" if res == "1080p" else "768P"
+    elif s.startswith("wan"):                             # wan* → image_urls[], str dur
+        if op in ("image_to_video", "reference_to_video") and ref_urls:
+            inp["image_urls"] = ref_urls
+        inp["duration"] = str(secs)                       # STRING
+        if res:
+            inp["resolution"] = res
+        inp["aspect_ratio"] = aspect
+    else:                                                 # happyhorse* + any other jobs model → generic
+        if op in ("image_to_video", "reference_to_video") and ref_urls:
+            inp["image_urls"] = ref_urls
+        if op == "video_edit":
+            rv = params.get("ref_video")
+            if rv:
+                inp["video_url"] = _img_url(rv)
+        inp["duration"] = str(secs)
+        if res:
+            inp["resolution"] = res
+    return inp
+
+
+async def _kie_video(client, op, slug, params):
+    """KIE API video — TWO endpoints by slug (DOC-VERIFIED, FAILOVER-DOC-VERIFY):
+      (a) VEO slugs (veo3/veo3_fast/veo3_lite) → POST /api/v1/veo/generate with a FLAT body
+          {prompt, model, imageUrls[], generationType, aspect_ratio, resolution, duration} → poll
+          GET /api/v1/veo/record-info?taskId={id} until data.successFlag; result data.resultUrls[0].
+      (b) JOBS slugs (bytedance/*, kling-3.0/video, hailuo/*, wan*, happyhorse*) → POST
+          /api/v1/jobs/createTask {model, input:{...per-model...}} → poll GET
+          /api/v1/jobs/recordInfo?taskId={id} until data.state=='success'; result =
+          json.loads(data.resultJson)['resultUrls'][0]  (resultJson is a JSON STRING — must json.loads).
+    Reuses _poll/_fetch/_rehost; KIE result URLs expire ~24h → _fetch re-hosts immediately.
+    Keeps ALL SSRF/OOM guards (_img_bytes/_capped_get on ref inputs, _drain_capped on result fetch)."""
+    h = {"Authorization": f"Bearer {_key('KIE_API_KEY')}", "Content-Type": "application/json"}
+    base = "https://api.kie.ai/api/v1"
+    s = (slug or "").lower()
+    is_veo = s in ("veo3", "veo3_fast", "veo3_lite") or s.startswith("veo3")
+
+    if is_veo:
+        refs = params.get("ref_images") or []
+        ref_urls = [_img_url(r) for r in refs]
+        # generationType per op: i2v/ref carry imageUrls; t2v is plain.
+        if op == "reference_to_video":
+            gen_type = "REFERENCE_2_VIDEO"
+        elif op == "image_to_video" and ref_urls:
+            gen_type = "FIRST_AND_LAST_FRAMES_2_VIDEO"
+        else:
+            gen_type = "TEXT_2_VIDEO"
+        body = {"prompt": params.get("prompt") or "", "model": slug,
+                "generationType": gen_type, "aspect_ratio": _aspect(params)}
+        if ref_urls and op in ("image_to_video", "reference_to_video"):
+            body["imageUrls"] = ref_urls
+        if params.get("resolution"):
+            body["resolution"] = _norm_res(params["resolution"])    # '720p'|'1080p'|'4k'
+        body["duration"] = _seconds(params)                          # 4|6|8 int
+        r = await client.post(f"{base}/veo/generate", headers=h, json=body); r.raise_for_status()
+        j = r.json()
+        tid = (j.get("data") or {}).get("taskId") or j.get("taskId") or (j.get("data") or {}).get("id")
+        if not tid:
+            raise ProviderError(f"kie_video(veo): no taskId in submit response: {str(j)[:200]}")
+
+        def _veo_result(jj):
+            d = jj.get("data") or {}
+            urls = d.get("resultUrls") or (d.get("response") or {}).get("resultUrls")
+            if not urls:
+                raise ProviderError(f"kie_video(veo): no resultUrls in response: {str(jj)[:200]}")
+            return urls[0]
+
+        out = await _poll(client, f"{base}/veo/record-info?taskId={tid}", h,
+                          done=lambda jj: (jj.get("data") or {}).get("successFlag") in (1, True, "1"),
+                          err=lambda jj: str((jj.get("data") or {}).get("successFlag")) in ("2", "3"),
+                          result=_veo_result)
+        return await _fetch(client, out)
+
+    # ── JOBS branch ──
+    inp = _kie_jobs_input(slug, op, params)
+    body = {"model": slug, "input": inp}
+    r = await client.post(f"{base}/jobs/createTask", headers=h, json=body); r.raise_for_status()
+    j = r.json()
+    tid = (j.get("data") or {}).get("taskId") or j.get("taskId") or (j.get("data") or {}).get("id")
+    if not tid:
+        raise ProviderError(f"kie_video(jobs): no taskId in submit response: {str(j)[:200]}")
+
+    def _jobs_result(jj):
+        d = jj.get("data") or {}
+        raw = d.get("resultJson")
+        if not raw:
+            raise ProviderError(f"kie_video(jobs): no resultJson in response: {str(jj)[:200]}")
+        parsed = json.loads(raw) if isinstance(raw, str) else raw   # resultJson is a JSON STRING
+        urls = parsed.get("resultUrls") or []
+        if not urls:
+            raise ProviderError(f"kie_video(jobs): no resultUrls in resultJson: {str(parsed)[:200]}")
+        return urls[0]
+
+    out = await _poll(client, f"{base}/jobs/recordInfo?taskId={tid}", h,
+                      done=lambda jj: (jj.get("data") or {}).get("state") == "success",
+                      err=lambda jj: (jj.get("data") or {}).get("state") == "fail",
+                      result=_jobs_result)
+    return await _fetch(client, out)
+
+
+def _laozhang_size(params) -> str:
+    """Derive an OpenAI-Videos-API `size` token ('WIDTHxHEIGHT') from aspect + resolution for the
+    Sora/Veo /v1/videos route (those models take `size`, not a separate resolution+aspect). Maps the
+    canonical short edge ('720p'/'1080p'/'4k', default 720p) onto 16:9 / 9:16 dims. VERIFY: exact
+    accepted sizes are model-specific (docs list 1280x720 / 1024x1792 / 1920x1080 / 3840x2160); we emit
+    the standard 16:9 / 9:16 pairs and the provider clamps/validates."""
+    res = _norm_res(params.get("resolution")) or "720p"
+    short = {"720p": 720, "1080p": 1080, "4k": 2160}.get(res, 720)
+    long_ = {720: 1280, 1080: 1920, 2160: 3840}[short]
+    asp = _aspect(params)
+    if asp in ("9:16", "portrait") or (isinstance(asp, str) and asp.startswith("9:")):
+        return f"{short}x{long_}"          # portrait
+    return f"{long_}x{short}"              # 16:9 / default landscape
+
+
+async def _laozhang_openai_video(client, h, slug, op, params):
+    """OpenAI Videos API path shared by LaoZhang Sora AND Veo (both go through /v1/videos now — the old
+    custom /veo route is DEPRECATED): POST /v1/videos {model, prompt, seconds(str), size} → poll
+    GET /v1/videos/{id} until status=='completed' → the video is BINARY at GET /v1/videos/{id}/content
+    (there is NO url field). We stream that binary through _drain_capped (OOM cap) and _rehost it.
+    i2v: VERIFY — JSON requests pass first-frame Data URI(s) in `images`[] (+ `metadata.lastFrame` for a
+    last frame); the multipart `input_reference` file form is the alternative. We send `images` as Data
+    URIs so the request stays JSON (do NOT use `image`/`reference_image`/`referenceImages` — deprecated)."""
+    body = {"model": slug, "prompt": params.get("prompt") or "",
+            "seconds": str(_seconds(params)), "size": _laozhang_size(params)}
+    if op in ("image_to_video", "reference_to_video"):
+        refs = params.get("ref_images") or []
+        if refs:
+            # JSON i2v: first frame(s) as Data URIs in `images`; a 2nd ref → metadata.lastFrame.
+            body["images"] = [_img_url(r) for r in refs[:2]]
+            if len(refs) > 1:
+                body.setdefault("metadata", {})["lastFrame"] = _img_url(refs[1])
+    r = await client.post("https://api.laozhang.ai/v1/videos", headers=h, json=body); r.raise_for_status()
+    j = r.json()
+    vid = (j.get("id") or (j.get("data") or {}).get("id"))
+    if not vid:
+        raise ProviderError(f"laozhang_video(openai): no video id in submit response: {str(j)[:200]}")
+
+    def _status(jj):
+        return ((jj.get("status") or (jj.get("data") or {}).get("status")) or "").lower()
+
+    # Poll status only (the result is a separate binary endpoint, not a URL in this JSON) — _poll's
+    # result() just signals readiness; we fetch the bytes from /content afterward.
+    await _poll(client, f"https://api.laozhang.ai/v1/videos/{vid}", h,
+                done=lambda jj: _status(jj) in ("completed", "succeeded", "success"),
+                err=lambda jj: _status(jj) in ("failed", "error", "cancelled", "canceled"),
+                result=lambda jj: True)
+    # BINARY download — NO url field. Stream through the running-total OOM cap, then _rehost (by caller).
+    async with client.stream("GET", f"https://api.laozhang.ai/v1/videos/{vid}/content",
+                             headers=h) as rc:
+        rc.raise_for_status()
+        data = await _drain_capped(rc)
+        mime = rc.headers.get("content-type", "video/mp4")
+    if not data:
+        raise ProviderError("laozhang_video(openai): empty content body")
+    return data, mime
+
+
+async def _laozhang_wan_video(client, h, slug, op, params):
+    """LaoZhang Wan (DashScope path, NOT OpenAI-compatible): POST
+    /wan/api/v1/services/aigc/video-generation/video-synthesis with header X-DashScope-Async: enable and a
+    NESTED body {model, input:{prompt, media:[{type:'first_frame',url}]}, parameters:{resolution,duration}}
+    → submit returns output.task_id → poll GET /v1/tasks/{task_id} until status=='completed' → top-level
+    `result_url` (a signed upstream URL → _fetch + _rehost; per docs the LaoZhang auth header must NOT be
+    sent to result_url, and _fetch uses no auth header). VERIFY: the nested input/parameters shape +
+    X-DashScope-Async header are doc-derived; field casing of resolution is UPPERCASE ('720P'/'1080P')."""
+    wh = dict(h); wh["X-DashScope-Async"] = "enable"
+    inp = {"prompt": params.get("prompt") or ""}
+    if op in ("image_to_video", "reference_to_video"):
+        refs = params.get("ref_images") or []
+        if refs:
+            inp["media"] = [{"type": "first_frame", "url": _img_url(refs[0])}]
+            if len(refs) > 1:
+                inp["media"].append({"type": "last_frame", "url": _img_url(refs[1])})
+    par = {"duration": _seconds(params)}
+    if params.get("resolution"):
+        par["resolution"] = _norm_res(params["resolution"]).upper()    # '720P'/'1080P'
+    body = {"model": slug, "input": inp, "parameters": par}
+    r = await client.post(
+        "https://api.laozhang.ai/wan/api/v1/services/aigc/video-generation/video-synthesis",
+        headers=wh, json=body); r.raise_for_status()
+    j = r.json()
+    tid = (j.get("output") or {}).get("task_id") or j.get("task_id") or (j.get("data") or {}).get("task_id")
+    if not tid:
+        raise ProviderError(f"laozhang_video(wan): no task_id in submit response: {str(j)[:200]}")
+
+    def _status(jj):
+        d = jj.get("output") or jj
+        return ((d.get("task_status") or d.get("status") or jj.get("status")) or "").lower()
+
+    def _result(jj):
+        d = jj.get("output") or jj
+        url = jj.get("result_url") or d.get("result_url") or d.get("video_url")
+        if not url:
+            results = d.get("results")
+            if isinstance(results, list) and results and isinstance(results[0], dict):
+                url = results[0].get("url")
+        if not url:
+            raise ProviderError(f"laozhang_video(wan): no result_url in response: {str(jj)[:200]}")
+        return url
+
+    out = await _poll(client, f"https://api.laozhang.ai/v1/tasks/{tid}", h,
+                      done=lambda jj: _status(jj) in ("completed", "succeeded", "success", "done"),
+                      err=lambda jj: _status(jj) in ("failed", "error", "cancelled", "canceled", "unknown"),
+                      result=_result)
+    return await _fetch(client, out)   # signed upstream URL → no LaoZhang auth header (per docs)
+
+
+async def _laozhang_video(client, op, slug, params):
+    """LaoZhang video — THREE endpoint shapes by slug (doc-verified at docs.laozhang.ai/en):
+      (a) VEO slugs (veo-3.1-generate-preview, veo-3.1-fast-generate-preview): the CURRENT LaoZhang Veo
+          route is the OpenAI Videos API (the old custom /veo route is DEPRECATED) — same /v1/videos
+          submit→poll→/content binary download as Sora. VERIFY: Veo-via-/v1/videos confirmed on the docs
+          Veo page; i2v `images`[]/`metadata.lastFrame` field names are the JSON-request shape.
+      (b) SORA slugs (sora-2, sora-2-pro): OpenAI Videos API — POST /v1/videos {model, prompt,
+          seconds(str), size} → poll GET /v1/videos/{id} → BINARY at GET /v1/videos/{id}/content (no url).
+      (c) WAN slugs (wan2.7-*, wan2.6-*, wan2.5-*): DashScope synthesis path → poll /v1/tasks/{id} →
+          result_url.
+    Auth = Authorization: Bearer _key('LAOZHANG_IMAGE_API_KEY') — the live LaoZhang account key (same
+    one the image path uses; despite the 'IMAGE' name it is the general LaoZhang API key). Keeps ALL
+    SSRF/OOM/redirect guards (_img_url on refs, _drain_capped on the binary stream, _fetch on the Wan
+    result_url). Defensive: unknown params omitted; ProviderError on an unexpected shape so it fails over."""
+    h = {"Authorization": f"Bearer {_key('LAOZHANG_IMAGE_API_KEY')}", "Content-Type": "application/json"}
+    s = (slug or "").lower()
+    if s.startswith("wan"):
+        return await _laozhang_wan_video(client, h, slug, op, params)
+    if s.startswith("sora") or s.startswith("veo"):
+        return await _laozhang_openai_video(client, h, slug, op, params)
+    raise ProviderError(f"laozhang_video: unrecognized slug '{slug}'")
+
+
 _ADAPTERS = {
-    "atlascloud": _atlascloud_video, "fal": _fal_video, "aiml": _aiml_video,
-    # laozhang + vertex are routed through the EXISTING Veo/Sora path (handled by the caller as the
-    # guaranteed legacy tail of every chain) — they have NO adapter here, so a chain step naming them
-    # raises `no adapter for '...'` → that step fails over → caller's legacy tail. See dispatch().
+    "atlascloud": _atlascloud_video, "fal": _fal_video, "aiml": _aiml_video, "kie": _kie_video,
+    "laozhang": _laozhang_video,
+    # vertex is routed through the EXISTING Veo/Sora path (handled by the caller as the guaranteed legacy
+    # tail of every chain) — it has NO adapter here, so a chain step naming it raises `no adapter for
+    # '...'` → that step fails over → caller's legacy tail. See dispatch(). laozhang now HAS an adapter.
 }
 
 
@@ -419,8 +763,13 @@ async def dispatch(feature: str, model_id: str, params: dict, op_id: str) -> dic
     the absolute COGS). Raises if the whole chain fails (caller then falls back to the legacy
     Veo/Sora LaoZhang/Vertex path)."""
     model = _MODELS.get(model_id)
-    cogs = (model or {}).get("cogs_usd")
-    official = (model or {}).get("official_usd") or cogs
+    # COGS booking uses the per-RESOLUTION cost for the SERVED resolution (v2): chain[0] (cheapest
+    # aggregator) costs the per-res cogs_usd; any failover to a pricier source books the conservative
+    # per-res official_usd. Resolves from the request's resolution → default_resolution → top-level anchor.
+    if model:
+        official, cogs = _res_basis(model, (params or {}).get("resolution"))
+    else:
+        cogs = official = None
     # Tool ops (reframe/upscale/lip_sync) are PRICED off the op-chain (price_basis→_op_chain_basis), so they
     # MUST also dispatch + book COGS off the op-chain — never a model chain. Else a client posting a model id
     # to a tool op runs the model chain and books the model COGS, undercutting the margin floor. Prompt ops
@@ -459,12 +808,69 @@ async def dispatch(feature: str, model_id: str, params: dict, op_id: str) -> dic
 
 # convenience for the banner / picker
 def model_catalog() -> list:
-    """Picker metadata (no secrets) for the studio model dropdown."""
-    return [{"id": m["id"], "label": m["label"], "sublabel": m.get("sublabel", ""),
-             "icon": m.get("icon", ""), "features": m.get("features", []),
-             "transparent": m.get("transparent", False),
-             "official_usd": m.get("official_usd"), "cogs_usd": m.get("cogs_usd")}
-            for m in _REG["models"]]
+    """Picker metadata (no secrets) for the studio model dropdown. v2: emits each model's FULL caps so
+    the frontend can compute the badge locally (badge == charge) — durations[], default_duration,
+    resolutions[{res,cogs_usd,official_usd}], default_resolution, audio (always|toggle|none) and
+    audio_on_mult — plus label/sublabel/icon/features. Per-res prices are surfaced so the frontend's
+    creditFor() runs the exact same double-floor × audio_mult formula as credit_catalog."""
+    out = []
+    for m in _REG["models"]:
+        res = [{"res": r.get("res"), "cogs_usd": r.get("cogs_usd"), "official_usd": r.get("official_usd")}
+               for r in (m.get("resolutions") or [])]
+        out.append({
+            "id": m["id"], "label": m["label"], "sublabel": m.get("sublabel", ""),
+            "icon": m.get("icon", ""), "features": m.get("features", []),
+            "transparent": m.get("transparent", False),
+            "durations": m.get("durations") or [],
+            "default_duration": m.get("default_duration"),
+            "resolutions": res,
+            "default_resolution": m.get("default_resolution"),
+            "audio": m.get("audio", "none"),
+            "audio_on_mult": m.get("audio_on_mult", 1),
+            "official_usd": m.get("official_usd"), "cogs_usd": m.get("cogs_usd"),
+        })
+    return out
+
+
+def _res_basis(model: dict, resolution=None) -> tuple:
+    """(official_usd, cogs_usd) for a model at `resolution`. Resolves the per-res entry from the model's
+    resolutions[] (exact `res` match, normalised so '4K'=='4k', '1080p'=='1080'…), falling back to the
+    model's default_resolution entry, then the first resolutions[] row, then the model's top-level
+    cogs_usd/official_usd anchor. official falls back to cogs when a row omits it."""
+    rows = model.get("resolutions") or []
+    chosen = None
+    if rows:
+        want = _norm_res(resolution) if resolution else None
+        if want:
+            chosen = next((r for r in rows if _norm_res(r.get("res")) == want), None)
+        if chosen is None:
+            dflt = _norm_res(model.get("default_resolution"))
+            chosen = next((r for r in rows if _norm_res(r.get("res")) == dflt), None)
+        if chosen is None:
+            chosen = rows[0]
+    if chosen is not None:
+        cogs = chosen.get("cogs_usd")
+        official = chosen.get("official_usd") or cogs
+        return official, cogs
+    cogs = model.get("cogs_usd")
+    return (model.get("official_usd") or cogs), cogs
+
+
+def _norm_res(res) -> str:
+    """Normalise a resolution token to a canonical lowercase key for matching: '4K'→'4k', '1080p'→'1080p',
+    '1080'→'1080p', '720'→'720p', '480'→'480p'. Bare unknown tokens pass through lowercased/stripped."""
+    s = str(res or "").strip().lower()
+    if not s:
+        return ""
+    if "2160" in s or "3840" in s or "4k" in s or "uhd" in s:
+        return "4k"
+    if "1080" in s or "1920" in s:
+        return "1080p"
+    if "720" in s or "1280" in s:
+        return "720p"
+    if "480" in s:
+        return "480p"
+    return s
 
 
 def _op_chain_basis(feature: str):
@@ -485,38 +891,60 @@ def _op_chain_basis(feature: str):
     return (max(offs) if offs else None), (max(cogs) if cogs else None), markup
 
 
-def price_basis(feature: str, model_id: str):
+def price_basis(feature: str, model_id: str, resolution=None):
     """(official_usd, cogs_usd, sell_markup) PER-SECOND that drive the credit price for a (feature, model).
-    Op-tools (reframe/upscale/lip_sync) price off their op-chain's WORST (most expensive) step
-    (model-independent, covers failover); every prompt-op (text/image/reference-to-video + video_edit)
-    prices by the selected model. Returns (None, None, None) when nothing matches."""
+    v2: prompt-ops resolve the per-RESOLUTION basis from the model's resolutions[] (fallback
+    default_resolution → first row → top-level anchor) via _res_basis. Op-tools (reframe/upscale/lip_sync)
+    price off their op-chain's WORST (most expensive) step (model-independent, covers failover) and are
+    resolution-invariant. Returns (None, None, None) when nothing matches."""
     if feature in _OP_TOOL_FEATURES:
         return _op_chain_basis(feature)
     m = _MODELS.get(model_id) or {}
-    return (m.get("official_usd") or m.get("cogs_usd")), m.get("cogs_usd"), None
+    if not m:
+        return None, None, None
+    official, cogs = _res_basis(m, resolution)
+    return official, cogs, None
 
 
-def credits_per_sec(feature: str, model_id: str):
-    """PER-SECOND sell credits for a (feature, model) — the picker badge multiplies this by the chosen
-    duration, and the caller debits credits_per_sec * seconds. Single source so badge == charge. Resolves
-    the per-second price basis from the registry and runs it through catalog.video_credits_for_usd at
-    seconds=1 (the same double floor as image: max(official*VIDEO_SELL_MARKUP, 2*cogs) → /credit_usd_value
-    → round-up-5, computed PER SECOND). Returns int per-second credits, or None if unpriced."""
+def _audio_mult_for(model: dict, audio_on: bool) -> float:
+    """The audio price multiplier for a model: model.audio_on_mult when audio is engaged — i.e. the caller
+    asked for audio on, OR the model emits native always-on audio (audio=='always') — else 1.0. A 'none'
+    (silent) model never charges the multiplier even if audio_on is mistakenly passed."""
+    audio = (model or {}).get("audio", "none")
+    if audio == "none":
+        return 1.0
+    engaged = bool(audio_on) or audio == "always"
+    if not engaged:
+        return 1.0
+    try:
+        return float(model.get("audio_on_mult", 1) or 1)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def credits_per_sec(feature: str, model_id: str, resolution=None, audio_on: bool = False):
+    """PER-SECOND sell credits for a (feature, model, resolution, audio) — a DISPLAY figure. NOTE the v2
+    badge is the TOTAL (ceil5 applied once to the full clip), so the badge is credits_for(...), NOT
+    credits_per_sec × seconds. This per-sec figure (ceil5 over one second) is kept only for any per-second
+    display label. Returns int per-second credits, or None if unpriced."""
     import credit_catalog as _cat
-    official, cogs, markup = price_basis(feature, model_id)
+    official, cogs, markup = price_basis(feature, model_id, resolution)
     if not official:
         return None
-    return _cat.video_credits_for_usd(official, cogs, seconds=1, markup=markup)
+    am = _audio_mult_for(_MODELS.get(model_id) or {}, audio_on)
+    return _cat.video_credits_for_usd(official, cogs, seconds=1, markup=markup, audio_mult=am)
 
 
-def credits_for(feature: str, model_id: str, seconds: float = 5):
-    """SINGLE SOURCE for the picker badge AND the metered debit (badge == charge). Video bills PER-SECOND:
-    badge = credits_per_sec(feature, model) * seconds (default 5s) via catalog.video_credits_for_usd. The
-    per-second credit is rounded up to 5 FIRST (inside video_credits_for_usd), then multiplied by the
-    integer duration — matching the contract's `perSecCredits * seconds`. Returns int credits, or None if
-    unpriced."""
+def credits_for(feature: str, model_id: str, seconds: float = 5, resolution=None, audio_on: bool = False):
+    """SINGLE SOURCE for the picker badge AND the metered debit (badge == charge). v2 per-model-caps:
+    resolves the per-RESOLUTION price basis from the model's resolutions[] (fallback default_resolution),
+    derives the audio multiplier (model.audio_on_mult when audio_on or model.audio=='always', else 1.0),
+    and runs the full clip through catalog.video_credits_for_usd — which applies the double floor
+    max(official×markup, 2×cogs) × audio_mult × seconds, then ceil5 ONCE on the FULL-CLIP total. Returns
+    int credits, or None if unpriced."""
     import credit_catalog as _cat
-    official, cogs, markup = price_basis(feature, model_id)
+    official, cogs, markup = price_basis(feature, model_id, resolution)
     if not official:
         return None
-    return _cat.video_credits_for_usd(official, cogs, seconds=seconds, markup=markup)
+    am = _audio_mult_for(_MODELS.get(model_id) or {}, audio_on)
+    return _cat.video_credits_for_usd(official, cogs, seconds=seconds, markup=markup, audio_mult=am)

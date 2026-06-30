@@ -724,6 +724,12 @@ async def lifespan(application):
         _vid_sweep_task = asyncio.create_task(_video_jobs_sweep_loop())
     except Exception as _se:
         _VID_LOG.warning("[video_jobs] sweep loop failed to start: %s", _se)
+    # In-process recipe orphan sweep (refund the umbrella hold left by a dead recipe DAG task).
+    _recipe_sweep_task = None
+    try:
+        _recipe_sweep_task = asyncio.create_task(_recipe_jobs_sweep_loop())
+    except Exception as _se:
+        _RECIPE_LOG.warning("[recipe_jobs] sweep loop failed to start: %s", _se)
     yield
     if _img_sweep_task:
         _img_sweep_task.cancel()
@@ -735,6 +741,12 @@ async def lifespan(application):
         _vid_sweep_task.cancel()
         try:
             await _vid_sweep_task
+        except BaseException:
+            pass
+    if _recipe_sweep_task:
+        _recipe_sweep_task.cancel()
+        try:
+            await _recipe_sweep_task
         except BaseException:
             pass
     await rc.close_redis()
@@ -3224,8 +3236,9 @@ async def _image_jobs_sweep_loop():
 # hold itself is durable in credit_ledger and refund_credits is idempotent).
 # ══════════════════════════════════════════════════════════════════════════════
 
-# op slug → registry feature (BUILD CONTRACT §1 featureForOp). Distinct from the
-# image map. modify_video→video_edit; motion_control/paparazzi_moment→image_to_video.
+# op slug → registry feature (BUILD CONTRACT v2 featureForOp). Distinct from the
+# image map. modify_video→video_edit; motion_control→image_to_video;
+# seamless_looping→text_to_video (v2 rename of paparazzi_moment; dispatch gets loop=true).
 _VIDEO_OP_FEATURE = {
     "text_to_video": "text_to_video",
     "image_to_video": "image_to_video",
@@ -3235,8 +3248,10 @@ _VIDEO_OP_FEATURE = {
     "caption_video": "caption_video",
     "lip_sync": "lip_sync",
     "motion_control": "image_to_video",
-    "paparazzi_moment": "image_to_video",
+    "seamless_looping": "text_to_video",
 }
+# ops that set loop=true in the dispatch params (seamless perfect-loop clip).
+_VIDEO_OPS_LOOP = {"seamless_looping"}
 # ops whose dispatch sends a reference image seed (i2v family)
 _VIDEO_OPS_NEED_REF_IMAGE = {"image_to_video", "motion_control"}
 # ops whose dispatch operates on a source VIDEO (tool ops + edit)
@@ -3265,11 +3280,13 @@ def _vid_b64_within(b64s: str, cap: int) -> bool:
     return (len(b64s) * 3 // 4) <= cap
 
 
-def _video_params_from_body(feature: str, body: dict) -> dict:
+def _video_params_from_body(feature: str, body: dict, op: str = "", model_meta: dict = None) -> dict:
     """Build the video_providers.dispatch params from a validated request body. Normalises ref
     inputs to dispatch's contract: ref_images=[{url|b64}] (i2v seed), ref_video={url|b64}
     (edit/reframe/upscale/lip_sync source), audio={url|b64} (lip_sync). USER http(s) refs are
-    SSRF-validated here (adapters fetch them server-side); b64 refs are size-capped (OOM guard)."""
+    SSRF-validated here (adapters fetch them server-side); b64 refs are size-capped (OOM guard).
+    v2: threads `audio` (bool — honored only when the model's audio != 'none') and `loop` (true for
+    seamless_looping) into the dispatch params so the adapters can pass them to the provider body."""
     params: dict = {
         "prompt": (body.get("prompt") or "")[:4000],
         "aspect": body.get("aspect") or "16:9",
@@ -3282,7 +3299,19 @@ def _video_params_from_body(feature: str, body: dict) -> dict:
     if body.get("camera"):
         params["camera"] = body["camera"]
 
-    # reference image (i2v / motion / paparazzi seed frame). paparazzi_moment ref is OPTIONAL.
+    # Audio toggle (v2): only meaningful when the model supports audio. For a 'none' (silent) model the
+    # field is dropped so we never send a misleading enable_audio to a provider that can't do it; for an
+    # 'always' (native) model we DON'T force a value (the provider always emits audio). Only a 'toggle'
+    # model threads the explicit on/off the user chose.
+    _audio_kind = (model_meta or {}).get("audio", "none")
+    if _audio_kind == "toggle" and ("audio" in body):
+        params["audio"] = bool(body.get("audio"))
+
+    # Seamless looping (v2): the seamless_looping op produces a perfectly-looping clip → loop=true.
+    if (op or "").lower() in _VIDEO_OPS_LOOP:
+        params["loop"] = True
+
+    # reference image (i2v / motion seed frame). seamless_looping ref is OPTIONAL.
     ref_img = body.get("ref_image_b64")
     if ref_img:
         b64 = str(ref_img).split(",")[-1]
@@ -3333,20 +3362,32 @@ def _video_prepare(op: str, body: dict, user) -> dict:
                 "coming_soon": True, "cr": 0, "params": {}, "op_id": f"vid-{uuid.uuid4().hex[:12]}",
                 "seconds": int(body.get("seconds") or 5)}
 
+    model_meta: dict = {}
+    resolution = (body.get("resolution") or "").strip()
     if not is_tool:
-        if model not in _vp._MODELS:
+        model_meta = _vp._MODELS.get(model) or {}
+        if not model_meta:
             raise HTTPException(400, f"Unknown video model: {model}")
         # the model MUST support the requested feature — else dispatch silently falls back to an
         # op-chain while we price+book off the model → margin leak. Reject instead (mirror image).
-        if feature not in ((_vp._MODELS.get(model) or {}).get("features") or []):
+        if feature not in (model_meta.get("features") or []):
             raise HTTPException(400, f"Model '{model}' does not support '{op}'")
-        metering.ensure_tier(user, catalog.video_min_tier(model, body.get("resolution") or ""), model)
+        # v2: validate resolution ∈ model.resolutions[] (default to the model's default_resolution when
+        # the client omits it). An invalid resolution is a 400 (never silently re-priced off a default).
+        _res_keys = {str(r.get("res")) for r in (model_meta.get("resolutions") or [])}
+        _res_norms = {_vp._norm_res(r.get("res")) for r in (model_meta.get("resolutions") or [])}
+        if not resolution:
+            resolution = str(model_meta.get("default_resolution") or "")
+        elif resolution not in _res_keys and _vp._norm_res(resolution) not in _res_norms:
+            raise HTTPException(400, f"resolution '{resolution}' not supported by '{model}'")
+        # 4K is resolution-locked to Studio (any model) — video_min_tier accepts the '4K' label.
+        metering.ensure_tier(user, catalog.video_min_tier(model, resolution), model)
     else:
         # tool ops are model-independent (priced off the op-chain); still tier-gate by the op-chain
         # min tier when one is configured, else they're ungated like image pure-tools.
         model = model or "wimba-tool"
 
-    # ref-presence validation per op (matches the UI flags in BUILD CONTRACT §1)
+    # ref-presence validation per op (matches the UI flags in BUILD CONTRACT)
     if feature in _VIDEO_OPS_NEED_REF_VIDEO and not (body.get("ref_video_url") or body.get("ref_video_b64")):
         raise HTTPException(400, f"op '{op}' needs a reference video")
     if op == "image_to_video" and not body.get("ref_image_b64"):
@@ -3357,12 +3398,25 @@ def _video_prepare(op: str, body: dict, user) -> dict:
     seconds = int(body.get("seconds") or 5)
     if seconds <= 0:
         seconds = 5
-    # price = picker badge (single source). credits_for already multiplies per-sec × seconds.
-    cr = _vp.credits_for(feature, model if not is_tool else "", seconds) or 0
+    # v2: validate seconds ∈ model.durations[] (prompt ops only; tool ops have no per-model duration set).
+    if not is_tool:
+        _durs = model_meta.get("durations") or []
+        if _durs and seconds not in _durs:
+            raise HTTPException(400, f"duration {seconds}s not supported by '{model}' (allowed: {_durs})")
+
+    # audio toggle: only a 'toggle' model honors the user's audio flag; 'always' is native-on (priced
+    # via audio_on_mult inside credits_for), 'none' is silent. Pass the resolved on/off to credits_for.
+    audio_on = bool(body.get("audio")) if (model_meta.get("audio") == "toggle") else False
+
+    # price = picker badge (single source). credits_for applies the v2 per-res + audio formula and the
+    # ceil5-once-on-the-full-clip total — so the held credits == the badge the frontend shows.
+    cr = _vp.credits_for(feature, model if not is_tool else "", seconds,
+                         resolution=(resolution or None) if not is_tool else None,
+                         audio_on=audio_on) or 0
     if cr <= 0:
         raise HTTPException(400, f"'{op}' on '{model}' is not priced")
 
-    params = _video_params_from_body(feature, body)
+    params = _video_params_from_body(feature, body, op=op, model_meta=model_meta)
     return {"feature": feature, "is_tool": is_tool, "model": model, "coming_soon": False,
             "cr": cr, "params": params, "op_id": f"vid-{uuid.uuid4().hex[:12]}", "seconds": seconds}
 
@@ -3434,21 +3488,36 @@ async def _run_video_job(*, tenant_id, uid, job_id: str, op: str, prep: dict):
 
 @app.get("/video-tools/catalog")
 async def video_tools_catalog():
-    """Picker metadata for the Video page (BUILD CONTRACT §2/§3). Per-model label/sublabel/icon +
-    feature support + credits_per_sec (= what's debited PER SECOND; the frontend badge renders
-    credits_per_sec × duration). Badge == metering charge: both via video_providers.credits_for. Tool
-    ops expose tool_credits[op] (also per-second). Mirrors /image/catalog."""
+    """Picker metadata for the Video page (BUILD CONTRACT v2 §3, frontend `Catalog`). Each model carries
+    its FULL caps — durations[], default_duration, resolutions[{res,cogs_usd,official_usd}],
+    default_resolution, audio (always|toggle|none), audio_on_mult — plus label/sublabel/icon/features, so
+    the frontend's creditFor() computes the badge LOCALLY via the exact same formula
+    (max(official×markup, 2×cogs) × audio_mult × seconds → ceil5 once). Top-level `markup`,
+    `credit_usd_value`, `tool_credits`, `features`, `tool_defaults` complete the contract so badge ==
+    charge without a server round-trip. A per-model `credits_per_sec` is also included as a convenience
+    display figure (NOT the badge — the v2 badge is the full-clip total). Mirrors /image/catalog."""
     import video_providers as _vp
     models = []
-    for m in _vp.model_catalog():
+    for m in _vp.model_catalog():       # model_catalog() already emits the full caps
         feats = m.get("features", [])
-        # credits_per_sec uses the model's FIRST prompt feature as the price basis (all prompt features
-        # of a model share the model's per-sec basis; price_basis is model-keyed for non-tool features).
+        # convenience per-second figure (uses the model's default_resolution + native-audio policy);
+        # the frontend computes the real (res,seconds,audio) total itself from the caps below.
         basis_feat = feats[0] if feats else "text_to_video"
-        cps = _vp.credits_for(basis_feat, m["id"], 1)   # seconds=1 → per-second credits
-        models.append({"id": m["id"], "label": m["label"], "sublabel": m.get("sublabel", ""),
-                       "icon": m.get("icon", ""), "features": feats,
-                       "credits_per_sec": cps, "credit_usd_value": catalog.CREDIT_USD_VALUE})
+        cps = _vp.credits_for(basis_feat, m["id"], 1,
+                              resolution=m.get("default_resolution"),
+                              audio_on=(m.get("audio") == "always"))
+        models.append({
+            "id": m["id"], "label": m["label"], "sublabel": m.get("sublabel", ""),
+            "icon": m.get("icon", ""), "features": feats,
+            "durations": m.get("durations", []),
+            "default_duration": m.get("default_duration"),
+            "resolutions": m.get("resolutions", []),
+            "default_resolution": m.get("default_resolution"),
+            "audio": m.get("audio", "none"),
+            "audio_on_mult": m.get("audio_on_mult", 1),
+            "credits_per_sec": cps,
+            "credit_usd_value": catalog.CREDIT_USD_VALUE,
+        })
     tool_credits = {}
     for op in ("reframe_video", "upscale_video", "lip_sync"):   # caption_video is native/free (no chain)
         cps = _vp.credits_for(op, "", 1)
@@ -3457,6 +3526,7 @@ async def video_tools_catalog():
     return {"models": models, "tool_credits": tool_credits,
             "features": _vp._REG.get("_features", []),
             "tool_defaults": _vp._REG.get("tool_defaults", {}),
+            "markup": catalog.VIDEO_SELL_MARKUP,
             "credit_usd_value": catalog.CREDIT_USD_VALUE}
 
 
@@ -3567,6 +3637,290 @@ async def _video_jobs_sweep_loop():
             await _sweep_orphaned_video_jobs()
         except Exception as _e:
             _VID_LOG.warning("[video_jobs] sweep loop error: %s", _e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RECIPES — the /recipes/product-ad/* namespace (one-click "Format": upload a
+# product → a finished, multi-aspect ad with locked product fidelity).
+# ADDITIVE + ISOLATED: this does NOT touch the WB/VI engine cores, Flow, Batch, or
+# the existing /video-tools / /video routes. It mirrors the /video-tools async
+# submit+poll+sweep discipline, but the heavy lifting lives in recipe_product_ad.
+#
+# BILLING (single source of truth — NO double-hold):
+#   recipe_product_ad.run_product_ad_job() OWNS the umbrella reservation: it calls
+#   estimate() → metering.hold_credits(total, op_id) as its FIRST step, commits the
+#   actual (commit<hold auto-refunds the slack) as its LAST step, and refunds the
+#   whole hold on ANY failure. Every ledger line carries video_job=op_id → ONE
+#   history row. The SUBMIT route therefore does NOT hold — it only:
+#     (a) ensure_tier (403, premium recipe — min "starter"),
+#     (b) estimate() for the receipt + a synchronous gate_credits() pre-check (402
+#         surfaced at submit-time, same UX as /video-tools; the job's own hold is the
+#         atomic source of truth — a balance race just resolves the job 'failed'),
+#     (c) mint a server-side op_id (recipe-<uuid>; NEVER a client header → the
+#         hold/commit are idempotent on op_id) which is ALSO the video_job rollup key,
+#     (d) persist a 'running' in-process job row carrying op_id,
+#     (e) spawn the background DAG task, return {job_id} in ~1s.
+#   The orphan sweep refunds the umbrella hold of any 'running' row whose task died
+#   (idempotent — refund_credits no-ops a consumed/absent hold).
+# ══════════════════════════════════════════════════════════════════════════════
+_RECIPE_LOG = _logging.getLogger("recipes")
+# Each recipe job fans out into MANY heavy sub-dispatches (bg-remove + keyframes +
+# clips × variants + TTS + per-aspect ffmpeg) and runs for MINUTES — its own,
+# small admission cap (independent of VIDEO_MAX_INFLIGHT, which it does NOT consume).
+RECIPE_MAX_INFLIGHT = int(os.getenv("RECIPE_MAX_INFLIGHT", "2"))
+_recipe_inflight = 0
+# A 'running' recipe row older than this ⟹ the task died. Recipes are the heaviest
+# job on the backend (multiple clips × variants + ffmpeg) → very generous.
+RECIPE_JOB_STALE_SECS = float(os.getenv("RECIPE_JOB_STALE_SECS", "3600"))
+RECIPE_JOB_SWEEP_EVERY = float(os.getenv("RECIPE_JOB_SWEEP_EVERY", "300"))
+# premium gate: the recipe orchestrates paid renders → require at least this tier.
+RECIPE_MIN_TIER = os.getenv("RECIPE_MIN_TIER", "starter")
+# 4 product images, b64, can be large — cap the decoded bytes (OOM guard; the Node
+# proxy already raises its json limit to 220mb to carry them).
+RECIPE_MAX_IMG_BYTES = int(os.getenv("RECIPE_MAX_IMG_BYTES", str(15 * 1024 * 1024)))   # 15MB/image decoded
+RECIPE_MAX_IMAGES = 4
+
+# in-process job ledger: job_id -> dict(tenant_id, user_id, op_id, status, style,
+# variants, credits_held, breakdown, result(variants[]), credits, error, progress,
+# created, updated). Tenant-scoped on read (IDOR guard).
+_RECIPE_JOBS: dict[str, dict] = {}
+
+
+def _recipe_validate_input(body: dict) -> dict:
+    """Validate + normalise a RecipeInput (contract §1). Raises HTTPException on bad input. Does NOT
+    resolve pricing/models — recipe_product_ad.estimate()/run own that. b64 product images are
+    size-capped (OOM guard); http(s) image refs are SSRF-validated (the fidelity core fetches them
+    server-side). Returns a shallow-normalised copy safe to pass to estimate()/run_product_ad_job()."""
+    body = dict(body or {})
+    imgs = body.get("product_images") or []
+    if not isinstance(imgs, list) or not imgs:
+        raise HTTPException(400, "at least one product image is required")
+    if len(imgs) > RECIPE_MAX_IMAGES:
+        raise HTTPException(400, f"at most {RECIPE_MAX_IMAGES} product images")
+    clean_imgs = []
+    for img in imgs:
+        if not isinstance(img, str) or not img.strip():
+            raise HTTPException(400, "each product image must be a base64 string or url")
+        s = img.strip()
+        if s.startswith("http://") or s.startswith("https://"):
+            if not _is_public_http_url(s):
+                raise HTTPException(400, "product image URL not allowed")
+        else:
+            b64 = s.split(",")[-1]
+            if not _vid_b64_within(b64, RECIPE_MAX_IMG_BYTES):
+                raise HTTPException(413, "product image too large")
+        clean_imgs.append(s)
+    body["product_images"] = clean_imgs
+
+    style = (body.get("style") or "showcase").lower()
+    if style not in ("showcase", "in_scene", "ugc"):
+        raise HTTPException(400, f"unknown style: {style}")
+    body["style"] = style
+
+    # aspects: keep only the supported set; default ["9:16"].
+    aspects = body.get("aspects") or ["9:16"]
+    if not isinstance(aspects, list):
+        raise HTTPException(400, "aspects must be a list")
+    aspects = [a for a in aspects if a in ("9:16", "1:1", "16:9")]
+    if not aspects:
+        raise HTTPException(400, "at least one valid aspect (9:16|1:1|16:9) is required")
+    body["aspects"] = aspects
+
+    secs = body.get("seconds") or 8
+    if secs not in (8, 15, 30):
+        raise HTTPException(400, "seconds must be 8, 15 or 30")
+    body["seconds"] = secs
+
+    variants = body.get("variants") or 1
+    if variants not in (1, 2, 3):
+        raise HTTPException(400, "variants must be 1, 2 or 3")
+    body["variants"] = variants
+    return body
+
+
+def _recipe_estimate(body: dict) -> dict:
+    """Compute the itemised receipt via recipe_product_ad.estimate() → {line_items, total}. The SAME
+    total is the umbrella hold the job takes (badge == charge)."""
+    import recipe_product_ad as _recipe
+    est = _recipe.estimate(body)
+    total = int(est.get("total") or 0)
+    if total <= 0:
+        raise HTTPException(400, "recipe is not priced (no live models resolved)")
+    return {"line_items": est.get("line_items") or [], "total": total}
+
+
+async def _run_recipe_job(*, tenant_id, uid, byok: bool, job_id: str, body: dict, op_id: str):
+    """Background runner (OUTSIDE request context). recipe_product_ad.run_product_ad_job OWNS the
+    umbrella hold/commit/refund (op_id) — this wrapper only injects the billing context, feeds the poll
+    UI via set_progress, records the terminal state, and releases the admission slot. It NEVER holds or
+    commits itself (no double-charge)."""
+    import recipe_product_ad as _recipe
+    global _recipe_inflight
+    job = _RECIPE_JOBS.get(job_id)
+
+    async def _set_progress(phase: str, pct: int, label: str):
+        j = _RECIPE_JOBS.get(job_id)
+        if j is not None and j.get("status") == "running":
+            j["progress"] = {"phase": phase, "pct": int(pct), "label": label}
+            j["updated"] = time.time()
+
+    # billing context for the DAG (read inside run_product_ad_job under these keys).
+    run_input = dict(body)
+    run_input["_tenant_id"] = tenant_id
+    run_input["_user_id"] = uid
+    run_input["_byok"] = bool(byok)
+    try:
+        try:
+            out = await asyncio.wait_for(
+                _recipe.run_product_ad_job(run_input, op_id, _set_progress),
+                timeout=RECIPE_JOB_STALE_SECS)
+        except BaseException as e:
+            # run_product_ad_job refunds its OWN hold on failure; this is a belt-and-suspenders refund in
+            # case it raised before/around the hold (idempotent — refund_credits no-ops a consumed hold).
+            await metering.refund_credits(tenant_id, op_id)
+            if job is not None and job.get("status") == "running":
+                job.update(status="failed", error=_short_err(e), updated=time.time())
+            _RECIPE_LOG.info("[recipe_job] %s failed: %s", job_id, _short_err(e))
+            return
+
+        variants = out.get("variants") or []
+        if not variants:
+            await metering.refund_credits(tenant_id, op_id)
+            if job is not None and job.get("status") == "running":
+                job.update(status="failed", error="no variants produced", updated=time.time())
+            return
+        if job is not None:
+            job.update(status="success",
+                       result={"variants": variants},
+                       credits=int(out.get("credits") or 0),
+                       updated=time.time())
+    finally:
+        _recipe_inflight -= 1
+
+
+@app.post("/recipes/product-ad/estimate")
+async def recipe_product_ad_estimate(body: dict,
+                                     user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Itemised cost receipt for the live wizard (NO hold). {line_items:[{label,credits}], total}. The
+    total equals the umbrella hold the submit path will reserve (badge == charge)."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    clean = _recipe_validate_input(body or {})
+    return {"ok": True, **_recipe_estimate(clean)}
+
+
+@app.post("/recipes/product-ad/submit")
+async def recipe_product_ad_submit(body: dict,
+                                   user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Async submit (mirror of /video-tools/<op>/submit). ensure_tier (403) → estimate (receipt) →
+    gate_credits (402 pre-check) → persist a 'running' job carrying the server-minted op_id → spawn the
+    DAG task → return {job_id} in ~1s. The umbrella hold itself is taken INSIDE run_product_ad_job (the
+    single source of truth) — this route never double-holds. The client polls
+    /recipes/product-ad/jobs/<id>."""
+    if user is None:
+        raise HTTPException(401, "authentication required")   # fail CLOSED — never run paid upstream anon
+    clean = _recipe_validate_input(body or {})
+    # premium gate: a recipe orchestrates paid renders → require the recipe min tier BEFORE any reserve.
+    metering.ensure_tier(user, RECIPE_MIN_TIER, "wimba-product-ad")
+
+    est = _recipe_estimate(clean)
+    total = est["total"]
+    # synchronous balance pre-check (402 at submit-time, same UX as /video-tools). The job's hold_credits
+    # is the atomic authority; this only spares the user a job that would immediately fail on funds.
+    await metering.gate_credits(user.tenant_id, total, byok=False)
+
+    uid = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    op_id = f"recipe-{uuid.uuid4().hex}"
+    job_id = str(uuid.uuid4())
+    now = time.time()
+
+    global _recipe_inflight
+    if _recipe_inflight >= RECIPE_MAX_INFLIGHT:
+        raise HTTPException(429, "recipe service busy — try again in a moment")
+    _recipe_inflight += 1   # reserve SYNCHRONOUSLY; released by _run_recipe_job's finally
+    try:
+        # persist the running row BEFORE spawning — a job that will hold credits must always be pollable.
+        _RECIPE_JOBS[job_id] = {
+            "tenant_id": user.tenant_id, "user_id": uid, "op_id": op_id, "status": "running",
+            "style": clean.get("style"), "variants": clean.get("variants"),
+            "credits_held": total, "breakdown": est["line_items"],
+            "result": None, "credits": 0, "error": None,
+            "progress": {"phase": "queued", "pct": 0, "label": "Queued…"},
+            "created": now, "updated": now,
+        }
+    except BaseException:
+        _recipe_inflight -= 1
+        raise
+    # hand off to the background DAG (it owns the umbrella hold/commit/refund + slot release + terminal row).
+    asyncio.create_task(_run_recipe_job(
+        tenant_id=user.tenant_id, uid=uid, byok=False, job_id=job_id, body=clean, op_id=op_id))
+    return {"ok": True, "job_id": job_id, "status": "running",
+            "credits_held": total, "breakdown": est["line_items"]}
+
+
+@app.get("/recipes/product-ad/jobs/{job_id}")
+async def recipe_product_ad_job_status(job_id: str,
+                                       user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Poll one async recipe job (tenant-scoped — IDOR guard). running → {progress}; success →
+    {variants:[{aspect, video_url(signed), seconds, credits}], credits}; failed → {error}. LAZY REAP: a
+    'running' row older than RECIPE_JOB_STALE_SECS means the task died → refund the orphaned umbrella
+    hold + mark failed (idempotent)."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    job = _RECIPE_JOBS.get(job_id)
+    if not job or job.get("tenant_id") != user.tenant_id:   # tenant-scope (IDOR guard)
+        raise HTTPException(404, "job not found")
+    status = job.get("status")
+    if status == "running":
+        if (time.time() - float(job.get("updated") or 0)) > RECIPE_JOB_STALE_SECS:
+            await metering.refund_credits(user.tenant_id, job.get("op_id"))
+            job.update(status="failed", error="timed out", updated=time.time())
+            return {"ok": True, "job_id": job_id, "status": "failed", "error": "timed out"}
+        return {"ok": True, "job_id": job_id, "status": "running",
+                "progress": job.get("progress") or {"phase": "running", "pct": 0, "label": ""}}
+    if status == "failed":
+        return {"ok": True, "job_id": job_id, "status": "failed",
+                "error": job.get("error") or "recipe generation failed"}
+    # success — sign each variant's R2 key on read.
+    out_variants = []
+    for v in ((job.get("result") or {}).get("variants") or []):
+        signed = await _sign_result_key(v.get("key"))
+        item = {"aspect": v.get("aspect"), "seconds": v.get("seconds") or 0,
+                "credits": v.get("credits") or 0}
+        if signed:
+            item["video_url"] = signed
+        out_variants.append(item)
+    return {"ok": True, "job_id": job_id, "status": "success",
+            "variants": out_variants, "credits": job.get("credits") or 0}
+
+
+async def _sweep_orphaned_recipe_jobs() -> int:
+    """Mark stale in-process 'running' recipe jobs failed + refund their orphaned umbrella holds
+    (idempotent). Covers jobs whose background task died without flipping the row and that no one polls."""
+    n, now = 0, time.time()
+    for jid, job in list(_RECIPE_JOBS.items()):
+        if job.get("status") == "running" and (now - float(job.get("updated") or 0)) > RECIPE_JOB_STALE_SECS:
+            try:
+                await metering.refund_credits(job.get("tenant_id"), job.get("op_id"))
+            except Exception as _e:
+                _RECIPE_LOG.warning("[recipe_jobs] sweep refund failed (%s): %s", job.get("op_id"), _e)
+            job.update(status="failed", error="timed out", updated=now); n += 1
+    if n:
+        _RECIPE_LOG.info("[recipe_jobs] sweep: failed+refunded %d orphaned job(s)", n)
+    return n
+
+
+async def _recipe_jobs_sweep_loop():
+    """Periodic in-process orphan-sweep (every RECIPE_JOB_SWEEP_EVERY s). Mirrors _video_jobs_sweep_loop."""
+    while True:
+        try:
+            await asyncio.sleep(RECIPE_JOB_SWEEP_EVERY)
+        except asyncio.CancelledError:
+            break
+        try:
+            await _sweep_orphaned_recipe_jobs()
+        except Exception as _e:
+            _RECIPE_LOG.warning("[recipe_jobs] sweep loop error: %s", _e)
 
 
 def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
