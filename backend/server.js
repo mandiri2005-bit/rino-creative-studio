@@ -1186,6 +1186,32 @@ app.get("/api/image/batch/jobs/:id", async (req,res) => {
     return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
   return pyProxy(req, res, `/image/batch/jobs/${encodeURIComponent(id)}`);
 });
+// Same-origin byte proxy for ONE delivered batch image — feeds the client-side .zip bundler, which
+// can't fetch() the cross-origin R2 signed URL (no Access-Control-Allow-Origin on R2's S3 endpoint).
+// pyProxy is JSON-only, so this streams the binary itself: forward the Clerk JWT, pull the bytes from
+// Python (tenant-scoped + RLS there), and pipe them back with the upstream content-type. 4 segments
+// under /api/image (batch/:id/raw/:index) ⟹ no collision with batch/jobs/:id (3) or :op (1).
+app.get("/api/image/batch/:id/raw/:index", async (req,res) => {
+  const id = String(req.params.id || "");
+  const index = String(req.params.index || "");
+  const tenantId = resolveTenantId(req);
+  if (tenantId && !(await rateLimitOk(`imgpoll:${tenantId}`, 240, 60)))
+    return res.status(429).json({ error: "rate_limited", message: "Slow down a moment." });
+  try {
+    const headers = {};
+    if (req.headers.authorization) headers.authorization = req.headers.authorization;
+    const pyRes = await fetch(`${PYTHON_API}/image/batch/${encodeURIComponent(id)}/raw/${encodeURIComponent(index)}`, { headers });
+    if (!pyRes.ok) {
+      const e = await pyRes.json().catch(() => ({}));
+      return res.status(pyRes.status).json({ error: e.detail || e.error || pyRes.statusText });
+    }
+    const ct = pyRes.headers.get("content-type") || "application/octet-stream";
+    const buf = Buffer.from(await pyRes.arrayBuffer());
+    res.setHeader("Content-Type", ct);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    return res.status(200).send(buf);
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
 
 // New atlabs-style Image page — one POST per feature op. Auth is enforced by the /api gate
 // above (requireAuth); Python tier-gates the model, balance-gates + debits the badge credits

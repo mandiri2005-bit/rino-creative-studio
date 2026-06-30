@@ -562,14 +562,17 @@ _IMAGE_BATCH_CREDITS = {
     "nano-banana-2":   25,
     "nano-banana-pro": 40,
 }
-# Native-Google model id per auth path. Vertex (OAuth) uses the GA names; the
-# Developer API (API key) carries a `-preview` suffix on the Gemini-3 image models.
-# Both are FIRST-PARTY Google — no aggregator. (Source of truth: image_registry.json
-# `vertex` chain + the laozhang_api _IMG_MODEL Developer map.)
+# Native-Google model id for the Vertex (OAuth) batch path. nano-banana (2.5) is GA + served on the
+# REGIONAL endpoint; the Gemini-3 image models are PREVIEW + served ONLY on the GLOBAL Vertex endpoint
+# (batch_engine._location_for_model routes gemini-3* to location='global' — a regional endpoint 404s
+# "PublisherModel does not exist", confirmed by live probe). FIRST-PARTY Google only — no aggregator.
+# NOTE: the Developer-API (API-key) batch path is DEAD for us — GEMINI_API_KEY returns
+# 403 PERMISSION_DENIED for BatchService.BatchGenerateContent (project not paid-tier/allowlisted),
+# so _IMAGE_BATCH_DEVELOPER is reference-only; batch runs exclusively over Vertex OAuth.
 _IMAGE_BATCH_VERTEX = {
     "nano-banana":     "gemini-2.5-flash-image",
-    "nano-banana-2":   "gemini-3.1-flash-image",
-    "nano-banana-pro": "gemini-3-pro-image",
+    "nano-banana-2":   "gemini-3.1-flash-image-preview",
+    "nano-banana-pro": "gemini-3-pro-image-preview",
 }
 _IMAGE_BATCH_DEVELOPER = {
     "nano-banana":     "gemini-2.5-flash-image",

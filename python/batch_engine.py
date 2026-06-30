@@ -17,8 +17,11 @@ with GCS). So batch is Vertex-OAuth + GCS only — proven end-to-end by the live
 
 Auth: an OAuth refresh-token (GCP_REFRESH_TOKEN/CLIENT_ID/SECRET) minted with the
 cloud-platform scope — covers BOTH Vertex aiplatform AND GCS read/write, so no service
-account is needed. The Vertex BATCH endpoint must be REGIONAL (location != 'global') and
-the region MUST match the bucket's region; GCP_BATCH_LOCATION defaults to us-central1.
+account is needed. The Vertex BATCH endpoint is PER-MODEL: gemini-2.5-flash-image runs on the
+REGIONAL endpoint (GCP_BATCH_LOCATION, default us-central1, region-matched to the bucket); the
+gemini-3.x image models are served ONLY on the GLOBAL endpoint (a regional endpoint 404s
+"PublisherModel ... does not exist"). See _location_for_model — the same OAuth creds + the same
+GCS bucket serve both.
 
 All blocking SDK / GCS calls run via asyncio.to_thread so they never stall the loop.
 """
@@ -63,7 +66,7 @@ _SAFETY_CATEGORIES = (
 
 # ── lazy, cached clients (mirror the proven probe: own creds w/ cloud-platform scope) ──
 _creds_singleton = None
-_genai_singleton = None
+_genai_clients = {}          # location -> genai.Client (per-endpoint: gemini-3 = 'global', 2.5 = regional)
 _storage_singleton = None
 
 
@@ -83,18 +86,39 @@ def _credentials():
     return _creds_singleton
 
 
-def _genai_regional():
-    """google.genai client pinned to the BATCH region (Vertex). None if unconfigured."""
-    global _genai_singleton
-    if _genai_singleton is not None:
-        return _genai_singleton
+def _location_for_model(model: str) -> str:
+    """Which Vertex endpoint serves `model` for batch. Gemini-3.x image models exist ONLY on the
+    GLOBAL endpoint (a regional endpoint 404s "PublisherModel does not exist"); gemini-2.5-flash-image
+    (nano-banana) is regional. Proven by live probe (gemini-3-pro-image-preview /
+    gemini-3.1-flash-image-preview reach JOB_STATE on 'global', 404 on us-central1)."""
+    return "global" if (model or "").lower().startswith("gemini-3") else GCP_BATCH_LOCATION
+
+
+def _location_from_job_name(name: str) -> str:
+    """The location segment of a batch-job resource name
+    (projects/.../locations/<loc>/batchPredictionJobs/...), so poll hits the endpoint the job
+    was created on. Falls back to the regional default if the name is unparseable."""
+    try:
+        parts = (name or "").split("/")
+        return parts[parts.index("locations") + 1] or GCP_BATCH_LOCATION
+    except (ValueError, IndexError):
+        return GCP_BATCH_LOCATION
+
+
+def _genai_for(location):
+    """google.genai Vertex client pinned to `location`, cached per-location. None if unconfigured.
+    gemini-3 batch needs location='global', gemini-2.5 needs the regional endpoint — both share the
+    same OAuth creds and the same GCS bucket."""
     if not have_batch_auth():
         return None
-    from google import genai
-    _genai_singleton = genai.Client(
-        vertexai=True, project=GCP_PROJECT_ID, location=GCP_BATCH_LOCATION,
-        credentials=_credentials())
-    return _genai_singleton
+    loc = (location or GCP_BATCH_LOCATION).strip().lower()
+    client = _genai_clients.get(loc)
+    if client is None:
+        from google import genai
+        client = genai.Client(vertexai=True, project=GCP_PROJECT_ID, location=loc,
+                              credentials=_credentials())
+        _genai_clients[loc] = client
+    return client
 
 
 def _storage():
@@ -185,7 +209,8 @@ async def submit(*, model, prompts, aspect, job_id, display_name):
     """Upload the JSONL request file to GCS, then create a Vertex batch over it. Returns
     (gemini_job_name, auth_mode, state_name). auth_mode is always 'oauth' (kept for the DB column
     + poll signature). Raises RuntimeError on any failure (caller refunds the hold)."""
-    client = _genai_regional()
+    location = _location_for_model(model)
+    client = _genai_for(location)
     gcs = _storage()
     if client is None or gcs is None:
         raise RuntimeError("Vertex GCS batch not configured (OAuth creds or bucket missing)")
@@ -207,14 +232,16 @@ async def submit(*, model, prompts, aspect, job_id, display_name):
     try:
         job = await asyncio.to_thread(_do)
     except Exception as e:
-        raise RuntimeError(f"Vertex GCS batch submit failed ({model}@{GCP_BATCH_LOCATION}): {e}")
+        raise RuntimeError(f"Vertex GCS batch submit failed ({model}@{location}): {e}")
     return job.name, "oauth", state_name(getattr(job, "state", None))
 
 
 async def poll(*, gemini_job_name, auth_mode=None):
     """Fetch the Vertex BatchJob. auth_mode is ignored (always Vertex/OAuth now) — kept in the
-    signature so the existing reconcile call site doesn't have to special-case it."""
-    client = _genai_regional()
+    signature so the existing reconcile call site doesn't have to special-case it. The endpoint is
+    derived from the job name's location segment so a 'global' (gemini-3) job is polled on the
+    global endpoint and a regional (gemini-2.5) job on the regional one."""
+    client = _genai_for(_location_from_job_name(gemini_job_name))
     if client is None:
         raise RuntimeError("Vertex GCS batch not configured")
     return await asyncio.to_thread(client.batches.get, name=gemini_job_name)

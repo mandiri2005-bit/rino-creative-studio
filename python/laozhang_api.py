@@ -3167,11 +3167,11 @@ async def _sign_result_key(result_key: Optional[str]) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 import batch_engine as batch
 
-# 24h warning surfaced on submit + every poll (Indonesian; user-locked wording).
+# 24h warning surfaced on submit + every poll (English; Wimba is the global brand).
 _BATCH_WARNING = (
-    "Hasil batch diproses Google secara asinkron — bisa beberapa menit sampai "
-    "maksimal 24 jam. Hasil hanya tersedia maksimal 24 jam (atau kurang), jadi "
-    "cek halaman ini secara berkala dan unduh begitu siap."
+    "Batch results are processed by Google asynchronously — this can take from a "
+    "few minutes up to 24 hours. Results stay available for at most 24 hours (often "
+    "less), so check back on this page periodically and download them as soon as they're ready."
 )
 # Aspect ratios Gemini image models accept; anything else → 400 (no silent drop).
 _BATCH_ASPECTS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
@@ -3561,6 +3561,37 @@ async def image_batch_status(batch_id: str,
             _IMG_LOG.warning("[image_batch] lazy reconcile %s failed: %s", batch_id, _e)
         job = await db.get_image_batch_job(user.tenant_id, batch_id) or job
     return await _batch_status_payload(job)
+
+
+@app.get("/image/batch/{batch_id}/raw/{index}")
+async def image_batch_raw(batch_id: str, index: int,
+                          user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Same-origin byte proxy for ONE delivered batch image. The client-side .zip bundler can't
+    fetch() the cross-origin R2 signed URL (R2's S3 endpoint sends no Access-Control-Allow-Origin,
+    so the browser blocks reading the response body); <img src> and <a download> are exempt from
+    CORS but fetch() is not. This streams the image bytes from R2 server-side so the bundler reads
+    them SAME-ORIGIN. Tenant-scoped via get_image_batch_job (RLS) — a user can only read their own
+    batch's images. Registered BEFORE @app.post('/image/{op}') and distinct from the GET
+    '/image/batch/jobs/{id}' route (3 vs 4 segments), so no route collision."""
+    from fastapi.responses import Response as FResponse
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    job = await db.get_image_batch_job(user.tenant_id, batch_id)
+    if not job:
+        raise HTTPException(404, "batch not found")
+    keys = list(job.get("result_keys") or [])
+    if index < 0 or index >= len(keys) or not keys[index]:
+        raise HTTPException(404, "image not available")
+    key = keys[index]
+    try:
+        data = await asyncio.to_thread(storage.download_bytes, key)
+    except Exception as e:
+        _IMG_LOG.warning("[image_batch] raw byte fetch failed %s[%d]: %s", batch_id, index, e)
+        raise HTTPException(502, "could not read image")
+    mime = "image/jpeg" if str(key).lower().endswith((".jpg", ".jpeg")) else "image/png"
+    # private (signed/owned content) + short cache so a re-zip or retry doesn't re-hit R2.
+    return FResponse(content=data, media_type=mime,
+                     headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.post("/image/{op}")
