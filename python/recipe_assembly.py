@@ -436,7 +436,11 @@ def _build_karaoke_ass(cap_wins: list[tuple[float, float, str]], w: int, h: int,
     head = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
-        "WrapStyle: 2\n"
+        # WrapStyle 0 = smart auto-wrap: any line wider than (PlayResX − MarginL − MarginR) wraps to a
+        # balanced 2nd line INSTEAD of overflowing the frame (the 9:16 cut-off bug). \kf fill continues
+        # across the wrap. Short caption lines (the recipe sends ~5 words) rarely trigger it; this is the
+        # safety net for an occasional long word-run.
+        "WrapStyle: 0\n"
         "ScaledBorderAndShadow: yes\n"
         f"PlayResX: {w}\nPlayResY: {h}\n\n"
         "[V4+ Styles]\n"

@@ -129,6 +129,9 @@ SPK_MAX_SEGMENTS = int(os.getenv("SPK_MAX_SEGMENTS", "8"))
 # Margin guard: cap total rendered seconds at requested × tolerance so a planner that over-writes the
 # script can't drive actual COGS far past the held estimate (commit clamps to hold → WE'd eat the excess).
 SPK_DURATION_TOLERANCE = float(os.getenv("SPK_DURATION_TOLERANCE", "1.5"))
+# Caption words-per-line — short for the vertical social-native look (avoids the 9:16 overflow that a
+# wider 8-word line hits at the karaoke font size). libass also wraps (WrapStyle) as a safety net.
+SPK_CAPTION_WORDS = int(os.getenv("SPK_CAPTION_WORDS", "5"))
 
 
 def _broll_on(input: dict) -> bool:
@@ -182,6 +185,24 @@ async def _concat_audio(parts: list) -> Optional[bytes]:
             return parts[0]
 
 
+async def _creep_progress(progress_fn, phase: str, lo: int, hi: int, label: str, est_secs: float = 80.0):
+    """Creep the progress bar lo→hi over ~est_secs while ONE long step runs (the avatar render is a single
+    `await dispatch` that otherwise freezes the bar). The caller cancels this when the step completes;
+    it never exceeds hi, so the real next-step update stays monotonic. Best-effort — swallows errors."""
+    span = max(1, int(hi) - int(lo))
+    interval = max(1.5, float(est_secs) / span)
+    pct = int(lo)
+    try:
+        while pct < int(hi):
+            await asyncio.sleep(interval)
+            pct += 1
+            await progress_fn(phase, pct, label)
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 async def _render_segments(segments: list, portrait_url: str, voice: str, language: str, want_captions: bool,
                            tenant_id, user_id, op_id: str, byok: bool, _api, v: int, budget_seconds: float = 0.0):
     """Render each beat → a clip (presenter avatar | b-roll text_to_video), driven by its OWN VO slice.
@@ -232,7 +253,8 @@ async def _render_segments(segments: list, portrait_url: str, voice: str, langua
             # segment-accurate captions (Phase 3): chunk THIS beat's words into ~8-word windows
             # spread evenly across its exact [t, t+dur) slot, so captions read in lock-step with VO.
             cap_words = text.split()
-            groups = [" ".join(cap_words[j:j + 8]) for j in range(0, len(cap_words), 8)] or [text]
+            _cw = SPK_CAPTION_WORDS
+            groups = [" ".join(cap_words[j:j + _cw]) for j in range(0, len(cap_words), _cw)] or [text]
             cspan = dur / len(groups)
             for gi, g in enumerate(groups):
                 cs = t + gi * cspan
@@ -441,9 +463,15 @@ async def run_spokesperson_job(input: dict, op_id: str, set_progress) -> dict:
                 #    the clips concatenate to the full VO with segment-accurate captions. Any failed
                 #    beat is dropped in lockstep (clip + its audio) to keep the timing exact.
                 await _progress("render", base_pct + 8, f"Filming the segments (variant {v + 1})…")
-                clips, seg_audios, captions, seg_committed = await _render_segments(
-                    segments, portrait_url, voice, language, want_captions,
-                    tenant_id, user_id, op_id, byok, _api, v, budget_seconds=seconds * SPK_DURATION_TOLERANCE)
+                _tick = asyncio.create_task(_creep_progress(
+                    _progress, "render", base_pct + 8, base_pct + 21,
+                    f"Filming the segments (variant {v + 1})…", est_secs=120.0))
+                try:
+                    clips, seg_audios, captions, seg_committed = await _render_segments(
+                        segments, portrait_url, voice, language, want_captions,
+                        tenant_id, user_id, op_id, byok, _api, v, budget_seconds=seconds * SPK_DURATION_TOLERANCE)
+                finally:
+                    _tick.cancel()
                 if not clips:
                     raise RuntimeError(f"variant {v + 1}: no segment rendered")
                 committed_total += seg_committed
@@ -462,18 +490,27 @@ async def run_spokesperson_job(input: dict, op_id: str, set_progress) -> dict:
                     raise RuntimeError("voiceover hosting unavailable (R2 off)")
                 await _progress("render", base_pct + 14, f"Filming the presenter (variant {v + 1})…")
                 talk_prompt = "a presenter speaking naturally to the camera, subtle head and hand motion"
-                res = await _vp.dispatch(SPK_AVATAR_FEATURE, SPK_AVATAR_MODEL,
-                                         {"prompt": talk_prompt, "resolution": SPK_CLIP_RES,
-                                          "ref_images": [{"url": portrait_url}], "audio_ref": {"url": vo_url}},
-                                         f"{op_id}-v{v}-presenter")
+                # the avatar render is one long external call (~60-120s) — creep the bar so it doesn't
+                # visibly freeze; cancel the instant the render returns.
+                _tick = asyncio.create_task(_creep_progress(
+                    _progress, "render", base_pct + 14, base_pct + 21,
+                    f"Filming the presenter (variant {v + 1})…", est_secs=90.0))
+                try:
+                    res = await _vp.dispatch(SPK_AVATAR_FEATURE, SPK_AVATAR_MODEL,
+                                             {"prompt": talk_prompt, "resolution": SPK_CLIP_RES,
+                                              "ref_images": [{"url": portrait_url}], "audio_ref": {"url": vo_url}},
+                                             f"{op_id}-v{v}-presenter")
+                finally:
+                    _tick.cancel()
                 if res is None or res.get("data") is None:
                     raise RuntimeError(f"variant {v + 1}: presenter render failed")
                 committed_total += _avatar_credits(seconds)
                 clips = [{"bytes": res["data"]}]
                 # time captions to the ACTUAL VO length (not the requested seconds) so karaoke
-                # word-fill lands on the real clip — the avatar clip == the VO duration.
+                # word-fill lands on the real clip — the avatar clip == the VO duration. Short lines
+                # (SPK_CAPTION_WORDS) so a vertical frame never overflows.
                 vo_secs = _wav_seconds(vo_bytes)
-                captions = _captions_from_script(script, vo_secs) if (want_captions and script) else None
+                captions = _captions_from_script(script, vo_secs, chunk=SPK_CAPTION_WORDS) if (want_captions and script) else None
 
             # 3. music (optional) → ducked under the VO in assembly.
             music_input = None
