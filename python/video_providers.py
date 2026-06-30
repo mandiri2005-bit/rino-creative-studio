@@ -854,6 +854,14 @@ async def dispatch(feature: str, model_id: str, params: dict, op_id: str) -> dic
     chain = model_chain or _OP_CHAINS.get(feature)
     if not chain:
         raise ProviderError(f"no chain for feature={feature} model={model_id}")
+    # DYNAMIC cheapest-first: re-order the failover chain by the pricing catalog (single source of truth)
+    # instead of trusting the hand-typed registry order. Falls back to the registry order untouched when the
+    # catalog doesn't cover this model (backward-compatible). Pure reorder — same steps, cheapest provider first.
+    try:
+        import pricing as _pricing
+        chain = _pricing.reorder_steps(model_id, feature, list(chain))
+    except Exception as _e:
+        log.warning("dispatch: pricing-catalog reorder skipped (%s) — using registry order", _e)
     errors = []
     # Provider traffic (POST/poll/result-fetch) FOLLOWS redirects — signed result URLs legitimately 30x to
     # object storage, and blanket redirects-off turned every such 3xx into a spurious failover / paid-but-502.
@@ -867,10 +875,18 @@ async def dispatch(feature: str, model_id: str, params: dict, op_id: str) -> dic
                 continue
             try:
                 ref, data, mime = await _try(client, prov, feature, slug, params, op_id)
-                # COGS of the provider that actually served: an op-chain step carries its own
-                # cogs_usd; otherwise the cheapest aggregator (chain[0]) costs the model's cogs_usd,
-                # and any failover to a pricier source books the conservative first-party price.
+                # COGS of the provider that ACTUALLY served — booked at its REAL per-provider price:
+                #   1) an op-chain step carries its own cogs_usd;
+                #   2) else the pricing catalog's price for (model, this provider) — the accurate number,
+                #      so a failover to a pricier source books what we REALLY pay (not a cheap/official guess);
+                #   3) else the legacy fallback (chain[0]=model cogs, else official).
                 cost = step.get("cogs_usd")
+                if cost is None:
+                    try:
+                        import pricing as _pricing
+                        cost = _pricing.cost_for_provider(model_id, prov, feature)
+                    except Exception:
+                        cost = None
                 if cost is None:
                     cost = cogs if idx == 0 else official
                 return {"ref": ref, "data": data, "mime": mime, "provider": prov,
@@ -887,10 +903,23 @@ def model_catalog() -> list:
     resolutions[{res,cogs_usd,official_usd}], default_resolution, audio (always|toggle|none) and
     audio_on_mult — plus label/sublabel/icon/features. Per-res prices are surfaced so the frontend's
     creditFor() runs the exact same double-floor × audio_mult formula as credit_catalog."""
+    try:
+        import pricing as _pricing
+    except Exception:
+        _pricing = None
     out = []
     for m in _REG["models"]:
         res = [{"res": r.get("res"), "cogs_usd": r.get("cogs_usd"), "official_usd": r.get("official_usd")}
                for r in (m.get("resolutions") or [])]
+        # worst-case (max known) per-sec COGS across the model's provider chain — lets the frontend show
+        # the SAME worst-case-hold badge the backend reserves under option A (else the optimistic badge
+        # would read cheap then jump to the live worst-case estimate). None → FE falls back to cogs.
+        worst = None
+        if _pricing is not None:
+            try:
+                worst = _pricing.bounds_any(m["id"]).get("max_cost")
+            except Exception:
+                worst = None
         out.append({
             "id": m["id"], "label": m["label"], "sublabel": m.get("sublabel", ""),
             "icon": m.get("icon", ""), "features": m.get("features", []),
@@ -902,6 +931,7 @@ def model_catalog() -> list:
             "audio": m.get("audio", "none"),
             "audio_on_mult": m.get("audio_on_mult", 1),
             "official_usd": m.get("official_usd"), "cogs_usd": m.get("cogs_usd"),
+            "worst_cogs_usd": worst,
         })
     return out
 
@@ -1009,16 +1039,24 @@ def credits_per_sec(feature: str, model_id: str, resolution=None, audio_on: bool
     return _cat.video_credits_for_usd(official, cogs, seconds=1, markup=markup, audio_mult=am)
 
 
-def credits_for(feature: str, model_id: str, seconds: float = 5, resolution=None, audio_on: bool = False):
-    """SINGLE SOURCE for the picker badge AND the metered debit (badge == charge). v2 per-model-caps:
-    resolves the per-RESOLUTION price basis from the model's resolutions[] (fallback default_resolution),
-    derives the audio multiplier (model.audio_on_mult when audio_on or model.audio=='always', else 1.0),
-    and runs the full clip through catalog.video_credits_for_usd — which applies the double floor
-    max(official×markup, 2×cogs) × audio_mult × seconds, then ceil5 ONCE on the FULL-CLIP total. Returns
-    int credits, or None if unpriced."""
+def credits_for(feature: str, model_id: str, seconds: float = 5, resolution=None, audio_on: bool = False,
+                cogs_override: float = None):
+    """SINGLE SOURCE for the picker badge AND the metered debit. v2 per-model-caps: resolves the
+    per-RESOLUTION price basis from the model's resolutions[] (fallback default_resolution), derives the
+    audio multiplier (model.audio_on_mult when audio_on or model.audio=='always', else 1.0), and runs the
+    full clip through catalog.video_credits_for_usd — double floor max(official×markup, 2×cogs) × audio_mult
+    × seconds, ceil5 ONCE on the FULL-CLIP total. Returns int credits, or None if unpriced.
+
+    cogs_override: price the clip off THIS per-second COGS instead of the registry's (cheapest) cogs — used
+    by the worst-case-hold / charge-at-actual-provider billing (option A). When the override exceeds the
+    first-party `official`, official is bumped to it so the 2×cogs margin floor governs (never under-prices
+    a pricier provider); when it's below official, the result matches the normal cheapest-cogs price."""
     import credit_catalog as _cat
     official, cogs, markup = price_basis(feature, model_id, resolution)
     if not official:
         return None
+    if cogs_override is not None and cogs_override > 0:
+        cogs = float(cogs_override)
+        official = max(official, cogs)
     am = _audio_mult_for(_MODELS.get(model_id) or {}, audio_on)
     return _cat.video_credits_for_usd(official, cogs, seconds=seconds, markup=markup, audio_mult=am)
