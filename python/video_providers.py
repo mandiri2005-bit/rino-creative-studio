@@ -276,40 +276,63 @@ async def _atlascloud_video(client, op, slug, params):
     is_bytedance = s.startswith("bytedance/")
     is_kling = s.startswith("kwaivgi/")
     is_happyhorse = "happyhorse" in s
-    body = {"model": slug, "enable_sync_mode": False, "duration": _seconds(params)}
-    # ASPECT — field name + presence per family.
-    if is_google:
-        body["aspect_ratio"] = _aspect(params)
-    elif is_bytedance:
-        body["ratio"] = _aspect(params)
-    # kwaivgi/* + happyhorse take NO aspect param → omit.
-    if op == "text_to_video":
-        body["prompt"] = params.get("prompt") or ""
-    elif op in ("image_to_video", "reference_to_video"):
-        body["prompt"] = params.get("prompt") or ""
-        refs = params.get("ref_images") or []
-        if refs:
-            if op == "reference_to_video" and is_bytedance:
-                body["reference_images"] = [_img_url(r) for r in refs]   # Seedance ref → array
-            else:
-                body["image"] = _img_url(refs[0])                        # i2v seed frame (single)
-    elif op == "video_edit":
-        body["prompt"] = params.get("prompt") or ""
-        rv = params.get("ref_video")
-        if rv:
-            body["video"] = _img_url(rv)
+    # AUDIO-DRIVEN avatar (talking head): portrait + driving voice → lip-synced video. Distinct body from
+    # the generic clip models, so handle it FIRST and skip the generic builder.
+    is_avatar = ("avatar-omni-human" in s) or s.endswith("/avatar")
+    if is_avatar:
+        # atlascloud REQUIRES hosted URLs for both inputs (its pricing probe FETCHES them — data: URIs are
+        # rejected with "url not allowed for probe"), and the driving audio is MANDATORY (the avatar IS the
+        # lip-sync). Field names differ by family: omnihuman → image_url/audio_url (+ output_resolution
+        # 720|1080); kwaivgi/.../avatar → image/audio.
+        imgs = params.get("ref_images") or []
+        aud = params.get("audio_ref")
+        if not imgs or aud is None:
+            raise ProviderError("atlascloud avatar requires a portrait (ref_images[0]) + driving audio (audio_ref) as hosted URLs")
+        img_u = _img_url(imgs[0])
+        aud_u = aud.get("url") if isinstance(aud, dict) else aud
+        if "avatar-omni-human" in s:
+            body = {"model": slug, "image_url": img_u, "audio_url": aud_u}
+            _rr = _norm_res(params.get("resolution") or "720p")
+            body["output_resolution"] = 720 if str(_rr).startswith("720") else 1080
+        else:                                                # kwaivgi/.../avatar
+            body = {"model": slug, "image": img_u, "audio": aud_u}
+        if params.get("prompt"):
+            body["prompt"] = params["prompt"]
     else:
-        raise ProviderError(f"atlascloud_video: op {op} unsupported")
-    # RESOLUTION casing per family: lowercase for veo/seedance, UPPERCASE for kling/happyhorse.
-    if params.get("resolution"):
-        rsv = _norm_res(params["resolution"])           # canonical lowercase e.g. '1080p'/'4k'
-        body["resolution"] = rsv.upper() if (is_kling or is_happyhorse) else rsv
-    # AUDIO field name per family — omit entirely for happyhorse (no audio field).
-    _a = _audio_on(params)
-    if _a is not None and not is_happyhorse:
-        body["sound" if is_kling else "generate_audio"] = _a
-    if _loop_on(params):
-        body["loop"] = True
+        body = {"model": slug, "enable_sync_mode": False, "duration": _seconds(params)}
+        # ASPECT — field name + presence per family.
+        if is_google:
+            body["aspect_ratio"] = _aspect(params)
+        elif is_bytedance:
+            body["ratio"] = _aspect(params)
+        # kwaivgi/* + happyhorse take NO aspect param → omit.
+        if op == "text_to_video":
+            body["prompt"] = params.get("prompt") or ""
+        elif op in ("image_to_video", "reference_to_video"):
+            body["prompt"] = params.get("prompt") or ""
+            refs = params.get("ref_images") or []
+            if refs:
+                if op == "reference_to_video" and is_bytedance:
+                    body["reference_images"] = [_img_url(r) for r in refs]   # Seedance ref → array
+                else:
+                    body["image"] = _img_url(refs[0])                        # i2v seed frame (single)
+        elif op == "video_edit":
+            body["prompt"] = params.get("prompt") or ""
+            rv = params.get("ref_video")
+            if rv:
+                body["video"] = _img_url(rv)
+        else:
+            raise ProviderError(f"atlascloud_video: op {op} unsupported")
+        # RESOLUTION casing per family: lowercase for veo/seedance, UPPERCASE for kling/happyhorse.
+        if params.get("resolution"):
+            rsv = _norm_res(params["resolution"])           # canonical lowercase e.g. '1080p'/'4k'
+            body["resolution"] = rsv.upper() if (is_kling or is_happyhorse) else rsv
+        # AUDIO field name per family — omit entirely for happyhorse (no audio field).
+        _a = _audio_on(params)
+        if _a is not None and not is_happyhorse:
+            body["sound" if is_kling else "generate_audio"] = _a
+        if _loop_on(params):
+            body["loop"] = True
     r = await client.post(f"{base}/model/generateVideo", headers=h, json=body); r.raise_for_status()
     d = r.json().get("data", r.json())
     if d.get("outputs"):                                 # rare inline-result fast path

@@ -414,11 +414,8 @@ def estimate(input: dict, catalog: Any = None) -> dict:
     broll_clip = (_vp.credits_for(broll_feat, broll_model, seconds=per_broll,
                                   resolution=RECIPE_CLIP_RES, audio_on=broll_audio) or 0) if broll_model else 0
 
-    # ── ugc: an extra lip_sync pass per hero clip (avatar talks). lip_sync is an op-chain tool, priced
-    # per-second off the op-chain MAX (resolution-invariant). Only when there is a voiceover to sync to.
-    lip_each = 0
-    if style == "ugc" and want_vo:
-        lip_each = _vp.credits_for("lip_sync", "", seconds=per_hero) or 0
+    # ── ugc avatars are AUDIO-DRIVEN: the avatar render itself lip-syncs the portrait to the voiceover,
+    # so there is NO separate lip_sync op to price — the hero (avatar) clip above already carries it.
 
     # ── VO cost: price the script if present, else a length proxy (~16 chars/sec of speech).
     vo_credits = 0
@@ -445,11 +442,6 @@ def estimate(input: dict, catalog: Any = None) -> dict:
             "label": f"Hero clips · {hero_model} ({n_hero}×{n_variants}, {per_hero}s)",
             "credits": hero_total})
         total += hero_total
-
-    if lip_each:
-        lip_total = lip_each * n_hero * n_variants
-        line_items.append({"label": f"Avatar lip-sync ({n_hero}×{n_variants})", "credits": lip_total})
-        total += lip_total
 
     broll_total = broll_clip * n_broll * n_variants
     if broll_total:
@@ -480,12 +472,31 @@ def estimate(input: dict, catalog: Any = None) -> dict:
 
 
 # ══════════════════════════════ DAG sequencer ══════════════════════════════════
+async def _host_bytes(data: bytes, mime: str, key_base: str) -> Optional[str]:
+    """Upload bytes to object storage → SIGNED public URL. The atlascloud avatar models fetch their
+    image/audio inputs server-side (their pricing probe rejects data: URIs), so the ugc path must host
+    the portrait + voice and pass URLs. Returns None if storage is unavailable (R2 off) — the caller then
+    drops the avatar clip rather than sending an unfetchable URI."""
+    try:
+        import storage
+        if storage is None or not storage.is_configured():
+            return None
+        ext = {"audio/wav": "wav", "audio/mpeg": "mp3", "image/png": "png",
+               "image/jpeg": "jpg", "video/mp4": "mp4"}.get(mime, "bin")
+        key = await storage.aupload_bytes(f"recipe/{key_base}.{ext}", data, mime)
+        return await storage.asigned_url(key)
+    except Exception as e:
+        log.info("_host_bytes(%s) failed: %s", key_base, e)
+        return None
+
+
 async def _animate_beat(beat: dict, style: str, cutouts: list, keyframe_bytes: Optional[bytes],
-                        aspect: str, op_id: str, idx: int) -> Optional[dict]:
+                        aspect: str, op_id: str, idx: int, audio_url: Optional[str] = None) -> Optional[dict]:
     """Animate ONE beat → a dispatch result dict (carries .data mp4 bytes). HERO beats animate the LOCKED
     keyframe (showcase=i2v on the keyframe; in_scene=reference_to_video with the cutouts as refs +
-    keyframe seed; ugc=avatar i2v on the keyframe). BROLL beats = text_to_video (loose, product absent).
-    Returns None on a fully-failed dispatch (the caller decides whether that's fatal)."""
+    keyframe seed; ugc=AUDIO-DRIVEN avatar — the portrait keyframe is lip-synced to `audio_url`). BROLL
+    beats = text_to_video (loose, product absent). Returns None on a fully-failed dispatch (the caller
+    decides whether that's fatal)."""
     import video_providers as _vp
     role = beat.get("role", "hero")
     seconds = int(beat.get("seconds") or RECIPE_HERO_MAX_SECONDS)
@@ -504,6 +515,20 @@ async def _animate_beat(beat: dict, style: str, cutouts: list, keyframe_bytes: O
     model, feat = _hero_resolved(style)
     if not model:
         return None
+
+    # ── ugc: the hero is an AUDIO-DRIVEN avatar. It lip-syncs a hosted portrait to the hosted voiceover —
+    # the avatar render IS the lip-sync (no separate lip_sync pass). atlascloud rejects data: URIs for the
+    # avatar inputs, so host the portrait + use the pre-hosted `audio_url`.
+    if style == "ugc":
+        if keyframe_bytes is None or not audio_url:
+            return None   # no portrait or no voice → can't drive the avatar; caller drops the clip
+        img_url = await _host_bytes(keyframe_bytes, "image/png", f"{op_id}-ugcimg{idx}")
+        if not img_url:
+            return None   # hosting unavailable (R2 off) → avatar can't fetch a data: URI
+        params = {"prompt": prompt, "resolution": RECIPE_CLIP_RES,
+                  "ref_images": [{"url": img_url}], "audio_ref": {"url": audio_url}}
+        return await _vp.dispatch(feat, model, params, f"{op_id}-hero{idx}")
+
     # Lock the product against the i2v model duplicating/morphing it mid-take (camera-only motion).
     lock = (" Keep EXACTLY ONE product, fixed in place — do NOT duplicate, split, clone, add, remove, "
             "morph, rotate or distort the product or its logo; no extra products, hands or people "
@@ -775,9 +800,23 @@ async def run_product_ad_job(input: dict, op_id: str, set_progress) -> dict:
             await _progress("render", base_pct + 10, f"Rendering clips (variant {v + 1})…")
             _clip_sem = asyncio.Semaphore(max(1, _CLIP_CONCURRENCY))
 
+            # ugc heroes are AUDIO-DRIVEN avatars: the voiceover must be synthesized AND hosted BEFORE the
+            # avatar render (the avatar gen IS the lip-sync — there is no separate lip_sync pass). Synth +
+            # host the shared VO once here, ahead of the concurrent render; the hosted URL drives each beat.
+            ugc_audio_url = None
+            if style == "ugc" and want_vo and hero_beats:
+                if vo_audio_bytes is None:
+                    vo_audio_bytes = await _synth_vo(script, voice, language)
+                    if vo_audio_bytes is not None and not vo_committed:
+                        committed_total += _commit_tts(script, tenant_id, user_id, op_id, byok, _api)
+                        vo_committed = True
+                if vo_audio_bytes is not None:
+                    ugc_audio_url = await _host_bytes(vo_audio_bytes, "audio/wav", f"{op_id}-v{v}-vo")
+
             async def _animate_guarded(beat, kf, idx):
                 async with _clip_sem:
-                    return await _animate_beat(beat, style, cutouts, kf, kf_aspect, f"{op_id}-v{v}", idx)
+                    return await _animate_beat(beat, style, cutouts, kf, kf_aspect, f"{op_id}-v{v}", idx,
+                                               audio_url=(ugc_audio_url if style == "ugc" else None))
 
             hero_tasks = [
                 _animate_guarded(beat, (kf_bytes[hi % len(kf_bytes)] if kf_bytes else None), hi)
@@ -793,19 +832,10 @@ async def run_product_ad_job(input: dict, op_id: str, set_progress) -> dict:
             for hi, (beat, res) in enumerate(zip(hero_beats, hero_res)):
                 if isinstance(res, BaseException) or res is None or res.get("data") is None:
                     continue
+                # ugc avatar clips already carry the synced voiceover (the avatar IS the lip-sync), so there
+                # is no separate lip_sync commit — the clip is final.
                 committed_total += _commit_clip(res, beat, tenant_id, user_id, op_id, byok, _api,
                                                  _hero_resolved(style))
-                # ugc: lip-sync the hero avatar clip to the VO.
-                if style == "ugc" and want_vo:
-                    if vo_audio_bytes is None:
-                        vo_audio_bytes = await _synth_vo(script, voice, language)
-                        if vo_audio_bytes is not None and not vo_committed:
-                            committed_total += _commit_tts(script, tenant_id, user_id, op_id, byok, _api)
-                            vo_committed = True
-                    lip = await _lip_sync_clip(res, vo_audio_bytes, f"{op_id}-v{v}", hi)
-                    if lip is not None and lip.get("data") is not None:
-                        committed_total += _commit_liptool(lip, beat, tenant_id, user_id, op_id, byok, _api)
-                        res = lip
                 clip_results.append(res)
             for bi, (beat, res) in enumerate(zip(broll_beats, broll_res)):
                 if isinstance(res, BaseException) or res is None or res.get("data") is None:

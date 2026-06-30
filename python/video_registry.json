@@ -949,7 +949,7 @@
       "chain": [
         {
           "provider": "atlascloud",
-          "image_to_video": "bytedance/avatar-omni-human-v1.5/image-to-video"
+          "image_to_video": "bytedance/avatar-omni-human-v1.5"
         }
       ]
     },
@@ -987,7 +987,7 @@
       "chain": [
         {
           "provider": "atlascloud",
-          "image_to_video": "kwaivgi/kling-avatar-std/image-to-video"
+          "image_to_video": "kwaivgi/kling-v2.6-std/avatar"
         }
       ]
     }
