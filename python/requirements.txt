@@ -10,6 +10,7 @@ openpyxl
 python-multipart
 google-genai
 google-cloud-aiplatform[preview]
+google-cloud-storage
 google-auth
 asyncpg
 python-dotenv

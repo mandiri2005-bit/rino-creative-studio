@@ -3145,11 +3145,13 @@ async def _sign_result_key(result_key: Optional[str]) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 # IMAGE BATCH — genuine async Google Batch API (native Google ONLY, 50% price)
 #
-# A "batch" is ONE Gemini Batch job (client.batches.create with INLINED requests)
-# that Google fulfils over minutes-to-24h at ~50% of the online price, so we bill
+# A "batch" is ONE Vertex AI Batch job (client.batches.create over a GCS JSONL input
+# file) that Google fulfils over minutes-to-24h at ~50% of the online price, so we bill
 # 50% (locked 15/25/40 cr for nano-banana / -2 / -pro; -pro-ultra is EXCLUDED).
-# Auth failover is native-Google both ways: Vertex OAuth first (_genai_client),
-# Developer API key second (batch_engine). NO aggregators.
+# Auth is native-Google, OAuth-only: a refresh token (cloud-platform scope) drives BOTH
+# the REGIONAL Vertex endpoint and GCS read/write (batch_engine owns its own clients).
+# The Developer-API-key path is gone — that key is blocked for BatchService AND that API
+# is inline-only (incompatible with GCS). NO aggregators.
 #
 # Lifecycle: POST /image/batch/submit holds (price_each×count) → inserts a
 # 'submitting' row → submits to Google → flips 'processing'. A reconcile loop
@@ -3252,7 +3254,7 @@ async def _reconcile_one_batch(tenant_id, batch_id) -> None:
         return
 
     try:
-        gjob = await batch.poll(oauth_client=_genai_client(), auth_mode=auth_mode, gemini_job_name=name)
+        gjob = await batch.poll(gemini_job_name=name, auth_mode=auth_mode)
     except Exception as e:
         if hard:
             won = await db.finish_image_batch_job(tenant_id, batch_id, status="expired",
@@ -3278,16 +3280,31 @@ async def _reconcile_one_batch(tenant_id, batch_id) -> None:
             await metering.touch_hold(tenant_id, op_id, ttl=_BATCH_HOLD_TTL)   # keep hold marker alive past 6h
         return
 
-    # ── terminal: extract inline results (parallel to prompts), persist produced images ──
-    results = batch.extract_results(gjob)
+    # ── terminal: download GCS output, map results back to prompts, persist produced images ──
     prompts = list(job.get("prompts") or [])
+    try:
+        # extract reads the GCS predictions.jsonl and re-associates by ECHOED prompt text (Vertex
+        # does not guarantee output order). Returns a list PARALLEL to prompts.
+        results = await batch.extract_results(gjob, prompts, batch_id)
+    except Exception as e:
+        # A GCS read failure (transient / eventual-consistency right after SUCCEEDED) must NOT burn the
+        # terminal transition — the output lives ~24h. Touch + retry next pass, unless hard-expired.
+        if hard:
+            won = await db.finish_image_batch_job(tenant_id, batch_id, status="failed",
+                                                  delivered=0, failed=total,
+                                                  error=f"batch output unreadable past expiry: {str(e)[:140]}")
+            if won:
+                await metering.refund_credits(tenant_id, op_id)
+        else:
+            await db.touch_image_batch_job(tenant_id, batch_id)
+            await metering.touch_hold(tenant_id, op_id, ttl=_BATCH_HOLD_TTL)   # keep hold marker alive past 6h
+        return
     if len(results) != total:
-        # Inline batch responses are contractually parallel to the request list (failed slots INCLUDED),
-        # so a length mismatch means Google dropped/added a slot → the index→prompt alignment is suspect.
+        # extract_results ALWAYS pads to len(prompts), so this is a should-never-happen invariant guard.
         # Don't crash reconcile (billing is by delivered COUNT, still correct); alert so we catch the drift.
-        _IMG_LOG.warning("[image_batch] %s inline-order drift: %d results vs %d prompts",
+        _IMG_LOG.warning("[image_batch] %s result-count drift: %d results vs %d prompts",
                          batch_id, len(results), total)
-        _sentry_capture(message=f"batch {batch_id}: inline results {len(results)} != total {total}",
+        _sentry_capture(message=f"batch {batch_id}: results {len(results)} != total {total}",
                         level="warning", area="image_batch_reconcile", batch_id=str(batch_id))
     result_keys = list(job.get("result_keys") or [])
     if len(result_keys) < total:
@@ -3312,10 +3329,14 @@ async def _reconcile_one_batch(tenant_id, batch_id) -> None:
     # Storage-outage guard: Google produced in-range images we have NOT persisted yet (full OR PARTIAL R2
     # outage = produced-but-unkeyed slots). Google results live ~24h, so DON'T finalize and permanently burn
     # those still-fetchable slots as 'failed'; touch + retry next pass to persist the stragglers, unless
-    # hard-expired. (Was: only the all-or-nothing delivered==0 case — partial outages silently lost images.)
+    # hard-expired. This applies to ANY terminal state, ok- OR bad-: a JOB_STATE_FAILED/CANCELLED job can
+    # still have written partial predictions, and a transient persist blip on those must DEFER not burn the
+    # produced images (invariant: a transient persist failure never burns the terminal transition). Bounded
+    # by `not hard` so it can't defer forever — at hard-expiry it finalizes and the hold is released.
+    # (Was gated on ok_terminal, which silently lost produced images of a bad-terminal partial output.)
     pending_persist = sum(1 for _i, (k, _a, _b) in enumerate(results)
                           if k == "ok" and _i < total and not result_keys[_i])
-    if ok_terminal and pending_persist > 0 and not hard:
+    if pending_persist > 0 and not hard:
         await db.touch_image_batch_job(tenant_id, batch_id)
         await metering.touch_hold(tenant_id, op_id, ttl=_BATCH_HOLD_TTL)   # keep hold marker alive past 6h
         return
@@ -3344,6 +3365,9 @@ async def _reconcile_one_batch(tenant_id, batch_id) -> None:
         else:
             await metering.refund_credits(tenant_id, op_id)
         _IMG_LOG.info("[image_batch] %s settled: %s delivered=%d/%d", batch_id, final, delivered, total)
+        # transient GCS I/O is no longer needed once settled (the row is terminal, so no later reconcile
+        # re-reads the output). Best-effort delete; a leftover is harmless (bucket lifecycle TTL backstop).
+        await batch.cleanup(batch_id)
 
 
 async def _batch_status_payload(job: dict) -> dict:
@@ -3404,9 +3428,10 @@ async def _image_batch_reconcile_loop():
 async def image_batch_submit(req: ImageBatchRequest,
                              user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a genuine async Google batch. Holds (price_each×count), inserts a 'submitting' row,
-    submits to Google (Vertex OAuth → Developer API key), flips to 'processing'. Returns ~1s with
-    {batch_id} + the 24h warning. NOTE: registered BEFORE @app.post('/image/{op}') so this path
-    doesn't get captured as op='batch'."""
+    submits to Google via the regional Vertex AI batch over a GCS JSONL input (OAuth only — there is
+    no Developer-API-key fallback), flips to 'processing'. Returns ~1s with {batch_id} + the 24h
+    warning. NOTE: registered BEFORE @app.post('/image/{op}') so this path doesn't get captured as
+    op='batch'."""
     if user is None:
         raise HTTPException(401, "authentication required")
 
@@ -3427,15 +3452,15 @@ async def image_batch_submit(req: ImageBatchRequest,
     if aspect and aspect not in _BATCH_ASPECTS:
         raise HTTPException(400, f"unsupported aspect ratio '{aspect}'")
 
-    # native-Google auth must exist BEFORE we hold credits (else a misconfigured deploy strands a hold).
-    if not batch.have_batch_auth(_genai_client()):
-        raise HTTPException(503, "batch image service unavailable (no Google auth configured)")
+    # Vertex GCS batch must be FULLY configured (OAuth creds + bucket) BEFORE we hold credits, else a
+    # misconfigured deploy strands a hold it can never settle (the old inline design's failure mode).
+    if not batch.have_batch_auth():
+        raise HTTPException(503, "batch image service unavailable (Vertex GCS batch not configured)")
 
     price_each = catalog.image_batch_credits(model)
     total      = len(prompts)
     held       = price_each * total
-    vertex_model    = catalog.image_batch_vertex_model(model)
-    developer_model = catalog.image_batch_developer_model(model)
+    vertex_model = catalog.image_batch_vertex_model(model)
 
     uid    = await _resolve_user_uuid(user.tenant_id, user.user_id)
     op_id  = f"imgbatch-{uuid.uuid4().hex[:12]}"
@@ -3461,11 +3486,10 @@ async def image_batch_submit(req: ImageBatchRequest,
 
     try:
         name, auth_mode, _state = await batch.submit(
-            oauth_client=_genai_client(), vertex_model=vertex_model,
-            developer_model=developer_model, prompts=prompts, aspect=aspect,
+            model=vertex_model, prompts=prompts, aspect=aspect, job_id=job_id,
             display_name=f"wimba-batch-{job_id}")
     except Exception as e:
-        # both native-Google paths failed → refund + mark failed (the row already exists).
+        # GCS upload or Vertex submit failed → refund + mark failed (the row already exists).
         await metering.refund_credits(user.tenant_id, op_id)
         await db.finish_image_batch_job(user.tenant_id, job_id, status="failed",
                                         delivered=0, failed=total, error=str(e)[:200])

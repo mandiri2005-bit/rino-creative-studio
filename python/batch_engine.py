@@ -1,43 +1,59 @@
 """
-batch_engine.py — Genuine async Google Batch API for the Image "Batch" tool.
+batch_engine.py — Vertex AI Batch prediction over GCS for the Image "Batch" tool.
 
-NATIVE GOOGLE ONLY (no aggregators). One submit = one Gemini Batch job built from
-INLINED requests (no JSONL upload, no GCS) — results come back inline on
-`job.dest.inlined_responses`, parallel to the input order.
+NATIVE GOOGLE ONLY (no aggregators). One submit = one Vertex batch job:
+  build JSONL (one request line per prompt) → upload to
+  gs://BUCKET/PREFIX/<job_id>/input.jsonl → batches.create(model, src=gs://…input.jsonl,
+  dest=gs://…/output/) on a REGIONAL Vertex client → poll JOB_STATE_* → on a terminal
+  state download the output predictions.jsonl and map each produced image back to its
+  prompt by the ECHOED request text (Vertex does NOT guarantee output order).
 
-Auth failover (both first-party Google): Vertex OAuth first, Developer API key
-second. The OAuth client is injected by laozhang_api (`_genai_client()`, which
-owns the Vertex creds); the API-key client is built here from GEMINI_API_KEY. The
-winning path is recorded as auth_mode so polling re-acquires the same client (a
-Vertex job name is only resolvable on the Vertex client, an API-key job only on
-the API-key client).
+Why GCS and not inline: the Vertex Batch API REQUIRES a GCS/BigQuery input source
+("Exactly one of gcs_uri/bigquery_uri/vertex_dataset_name must be set") — it rejects
+inline requests outright. And the Developer-API-key batch path is dead for us (the key
+is API_KEY_SERVICE_BLOCKED for BatchService, AND that API is inline-only, incompatible
+with GCS). So batch is Vertex-OAuth + GCS only — proven end-to-end by the live probe
+(gemini-2.5-flash-image, us-central1, image extracted from output JSONL).
 
-All blocking SDK calls run via asyncio.to_thread so they never stall the loop.
+Auth: an OAuth refresh-token (GCP_REFRESH_TOKEN/CLIENT_ID/SECRET) minted with the
+cloud-platform scope — covers BOTH Vertex aiplatform AND GCS read/write, so no service
+account is needed. The Vertex BATCH endpoint must be REGIONAL (location != 'global') and
+the region MUST match the bucket's region; GCP_BATCH_LOCATION defaults to us-central1.
+
+All blocking SDK / GCS calls run via asyncio.to_thread so they never stall the loop.
 """
 import os
+import json
 import base64
 import asyncio
 import logging
-
-from google import genai
-from google.genai import types as gt
+from collections import deque
 
 log = logging.getLogger("batch_engine")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# ── config (env) ──────────────────────────────────────────────────────────────
+GCP_PROJECT_ID     = os.environ.get("GCP_PROJECT_ID", "")
+GCP_REFRESH_TOKEN  = os.environ.get("GCP_REFRESH_TOKEN", "")
+GCP_CLIENT_ID      = os.environ.get("GCP_CLIENT_ID", "")
+GCP_CLIENT_SECRET  = os.environ.get("GCP_CLIENT_SECRET", "")
+# Vertex BATCH needs a REGIONAL endpoint (location != 'global') that MATCHES the bucket region.
+GCP_BATCH_LOCATION = (os.environ.get("GCP_BATCH_LOCATION") or "us-central1").strip().lower()
+# GCS bucket for batch JSONL I/O (REGIONAL, same region as GCP_BATCH_LOCATION).
+BATCH_GCS_BUCKET   = os.environ.get("BATCH_GCS_BUCKET", "").strip().replace("gs://", "").strip("/")
+BATCH_GCS_PREFIX   = (os.environ.get("BATCH_GCS_PREFIX") or "image-batch").strip("/")
+# Best-effort delete of a settled job's transient I/O objects (bucket lifecycle TTL is the real backstop).
+BATCH_GCS_CLEANUP  = os.getenv("BATCH_GCS_CLEANUP", "1") not in ("0", "false", "False", "")
 # Server-side cap on images per batch (admission guard; the UI caps lower).
-BATCH_MAX_ROWS = int(os.getenv("BATCH_MAX_ROWS", "10"))
+BATCH_MAX_ROWS     = int(os.getenv("BATCH_MAX_ROWS", "10"))
 
 # Google JobState buckets (terminal = stop polling).
 _TERMINAL_OK  = {"JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"}
 _TERMINAL_BAD = {"JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}
 
-_apikey_singleton = None
-
 # Explicit safety thresholds on native-Google batch image gen (D). Default BLOCK_ONLY_HIGH = block only
 # high-confidence harmful content: a strong floor without nuking legit creative prompts (the pre-dispatch
 # text gate in laozhang_api catches egregious prompts before we even hold credits; this is the model-level
-# backstop). Rino-tunable via IMAGE_SAFETY_THRESHOLD on the Python service.
+# backstop). REST shape (sibling of generationConfig in the request). Rino-tunable via IMAGE_SAFETY_THRESHOLD.
 _SAFETY_THRESHOLD = os.getenv("IMAGE_SAFETY_THRESHOLD", "BLOCK_ONLY_HIGH")
 _SAFETY_CATEGORIES = (
     "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
@@ -45,31 +61,61 @@ _SAFETY_CATEGORIES = (
 )
 
 
-def _safety_settings():
-    """[SafetySetting] for GenerateContentConfig, or None if the SDK version rejects the shape
-    (graceful: an older SDK simply generates without the explicit overrides → provider defaults)."""
-    try:
-        return [gt.SafetySetting(category=c, threshold=_SAFETY_THRESHOLD) for c in _SAFETY_CATEGORIES]
-    except Exception as e:  # pragma: no cover — SDK shape drift
-        log.warning("[batch] safety_settings unavailable on this SDK: %s", e)
+# ── lazy, cached clients (mirror the proven probe: own creds w/ cloud-platform scope) ──
+_creds_singleton = None
+_genai_singleton = None
+_storage_singleton = None
+
+
+def _credentials():
+    """OAuth user credentials from the refresh token, scoped cloud-platform (covers Vertex + GCS).
+    Cached. Built lazily so import never touches the network."""
+    global _creds_singleton
+    if _creds_singleton is not None:
+        return _creds_singleton
+    from google.oauth2.credentials import Credentials
+    _creds_singleton = Credentials(
+        token=None, refresh_token=GCP_REFRESH_TOKEN,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GCP_CLIENT_ID, client_secret=GCP_CLIENT_SECRET,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    return _creds_singleton
+
+
+def _genai_regional():
+    """google.genai client pinned to the BATCH region (Vertex). None if unconfigured."""
+    global _genai_singleton
+    if _genai_singleton is not None:
+        return _genai_singleton
+    if not have_batch_auth():
         return None
+    from google import genai
+    _genai_singleton = genai.Client(
+        vertexai=True, project=GCP_PROJECT_ID, location=GCP_BATCH_LOCATION,
+        credentials=_credentials())
+    return _genai_singleton
 
 
-def _apikey_client():
-    """Cached Developer-API (API-key) google-genai client, or None if no key set."""
-    global _apikey_singleton
-    if _apikey_singleton is not None:
-        return _apikey_singleton
-    if not GEMINI_API_KEY:
+def _storage():
+    """GCS client (same OAuth creds). None if unconfigured."""
+    global _storage_singleton
+    if _storage_singleton is not None:
+        return _storage_singleton
+    if not have_batch_auth():
         return None
-    _apikey_singleton = genai.Client(api_key=GEMINI_API_KEY)
-    return _apikey_singleton
+    from google.cloud import storage
+    _storage_singleton = storage.Client(project=GCP_PROJECT_ID, credentials=_credentials())
+    return _storage_singleton
 
 
-def have_batch_auth(oauth_client) -> bool:
-    """True iff at least one native-Google auth path is available (OAuth or API key).
-    Checked BEFORE holding credits so a misconfigured deploy 503s instead of stranding a hold."""
-    return bool(oauth_client) or bool(GEMINI_API_KEY)
+def have_batch_auth() -> bool:
+    """True iff Vertex GCS batch is FULLY configured: OAuth creds + project + a GCS bucket.
+    A capability check (not mere presence), so a misconfigured deploy 503s on submit instead of
+    holding credits it can never settle. (The old inline design only checked auth presence and
+    so shipped broken — it 502'd at submit after the hold; this gate prevents that class.)"""
+    return bool(GCP_PROJECT_ID and GCP_REFRESH_TOKEN and GCP_CLIENT_ID
+                and GCP_CLIENT_SECRET and BATCH_GCS_BUCKET)
 
 
 def state_name(state) -> str:
@@ -87,68 +133,6 @@ def is_ok_terminal(name: str) -> bool:
     return name in _TERMINAL_OK
 
 
-def _build_inline_requests(prompts, aspect):
-    """One InlinedRequest per prompt — image-out config, optional aspect ratio. No
-    per-request model (inherits the batch-level model). Responses return in this order."""
-    image_cfg = gt.ImageConfig(aspect_ratio=aspect) if aspect else None
-    _safety = _safety_settings()
-    _cfg_kw = dict(response_modalities=["IMAGE"], image_config=image_cfg)
-    if _safety:
-        _cfg_kw["safety_settings"] = _safety
-    try:
-        cfg = gt.GenerateContentConfig(**_cfg_kw)
-    except Exception:                              # SDK rejects safety_settings shape → drop it, keep gen
-        cfg = gt.GenerateContentConfig(response_modalities=["IMAGE"], image_config=image_cfg)
-    reqs = []
-    for p in prompts:
-        reqs.append(gt.InlinedRequest(
-            contents=[gt.Content(role="user", parts=[gt.Part(text=str(p or ""))])],
-            config=cfg,
-        ))
-    return reqs
-
-
-async def submit(*, oauth_client, vertex_model, developer_model, prompts, aspect, display_name):
-    """Submit one inline batch, trying Vertex OAuth then Developer API key.
-    Returns (gemini_job_name, auth_mode, state_name). Raises RuntimeError if BOTH
-    native-Google paths fail (caller refunds the hold)."""
-    errs = []
-    reqs = _build_inline_requests(prompts, aspect)
-    cfg = gt.CreateBatchJobConfig(display_name=display_name)
-
-    # 1) Vertex OAuth (preferred)
-    if oauth_client is not None:
-        try:
-            job = await asyncio.to_thread(
-                oauth_client.batches.create, model=vertex_model, src=reqs, config=cfg)
-            return job.name, "oauth", state_name(getattr(job, "state", None))
-        except Exception as e:
-            errs.append(f"oauth({vertex_model}): {e}")
-            log.warning("[batch] Vertex OAuth submit failed: %s", e)
-
-    # 2) Developer API key (failover)
-    ak = _apikey_client()
-    if ak is not None:
-        try:
-            dev_reqs = _build_inline_requests(prompts, aspect)   # fresh objects per client
-            job = await asyncio.to_thread(
-                ak.batches.create, model=developer_model, src=dev_reqs, config=cfg)
-            return job.name, "apikey", state_name(getattr(job, "state", None))
-        except Exception as e:
-            errs.append(f"apikey({developer_model}): {e}")
-            log.warning("[batch] Developer API-key submit failed: %s", e)
-
-    raise RuntimeError("native Google batch submit failed — " + " | ".join(errs or ["no auth"]))
-
-
-async def poll(*, oauth_client, auth_mode, gemini_job_name):
-    """Fetch the BatchJob via the SAME client family that submitted it."""
-    client = oauth_client if auth_mode == "oauth" else _apikey_client()
-    if client is None:
-        raise RuntimeError(f"no native-Google client for auth_mode={auth_mode!r}")
-    return await asyncio.to_thread(client.batches.get, name=gemini_job_name)
-
-
 def _err_str(err) -> str:
     try:
         msg = getattr(err, "message", None) or getattr(err, "status", None)
@@ -157,40 +141,224 @@ def _err_str(err) -> str:
         return "request failed"
 
 
-def _first_image(resp):
-    """First inline image (bytes, mime) in a GenerateContentResponse, or None."""
+# ── GCS object paths (deterministic per job_id) ───────────────────────────────
+def _job_prefix(job_id) -> str:
+    return f"{BATCH_GCS_PREFIX}/{job_id}"
+
+
+def _input_blob(job_id) -> str:
+    return f"{_job_prefix(job_id)}/input.jsonl"
+
+
+def _output_prefix(job_id) -> str:
+    return f"{_job_prefix(job_id)}/output/"
+
+
+# ── JSONL request file (Vertex batch GCS line shape; camelCase REST, NOT SDK snake_case) ──
+def _safety_settings_rest():
+    """REST safetySettings array (sibling of generationConfig), or None to omit."""
+    if not _SAFETY_THRESHOLD:
+        return None
+    return [{"category": c, "threshold": _SAFETY_THRESHOLD} for c in _SAFETY_CATEGORIES]
+
+
+def _build_jsonl(prompts, aspect) -> str:
+    """One JSON line per prompt. Each line is {"request": <GenerateContentRequest>}. Image models
+    need responseModalities to include IMAGE (TEXT kept too — they may emit a text part alongside).
+    Optional aspect ratio via generationConfig.imageConfig.aspectRatio; optional safetySettings
+    backstop. Output order is NOT guaranteed — we re-associate by the echoed text, not position."""
+    gen_cfg = {"responseModalities": ["TEXT", "IMAGE"]}
+    if aspect:
+        gen_cfg["imageConfig"] = {"aspectRatio": aspect}
+    safety = _safety_settings_rest()
+    lines = []
+    for p in prompts:
+        req = {"contents": [{"role": "user", "parts": [{"text": str(p or "")}]}],
+               "generationConfig": gen_cfg}
+        if safety:
+            req["safetySettings"] = safety
+        lines.append(json.dumps({"request": req}))
+    return "\n".join(lines) + "\n"
+
+
+async def submit(*, model, prompts, aspect, job_id, display_name):
+    """Upload the JSONL request file to GCS, then create a Vertex batch over it. Returns
+    (gemini_job_name, auth_mode, state_name). auth_mode is always 'oauth' (kept for the DB column
+    + poll signature). Raises RuntimeError on any failure (caller refunds the hold)."""
+    client = _genai_regional()
+    gcs = _storage()
+    if client is None or gcs is None:
+        raise RuntimeError("Vertex GCS batch not configured (OAuth creds or bucket missing)")
+    from google.genai import types as gt
+
+    jsonl   = _build_jsonl(prompts, aspect)
+    in_blob = _input_blob(job_id)
+    in_uri  = f"gs://{BATCH_GCS_BUCKET}/{in_blob}"
+    out_uri = f"gs://{BATCH_GCS_BUCKET}/{_output_prefix(job_id)}"
+
+    def _do():
+        # bucket() is a lazy ref (no metadata GET); upload writes the input file.
+        gcs.bucket(BATCH_GCS_BUCKET).blob(in_blob).upload_from_string(
+            jsonl, content_type="application/json")
+        return client.batches.create(
+            model=model, src=in_uri,
+            config=gt.CreateBatchJobConfig(dest=out_uri, display_name=display_name))
+
     try:
-        for cand in (getattr(resp, "candidates", None) or []):
-            content = getattr(cand, "content", None)
-            for part in (getattr(content, "parts", None) or []):
-                inline = getattr(part, "inline_data", None)
-                data = getattr(inline, "data", None) if inline is not None else None
-                if data:
-                    if isinstance(data, str):
-                        data = base64.b64decode(data)
-                    mime = getattr(inline, "mime_type", None) or "image/png"
-                    return data, mime
+        job = await asyncio.to_thread(_do)
     except Exception as e:
-        log.warning("[batch] image extract error: %s", e)
+        raise RuntimeError(f"Vertex GCS batch submit failed ({model}@{GCP_BATCH_LOCATION}): {e}")
+    return job.name, "oauth", state_name(getattr(job, "state", None))
+
+
+async def poll(*, gemini_job_name, auth_mode=None):
+    """Fetch the Vertex BatchJob. auth_mode is ignored (always Vertex/OAuth now) — kept in the
+    signature so the existing reconcile call site doesn't have to special-case it."""
+    client = _genai_regional()
+    if client is None:
+        raise RuntimeError("Vertex GCS batch not configured")
+    return await asyncio.to_thread(client.batches.get, name=gemini_job_name)
+
+
+def _image_from_response_json(resp: dict):
+    """First inline image (bytes, mime) in a REST GenerateContentResponse dict, or None.
+    A part whose base64 is corrupt/undecodable is SKIPPED (try the next part), never raised — so one
+    malformed inlineData can't abort extraction of the rest of the batch. A line where nothing decodes
+    returns None (its slot degrades to 'err'); a genuinely-transient GCS *read* failure is a different
+    thing entirely and still raises from _download_texts so the caller defers."""
+    for cand in (resp.get("candidates") or []):
+        for part in ((cand.get("content") or {}).get("parts") or []):
+            inl = part.get("inlineData") or part.get("inline_data") or {}
+            data = inl.get("data")
+            if not data:
+                continue
+            try:
+                raw = base64.b64decode(data) if isinstance(data, str) else data
+            except Exception:
+                continue
+            mime = inl.get("mimeType") or inl.get("mime_type") or "image/png"
+            return raw, mime
     return None
 
 
-def extract_results(job):
-    """Map a terminal BatchJob to a list PARALLEL to the input prompts. Each element is
-    ('ok', bytes, mime) for a produced image or ('err', reason, None) for a failed slot.
-    Inline batch responses preserve request order (incl. failed slots), so index i here
-    corresponds to prompt i."""
-    dest = getattr(job, "dest", None)
-    responses = list(getattr(dest, "inlined_responses", None) or []) if dest else []
-    out = []
-    for r in responses:
-        err = getattr(r, "error", None)
-        if err:
-            out.append(("err", _err_str(err), None))
-            continue
-        img = _first_image(getattr(r, "response", None))
-        if img is None:
-            out.append(("err", "no image in response", None))
-        else:
-            out.append(("ok", img[0], img[1]))
-    return out
+def _echoed_text(row: dict) -> str:
+    """The prompt text echoed back in an output line's request, for re-association."""
+    req = row.get("request") or {}
+    for c in (req.get("contents") or []):
+        for part in (c.get("parts") or []):
+            t = part.get("text")
+            if t:
+                return t
+    return ""
+
+
+def _output_prefix_for(gjob, job_id) -> str:
+    """The GCS prefix to scan for output. Prefer the job's reported dest; fall back to the
+    deterministic prefix we requested (robust if the SDK doesn't surface dest.gcs_uri)."""
+    dest = getattr(gjob, "dest", None)
+    gcs_out = getattr(dest, "gcs_uri", None) if dest is not None else None
+    pfx = f"gs://{BATCH_GCS_BUCKET}/"
+    if gcs_out and isinstance(gcs_out, str) and gcs_out.startswith(pfx):
+        return gcs_out[len(pfx):].lstrip("/")
+    return _output_prefix(job_id)
+
+
+async def extract_results(gjob, prompts, job_id):
+    """Download the batch's output predictions.jsonl from GCS and map each produced image back to
+    its INPUT prompt index. Vertex does NOT guarantee output order, so we re-associate by the echoed
+    request text (a multiset keyed by prompt text — handles reordering AND duplicate prompts). Any
+    produced image whose echoed text doesn't match a remaining slot (e.g. whitespace normalization)
+    fills the earliest still-unfilled slot, so a produced image is NEVER lost (billing is by delivered
+    COUNT, and the user still gets every image). Returns a list PARALLEL to `prompts`:
+    ('ok', bytes, mime) for a produced image | ('err', reason, None) for a failed/missing slot.
+    Raises on a GCS read failure (caller defers — does not burn the terminal transition)."""
+    gcs = _storage()
+    if gcs is None:
+        raise RuntimeError("Vertex GCS batch not configured")
+    total = len(prompts)
+    results = [("err", "no image in batch output", None) for _ in range(total)]
+    if total == 0:
+        return results
+
+    # prompt text → FIFO queue of input indices (handles duplicate prompts)
+    by_text = {}
+    for i, p in enumerate(prompts):
+        by_text.setdefault(str(p or ""), deque()).append(i)
+
+    out_prefix = _output_prefix_for(gjob, job_id)
+
+    def _download_texts():
+        texts = []
+        for b in gcs.list_blobs(BATCH_GCS_BUCKET, prefix=out_prefix):
+            if b.name.endswith(".jsonl") or "prediction" in b.name:
+                texts.append(b.download_as_text())
+        return texts
+
+    try:
+        texts = await asyncio.to_thread(_download_texts)
+    except Exception as e:
+        raise RuntimeError(f"GCS output read failed for {job_id}: {e}")
+
+    unmatched_imgs = deque()        # produced images whose echoed text didn't map to a slot
+    for text in texts:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # The whole per-line body is guarded: a malformed/corrupt line (bad JSON, weird shape,
+            # undecodable image) degrades to "skip / leave slot err" and we move on — it must NEVER
+            # abort the loop and discard the rest of an already-downloaded shard. (Transient GCS READ
+            # failures are caught earlier in _download_texts and re-raised so the caller defers.)
+            try:
+                row = json.loads(line)
+                resp = row.get("response") or {}
+                img = _image_from_response_json(resp) if resp else None
+                q = by_text.get(_echoed_text(row))
+                idx = q.popleft() if (q and len(q)) else None
+                if img is None:
+                    if idx is not None:
+                        status = row.get("status")
+                        results[idx] = ("err", (str(status)[:160] if status else None)
+                                        or "no image in response", None)
+                    continue
+                if idx is not None:
+                    results[idx] = ("ok", img[0], img[1])
+                else:
+                    unmatched_imgs.append(img)
+            except Exception as e:
+                log.warning("[batch] skipped malformed output line for %s: %s", job_id, e)
+                continue
+
+    # fallback: place any leftover produced images into the earliest still-unfilled slots in order
+    if unmatched_imgs:
+        for i in range(total):
+            if not unmatched_imgs:
+                break
+            if results[i][0] != "ok":
+                img = unmatched_imgs.popleft()
+                results[i] = ("ok", img[0], img[1])
+
+    return results
+
+
+async def cleanup(job_id) -> None:
+    """Best-effort delete of a settled job's GCS input+output objects (transient I/O). Never raises —
+    a leftover is harmless (a bucket lifecycle TTL rule is the real backstop). Only the winning
+    settler calls this, and only after the row is terminal, so no live reconcile re-reads the output."""
+    if not BATCH_GCS_CLEANUP:
+        return
+    gcs = _storage()
+    if gcs is None:
+        return
+
+    def _do():
+        for b in list(gcs.list_blobs(BATCH_GCS_BUCKET, prefix=f"{_job_prefix(job_id)}/")):
+            try:
+                b.delete()
+            except Exception:
+                pass
+
+    try:
+        await asyncio.to_thread(_do)
+    except Exception as e:
+        log.warning("[batch] gcs cleanup failed for %s: %s", job_id, e)
