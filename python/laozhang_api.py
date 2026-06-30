@@ -4092,6 +4092,7 @@ async def video_tools_catalog():
             "audio_on_mult": m.get("audio_on_mult", 1),
             "credits_per_sec": cps,
             "credit_usd_value": catalog.CREDIT_USD_VALUE,
+            "worst_cogs_usd": m.get("worst_cogs_usd"),   # worst-case provider cogs → FE option-A badge
         })
     tool_credits = {}
     for op in ("reframe_video", "upscale_video", "lip_sync"):   # caption_video is native/free (no chain)
