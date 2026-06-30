@@ -107,10 +107,37 @@ def _presenter_credits() -> int:
     return int(_ip.credits_for("create_raster", SPK_PORTRAIT_MODEL) or 0)
 
 
-def _avatar_credits(seconds: int) -> int:
+def _avatar_credits(seconds: int, cogs_override: float = None) -> int:
     import video_providers as _vp
     return int(_vp.credits_for(SPK_AVATAR_FEATURE, SPK_AVATAR_MODEL, seconds=seconds,
-                               resolution=SPK_CLIP_RES, audio_on=_audio_on_for(SPK_AVATAR_MODEL)) or 0)
+                               resolution=SPK_CLIP_RES, audio_on=_audio_on_for(SPK_AVATAR_MODEL),
+                               cogs_override=cogs_override) or 0)
+
+
+def _avatar_worst_cogs() -> Optional[float]:
+    """Worst-case (max KNOWN) per-second COGS across the avatar model's provider chain — the HOLD basis
+    (option A) so a failover to the priciest provider is always covered. None → catalog uncovered (the
+    hold then uses the registry cheapest cogs, i.e. the legacy behaviour)."""
+    try:
+        import pricing as _pricing
+        return _pricing.bounds_any(SPK_AVATAR_MODEL, SPK_AVATAR_FEATURE).get("max_cost")
+    except Exception:
+        return None
+
+
+def _avatar_credits_hold(seconds: int) -> int:
+    """HOLD = worst-case provider basis (option A): reserve enough that ANY failover stays profitable."""
+    return _avatar_credits(seconds, cogs_override=_avatar_worst_cogs())
+
+
+def _avatar_credits_actual(cost_per_sec, seconds: int) -> int:
+    """COMMIT = the provider that ACTUALLY served (dispatch.cost_usd) → fair charge, refund the slack vs the
+    worst-case hold. Falls back to the registry cheapest cogs if the actual cost is unknown."""
+    try:
+        c = float(cost_per_sec)
+    except (TypeError, ValueError):
+        c = None
+    return _avatar_credits(seconds, cogs_override=(c if (c and c > 0) else None))
 
 
 def _vo_credits(script: str, seconds: int) -> int:
@@ -138,10 +165,19 @@ def _broll_on(input: dict) -> bool:
     return bool((input.get("broll") or {}).get("on"))
 
 
-def _broll_credits(seconds: int) -> int:
+def _broll_credits(seconds: int, cogs_override: float = None) -> int:
     import video_providers as _vp
     return int(_vp.credits_for("text_to_video", SPK_BROLL_MODEL, seconds=seconds,
-                               resolution=SPK_CLIP_RES, audio_on=False) or 0)
+                               resolution=SPK_CLIP_RES, audio_on=False, cogs_override=cogs_override) or 0)
+
+
+def _broll_worst_cogs() -> Optional[float]:
+    """Worst-case (max known) per-second COGS across the b-roll model's chain — HOLD basis (option A)."""
+    try:
+        import pricing as _pricing
+        return _pricing.bounds_any(SPK_BROLL_MODEL, "text_to_video").get("max_cost")
+    except Exception:
+        return None
 
 
 def _wav_seconds(b: bytes) -> float:
@@ -231,7 +267,7 @@ async def _render_segments(segments: list, portrait_url: str, voice: str, langua
                 r = await _vp.dispatch("text_to_video", SPK_BROLL_MODEL,
                                        {"prompt": brief, "aspect": "9:16", "seconds": int(max(2, round(dur))),
                                         "resolution": SPK_CLIP_RES}, f"{op_id}-v{v}-broll{i}")
-                ccost = _broll_credits(int(max(2, round(dur))))
+                ccost = _broll_credits(int(max(2, round(dur))), cogs_override=(r or {}).get("cost_usd"))
             else:
                 aud_url = await _host_bytes(audio, "audio/wav", f"{op_id}-v{v}-seg{i}vo")
                 if not aud_url:
@@ -240,7 +276,7 @@ async def _render_segments(segments: list, portrait_url: str, voice: str, langua
                                        {"prompt": "a presenter speaking naturally to the camera",
                                         "resolution": SPK_CLIP_RES, "ref_images": [{"url": portrait_url}],
                                         "audio_ref": {"url": aud_url}}, f"{op_id}-v{v}-pres{i}")
-                ccost = _avatar_credits(int(max(1, round(dur))))
+                ccost = _avatar_credits_actual((r or {}).get("cost_usd"), int(max(1, round(dur))))
         except Exception as e:
             log.info("spokesperson segment %d render failed (%s) → skip", i, e)
             continue
@@ -360,18 +396,18 @@ def estimate(input: dict, catalog: Any = None) -> dict:
     if _broll_on(input):
         pres_s = max(1, int(round(seconds * SPK_PRESENTER_RATIO)))
         broll_s = max(1, seconds - pres_s)
-        av = _avatar_credits(pres_s)
+        av = _avatar_credits_hold(pres_s)   # HOLD = worst-case provider (option A)
         if av:
             line_items.append({"label": f"Presenter · {SPK_AVATAR_MODEL} (~{pres_s}s × {n_variants})",
                                "credits": av * n_variants})
             total += av * n_variants
-        bv = _broll_credits(broll_s)
+        bv = _broll_credits(broll_s, cogs_override=_broll_worst_cogs())
         if bv:
             line_items.append({"label": f"B-roll · {SPK_BROLL_MODEL} (~{broll_s}s × {n_variants})",
                                "credits": bv * n_variants})
             total += bv * n_variants
     else:
-        av = _avatar_credits(seconds)
+        av = _avatar_credits_hold(seconds)   # HOLD = worst-case provider (option A)
         if av:
             line_items.append({"label": f"Presenter · {SPK_AVATAR_MODEL} ({seconds}s × {n_variants})",
                                "credits": av * n_variants})
@@ -504,7 +540,9 @@ async def run_spokesperson_job(input: dict, op_id: str, set_progress) -> dict:
                     _tick.cancel()
                 if res is None or res.get("data") is None:
                     raise RuntimeError(f"variant {v + 1}: presenter render failed")
-                committed_total += _avatar_credits(seconds)
+                # COMMIT at the ACTUAL provider served (option A): the hold reserved worst-case; charge what
+                # we really pay (dispatch.cost_usd) → fair, and the umbrella refunds the slack.
+                committed_total += _avatar_credits_actual(res.get("cost_usd"), seconds)
                 clips = [{"bytes": res["data"]}]
                 # time captions to the ACTUAL VO length (not the requested seconds) so karaoke
                 # word-fill lands on the real clip — the avatar clip == the VO duration. Short lines

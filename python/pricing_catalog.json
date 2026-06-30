@@ -1,0 +1,1209 @@
+{
+  "_doc": "SINGLE source of provider pricing + the model\u2192provider\u2192slug map. One list per category. Each row = ONE (model, provider) offering. price = our COGS in `unit`; sell = optional explicit sell-price override (else derived by the markup/floor formula). To change a price, edit the row HERE ONLY \u2014 pricing.cheapest_chain() re-derives the failover order (cheapest first) and pricing.cost_bounds() re-derives the billing floor automatically. price=null = UNKNOWN (resolver treats it as most-expensive so it's never silently chosen as 'cheapest', and logs it for fill). NO chain order is hardcoded anywhere else.",
+  "currency": "USD",
+  "categories": {
+    "avatar": [
+      {
+        "model": "omnihuman-avatar",
+        "provider": "atlascloud",
+        "slug": "bytedance/avatar-omni-human-v1.5",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.06,
+        "sell": null
+      },
+      {
+        "model": "omnihuman-avatar",
+        "provider": "kie",
+        "slug": "omnihuman-1-5",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "omnihuman-avatar",
+        "provider": "fal",
+        "slug": "fal-ai/bytedance/omnihuman/v1.5",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.16,
+        "sell": null
+      },
+      {
+        "model": "omnihuman-avatar",
+        "provider": "aiml",
+        "slug": "bytedance/omnihuman/v1.5",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.21,
+        "sell": null
+      },
+      {
+        "model": "kling-avatar",
+        "provider": "fal",
+        "slug": "fal-ai/kling-video/ai-avatar/v2/standard",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.056,
+        "sell": null
+      },
+      {
+        "model": "kling-avatar",
+        "provider": "atlascloud",
+        "slug": "kwaivgi/kling-v2.6-std/avatar",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.048,
+        "sell": null
+      },
+      {
+        "model": "kling-avatar",
+        "provider": "aiml",
+        "slug": "klingai/avatar-standard",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "kling-avatar",
+        "provider": "kie",
+        "slug": "kling/ai-avatar-standard",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "kling-pro-avatar",
+        "provider": "atlascloud",
+        "slug": "kwaivgi/kling-v2.6-pro/avatar",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.095,
+        "_note": "Kling v2.6 PRO avatar (premium; std=kling-avatar $0.048). atlascloud dashboard $0.095/s. VERIFY the slug + add other providers (fal/aiml/kie) from Rino's latest list. Needs a video_registry model entry before it's user-selectable.",
+        "sell": null
+      }
+    ],
+    "video": [
+      {
+        "model": "veo-3-1-fast",
+        "provider": "kie",
+        "slug": "veo3_fast",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.0375,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1-fast",
+        "provider": "laozhang",
+        "slug": "veo-3.1-fast-generate-preview",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.0375,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1-fast",
+        "provider": "atlascloud",
+        "slug": "google/veo3.1-fast/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1-fast",
+        "provider": "aiml",
+        "slug": "google/veo-3.1-t2v-fast",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1-fast",
+        "provider": "fal",
+        "slug": "fal-ai/veo3.1/fast/image-to-video",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1",
+        "provider": "laozhang",
+        "slug": "veo-3.1-generate-preview",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.15,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1",
+        "provider": "kie",
+        "slug": "veo3",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.156,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1",
+        "provider": "atlascloud",
+        "slug": "google/veo3.1/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1",
+        "provider": "aiml",
+        "slug": "google/veo-3.1-t2v",
+        "features": [
+          "text_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1",
+        "provider": "fal",
+        "slug": "fal-ai/veo3.1/image-to-video",
+        "features": [
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1",
+        "provider": "vertex",
+        "slug": "veo-3.1-generate-preview",
+        "features": [
+          "text_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1-lite",
+        "provider": "atlascloud",
+        "slug": "google/veo3.1-lite/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.05,
+        "sell": null
+      },
+      {
+        "model": "veo-3-1-lite",
+        "provider": "kie",
+        "slug": "veo3_lite",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "veo-3-fast",
+        "provider": "aiml",
+        "slug": "google/veo-3.0-fast",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.105,
+        "sell": null
+      },
+      {
+        "model": "sora-2",
+        "provider": "fal",
+        "slug": "fal-ai/sora-2/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.1,
+        "sell": null
+      },
+      {
+        "model": "sora-2",
+        "provider": "aiml",
+        "slug": "openai/sora-2-t2v",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "sora-2",
+        "provider": "laozhang",
+        "slug": "sora-2",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "sora-2-pro",
+        "provider": "fal",
+        "slug": "fal-ai/sora-2/text-to-video/pro",
+        "features": [
+          "text_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.3,
+        "sell": null
+      },
+      {
+        "model": "sora-2-pro",
+        "provider": "aiml",
+        "slug": "openai/sora-2-pro-t2v",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "sora-2-pro",
+        "provider": "laozhang",
+        "slug": "sora-2-pro",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "seedance-1-5-pro",
+        "provider": "atlascloud",
+        "slug": "bytedance/seedance-v1.5-pro/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.0175,
+        "sell": null
+      },
+      {
+        "model": "seedance-1-5-pro",
+        "provider": "fal",
+        "slug": "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "seedance-2",
+        "provider": "atlascloud",
+        "slug": "bytedance/seedance-2.0/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.112,
+        "sell": null
+      },
+      {
+        "model": "seedance-2",
+        "provider": "fal",
+        "slug": "bytedance/seedance-2.0/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "seedance-2-mini",
+        "provider": "atlascloud",
+        "slug": "bytedance/seedance-2.0-mini/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.0625,
+        "sell": null
+      },
+      {
+        "model": "seedance-2-mini",
+        "provider": "fal",
+        "slug": "bytedance/seedance-2.0/mini/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "happyhorse-1-0",
+        "provider": "atlascloud",
+        "slug": "alibaba/happyhorse-1.0/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video",
+          "video_edit"
+        ],
+        "unit": "per_second",
+        "price": 0.112,
+        "sell": null
+      },
+      {
+        "model": "happyhorse-1-0",
+        "provider": "fal",
+        "slug": "alibaba/happy-horse/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "happyhorse-1-1",
+        "provider": "atlascloud",
+        "slug": "alibaba/happyhorse-1.1/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.1125,
+        "sell": null
+      },
+      {
+        "model": "happyhorse-1-1",
+        "provider": "fal",
+        "slug": "alibaba/happy-horse/v1.1/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "kling-o3",
+        "provider": "atlascloud",
+        "slug": "kwaivgi/kling-video-o3-std/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.09,
+        "sell": null
+      },
+      {
+        "model": "kling-o3",
+        "provider": "fal",
+        "slug": "fal-ai/kling-video/o3/standard/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "kling-o3-pro",
+        "provider": "atlascloud",
+        "slug": "kwaivgi/kling-video-o3-pro/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video",
+          "reference_to_video",
+          "video_edit"
+        ],
+        "unit": "per_second",
+        "price": 0.095,
+        "sell": null
+      },
+      {
+        "model": "kling-o3-pro",
+        "provider": "fal",
+        "slug": "fal-ai/kling-video/o3/pro/image-to-video",
+        "features": [
+          "image_to_video",
+          "reference_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "kling-o3-4k",
+        "provider": "atlascloud",
+        "slug": "kwaivgi/kling-video-o3-4k/text-to-video",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.335,
+        "sell": null
+      },
+      {
+        "model": "wan-2-5",
+        "provider": "aiml",
+        "slug": "alibaba/wan2.5-t2v-preview",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.035,
+        "sell": null
+      },
+      {
+        "model": "wan-2-7",
+        "provider": "aiml",
+        "slug": "alibaba/wan-2-7-t2v",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.039,
+        "sell": null
+      },
+      {
+        "model": "wan-2-7",
+        "provider": "laozhang",
+        "slug": "wan2.7-t2v",
+        "features": [
+          "text_to_video",
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "hailuo-02",
+        "provider": "fal",
+        "slug": "fal-ai/minimax/hailuo-02/standard/image-to-video",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.025,
+        "sell": null
+      },
+      {
+        "model": "wan-2-2-turbo",
+        "provider": "atlascloud",
+        "slug": "atlascloud/wan-2.2-turbo/image-to-video",
+        "features": [
+          "image_to_video"
+        ],
+        "unit": "per_second",
+        "price": 0.02,
+        "sell": null
+      }
+    ],
+    "image": [
+      {
+        "model": "nano-banana",
+        "provider": "atlascloud",
+        "slug": "google/nano-banana/text-to-image-developer",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.019,
+        "sell": null
+      },
+      {
+        "model": "nano-banana",
+        "provider": "laozhang",
+        "slug": "nano-banana",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "nano-banana",
+        "provider": "kie",
+        "slug": "google/nano-banana",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "nano-banana",
+        "provider": "vertex",
+        "slug": "gemini-2.5-flash-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "nano-banana-2",
+        "provider": "atlascloud",
+        "slug": "google/nano-banana-2/text-to-image-developer",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.04,
+        "sell": null
+      },
+      {
+        "model": "nano-banana-2",
+        "provider": "kie",
+        "slug": "nano-banana-2",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "nano-banana-2",
+        "provider": "vertex",
+        "slug": "gemini-3.1-flash-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "nano-banana-pro",
+        "provider": "fal",
+        "slug": "fal-ai/nano-banana-pro",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.04,
+        "sell": null
+      },
+      {
+        "model": "nano-banana-pro",
+        "provider": "atlascloud",
+        "slug": "google/nano-banana-pro/text-to-image-developer",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "nano-banana-pro",
+        "provider": "vertex",
+        "slug": "gemini-3-pro-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-2",
+        "provider": "atlascloud",
+        "slug": "openai/gpt-image-2-developer/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.004,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-2",
+        "provider": "laozhang",
+        "slug": "gpt-image-2",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-2",
+        "provider": "kie",
+        "slug": "gpt-image-2-text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-2",
+        "provider": "openai",
+        "slug": "gpt-image-2",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-1",
+        "provider": "atlascloud",
+        "slug": "openai/gpt-image-1/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.009,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-1",
+        "provider": "aiml",
+        "slug": "gpt-image-1",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-1",
+        "provider": "openai",
+        "slug": "gpt-image-1",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "seedream-4-5",
+        "provider": "kie",
+        "slug": "seedream/4.5-text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.0325,
+        "sell": null
+      },
+      {
+        "model": "seedream-4-5",
+        "provider": "laozhang",
+        "slug": "seedream-4-5",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "seedream-4-5",
+        "provider": "byteplus",
+        "slug": "seedream-4-5-251128",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "seedream-5",
+        "provider": "kie",
+        "slug": "seedream/5-lite-text-to-image",
+        "features": [
+          "create",
+          "edit",
+          "_note"
+        ],
+        "unit": "per_image",
+        "price": 0.0275,
+        "sell": null
+      },
+      {
+        "model": "seedream-5",
+        "provider": "laozhang",
+        "slug": "seedream-5",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "seedream-5",
+        "provider": "byteplus",
+        "slug": "seedream-5-0-260128",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-pro",
+        "provider": "laozhang",
+        "slug": "flux-kontext-pro",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.035,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-pro",
+        "provider": "aiml",
+        "slug": "flux/kontext-pro/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-pro",
+        "provider": "kie",
+        "slug": "flux-kontext-pro",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-pro",
+        "provider": "bfl",
+        "slug": "/v1/flux-kontext-pro",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-max",
+        "provider": "laozhang",
+        "slug": "flux-kontext-max",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.07,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-max",
+        "provider": "aiml",
+        "slug": "flux/kontext-max/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-max",
+        "provider": "kie",
+        "slug": "flux-kontext-max",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-kontext-max",
+        "provider": "bfl",
+        "slug": "/v1/flux-kontext-max",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-dev",
+        "provider": "atlascloud",
+        "slug": "black-forest-labs/flux-dev",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": 0.012,
+        "sell": null
+      },
+      {
+        "model": "flux-dev",
+        "provider": "aiml",
+        "slug": "flux-1-dev-api",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "flux-dev",
+        "provider": "bfl",
+        "slug": "/v1/flux-dev",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "imagen-4",
+        "provider": "atlascloud",
+        "slug": "google/imagen4",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": 0.04,
+        "sell": null
+      },
+      {
+        "model": "imagen-4",
+        "provider": "kie",
+        "slug": "google/imagen4",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "imagen-4",
+        "provider": "vertex",
+        "slug": "imagen-4.0-generate-001",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "qwen-image",
+        "provider": "kie",
+        "slug": "qwen/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.021,
+        "sell": null
+      },
+      {
+        "model": "qwen-image",
+        "provider": "atlascloud",
+        "slug": "alibaba/qwen-image/text-to-image-plus",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "qwen-image",
+        "provider": "alibaba",
+        "slug": "qwen-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "recraft-v3",
+        "provider": "recraft",
+        "slug": "recraftv3",
+        "features": [
+          "create",
+          "create_vector",
+          "edit",
+          "reframe",
+          "upscale",
+          "vectorize",
+          "bg_remove"
+        ],
+        "unit": "per_image",
+        "price": 0.04,
+        "sell": null
+      },
+      {
+        "model": "flux-schnell",
+        "provider": "atlascloud",
+        "slug": "black-forest-labs/flux-schnell",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": 0.003,
+        "sell": null
+      },
+      {
+        "model": "gpt-image-1-mini",
+        "provider": "atlascloud",
+        "slug": "openai/gpt-image-1-mini/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.004,
+        "sell": null
+      },
+      {
+        "model": "ernie-image-turbo",
+        "provider": "atlascloud",
+        "slug": "baidu/ERNIE-Image-Turbo/text-to-image",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": 0.003,
+        "sell": null
+      },
+      {
+        "model": "z-image-turbo",
+        "provider": "atlascloud",
+        "slug": "z-image/turbo",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": 0.005,
+        "sell": null
+      },
+      {
+        "model": "z-image-turbo",
+        "provider": "kie",
+        "slug": "z-image",
+        "features": [
+          "create"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "grok-imagine",
+        "provider": "atlascloud",
+        "slug": "xai/grok-imagine-image/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.02,
+        "sell": null
+      },
+      {
+        "model": "grok-imagine",
+        "provider": "kie",
+        "slug": "grok-imagine/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": null,
+        "sell": null
+      },
+      {
+        "model": "mai-image-2-5",
+        "provider": "atlascloud",
+        "slug": "microsoft/mai-image-2.5-flash/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.03,
+        "sell": null
+      },
+      {
+        "model": "nano-banana-pro-ultra",
+        "provider": "atlascloud",
+        "slug": "google/nano-banana-pro/text-to-image-ultra",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.15,
+        "sell": null
+      },
+      {
+        "model": "youchuan-v8",
+        "provider": "atlascloud",
+        "slug": "youchuan/v8.1/text-to-image",
+        "features": [
+          "create",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.086,
+        "sell": null
+      }
+    ],
+    "tts": [],
+    "fx": []
+  }
+}

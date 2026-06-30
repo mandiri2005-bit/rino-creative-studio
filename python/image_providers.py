@@ -573,6 +573,14 @@ async def dispatch(feature: str, model_id: str, params: dict, op_id: str) -> dic
     chain = model_chain or _OP_CHAINS.get(feature) or _OP_CHAINS.get({"upscale": "upscale_crisp"}.get(feature, feature))
     if not chain:
         raise ProviderError(f"no chain for feature={feature} model={model_id}")
+    # DYNAMIC cheapest-first: re-order the failover chain by the pricing catalog (single source of truth)
+    # instead of the hand-typed registry order. Falls back to the registry order untouched when the catalog
+    # doesn't cover this model (backward-compatible). Mirrors video_providers.dispatch.
+    try:
+        import pricing as _pricing
+        chain = _pricing.reorder_steps(model_id, feature, list(chain))
+    except Exception as _e:
+        log.warning("dispatch: pricing-catalog reorder skipped (%s) — using registry order", _e)
     errors = []
     # Provider traffic (POST/poll/result-fetch) FOLLOWS redirects — signed result URLs legitimately 30x to
     # object storage, and blanket redirects-off turned every such 3xx into a spurious failover / paid-but-502.
@@ -586,10 +594,16 @@ async def dispatch(feature: str, model_id: str, params: dict, op_id: str) -> dic
                 continue
             try:
                 ref, data, mime = await _try(client, prov, feature, slug, params, op_id)
-                # COGS of the provider that actually served: an op-chain step carries its own
-                # cogs_usd; otherwise the cheapest aggregator (chain[0]) costs the model's cogs_usd,
-                # and any failover to a pricier source books the conservative first-party price.
+                # COGS of the provider that ACTUALLY served — booked at its REAL per-provider price:
+                #   1) an op-chain step's own cogs_usd; 2) else the pricing catalog's price for
+                #   (model, this provider) — accurate even on failover; 3) else the legacy guess.
                 cost = step.get("cogs_usd")
+                if cost is None:
+                    try:
+                        import pricing as _pricing
+                        cost = _pricing.cost_for_provider(model_id, prov, feature)
+                    except Exception:
+                        cost = None
                 if cost is None:
                     cost = cogs if idx == 0 else official
                 return {"ref": ref, "data": data, "mime": mime, "provider": prov,

@@ -52,6 +52,11 @@ COPY image_registry.json ./
 # without this `import video_providers` raises FileNotFoundError → every /video-tools + recipe video
 # dispatch 500s. (Same class of bug already fixed once for image_registry.json.)
 COPY video_registry.json ./
+# Wimba unified pricing catalog (per-provider COGS/slugs → pricing.py resolver: cheapest-first failover +
+# worst-case-hold billing). NOT matched by `COPY *.py`, so without this pricing._load() returns {} and the
+# resolver SILENTLY degrades to the legacy registry order + cheapest-cogs pricing (no crash, but the
+# cheapest-first reorder + option-A boncos guard do nothing). Same class as the registry COPYs above.
+COPY pricing_catalog.json ./
 # Nusantara Corpus seed + ref images. NOT matched by `COPY *.py`, so without this
 # data/nusantara_seed.json is absent at runtime → _load_seed() empty → BM25 retrieval
 # returns nothing (the corpus silently does nothing on the BM25 path).
