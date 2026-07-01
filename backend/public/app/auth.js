@@ -138,21 +138,22 @@
       }
     },
     async signOut() {
-      // No Clerk (auth disabled) → just go to the landing page.
-      if (!_clerk) { window.location.href = "/"; return; }
+      // Wimba's marketing landing lives on a SEPARATE domain (wimba.ai); ceritaAI's landing is
+      // this app's root ("/" → landing.html). Brand-gate so Wimba logout doesn't bounce unauthed
+      // through /app/ → /sign-up. (window.__BRAND is injected at serve time.)
+      const landing = window.__BRAND === "wimba" ? "https://wimba.ai" : "/";
+      if (!_clerk) { window.location.href = landing; return; }
       try {
         _currentUser = null;
         notifyUserChange();
         ["rc_lzkey","rc_imgkey","rc_veokey","rc_sorakey","rc_ds_route",
          "rc_nar_outline","rc_nar_outline_text","rc_nar_result"]
           .forEach(k => localStorage.removeItem(k));
-        // Redirect to the marketing landing page ("/" → landing.html) after sign-out
-        // instead of showing the in-app auth gate (looked like being stuck on the
-        // sign-in screen). Clerk clears the session, then navigates.
-        await _clerk.signOut({ redirectUrl: "/" });
+        // Clerk clears the session, then navigates to the (brand-correct) landing.
+        await _clerk.signOut({ redirectUrl: landing });
       } catch (e) {
         console.error("[auth] signOut:", e);
-        window.location.href = "/";   // hard fallback so the user still leaves the app
+        window.location.href = landing;   // hard fallback so the user still leaves the app
       }
     },
     get currentUser() { return _currentUser; },
