@@ -2536,6 +2536,117 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
   try{ await logUsage(tenantId, userId, model, "tts", 0, 0, (transcriptBody||"").length/1000*0.10, null, "gemini"); }
   catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
+
+// ── Voiceover provider expansion (Creator Suite App 3) ─────────────────────────
+// New TTS providers (ElevenLabs / MiniMax / budget) synthesize on the PYTHON service
+// (it holds the FAL/AIMLAPI keys; Node holds none), via /tts/synth. google + openai
+// stay on the legacy Node runners above, UNTOUCHED. Routed-provider set is closed:
+const PROVIDER_ROUTED = new Set(["elevenlabs","minimax","budget"]);
+
+// Pre-flight credit gate (closes the -547 charge-without-gate TOCTOU class — Rino's
+// explicit "Tambah pre-flight gate" choice). POSTs to Python /tts/gate which quotes
+// the SAME basis the post-hoc debit uses (registry usd→credits for routed providers,
+// catalog 'tts' flat for google/openai) and 402s if balance<needed. Returns:
+//   {ok:true}                          → sufficient, proceed
+//   {ok:false,status,body}             → relay verbatim (esp. 402 insufficient_credits)
+// Fail policy on an UNREACHABLE gate:
+//   • routed provider → fail-CLOSED (synth needs Python anyway; blocking early is honest)
+//   • google/openai   → fail-OPEN (Node-native synth, no Python needed; matches today's
+//                        gate-less behaviour — no regression, post-hoc debit still runs).
+async function ttsPreflightGate(req,{provider,model,chars,failClosed}){
+  try{
+    const r=await fetch(`${PYTHON_API}/tts/gate`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json",...(req.headers.authorization?{authorization:req.headers.authorization}:{})},
+      body:JSON.stringify({provider,model,chars}),
+    });
+    if(r.ok)return{ok:true};
+    const e=await r.json().catch(()=>({}));
+    const d=e&&e.detail;
+    const body=(d&&typeof d==="object"&&!Array.isArray(d))
+      ? {...d,error:d.error||d.message||r.statusText}
+      : {error:(typeof d==="string"&&d)||e.error||r.statusText};
+    return{ok:false,status:r.status,body};
+  }catch(err){
+    if(failClosed)return{ok:false,status:503,body:{error:"tts_unavailable",message:"Voice service temporarily unavailable — please try again shortly."}};
+    console.error("[tts] preflight gate unreachable (fail-open, legacy path):",err.message);
+    return{ok:true,degraded:true};
+  }
+}
+
+// Provider runner: per-chunk POST ${PYTHON_API}/tts/synth (Python does the failover
+// chain + reports the winning model's REAL normalized cost). Node owns the job loop:
+// write audio to TTS_DIR with the right ext, Vault-persist, accumulate cost, debit ONCE
+// at the end at the real summed COGS (x1 tts markup = studio-consistent). Mirrors the
+// google/laozhang runners' shape so the FE poll/files/profiles surface is unchanged.
+async function runProviderTtsJob(jobId,{tenantId,userId,authHeader,provider,providerModel,providerVoice,providerLanguage,silenceSeconds,transcriptBody,outputPrefix}){
+  let job=await getLiveJob(jobId);
+  const lines=transcriptBody.trim().split(/\n\n+/).filter(l=>l.trim());
+  job.total=lines.length;job.progress=0;job.status="running";
+  const log=msg=>{job.logs.push(msg);};
+  const flush=()=>setLiveJob(jobId,job);
+  await flush();
+  let totalCostUsd=0;
+  log(`🟪 ${provider} TTS · model=${providerModel} voice=${providerVoice||"default"} lang=${providerLanguage||"auto"} · ${lines.length} chunk(s)`);
+  for(let i=0;i<lines.length;){
+    if(ttsCancelFlags.get(jobId)){
+      log("🚫 Cancelled by user");
+      job.status="cancelled";
+      ttsCancelFlags.delete(jobId);
+      await flush();
+      await failJob(jobId, "Cancelled by user");
+      return;
+    }
+    const line=lines[i];
+    log(`[${i+1}/${lines.length}] (${line.length} chars)`);
+    try{
+      const resp=await fetch(`${PYTHON_API}/tts/synth`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json",...(authHeader?{authorization:authHeader}:{})},
+        body:JSON.stringify({provider,model:providerModel,voice:providerVoice,language:providerLanguage,text:line}),
+      });
+      if(!resp.ok){
+        const e=await resp.json().catch(()=>({}));
+        const det=e&&e.detail;
+        const msg=(typeof det==="string"&&det)||(det&&typeof det==="object"&&(det.error||det.message))||e.error||resp.statusText;
+        log(`🔴 ${resp.status}: ${String(msg).slice(0,140)}`);
+        await new Promise(r=>setTimeout(r,2000));
+        i++;job.progress=i;await flush();continue;
+      }
+      const out=await resp.json();
+      const audio=Buffer.from(out.audio_b64||"","base64");
+      if(!audio.length){ log(`⚠️  empty audio for chunk ${i+1}`); i++;job.progress=i;await flush();continue; }
+      const mime=out.mime||"audio/mpeg";
+      const ext=/wav/i.test(mime)?"wav":/ogg/i.test(mime)?"ogg":"mp3";
+      const ctype=ext==="wav"?"audio/wav":ext==="ogg"?"audio/ogg":"audio/mpeg";
+      let buf=audio;
+      if(silenceSeconds>0&&ext==="wav"){ try{buf=prependSilence(buf,silenceSeconds);}catch(_){/* keep original */} }
+      const filename=`${outputPrefix||"tts"}_${String(i+1).padStart(2,"0")}.${ext}`;
+      fs.writeFileSync(path.join(TTS_DIR,filename),buf);
+      const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
+      job.files.push(_f);
+      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:buf,contentType:ctype,metadata:{provider,model:providerModel,voice:providerVoice,text:line,served_by:out.served_by}});
+           if(a){_f.key=a.key;_f.assetId=a.id;} }
+      catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
+      totalCostUsd+=Number(out.cost_usd)||0;
+      log(`✅ ${filename}${out.served_by?" · via "+out.served_by:""}`);
+      await new Promise(r=>setTimeout(r,300));
+      i++;job.progress=i;await flush();
+    }catch(e){
+      const msg=String(e);
+      log(`🔴 ${msg.slice(0,120)}`);
+      await new Promise(r=>setTimeout(r,3000));
+      i++;job.progress=i;await flush();
+    }
+  }
+  job.status="done";log("✅ Complete");
+  await flush();
+  await completeJob(jobId, { files: job.files, total: job.total });
+  // Debit the REAL summed upstream cost (only successful chunks accrued). usage_logs.provider
+  // CHECK constraint excludes fal/aimlapi → 'other'. x1 tts markup keeps it studio-consistent.
+  try{ await logUsage(tenantId, userId, providerModel, "tts", 0, 0, totalCostUsd, null, "other"); }
+  catch(e){ console.error("[tts] provider logUsage failed:", e.message); }
+}
 app.get("/api/tts/jobs", requireAuth, async(req,res)=>{
   try{
     const rows = await listJobs(resolveTenantId(req), "tts");
@@ -2547,7 +2658,7 @@ app.get("/api/tts/jobs", requireAuth, async(req,res)=>{
     }))));
   }catch(e){ res.status(500).json({error:e.message}); }
 });
-app.get("/api/tts/files", (_,res)=>{try{res.json(fs.readdirSync(TTS_DIR).filter(f=>/\.wav$/i.test(f)).map(f=>({file:f,url:`/audio/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
+app.get("/api/tts/files", (_,res)=>{try{res.json(fs.readdirSync(TTS_DIR).filter(f=>/\.(wav|mp3|ogg)$/i.test(f)).map(f=>({file:f,url:`/audio/${encodeURIComponent(f)}`})));}catch{res.json([]);}});
 app.get("/api/tts/job/:id", requireAuth, async(req,res)=>{
   try{
     const live = await getLiveJob(req.params.id);   // running job → rich live object
@@ -2564,30 +2675,52 @@ app.get("/api/tts/job/:id", requireAuth, async(req,res)=>{
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.post("/api/tts/start", requireAuth, async(req,res)=>{
-  const{apiMode="google",apiKeys=[],model="gemini-3.1-flash-tts-preview",voice="Enceladus",speed=1.0,language="auto",audiobookMode=false,silenceSeconds=0.5,audioProfile="",transcriptBody="",outputPrefix="tts"}=req.body||{};
+  const{apiMode="google",apiKeys=[],model="gemini-3.1-flash-tts-preview",voice="Enceladus",speed=1.0,language="auto",audiobookMode=false,silenceSeconds=0.5,audioProfile="",transcriptBody="",outputPrefix="tts",
+    provider="",providerModel="",providerVoice="",providerLanguage=""}=req.body||{};
+  if(!transcriptBody.trim())return res.status(400).json({error:"Empty transcript"});
+  // Routed providers (ElevenLabs/MiniMax/budget) synthesize on Python and need NO Node key.
+  const useProvider=PROVIDER_ROUTED.has(String(provider||"").toLowerCase());
   const rawKeys=[...(Array.isArray(apiKeys)?apiKeys:[apiKeys])].filter(Boolean);
   // Google falls back to server env GEMINI_KEY; LaoZhang has no env fallback here
   const keys=apiMode==="laozhang"?rawKeys:[...rawKeys,GEMINI_KEY].filter(Boolean);
-  if(!keys.length)return res.status(400).json({error:apiMode==="laozhang"?"No LaoZhang API key":"No API keys"});
-  if(!transcriptBody.trim())return res.status(400).json({error:"Empty transcript"});
+  if(!useProvider&&!keys.length)return res.status(400).json({error:apiMode==="laozhang"?"No LaoZhang API key":"No API keys"});
   const tenantId = resolveTenantId(req);
   const userId   = await resolveUserId(req, tenantId);
+  // PRE-FLIGHT CREDIT GATE (all paths) — block zero/low balance BEFORE any synthesis,
+  // quoting the SAME basis the post-hoc debit uses. Routed providers fail-CLOSED on an
+  // unreachable gate (Python is also their synth host); google/laozhang fail-OPEN.
+  const gate=await ttsPreflightGate(req,{
+    provider: useProvider?provider:apiMode,
+    model:    useProvider?providerModel:model,
+    chars:    transcriptBody.trim().length,
+    failClosed: useProvider,
+  });
+  if(!gate.ok)return res.status(gate.status||402).json(gate.body||{error:"insufficient_credits"});
   // Preview count = audiobook chunks for LaoZhang+audiobook mode, else paragraphs
-  const lines=(apiMode==="laozhang"&&audiobookMode)
+  const lines=(!useProvider&&apiMode==="laozhang"&&audiobookMode)
     ? chunkTextForAudiobook(transcriptBody.trim(),4000)
     : transcriptBody.trim().split(/\n\n+/).filter(l=>l.trim());
+  // Job-list display reflects the actually-selected engine/model/voice.
+  const dispApiMode=useProvider?provider:apiMode, dispModel=useProvider?providerModel:model, dispVoice=useProvider?providerVoice:voice;
   // Durable row (status 'processing'); UUID id becomes the jobId the UI polls.
   const jobId = await createJob(tenantId, userId, "tts", outputPrefix);
   // Live object in Redis (replaces activeJobs.set + the JSON file unshift).
-  await setLiveJob(jobId, { jobId, apiMode, model, voice, outputPrefix,
+  await setLiveJob(jobId, { jobId, apiMode:dispApiMode, model:dispModel, voice:dispVoice, outputPrefix,
     status:"queued", total:lines.length, progress:0, logs:[], files:[],
     createdAt:new Date().toISOString() });
   // Seed result_payload so list/restart shows model/voice/total before completion.
-  await patchJobPayload(jobId, { apiMode, model, voice, total:lines.length });
-  const runner=apiMode==="laozhang"?runLaozhangTtsJob:runTtsJob;
-  runner(jobId,{tenantId,userId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
-    .catch(async e=>{ await failJob(jobId, e.message);
-      await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal: "+e.message);return j;}); });
+  await patchJobPayload(jobId, { apiMode:dispApiMode, model:dispModel, voice:dispVoice, total:lines.length });
+  const onFatal=async e=>{ await failJob(jobId, e.message);
+      await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal: "+e.message);return j;}); };
+  if(useProvider){
+    runProviderTtsJob(jobId,{tenantId,userId,authHeader:req.headers.authorization||"",
+      provider,providerModel,providerVoice,providerLanguage,silenceSeconds,transcriptBody,outputPrefix})
+      .catch(onFatal);
+  }else{
+    const runner=apiMode==="laozhang"?runLaozhangTtsJob:runTtsJob;
+    runner(jobId,{tenantId,userId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
+      .catch(onFatal);
+  }
   res.json({ok:true,jobId,total:lines.length});
 });
 app.post("/api/tts/cancel/:id", requireAuth, async(req,res)=>{
@@ -2636,6 +2769,21 @@ app.get("/api/assets/content", requireAuth, async (req, res) => {
     res.send(buf);
   } catch (e) { console.error("[/api/assets/content]", e.message); res.status(500).json({ error: e.message }); }
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SOUND EFFECTS (Creator Suite App 4) — AI SFX-only generation
+// ══════════════════════════════════════════════════════════════════════════════
+// CC0 music/SFX LIBRARY is DROPPED for v1: the free Freesound/Jamendo/Pixabay music
+// APIs all restrict commercial API use to a paid/negotiated agreement, and Wimba is a
+// commercial product — proxying them live would breach those terms. The Node library
+// search route + the external-host byte proxy were removed with it (no external-fetch
+// surface left). Intended revival is a self-hosted curated CC0 pack on R2. The Python
+// /music/search is short-circuited to [] as defence-in-depth.
+//
+// AI SFX generation (SFX-ONLY — NO AI music, copyright constraint). Billing is owned
+// by the Python /sfx/generate (hold ceiling → FAL chain → persist Vault → commit the
+// real winning cost / refund whole hold on fail). 402 detail spreads to top-level.
+app.post("/api/sfx/generate", requireAuth, (req, res) => pyProxy(req, res, "/sfx/generate"));
 
 // Delete a single asset from the vault (R2 object + DB row). RLS-scoped — the
 // DELETE only matches rows belonging to the caller's tenant.

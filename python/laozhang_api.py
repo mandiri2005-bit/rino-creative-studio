@@ -1694,6 +1694,227 @@ async def credits_balance(user: CurrentUser = Depends(get_current_user)):
     return {"balance": bal, "tier": user.tier, **bd}
 
 
+# ── Voiceover expansion (App 3) — pre-flight gate + per-chunk provider synth ──────
+# The Node /api/tts/start runner owns the job loop (split / WAV write / Vault persist / debit). For
+# the new providers (ElevenLabs/MiniMax/Budget via FAL+AIMLAPI — keys live ONLY here, not on Node)
+# Node calls these two endpoints: /tts/gate ONCE before starting (affordability 402) and /tts/synth
+# per chunk (stateless audio synth + REAL normalized cost). google + openai(tts-1/hd) stay on Node's
+# legacy runners; /tts/gate still fronts them so EVERY TTS path is gated (closes the -547 TOCTOU).
+@app.post("/tts/gate")
+async def tts_gate(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """Pre-flight affordability check for ANY TTS path. Raises 402 (insufficient_credits) if the
+    tenant can't cover the estimate; else returns the credit cost + live balance. No deduction."""
+    import tts_providers as _tts
+    provider = (body.get("provider") or "").strip()
+    model    = (body.get("model") or "").strip()
+    chars    = int(body.get("chars") or 0)
+    # Registry provider (elevenlabs/minimax/budget) → normalized registry rate → usd_to_credits.
+    # Non-registry (google/openai legacy) → catalog 'tts' flat rate — the SAME basis Node's post-hoc
+    # logUsage debit uses, so gate == debit and a zero-balance user is blocked before synthesis.
+    try:
+        usd = _tts.estimate_usd(provider, model, chars)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"cannot quote tts: {e}")
+    if usd is None:
+        credits_needed = metering.quote("tts", model or "tts-1", {"chars": chars})
+    else:
+        credits_needed = catalog.usd_to_credits(usd)   # tts markup is x1 (break-even by design)
+    await metering.gate_credits(user.tenant_id, int(credits_needed))   # raises 402 if short / no-op if metering off
+    balance = await credits_lib.get_balance(user.tenant_id)
+    return {"ok": True, "credits": int(credits_needed), "balance": balance, "sufficient": True}
+
+
+@app.post("/tts/synth")
+async def tts_synth(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """Synthesize ONE TTS chunk via the new-provider failover chain (FAL/AIMLAPI). Stateless: returns
+    audio bytes (base64) + the REAL normalized upstream cost so Node debits accurate COGS post-success.
+    No credit deduction here (balance was pre-flight gated; Node debits the summed cost on completion).
+    Auth-gated so provider keys can't be driven by an unauthenticated caller."""
+    import base64 as _b64
+    import tts_providers as _tts
+    provider = (body.get("provider") or "").strip()
+    model    = (body.get("model") or "").strip()
+    voice    = (body.get("voice") or "").strip()
+    language = (body.get("language") or "").strip()
+    text     = body.get("text") or ""
+    if not str(text).strip():
+        raise HTTPException(status_code=400, detail="empty text")
+    try:
+        out = await _tts.synth(provider, model, voice, language, str(text))
+    except _tts.ProviderError as e:
+        raise HTTPException(status_code=502, detail=f"tts synth failed: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"tts synth error: {e}")
+    return {
+        "audio_b64": _b64.b64encode(out["audio"]).decode("ascii"),
+        "mime":      out["mime"],
+        "cost_usd":  out["cost_usd"],
+        "provider":  out["provider"],
+        "model":     out["model"],
+        "served_by": out["served_by"],
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MUSIC APP (Creator Suite App 4) — CC0 library search + AI SFX-ONLY generation
+# ══════════════════════════════════════════════════════════════════════════════
+# Library = CC0 ONLY (Freesound CC0 filter + Pixabay), keys server-side. Generation = SFX ONLY
+# (NO AI music — hard copyright constraint). The Node front door proxies /api/music/search and
+# /api/sfx/generate here; /api/music/content is a Node-native byte proxy (binary, SSRF-allowlisted).
+
+async def _freesound_search(q: str, typ: str) -> list:
+    """Freesound text search filtered to Creative Commons 0. Returns normalised LibraryTrack dicts.
+    Env-gated on FREESOUND_API_KEY → [] when unset (UI degrades to 'no results / not configured').
+    VERIFY LIVE: token not yet provisioned; the apiv2 contract below is the documented one."""
+    import httpx
+    key = os.getenv("FREESOUND_API_KEY", "").strip()
+    if not key:
+        return []
+    # CC0 ONLY. 'music' ⇒ longer clips, 'sfx' ⇒ short — a light duration nudge, not a hard gate.
+    filt = 'license:"Creative Commons 0"'
+    if typ == "music":
+        filt += " duration:[20 TO *]"
+    params = {
+        "query": q or "", "filter": filt, "page_size": "30",
+        "fields": "id,name,duration,previews,license,username,url",
+        "token": key,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as c:
+            r = await c.get("https://freesound.org/apiv2/search/text/", params=params)
+            r.raise_for_status()
+            j = r.json()
+    except Exception as e:
+        _IMG_LOG.warning("[music] freesound search failed: %s", e)
+        return []
+    out = []
+    for it in (j.get("results") or []):
+        pv = it.get("previews") or {}
+        preview = pv.get("preview-hq-mp3") or pv.get("preview-lq-mp3") or ""
+        out.append({
+            "id": f"fs-{it.get('id')}",
+            "title": it.get("name") or "Untitled",
+            "duration": round(float(it["duration"]), 1) if it.get("duration") is not None else None,
+            "previewUrl": preview,
+            "downloadUrl": preview,   # full download needs OAuth2; preview-hq is the CC0-safe playable file
+            "license": "CC0",
+            "attribution": f"{it.get('username','')} · Freesound".strip(" ·"),
+            "source": "Freesound",
+        })
+    return out
+
+
+async def _pixabay_search(q: str, typ: str) -> list:
+    """Pixabay audio search (best-effort, env-gated on PIXABAY_API_KEY). VERIFY LIVE: Pixabay's audio
+    REST contract is not yet confirmed/provisioned — wrapped so any failure contributes [] (never 500)."""
+    import httpx
+    key = os.getenv("PIXABAY_API_KEY", "").strip()
+    endpoint = os.getenv("PIXABAY_AUDIO_ENDPOINT", "").strip()   # set once the real audio endpoint is known
+    if not key or not endpoint:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as c:
+            r = await c.get(endpoint, params={"key": key, "q": q or "", "per_page": "30"})
+            r.raise_for_status()
+            j = r.json()
+    except Exception as e:
+        _IMG_LOG.warning("[music] pixabay search failed: %s", e)
+        return []
+    out = []
+    for it in (j.get("hits") or []):
+        url = it.get("audio") or it.get("previewURL") or it.get("download") or ""
+        if not url:
+            continue
+        out.append({
+            "id": f"px-{it.get('id')}",
+            "title": (it.get("tags") or "Pixabay audio")[:80],
+            "duration": float(it["duration"]) if it.get("duration") is not None else None,
+            "previewUrl": url, "downloadUrl": url,
+            "license": "Pixabay (CC0-like)",
+            "attribution": f"{it.get('user','')} · Pixabay".strip(" ·"),
+            "source": "Pixabay",
+        })
+    return out
+
+
+@app.get("/music/search")
+async def music_search(type: str = "music", q: str = ""):
+    """CC0 library search — DEFERRED (returns []). The free Freesound/Jamendo/Pixabay music APIs all
+    restrict commercial API use to a paid/negotiated agreement (Freesound ToS: commercial use
+    "negotiated case by case with UPF" + no redistribution outside the app; Jamendo ToS §3.3:
+    "non-commercial uses" only on the free tier). Wimba is a commercial product, so wiring any of them
+    live would breach those terms. The library tab is dropped for v1 (UI is SFX-generation only); the
+    intended revival is a self-hosted curated CC0 pack on R2 (truly public-domain, no third-party API,
+    no attribution, no ToS exposure). Short-circuit here is DEFENCE-IN-DEPTH: even if a provider key is
+    later set in the env, no live third-party music-API call can fire. The `_freesound_search` /
+    `_pixabay_search` adapters below are kept dormant only as a reference for that future work."""
+    return {"tracks": []}
+
+
+@app.post("/sfx/generate")
+async def sfx_generate(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """Generate ONE sound-effect (SFX-ONLY — NO AI music). Billing mirrors the image single-gen path:
+    HOLD the ceiling credits (402 if short) → FAL failover chain → persist to Vault (asset_type=audio)
+    → COMMIT the real winning cost (refunds the unused hold) → refund the WHOLE hold on ANY failure.
+    Returns {audioUrl, id, provider}. The clip lands in the user's Media Vault."""
+    import sfx_providers as _sfx
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt required")
+    duration = _sfx.clamp_duration(body.get("duration") or 0)
+
+    est_usd = _sfx.estimate_usd(duration)
+    if est_usd <= 0:
+        raise HTTPException(status_code=503, detail="sfx generation not configured")
+    held = max(1, catalog.usd_to_credits(est_usd))
+    op_id = f"sfx-{uuid.uuid4().hex[:12]}"
+    tenant_id = user.tenant_id
+    uid = await _resolve_user_uuid(user.tenant_id, user.user_id)   # DB uuid (FK to users.id), not the Clerk id
+
+    await metering.hold_credits(tenant_id, held, op_id, byok=False)   # raises 402 if it can't cover
+    try:
+        try:
+            out = await _sfx.synth_sfx(prompt, duration)
+        except _sfx.ProviderError as e:
+            raise HTTPException(status_code=502, detail=f"sfx generation failed: {e}")
+        data, mime = out["audio"], out.get("mime") or "audio/mpeg"
+        if not data:
+            raise HTTPException(status_code=502, detail="sfx produced no audio")
+        ext = "wav" if "wav" in mime else ("ogg" if "ogg" in mime else "mp3")
+        fname = f"sfx_{op_id}.{ext}"
+        # Persist to Vault. source_job_type=None (the job_type_enum has no sfx/audio label; passing an
+        # unknown value would raise and silently DROP the asset row — the known enum-orphan bug). The
+        # Vault filters on asset_type='audio', so None is correct and safe.
+        await _persist_asset(tenant_id, asset_type="audio", source_job_type=None,
+                             filename=fname, data=data, content_type=mime, user_id=uid,
+                             metadata={"op": "sfx", "model": out.get("model"), "provider": out.get("served_by"),
+                                       "duration": duration, "kind": "sfx"},
+                             source_prompt=prompt)
+        # Build a signed, playable URL from the deterministic key _persist_asset wrote (job_id=None).
+        audio_url = ""
+        if storage.is_configured():
+            try:
+                audio_url = await storage.asigned_url(storage.build_key(tenant_id, None, "audio", fname))
+            except Exception as _se:
+                _IMG_LOG.warning("[sfx] sign failed (falling back to data URI): %s", _se)
+        if not audio_url:
+            audio_url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        # COMMIT the real winning cost (≤ held → refunds the difference). usage_logs.provider CHECK
+        # excludes fal → 'other'. x1 markup keeps it studio-consistent with the tts break-even basis.
+        commit_cr = min(held, max(1, catalog.usd_to_credits(out.get("cost_usd") or est_usd)))
+        charged = await metering.commit_credits(tenant_id, uid, "sfx", out.get("model") or "sfx",
+                                                commit_cr, op_id, byok=False,
+                                                cost_usd=out.get("cost_usd"), provider="other",
+                                                write_log=True) or 0
+    except BaseException:
+        await metering.refund_credits(tenant_id, op_id)   # release the WHOLE hold → charge nothing
+        raise
+    return {"audioUrl": audio_url, "id": op_id, "provider": out.get("served_by"),
+            "duration": duration, "credits": charged}
+
+
 # ── Usage history: per-transaction credit ledger for the account page ─────────
 _HIST_OP_LABELS = {
     "chat": "Chat", "image": "Image", "imagen": "Image", "batch": "Batch Images",

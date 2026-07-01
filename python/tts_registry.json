@@ -1,0 +1,114 @@
+{
+  "_doc": [
+    "TTS provider registry for the Wimba voiceover expansion (App 3 of the Creator Suite).",
+    "Mirrors image_registry.json: each (provider -> model) carries a cheapest-first failover `chain`.",
+    "BILLING-UNIT NORMALIZATION: every rate is expressed in ONE unit -> usd_per_1k_chars. Upstream",
+    "engines that bill per-char / per-1M-token / per-credit are pre-normalized to per-1k-char HERE so",
+    "the metering math (cost_usd = usd_per_1k_chars * chars/1000) is uniform across all providers.",
+    "Charge basis = the MODEL's usd_per_1k_chars (x1 markup for tts, studio-consistent), independent of",
+    "which chain step served the request, so the debit is predictable regardless of failover.",
+    "STEP SHAPE: {provider:fal|aiml, slug|endpoint, body:{templated}, response:fal_queue|direct_bytes|json_audio}.",
+    "  $TEXT -> the chunk text, $VOICE -> provider voice id/name, $LANG -> output language.",
+    "  Request shapes are DATA-DRIVEN so post-smoke tuning is a registry edit, not a code change.",
+    "FLAGS: verified=price/slug confirmed live (else conservative-high rate to protect margin + audit-flagged);",
+    "  no_indonesian=English-only engine, refused when output language is Indonesian (defense-in-depth, FE also guards).",
+    "Providers google + openai are NOT here: they ride the legacy /api/tts/start google|laozhang runners untouched."
+  ],
+  "providers": {
+    "elevenlabs": {
+      "voice_mode": "text",
+      "default_voice": "Rachel",
+      "models": {
+        "turbo-v2.5": {
+          "usd_per_1k_chars": 0.05,
+          "verified": true,
+          "enabled": true,
+          "chain": [
+            { "provider": "fal", "slug": "fal-ai/elevenlabs/tts/turbo-v2.5",
+              "body": { "text": "$TEXT", "voice": "$VOICE" }, "response": "fal_queue" }
+          ]
+        },
+        "multilingual-v2": {
+          "usd_per_1k_chars": 0.10,
+          "verified": true,
+          "enabled": true,
+          "chain": [
+            { "provider": "fal", "slug": "fal-ai/elevenlabs/tts/multilingual-v2",
+              "body": { "text": "$TEXT", "voice": "$VOICE" }, "response": "fal_queue" }
+          ]
+        },
+        "eleven-v3": {
+          "usd_per_1k_chars": 0.10,
+          "verified": true,
+          "enabled": true,
+          "chain": [
+            { "provider": "fal", "slug": "fal-ai/elevenlabs/tts/eleven-v3",
+              "body": { "text": "$TEXT", "voice": "$VOICE" }, "response": "fal_queue" }
+          ]
+        }
+      }
+    },
+    "minimax": {
+      "voice_mode": "list",
+      "default_voice": "Wise_Woman",
+      "models": {
+        "speech-02-turbo": {
+          "usd_per_1k_chars": 0.06,
+          "verified": true,
+          "enabled": true,
+          "chain": [
+            { "provider": "fal", "slug": "fal-ai/minimax/speech-02-turbo",
+              "body": { "text": "$TEXT", "voice_setting": { "voice_id": "$VOICE" } }, "response": "fal_queue" }
+          ]
+        },
+        "speech-2.6-hd": {
+          "usd_per_1k_chars": 0.13,
+          "verified": true,
+          "enabled": true,
+          "indonesian_boost": true,
+          "chain": [
+            { "provider": "aiml", "endpoint": "https://api.aimlapi.com/v1/tts",
+              "body": { "model": "minimax/speech-2.6-hd", "text": "$TEXT", "voice_id": "$VOICE", "language_boost": "Indonesian" },
+              "response": "json_audio" }
+          ]
+        }
+      }
+    },
+    "budget": {
+      "voice_mode": "text",
+      "default_voice": "af_heart",
+      "models": {
+        "kokoro": {
+          "usd_per_1k_chars": 0.02,
+          "verified": true,
+          "enabled": true,
+          "no_indonesian": true,
+          "chain": [
+            { "provider": "fal", "slug": "fal-ai/kokoro",
+              "body": { "prompt": "$TEXT", "voice": "$VOICE" }, "response": "fal_queue" }
+          ]
+        },
+        "inworld/tts-1": {
+          "usd_per_1k_chars": 0.007,
+          "verified": true,
+          "enabled": true,
+          "chain": [
+            { "provider": "aiml", "endpoint": "https://api.aimlapi.com/v1/audio/speech",
+              "body": { "model": "inworld/tts-1", "input": "$TEXT", "voice": "$VOICE", "response_format": "wav" },
+              "response": "direct_bytes" }
+          ]
+        },
+        "gpt-4o-mini-tts": {
+          "usd_per_1k_chars": 0.001,
+          "verified": true,
+          "enabled": true,
+          "chain": [
+            { "provider": "aiml", "endpoint": "https://api.aimlapi.com/v1/audio/speech",
+              "body": { "model": "gpt-4o-mini-tts", "input": "$TEXT", "voice": "$VOICE", "response_format": "wav" },
+              "response": "direct_bytes" }
+          ]
+        }
+      }
+    }
+  }
+}

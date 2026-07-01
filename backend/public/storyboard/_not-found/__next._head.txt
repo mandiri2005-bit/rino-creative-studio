@@ -1,0 +1,5 @@
+1:"$Sreact.fragment"
+2:I[97367,["/storyboard/_next/static/chunks/158myu8e_yme3.js","/storyboard/_next/static/chunks/2xd9d_w6j6hpt.js"],"ViewportBoundary"]
+3:I[97367,["/storyboard/_next/static/chunks/158myu8e_yme3.js","/storyboard/_next/static/chunks/2xd9d_w6j6hpt.js"],"MetadataBoundary"]
+4:"$Sreact.suspense"
+0:{"rsc":["$","$1","h",{"children":[["$","meta",null,{"name":"robots","content":"noindex"}],["$","$L2",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}],["$","meta","2",{"name":"theme-color","content":"#0b0910"}]]}],["$","div",null,{"hidden":true,"children":["$","$L3",null,{"children":["$","$4",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"Wimba — Storyboard"}],["$","meta","1",{"name":"description","content":"Write your script, review and polish it for narration, then turn it into a shot-by-shot storyboard with AI images and per-scene video."}]]}]}]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"pQc4SSzzQHYqaoKrGvKLW"}

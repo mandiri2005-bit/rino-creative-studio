@@ -1,0 +1,31 @@
+{
+  "_doc": [
+    "SFX (sound-effects) generation registry for the Wimba Music app (App 4 of the Creator Suite).",
+    "AI generation is SFX-ONLY — NO AI MUSIC (hard copyright constraint). Music is library-only (CC0).",
+    "Mirrors tts_registry.json: a cheapest-first failover `chain`; every step is COMMERCIAL-OK and rides",
+    "the FAL_API_KEY we already hold (no new provider key). The non-commercial `atlascloud/mmaudio-v2`",
+    "research weights are deliberately EXCLUDED — only the clean `fal-ai/mmaudio-v2` is listed.",
+    "PRICING: per-step rate normalized to USD. `usd_flat` = flat per-generation; `usd_per_s` = per second",
+    "(billed on the effective, max-capped duration). The GATE holds the CEILING across all steps so a",
+    "failover to a pricier step can never exceed the reservation; the DEBIT settles to the winner's real",
+    "cost (commit refunds the difference). Studio-consistent x1 markup.",
+    "STEP SHAPE: {provider:fal, slug, body:{templated}, response:fal_queue, max_duration, usd_flat|usd_per_s}.",
+    "  $PROMPT -> the effect description, $DURATION -> requested seconds (numeric, max-capped per step).",
+    "  Request shapes are DATA-DRIVEN so post-smoke tuning is a registry edit, not a code change.",
+    "FLAGS: verified=slug/price confirmed live (else conservative-high rate to protect margin + audit-flag)."
+  ],
+  "sfx": {
+    "max_duration": 30,
+    "chain": [
+      { "provider": "fal", "slug": "cassetteai/sound-effects-generator",
+        "body": { "prompt": "$PROMPT", "duration": "$DURATION" },
+        "response": "fal_queue", "max_duration": 30, "usd_flat": 0.01, "verified": false },
+      { "provider": "fal", "slug": "fal-ai/elevenlabs/sound-effects/v2",
+        "body": { "text": "$PROMPT", "duration_seconds": "$DURATION" },
+        "response": "fal_queue", "max_duration": 22, "usd_per_s": 0.002, "verified": false },
+      { "provider": "fal", "slug": "fal-ai/mmaudio-v2/text-to-audio",
+        "body": { "prompt": "$PROMPT", "duration": "$DURATION" },
+        "response": "fal_queue", "max_duration": 30, "usd_per_s": 0.001, "verified": false }
+    ]
+  }
+}

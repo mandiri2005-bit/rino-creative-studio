@@ -18,7 +18,7 @@ if [ -z "$PK" ]; then
 else
   echo ">>> [clerk-pk] injecting window.__CLERK_PK = $PK"
 fi
-for f in /usr/share/nginx/html/*.html /usr/share/nginx/html/app/*.html /usr/share/nginx/html/image/*.html /usr/share/nginx/html/video/*.html; do
+for f in /usr/share/nginx/html/*.html /usr/share/nginx/html/app/*.html /usr/share/nginx/html/image/*.html /usr/share/nginx/html/video/*.html /usr/share/nginx/html/project/*.html /usr/share/nginx/html/storyboard/*.html /usr/share/nginx/html/voiceover/*.html /usr/share/nginx/html/music/*.html; do
   [ -f "$f" ] && sed -i "s|__CLERK_PK_ENV__|${PK}|g" "$f" 2>/dev/null || true
 done
 
