@@ -138,9 +138,10 @@
       }
     },
     async signOut() {
-      // Wimba's marketing landing lives on a SEPARATE domain (wimba.ai); ceritaAI's landing is
-      // this app's root ("/" → landing.html). Brand-gate so Wimba logout doesn't bounce unauthed
-      // through /app/ → /sign-up. (window.__BRAND is injected at serve time.)
+      // Wimba's marketing landing lives on a SEPARATE domain (wimba.ai); ceritaAI's is app root.
+      // Clerk v5 IGNORES a cross-origin signOut redirectUrl and falls back to afterSignOutUrl ('/')
+      // → nginx 302 /app/ → unauthed → /sign-up. So clear the session WITHOUT relying on Clerk's
+      // redirect, then navigate to the brand-correct landing ourselves (our nav wins, last write).
       const landing = window.__BRAND === "wimba" ? "https://wimba.ai" : "/";
       if (!_clerk) { window.location.href = landing; return; }
       try {
@@ -149,12 +150,11 @@
         ["rc_lzkey","rc_imgkey","rc_veokey","rc_sorakey","rc_ds_route",
          "rc_nar_outline","rc_nar_outline_text","rc_nar_result"]
           .forEach(k => localStorage.removeItem(k));
-        // Clerk clears the session, then navigates to the (brand-correct) landing.
-        await _clerk.signOut({ redirectUrl: landing });
+        await _clerk.signOut();
       } catch (e) {
         console.error("[auth] signOut:", e);
-        window.location.href = landing;   // hard fallback so the user still leaves the app
       }
+      window.location.href = landing;   // WE own the redirect → beats Clerk's '/' fallback
     },
     get currentUser() { return _currentUser; },
     get clerk()       { return _clerk; },
