@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <!-- Post-logout bounce: Wimba's marketing landing is a separate domain. Clerk drops a
+       cross-origin signOut redirectUrl, so we redirect Clerk to THIS same-origin page and
+       hard-navigate to wimba.ai from here. Meta-refresh is the no-JS fallback. -->
+  <meta http-equiv="refresh" content="0; url=https://wimba.ai">
+  <title>Signing out…</title>
+  <script>window.location.replace("https://wimba.ai");</script>
+  <style>html,body{margin:0;height:100%;background:#0b0b14}</style>
+</head>
+<body></body>
+</html>
