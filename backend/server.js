@@ -1001,6 +1001,22 @@ function serveVideoApp(_req, res) {
 }
 app.get(["/video", "/video/"], serveVideoApp);
 
+// ── Wimba Video Instant app (separate Next.js static export at public/video-instant/, built with
+// VI_BASE_PATH=/video-instant). Same recipe as the Image/Video apps above: served same-origin so it
+// shares the Clerk session + calls /api/video/* relatively, Clerk key + brand injected at request time.
+// Returns a friendly 404 until public/video-instant/ is deployed. Registered BEFORE express.static so
+// "/video-instant" (no extension) resolves here, not to the legacy public/video-instant.html file. ──
+const VIDEO_INSTANT_INDEX = path.join(__dirname, "public", "video-instant", "index.html");
+function serveVideoInstantApp(_req, res) {
+  fs.readFile(VIDEO_INSTANT_INDEX, "utf8", (err, html) => {
+    if (err) return res.status(404).send("Wimba Video Instant app not deployed yet");
+    const inject = `<script>window.__CLERK_PK=${JSON.stringify(process.env.CLERK_PUBLISHABLE_KEY || "")};window.__BRAND="wimba";</script>`;
+    res.setHeader("Cache-Control", "no-cache");
+    res.type("html").send(html.includes("</head>") ? html.replace("</head>", inject + "</head>") : inject + html);
+  });
+}
+app.get(["/video-instant", "/video-instant/"], serveVideoInstantApp);
+
 app.use(express.static(path.join(__dirname,"public"),{
   setHeaders:(res,p)=>{ if(p.endsWith("index.html")) res.setHeader("Cache-Control","no-cache"); }
 }));
