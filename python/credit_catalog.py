@@ -467,6 +467,18 @@ def operation_usd(operation: str, model: str, units: Union[int, float, dict]) ->
 
     if op == "tts":
         chars = int(units.get("chars", 0)) if isinstance(units, dict) else int(units or 0)
+        # Provider-routed TTS models are "provider/model" (e.g. elevenlabs/turbo-v2.5) → price at the
+        # per-model registry rate, not the flat catalog rate. Bare/non-registry models fall through.
+        if model and "/" in model:
+            try:
+                import tts_providers as _ttsp
+                _usd = _ttsp.estimate_usd(model.split("/", 1)[0], model.split("/", 1)[1], chars)
+                if _usd is not None:
+                    return round(_usd, 6)
+            except Exception as _e:
+                # Unknown/invalid provider model → fall back to the flat rate for the gate. Safe
+                # (synth 502s before any debit fires), but log so a model typo stays visible.
+                print(f"[credit_catalog] tts registry price for '{model}' failed ({_e}); flat rate", file=sys.stderr)
         return round(_TTS_USD_PER_1K_CHARS * max(0, chars) / 1000.0, 6)
 
     # unknown op → treat as token-priced 'other'

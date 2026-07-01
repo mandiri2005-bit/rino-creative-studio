@@ -9022,6 +9022,7 @@ class VideoParamsReq(BaseModel):
     visual_mode: str = "hybrid"
     clip_model: str = "veo3"
     image_model: str = "nano-banana-hd"
+    tts_model: str = "tts-1"            # selected voiceover model → estimate == real per-scene charge
     clip_ratio: float = 0.3
 
 class VideoSegmentReq(BaseModel):
@@ -9124,7 +9125,7 @@ class VideoTtsSceneReq(BaseModel):
     meter_only: bool = False   # worker generated Gemini TTS itself → just gate+debit here
 
 def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
-                           image_model="nano-banana-hd", clip_ratio=0.3) -> dict:
+                           image_model="nano-banana-hd", tts_model="tts-1", clip_ratio=0.3) -> dict:
     """Honest per-asset credit estimate (Model B), priced with the SAME catalog the
     charges use (metering.quote == credit_cost). TTS scales with the word target;
     visuals split into clips (expensive) vs images per the chosen mode. Returns the
@@ -9132,7 +9133,10 @@ def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
     a range — the real cost lands inside it once the decide stage runs."""
     sc = int(p.scene_count)
     total_chars = int(p.target_words * 6.5)                 # ~6.5 chars/word incl. spaces (id)
-    tts = metering.quote("tts", "tts-1", {"chars": total_chars})   # rate is flat across tts models
+    # Price TTS at the ACTUAL selected model. Provider-routed models (elevenlabs/*, minimax/*,
+    # budget/*) carry per-model registry rates, so a hardcoded flat rate would make the shown
+    # estimate diverge from the real per-scene debit (quote == charge only when the SAME model).
+    tts = metering.quote("tts", tts_model or "tts-1", {"chars": total_chars})
     image_each = metering.quote("image", image_model, {"count": 1})
     clip_secs = min(8, max(1, round(p.seconds_per_scene)))
     clip_each = metering.quote("video", clip_model, {"seconds": clip_secs})
@@ -9172,7 +9176,7 @@ async def video_params(req: VideoParamsReq):
     try:
         out.update(_video_credit_estimate(
             p, visual_mode=req.visual_mode, clip_model=req.clip_model,
-            image_model=req.image_model, clip_ratio=req.clip_ratio))
+            image_model=req.image_model, tts_model=req.tts_model, clip_ratio=req.clip_ratio))
     except Exception as _e:
         print(f"[video/params] honest estimate failed (non-fatal, using flat): {_e}")
     return out
@@ -9574,7 +9578,25 @@ async def video_tts_scene(req: VideoTtsSceneReq,
                   "speed": float(req.speed) or 1.0, "response_format": "wav"}, timeout=120)
         r.raise_for_status()
         return r.content
-    if _is_gemini_tts(req.model):
+    _tp = (req.model or "").split("/", 1)
+    if len(_tp) == 2 and _tp[0] in ("elevenlabs", "minimax", "budget"):
+        # Provider-routed TTS (ElevenLabs / MiniMax / Budget via FAL+AIMLAPI) — the SAME synth() the
+        # Voiceover app uses. Model string is "provider/model"; voice + text flow straight through.
+        # Pricing is registry-aware in credit_catalog (gate/debit above/below price it correctly).
+        # Import lives INSIDE the try so an import failure becomes a controlled 502 — and the except
+        # never names _ttsp (a failed import would leave it unbound → UnboundLocalError masking the
+        # real error). Generic Exception + HTTPException re-raise mirrors the /tts/synth endpoint.
+        try:
+            import tts_providers as _ttsp
+            _out = await _ttsp.synth(_tp[0], _tp[1], req.voice, "", synth)
+            content = _out.get("audio")
+            if not content:
+                raise HTTPException(502, "tts provider returned no audio")
+        except HTTPException:
+            raise
+        except Exception as _pe:
+            raise HTTPException(502, f"tts provider failed ({_tp[0]}/{_tp[1]}): {str(_pe)[:200]}")
+    elif _is_gemini_tts(req.model):
         # Gemini TTS → Vertex OAuth (Google OAuth, not a GEMINI_API_KEY). On failure, cycle the
         # Gemini TTS model chain (same OAuth + same Gemini voices → voice always valid). NO tts-1
         # fallback: it 400s on Gemini voices like "Zephyr" → silent scenes. (Rino's call.)
