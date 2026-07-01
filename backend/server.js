@@ -21,7 +21,8 @@ import { GoogleGenAI } from "@google/genai";
 import Jimp from "jimp";
 import { parseAudioMime, makeWavHeader, convertToWav, prependSilence, buildJsonl, mkId as _mkId } from "./utils.mjs";
 import { getConfig, setConfig, getTtsProfiles, saveTtsProfiles, deleteTtsProfile, resolveTenantId, resolveUserId, _uuid5, getOrCreateSession, appendMessage, logUsage, calcGoogleCost,
-         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, listAssets, logSyncJob, query } from "./db.js";
+         createJob, updateJobProgress, completeJob, failJob, getJob, listJobs, findJobByJobName, patchJobPayload, insertAsset, listAssets,
+         createProject, listProjects, getProject, updateProject, deleteProject, assignAssetsToProject, uuidOrNull, logSyncJob, query } from "./db.js";
 import { clerkMiddleware, requireAuth, getUserId } from "./auth.js";
 import { Webhook } from "svix";
 import { pool } from "./db.js";
@@ -164,7 +165,7 @@ async function pyProxy(req, res, pyPath, extraHeaders = {}) {
 //   sourceJobType ∈ batch_image|tts|imagen|veo|sora | null  (job_type_enum)
 async function persistAsset({ tenantId, userId = null, jobId = null, assetType,
                               sourceJobType = null, filename, buffer,
-                              contentType, metadata = {} }) {
+                              contentType, metadata = {}, projectId = null }) {
   if (!storage.isConfigured()) {
     console.warn("[persistAsset] storage not configured — skipped", filename);
     return null;
@@ -174,7 +175,7 @@ async function persistAsset({ tenantId, userId = null, jobId = null, assetType,
   const id = await insertAsset({
     tenantId, userId, jobId, bucket: storage.BUCKET_NAME, s3Key: key,
     originalFilename: filename, contentType, sizeBytes: buffer.length,
-    assetType, sourceJobType, metadata,
+    assetType, sourceJobType, metadata, projectId,
   });
   return { key, id, signedUrl: await storage.signedUrl(key) };
 }
@@ -239,7 +240,7 @@ function _sniffImage(buf) {
 }
 // Synchronous image flows (google-native): ONE 'done' job + persist each image to
 // R2/assets (durable + moat capture; were base64-only) + one usage row per image.
-async function captureImageFlow(req, model, jobType, b64list, provider = "gemini", prompts = null) {
+async function captureImageFlow(req, model, jobType, b64list, provider = "gemini", prompts = null, projectId = null) {
   try {
     const tenantId = resolveTenantId(req);
     const userId   = await resolveUserId(req, tenantId);
@@ -255,7 +256,7 @@ async function captureImageFlow(req, model, jobType, b64list, provider = "gemini
       try {
         await persistAsset({ tenantId, userId, jobId, assetType: "image", sourceJobType: jobType,
           filename: `${jobType}_${i+1}.${ext}`, buffer: buf, contentType: ct,
-          metadata: { model, ...(_p ? { prompt: _p } : {}) } });
+          metadata: { model, ...(_p ? { prompt: _p } : {}) }, projectId });
       } catch (e) { console.error("[captureImageFlow] persist", e.message); }
       await logUsage(tenantId, userId, model || "unknown", "image", 0, 0, cost, null, provider, jobId);
     }
@@ -1350,7 +1351,7 @@ const NANO_TO_GOOGLE_MODEL = {
 
 // ── Flow images: Google native first, fallback LaoZhang on quota ─────────────
 app.post("/api/flow/images/native", async (req, res) => {
-  const { scenes=[], model="nano-banana-hd", aspect_ratio="16:9", image_style="", google_api_key="", nusantara_corpus=false } = req.body || {};
+  const { scenes=[], model="nano-banana-hd", aspect_ratio="16:9", image_style="", google_api_key="", nusantara_corpus=false, project_id=null } = req.body || {};
   if (!scenes.length) return res.status(400).json({ error:"scenes required" });
 
   const effectiveGoogleKey = google_api_key.trim() || GEMINI_KEY;
@@ -1396,7 +1397,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       const okCount = images.filter(x=>x.image_b64).length;
       if (!okCount) throw new Error("Google native returned no images");
       console.log(`[flow/images/native] GOOGLE ok model=${nativeModel} scenes=${scenes.length} images=${okCount}`);
-      await captureImageFlow(req, nativeModel, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""));
+      await captureImageFlow(req, nativeModel, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""), project_id);
       return res.json({ images, via:"google_native" });
 
     } catch(e) {
@@ -1411,7 +1412,7 @@ app.post("/api/flow/images/native", async (req, res) => {
       method:"POST",
       headers:{"Content-Type":"application/json","X-Image-API-Key": lzKey,
                ...(req.headers.authorization ? {authorization: req.headers.authorization} : {})},
-      body: JSON.stringify({ scenes, model, aspect_ratio, image_style, nusantara_corpus }),
+      body: JSON.stringify({ scenes, model, aspect_ratio, image_style, nusantara_corpus, project_id }),
     });
     const data = await r.json();
     console.log(`[flow/images/native] LAOZHANG fallback model=${model} scenes=${scenes.length}`);
@@ -2416,7 +2417,7 @@ function chunkTextForAudiobook(text, maxChars=4000){
   flush();
   return chunks;
 }
-async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix,projectId=null}){
   let job=await getLiveJob(jobId);
   // Audiobook mode = treat whole transcript as continuous prose, chunk at ~4000 char.
   // Default = split by blank line (one file per paragraph), legacy behaviour.
@@ -2481,7 +2482,7 @@ async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,spee
       fs.writeFileSync(path.join(TTS_DIR,filename),wav);
       const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
       job.files.push(_f);
-      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:inputText}});
+      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:inputText},projectId});
            if(a){_f.key=a.key;_f.assetId=a.id;} }
       catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
       log(`✅ ${filename}`);
@@ -2501,7 +2502,7 @@ async function runLaozhangTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,spee
   catch(e){ console.error("[tts] logUsage failed:", e.message); }
 }
 
-async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix}){
+async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSeconds,audioProfile,transcriptBody,outputPrefix,projectId=null}){
   let job=await getLiveJob(jobId);
   const lines=transcriptBody.trim().split(/\n\n+/).filter(l=>l.trim());
   job.total=lines.length;job.progress=0;job.status="running";
@@ -2532,7 +2533,7 @@ async function runTtsJob(jobId,{tenantId,userId,apiKeys,model,voice,silenceSecon
         fs.writeFileSync(path.join(TTS_DIR,filename),wav);
         const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
         job.files.push(_f);
-        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:line}});
+        try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:wav,contentType:"audio/wav",metadata:{model,voice,text:line},projectId});
              if(a){_f.key=a.key;_f.assetId=a.id;} }
         catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
         log(`✅ ${filename}`);
@@ -2595,7 +2596,7 @@ async function ttsPreflightGate(req,{provider,model,chars,failClosed}){
 // write audio to TTS_DIR with the right ext, Vault-persist, accumulate cost, debit ONCE
 // at the end at the real summed COGS (x1 tts markup = studio-consistent). Mirrors the
 // google/laozhang runners' shape so the FE poll/files/profiles surface is unchanged.
-async function runProviderTtsJob(jobId,{tenantId,userId,authHeader,provider,providerModel,providerVoice,providerLanguage,silenceSeconds,transcriptBody,outputPrefix}){
+async function runProviderTtsJob(jobId,{tenantId,userId,authHeader,provider,providerModel,providerVoice,providerLanguage,silenceSeconds,transcriptBody,outputPrefix,projectId=null}){
   let job=await getLiveJob(jobId);
   const lines=transcriptBody.trim().split(/\n\n+/).filter(l=>l.trim());
   job.total=lines.length;job.progress=0;job.status="running";
@@ -2641,7 +2642,7 @@ async function runProviderTtsJob(jobId,{tenantId,userId,authHeader,provider,prov
       fs.writeFileSync(path.join(TTS_DIR,filename),buf);
       const _f={file:filename,url:`/audio/${encodeURIComponent(filename)}`};
       job.files.push(_f);
-      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:buf,contentType:ctype,metadata:{provider,model:providerModel,voice:providerVoice,text:line,served_by:out.served_by}});
+      try{ const a=await persistAsset({tenantId,userId,jobId,assetType:"audio",sourceJobType:"tts",filename,buffer:buf,contentType:ctype,metadata:{provider,model:providerModel,voice:providerVoice,text:line,served_by:out.served_by},projectId});
            if(a){_f.key=a.key;_f.assetId=a.id;} }
       catch(e){ log(`⚠️  R2 persist failed: ${String(e.message||e).slice(0,80)}`); }
       totalCostUsd+=Number(out.cost_usd)||0;
@@ -2692,7 +2693,7 @@ app.get("/api/tts/job/:id", requireAuth, async(req,res)=>{
 });
 app.post("/api/tts/start", requireAuth, async(req,res)=>{
   const{apiMode="google",apiKeys=[],model="gemini-3.1-flash-tts-preview",voice="Enceladus",speed=1.0,language="auto",audiobookMode=false,silenceSeconds=0.5,audioProfile="",transcriptBody="",outputPrefix="tts",
-    provider="",providerModel="",providerVoice="",providerLanguage=""}=req.body||{};
+    provider="",providerModel="",providerVoice="",providerLanguage="",project_id:projectId=null}=req.body||{};
   if(!transcriptBody.trim())return res.status(400).json({error:"Empty transcript"});
   // Routed providers (ElevenLabs/MiniMax/budget) synthesize on Python and need NO Node key.
   const useProvider=PROVIDER_ROUTED.has(String(provider||"").toLowerCase());
@@ -2730,11 +2731,11 @@ app.post("/api/tts/start", requireAuth, async(req,res)=>{
       await updateLiveJob(jobId,(j)=>{j.status="error";(j.logs=j.logs||[]).push("Fatal: "+e.message);return j;}); };
   if(useProvider){
     runProviderTtsJob(jobId,{tenantId,userId,authHeader:req.headers.authorization||"",
-      provider,providerModel,providerVoice,providerLanguage,silenceSeconds,transcriptBody,outputPrefix})
+      provider,providerModel,providerVoice,providerLanguage,silenceSeconds,transcriptBody,outputPrefix,projectId})
       .catch(onFatal);
   }else{
     const runner=apiMode==="laozhang"?runLaozhangTtsJob:runTtsJob;
-    runner(jobId,{tenantId,userId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix})
+    runner(jobId,{tenantId,userId,apiKeys:keys,model,voice,speed,language,audiobookMode,silenceSeconds,audioProfile,transcriptBody,outputPrefix,projectId})
       .catch(onFatal);
   }
   res.json({ok:true,jobId,total:lines.length});
@@ -2856,9 +2857,10 @@ const VAULT_CATEGORIES = {
 app.get("/api/assets", requireAuth, async (req, res) => {
   try {
     const tenantId = resolveTenantId(req);
-    const { category = null, limit = 50, before = null } = req.query;
+    const { category = null, projectId = null, limit = 50, before = null } = req.query;
     const cat = category && category !== "all" ? (VAULT_CATEGORIES[category] || {}) : {};
-    const rows = await listAssets(tenantId, { ...cat, limit, before });
+    // projectId: a UUID → that project's assets; "__none__" → Unassigned; omit → all.
+    const rows = await listAssets(tenantId, { ...cat, projectId: projectId || null, limit, before });
     const assets = await Promise.all(rows.map(async (r) => ({
       id: r.id,
       assetType: r.asset_type,
@@ -2869,11 +2871,127 @@ app.get("/api/assets", requireAuth, async (req, res) => {
       createdAt: r.created_at,
       key: r.s3_key,
       metadata: r.metadata,
+      projectId: r.project_id,
       signedUrl: storage.isConfigured() ? await storage.signedUrl(r.s3_key, 600) : null,
     })));
     res.json({ assets, nextBefore: rows.length ? rows[rows.length - 1].created_at : null });
   } catch (e) {
     console.error("[/api/assets]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PROJECTS  (collections/folders — migration 0051/0052)
+// A project is the unit the user packages + exports to CapCut/FCP. Tenant-scoped;
+// every route resolves the tenant server-side and never trusts a client tenant id.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// List all projects for the tenant (folder grid), each with a live asset count.
+app.get("/api/projects", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const rows = await listProjects(tenantId);
+    res.json({ projects: rows.map((r) => ({
+      id: r.id, name: r.name, description: r.description,
+      assetCount: r.asset_count, createdAt: r.created_at, updatedAt: r.updated_at,
+    })) });
+  } catch (e) {
+    console.error("[/api/projects GET]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create a project. `name` required (trimmed, ≤120 chars).
+app.post("/api/projects", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const userId   = await resolveUserId(req, tenantId);
+    const name = String((req.body?.name ?? "")).trim();
+    if (!name) return res.status(400).json({ error: "name required" });
+    if (name.length > 120) return res.status(400).json({ error: "name too long (max 120)" });
+    const description = req.body?.description != null ? String(req.body.description).slice(0, 2000) : null;
+    const p = await createProject(tenantId, { userId, name, description });
+    res.json({ project: {
+      id: p.id, name: p.name, description: p.description,
+      assetCount: 0, createdAt: p.created_at, updatedAt: p.updated_at,
+    } });
+  } catch (e) {
+    console.error("[/api/projects POST]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fetch one project.
+app.get("/api/projects/:id", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    if (!uuidOrNull(req.params.id)) return res.status(404).json({ error: "Not found" });
+    const p = await getProject(tenantId, req.params.id);
+    if (!p) return res.status(404).json({ error: "Not found" });
+    res.json({ project: {
+      id: p.id, name: p.name, description: p.description,
+      createdAt: p.created_at, updatedAt: p.updated_at,
+    } });
+  } catch (e) {
+    console.error("[/api/projects/:id GET]", e.message);
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
+// Rename / re-describe a project (only provided fields change).
+app.patch("/api/projects/:id", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    if (!uuidOrNull(req.params.id)) return res.status(404).json({ error: "Not found" });
+    let name = req.body?.name != null ? String(req.body.name).trim() : null;
+    if (name != null) {
+      if (!name) return res.status(400).json({ error: "name cannot be blank" });
+      if (name.length > 120) return res.status(400).json({ error: "name too long (max 120)" });
+    }
+    const description = req.body?.description != null ? String(req.body.description).slice(0, 2000) : null;
+    const p = await updateProject(tenantId, req.params.id, { name, description });
+    if (!p) return res.status(404).json({ error: "Not found" });
+    res.json({ project: {
+      id: p.id, name: p.name, description: p.description,
+      createdAt: p.created_at, updatedAt: p.updated_at,
+    } });
+  } catch (e) {
+    console.error("[/api/projects/:id PATCH]", e.message);
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
+// Delete a project. Non-destructive: its assets fall back to Unassigned
+// (assets.project_id ON DELETE SET NULL).
+app.delete("/api/projects/:id", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    if (!uuidOrNull(req.params.id)) return res.status(404).json({ error: "Not found" });
+    const ok = await deleteProject(tenantId, req.params.id);
+    if (!ok) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[/api/projects/:id DELETE]", e.message);
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
+// Move assets into a project (multi-select). projectId null/"" → Unassigned.
+// The target project must belong to the tenant (enforced in SQL); a forged id
+// moves 0 rows.
+app.post("/api/projects/assign", requireAuth, async (req, res) => {
+  try {
+    const tenantId = resolveTenantId(req);
+    const assetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds : [];
+    if (!assetIds.length) return res.status(400).json({ error: "assetIds required" });
+    if (assetIds.length > 500) return res.status(400).json({ error: "too many assetIds (max 500)" });
+    const rawTarget = req.body?.projectId;
+    const projectId = (rawTarget === null || rawTarget === undefined || rawTarget === "") ? null : String(rawTarget);
+    const moved = await assignAssetsToProject(tenantId, assetIds, projectId);
+    res.json({ moved });
+  } catch (e) {
+    console.error("[/api/projects/assign POST]", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -3262,7 +3380,7 @@ app.post("/api/flow/storyboard/google/text", async (req,res) => {
 
 app.post("/api/flow/storyboard/google", async (req,res) => {
   try {
-    const { scenes=[], aspect_ratio="16:9", model="imagen-4.0-fast-generate-001", image_style="", google_api_key="", nusantara_corpus=false } = req.body || {};
+    const { scenes=[], aspect_ratio="16:9", model="imagen-4.0-fast-generate-001", image_style="", google_api_key="", nusantara_corpus=false, project_id=null } = req.body || {};
     const effectiveKey = google_api_key.trim() || GEMINI_KEY;
     if (!effectiveKey) return res.status(400).json({ error:"No Gemini API key — set GEMINI_API_KEY in .env or enter a key in the UI" });
     if (!scenes.length) return res.status(400).json({ error:"scenes required" });
@@ -3279,7 +3397,7 @@ app.post("/api/flow/storyboard/google", async (req,res) => {
       return { index:i, image_b64: data||"" };
     }));
     const images = results.map((r,i) => r.status==="fulfilled" ? r.value : { index:i, image_b64:"" });
-    await captureImageFlow(req, model, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""));
+    await captureImageFlow(req, model, "flow_image", images.map(im=>im.image_b64), "gemini", (scenes||[]).map(s=>s.description||s.title||""), project_id);
     res.json({ images });
   } catch(e) { res.status(500).json({ error: e?.message || String(e) }); }
 });

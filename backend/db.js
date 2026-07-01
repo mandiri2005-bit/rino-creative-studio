@@ -77,6 +77,17 @@ function _uuid5(name) {
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20,32)}`;
 }
 
+// Normalize an untrusted project_id/asset_id to a canonical UUID string or null.
+// Postgres UUID columns raise 22P02 on a malformed literal BEFORE any WHERE-clause
+// tenant filter can null it — so a garbage id would (M1) drop an asset inside a
+// persist try/catch or (M2) 500 a read. Mirrors python database.py's guard: a
+// non-UUID degrades to null (→ Unassigned), a well-formed-but-foreign UUID stays
+// and is still safely nulled by the tenant subquery. Never raises.
+const _UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function uuidOrNull(v) {
+  return (typeof v === "string" && _UUID_RE.test(v)) ? v : null;
+}
+
 /**
  * Resolve tenant_id from an authenticated Express request.
  * Uses Clerk orgId if present; falls back to a UUID derived from userId.
@@ -435,41 +446,52 @@ async function insertAsset({
   bucket, s3Key, originalFilename = null,
   contentType, sizeBytes = 0, assetType,
   sourceJobType = null, metadata = {}, modality = null, sourcePrompt = null,
+  projectId = null,
 } = {}) {
   // Step 1 (moat): modality auto-derives from asset_type; source_prompt falls back
   // to metadata.prompt — both let one query span narration + image + video signal.
   const md = metadata || {};
   const _modality = modality || ASSET_MODALITY[assetType] || null;
   const _prompt   = sourcePrompt != null ? sourcePrompt : (md.prompt ?? md.text ?? null);
+  const _pid      = uuidOrNull(projectId);  // malformed id → null, never 22P02-drops the asset
   const res = await query(
     `INSERT INTO assets
          (tenant_id, user_id, job_id, bucket, s3_key, original_filename,
           content_type, size_bytes, asset_type, source_job_type, metadata,
-          modality, source_prompt)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11::jsonb,$12,$13)
+          modality, source_prompt, project_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11::jsonb,$12,$13,
+             -- self-guarding project_id: resolves to the id only when it is one
+             -- of THIS tenant's projects, else NULL (asset lands Unassigned).
+             -- Stops a forged/foreign project id from mis-filing an asset.
+             (SELECT p.id FROM projects p WHERE p.id = $14::uuid AND p.tenant_id = $1))
      ON CONFLICT (bucket, s3_key) DO UPDATE SET
          size_bytes    = EXCLUDED.size_bytes,
          content_type  = EXCLUDED.content_type,
          modality      = COALESCE(EXCLUDED.modality, assets.modality),
          source_prompt = COALESCE(EXCLUDED.source_prompt, assets.source_prompt),
+         project_id    = COALESCE(EXCLUDED.project_id, assets.project_id),
          updated_at    = now()
      RETURNING id`,
     [tenantId, userId, jobId, bucket, s3Key, originalFilename,
      contentType, sizeBytes, assetType, sourceJobType,
-     JSON.stringify(md), _modality, _prompt],
+     JSON.stringify(md), _modality, _prompt, _pid],
     tenantId
   );
   return res.rows[0]?.id ?? null;
 }
 
 /**
- * listAssets(tenantId, {assetType?, sourceJobType?, limit?, before?}) → rows
+ * listAssets(tenantId, {assetType?, sourceJobType?, projectId?, limit?, before?}) → rows
  * Durable retrieval of a tenant's generated assets straight from the `assets`
  * table (survives redeploy + any job cleanup). Newest first, RLS-scoped.
  * Cursor pagination via `before` (pass the previous page's last created_at).
+ *   projectId  a UUID       → only that project's assets (folder-open view)
+ *              '__none__'   → only Unassigned assets (project_id IS NULL)
+ *              null         → all assets regardless of project
  */
 async function listAssets(tenantId, {
-  assetType = null, sourceJobTypes = null, metadataKind = null, limit = 50, before = null,
+  assetType = null, sourceJobTypes = null, metadataKind = null,
+  projectId = null, limit = 50, before = null,
 } = {}) {
   const lim = Math.min(Math.max(1, parseInt(limit) || 50), 200);
   const conds = ["tenant_id = $1", "is_deleted = false"];
@@ -480,11 +502,17 @@ async function listAssets(tenantId, {
     conds.push(`source_job_type = ANY($${params.length}::job_type_enum[])`);
   }
   if (metadataKind) { params.push(metadataKind); conds.push(`metadata->>'kind' = $${params.length}`); }
+  if (projectId === "__none__") {
+    conds.push("project_id IS NULL");
+  } else {
+    const _pid = uuidOrNull(projectId);  // garbage id → treat as null (all), never 500 the read
+    if (_pid) { params.push(_pid); conds.push(`project_id = $${params.length}::uuid`); }
+  }
   if (before) { params.push(before); conds.push(`created_at < $${params.length}`); }
   params.push(lim);
   const res = await query(
     `SELECT id, asset_type, source_job_type, bucket, s3_key, original_filename,
-            content_type, size_bytes, metadata, created_at
+            content_type, size_bytes, metadata, project_id, created_at
        FROM assets
       WHERE ${conds.join(" AND ")}
       ORDER BY created_at DESC
@@ -492,6 +520,118 @@ async function listAssets(tenantId, {
     params, tenantId
   );
   return res.rows;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PROJECTS  (user-created collections/folders assets belong to — migration 0051)
+// The unit the user packages + exports to CapCut/FCP. Tenant-scoped, RLS-safe.
+// Single-project-per-asset via assets.project_id (0052, ON DELETE SET NULL).
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * createProject(tenantId, {userId?, name, description?}) → {id, name, description, created_at, updated_at}
+ * `name` is required and trimmed; blank names are rejected by the caller.
+ */
+async function createProject(tenantId, { userId = null, name, description = null } = {}) {
+  const res = await query(
+    `INSERT INTO projects (tenant_id, user_id, name, description)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, name, description, created_at, updated_at`,
+    [tenantId, userId, name, description],
+    tenantId
+  );
+  return res.rows[0] ?? null;
+}
+
+/**
+ * listProjects(tenantId) → [{id, name, description, created_at, updated_at, asset_count}]
+ * Folder-grid data: every project for the tenant, newest first, with a live
+ * count of assigned (non-deleted) assets so the grid can show "N items".
+ */
+async function listProjects(tenantId) {
+  const res = await query(
+    `SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
+            COUNT(a.id) FILTER (WHERE a.is_deleted = false) AS asset_count
+       FROM projects p
+       LEFT JOIN assets a ON a.project_id = p.id AND a.tenant_id = p.tenant_id
+      WHERE p.tenant_id = $1
+      GROUP BY p.id
+      ORDER BY p.created_at DESC`,
+    [tenantId], tenantId
+  );
+  return res.rows.map((r) => ({ ...r, asset_count: Number(r.asset_count) || 0 }));
+}
+
+/**
+ * getProject(tenantId, projectId) → row | null
+ */
+async function getProject(tenantId, projectId) {
+  const res = await query(
+    `SELECT id, name, description, created_at, updated_at
+       FROM projects WHERE id = $1 AND tenant_id = $2`,
+    [projectId, tenantId], tenantId
+  );
+  return res.rows[0] ?? null;
+}
+
+/**
+ * updateProject(tenantId, projectId, {name?, description?}) → row | null
+ * Only provided fields change (COALESCE keeps the existing value on null).
+ */
+async function updateProject(tenantId, projectId, { name = null, description = null } = {}) {
+  const res = await query(
+    `UPDATE projects
+        SET name        = COALESCE($3, name),
+            description  = COALESCE($4, description)
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING id, name, description, created_at, updated_at`,
+    [projectId, tenantId, name, description], tenantId
+  );
+  return res.rows[0] ?? null;
+}
+
+/**
+ * deleteProject(tenantId, projectId) → boolean (true if a row was removed)
+ * Non-destructive to assets: assets.project_id is ON DELETE SET NULL, so the
+ * project's assets fall back to "Unassigned" rather than being deleted.
+ */
+async function deleteProject(tenantId, projectId) {
+  const res = await query(
+    `DELETE FROM projects WHERE id = $1 AND tenant_id = $2`,
+    [projectId, tenantId], tenantId
+  );
+  return (res.rowCount || 0) > 0;
+}
+
+/**
+ * assignAssetsToProject(tenantId, assetIds[], projectId|null) → number (rows moved)
+ * Multi-select "Move to project". projectId=null moves assets back to Unassigned.
+ * When projectId is set, it must belong to the tenant (guarded by the caller
+ * and by the tenant_id predicate here — a foreign project id matches nothing).
+ */
+async function assignAssetsToProject(tenantId, assetIds, projectId = null) {
+  if (!Array.isArray(assetIds)) return 0;
+  // Drop malformed asset ids (one bad element in $2::uuid[] would 22P02 the whole
+  // move); normalize the target so a garbage projectId degrades to Unassigned
+  // rather than raising. A well-formed foreign id survives and is nulled by EXISTS.
+  const ids  = assetIds.filter((x) => uuidOrNull(x));
+  if (!ids.length) return 0;
+  const _pid = uuidOrNull(projectId);
+  // The EXISTS guard makes a forged foreign project id a no-op: a target that
+  // isn't NULL and isn't one of THIS tenant's projects matches zero rows, so an
+  // asset can never be attached to another tenant's folder even if the route
+  // check is bypassed. NULL always passes (→ move to Unassigned).
+  const res = await query(
+    `UPDATE assets
+        SET project_id = $3, updated_at = now()
+      WHERE tenant_id = $1
+        AND id = ANY($2::uuid[])
+        AND ($3::uuid IS NULL
+             OR EXISTS (SELECT 1 FROM projects p
+                         WHERE p.id = $3 AND p.tenant_id = $1))`,
+    [tenantId, ids, _pid], tenantId
+  );
+  return res.rowCount || 0;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -672,6 +812,15 @@ export {
   // assets (object storage)
   insertAsset,
   listAssets,
+
+  // projects (collections/folders — migration 0051/0052)
+  createProject,
+  listProjects,
+  getProject,
+  updateProject,
+  deleteProject,
+  assignAssetsToProject,
+  uuidOrNull,   // shared UUID guard (route-layer :id validation)
 
   // sync-flow job ledger
   logSyncJob,

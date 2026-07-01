@@ -659,7 +659,7 @@ def _sniff_image(data: bytes):
     return "image/png", "png"
 
 
-async def _capture_image_flow(user, model, job_type, images_b64, prompts=None, credits=0):
+async def _capture_image_flow(user, model, job_type, images_b64, prompts=None, credits=0, project_id=None):
     """Synchronous image flows (generate-image / whisk / flow-images): create ONE
     'done' jobs row, persist each generated image to R2 + assets (so it's durable
     and captured for the moat — these used to be base64-only, ephemeral), and log
@@ -689,7 +689,8 @@ async def _capture_image_flow(user, model, job_type, images_b64, prompts=None, c
             await _persist_asset(tid, asset_type="image", source_job_type=job_type,
                                  filename=f"{job_type}_{i+1}.{ext}", data=data,
                                  content_type=ct, job_id=jid,
-                                 metadata=_md, source_prompt=(_p or None))
+                                 metadata=_md, source_prompt=(_p or None),
+                                 project_id=project_id)
         except Exception as _e:
             import logging as _lg; _lg.getLogger("usage").warning("[capture] %s: %s", job_type, _e)
         await _track_usage(user, model, "image", job_id=jid, credits=_pc)
@@ -1891,7 +1892,7 @@ async def sfx_generate(body: dict, user: CurrentUser = Depends(get_current_user)
                              filename=fname, data=data, content_type=mime, user_id=uid,
                              metadata={"op": "sfx", "model": out.get("model"), "provider": out.get("served_by"),
                                        "duration": duration, "kind": "sfx"},
-                             source_prompt=prompt)
+                             source_prompt=prompt, project_id=body.get("project_id"))
         # Build a signed, playable URL from the deterministic key _persist_asset wrote (job_id=None).
         audio_url = ""
         if storage.is_configured():
@@ -3035,6 +3036,7 @@ class ImageOpRequest(BaseModel):
     expand: Optional[dict] = None
     seed: Optional[int] = 0
     quality: Optional[str] = None
+    project_id: Optional[str] = None          # folder the asset lands in (self-guarded by the DB)
 
     @validator("prompt")
     def _cap_prompt(cls, v):
@@ -3237,7 +3239,8 @@ def _image_prepare(op: str, req: ImageOpRequest, user) -> dict:
     return {"feature": feature, "is_tool": is_tool, "model": model, "needs_autobg": needs_autobg,
             "cr": cr, "autobg_cr": autobg_cr, "params": params, "op_id": op_id,
             "prompt": req.prompt or "", "aspect": req.aspect or "1:1",
-            "image_size": req.image_size or "1K", "seed": req.seed or 0}
+            "image_size": req.image_size or "1K", "seed": req.seed or 0,
+            "project_id": req.project_id}
 
 
 async def _image_generate_core(*, tenant_id, uid, op: str, prep: dict, do_commit: bool = True) -> dict:
@@ -3319,7 +3322,7 @@ async def _image_generate_core(*, tenant_id, uid, op: str, prep: dict, do_commit
         persisted = await _persist_asset(tenant_id, asset_type="image", source_job_type="generate_image",
                              filename=_fname, data=data, content_type=mime or "image/png",
                              user_id=uid, metadata={"model": model, "op": op, "provider": provider, "feature": feature},
-                             source_prompt=(prep["prompt"] or None))
+                             source_prompt=(prep["prompt"] or None), project_id=prep.get("project_id"))
     except Exception as _pe:
         _IMG_LOG.warning("[image_op] persist failed (non-fatal): %s", _pe)
 
@@ -4214,7 +4217,8 @@ def _video_prepare(op: str, body: dict, user) -> dict:
 
     params = _video_params_from_body(feature, body, op=op, model_meta=model_meta)
     return {"feature": feature, "is_tool": is_tool, "model": model, "coming_soon": False,
-            "cr": cr, "params": params, "op_id": f"vid-{uuid.uuid4().hex[:12]}", "seconds": seconds}
+            "cr": cr, "params": params, "op_id": f"vid-{uuid.uuid4().hex[:12]}", "seconds": seconds,
+            "project_id": body.get("project_id")}
 
 
 async def _run_video_job(*, tenant_id, uid, job_id: str, op: str, prep: dict):
@@ -4264,7 +4268,8 @@ async def _run_video_job(*, tenant_id, uid, job_id: str, op: str, prep: dict):
                 content_type=mime, source_job_type=(provider or "video_tools"),
                 user_id=uid, source_prompt=(prep["params"].get("prompt") or None),
                 metadata={"model": prep["model"], "op": op, "feature": prep["feature"],
-                          "provider": provider, "duration": prep["seconds"], "job_id": job_id})
+                          "provider": provider, "duration": prep["seconds"], "job_id": job_id},
+                project_id=prep.get("project_id"))
             # the rehosted KEY from dispatch (data: URI passes straight through; an R2 key is signed on read)
             result_key = res.get("ref")
         except Exception as _pe:
@@ -5800,6 +5805,7 @@ class FlowImagesRequest(BaseModel):
     aspect_ratio: str = "16:9"
     image_style: str = ""
     nusantara_corpus: bool = False
+    project_id: Optional[str] = None          # folder the frames land in (self-guarded by the DB)
 
 
 @app.post("/flow/images")
@@ -5885,7 +5891,8 @@ async def flow_images_only(
     await _capture_image_flow(user, req.model, "flow_image",
                               [im.get("image_b64") for im in images],
                               prompts=[(s.get("description") or "") if isinstance(s, dict) else ""
-                                       for s in req.scenes])
+                                       for s in req.scenes],
+                              project_id=req.project_id)
     if user:
         _n = sum(1 for im in images if im.get("image_b64"))
         await metering.debit(user.tenant_id, _uid, "image", req.model, {"count": _n}, byok=_byok, write_log=False)
@@ -7555,12 +7562,15 @@ async def narasi_generate(body: dict,
 _PERSIST_LOG = _logging.getLogger("persist_asset")   # module-level (laozhang_api has no module `_log`)
 async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
                          content_type, source_job_type=None, job_id=None,
-                         user_id=None, metadata=None, source_prompt=None):
+                         user_id=None, metadata=None, source_prompt=None,
+                         project_id=None):
     """Step 2: upload bytes to R2 + record an `assets` row (R2 = source of truth,
     disk = cache). Non-fatal: logs and returns None on any storage error so
     generation never breaks. Mirrors persistAsset() in server.js.
       asset_type     ∈ video|audio|image|document|archive|other
-      source_job_type∈ batch_image|tts|imagen|veo|sora | None"""
+      source_job_type∈ batch_image|tts|imagen|veo|sora | None
+      project_id     the folder the asset lands in — SELF-GUARDED in insert_asset
+                     (a foreign/stale/malformed id degrades to Unassigned)"""
     if not storage.is_configured():
         _PERSIST_LOG.warning("[persist_asset] storage not configured — skipped %s", filename)
         return None
@@ -7573,7 +7583,8 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
                 content_type=content_type, size_bytes=len(data),
                 asset_type=asset_type, source_job_type=source_job_type,
                 user_id=user_id, job_id=job_id, original_filename=filename,
-                metadata=metadata or {}, source_prompt=source_prompt)
+                metadata=metadata or {}, source_prompt=source_prompt,
+                project_id=project_id)
         except Exception as _ie:
             # assets.user_id has an FK → users(id) (0008_create_assets.sql). _resolve_user_uuid can
             # return a DETERMINISTIC FALLBACK uuid for a user not yet in the table (Clerk webhook lag /
@@ -7590,7 +7601,8 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
                     content_type=content_type, size_bytes=len(data),
                     asset_type=asset_type, source_job_type=source_job_type,
                     user_id=None, job_id=job_id, original_filename=filename,
-                    metadata=metadata or {}, source_prompt=source_prompt)
+                    metadata=metadata or {}, source_prompt=source_prompt,
+                    project_id=project_id)
             raise
     except Exception as e:
         _PERSIST_LOG.warning("[persist_asset] %s failed (non-fatal): %s", filename, e)
@@ -7810,7 +7822,8 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 filename=f"{chap_id}.txt", data=_chap_txt.encode("utf-8"),
                 content_type="text/plain; charset=utf-8",
                 job_id=_narasi_job_uuid, user_id=None,
-                metadata={"kind": "narasi", "chapter_id": chap_id, "title": chap_title})
+                metadata={"kind": "narasi", "chapter_id": chap_id, "title": chap_title},
+                project_id=body.get("project_id"))
             # Accumulate for inter-chapter context
             previous_chapters.append({"id": chap_id, "title": chap_title, "text": text})
 

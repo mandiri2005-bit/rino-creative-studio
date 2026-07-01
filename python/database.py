@@ -245,7 +245,8 @@ _ASSET_MODALITY = {"image": "image", "video": "video", "audio": "audio"}
 async def insert_asset(tenant_id, *, bucket, s3_key, content_type, size_bytes,
                        asset_type, user_id=None, job_id=None,
                        source_job_type=None, original_filename=None,
-                       metadata=None, modality=None, source_prompt=None) -> Optional[str]:
+                       metadata=None, modality=None, source_prompt=None,
+                       project_id=None) -> Optional[str]:
     """Record one object-storage file in `assets` (storage metadata + moat capture).
     Idempotent on (bucket, s3_key). Mirrors db.js insertAsset.
       asset_type     ∈ video|audio|image|document|archive|other   (required)
@@ -253,28 +254,45 @@ async def insert_asset(tenant_id, *, bucket, s3_key, content_type, size_bytes,
     Step 1 (moat): `modality` is auto-derived from asset_type when not given, and
     `source_prompt` is the generating prompt (falls back to metadata['prompt']) —
     both let one query span narration + image + video signal.
+    `project_id` (the folder the asset lands in) is SELF-GUARDING: it only takes
+    effect when it is one of THIS tenant's projects, else the asset stays
+    Unassigned — a forged/foreign/stale id can never mis-file. Mirrors db.js.
     Tenant is passed explicitly (callers may run as background tasks with no ctx)."""
     try:
         md = metadata or {}
         modality = modality or _ASSET_MODALITY.get(asset_type)
         if source_prompt is None:
             source_prompt = md.get("prompt")
+        # Normalize project_id → UUID | None WITHOUT raising: a malformed id must
+        # degrade to Unassigned, never crash a best-effort persist (dropping the
+        # whole asset row). The SQL self-guard then also nulls foreign ids.
+        _pid: Optional[UUID] = None
+        if project_id:
+            try:
+                _pid = project_id if isinstance(project_id, UUID) else UUID(str(project_id))
+            except (ValueError, TypeError, AttributeError):
+                _pid = None
         aid = await _q_fetchval(
             """INSERT INTO assets
                    (tenant_id,user_id,job_id,bucket,s3_key,original_filename,
                     content_type,size_bytes,asset_type,source_job_type,metadata,
-                    modality,source_prompt)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11,$12,$13)
+                    modality,source_prompt,project_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::job_type_enum,$11,$12,$13,
+                       -- self-guarding project_id: resolves to the id only when it
+                       -- is one of THIS tenant's projects, else NULL (Unassigned).
+                       (SELECT p.id FROM projects p
+                          WHERE p.id = $14::uuid AND p.tenant_id = $1))
                ON CONFLICT (bucket,s3_key) DO UPDATE SET
                    size_bytes=EXCLUDED.size_bytes,
                    content_type=EXCLUDED.content_type,
                    modality=COALESCE(EXCLUDED.modality, assets.modality),
                    source_prompt=COALESCE(EXCLUDED.source_prompt, assets.source_prompt),
+                   project_id=COALESCE(EXCLUDED.project_id, assets.project_id),
                    updated_at=now()
                RETURNING id""",
             _uid(tenant_id), _uid(user_id), _uid(job_id), bucket, s3_key,
             original_filename, content_type, int(size_bytes), asset_type,
-            source_job_type, md, modality, source_prompt,
+            source_job_type, md, modality, source_prompt, _pid,
             tenant=str(tenant_id))
         return str(aid) if aid else None
     except Exception as e:
