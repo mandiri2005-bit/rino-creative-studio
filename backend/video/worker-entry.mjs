@@ -33,6 +33,22 @@ const generationClient = synthetic ? syntheticGenerationClient() : httpGeneratio
 
 const engine = startWorkers(makeDeps({ generationClient }));
 
+// ── BULLMQ MIGRATION trigger workers (default OFF) ──────────────────────────────────────────────
+// Registered ONLY in the worker process, and ONLY when their flag is set. When unset, the workers
+// never start — the Python asyncio path runs unchanged (byte-identical default behavior). These are
+// thin "trigger + wait" workers that call the idempotent Python /run endpoints (no money-path in Node).
+const _triggerWorkers = [];
+if (/^(1|true|yes)$/i.test(process.env.VIDEO_BULLMQ_ENABLED || "")) {
+  const { startVideoClipWorker } = await import("./workers-videoclip.mjs");
+  _triggerWorkers.push(startVideoClipWorker());
+  console.log("[video-worker] videoclip trigger worker registered (VIDEO_BULLMQ_ENABLED)");
+}
+if (/^(1|true|yes)$/i.test(process.env.RECIPE_BULLMQ_ENABLED || "")) {
+  const { startRecipeWorker } = await import("./workers-recipe.mjs");
+  _triggerWorkers.push(startRecipeWorker());
+  console.log("[video-worker] recipe trigger worker registered (RECIPE_BULLMQ_ENABLED)");
+}
+
 // Auto-expire finished videos under the R2 `videos/` prefix after VIDEO_R2_TTL_DAYS (default 7).
 // OPT-IN via VIDEO_R2_LIFECYCLE=1: the R2 API token usually lacks PutBucketLifecycle perms, so this
 // just logged "Access Denied" on EVERY boot. R2 lifecycle is simplest set ONCE in the Cloudflare
@@ -60,7 +76,12 @@ async function shutdown(sig) {
   const maxMs = Number(process.env.WB_DRAIN_TIMEOUT_MS) || 120000;
   console.log(`[video-worker] ${sig} → draining active jobs before exit (max ${maxMs}ms)…`);
   const t = setTimeout(() => { console.warn(`[video-worker] drain exceeded ${maxMs}ms → exiting; unfinished jobs re-queue`); process.exit(0); }, maxMs);
-  try { await engine.close(); console.log("[video-worker] drained cleanly → exit"); }
+  try {
+    // drain the VI engine + any registered BullMQ trigger workers (videoclip/recipe) together, so a
+    // deploy doesn't kill a mid-run single-clip / recipe (its /run re-runs on redeliver anyway).
+    await Promise.all([engine.close(), ..._triggerWorkers.map((w) => w.close())]);
+    console.log("[video-worker] drained cleanly → exit");
+  }
   catch (e) { console.warn("[video-worker] drain error:", e.message); }
   finally { clearTimeout(t); process.exit(0); }
 }

@@ -47,6 +47,14 @@ const PYTHON_API  = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 const MCP_API     = process.env.MCP_API_URL    || "http://127.0.0.1:8001";
 const GEMINI_KEY  = process.env.GEMINI_API_KEY || "";
 
+// ── BULLMQ MIGRATION flags (default OFF → byte-identical behavior) ──────────────────────────────
+// When set, the paid single-clip / recipe submit still calls Python (which holds+persists the job but
+// DEFERS the asyncio dispatch); the API then enqueues the job to a BullMQ trigger queue and a worker
+// calls back into the idempotent Python /run endpoint. When UNSET, submit is a plain pyProxy exactly
+// as today (Python spawns asyncio). FE polls the same Python /jobs/<id> either way — no FE change.
+const VIDEO_BULLMQ_ENABLED  = /^(1|true|yes)$/i.test(process.env.VIDEO_BULLMQ_ENABLED  || "");
+const RECIPE_BULLMQ_ENABLED = /^(1|true|yes)$/i.test(process.env.RECIPE_BULLMQ_ENABLED || "");
+
 // ── Project Dalang (WS-7): language table is owned by the pakem (ONE source of
 // truth, python/pakem). Node no longer hard-codes the canon; it lazily mirrors
 // it from GET ${PYTHON_API}/narration/languages and refreshes in the background.
@@ -154,6 +162,52 @@ async function pyProxy(req, res, pyPath, extraHeaders = {}) {
       return res.status(pyRes.status).json(body);
     }
     res.json(await pyRes.json());
+  } catch(e) { res.status(500).json({ error: e.message }); }
+}
+
+// ── BULLMQ MIGRATION: submit-then-enqueue (default-off path only) ────────────────────────────────
+// Mirrors pyProxy's header-forwarding + FastAPI error-shaping, but on a 2xx SUBMIT it enqueues a
+// trigger job for the returned job_id, then forwards the Python body unchanged (so the FE gets the
+// SAME {job_id,...} shape and polls the SAME Python /jobs/<id>). The Python submit ran in DEFER mode
+// (held credits + persisted a 'running' row, no asyncio spawn); the enqueued worker calls the
+// idempotent Python /run to drive it. If enqueue fails, the job's hold is still refunded by the Python
+// orphan sweep (a 'running' row whose worker never ran) — so a producer outage fails SAFE (no leak),
+// it just leaves that one job to time out + refund. `kind` ∈ "videoclip"|"recipe"; `extra` carries the
+// recipe slug. Only ever reached when the corresponding *_BULLMQ_ENABLED flag is on.
+async function submitAndEnqueue(req, res, pyPath, kind, extra = {}) {
+  try {
+    const headers = { "Content-Type": "application/json" };
+    for (const h of ["x-image-api-key","x-veo-api-key","x-sora-api-key","X-Image-API-Key","x-laozhang-api-key","X-LaoZhang-API-Key","x-deepseek-route","X-DeepSeek-Route","authorization"]) {
+      if (req.headers[h.toLowerCase()] || req.headers[h]) headers[h] = req.headers[h.toLowerCase()] || req.headers[h];
+    }
+    const pyRes = await fetch(`${PYTHON_API}${pyPath}`, {
+      method: "POST", headers, body: JSON.stringify(req.body),
+    });
+    if (!pyRes.ok) {
+      const e = await pyRes.json().catch(() => ({}));
+      const d = e && e.detail;
+      const body = (d && typeof d === "object" && !Array.isArray(d))
+        ? { ...d, error: d.error || d.message || pyRes.statusText }
+        : { error: (typeof d === "string" && d) || e.error || pyRes.statusText };
+      return res.status(pyRes.status).json(body);
+    }
+    const data = await pyRes.json();
+    const jobId = data && data.job_id;
+    // caption_video (coming_soon) resolves 'failed' at submit with no hold → nothing to run/enqueue.
+    if (jobId && data.status === "running") {
+      const tenantId = resolveTenantId(req);
+      const userId   = await resolveUserId(req, tenantId);
+      try {
+        const tq = await import("./video/trigger-queues.mjs");
+        if (kind === "videoclip") await tq.enqueueVideoClip({ jobId, tenantId, userId });
+        else if (kind === "recipe") await tq.enqueueRecipe({ jobId, tenantId, userId, slug: extra.slug });
+      } catch (enqErr) {
+        // Fail-safe: the hold is already taken + the row is pollable; the Python orphan sweep will
+        // refund a 'running' row whose worker never ran. Surface a soft warning, still return the job.
+        console.warn(`[bullmq enqueue ${kind} ${jobId}] failed (job will orphan-refund): ${enqErr.message}`);
+      }
+    }
+    res.json(data);
   } catch(e) { res.status(500).json({ error: e.message }); }
 }
 
@@ -1292,6 +1346,12 @@ app.post("/api/video-tools/:op/submit", async (req,res) => {
   const tenantId = resolveTenantId(req);
   if (tenantId && !(await rateLimitOk(`video:${tenantId}`, 12, 60)))
     return res.status(429).json({ error: "rate_limited", message: "Too many video requests — give it a moment." });
+  // BULLMQ (default off): Python submit DEFERS the dispatch (holds+persists only); enqueue the job to
+  // the videoclip trigger queue. On any enqueue failure the job's hold is still refunded by the Python
+  // orphan sweep (idempotent), so we fail-safe. FE polls the same Python /jobs/<id>.
+  if (VIDEO_BULLMQ_ENABLED) {
+    return submitAndEnqueue(req, res, `/video-tools/${op}/submit`, "videoclip", {});
+  }
   return pyProxy(req, res, `/video-tools/${op}/submit`);
 });
 
@@ -1327,6 +1387,11 @@ app.post("/api/recipes/:recipe/submit", async (req,res) => {
   const tenantId = resolveTenantId(req);
   if (tenantId && !(await rateLimitOk(`recipe:${tenantId}`, 6, 60)))
     return res.status(429).json({ error: "rate_limited", message: "Too many recipe requests — give it a moment." });
+  // BULLMQ (default off): Python submit DEFERS the DAG (holds+persists only); enqueue to the recipe
+  // trigger queue with the slug so the worker calls /recipes/<slug>/run. FE polls the same Python /jobs.
+  if (RECIPE_BULLMQ_ENABLED) {
+    return submitAndEnqueue(req, res, `/recipes/${recipe}/submit`, "recipe", { slug: recipe });
+  }
   return pyProxy(req, res, `/recipes/${recipe}/submit`);
 });
 app.get("/api/recipes/:recipe/jobs/:id", async (req,res) => {

@@ -4067,6 +4067,16 @@ VIDEO_MAX_REF_AUD_BYTES = int(os.getenv("VIDEO_MAX_REF_AUD_BYTES", str(40 * 1024
 # Video renders take MINUTES — generous. MUST exceed video_providers._POLL_MAX (900) + persist.
 VIDEO_JOB_STALE_SECS = float(os.getenv("VIDEO_JOB_STALE_SECS", "1800"))
 VIDEO_JOB_SWEEP_EVERY = float(os.getenv("VIDEO_JOB_SWEEP_EVERY", "300"))   # periodic orphan-sweep cadence (s)
+# BULLMQ MIGRATION (Phase 2, default OFF): when set, /video-tools/<op>/submit holds+persists the
+# 'running' job but does NOT spawn the asyncio dispatch task — the Node video-worker enqueues the
+# job to the `videoclip` BullMQ queue and a worker calls back into POST /video-tools/run {job_id}
+# (idempotent). When UNSET (default), behavior is BYTE-IDENTICAL: submit spawns asyncio as today.
+VIDEO_BULLMQ_ENABLED = os.getenv("VIDEO_BULLMQ_ENABLED", "0").strip() in ("1", "true", "True", "yes")
+# When queued (BullMQ), the hold must outlive the time a job waits in the queue before a worker
+# picks it up. The default hold TTL is 6h; a queued single-clip almost always starts far sooner,
+# but we also touch_hold at /run time (right before dispatch) so a backlogged job never strands its
+# reservation. This is the TTL the submit path uses for the initial hold when BullMQ is on.
+VIDEO_BULLMQ_HOLD_TTL = int(os.getenv("VIDEO_BULLMQ_HOLD_TTL", str(6 * 3600)))   # 6h default
 
 # in-process job ledger: job_id -> dict(tenant_id, op_id, status, op, feature, model,
 # credits, result_key, result_mime, duration, error, created, updated). Guarded by tenant
@@ -4221,68 +4231,78 @@ def _video_prepare(op: str, body: dict, user) -> dict:
             "project_id": body.get("project_id")}
 
 
-async def _run_video_job(*, tenant_id, uid, job_id: str, op: str, prep: dict):
-    """Background runner (OUTSIDE request context — passes tenant= everywhere). The hold is already
-    taken. Runs video_providers.dispatch; on success persists the MP4 (Media Vault moat) + commits the
-    precomputed credits with the REAL winning-provider COGS (cost_usd × seconds); on ANY failure refunds
-    the whole hold. The in-process job row is the terminal-state ledger the poll reads. Releases the
-    admission slot in finally."""
+async def _video_job_body(*, tenant_id, uid, job_id: str, op: str, prep: dict):
+    """The dispatch + persist + commit/refund body for ONE already-persisted 'running' video job.
+    Factored out of _run_video_job so it can be driven either by the asyncio background task (default
+    path) OR by the BullMQ worker via POST /video-tools/run (Phase 2). It does NOT touch the admission
+    counter (_vid_inflight) — the caller owns slot lifecycle (the asyncio task's finally, or nothing in
+    the BullMQ path where the queue's concurrency is the cap). Runs video_providers.dispatch; on success
+    persists the MP4 + commits the precomputed credits with REAL COGS; on ANY failure refunds the whole
+    hold. Flips the in-process job row to its terminal state. Idempotent side-effects are guarded by the
+    /run endpoint (terminal → skip) + metering's op_id idempotency (commit/refund no-op after settle)."""
     import video_providers as _vp
-    global _vid_inflight
     job = _VID_JOBS.get(job_id)
     try:
-        try:
-            res = await asyncio.wait_for(
-                _vp.dispatch(prep["feature"], prep["model"] if not prep["is_tool"] else "",
-                             prep["params"], prep["op_id"]),
-                timeout=VIDEO_JOB_STALE_SECS)
-        except BaseException as e:
-            await metering.refund_credits(tenant_id, prep["op_id"])   # no commit happened → release hold
-            if job is not None and job.get("status") == "running":
-                job.update(status="failed", error=_short_err(e), updated=time.time())
-            _VID_LOG.info("[video_job] %s failed: %s", job_id, _short_err(e))
-            return
+        res = await asyncio.wait_for(
+            _vp.dispatch(prep["feature"], prep["model"] if not prep["is_tool"] else "",
+                         prep["params"], prep["op_id"]),
+            timeout=VIDEO_JOB_STALE_SECS)
+    except BaseException as e:
+        await metering.refund_credits(tenant_id, prep["op_id"])   # no commit happened → release hold
+        if job is not None and job.get("status") == "running":
+            job.update(status="failed", error=_short_err(e), updated=time.time())
+        _VID_LOG.info("[video_job] %s failed: %s", job_id, _short_err(e))
+        return
 
-        data = res.get("data")
-        # mirror image_op's `if data is None` guard: never commit for an empty result (a None payload
-        # means the provider returned nothing usable → treat as failure, refund, do not charge).
-        if data is None:
-            await metering.refund_credits(tenant_id, prep["op_id"])
-            if job is not None and job.get("status") == "running":
-                job.update(status="failed", error="provider returned no video", updated=time.time())
-            _VID_LOG.info("[video_job] %s: empty dispatch result — refunded", job_id)
-            return
+    data = res.get("data")
+    # mirror image_op's `if data is None` guard: never commit for an empty result (a None payload
+    # means the provider returned nothing usable → treat as failure, refund, do not charge).
+    if data is None:
+        await metering.refund_credits(tenant_id, prep["op_id"])
+        if job is not None and job.get("status") == "running":
+            job.update(status="failed", error="provider returned no video", updated=time.time())
+        _VID_LOG.info("[video_job] %s: empty dispatch result — refunded", job_id)
+        return
 
-        mime = res.get("mime") or "video/mp4"
-        provider = res.get("provider")
-        # cost_usd from dispatch is the winning provider's PER-SECOND cost → absolute COGS = ×seconds.
-        cost_usd = res.get("cost_usd")
-        abs_cost = (float(cost_usd) * int(prep["seconds"])) if cost_usd is not None else None
+    mime = res.get("mime") or "video/mp4"
+    provider = res.get("provider")
+    # cost_usd from dispatch is the winning provider's PER-SECOND cost → absolute COGS = ×seconds.
+    cost_usd = res.get("cost_usd")
+    abs_cost = (float(cost_usd) * int(prep["seconds"])) if cost_usd is not None else None
 
-        # persist the MP4 to R2 + assets (moat). source_job_type = the winning provider (mirrors veo/sora).
-        result_key = None
-        try:
-            ext = "webm" if mime == "video/webm" else "mp4"
-            await _persist_asset(
-                tenant_id, asset_type="video", filename=f"{job_id}.{ext}", data=data,
-                content_type=mime, source_job_type=(provider or "video_tools"),
-                user_id=uid, source_prompt=(prep["params"].get("prompt") or None),
-                metadata={"model": prep["model"], "op": op, "feature": prep["feature"],
-                          "provider": provider, "duration": prep["seconds"], "job_id": job_id},
-                project_id=prep.get("project_id"))
-            # the rehosted KEY from dispatch (data: URI passes straight through; an R2 key is signed on read)
-            result_key = res.get("ref")
-        except Exception as _pe:
-            _VID_LOG.warning("[video_job] %s persist failed (non-fatal): %s", job_id, _pe)
-            result_key = res.get("ref")
+    # persist the MP4 to R2 + assets (moat). source_job_type = the winning provider (mirrors veo/sora).
+    result_key = None
+    try:
+        ext = "webm" if mime == "video/webm" else "mp4"
+        await _persist_asset(
+            tenant_id, asset_type="video", filename=f"{job_id}.{ext}", data=data,
+            content_type=mime, source_job_type=(provider or "video_tools"),
+            user_id=uid, source_prompt=(prep["params"].get("prompt") or None),
+            metadata={"model": prep["model"], "op": op, "feature": prep["feature"],
+                      "provider": provider, "duration": prep["seconds"], "job_id": job_id},
+            project_id=prep.get("project_id"))
+        # the rehosted KEY from dispatch (data: URI passes straight through; an R2 key is signed on read)
+        result_key = res.get("ref")
+    except Exception as _pe:
+        _VID_LOG.warning("[video_job] %s persist failed (non-fatal): %s", job_id, _pe)
+        result_key = res.get("ref")
 
-        # COMMIT is the last awaited step — nothing after it can raise and strand a charge.
-        committed = await metering.commit_credits(
-            tenant_id, uid, "video", prep["model"], prep["cr"], prep["op_id"],
-            byok=False, cost_usd=abs_cost, provider=provider, video_job=job_id, write_log=True)
-        if job is not None:
-            job.update(status="success", result_key=result_key, result_mime=mime,
-                       credits=committed, duration=prep["seconds"], updated=time.time())
+    # COMMIT is the last awaited step — nothing after it can raise and strand a charge.
+    committed = await metering.commit_credits(
+        tenant_id, uid, "video", prep["model"], prep["cr"], prep["op_id"],
+        byok=False, cost_usd=abs_cost, provider=provider, video_job=job_id, write_log=True)
+    if job is not None:
+        job.update(status="success", result_key=result_key, result_mime=mime,
+                   credits=committed, duration=prep["seconds"], updated=time.time())
+
+
+async def _run_video_job(*, tenant_id, uid, job_id: str, op: str, prep: dict):
+    """Background runner (OUTSIDE request context — passes tenant= everywhere) for the DEFAULT
+    (asyncio) path. The hold is already taken. Delegates the dispatch+commit/refund to _video_job_body
+    and releases the admission slot in finally (the BullMQ path does not go through here)."""
+    global _vid_inflight
+    try:
+        await _video_job_body(tenant_id=tenant_id, uid=uid, job_id=job_id, op=op, prep=prep)
     finally:
         _vid_inflight -= 1
 
@@ -4354,6 +4374,31 @@ async def video_op_submit(op: str, body: dict,
         return {"ok": True, "job_id": job_id, "status": "running", "op": op,
                 "feature": prep["feature"], "model": prep["model"], "credits_held": 0}
 
+    # ── BullMQ defer path (Phase 2, VIDEO_BULLMQ_ENABLED) ──────────────────────────────────────────
+    # SAME ensure_tier (done in _video_prepare) + hold + persist a 'running' row, but do NOT spawn the
+    # asyncio dispatch task and do NOT consume the in-process admission slot (BullMQ queue concurrency is
+    # the cap now). The Node video-worker enqueues {jobId} and calls back into POST /video-tools/run.
+    # The job row carries _run_ctx (uid/op/prep) so /run can drive _video_job_body for it. The hold uses
+    # a longer TTL so a queued job doesn't lose its reservation before a worker picks it up.
+    if VIDEO_BULLMQ_ENABLED:
+        try:
+            await metering.hold_credits(user.tenant_id, prep["cr"], op_id, byok=False,
+                                        ttl=VIDEO_BULLMQ_HOLD_TTL)   # raises 402 if short
+            _VID_JOBS[job_id] = {"tenant_id": user.tenant_id, "op_id": op_id, "status": "running",
+                                 "op": op, "feature": prep["feature"], "model": prep["model"],
+                                 "credits": 0, "result_key": None, "result_mime": None,
+                                 "duration": prep["seconds"], "error": None,
+                                 "created": now, "updated": now,
+                                 # billing/dispatch context for POST /video-tools/run (not exposed on poll)
+                                 "_run_ctx": {"uid": uid, "op": op, "prep": prep}}
+        except BaseException:
+            await metering.refund_credits(user.tenant_id, op_id)
+            raise
+        # NOTE: no asyncio.create_task — Node enqueues the videoclip job and drives /video-tools/run.
+        return {"ok": True, "job_id": job_id, "status": "running", "op": op, "op_id": op_id,
+                "feature": prep["feature"], "model": prep["model"], "credits_held": prep["cr"]}
+
+    # ── DEFAULT path (flag off) — UNCHANGED: reserve slot synchronously + spawn asyncio dispatch ─────
     global _vid_inflight
     if _vid_inflight >= VIDEO_MAX_INFLIGHT:
         raise HTTPException(429, "video service busy — try again in a moment")
@@ -4374,6 +4419,46 @@ async def video_op_submit(op: str, body: dict,
     asyncio.create_task(_run_video_job(tenant_id=user.tenant_id, uid=uid, job_id=job_id, op=op, prep=prep))
     return {"ok": True, "job_id": job_id, "status": "running", "op": op,
             "feature": prep["feature"], "model": prep["model"], "credits_held": prep["cr"]}
+
+
+@app.post("/video-tools/run")
+async def video_op_run(body: dict,
+                       user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """BullMQ worker callback (Phase 2, internal-auth). Drives an ALREADY-PERSISTED 'running' video job
+    to a terminal state. IDEMPOTENT: if the job is already terminal (success/failed) it returns that
+    status WITHOUT re-dispatching or re-charging — the guard is on the persisted job status BEFORE any
+    dispatch, and metering commit/refund are additionally op_id-idempotent. Called by the Node video-
+    worker; authenticates via X-Internal-Secret (same as /video/meter). The hold was already taken at
+    submit; touch_hold extends its TTL right before the (possibly long) dispatch so a backlog can't
+    strand it."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    job_id = str((body or {}).get("job_id") or "").strip()
+    if not job_id:
+        raise HTTPException(400, "job_id is required")
+    job = _VID_JOBS.get(job_id)
+    if not job or job.get("tenant_id") != user.tenant_id:   # tenant-scope (IDOR guard, same as poll)
+        raise HTTPException(404, "job not found")
+
+    # IDEMPOTENCY GUARD — terminal job → no-op (no re-dispatch, no re-charge). A BullMQ retry after the
+    # job already settled (success or failed) lands here and returns immediately.
+    status = job.get("status")
+    if status != "running":
+        return {"ok": True, "job_id": job_id, "status": status, "error": job.get("error")}
+
+    ctx = job.get("_run_ctx") or {}
+    prep = ctx.get("prep")
+    if not prep:
+        # A job with no run-ctx can't be driven here (e.g. a coming_soon stub or a legacy row) — treat as
+        # a no-op rather than 500; the poll/sweep handles its lifecycle.
+        return {"ok": True, "job_id": job_id, "status": status}
+    # Extend the hold TTL now that a worker is actively running this job (guards a long dispatch).
+    await metering.touch_hold(user.tenant_id, job.get("op_id"), ttl=VIDEO_BULLMQ_HOLD_TTL)
+    await _video_job_body(tenant_id=user.tenant_id, uid=ctx.get("uid"), job_id=job_id,
+                          op=ctx.get("op") or job.get("op"), prep=prep)
+    fin = _VID_JOBS.get(job_id) or {}
+    return {"ok": True, "job_id": job_id, "status": fin.get("status") or "failed",
+            "error": fin.get("error")}
 
 
 @app.get("/video-tools/jobs/{job_id}")
@@ -4475,6 +4560,15 @@ _recipe_inflight = 0
 # job on the backend (multiple clips × variants + ffmpeg) → very generous.
 RECIPE_JOB_STALE_SECS = float(os.getenv("RECIPE_JOB_STALE_SECS", "3600"))
 RECIPE_JOB_SWEEP_EVERY = float(os.getenv("RECIPE_JOB_SWEEP_EVERY", "300"))
+# BULLMQ MIGRATION (Phase 3, default OFF): when set, /recipes/<slug>/submit holds+persists the 'running'
+# job but does NOT spawn the asyncio DAG task — the Node video-worker enqueues the job to the `recipe`
+# BullMQ queue and a worker calls back into POST /recipes/<slug>/run {job_id} (idempotent). Flag unset
+# (default) → BYTE-IDENTICAL: submit spawns asyncio as today.
+RECIPE_BULLMQ_ENABLED = os.getenv("RECIPE_BULLMQ_ENABLED", "0").strip() in ("1", "true", "True", "yes")
+# Hold TTL for a queued recipe (heaviest job; the umbrella hold is taken INSIDE run_*_job when /run
+# fires, so the hold does not actually exist while the job sits in the queue — but a longer TTL keeps
+# margin once it starts, refreshed via touch_hold as the DAG progresses). Kept generous.
+RECIPE_BULLMQ_HOLD_TTL = int(os.getenv("RECIPE_BULLMQ_HOLD_TTL", str(6 * 3600)))
 # premium gate: the recipe orchestrates paid renders → require at least this tier.
 RECIPE_MIN_TIER = os.getenv("RECIPE_MIN_TIER", "starter")
 # Ad styles currently EXPOSED. All three are live: the atlascloud avatar adapter (audio-driven omnihuman /
@@ -4604,15 +4698,16 @@ def _recipe_estimate(body: dict, estimate_fn=None) -> dict:
     return {"line_items": est.get("line_items") or [], "total": total}
 
 
-async def _run_recipe_job(*, tenant_id, uid, byok: bool, job_id: str, body: dict, op_id: str, run_fn=None):
-    """Background runner (OUTSIDE request context). The recipe's run_*_job OWNS the umbrella
-    hold/commit/refund (op_id) — this wrapper only injects the billing context, feeds the poll UI via
-    set_progress, records the terminal state, and releases the admission slot. It NEVER holds or commits
-    itself (no double-charge). run_fn defaults to the Product Ad recipe."""
+async def _recipe_job_body(*, tenant_id, uid, byok: bool, job_id: str, body: dict, op_id: str, run_fn=None):
+    """Run the recipe DAG for ONE already-persisted 'running' recipe job. Factored out of
+    _run_recipe_job so it can be driven either by the asyncio task (default path) OR by the BullMQ worker
+    via POST /recipes/<slug>/run (Phase 3). It does NOT touch the admission counter (_recipe_inflight) —
+    the caller owns slot lifecycle. The recipe's run_*_job OWNS the umbrella hold/commit/refund (op_id);
+    this wrapper only injects billing context, feeds the poll UI via set_progress, and records the
+    terminal state (no double-charge). run_fn defaults to the Product Ad recipe."""
     if run_fn is None:
         import recipe_product_ad as _recipe
         run_fn = _recipe.run_product_ad_job
-    global _recipe_inflight
     job = _RECIPE_JOBS.get(job_id)
 
     async def _set_progress(phase: str, pct: int, label: str):
@@ -4627,30 +4722,39 @@ async def _run_recipe_job(*, tenant_id, uid, byok: bool, job_id: str, body: dict
     run_input["_user_id"] = uid
     run_input["_byok"] = bool(byok)
     try:
-        try:
-            out = await asyncio.wait_for(
-                run_fn(run_input, op_id, _set_progress),
-                timeout=RECIPE_JOB_STALE_SECS)
-        except BaseException as e:
-            # run_product_ad_job refunds its OWN hold on failure; this is a belt-and-suspenders refund in
-            # case it raised before/around the hold (idempotent — refund_credits no-ops a consumed hold).
-            await metering.refund_credits(tenant_id, op_id)
-            if job is not None and job.get("status") == "running":
-                job.update(status="failed", error=_short_err(e), updated=time.time())
-            _RECIPE_LOG.info("[recipe_job] %s failed: %s", job_id, _short_err(e))
-            return
+        out = await asyncio.wait_for(
+            run_fn(run_input, op_id, _set_progress),
+            timeout=RECIPE_JOB_STALE_SECS)
+    except BaseException as e:
+        # run_product_ad_job refunds its OWN hold on failure; this is a belt-and-suspenders refund in
+        # case it raised before/around the hold (idempotent — refund_credits no-ops a consumed hold).
+        await metering.refund_credits(tenant_id, op_id)
+        if job is not None and job.get("status") == "running":
+            job.update(status="failed", error=_short_err(e), updated=time.time())
+        _RECIPE_LOG.info("[recipe_job] %s failed: %s", job_id, _short_err(e))
+        return
 
-        variants = out.get("variants") or []
-        if not variants:
-            await metering.refund_credits(tenant_id, op_id)
-            if job is not None and job.get("status") == "running":
-                job.update(status="failed", error="no variants produced", updated=time.time())
-            return
-        if job is not None:
-            job.update(status="success",
-                       result={"variants": variants},
-                       credits=int(out.get("credits") or 0),
-                       updated=time.time())
+    variants = out.get("variants") or []
+    if not variants:
+        await metering.refund_credits(tenant_id, op_id)
+        if job is not None and job.get("status") == "running":
+            job.update(status="failed", error="no variants produced", updated=time.time())
+        return
+    if job is not None:
+        job.update(status="success",
+                   result={"variants": variants},
+                   credits=int(out.get("credits") or 0),
+                   updated=time.time())
+
+
+async def _run_recipe_job(*, tenant_id, uid, byok: bool, job_id: str, body: dict, op_id: str, run_fn=None):
+    """Background runner (OUTSIDE request context) for the DEFAULT (asyncio) path. Delegates the DAG to
+    _recipe_job_body and releases the admission slot in finally (the BullMQ path does not go through
+    here). It NEVER holds or commits itself — run_*_job owns the money-path."""
+    global _recipe_inflight
+    try:
+        await _recipe_job_body(tenant_id=tenant_id, uid=uid, byok=byok, job_id=job_id,
+                               body=body, op_id=op_id, run_fn=run_fn)
     finally:
         _recipe_inflight -= 1
 
@@ -4691,6 +4795,25 @@ async def recipe_product_ad_submit(body: dict,
     job_id = str(uuid.uuid4())
     now = time.time()
 
+    # ── BullMQ defer path (Phase 3, RECIPE_BULLMQ_ENABLED) ─────────────────────────────────────────
+    # Persist a 'running' row (carrying _run_ctx for /recipes/<slug>/run) but do NOT spawn the asyncio
+    # DAG and do NOT consume the in-process slot (BullMQ queue concurrency is the cap now). The umbrella
+    # hold is still taken INSIDE run_product_ad_job when the worker calls /run (single source of truth).
+    if RECIPE_BULLMQ_ENABLED:
+        _RECIPE_JOBS[job_id] = {
+            "tenant_id": user.tenant_id, "user_id": uid, "op_id": op_id, "status": "running",
+            "style": clean.get("style"), "variants": clean.get("variants"),
+            "credits_held": total, "breakdown": est["line_items"],
+            "result": None, "credits": 0, "error": None,
+            "progress": {"phase": "queued", "pct": 0, "label": "Queued…"},
+            "created": now, "updated": now,
+            # billing/DAG context for POST /recipes/product-ad/run (not exposed on poll)
+            "_run_ctx": {"uid": uid, "byok": False, "body": clean, "slug": "product-ad"},
+        }
+        return {"ok": True, "job_id": job_id, "status": "running",
+                "credits_held": total, "breakdown": est["line_items"]}
+
+    # ── DEFAULT path (flag off) — UNCHANGED: reserve slot synchronously + spawn asyncio DAG ──────────
     global _recipe_inflight
     if _recipe_inflight >= RECIPE_MAX_INFLIGHT:
         raise HTTPException(429, "recipe service busy — try again in a moment")
@@ -4810,6 +4933,22 @@ async def recipe_spokesperson_submit(body: dict,
     op_id = f"recipe-{uuid.uuid4().hex}"
     job_id = str(uuid.uuid4())
     now = time.time()
+
+    # ── BullMQ defer path (Phase 3, RECIPE_BULLMQ_ENABLED) — mirror the product-ad route ────────────
+    if RECIPE_BULLMQ_ENABLED:
+        _RECIPE_JOBS[job_id] = {
+            "tenant_id": user.tenant_id, "user_id": uid, "op_id": op_id, "status": "running",
+            "style": "spokesperson", "variants": clean.get("variants"),
+            "credits_held": total, "breakdown": est["line_items"],
+            "result": None, "credits": 0, "error": None,
+            "progress": {"phase": "queued", "pct": 0, "label": "Queued…"},
+            "created": now, "updated": now,
+            "_run_ctx": {"uid": uid, "byok": False, "body": clean, "slug": "spokesperson"},
+        }
+        return {"ok": True, "job_id": job_id, "status": "running",
+                "credits_held": total, "breakdown": est["line_items"]}
+
+    # ── DEFAULT path (flag off) — UNCHANGED ─────────────────────────────────────────────────────────
     global _recipe_inflight
     if _recipe_inflight >= RECIPE_MAX_INFLIGHT:
         raise HTTPException(429, "recipe service busy — try again in a moment")
@@ -4837,6 +4976,49 @@ async def recipe_spokesperson_submit(body: dict,
 async def recipe_spokesperson_job_status(job_id: str,
                                          user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     return await _recipe_job_status(job_id, user)
+
+
+@app.post("/recipes/{slug}/run")
+async def recipe_run(slug: str, body: dict,
+                     user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """BullMQ worker callback (Phase 3, internal-auth). Drives an ALREADY-PERSISTED 'running' recipe job
+    to a terminal state. IDEMPOTENT: a job already terminal (success/failed) returns that status WITHOUT
+    re-running the DAG or re-charging — the guard is on the persisted job status BEFORE any dispatch, and
+    the recipe's umbrella hold/commit/refund are op_id-idempotent. Called by the Node video-worker;
+    authenticates via X-Internal-Secret. The umbrella hold is taken INSIDE run_*_job here (as in the
+    default path) — the submit did NOT hold in defer mode."""
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    if slug not in ("product-ad", "spokesperson"):
+        raise HTTPException(400, f"unknown recipe: {slug}")
+    job_id = str((body or {}).get("job_id") or "").strip()
+    if not job_id:
+        raise HTTPException(400, "job_id is required")
+    job = _RECIPE_JOBS.get(job_id)
+    if not job or job.get("tenant_id") != user.tenant_id:   # tenant-scope (IDOR guard, same as poll)
+        raise HTTPException(404, "job not found")
+
+    # IDEMPOTENCY GUARD — terminal job → no-op (no re-run, no re-charge).
+    status = job.get("status")
+    if status != "running":
+        return {"ok": True, "job_id": job_id, "status": status, "error": job.get("error")}
+
+    ctx = job.get("_run_ctx") or {}
+    run_body = ctx.get("body")
+    if not run_body:
+        return {"ok": True, "job_id": job_id, "status": status}   # no run-ctx → let poll/sweep handle it
+    ctx_slug = ctx.get("slug") or slug
+    if ctx_slug == "spokesperson":
+        import recipe_spokesperson as _spk
+        run_fn = _spk.run_spokesperson_job
+    else:
+        run_fn = None   # _recipe_job_body defaults to the product-ad recipe
+    await _recipe_job_body(
+        tenant_id=user.tenant_id, uid=ctx.get("uid"), byok=bool(ctx.get("byok")),
+        job_id=job_id, body=run_body, op_id=job.get("op_id"), run_fn=run_fn)
+    fin = _RECIPE_JOBS.get(job_id) or {}
+    return {"ok": True, "job_id": job_id, "status": fin.get("status") or "failed",
+            "error": fin.get("error")}
 
 
 async def _sweep_orphaned_recipe_jobs() -> int:

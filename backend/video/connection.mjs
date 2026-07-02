@@ -48,6 +48,12 @@ export const QUEUE = Object.freeze({
   VISUAL: "video-visual",
   CHECK:  "video-check",
   STITCH: "video-stitch",
+  // BULLMQ MIGRATION (default-off; only used when VIDEO_BULLMQ_ENABLED / RECIPE_BULLMQ_ENABLED):
+  //   videoclip — one single-clip /video-tools job (thin "trigger + wait": calls Python /video-tools/run)
+  //   recipe    — one avatar-recipe job (product-ad|spokesperson; calls Python /recipes/<slug>/run)
+  // These are TRIGGER queues (the money-path stays in Python); Python /run idempotency makes retry safe.
+  VIDEOCLIP: "video-clip",
+  RECIPE:    "video-recipe",
 });
 
 // Worker concurrency per queue. Audio/visual fan out wide (the whole point);
@@ -57,6 +63,11 @@ export const CONCURRENCY = Object.freeze({
   [QUEUE.VISUAL]: Number(process.env.VIDEO_VISUAL_CONCURRENCY || 10),
   [QUEUE.CHECK]:  Number(process.env.VIDEO_CHECK_CONCURRENCY  || 4),
   [QUEUE.STITCH]: Number(process.env.VIDEO_STITCH_CONCURRENCY || 2),
+  // Single-clip trigger workers. The worker mostly WAITS on the Python /run (dispatch runs in Python),
+  // so this cap should mirror the Python admission cap it replaces (VIDEO_MAX_INFLIGHT=4 / RECIPE_MAX_INFLIGHT=2)
+  // to keep the same upstream pressure. Tunable via env.
+  [QUEUE.VIDEOCLIP]: Number(process.env.VIDEOCLIP_WORKER_CONCURRENCY || 4),
+  [QUEUE.RECIPE]:    Number(process.env.RECIPE_CLIP_CONCURRENCY || 2),
 });
 
 // Default job options: keep the queues from growing unbounded, retry transient
