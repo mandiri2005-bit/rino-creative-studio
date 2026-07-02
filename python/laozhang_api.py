@@ -5224,6 +5224,7 @@ class VeoSubmitRequest(BaseModel):
 @app.post("/veo/submit")
 async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Header(default=None),
                      x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
+                     x_op_id: Optional[str] = Header(None, alias="X-Op-Id"),
                      user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Veo 3.1 image-to-video or text-to-video task."""
     preset = req.preset
@@ -5289,7 +5290,7 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
                                      {"seconds": _secs, "size": str(preset.get("size") or "")},
                                      byok=_byok, job_id=_jid,
-                                     video_job=x_video_job, write_log=True)
+                                     video_job=x_video_job, op_id=x_op_id, write_log=True)
             except Exception as _e:
                 print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -5499,6 +5500,7 @@ class SoraSubmitRequest(BaseModel):
 @app.post("/sora/submit")
 async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = Header(default=None),
                       x_video_job: Optional[str] = Header(None, alias="X-Video-Job-Id"),
+                      x_op_id: Optional[str] = Header(None, alias="X-Op-Id"),
                       user: Optional[CurrentUser] = Depends(get_current_user_optional)):
     """Submit a Sora 2 text-to-video or image-to-video task."""
     headers = _sora_headers(x_sora_api_key)
@@ -5555,7 +5557,7 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
                 await metering.debit(user.tenant_id, _uid, "video", req.model,
                                      {"seconds": _secs, "size": str(getattr(req, "size", "") or "")},
                                      byok=_byok, job_id=_jid,
-                                     video_job=x_video_job, write_log=True)
+                                     video_job=x_video_job, op_id=x_op_id, write_log=True)
             except Exception as _e:
                 print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
@@ -9753,6 +9755,10 @@ async def video_tts_scene(req: VideoTtsSceneReq,
     synth = text[:4000]   # provider hard cap; meter exactly what we synthesize
     _byok = _byok_active()
     _uid = await _resolve_user_uuid(user.tenant_id, user.user_id) if user else None
+    # Stable op_id per (job, scene, model) → the debit dedups on op_id (credit_ledger ON CONFLICT DO
+    # NOTHING), so a worker retry / BullMQ re-delivery of the SAME scene's TTS can't double-charge.
+    # Mirrors the image path's vi-img op_id. No job ctx (standalone TTS) → None → fresh op_id.
+    _tts_op = f"vi-tts:{x_video_job}:{req.scene_index}:{req.model}" if x_video_job else None
     if user:
         await metering.gate(user.tenant_id, "tts", req.model, {"chars": len(synth)}, byok=_byok)
     if req.meter_only:
@@ -9761,7 +9767,7 @@ async def video_tts_scene(req: VideoTtsSceneReq,
         if user:
             try:
                 await metering.debit(user.tenant_id, _uid, "tts", req.model,
-                                     {"chars": len(synth)}, byok=_byok, video_job=x_video_job, write_log=True)
+                                     {"chars": len(synth)}, byok=_byok, video_job=x_video_job, op_id=_tts_op, write_log=True)
             except Exception as _e:
                 print(f"[video/tts/scene] meter_only debit failed (non-fatal): {_e}")
         return {"metered": True}
@@ -9826,7 +9832,7 @@ async def video_tts_scene(req: VideoTtsSceneReq,
     if user:
         try:
             await metering.debit(user.tenant_id, _uid, "tts", req.model,
-                                 {"chars": len(synth)}, byok=_byok, video_job=x_video_job, write_log=True)
+                                 {"chars": len(synth)}, byok=_byok, video_job=x_video_job, op_id=_tts_op, write_log=True)
         except Exception as _e:
             print(f"[video/tts/scene] metering debit failed (non-fatal): {_e}")
     return {"audio_b64": audio_b64}

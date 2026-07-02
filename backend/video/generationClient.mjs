@@ -290,6 +290,9 @@ export function httpGenerationClient(opts = {}) {
       // translate to the real upstream id + pick the /veo or /sora route family.
       const modelId = CLIP_MODEL_IDS[scene.clipModel] || scene.clipModelId || "veo-3.1-generate-preview";
       const prov = clipProvider(scene.clipModel);
+      // Stable op_id → the veo/sora /submit debit dedups (credit_ledger ON CONFLICT DO NOTHING), so a
+      // BullMQ re-delivery of this scene's clip can't double-charge the user (mirrors vi-img).
+      const clipOpId = scene.jobId != null ? `vi-clip:${scene.jobId}:${scene.sceneIndex}:${modelId}` : undefined;
       // De-burst (withClipSlot caps concurrent submits) + retry on 429/503 ("upstream load
       // saturated, retry later") — both are transient under a multi-scene burst, so riding them
       // out yields a real CLIP instead of silently degrading to the clip→image fallback.
@@ -298,7 +301,7 @@ export function httpGenerationClient(opts = {}) {
         for (let attempt = 0; ; attempt++) {
           const submit = await fetch(`${PYTHON_API}/${prov}/submit`, {
             method: "POST",
-            headers: { "Content-Type": "application/json", ...h },
+            headers: { "Content-Type": "application/json", ...(clipOpId ? { "X-Op-Id": clipOpId } : {}), ...h },
             body: JSON.stringify({ prompt: scene.visualPrompt, model: modelId, aspect: scene.aspectRatio || "16:9", seed: scene.seed ? String(scene.seed) : "" }),
           });
           if (submit.ok) { ({ task_id } = await submit.json()); return; }

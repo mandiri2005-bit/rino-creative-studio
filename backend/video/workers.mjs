@@ -442,9 +442,13 @@ export async function visualProcessor(job, deps) {
                   }
                 }
               }
-              for (const m of meters) {
+              for (let mi = 0; mi < meters.length; mi++) {
+                const m = meters[mi];
+                // Stable op_id per (job, scene, meter-slot) → /video/meter dedups (charge() ON CONFLICT),
+                // so a BullMQ re-delivery of this scene's plan-baking can't double-charge a Recraft icon.
                 await deps.generationClient?.meterUsage?.(
-                  { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units);
+                  { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units,
+                  `vi-wbm:${jobId}:${sceneIndex}:${mi}:${m.operation}:${m.model}`);
               }
             } catch (re) {
               console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] asset baking skipped: ${re.message}`);
@@ -474,9 +478,13 @@ export async function visualProcessor(job, deps) {
                 { description: desc, model: meta.genModel, language: meta.language })
             : undefined,
         });
-        for (const m of a.meters || []) {
+        const _wbMeters = a.meters || [];
+        for (let mi = 0; mi < _wbMeters.length; mi++) {
+          const m = _wbMeters[mi];
+          // Stable op_id per (job, scene, meter-slot) → idempotent on a whiteboard-asset worker re-run.
           await deps.generationClient?.meterUsage?.(
-            { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units);
+            { jobId, tenantId: meta.tenantId, userId: meta.userId }, m.operation, m.model, m.units,
+            `vi-wba:${jobId}:${sceneIndex}:${mi}:${m.operation}:${m.model}`);
         }
         const up = a.visualPath ? await maybeUpload(jobId, meta.tenantId, "images", a.visualPath) : { path: undefined, key: null };
         const mk = a.maskPath ? await maybeUpload(jobId, meta.tenantId, "images", a.maskPath) : { path: undefined, key: null };
