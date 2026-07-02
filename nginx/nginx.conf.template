@@ -9,6 +9,15 @@ http {
 
   resolver [fd12::10] valid=10s;
 
+  # Keep app.wimba.ai (the app/login entry) OUT of Google so it can't outrank the wimba.ai
+  # marketing landing. Host-gated: ONLY app.wimba.ai emits X-Robots-Tag; every other host
+  # (incl. ceritaAI's ceritai.com if it shares this config) → "" → nginx omits the header
+  # entirely → stays indexable. $host survives the restricted `envsubst ${PORT} ${BACKEND_URL}`.
+  map $host $wimba_robots {
+    default "";
+    app.wimba.ai "noindex, follow";
+  }
+
   server {
     listen ${PORT};
     server_name _;
@@ -17,6 +26,9 @@ http {
     # browser at http://host:8080/… (unreachable). Relative → browser keeps https://host. (2026-06-22)
     absolute_redirect off;
     root /usr/share/nginx/html; index index.html;
+    # Server-level noindex for app.wimba.ai (host-gated via $wimba_robots map above). `always` so
+    # it rides 302s (/, /index.html) + 404s too. Empty on other hosts → header omitted.
+    add_header X-Robots-Tag $wimba_robots always;
 
     # /index.html (stale failover shell) → redirect to the canonical studio /app/. 302 = un-sticky so
     # it can never permanently pin a stale state in a browser. (studio hardening 2026-06-22)
