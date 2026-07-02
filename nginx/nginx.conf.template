@@ -34,11 +34,11 @@ http {
     # it can never permanently pin a stale state in a browser. (studio hardening 2026-06-22)
     location = /index.html { return 302 /app/; }
     # the canonical app shell must always revalidate so deploys show up without a hard refresh
-    location = /app/index.html { add_header Cache-Control "no-cache"; }
+    location = /app/index.html { add_header Cache-Control "no-cache"; add_header X-Robots-Tag $wimba_robots always; }
 
     # Wimba deploy: root redirects to studio. No separate marketing landing on app.wimba.ai.
     location = / { return 302 /app/; }
-    location = /landing.html { add_header Cache-Control "no-cache"; }
+    location = /landing.html { add_header Cache-Control "no-cache"; add_header X-Robots-Tag $wimba_robots always; }
 
     # A MISSING build asset must 404 CLEANLY — never fall through to the SPA index.html, whose
     # text/html breaks <script type=module> ("'text/html' is not a valid JavaScript MIME type") and
