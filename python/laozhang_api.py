@@ -4446,6 +4446,14 @@ async def video_op_run(body: dict,
     if status != "running":
         return {"ok": True, "job_id": job_id, "status": status, "error": job.get("error")}
 
+    # CONCURRENT-DELIVERY GUARD (in-process): claim the job synchronously so a second BullMQ delivery that
+    # RACES an in-flight /run (both saw status=='running') no-ops instead of re-dispatching a paid render.
+    # No await between the status read and this set → atomic under asyncio. Belt to the op_id-idempotent
+    # commit/refund suspenders (which already stop a double-CHARGE; this stops the double-DISPATCH cost).
+    if job.get("_claimed"):
+        return {"ok": True, "job_id": job_id, "status": "running", "note": "already dispatched"}
+    job["_claimed"] = True
+
     ctx = job.get("_run_ctx") or {}
     prep = ctx.get("prep")
     if not prep:
@@ -4496,6 +4504,26 @@ async def video_job_status(job_id: str,
     return resp
 
 
+# In-process job maps (_VID_JOBS / _RECIPE_JOBS) are append-only per submit and were never pruned →
+# unbounded growth over a long-lived process. Bound them: when a map exceeds its cap, drop the OLDEST
+# *terminal* (success/failed) rows by updated-time during the periodic sweep. A 'running' row is NEVER
+# evicted (still pollable + may hold credits). A dropped terminal row's later poll 404s — acceptable, it
+# only happens far past settlement (caps are generous; a poll lands seconds→minutes after terminal).
+VIDEO_JOBS_MAX = int(os.getenv("VIDEO_JOBS_MAX", "2000"))
+RECIPE_JOBS_MAX = int(os.getenv("RECIPE_JOBS_MAX", "1000"))
+
+
+def _evict_terminal_jobs(store: dict, cap: int) -> int:
+    if len(store) <= cap:
+        return 0
+    terminal = [(jid, j) for jid, j in store.items() if j.get("status") in ("success", "failed")]
+    terminal.sort(key=lambda kv: float(kv[1].get("updated") or 0))   # oldest first
+    drop = min(len(terminal), len(store) - cap)
+    for i in range(drop):
+        store.pop(terminal[i][0], None)
+    return drop
+
+
 async def _sweep_orphaned_video_jobs() -> int:
     """Mark stale in-process 'running' jobs failed + refund their held credits (idempotent). Catches
     holds orphaned when a background task dies without flipping its row (the lazy poll-reap is the
@@ -4508,8 +4536,9 @@ async def _sweep_orphaned_video_jobs() -> int:
             except Exception as _e:
                 _VID_LOG.warning("[video_jobs] sweep refund failed (%s): %s", job.get("op_id"), _e)
             job.update(status="failed", error="timed out", updated=now); n += 1
-    if n:
-        _VID_LOG.info("[video_jobs] sweep: failed+refunded %d orphaned job(s)", n)
+    ev = _evict_terminal_jobs(_VID_JOBS, VIDEO_JOBS_MAX)
+    if n or ev:
+        _VID_LOG.info("[video_jobs] sweep: failed+refunded %d orphaned, evicted %d terminal", n, ev)
     return n
 
 
@@ -5003,6 +5032,16 @@ async def recipe_run(slug: str, body: dict,
     if status != "running":
         return {"ok": True, "job_id": job_id, "status": status, "error": job.get("error")}
 
+    # CONCURRENT-DELIVERY GUARD (in-process, matching the single-replica _RECIPE_JOBS model): claim the
+    # job synchronously so a second BullMQ delivery that RACES an in-flight /run — both saw status=='running'
+    # so the guard above passed for both — returns a no-op instead of re-running the paid DAG. There is no
+    # await between the status read above and this set, so the claim is atomic under asyncio. The DAG flips
+    # status terminal when it ends (a later delivery hits the guard above); a process death drops _RECIPE_JOBS
+    # entirely (retry → 404). Belt to the op_id-idempotent hold/commit suspenders.
+    if job.get("_claimed"):
+        return {"ok": True, "job_id": job_id, "status": "running", "note": "already dispatched"}
+    job["_claimed"] = True
+
     ctx = job.get("_run_ctx") or {}
     run_body = ctx.get("body")
     if not run_body:
@@ -5032,8 +5071,9 @@ async def _sweep_orphaned_recipe_jobs() -> int:
             except Exception as _e:
                 _RECIPE_LOG.warning("[recipe_jobs] sweep refund failed (%s): %s", job.get("op_id"), _e)
             job.update(status="failed", error="timed out", updated=now); n += 1
-    if n:
-        _RECIPE_LOG.info("[recipe_jobs] sweep: failed+refunded %d orphaned job(s)", n)
+    ev = _evict_terminal_jobs(_RECIPE_JOBS, RECIPE_JOBS_MAX)
+    if n or ev:
+        _RECIPE_LOG.info("[recipe_jobs] sweep: failed+refunded %d orphaned, evicted %d terminal", n, ev)
     return n
 
 

@@ -68,6 +68,14 @@ _LUA_HOLD = """
 local bal = redis.call('GET', KEYS[1])
 if not bal then return -2 end                 -- not cached: caller must seed
 bal = tonumber(bal)
+-- Idempotent on op_id: if this hold marker already exists, the live balance ALREADY
+-- reflects its single DECRBY. A repeat hold (double-submit / retry with the same op_id)
+-- must NOT decrement again — that would strand the cache LOW by amt. Refresh the TTL
+-- (acts as a touch) and return the current balance unchanged.
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  redis.call('EXPIRE', KEYS[2], tonumber(ARGV[2]))
+  return bal
+end
 local amt = tonumber(ARGV[1])
 if bal < amt then return -1 end               -- insufficient
 local newbal = redis.call('DECRBY', KEYS[1], amt)
