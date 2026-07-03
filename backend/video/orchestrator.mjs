@@ -95,6 +95,7 @@ export async function startAssembly(ctx, deps) {
     clipModel = "veo3", visualMode = "hybrid", whiteboardGenre = "", captions = false,
     voice, imageModel, ttsModel, language, genModel, aspectRatio = "16:9", captionFont,
     anchorKey, anchorB64, heroStyle,
+    avatarPresenter, avatarBroll, avatarAspect, captionsStyle,   // avatar-mode sub-selectors (Slice 1: persisted on meta, no render)
     brief,   // shared art-direction brief from /video/segment — used by the NON-WB visual worker
             // (workers.mjs ELSE branch) to ground each per-scene visualPrompt LLM call
     visualStyle,   // UI dropdown (cinematic/photorealistic/...) — also fed to the visual worker
@@ -120,8 +121,10 @@ export async function startAssembly(ctx, deps) {
     }
   }
 
+  const isAvatar = visualMode === "avatar";
   await deps.store.createJob({
     jobId, tenantId, userId, tier: tierN, clipModel, visualMode, whiteboardGenre, captions,
+    avatarPresenter: avatarPresenter || "", avatarBroll: !!avatarBroll, avatarAspect: avatarAspect || "", captionsStyle: captionsStyle || "",   // avatar sub-selectors (schemaless meta)
     voice: voice || "", imageModel: imageModel || "",
     ttsModel: ttsModel || "", language: language || "", genModel: genModel || "", aspectRatio,
     captionFont: captionFont || "",
@@ -129,19 +132,25 @@ export async function startAssembly(ctx, deps) {
     brief: brief || "", visualStyle: visualStyle || "", style: style || "",   // for the non-WB visual worker (workers.mjs) — `style` = gaya narasi for cinematography tone
     culturalPalette: culturalPalette || "", visualCast: visualCast || "",   // Nusantara cues + Visual SharedContext registry for the non-WB visual worker
     sceneCount: scenes.length, batchSize: DISPATCH_BATCH_SIZE, batchPlan,
-    status: "running", progress: 0, creditsEstimate: creditsNeeded,
+    status: isAvatar ? "planned" : "running", progress: 0, creditsEstimate: creditsNeeded,
     scenes,
   });
 
-  await dispatchBatch(jobId, 0, { batchPlan, tier: tierN }, deps);
-  await deps.store.tryClaimBatch(jobId, 0);
+  // Slice 1: avatar mode is plumbing-only — the 'planned' job persists its scenes + meta and
+  // is pollable, but we dispatch NO render batch (the avatar renderer is Slice 2). No batch ⇒
+  // no per-scene provider call ⇒ no metering / no charge.
+  if (!isAvatar) {
+    await dispatchBatch(jobId, 0, { batchPlan, tier: tierN }, deps);
+    await deps.store.tryClaimBatch(jobId, 0);
+  }
 
   return {
     jobId,
     sceneCount: scenes.length,
-    dispatch: dispatchMode(scenes.length),
+    dispatch: isAvatar ? "planned" : dispatchMode(scenes.length),
     batchPlan,
     creditsEstimate: creditsNeeded,
+    ...(isAvatar ? { status: "planned" } : {}),
   };
 }
 

@@ -20,6 +20,11 @@ import * as conc from "./concurrency.mjs";   // per-plan parallel-job cap (Phase
 import { modeRequiredTier, tierAtLeast } from "./mode_gate.mjs";   // global VI mode tier gate
 
 const PYTHON_API = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
+// Avatar is a flag-gated VI mode (Slice 1 = mode plumbing only, NO render / NO charge).
+// OFF by default; when unset, an avatar assemble request is rejected up front so it can
+// never fall through to a renderer or a metered charge. Snapshot at module load (mirrors
+// the other env flags in this engine).
+const VI_AVATAR_ENABLED = /^(1|true|yes)$/i.test(process.env.VI_AVATAR_ENABLED || "");
 
 let _deps = null;
 function deps() {
@@ -81,6 +86,9 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
   const auth = requireAuth || ((req, res, next) => next());
 
   app.post("/api/video/segment", auth, (req, res) => pyForward(req, res, "/video/segment"));
+  // Avatar segmenter (Slice 1) — separate Python route (owned by the narasi/Dalang side):
+  // topic/script → role-tagged scenes (presenter→kind 'avatar', broll→kind 'clip'). Pure proxy.
+  app.post("/api/video/segment/avatar", auth, (req, res) => pyForward(req, res, "/video/segment/avatar"));
   app.post("/api/video/params", auth, (req, res) => pyForward(req, res, "/video/params"));
   app.post("/api/video/decide", auth, (req, res) => pyForward(req, res, "/video/decide"));
 
@@ -117,6 +125,12 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
     let _slotTenant = null, _slotJob = null;   // for releasing the concurrency slot on early failure
     try {
       const b = req.body || {};
+      // Slice 1: avatar is a flag-gated VI mode. When disabled, reject up front so it never
+      // falls through to a renderer (NO hold, NO dispatch, NO charge). Unknown modes still
+      // flow to the existing mode-tier gate below which fail-closes them when gating is armed.
+      if (b.visualMode === "avatar" && !VI_AVATAR_ENABLED) {
+        return res.status(400).json({ error: "avatar_disabled", message: "Avatar mode isn't enabled yet." });
+      }
       const scenes = b.scenes;
       if (!Array.isArray(scenes) || scenes.length === 0) {
         return res.status(400).json({ error: "scenes[] required (call /api/video/segment first)" });
@@ -172,11 +186,22 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
         tier: b.tier || "hd", clipModel: b.clipModel || "veo3",
         visualMode: b.visualMode || "hybrid", whiteboardGenre: b.whiteboardGenre,
         captions: !!b.captions,
+        // avatar sub-selectors (Slice 1 plumbing — persisted on the schemaless meta; the
+        // avatar renderer that consumes these is Slice 2, so nothing is dispatched here)
+        avatarPresenter: b.avatar?.presenter, avatarBroll: !!(b.avatar?.broll),
+        avatarAspect: b.avatar?.aspect, captionsStyle: b.avatar?.captionsStyle,
         voice: b.voice, imageModel: b.imageModel,
         ttsModel: b.ttsModel, language: b.language, genModel: b.genModel, aspectRatio: b.aspectRatio,
         captionFont: b.captionFont, anchorKey, anchorB64, heroStyle: b.heroStyle,
         brief: b.brief, visualStyle: b.visualStyle, style: b.style, culturalPalette: b.culturalPalette, visualCast: b.visualCast,   // NON-WB visual worker: style=gaya narasi, culturalPalette=Nusantara cues, visualCast=SharedContext registry
       }, deps());
+      // Slice 1: an avatar job is persisted 'planned' with NO batch dispatched, so it holds no
+      // render — release the concurrency slots we took (normally freed only when a job goes
+      // terminal via store.setStatus, which a 'planned' job never reaches).
+      if (b.visualMode === "avatar") {
+        try { await conc.release(tenantId, jobId); await conc.releaseGlobal(jobId); } catch {}
+        _slotTenant = null; _slotJob = null;
+      }
       res.json({ ok: true, status: "running", ...result });
     } catch (e) {
       // release BOTH slots (per-tenant + global) if acquired but the job never started (e.g. 402 credits)
