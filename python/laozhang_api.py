@@ -580,6 +580,17 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
         usage = getattr(resp, "usage", None)
         tok_in  = int(getattr(usage, "prompt_tokens",     0) or 0) if usage else 0
         tok_out = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        if not tok_in and not tok_out:
+            # Some aggregators omit `usage` on non-streaming completions → 0 tokens ⟹ 0 credits
+            # ⟹ a real chapter delivered FREE. Estimate from the returned content (≈4 chars/token)
+            # so a genuine generation is never billed zero. No-op today (LaoZhang returns usage).
+            try:
+                _content = resp.choices[0].message.content or ""
+            except Exception:
+                _content = ""
+            if _content:
+                tok_out = max(1, len(_content) // 4)
+                tok_in  = min(tok_out, 2000)
         cost = _calc_cost(model, tok_in, tok_out)
         cr   = 0 if _byok_active() else catalog.credit_cost("narasi", model, {"tokens_in": tok_in, "tokens_out": tok_out})
         _ml = (model or "").lower()
@@ -964,6 +975,115 @@ def make_client(model: str = "") -> OpenAI:
             )
         return OpenAI(api_key=key, base_url=BASE_URL)
     return OpenAI(api_key=_req_key.get() or API_KEY, base_url=BASE_URL)
+
+
+# ── Narasi multi-aggregator failover ─────────────────────────────────────────
+# A cheapest-first Claude failover chain across DIFFERENT aggregators serving the same
+# logical Opus model (KIE opus-4-6 → LaoZhang opus-4-6 → AtlasCloud opus-4-8). On any
+# upstream failure (5xx / quota / timeout / connection) the next aggregator is tried.
+# Billing is UNCHANGED: _log_narasi_usage still meters the LOGICAL model at its configured
+# price — this only changes WHICH aggregator serves the tokens (KIE cheapest ⟹ best margin).
+# A rung with an empty API key auto-skips, so with only LAOZHANG_API_KEY set the chain
+# degrades to today's single-provider behavior (safe no-op). Gated OFF by default; flip
+# NARASI_FAILOVER_ENABLED=1 (+ KIE_API_KEY / ATLASCLOUD_API_KEY on the python service).
+NARASI_DEFAULT_MODEL = os.environ.get("NARASI_DEFAULT_MODEL") or "claude-opus-4-6"
+_NARASI_FAILOVER_MODELS = {"claude-opus-4-6", "claude-opus-4-8"}
+_NARASI_FAILOVER_TIMEOUT = int(os.environ.get("NARASI_FAILOVER_TIMEOUT") or 280)
+# Whole cheapest-first walk is bounded to this budget, kept < the caller's outer per-chapter
+# wait_for (DALANG_CHAPTER_LLM_TIMEOUT default 900s), so a hung EARLY rung can neither starve
+# the later rungs nor let the outer wait_for fire mid-chain (which would strand the to_thread
+# worker on a blocking call). 3 rungs × 280s = 840s < 900s.
+_NARASI_FAILOVER_CHAIN_BUDGET = float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET") or 840)
+
+
+def _narasi_failover_on() -> bool:
+    return str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _narasi_failover_chain() -> list[tuple[str, str, str, str]]:
+    """(name, base_url, api_key, per-provider model id), cheapest-first. Keys are read at
+    call time so newly-set env vars are picked up. A rung with an empty key is skipped by
+    the caller. The LaoZhang rung honours a per-request BYOK key (_req_key)."""
+    return [
+        ("kie",        "https://api.kie.ai/api/v1",         os.environ.get("KIE_API_KEY", ""),         "claude-opus-4-6"),
+        ("laozhang",   BASE_URL,                            _req_key.get() or API_KEY,                  "claude-opus-4-6"),
+        ("atlascloud", "https://api.atlascloud.ai/api/v1",  os.environ.get("ATLASCLOUD_API_KEY", ""),   "claude-opus-4-8"),
+    ]
+
+
+class _NarasiFailoverClient:
+    """Duck-typed drop-in for the OpenAI client used by narasi generation. Its
+    chat.completions.create(**kw) walks the cheapest-first aggregator chain, overriding
+    `model` per provider and advancing on any upstream failure. Everything else (metering,
+    the generation loop, json-mode fallbacks) is untouched — the caller still gets a normal
+    resp object and bills the logical model via _log_narasi_usage."""
+
+    class _Completions:
+        def __init__(self, outer: "_NarasiFailoverClient"):
+            self._o = outer
+
+        def create(self, **kw):
+            return self._o._create(**kw)
+
+    class _Chat:
+        def __init__(self, outer: "_NarasiFailoverClient"):
+            self.completions = _NarasiFailoverClient._Completions(outer)
+
+    def __init__(self, model: str = ""):
+        self._model = model or NARASI_DEFAULT_MODEL
+        self.chat = _NarasiFailoverClient._Chat(self)
+
+    def with_options(self, **_kw):
+        # timeout / max_retries are applied per-attempt inside _create; opts are a no-op here.
+        return self
+
+    def _create(self, **kw):
+        chain = _narasi_failover_chain()
+        primary = next((c[0] for c in chain if c[2]), "")
+        # Bound the whole cheapest-first walk to a budget < the caller's outer per-chapter
+        # wait_for, giving each rung the REMAINING budget (not a fresh full timeout) so a hung
+        # early rung cannot consume the whole window and strand later rungs / the worker thread.
+        deadline = time.monotonic() + _NARASI_FAILOVER_CHAIN_BUDGET
+        errors: list[str] = []
+        attempted = 0
+        for name, base_url, key, model_id in chain:
+            if not key:
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 1.0:
+                errors.append(f"{name}:skipped (chain budget spent)")
+                break
+            attempted += 1
+            rung_timeout = max(1.0, min(float(_NARASI_FAILOVER_TIMEOUT), remaining))
+            call_kw = dict(kw)
+            call_kw["model"] = model_id
+            try:
+                cli = OpenAI(api_key=key, base_url=base_url,
+                             timeout=rung_timeout, max_retries=0)
+                resp = cli.chat.completions.create(**call_kw)
+                if name != primary:
+                    print(f"[narasi-failover] served by {name} ({model_id})")
+                return resp
+            except Exception as e:  # 5xx / quota / timeout / connection → advance to next rung
+                errors.append(f"{name}:{repr(e)[:140]}")
+                print(f"[narasi-failover] {name} failed → next: {repr(e)[:160]}")
+                continue
+        if attempted == 0:
+            # no keyed rung in the chain → fall back to the standard single-provider client
+            return make_client(self._model).chat.completions.create(**kw)
+        raise RuntimeError("narasi failover exhausted — all aggregators failed: " + " | ".join(errors))
+
+
+def make_narasi_client(model: str = ""):
+    """Narasi client factory. Returns the multi-aggregator failover client for the Opus
+    narasi models when NARASI_FAILOVER_ENABLED is on; otherwise the standard make_client
+    (so non-opus models and the flag-off state keep today's exact behavior)."""
+    # BYOK: the user pays their provider on their OWN key (credits=0). Never route BYOK through
+    # a server-keyed failover rung — that would serve on the platform key yet bill 0. make_client
+    # honours the per-request key, so BYOK always goes straight through it.
+    if _narasi_failover_on() and (model in _NARASI_FAILOVER_MODELS) and not _byok_active():
+        return _NarasiFailoverClient(model)
+    return make_client(model)
 
 
 # ── Narration LLM: hard stall timeout + fast fallback ────────────────────────
@@ -1706,6 +1826,22 @@ async def credits_balance(user: CurrentUser = Depends(get_current_user)):
     bal = await credits_lib.get_balance(user.tenant_id)
     bd = await credits_lib.balance_breakdown(user.tenant_id)
     return {"balance": bal, "tier": user.tier, **bd}
+
+
+@app.get("/credits/reconcile")
+async def credits_reconcile(fix: int = 0, user: CurrentUser = Depends(get_current_user)):
+    """Live-vs-durable drift report for the authed tenant. `?fix=1` RESYNCS the live Redis cache to
+    the durable balance (the source of truth → can NEVER grant free credits; durable is the cap),
+    clearing a stranded live cache left by an interrupted/crashed op (e.g. a hold that never
+    settled). Read-only without fix=1. Run fix=1 when no generation is in flight (an in-flight hold
+    would be reset — the durable charge still lands, so it self-heals, but avoid it mid-run)."""
+    tid = user.tenant_id
+    before = await credits_lib.reconcile(tid)
+    resynced = None
+    if int(fix or 0) == 1:
+        resynced = await credits_lib.resync_from_durable(tid)
+    after = await credits_lib.reconcile(tid) if resynced is not None else before
+    return {"tenant": str(tid), "before": before, "resynced_to": resynced, "after": after}
 
 
 # ── Voiceover expansion (App 3) — pre-flight gate + per-chunk provider synth ──────
@@ -6472,7 +6608,7 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
     resolved = MODELS.get(model, model)
     safe_max = min(int(max_tokens), MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
     try:
-        client = make_client(model)
+        client = make_narasi_client(model)
         def _call(use_fmt):
             kw = dict(model=resolved,
                       messages=[{"role": "system", "content": system},
@@ -8051,7 +8187,7 @@ async def _narasi_outline_impl(body: dict):
     revise_instruction = (body.get("revise_instruction") or "").strip()
     current_outline = (body.get("current_outline") or "").strip()
     outline_for_brief = (body.get("outline") or "").strip()
-    client = make_client(model)
+    client = make_narasi_client(model)
     lang_label = _resolve_narasi_lang(language)
     # Resolve tenant + user UUID once for usage logging (auth dependency set the context)
     _ou_ctx = _tenant_ctx.get()
@@ -8364,7 +8500,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     lang_label = _resolve_narasi_lang(language)
     tmp_dir = Path(f"/app/data/narasi_temp/{job_id}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    client = make_client(model)
+    client = make_narasi_client(model)
     errors = []
     _meter_actual = 0   # Step 4: credits actually consumed (to settle the hold)
 
