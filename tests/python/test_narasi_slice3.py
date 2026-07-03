@@ -118,7 +118,7 @@ class TestContinuation:
         client = _FakeClient("tambahan kata pendek", finish="stop")   # keeps it under word_min
         text0 = "awalnya pendek"
         verdict = laozhang_api._narasi_word_verdict(text0, 1000, 2000, "stop")  # undershoot
-        text, extra = asyncio.run(laozhang_api._narasi_continuation(
+        text, extra, _verdict = asyncio.run(laozhang_api._narasi_continuation(
             client, "gemini-2.5-flash", "gemini-2.5-flash", 8000,
             [{"role": "user", "content": "x"}], text0, verdict,
             tenant_id="t", user_id="u", job_uuid=None, word_min=1000, word_max=2000))
@@ -134,7 +134,7 @@ class TestContinuation:
         self._patch_usage(monkeypatch, cost=5)
         client = _FakeClient("", finish="stop")   # empty content
         verdict = laozhang_api._narasi_word_verdict("short", 1000, 2000, "stop")
-        text, extra = asyncio.run(laozhang_api._narasi_continuation(
+        text, extra, _verdict = asyncio.run(laozhang_api._narasi_continuation(
             client, "m", "m", 8000, [{"role": "user", "content": "x"}], "short", verdict,
             tenant_id="t", user_id="u", job_uuid=None, word_min=1000, word_max=2000))
         assert extra == 0 and text == "short" and len(client.calls) == 1
@@ -143,10 +143,21 @@ class TestContinuation:
         self._patch_usage(monkeypatch)
         client = _FakeClient("should not be called")
         verdict = {"undershoot": False, "truncated": False, "words": 500, "shortfall": 0}
-        text, extra = asyncio.run(laozhang_api._narasi_continuation(
+        text, extra, _verdict = asyncio.run(laozhang_api._narasi_continuation(
             client, "m", "m", 8000, [{"role": "user", "content": "x"}], "fine text", verdict,
             tenant_id="t", user_id="u", job_uuid=None, word_min=10, word_max=999))
         assert client.calls == [] and extra == 0 and text == "fine text"
+
+    def test_returns_final_verdict_for_truncation_signal(self, monkeypatch):
+        # F7: continuation returns the FINAL verdict so the loop can flag a chapter that is STILL
+        # truncated after the bounded retries (surfaced as result_payload.truncated_chapters).
+        self._patch_usage(monkeypatch)
+        client = _FakeClient("tambahan", finish="length")   # every attempt is length-capped + still short
+        v0 = laozhang_api._narasi_word_verdict("short", 1000, 2000, "length")
+        _t, _e, verdict = asyncio.run(laozhang_api._narasi_continuation(
+            client, "m", "m", 8000, [{"role": "user", "content": "x"}], "short", v0,
+            tenant_id="t", user_id="u", job_uuid=None, word_min=1000, word_max=2000))
+        assert isinstance(verdict, dict) and verdict.get("truncated") is True
 
 
 class TestCheapCall:

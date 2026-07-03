@@ -6261,6 +6261,11 @@ DALANG_MAX_INFLIGHT          = int(os.getenv("DALANG_MAX_INFLIGHT", "3"))
 # window (updated_at), so a live-but-slow job is never swept out from under itself.
 NARASI_JOB_STALE_SECS  = float(os.getenv("NARASI_JOB_STALE_SECS", "3600"))
 NARASI_JOB_SWEEP_EVERY = float(os.getenv("NARASI_JOB_SWEEP_EVERY", "300"))
+# F1 (crash-safe belt-and-suspenders): hard wall-clock cap on a SINGLE chapter's LLM write, so a
+# stalled call can't silently let jobs.updated_at approach NARASI_JOB_STALE_SECS and trip the
+# premature orphan sweep. Generous (long thinking chapters are legit) but well under the stale
+# window. Only enforced under DALANG_CRASHSAFE_ENABLED (else the write path is byte-identical to v1).
+DALANG_CHAPTER_LLM_TIMEOUT = float(os.getenv("DALANG_CHAPTER_LLM_TIMEOUT", "900"))
 # Slice 3: bounded continuation re-calls per undershooting/truncated chapter (§4.4), and the
 # cheap model for fact-extraction / rolling-summary side-calls (§3.1/§3.2). Both env-tunable.
 DALANG_MAX_CHAPTER_RETRIES = int(os.getenv("DALANG_MAX_CHAPTER_RETRIES", "2"))
@@ -6522,7 +6527,10 @@ async def _narasi_continuation(client, model, resolved_model, safe_max, _msgs, t
         extra += _cr
         text = (text + "\n\n" + addition).strip()
         verdict = _narasi_word_verdict(text, word_min, word_max, fin)
-    return text, extra
+    # F7: return the FINAL verdict too so the caller can flag a chapter that is STILL truncated
+    # after the bounded retries (display-only; the word gate can't catch a length-cut chapter that
+    # cleared the floor).
+    return text, extra, verdict
 
 
 _FACT_SYS = ("Kamu ekstraktor fakta untuk menjaga konsistensi narasi. Dari teks bab berikut, keluarkan "
@@ -8382,6 +8390,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     # so the fact ledger / rolling summary — and later Persona/Showrunner — can attach. ──
     _narasi_series_id = _narasi_job_uuid
     _chapter_targets, _delivered_words = [], []   # job-level 'partial' post-check (§11)
+    _truncated_chapters = []   # F7: chapter ids still finish_reason=length after continuation (display)
     _chapter_scores = []                           # Slice 4: sampled per-chapter critic scores
     if _dalang_v2_enabled() and _narasi_series_id:
         try:
@@ -8493,10 +8502,26 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # MODEL_MAX_TOKENS value that truncates long chapters. See _narasi_safe_max.
             safe_max = _narasi_safe_max(resolved_model, word_max)
 
-            resp = client.chat.completions.create(
-                model=resolved_model, messages=_msgs,
-                max_tokens=safe_max, stream=False
-            )
+            if _dalang_crashsafe_enabled():
+                # F1: bound the single chapter write so a stall can't approach the stale-sweep
+                # window (which would trip the premature orphan sweep). to_thread also lets the
+                # loop's cancel + sweep-self-abort checks run instead of the event loop blocking on
+                # a synchronous call. On timeout the chapter errors and we move on (never hang the
+                # whole job). Only under crash-safe → the write path is byte-identical to v1 when off.
+                try:
+                    resp = await asyncio.wait_for(
+                        asyncio.to_thread(lambda: client.chat.completions.create(
+                            model=resolved_model, messages=_msgs, max_tokens=safe_max, stream=False)),
+                        timeout=DALANG_CHAPTER_LLM_TIMEOUT)
+                except asyncio.TimeoutError:
+                    errors.append({"id": chap_id, "error": f"chapter LLM timed out (>{int(DALANG_CHAPTER_LLM_TIMEOUT)}s)"})
+                    _logging.getLogger("narasi").warning("[narasi] bab %s LLM timeout — skipped", chap_id)
+                    continue
+            else:
+                resp = client.chat.completions.create(
+                    model=resolved_model, messages=_msgs,
+                    max_tokens=safe_max, stream=False
+                )
             choice = resp.choices[0]
             text = choice.message.content or ""
             text = text.strip()
@@ -8537,11 +8562,16 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     async def _cont_prog(_v=_verdict, _i=i):
                         await rc.set_progress(job_id,
                             f"Memperpanjang bab {_i+1}/{len(chapters)} ({_v['words']}/{word_min} kata)…"[:200])
-                    text, _extra_cr = await _narasi_continuation(
+                    text, _extra_cr, _verdict = await _narasi_continuation(
                         client, model, resolved_model, safe_max, _msgs, text, _verdict,
                         tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid,
                         word_min=word_min, word_max=word_max, on_progress=_cont_prog)
                     _chap_cr += _extra_cr
+                # F7: a chapter that is STILL finish_reason=length after the bounded continuation is
+                # truncated in a way the word-floor 'partial' check can't see — record it for a
+                # display-only signal. v2-gated (this whole block runs only under v2).
+                if _verdict.get("truncated"):
+                    _truncated_chapters.append(chap_id)
                 # ── Slice 5 (§3.3/§4.3): repetition guard — deterministic 5-gram gate over
                 # prior chapters (+ fail-open Qdrant semantic). A near-duplicate gets ONE
                 # rewrite that must bring a fresh angle. Runs before the quality critic. ──
@@ -8760,6 +8790,8 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 _result["partial"] = bool(_partial.get("partial"))
                 if _partial.get("partial"):
                     _result["undershoot_report"] = _partial
+                if _truncated_chapters:   # F7: display-only truncation signal (word gate can't catch it)
+                    _result["truncated_chapters"] = _truncated_chapters
             # Slice 4: surface critic scores (sampled per-chapter + whole-book) for the FE (U3).
             if _dalang_critic_enabled():
                 if _chapter_scores:
