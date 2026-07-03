@@ -1086,6 +1086,69 @@ def make_narasi_client(model: str = ""):
     return make_client(model)
 
 
+# ── Narasi model-level resilience (independent of the aggregator failover) ────
+# Even on the plain LaoZhang path, some requested model ids return an ERROR BODY as HTTP 200
+# (choices=None) — notably a mislabeled/unavailable id. Every narasi call site then did
+# `resp.choices[0]` unguarded → 500 "'NoneType' object is not subscriptable" (observed with
+# claude-opus-4-6). _narasi_complete tries the requested model, then a small fallback chain of
+# REAL, reliable models, guarding the empty/None case so a bad model degrades gracefully. It is
+# byte-identical to a plain create when the primary model works, and returns (resp, used_model)
+# so billing keys on what actually SERVED. Env-tunable via NARASI_MODEL_FALLBACKS.
+_NARASI_MODEL_FALLBACKS = [m.strip() for m in (
+    os.environ.get("NARASI_MODEL_FALLBACKS") or "claude-opus-4-7,claude-sonnet-4-6,gemini-2.5-flash"
+).split(",") if m.strip()]
+
+
+def _resp_content(resp):
+    """Usable assistant text from a completion, or None if the response has no choices/content
+    (the error-as-200 case). Never raises."""
+    ch = getattr(resp, "choices", None)
+    if not ch:
+        return None
+    try:
+        c = ch[0].message.content
+        return c if (c and c.strip()) else None
+    except Exception:
+        return None
+
+
+def _resp_err_detail(resp) -> str:
+    try:
+        d = resp.model_dump() if hasattr(resp, "model_dump") else {}
+        err = d.get("error") if isinstance(d, dict) else None
+        if isinstance(err, dict):
+            return str(err.get("message") or err)[:160]
+        return (str(err) if err else "no choices/content")[:160]
+    except Exception:
+        return "no choices/content"
+
+
+def _narasi_complete(model: str, messages: list, max_tokens: int):
+    """Resilient SYNCHRONOUS narasi chat completion. Tries `model` then _NARASI_MODEL_FALLBACKS
+    until one returns usable content (guards choices=None / empty). Byte-identical to a plain
+    create when the primary works. Returns (resp, used_model). Raises RuntimeError with the
+    collected per-model detail if EVERY candidate yields nothing. Call inside asyncio.to_thread."""
+    tried: list[str] = []
+    seen: list[str] = []
+    for m in [model] + _NARASI_MODEL_FALLBACKS:
+        if not m or m in seen:
+            continue
+        seen.append(m)
+        rm = MODELS.get(m, m)
+        mt = int(max_tokens) if m == model else min(int(max_tokens), MODEL_MAX_TOKENS.get(rm, DEFAULT_MAX_TOKENS))
+        try:
+            resp = make_narasi_client(m).chat.completions.create(
+                model=rm, messages=messages, max_tokens=mt, stream=False)
+            if _resp_content(resp) is not None:
+                if m != model:
+                    print(f"[narasi] model fallback {model} → {m} (primary returned no content)")
+                return resp, m
+            tried.append(f"{m}:empty({_resp_err_detail(resp)})")
+        except Exception as e:
+            tried.append(f"{m}:{type(e).__name__}:{str(e)[:100]}")
+    raise RuntimeError("narasi LLM returned no content from any model — " + " | ".join(tried))
+
+
 # ── Narration LLM: hard stall timeout + fast fallback ────────────────────────
 # make_client() sets NO timeout, so the OpenAI SDK default (600s) applies. A single
 # upstream hang on the chosen narration model blocks the whole render with zero
@@ -8220,10 +8283,9 @@ async def _narasi_outline_impl(body: dict):
             + vo_brief_note + "\n\n"
             f"Write the brief in {lang_label}. Return ONLY the brief text, no headings, no markdown."
         )
-        resp = client.chat.completions.create(model=model, messages=[{"role": "user", "content": user}],
-                                              max_tokens=1000, stream=False)
-        await _log_narasi_usage(_ou_tenant, _ou_user, model, resp, charge=True)
-        return {"ok": True, "brief": resp.choices[0].message.content.strip()}
+        resp, _um = await asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], 1000)
+        await _log_narasi_usage(_ou_tenant, _ou_user, _um, resp, charge=True)
+        return {"ok": True, "brief": (_resp_content(resp) or "").strip()}
 
     if revise_instruction and current_outline:
         user = (
@@ -8261,10 +8323,9 @@ async def _narasi_outline_impl(body: dict):
         )
 
     max_tok = max(4000, chap_count * 600 + 2000)
-    resp = client.chat.completions.create(model=model, messages=[{"role": "user", "content": user}], max_tokens=max_tok,
-                                          stream=False)
-    await _log_narasi_usage(_ou_tenant, _ou_user, model, resp)
-    raw = resp.choices[0].message.content.strip()
+    resp, _um = await asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], max_tok)
+    await _log_narasi_usage(_ou_tenant, _ou_user, _um, resp)
+    raw = (_resp_content(resp) or "").strip()
     raw = _re.sub(r"^```(?:json)?\s*", "", raw, flags=_re.MULTILINE)
     raw = _re.sub(r"\s*```\s*$", "", raw, flags=_re.MULTILINE).strip()
 
@@ -8646,26 +8707,31 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 # a synchronous call. On timeout the chapter errors and we move on (never hang the
                 # whole job). Only under crash-safe → the write path is byte-identical to v1 when off.
                 try:
-                    resp = await asyncio.wait_for(
-                        asyncio.to_thread(lambda: client.chat.completions.create(
-                            model=resolved_model, messages=_msgs, max_tokens=safe_max, stream=False)),
+                    resp, _used_m = await asyncio.wait_for(
+                        asyncio.to_thread(_narasi_complete, model, _msgs, safe_max),
                         timeout=DALANG_CHAPTER_LLM_TIMEOUT)
                 except asyncio.TimeoutError:
                     errors.append({"id": chap_id, "error": f"chapter LLM timed out (>{int(DALANG_CHAPTER_LLM_TIMEOUT)}s)"})
                     _logging.getLogger("narasi").warning("[narasi] bab %s LLM timeout — skipped", chap_id)
                     continue
+                except Exception as _lex:
+                    errors.append({"id": chap_id, "error": f"chapter LLM failed: {str(_lex)[:200]}"})
+                    _logging.getLogger("narasi").warning("[narasi] bab %s LLM no-content — skipped: %s", chap_id, _lex)
+                    continue
             else:
-                resp = client.chat.completions.create(
-                    model=resolved_model, messages=_msgs,
-                    max_tokens=safe_max, stream=False
-                )
+                try:
+                    resp, _used_m = _narasi_complete(model, _msgs, safe_max)
+                except Exception as _lex:
+                    errors.append({"id": chap_id, "error": f"chapter LLM failed: {str(_lex)[:200]}"})
+                    _logging.getLogger("narasi").warning("[narasi] bab %s LLM no-content — skipped: %s", chap_id, _lex)
+                    continue
             choice = resp.choices[0]
             text = choice.message.content or ""
             text = text.strip()
             finish = getattr(choice, "finish_reason", "unknown")
             import logging as _log
             _log.warning(f"[narasi] bab {chap_id} finish_reason={finish} words={len(text.split())} model={model}")
-            _cr_first = (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp, job_id=_narasi_job_uuid) or 0)
+            _cr_first = (await _log_narasi_usage(_narasi_tenant, _narasi_user, _used_m, resp, job_id=_narasi_job_uuid) or 0)
             # Task 4 + Tingkat 4: live progress. current = chapters done so far (i+1).
             _msg = f"Menulis bab {i+1}/{len(chapters)}: {chap_title}"[:200]
             await rc.set_progress(job_id, _msg)
@@ -8676,16 +8742,21 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # Retry once if response is empty or too short
             if len(text.split()) < 50:
                 _log.warning(f"[narasi] bab {chap_id} EMPTY -- retrying")
-                resp2 = client.chat.completions.create(
-                    model=resolved_model, messages=_msgs,
-                    max_tokens=safe_max, stream=False
-                )
-                text = (resp2.choices[0].message.content or "").strip()
-                finish = getattr(resp2.choices[0], "finish_reason", finish)   # Slice 3: keep the word gate's truncation verdict honest
-                # Bill ONLY the kept retry. The discarded first attempt is still
-                # logged to usage_logs (COGS visibility) but not charged to the tenant.
-                _chap_cr = (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid) or 0)
-                _kept_usage = getattr(resp2, "usage", None)   # Slice 4: moat capture reflects the KEPT attempt
+                try:
+                    resp2, _used_m2 = _narasi_complete(model, _msgs, safe_max)
+                    _rtext = (_resp_content(resp2) or "").strip()
+                except Exception:
+                    resp2, _rtext = None, ""
+                if _rtext:
+                    text = _rtext
+                    finish = getattr(resp2.choices[0], "finish_reason", finish)   # Slice 3: keep the word gate's truncation verdict honest
+                    # Bill ONLY the kept retry. The discarded first attempt is still
+                    # logged to usage_logs (COGS visibility) but not charged to the tenant.
+                    _chap_cr = (await _log_narasi_usage(_narasi_tenant, _narasi_user, _used_m2, resp2, job_id=_narasi_job_uuid) or 0)
+                    _kept_usage = getattr(resp2, "usage", None)   # Slice 4: moat capture reflects the KEPT attempt
+                else:
+                    _chap_cr = _cr_first
+                    _kept_usage = getattr(resp, "usage", None)
             else:
                 _chap_cr = _cr_first
                 _kept_usage = getattr(resp, "usage", None)
