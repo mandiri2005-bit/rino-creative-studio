@@ -598,6 +598,12 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
         elif _ml.startswith("deepseek"):          _provider = "deepseek"
         elif _ml.startswith(("gpt", "o3", "o1")): _provider = "openai"
         else:                                     _provider = "laozhang"
+        # If the narasi aggregator-failover client served this response, record the ACTUAL rung
+        # (kie/laozhang/atlascloud) instead of the model-derived default — so which aggregator
+        # served (and thus the real margin) is queryable from usage_logs.provider.
+        _served_by = getattr(resp, "_narasi_served_by", None)
+        if _served_by:
+            _provider = _served_by
         if charge and cr:
             try:
                 await credits_lib.charge(tenant_id, cr, op_id=str(uuid.uuid4()),
@@ -1069,6 +1075,12 @@ class _NarasiFailoverClient:
                     errors.append(f"{name}:empty({_resp_err_detail(resp)})")
                     print(f"[narasi-failover] {name} returned empty ({model_id}) → next")
                     continue
+                try:
+                    # stamp the serving aggregator so _log_narasi_usage records it in the
+                    # `provider` column (kie/laozhang/atlascloud) → margin/rung is verifiable.
+                    object.__setattr__(resp, "_narasi_served_by", name)
+                except Exception:
+                    pass
                 if name != primary:
                     print(f"[narasi-failover] served by {name} ({model_id})")
                 return resp
