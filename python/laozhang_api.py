@@ -36,23 +36,19 @@ if not _logging.root.handlers:                       # only if nothing set yet
         format="%(asctime)s  %(levelname)s  %(name)s  %(message)s",
         datefmt="%H:%M:%S",
     )
-_logging.getLogger("httpx").setLevel(_logging.DEBUG)        # Qdrant HTTP requests
-_logging.getLogger("httpcore").setLevel(_logging.DEBUG)     # underlying transport
+_logging.getLogger("httpx").setLevel(_logging.WARNING)      # was DEBUG: flooded prod logs + leaked Set-Cookie (__cf_bm/_cfuvid) response headers
+_logging.getLogger("httpcore").setLevel(_logging.WARNING)   # was DEBUG: TCP/TLS/HTTP transport spam
 _logging.getLogger("rag_narration").setLevel(_logging.INFO) # RAG pipeline steps
 
-try:
-    from moat.gutenberg.rag_narration import generate_rag_narration as _rag_generate
-    RAG_AVAILABLE = True
-except ImportError:
-    RAG_AVAILABLE = False
-
-# ── RAG master-roadmap Phase 1: global kill switch (default OFF) ──────────────
-# The eval gate proved standard narration (8.52) currently BEATS RAG (6.52), so
-# RAG ships OFF until the Step 5→6→7 fix makes it win. Folding RAG_ENABLED into
-# RAG_AVAILABLE auto-gates every downstream check (/rag/context, narasi use_rag,
-# generate_rag_narration). Re-enable later with RAG_ENABLED=true (per-env).
-RAG_ENABLED = os.environ.get("RAG_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-RAG_AVAILABLE = RAG_AVAILABLE and RAG_ENABLED
+# ── Dalang v2 Slice 6 (§8): the Gutenberg narration RAG is REMOVED. The module
+# (moat.gutenberg.rag_narration / style_rag_config) was never vendored, and the team's
+# own eval showed it LOSES to plain narration (6.52 vs 8.52). RAG_AVAILABLE is now
+# permanently False (no phantom import); the RAG_ENABLED kill switch is retained per §8
+# but has no live narration path to gate. The retrieval that matters in v2 is self-
+# retrieval (fact ledger + repetition guard). NOTE: the LIVE `nusantara_visual_v1` VISUAL
+# corpus (image/video prompt enhancement) is a DIFFERENT system — untouched.
+RAG_ENABLED   = os.environ.get("RAG_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+RAG_AVAILABLE = False
 
 # document parsing
 import io
@@ -704,12 +700,17 @@ import storage
 import redis_client as rc
 import metering
 import credits as credits_lib
+import dalang_dedup   # Slice 5: repetition guard (n-gram gate + fail-open Qdrant episode index)
 import credit_catalog as catalog
 from auth_middleware import (get_current_user, get_current_user_optional, CurrentUser,
                              _tenant_id as _ctx_tenant_id, _user_id as _ctx_user_id)
 
 @asynccontextmanager
 async def lifespan(application):
+    # Slice 0 (§7): refuse to boot in prod without Clerk configured (auth-bypass guard).
+    # Gated by the same admission flag; no-op until Rino enables DALANG_ADMISSION_ENABLED.
+    if _dalang_admission_enabled():
+        _require_prod_auth()
     await db.init_db()
     await rc.init_redis()
     # Async image-job orphan sweep: reap 'running' jobs left by a process restart (refund their held
@@ -738,9 +739,17 @@ async def lifespan(application):
         _recipe_sweep_task = asyncio.create_task(_recipe_jobs_sweep_loop())
     except Exception as _se:
         _RECIPE_LOG.warning("[recipe_jobs] sweep loop failed to start: %s", _se)
+    # Dalang v2 Slice 2: narasi orphan-hold sweep — registered ONLY when crash-safe
+    # billing is on, so v1 boot is byte-identical until DALANG_CRASHSAFE_ENABLED is set.
+    _narasi_sweep_task = None
+    if _dalang_crashsafe_enabled():
+        try:
+            _narasi_sweep_task = asyncio.create_task(_narasi_jobs_sweep_loop())
+        except Exception as _se:
+            _NARASI_SWEEP_LOG.warning("[narasi_jobs] sweep loop failed to start: %s", _se)
     yield
-    # Cancel every background loop on shutdown (image sweep + image-batch reconcile + video sweep + recipe sweep).
-    for _t in (_img_sweep_task, _img_batch_task, _vid_sweep_task, _recipe_sweep_task):
+    # Cancel every background loop on shutdown (image sweep + image-batch reconcile + video sweep + recipe sweep + narasi sweep).
+    for _t in (_img_sweep_task, _img_batch_task, _vid_sweep_task, _recipe_sweep_task, _narasi_sweep_task):
         if _t:
             _t.cancel()
             try:
@@ -5090,6 +5099,50 @@ async def _recipe_jobs_sweep_loop():
             _RECIPE_LOG.warning("[recipe_jobs] sweep loop error: %s", _e)
 
 
+# ── Dalang v2 Slice 2: narasi orphan-hold sweep (crash-safe billing, H4) ─────────────
+# A restart/SIGTERM kills the in-flight _narasi_generate_impl task after chapters are
+# durably persisted but before the umbrella hold settles → the delivered chapters would
+# be charged 0 ("crash delivers free"). This reaps stale narasi jobs (DB-backed + cross-
+# restart durable, mirrors _image_jobs_sweep_loop) and COMMITS the delivered-cost
+# checkpoint (commit is idempotent on op_id — a no-op if the live task already settled),
+# or refunds when nothing was delivered. Registered in lifespan ONLY under the flag.
+_NARASI_SWEEP_LOG = _logging.getLogger("narasi_jobs")
+async def _sweep_orphaned_narasi_jobs() -> int:
+    stale = await db.sweep_stale_narasi_jobs(int(NARASI_JOB_STALE_SECS))
+    for row in stale:
+        _tid = row.get("tenant_id"); _op = row.get("op_id")
+        _act = int(row.get("meter_actual") or 0); _usr = row.get("user_id")
+        if not _op:
+            continue   # no checkpoint op_id → nothing to settle (defensive)
+        try:
+            if _act > 0:
+                # commit the delivered chapters; commit() collapses actual<=0 to a refund
+                # and is idempotent on op_id (durable ledger uq (tenant_id, op_id)).
+                await credits_lib.commit(_tid, _op, _act, user_id=_usr,
+                                         metadata={"op": "narasi", "swept": True})
+            else:
+                await credits_lib.refund(_tid, _op)
+        except Exception as _e:
+            _NARASI_SWEEP_LOG.warning("[narasi_jobs] sweep settle failed (%s): %s", _op, _e)
+    if stale:
+        _NARASI_SWEEP_LOG.info("[narasi_jobs] sweep: settled %d orphaned job(s)", len(stale))
+    return len(stale)
+
+
+async def _narasi_jobs_sweep_loop():
+    """Immediate pass at startup (reap the last restart's orphans) then every
+    NARASI_JOB_SWEEP_EVERY s. Mirrors _image_jobs_sweep_loop (DB-backed, durable)."""
+    while True:
+        try:
+            await _sweep_orphaned_narasi_jobs()
+        except Exception as _e:
+            _NARASI_SWEEP_LOG.warning("[narasi_jobs] sweep loop error: %s", _e)
+        try:
+            await asyncio.sleep(NARASI_JOB_SWEEP_EVERY)
+        except asyncio.CancelledError:
+            break
+
+
 def _generate_seedream(prompt: str, model: str, ref_b64: str = "") -> str:
     """
     Seedream via /v1/images/generations.
@@ -6138,6 +6191,451 @@ THINKING_MODELS_NARASI = {
     "deepseek-r1",        # ← dan ini
 }
 THINKING_TOKEN_OVERHEAD = 32000  # conservative buffer for thinking tokens
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Project Dalang v2 — Slice 0 (admission/hardening) + Slice 1 (quality/truncation)
+# See ~/docs/dalang-v2-spec.md §7, §11, §13. Everything here is ADDITIVE and
+# flag-gated so v1 behavior stays byte-identical until Rino flips a flag ON.
+#
+#   DALANG_ADMISSION_ENABLED (default OFF) — master switch for the narasi admission
+#       net: input clamp + model whitelist + inflight cap + the prod Clerk boot-check
+#       (§7). OFF ⟹ every narasi request behaves exactly as before. Recommended ON in
+#       prod: it only ever REJECTS out-of-policy (abusive / unpriced) requests; a
+#       legitimate job (≤20 chapters, priced model) is never touched.
+#   DALANG_SLICE1_ENABLED    (default OFF) — the Slice-1 generation-quality changes:
+#       prev_tail head→tail fix (H1) + thinking-model truncation ceiling (H3). OFF ⟹
+#       generated text is byte-identical to v1.
+#
+# The IDOR fix (database.save_approval) and the not-found response on /narasi/rate are
+# UNCONDITIONAL — they are a security bug fix, not a v2 behavior, and never change the
+# result of a legitimate same-tenant rating.
+# ─────────────────────────────────────────────────────────────────────────────
+def _flag_on(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+def _dalang_admission_enabled() -> bool:
+    return _flag_on("DALANG_ADMISSION_ENABLED", "0")
+
+def _dalang_slice1_enabled() -> bool:
+    return _flag_on("DALANG_SLICE1_ENABLED", "0")
+
+def _dalang_crashsafe_enabled() -> bool:
+    # Slice 2 master switch: persist-then-bill reorder (H5) + op_id/meter checkpoint +
+    # the narasi orphan-hold sweep (H4). OFF ⟹ billing order is byte-identical to v1 and
+    # the sweep loop is not registered.
+    return _flag_on("DALANG_CRASHSAFE_ENABLED", "0")
+
+def _dalang_v2_enabled() -> bool:
+    # Slice 3 master switch: Series-State context + deterministic word-enforcement gate +
+    # bounded continuation re-call (H2) + job-level 'partial'. OFF ⟹ the generation loop is
+    # byte-identical to v1.
+    return _flag_on("DALANG_V2_ENABLED", "0")
+
+def _dalang_fact_ledger_enabled() -> bool:
+    # Slice 3 sub-feature (requires v2): per-chapter fact extraction + rolling summary,
+    # injected into the next chapter's context for cross-chapter consistency.
+    return _dalang_v2_enabled() and _flag_on("DALANG_FACT_LEDGER_ENABLED", "0")
+
+def _dalang_critic_enabled() -> bool:
+    # Slice 4 sub-feature (requires v2): fresh-context critic gate + ONE bounded revise,
+    # sampled every K chapters for books longer than the min + a whole-book pass at the end.
+    return _dalang_v2_enabled() and _flag_on("DALANG_CRITIC_ENABLED", "0")
+
+def _dalang_dedup_enabled() -> bool:
+    # Slice 5 sub-feature (requires v2): repetition guard — deterministic n-gram gate over
+    # prior chapters (+ fail-open Qdrant semantic index); a near-duplicate gets ONE rewrite.
+    return _dalang_v2_enabled() and _flag_on("DALANG_EMBED_DEDUP_ENABLED", "0")
+
+# Fan-out / DoS ceilings (§7 H6/H7). Generous — legit narasi jobs run 3–20 chapters of
+# ~400–4500 words. Tunable via env; only enforced when DALANG_ADMISSION_ENABLED is ON.
+DALANG_MAX_CHAPTERS          = int(os.getenv("DALANG_MAX_CHAPTERS", "20"))
+DALANG_MAX_WORDS_PER_CHAPTER = int(os.getenv("DALANG_MAX_WORDS_PER_CHAPTER", "8000"))
+DALANG_MAX_TOTAL_WORDS       = int(os.getenv("DALANG_MAX_TOTAL_WORDS", "120000"))
+DALANG_MAX_INFLIGHT          = int(os.getenv("DALANG_MAX_INFLIGHT", "3"))
+# Slice 2 (crash-safe billing) — narasi orphan-hold sweep cadence. STALE is generous:
+# a 20-chapter job runs minutes; only reap jobs whose row hasn't advanced past this
+# window (updated_at), so a live-but-slow job is never swept out from under itself.
+NARASI_JOB_STALE_SECS  = float(os.getenv("NARASI_JOB_STALE_SECS", "3600"))
+NARASI_JOB_SWEEP_EVERY = float(os.getenv("NARASI_JOB_SWEEP_EVERY", "300"))
+# Slice 3: bounded continuation re-calls per undershooting/truncated chapter (§4.4), and the
+# cheap model for fact-extraction / rolling-summary side-calls (§3.1/§3.2). Both env-tunable.
+DALANG_MAX_CHAPTER_RETRIES = int(os.getenv("DALANG_MAX_CHAPTER_RETRIES", "2"))
+DALANG_CHEAP_MODEL         = os.getenv("DALANG_CHEAP_MODEL", "gemini-2.5-flash-lite").strip()
+# Slice 4: fresh-context critic (D3) — sample every K chapters for books longer than MIN,
+# gate at GATE/10 (below ⟹ one revise), plus a whole-book pass at job end. Env-tunable.
+DALANG_CRITIC_MIN_CHAPTERS = int(os.getenv("DALANG_CRITIC_MIN_CHAPTERS", "5"))
+DALANG_CRITIC_EVERY_K      = int(os.getenv("DALANG_CRITIC_EVERY_K", "3"))
+DALANG_CRITIC_GATE         = float(os.getenv("DALANG_CRITIC_GATE", "8.5"))
+# Slice 5: repetition-guard thresholds — 5-gram Jaccard (deterministic) + Qdrant cosine.
+DALANG_DEDUP_THRESHOLD     = float(os.getenv("DALANG_DEDUP_THRESHOLD", "0.18"))
+DALANG_DEDUP_SEM_THRESHOLD = float(os.getenv("DALANG_DEDUP_SEM_THRESHOLD", "0.86"))
+# Slice 1 (H3): thinking models on the LaoZhang relay spend reasoning tokens from the
+# SAME max_tokens budget; the old min(ceiling, …) collapsed the +32k thinking overhead
+# back to a small MODEL_MAX_TOKENS ceiling (e.g. gemini-2.5-flash=16384) → long chapters
+# truncated. Give thinking narasi models a real, larger output ceiling. Tunable; validate
+# against the relay's real limit before enabling in prod.
+DALANG_THINKING_MAX_TOKENS   = int(os.getenv("DALANG_THINKING_MAX_TOKENS", "32768"))
+
+# narasi background-job admission counter (soft cap; mirrors _recipe_inflight). Only
+# mutated when admission is enabled → byte-identical when the flag is OFF.
+_narasi_inflight = 0
+
+
+def _require_prod_auth() -> None:
+    """Slice 0 boot guard (§7): refuse to boot in production if the Clerk issuer is
+    unset. An empty CLERK_JWT_ISSUER makes auth_middleware.verify_clerk_jwt authenticate
+    ANY bearer token as the fixed dev tenant — a critical auth bypass if it ships live.
+    No-op in dev/staging. Called from lifespan only when admission is enabled."""
+    import auth_middleware as _authm
+    if os.getenv("NODE_ENV", "development") == "production" and not _authm.CLERK_JWT_ISSUER:
+        raise RuntimeError(
+            "CLERK_JWT_ISSUER is unset in production — refusing to boot "
+            "(would authenticate any token as the dev tenant)."
+        )
+
+
+def _narasi_model_ok(model: str) -> bool:
+    """Whitelist (§7): the model must be a known alias in MODELS AND — unless BYOK pays
+    the provider upstream — be priceable, so an off-list / unpriced model can never
+    generate for free (H6 + the MED unpriced-model hole)."""
+    if not model or model not in MODELS:
+        return False
+    if _byok_active():
+        return True  # user pays upstream on their own key → price not required
+    try:
+        return _calc_cost(model, 1000, 1000) > 0   # fail-closed: 0.0 ⟹ unpriced ⟹ reject
+    except Exception:
+        return False
+
+
+def _pint(v, default: int) -> int:
+    """Tolerant int coercion for admission (a malformed numeric never 500s the route)."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _narasi_admit(body: dict, *, kind: str) -> None:
+    """Slice 0 admission gate (§7). Raises HTTPException(400) for an out-of-policy
+    request (over-limit fan-out or off-whitelist/unpriced model). No-op when
+    DALANG_ADMISSION_ENABLED is OFF, so pre-Slice-0 behavior is preserved exactly.
+    Call BEFORE any hold/charge. `kind` is "generate" or "outline"."""
+    if not _dalang_admission_enabled():
+        return
+    model = (body.get("model") or "gemini-2.5-flash").strip()
+    if not _narasi_model_ok(model):
+        raise HTTPException(400, f"model '{model}' is not an allowed/priced narasi model")
+    if kind == "generate":
+        chapters = body.get("chapters") or []
+        if not isinstance(chapters, list):
+            raise HTTPException(400, "chapters must be a list")
+        if len(chapters) > DALANG_MAX_CHAPTERS:
+            raise HTTPException(400, f"too many chapters: {len(chapters)} > {DALANG_MAX_CHAPTERS}")
+        total = 0
+        for c in chapters:
+            if not isinstance(c, dict):
+                raise HTTPException(400, "each chapter must be an object")
+            w = _pint(c.get("words") or 400, 400)
+            if w > DALANG_MAX_WORDS_PER_CHAPTER:
+                raise HTTPException(400, f"chapter words {w} > {DALANG_MAX_WORDS_PER_CHAPTER}")
+            total += max(0, w)
+        if total > DALANG_MAX_TOTAL_WORDS:
+            raise HTTPException(400, f"total words {total} > {DALANG_MAX_TOTAL_WORDS}")
+    elif kind == "outline":
+        chap_count = _pint(body.get("chap_count") or 5, 5)
+        if chap_count > DALANG_MAX_CHAPTERS:
+            raise HTTPException(400, f"too many chapters: {chap_count} > {DALANG_MAX_CHAPTERS}")
+        # outline word_max is the TOTAL word budget for the whole book (the server sums the
+        # chapter words against it), so bound it by the TOTAL ceiling, not the per-chapter one.
+        wmax = _pint(body.get("word_max") or 4500, 4500)
+        if wmax > DALANG_MAX_TOTAL_WORDS:
+            raise HTTPException(400, f"word_max {wmax} > {DALANG_MAX_TOTAL_WORDS}")
+
+
+def _narasi_prev_snippet(text: str, cap: int = 300) -> str:
+    """One prior-chapter snippet for the 'story so far' prev_tail. Slice 1 (H1): when the
+    flag is ON keep the chapter's TAIL (its ending) so the "continue from here" framing
+    matches the content and the assembler's keep="tail" trim is meaningful; when OFF,
+    the legacy HEAD slice (byte-identical to the old inline `words[:300]`)."""
+    words = (text or "").split()
+    if _dalang_slice1_enabled():
+        return ("…" if len(words) > cap else "") + " ".join(words[-cap:])
+    return " ".join(words[:cap]) + ("…" if len(words) > cap else "")
+
+
+def _narasi_safe_max(resolved_model: str, word_max: int) -> int:
+    """Output-token ceiling for one narasi chapter. Flag OFF ⟹ byte-identical to the old
+    inline math. Slice 1 (H3, flag ON): a thinking model gets a real, larger output
+    ceiling (DALANG_THINKING_MAX_TOKENS) so reasoning tokens — which the LaoZhang relay
+    bills from the SAME max_tokens budget — don't starve and truncate the chapter text.
+    Plain-Claude and non-thinking paths are unchanged."""
+    ceiling = MODEL_MAX_TOKENS.get(resolved_model, DEFAULT_MAX_TOKENS)
+    base_tokens = int(word_max * WORDS_TO_TOKENS_NARASI * 1.2) + 1500
+    is_claude_thinking = "thinking" in resolved_model
+    is_claude_plain    = resolved_model.startswith("claude") and not is_claude_thinking
+    thinking_overhead  = THINKING_TOKEN_OVERHEAD if resolved_model in THINKING_MODELS_NARASI else 0
+    if is_claude_plain:
+        # Plain Claude via LaoZhang: relay caps output at 4096
+        return min(4096, max(4000, base_tokens))
+    if _dalang_slice1_enabled() and thinking_overhead:
+        # H3 fix: lift the ceiling for thinking models so base+overhead is not clamped
+        # back to a small MODEL_MAX_TOKENS value (e.g. 16384) that truncates long chapters.
+        ceiling = max(ceiling, DALANG_THINKING_MAX_TOKENS)
+    return min(ceiling, max(8000, base_tokens + thinking_overhead))
+
+
+async def _narasi_generate_impl_guarded(body, job_id, _tenant, _user, _meter_op, _reserved):
+    """Slice 0: run the generation impl and ALWAYS release the inflight slot. The slot is
+    reserved synchronously in the route right before create_task (no await in between →
+    no leak), so this finally is the sole release point (mirrors _run_recipe_job)."""
+    global _narasi_inflight
+    try:
+        await _narasi_generate_impl(body, job_id, _tenant, _user, _meter_op)
+    finally:
+        if _reserved:
+            _narasi_inflight -= 1
+
+
+# ── Slice 3: deterministic gates (§4.3, free — NO LLM), pure + unit-testable ─────────
+def _narasi_word_verdict(text: str, word_min: int, word_max: int, finish_reason: str = "") -> dict:
+    """Per-chapter gate: undershoot (< word_min), overshoot (> word_max), truncation
+    (finish_reason == 'length'). Free — runs every chapter; an LLM re-call fires only on fail."""
+    n = len((text or "").split())
+    return {
+        "words": n,
+        "undershoot": n < int(word_min),
+        "overshoot":  n > int(word_max),
+        "truncated":  str(finish_reason) == "length",
+        "shortfall":  max(0, int(word_min) - n),
+    }
+
+
+def _narasi_job_partial(chapter_targets: list, delivered_words: list) -> dict:
+    """Job-level undershoot post-check (§11 / H2): a job whose delivered total falls below the
+    sum of per-chapter floors (0.9 × target) is 'partial', not silently 'done'. Returns a report."""
+    total  = sum(int(w or 0) for w in delivered_words)
+    target = sum(int(t or 0) for t in chapter_targets)
+    floor  = int(sum(int(t or 0) * 0.9 for t in chapter_targets))
+    short  = [{"index": i, "words": int(w or 0), "target": int(chapter_targets[i] or 0)}
+              for i, w in enumerate(delivered_words)
+              if i < len(chapter_targets) and int(w or 0) < int(chapter_targets[i] or 0) * 0.9]
+    return {
+        "partial": bool(delivered_words) and total < floor,
+        "total_words": total, "target_words": target, "floor_words": floor,
+        "short_chapters": short,
+    }
+
+
+def _narasi_parse_json(text: str):
+    """Fence-strip + json.loads, else pull the first {...}/[...] out of prose. None on fail.
+    Mirrors the outline/graph parsers already in this file."""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = _re.sub(r"^```[a-zA-Z]*\n?", "", t)
+        t = _re.sub(r"\n?```\s*$", "", t).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        for pat in (r"\{[\s\S]+\}", r"\[[\s\S]+\]"):
+            m = _re.search(pat, t)
+            if m:
+                try:
+                    return json.loads(m.group(0))
+                except Exception:
+                    pass
+    return None
+
+
+async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_uuid=None,
+                             max_tokens: int = 800, temperature: float = 0.2,
+                             json_mode: bool = False):
+    """Cheap narasi side-call (fact-extract / rolling-summary). Runs on DALANG_CHEAP_MODEL off
+    the event loop. Logs usage with charge=False and RETURNS (text, cr) so the caller folds cr
+    into the chapter's kept cost (settled via the umbrella hold → stays crash-safe). Never
+    raises → ('', 0) on any error."""
+    model    = DALANG_CHEAP_MODEL
+    resolved = MODELS.get(model, model)
+    safe_max = min(int(max_tokens), MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
+    try:
+        client = make_client(model)
+        def _call(use_fmt):
+            kw = dict(model=resolved,
+                      messages=[{"role": "system", "content": system},
+                                {"role": "user", "content": user}],
+                      temperature=temperature, max_tokens=safe_max, stream=False)
+            if use_fmt:
+                kw["response_format"] = {"type": "json_object"}
+            return client.chat.completions.create(**kw)
+        try:
+            resp = await asyncio.to_thread(lambda: _call(json_mode))
+        except Exception:
+            resp = await asyncio.to_thread(lambda: _call(False))   # relay rejected json_object
+        cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
+        return (resp.choices[0].message.content or "").strip(), int(cr)
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("cheap call failed (non-fatal): %s", _e)
+        return "", 0
+
+
+async def _narasi_continuation(client, model, resolved_model, safe_max, _msgs, text, verdict, *,
+                               tenant_id, user_id, job_uuid, word_min, word_max, on_progress=None):
+    """Bounded continuation re-call (§4.4, fix H2): while the chapter undershoots or was
+    truncated, ask the SAME model to CONTINUE from its current ending (append, don't restart),
+    capped at DALANG_MAX_CHAPTER_RETRIES. Logs every attempt (charge=False via _log_narasi_usage)
+    → returns (new_text, extra_cr) folded into the chapter's kept cost."""
+    extra = 0
+    for _ in range(max(0, DALANG_MAX_CHAPTER_RETRIES)):
+        if not (verdict.get("undershoot") or verdict.get("truncated")):
+            break
+        if on_progress:
+            try:
+                await on_progress()
+            except Exception:
+                pass
+        need = max(int(verdict.get("shortfall") or 0), 150)
+        # The assistant turn already carries the full chapter — no need to re-send a tail.
+        cont_msgs = list(_msgs) + [
+            {"role": "assistant", "content": text},
+            {"role": "user", "content":
+                (f"Lanjutkan narasi ini PERSIS dari kalimat terakhir — JANGAN ulang isi yang sudah "
+                 f"ada, JANGAN tulis penutup/kesimpulan baru. Tambah minimal {need} kata dengan "
+                 f"memperdalam adegan/argumen yang sedang berjalan. Bahasa & gaya identik.")},
+        ]
+        try:
+            resp = await asyncio.to_thread(lambda: client.chat.completions.create(
+                model=resolved_model, messages=cont_msgs, max_tokens=safe_max, stream=False))
+        except Exception:
+            break
+        if not getattr(resp, "choices", None):
+            break
+        choice   = resp.choices[0]
+        addition = (choice.message.content or "").strip()
+        fin      = getattr(choice, "finish_reason", "unknown")
+        _cr      = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
+        if not addition:
+            break   # empty continuation: logged for COGS visibility but NOT billed (nothing kept)
+        extra += _cr
+        text = (text + "\n\n" + addition).strip()
+        verdict = _narasi_word_verdict(text, word_min, word_max, fin)
+    return text, extra
+
+
+_FACT_SYS = ("Kamu ekstraktor fakta untuk menjaga konsistensi narasi. Dari teks bab berikut, keluarkan "
+             "entitas & fakta kanonik (tokoh, tempat, organisasi, tanggal/urutan waktu, klaim penting) "
+             'sebagai JSON: {"facts":[{"entity_key":"nama ringkas","entity_type":'
+             '"character|place|org|date|claim|other","value":{"detail":"..."}}]}. Maksimal 12 fakta '
+             "terpenting. HANYA JSON, tanpa penjelasan.")
+_SUMMARY_SYS = ("Tulis ulang 'cerita sejauh ini' agar bab berikutnya konsisten. Gabungkan ringkasan lama "
+                "(jika ada) dengan bab terbaru menjadi SATU ringkasan padat 80-150 kata, bahasa sama, "
+                "fokus alur/karakter/janji naratif yang belum ditutup. HANYA ringkasannya.")
+
+
+async def _narasi_context_block(tenant_id, series_id, summary="") -> str:
+    """Slice 3 (§3.1/§3.2): 'story so far' (rolling summary, passed in — read once per chapter)
+    + known facts, prepended to prev_tail so a long book stays consistent without re-reading
+    every chapter. '' when empty."""
+    facts = await db.get_series_facts(tenant_id, series_id, limit=40)
+    parts = []
+    if summary:
+        parts.append(f"[CERITA SEJAUH INI]\n{summary}")
+    if facts:
+        lines = []
+        for f in facts[:40]:
+            v = f.get("value")
+            vs = ", ".join(f"{k}={vv}" for k, vv in v.items()) if isinstance(v, dict) else str(v)
+            lines.append((f"- {f.get('entity_key')} ({f.get('entity_type')}): {vs}")[:200])
+        parts.append("[FAKTA KANONIK — jaga konsisten]\n" + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
+async def _narasi_update_series_state(tenant_id, user_id, series_id, job_uuid, chapter_text,
+                                      episode, prev_summary):
+    """Slice 3: extract facts → series_facts + regenerate the rolling summary → series_summary
+    (cheap-model side-calls). Returns extra_cr (folded into chapter cost). Best-effort — continuity
+    is a bonus and never blocks generation."""
+    extra = 0
+    fj, c1 = await _narasi_cheap_call(_FACT_SYS, (chapter_text or "")[:6000],
+                                      tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                                      max_tokens=900, json_mode=True)
+    extra += c1
+    parsed = _narasi_parse_json(fj)
+    facts = (parsed.get("facts") if isinstance(parsed, dict)
+             else parsed if isinstance(parsed, list) else None)
+    if facts:
+        await db.upsert_series_facts(tenant_id, series_id, facts, episode)
+    _u = f"[RINGKASAN LAMA]\n{prev_summary or '(belum ada)'}\n\n[BAB TERBARU]\n{(chapter_text or '')[:6000]}"
+    summ, c2 = await _narasi_cheap_call(_SUMMARY_SYS, _u, tenant_id=tenant_id, user_id=user_id,
+                                        job_uuid=job_uuid, max_tokens=350)
+    extra += c2
+    if summ:
+        await db.upsert_series_summary(tenant_id, series_id, summ, episode)
+    return extra
+
+
+# ── Slice 4: fresh-context critic gate (§4.5, D3) ────────────────────────────────────
+def _narasi_should_critique(i: int, total: int) -> bool:
+    """D3: critique every K chapters, only for books longer than the min (a whole-book pass
+    at job end is handled separately). Pure + unit-testable."""
+    return total > DALANG_CRITIC_MIN_CHAPTERS and ((i + 1) % max(1, DALANG_CRITIC_EVERY_K) == 0)
+
+
+_CRITIC_SYS = ("Kamu editor naratif yang KETAT & objektif (fresh-eyes, BUKAN penulisnya). Nilai bab "
+               "berikut 0-10 untuk koherensi, gaya, dan kesesuaian brief. Keluarkan JSON: "
+               '{"score": <angka 0-10>, "coherence_violations": ["..."], "notes": "1-2 kalimat"}. '
+               "coherence_violations HANYA untuk kontradiksi/plot-hole/inkonsistensi fakta (bukan "
+               "selera). HANYA JSON, tanpa penjelasan.")
+
+
+async def _narasi_critic(text, style, language, *, tenant_id, user_id, job_uuid):
+    """Fresh-context critic → (verdict, cr). verdict = {score: float|None, coherence_violations: list,
+    notes: str}. Cheap-model JSON side-call; never raises → ({...}, 0)."""
+    _u = f"[GAYA] {style} · [BAHASA] {language}\n\n[BAB]\n{(text or '')[:8000]}"
+    raw, cr = await _narasi_cheap_call(_CRITIC_SYS, _u, tenant_id=tenant_id, user_id=user_id,
+                                       job_uuid=job_uuid, max_tokens=500, json_mode=True)
+    v = _narasi_parse_json(raw)
+    if not isinstance(v, dict):   # a bare array/scalar/None must NOT crash .get() → no verdict
+        v = {}
+    try:
+        _s = float(v.get("score")) if v.get("score") is not None else None
+        if _s is not None and (_s != _s or _s < 0 or _s > 10):   # NaN or out of [0,10] → drop
+            _s = None
+        v["score"] = _s
+    except Exception:
+        v["score"] = None
+    if not isinstance(v.get("coherence_violations"), list):
+        v["coherence_violations"] = []
+    return v, cr
+
+
+async def _narasi_revise(client, model, resolved_model, safe_max, _msgs, text, critic, *,
+                         tenant_id, user_id, job_uuid):
+    """ONE revise pass addressing the critic's coherence violations, same length/style. Logs
+    every attempt (charge=False); bills ONLY when the rewrite is kept (≥50 words). Returns
+    (new_text, cr) — original text + 0 if the revise fails/degrades."""
+    viol  = "; ".join(str(x) for x in (critic.get("coherence_violations") or []))[:1500]
+    notes = str(critic.get("notes") or "")[:500]
+    rev_msgs = list(_msgs) + [
+        {"role": "assistant", "content": text},
+        {"role": "user", "content":
+            (f"Revisi bab ini SEKALI untuk memperbaiki masalah koherensi berikut, tanpa mengubah "
+             f"alur/panjang secara signifikan. Pertahankan gaya & bahasa.\n"
+             f"MASALAH: {viol or notes or 'tingkatkan koherensi & kualitas'}\n\n"
+             f"Tulis ulang bab LENGKAP (bukan catatan).")},
+    ]
+    try:
+        resp = await asyncio.to_thread(lambda: client.chat.completions.create(
+            model=resolved_model, messages=rev_msgs, max_tokens=safe_max, stream=False))
+    except Exception:
+        return text, 0
+    if not getattr(resp, "choices", None):   # empty choices (content-filter/moderation) → keep original
+        return text, 0
+    _cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
+    new = (resp.choices[0].message.content or "").strip()
+    if len(new.split()) < 50:      # degenerate revise → keep original; logged for COGS, not billed
+        return text, 0
+    return new, _cr
+
 
 STYLE_RULES = {
     "creative non-fiction": """
@@ -7355,45 +7853,11 @@ def get_generation_preamble(video_mode: bool = False) -> str:
 # ---------------------------------------------------------------------------
 @app.post("/rag/context")
 async def rag_context(body: dict):
-    """
-    Retrieve Gutenberg passages for a topic and return formatted context block.
-    Called by server.js before Google API chapter generation.
-    """
-    if not RAG_AVAILABLE:
-        return {"ok": False, "context_text": "", "sources": [], "passages": 0}
-
-    topic   = (body.get("topic")   or "").strip()
-    style   = (body.get("style")   or "epic").strip()
-    top_k   = int(body.get("top_k") or 5)
-
-    try:
-        from moat.gutenberg.rag_narration import get_narration_context
-        from moat.gutenberg.style_rag_config import get_style_config as _get_cfg
-        rag_style = _rag_style(style)
-        _cfg = _get_cfg(rag_style) if rag_style is not None else {
-            "style_filter": None, "structure_filter": None,
-            "min_quality": 3, "top_k": top_k, "query_instruction": None}
-        ctx = await get_narration_context(
-            topic=topic,
-            style=_cfg.get("style_filter"),
-            structure=_cfg.get("structure_filter"),
-            min_quality=_cfg.get("min_quality", 3),
-            top_k=top_k,
-            query_instruction=_cfg.get("query_instruction"),
-            prefer_source=os.environ.get("RAG_PREFER_SOURCE") or None,
-        )
-        _passages = ctx.get("passages", [])
-        return {
-            "ok":           True,
-            "context_text": ctx.get("context_text", ""),
-            "sources":      ctx.get("sources", []),
-            "passages":     len(_passages),
-            "passage_ids":  [(p.get("passage_id") or p.get("id"))
-                             for p in _passages
-                             if (p.get("passage_id") or p.get("id"))],
-        }
-    except Exception as exc:
-        return {"ok": False, "context_text": "", "sources": [], "passages": 0, "error": str(exc)}
+    """Gutenberg narration RAG REMOVED (Slice 6, §8) — the module was never vendored and
+    lost its own eval to plain narration. Retained as a disabled stub so the server.js
+    Google path keeps working without a 404; always returns empty context. (The live
+    `nusantara_visual_v1` VISUAL corpus is a different system and is untouched.)"""
+    return {"ok": False, "context_text": "", "sources": [], "passages": 0}
 
 
 # ==================================================================
@@ -7503,6 +7967,7 @@ async def narasi_outline(body: dict,
     """Generate or revise a narrative outline with chapter weights."""
     import traceback as _tb
     try:
+        _narasi_admit(body, kind="outline")   # Slice 0 (§7): clamp fan-out + model whitelist
         result = await _narasi_outline_impl(body)
         # Live-capture: outline → R2 + assets (Media Vault → Outline), downloadable
         try:
@@ -7743,6 +8208,12 @@ async def narasi_generate(body: dict):
 @app.post("/narasi/generate")
 async def narasi_generate(body: dict,
                           user: CurrentUser = Depends(get_current_user)):
+    global _narasi_inflight
+    # Slice 0 (§7): admission BEFORE any auth-DB call or credit hold — clamp fan-out +
+    # whitelist model (→400), then reject when the narasi service is saturated (→429).
+    _narasi_admit(body, kind="generate")
+    if _dalang_admission_enabled() and _narasi_inflight >= DALANG_MAX_INFLIGHT:
+        raise HTTPException(429, "narasi service busy — try again in a moment")
     # Resolve tenant/user from auth (reliable) and pass into the background task.
     _tenant = user.tenant_id
     _user   = await _resolve_user_uuid(user.tenant_id, user.user_id)
@@ -7773,13 +8244,22 @@ async def narasi_generate(body: dict,
 
     # Create the jobs-table row up front so polling can see it immediately.
     try:
-        await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters))
+        # Slice 2 (H4): stamp the billing op_id on the row (input_payload._meter) when
+        # crash-safe billing is on, so an orphan sweep can settle the hold after a crash.
+        await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters),
+                                   op_id=(_meter_op if _dalang_crashsafe_enabled() else None))
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("create_narasi_job failed (non-fatal): %s", _e)
     await rc.set_progress(job_id, "Memulai narasi...")
 
+    # Slice 0 (§7): reserve the inflight slot synchronously (no await before create_task
+    # ⟹ no leak); _narasi_generate_impl_guarded's finally is the sole release point.
+    _reserved = False
+    if _dalang_admission_enabled():
+        _narasi_inflight += 1
+        _reserved = True
     # Spawn the actual generation on the main loop; return the id immediately.
-    asyncio.create_task(_narasi_generate_impl(body, job_id, _tenant, _user, _meter_op))
+    asyncio.create_task(_narasi_generate_impl_guarded(body, job_id, _tenant, _user, _meter_op, _reserved))
     return {"ok": True, "job_id": job_id, "status": "started"}
 
 
@@ -7864,6 +8344,18 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
         _narasi_job_uuid = _jrow.get("id") if _jrow else None
     except Exception:
         _narasi_job_uuid = None
+    # ── Slice 3 (Series State): series.id == the narasi jobs.id; create the row (kind='book')
+    # so the fact ledger / rolling summary — and later Persona/Showrunner — can attach. ──
+    _narasi_series_id = _narasi_job_uuid
+    _chapter_targets, _delivered_words = [], []   # job-level 'partial' post-check (§11)
+    _chapter_scores = []                           # Slice 4: sampled per-chapter critic scores
+    if _dalang_v2_enabled() and _narasi_series_id:
+        try:
+            await db.create_series(_narasi_tenant, _narasi_series_id, "book",
+                                   {"topic": topic, "style": style, "language": language,
+                                    "outline": (outline or "")[:2000]}, user_id=_narasi_user)
+        except Exception:
+            pass
     for i, chapter in enumerate(chapters):
         # Check cancel before each chapter (local auto-cancel OR Redis flag)
         if cancel_ev.is_set() or await rc.is_cancelled(f"narasi_{job_id}"):
@@ -7888,55 +8380,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # build them inline here. get_style_rules()/get_generation_preamble()
             # remain as pakem-backed shims for any other caller.
 
-            # RAG: retrieve Gutenberg passages for this chapter's topic
+            # Slice 6 (§8): Gutenberg narration RAG REMOVED — self-retrieval (fact ledger +
+            # repetition guard) replaces it. rag_context_text stays empty; the assembler's
+            # rag_passages arg is simply unused for narration. (The visual corpus
+            # nusantara_visual_v1 is a separate system and is untouched.)
             rag_context_text = ""
-            import logging as _log_rag
-            _rag_log = _log_rag.getLogger("rag_narration")
-            if use_rag:
-                from moat.gutenberg.rag_narration import get_narration_context, build_rag_prompt
-                rag_style = _rag_style(style)
-                try:
-                    from moat.gutenberg.style_rag_config import get_style_config as _get_style_cfg
-                    if rag_style is not None:
-                        _cfg = _get_style_cfg(rag_style)
-                    else:
-                        # Broad genre (narrative non-fiction etc.) — no style filter
-                        _cfg = {"style_filter": None, "structure_filter": None,
-                                "min_quality": 3, "top_k": 5, "query_instruction": None}
-                except (ImportError, KeyError):
-                    _cfg = {"style_filter": rag_style, "structure_filter": None,
-                            "min_quality": 3, "top_k": 5, "query_instruction": None}
-
-                # Use chapter-specific query, not global topic for every chapter
-                rag_query = f"{chap_title}: {chap_desc}" if chap_desc else chap_title
-
-                _rag_ctx = await get_narration_context(
-                    topic=rag_query,
-                    style=_cfg["style_filter"],
-                    structure=_cfg["structure_filter"],
-                    min_quality=_cfg["min_quality"],
-                    top_k=_cfg["top_k"],
-                    query_instruction=_cfg.get("query_instruction"),
-                    prefer_source=os.environ.get("RAG_PREFER_SOURCE") or None,
-                )
-                rag_context_text = _rag_ctx.get("context_text", "")
-                _n_passages = len(_rag_ctx.get("passages", []))
-                if rag_context_text:
-                    _rag_log.info(
-                        "generate_rag_narration: bab=%s topic=%r style=%s passages=%d",
-                        chap_id, rag_query[:40], rag_style, _n_passages,
-                    )
-                else:
-                    _rag_log.warning(
-                        "[RAG] skipped: bab=%s passages=0 style_filter=%r topic=%r — "
-                        "Qdrant returned empty (filter too strict or embedding mismatch)",
-                        chap_id, rag_style, rag_query[:40],
-                    )
-            else:
-                _rag_log.info(
-                    "[RAG] skipped: bab=%s use_rag=False rag_available=%s",
-                    chap_id, RAG_AVAILABLE,
-                )
 
             # Build "story so far" tail to prevent cross-chapter repetition.
             # Pass the recent chapters straight to the assembler as prev_tail;
@@ -7947,11 +8395,19 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 recent = previous_chapters[-2:]
                 prev_lines = []
                 for pc in recent:
-                    # Truncate each to ~300 words to save tokens
-                    words = pc["text"].split()
-                    snippet = " ".join(words[:300]) + ("…" if len(words) > 300 else "")
+                    # Truncate each to ~300 words. Slice 1 (H1): keep the chapter TAIL
+                    # (its ending) when the flag is on, not the head (_narasi_prev_snippet).
+                    snippet = _narasi_prev_snippet(pc["text"], 300)
                     prev_lines.append(f"[Bab {pc['id']}: {pc['title']}]\n{snippet}")
                 prev_tail = "\n\n".join(prev_lines)
+            # ── Slice 3 (§3.1/§3.2): prepend the rolling summary + fact ledger so the model
+            # stays consistent across a long book without re-reading every chapter. ──
+            _series_summary = ""
+            if _dalang_fact_ledger_enabled() and _narasi_series_id:
+                _series_summary = await db.get_series_summary(_narasi_tenant, _narasi_series_id)
+                _ctx_block = await _narasi_context_block(_narasi_tenant, _narasi_series_id, _series_summary)
+                if _ctx_block:
+                    prev_tail = (_ctx_block + "\n\n" + prev_tail) if prev_tail else _ctx_block
 
             # ── Project Dalang (WS-7): assemble the prompt via the pakem assembler,
             # the ONE source of truth. compose() returns a cache-stable system
@@ -7988,24 +8444,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             user = _composed.static_prefix + "\n\n" + _composed.dynamic_block
             # Resolve model alias so MODEL_MAX_TOKENS lookup works correctly
             resolved_model = MODELS.get(model, model)
-            ceiling = MODEL_MAX_TOKENS.get(resolved_model, DEFAULT_MAX_TOKENS)
-
-            base_tokens = int(word_max * WORDS_TO_TOKENS_NARASI * 1.2) + 1500
-
-            # Gemini 2.5 Pro/Flash via LaoZhang's OpenAI-compatible relay counts
-            # thinking tokens against max_tokens (unlike the Google SDK which keeps
-            # them in a separate budget).  Without extra headroom the model exhausts
-            # the budget on thinking and truncates the actual chapter text.
-            # Claude *non-thinking* variants have a hard relay ceiling of ~4096.
-            is_claude_thinking = "thinking" in resolved_model
-            is_claude_plain    = resolved_model.startswith("claude") and not is_claude_thinking
-            thinking_overhead  = THINKING_TOKEN_OVERHEAD if resolved_model in THINKING_MODELS_NARASI else 0
-
-            if is_claude_plain:
-                # Plain Claude via LaoZhang: relay caps output at 4096
-                safe_max = min(4096, max(4000, base_tokens))
-            else:
-                safe_max = min(ceiling, max(8000, base_tokens + thinking_overhead))
+            # Slice 1 (H3): output-token ceiling that reasoning tokens can't starve on the
+            # LaoZhang relay. Flag OFF ⟹ byte-identical to the prior inline clamp; flag ON ⟹
+            # thinking models get a real, larger ceiling instead of being clamped to a small
+            # MODEL_MAX_TOKENS value that truncates long chapters. See _narasi_safe_max.
+            safe_max = _narasi_safe_max(resolved_model, word_max)
 
             resp = client.chat.completions.create(
                 model=resolved_model, messages=_msgs,
@@ -8033,11 +8476,94 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     max_tokens=safe_max, stream=False
                 )
                 text = (resp2.choices[0].message.content or "").strip()
+                finish = getattr(resp2.choices[0], "finish_reason", finish)   # Slice 3: keep the word gate's truncation verdict honest
                 # Bill ONLY the kept retry. The discarded first attempt is still
                 # logged to usage_logs (COGS visibility) but not charged to the tenant.
-                _meter_actual += (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid) or 0)
+                _chap_cr = (await _log_narasi_usage(_narasi_tenant, _narasi_user, model, resp2, job_id=_narasi_job_uuid) or 0)
+                _kept_usage = getattr(resp2, "usage", None)   # Slice 4: moat capture reflects the KEPT attempt
             else:
-                _meter_actual += _cr_first
+                _chap_cr = _cr_first
+                _kept_usage = getattr(resp, "usage", None)
+            # ── Slice 3 (§4.3/§4.4, fix H2): deterministic word gate → bounded continuation
+            # re-call on the FINAL text (undershoot/truncation are APPENDED, not restarted);
+            # the extra cost is folded into _chap_cr BEFORE the Slice-2 metering fork. ──
+            if _dalang_v2_enabled():
+                await rc.set_progress(job_id, f"Memeriksa bab {i+1}/{len(chapters)}…"[:200])
+                _verdict = _narasi_word_verdict(text, word_min, word_max, finish)
+                if _verdict["undershoot"] or _verdict["truncated"]:
+                    async def _cont_prog(_v=_verdict, _i=i):
+                        await rc.set_progress(job_id,
+                            f"Memperpanjang bab {_i+1}/{len(chapters)} ({_v['words']}/{word_min} kata)…"[:200])
+                    text, _extra_cr = await _narasi_continuation(
+                        client, model, resolved_model, safe_max, _msgs, text, _verdict,
+                        tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid,
+                        word_min=word_min, word_max=word_max, on_progress=_cont_prog)
+                    _chap_cr += _extra_cr
+                # ── Slice 5 (§3.3/§4.3): repetition guard — deterministic 5-gram gate over
+                # prior chapters (+ fail-open Qdrant semantic). A near-duplicate gets ONE
+                # rewrite that must bring a fresh angle. Runs before the quality critic. ──
+                _dedup_vec = None
+                if _dalang_dedup_enabled() and previous_chapters:
+                    _prior = [pc.get("text", "") for pc in previous_chapters]
+                    _rep = dalang_dedup.find_repetition(text, _prior, DALANG_DEDUP_THRESHOLD)
+                    if (not _rep.get("duplicate") and _narasi_series_id
+                            and dalang_dedup.qdrant_ready()):
+                        # embed ONCE (SEMANTIC_SIMILARITY) — reused below for the index upsert
+                        _dedup_vec = await asyncio.to_thread(dalang_dedup.embed, text)
+                        if _dedup_vec:
+                            _sem = await asyncio.to_thread(
+                                dalang_dedup.search_vec, _dedup_vec, _narasi_series_id,
+                                _narasi_tenant, i, DALANG_DEDUP_SEM_THRESHOLD)
+                            if _sem and _sem.get("duplicate"):
+                                _rep = _sem
+                    if _rep.get("duplicate"):
+                        _of = _rep.get("of_index", -1)
+                        await rc.set_progress(job_id, f"Menulis ulang bab {i+1} (mirip bab lain)…"[:200])
+                        text, _dc = await _narasi_revise(
+                            client, model, resolved_model, safe_max, _msgs, text,
+                            {"coherence_violations": [
+                                f"terlalu mirip/mengulang bab {(_of + 1) if _of >= 0 else '?'}"],
+                             "notes": "hindari pengulangan; bawa sudut / informasi baru"},
+                            tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid)
+                        _chap_cr += _dc
+                        _dedup_vec = None   # text changed by the rewrite → precomputed vector is stale
+                # ── Slice 4 (§4.5, D3): fresh-context critic every K chapters (books > MIN);
+                # a sub-gate score OR a coherence violation triggers ONE bounded revise, all on
+                # the FINAL text (before fact extraction, so the ledger reflects the kept version). ──
+                if _dalang_critic_enabled() and _narasi_should_critique(i, len(chapters)):
+                    await rc.set_progress(job_id, f"Menilai bab {i+1}/{len(chapters)}…"[:200])
+                    _critic, _cvc = await _narasi_critic(
+                        text, style, language, tenant_id=_narasi_tenant,
+                        user_id=_narasi_user, job_uuid=_narasi_job_uuid)
+                    _chap_cr += _cvc
+                    _cscore = _critic.get("score")
+                    _cviol  = _critic.get("coherence_violations") or []
+                    _revised = False
+                    if (_cscore is not None and _cscore < DALANG_CRITIC_GATE) or _cviol:
+                        await rc.set_progress(job_id, f"Merevisi bab {i+1}/{len(chapters)}…"[:200])
+                        text, _rvc = await _narasi_revise(
+                            client, model, resolved_model, safe_max, _msgs, text, _critic,
+                            tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid)
+                        _chap_cr += _rvc
+                        _revised = True
+                    # score is the PRE-revise verdict; `revised` marks that the shipped text was rewritten.
+                    _chapter_scores.append({"index": i, "score": _cscore,
+                                            "violations": len(_cviol), "revised": _revised})
+                # Series State (§3.1/§3.2): facts + rolling summary from the FINAL chapter text.
+                # Reuse the summary already read for context injection (unchanged until we write it).
+                if _dalang_fact_ledger_enabled() and _narasi_series_id:
+                    _chap_cr += await _narasi_update_series_state(
+                        _narasi_tenant, _narasi_user, _narasi_series_id, _narasi_job_uuid,
+                        text, i + 1, _series_summary)
+                # Slice 5: index the FINAL chapter into the episode embedding index (event-driven,
+                # fail-open, off-loop) — powers cross-episode dedup (Showrunner) + semantic search.
+                if _dalang_dedup_enabled() and _narasi_series_id:
+                    await asyncio.to_thread(dalang_dedup.index_chapter, text,
+                                            _narasi_series_id, _narasi_tenant, i, _dedup_vec)
+            # Slice 2 (H5): crash-safe OFF ⟹ legacy order — bill BEFORE persist (byte-identical).
+            # Crash-safe ON ⟹ the increment is DEFERRED to after the durable chapter write below.
+            if not _dalang_crashsafe_enabled():
+                _meter_actual += _chap_cr
             _chap_txt = f"## Bab {chap_id}: {chap_title}\n\n{text}\n"
             (tmp_dir / f"{chap_id}.txt").write_text(_chap_txt, encoding="utf-8")
             # ── Step 2: persist chapter text to R2 + assets row (capture) ──
@@ -8050,6 +8576,8 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 project_id=body.get("project_id"))
             # Accumulate for inter-chapter context
             previous_chapters.append({"id": chap_id, "title": chap_title, "text": text})
+            _chapter_targets.append(word_target)                 # Slice 3: job-level partial post-check
+            _delivered_words.append(len(text.split()))
 
             # ── Step 1.2: persist chapter to narasi_chapters (DB = source of truth) ──
             try:
@@ -8060,10 +8588,23 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                         for p in (_rag_ctx.get("passages") or [])
                         if (p.get("passage_id") or p.get("id"))
                     ]
-                await db.save_narasi_chapter(
-                    _narasi_tenant, _narasi_job_uuid, i, text,
-                    len(text.split()), user, _retrieved_ids,
-                    version=1, approved=False)
+                if _dalang_crashsafe_enabled():
+                    # ── Slice 2 (H4/H5): persist the chapter AND bump the delivered-cost
+                    # checkpoint ATOMICALLY (one txn, scoped to this run's jobs.id) so a
+                    # crash can't land between them, then count it in-memory only after the
+                    # durable write succeeds (never 'charged but invisible', never free-on-
+                    # crash beyond the current chapter). ──
+                    _new_meter = _meter_actual + _chap_cr
+                    await db.save_narasi_chapter(
+                        _narasi_tenant, _narasi_job_uuid, i, text,
+                        len(text.split()), user, _retrieved_ids,
+                        version=1, approved=False, meter_checkpoint=_new_meter)
+                    _meter_actual = _new_meter
+                else:
+                    await db.save_narasi_chapter(
+                        _narasi_tenant, _narasi_job_uuid, i, text,
+                        len(text.split()), user, _retrieved_ids,
+                        version=1, approved=False)
             except Exception as _e:
                 _log.warning("save_narasi_chapter failed (non-fatal): %s", _e)
 
@@ -8076,11 +8617,16 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     "prompt_used": user,
                     "narration": text,
                 }
+                # Slice 4: fill the moat capture's monetizable fields for real (were 0,0,0 →
+                # lossy training/eval asset). Uses the main write's usage; continuation/critic
+                # add marginal tokens but the chapter write dominates.
+                _mt_ti = int(getattr(_kept_usage, "prompt_tokens", 0) or 0)
+                _mt_to = int(getattr(_kept_usage, "completion_tokens", 0) or 0)
                 _moat_sid = await db.save_moat_session(
                     _narasi_tenant or None,
                     _narasi_user or None,
                     topic, style, _rag_result,
-                    model, 0, 0, 0)
+                    model, _mt_ti, _mt_to, _calc_cost(model, _mt_ti, _mt_to))
                 # Stash for the review/save step to attach a correction pair
                 (tmp_dir / f"{chap_id}.moat").write_text(str(_moat_sid), encoding="utf-8")
             except Exception as _e:
@@ -8102,6 +8648,22 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     # Clean up cross-container cancel flag.
     await rc.clear_cancel(f"narasi_{job_id}")
     cancelled = cancel_ev.is_set()
+
+    # ── Slice 4 (§4.5, D3): whole-book critic pass at job end (books > MIN). Runs BEFORE the
+    # settle so its cost folds into _meter_actual; a score only (no revise). Best-effort. ──
+    _book_score = None
+    if (_dalang_critic_enabled() and not cancelled
+            and len(chapters) > DALANG_CRITIC_MIN_CHAPTERS and previous_chapters):
+        _book_text = "\n\n".join(pc.get("text", "") for pc in previous_chapters)[:12000]
+        _bk, _bkc = await _narasi_critic(_book_text, style, language,
+                                         tenant_id=_narasi_tenant, user_id=_narasi_user,
+                                         job_uuid=_narasi_job_uuid)
+        _meter_actual += _bkc
+        _book_score = _bk.get("score")
+        # Durably checkpoint the book-critic cost too, so an orphan sweep settles it after a
+        # crash between here and the commit below (per-run, scoped to jobs.id). Crash-safe only.
+        if _dalang_crashsafe_enabled() and _bkc and _narasi_job_uuid:
+            await db.checkpoint_narasi_meter(_narasi_tenant, _narasi_job_uuid, _meter_actual)
 
     # ── Step 4 metering: settle the hold to the ACTUAL credits consumed. A
     # cancelled / partial run commits only what was produced (refunding the rest);
@@ -8130,14 +8692,30 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 f"## Bab {pc['id']}: {pc['title']}\n\n{pc['text']}"
                 for pc in previous_chapters
             )
-            await db.finish_narasi_job(_narasi_tenant, job_id, "done", result={
+            _result = {
                 "chapters": len(chapters),
                 "errors": errors,
                 "auto_cancelled": auto_cancelled,
                 "bab1_words": bab1_words,
                 "tmp_dir": str(tmp_dir),
                 "markdown": _stitched_md,          # DB = source of truth for combined output
-            })
+            }
+            # ── Slice 3 (§11, fix H2): job-level undershoot post-check. A job whose delivered
+            # total falls below the sum of per-chapter floors stays status='done' (job_status_enum
+            # has no 'partial') but carries partial=True + a report the FE (U2) reads. Added ONLY
+            # under v2, so the stored payload is byte-identical to v1 when the flag is off. ──
+            if _dalang_v2_enabled():
+                _partial = _narasi_job_partial(_chapter_targets, _delivered_words)
+                _result["partial"] = bool(_partial.get("partial"))
+                if _partial.get("partial"):
+                    _result["undershoot_report"] = _partial
+            # Slice 4: surface critic scores (sampled per-chapter + whole-book) for the FE (U3).
+            if _dalang_critic_enabled():
+                if _chapter_scores:
+                    _result["chapter_scores"] = _chapter_scores
+                if _book_score is not None:
+                    _result["book_score"] = _book_score
+            await db.finish_narasi_job(_narasi_tenant, job_id, "done", result=_result)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)
     await rc.delete_progress(job_id)
@@ -8262,6 +8840,8 @@ async def narasi_rate(body: dict, user: CurrentUser = Depends(get_current_user))
     _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
     try:
         aid = await db.save_approval(user.tenant_id, _user, chapter_id, rating)
+        if not aid:   # chapter not owned by this tenant (or unknown) → nothing written
+            return {"ok": False, "error": "chapter not found"}
         return {"ok": True, "approval_id": aid, "approved": rating >= 4}
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("rate failed (non-fatal): %s", _e)
@@ -8456,6 +9036,8 @@ async def narasi_stitch(job_id: str, body: dict,
     lang_label = _resolve_narasi_lang(language)
 
     body_text = ""
+    _partial = False          # Slice 3 (U2): surface the job-level undershoot verdict to the FE
+    _report = None
     # ── 1. DB = source of truth: stored stitched markdown, else narasi_chapters ──
     try:
         _row = await db.get_job_by_external(_tenant, job_id)
@@ -8464,6 +9046,8 @@ async def narasi_stitch(job_id: str, body: dict,
             if isinstance(_payload, str):
                 try: _payload = json.loads(_payload)
                 except Exception: _payload = {}
+            _partial = bool((_payload or {}).get("partial"))
+            _report  = (_payload or {}).get("undershoot_report")
             _stored_md = ((_payload or {}).get("markdown") or "")
             if _stored_md.strip():
                 body_text = _stored_md
@@ -8491,7 +9075,8 @@ async def narasi_stitch(job_id: str, body: dict,
     total_words = len(body_text.split())
     markdown = (f"> **Gaya:** {style} | **Bahasa:** {lang_label} | **{total_words} kata**\n\n---\n\n"
                 + body_text)
-    return {"ok": True, "markdown": markdown, "total_words": total_words}
+    return {"ok": True, "markdown": markdown, "total_words": total_words,
+            "partial": _partial, "undershoot_report": _report}
 
 
 

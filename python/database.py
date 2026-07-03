@@ -654,21 +654,60 @@ async def get_job(tenant_id, job_id) -> Optional[dict]:
     except Exception as e:
         log.error("get_job: %s", e); raise
 
-async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapters=0) -> str:
+async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapters=0, op_id=None) -> str:
     """Create a jobs row for a narasi run. The narasi 8-char id goes in
-    external_job_id (cancel/stitch keep using it); the row's UUID is the PK."""
+    external_job_id (cancel/stitch keep using it); the row's UUID is the PK.
+
+    Dalang v2 Slice 2 (crash-safe billing): when op_id is given, stash the billing
+    checkpoint {op_id, actual:0} in the (otherwise-unused) input_payload._meter, so an
+    orphan sweep (narasi_jobs_sweep_stale / 0054) can settle the hold after a crash.
+    When None (crash-safety off / BYOK / no hold) input_payload stays NULL —
+    byte-identical to pre-Slice-2. Pass the dict raw: the pool's jsonb codec encodes it."""
     try:
+        _meter = {"_meter": {"op_id": op_id, "actual": 0}} if op_id else None
         jid = await _q_fetchval(
             """INSERT INTO jobs
                    (tenant_id,user_id,job_type,status,progress_message,
-                    progress_current,progress_total,external_job_id,output_prefix,started_at)
+                    progress_current,progress_total,external_job_id,output_prefix,started_at,input_payload)
                VALUES ($1,$2,'narasi'::job_type_enum,'processing','Memulai narasi...',
-                       0,$3,$4,$5,now()) RETURNING id""",
+                       0,$3,$4,$5,now(),$6) RETURNING id""",
             _uid(tenant_id), _uid(user_id), int(total_chapters or 0),
-            external_id, (topic or "")[:200])
+            external_id, (topic or "")[:200], _meter)
         return str(jid)
     except Exception as e:
         log.error("create_narasi_job: %s", e); raise
+
+
+async def checkpoint_narasi_meter(tenant_id, job_id, meter_actual) -> None:
+    """Dalang v2: durably bump this run's input_payload._meter.actual, scoped to jobs.id
+    (per-run, never the shared external id). Used for POST-LOOP cost (the whole-book critic)
+    that the per-chapter save_narasi_chapter checkpoint can't capture. No-op when the row
+    lacks _meter (crash-safety off). Best-effort / non-fatal."""
+    try:
+        await _q_exec(
+            """UPDATE jobs SET input_payload = jsonb_set(input_payload, '{_meter,actual}',
+                                                        to_jsonb($2::int), false)
+                WHERE id=$1 AND tenant_id=$3 AND input_payload ? '_meter'""",
+            _uid(job_id), int(meter_actual), _uid(tenant_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.warning("checkpoint_narasi_meter (non-fatal): %s", e)
+
+
+async def sweep_stale_narasi_jobs(older_than_secs: int) -> list:
+    """Cross-tenant orphan sweep (Dalang v2 Slice 2): mark stale 'processing'/'running'
+    narasi jobs 'error' and return [{tenant_id, op_id, meter_actual, user_id}] so the app
+    settles each orphaned hold — commit the delivered checkpoint (attributed to user_id),
+    else refund. Routes through the SECURITY DEFINER fn (the UPDATE spans tenants →
+    impossible under app_user RLS). Only jobs carrying a checkpoint are swept; each is
+    returned at most once (only still-stale rows match), so settlements never double-fire."""
+    try:
+        rows = await _q_fetch(
+            "SELECT tenant_id, op_id, meter_actual, user_id "
+            "FROM narasi_jobs_sweep_stale(make_interval(secs => $1::int))",
+            int(older_than_secs), tenant="")
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.error("sweep_stale_narasi_jobs: %s", e); return []
 
 async def update_narasi_progress(tenant_id, external_id, current, total, message) -> None:
     """Update progress_current/total + message for a narasi job (by external id)."""
@@ -708,32 +747,49 @@ async def finish_narasi_job(tenant_id, external_id, status, result=None, error=N
 
 async def save_narasi_chapter(tenant_id, job_id, chapter_index, content,
                               word_count, source_prompt, retrieved_ids,
-                              version=1, approved=False):
+                              version=1, approved=False, *, meter_checkpoint=None):
     """Upsert one chapter into narasi_chapters (durable read-back + capture).
     job_id is the jobs.id UUID (NOT the external 8-char id). Idempotent on
     (job_id, chapter_index): a retry of the same chapter overwrites in place and
     bumps version. retrieved_ids is a list of Qdrant passage_id strings → stored
-    as a real jsonb array (pass the list, let the codec encode once)."""
+    as a real jsonb array (pass the list, let the codec encode once).
+
+    Dalang v2 Slice 2 (crash-safe billing): when meter_checkpoint is given, ATOMICALLY
+    bump this run's jobs.input_payload._meter.actual to it in the SAME transaction as the
+    chapter upsert — so a crash can't land between the chapter persist and the cost
+    checkpoint (H4), and the checkpoint is scoped to THIS run's jobs.id (never the shared
+    external_job_id → a client reusing pre_job_id can't cross-corrupt another run's
+    checkpoint). No-op checkpoint when the row lacks _meter (crash-safety off)."""
     try:
-        cid = await _q_fetchval(
-            """INSERT INTO narasi_chapters
-                   (tenant_id, job_id, chapter_index, content, word_count,
-                    version, source_prompt, retrieved_ids, approved)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-               ON CONFLICT (job_id, chapter_index) DO UPDATE SET
-                   content       = EXCLUDED.content,
-                   word_count    = EXCLUDED.word_count,
-                   version       = narasi_chapters.version + 1,
-                   source_prompt = EXCLUDED.source_prompt,
-                   retrieved_ids = EXCLUDED.retrieved_ids,
-                   approved      = EXCLUDED.approved,
-                   updated_at    = now()
-               RETURNING id""",
-            _uid(tenant_id), _uid(job_id), int(chapter_index),
-            content or "", int(word_count or 0), int(version or 1),
-            source_prompt or "", list(retrieved_ids or []), bool(approved),
-            tenant=str(tenant_id))           # bg task has no request ctx → set tenant
-        return str(cid)
+        async with _db().acquire() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('app.current_tenant_id', $1, true)",
+                               str(tenant_id))   # bg task has no request ctx → set tenant
+            cid = await conn.fetchval(
+                """INSERT INTO narasi_chapters
+                       (tenant_id, job_id, chapter_index, content, word_count,
+                        version, source_prompt, retrieved_ids, approved)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                   ON CONFLICT (job_id, chapter_index) DO UPDATE SET
+                       content       = EXCLUDED.content,
+                       word_count    = EXCLUDED.word_count,
+                       version       = narasi_chapters.version + 1,
+                       source_prompt = EXCLUDED.source_prompt,
+                       retrieved_ids = EXCLUDED.retrieved_ids,
+                       approved      = EXCLUDED.approved,
+                       updated_at    = now()
+                   RETURNING id""",
+                _uid(tenant_id), _uid(job_id), int(chapter_index),
+                content or "", int(word_count or 0), int(version or 1),
+                source_prompt or "", list(retrieved_ids or []), bool(approved))
+            if meter_checkpoint is not None:
+                # Same txn, scoped to this run's jobs.id (UUID) — atomic + per-run.
+                await conn.execute(
+                    """UPDATE jobs
+                          SET input_payload = jsonb_set(input_payload, '{_meter,actual}',
+                                                        to_jsonb($2::int), false)
+                        WHERE id=$1 AND tenant_id=$3 AND input_payload ? '_meter'""",
+                    _uid(job_id), int(meter_checkpoint), _uid(tenant_id))
+            return str(cid)
     except Exception as e:
         log.error("save_narasi_chapter: %s", e); raise
 
@@ -769,6 +825,99 @@ async def list_narasi_jobs(tenant_id, limit=15) -> list:
     except Exception as e:
         log.error("list_narasi_jobs: %s", e); raise
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SERIES STATE — Dalang v2 Slice 3 (fact ledger + rolling summary; see 0055).
+# For Dalang a series.id == the narasi jobs.id (a book). All best-effort: the v2
+# loop degrades gracefully (no continuity) if any of these fail.
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def create_series(tenant_id, series_id, kind, spec, user_id=None) -> None:
+    """Create the series row (idempotent on id). kind ∈ book|channel; spec is a
+    free-form dict (topic/style/language/…). Pass spec raw — the jsonb codec encodes."""
+    try:
+        await _q_exec(
+            """INSERT INTO series (id, tenant_id, user_id, kind, spec)
+               VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING""",
+            _uid(series_id), _uid(tenant_id), _uid(user_id) if user_id else None,
+            str(kind), spec or {}, tenant=str(tenant_id))
+    except Exception as e:
+        log.warning("create_series (non-fatal): %s", e)
+
+
+async def upsert_series_facts(tenant_id, series_id, facts, episode=None) -> int:
+    """Upsert canonical entity facts (§3.1). facts = [{entity_key, entity_type, value}].
+    Merges value jsonb on conflict (enrich, latest wins per key); keeps the original
+    introduced_episode. Returns the count written. Best-effort."""
+    n = 0
+    for f in (facts or []):
+        key = (f.get("entity_key") or f.get("name") or "").strip()
+        if not key:
+            continue
+        etype = (f.get("entity_type") or f.get("type") or "other").strip()
+        val = f.get("value")
+        if not isinstance(val, dict):
+            val = {"note": val} if val is not None else {}
+        try:
+            await _q_exec(
+                """INSERT INTO series_facts
+                       (series_id, tenant_id, entity_key, entity_type, value, introduced_episode)
+                   VALUES ($1,$2,$3,$4,$5,$6)
+                   ON CONFLICT (series_id, entity_key) DO UPDATE SET
+                       entity_type        = EXCLUDED.entity_type,
+                       value              = series_facts.value || EXCLUDED.value,
+                       introduced_episode = COALESCE(series_facts.introduced_episode,
+                                                     EXCLUDED.introduced_episode),
+                       updated_at         = now()""",
+                _uid(series_id), _uid(tenant_id), key[:200], etype[:60], val,
+                (int(episode) if episode is not None else None),
+                tenant=str(tenant_id))
+            n += 1
+        except Exception as e:
+            log.warning("upsert_series_facts (non-fatal): %s", e)
+    return n
+
+
+async def get_series_facts(tenant_id, series_id, limit=60) -> list:
+    """Read the fact ledger for a series (most-recently-updated first). Returns
+    [{entity_key, entity_type, value, introduced_episode}]."""
+    try:
+        rows = await _q_fetch(
+            """SELECT entity_key, entity_type, value, introduced_episode
+                 FROM series_facts WHERE series_id=$1 AND tenant_id=$2
+                ORDER BY updated_at DESC LIMIT $3""",
+            _uid(series_id), _uid(tenant_id), int(limit), tenant=str(tenant_id))
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.warning("get_series_facts (non-fatal): %s", e); return []
+
+
+async def upsert_series_summary(tenant_id, series_id, summary, episode=None) -> None:
+    """Write/replace the rolling 'story so far' summary (§3.2), 1 row per series."""
+    try:
+        await _q_exec(
+            """INSERT INTO series_summary (series_id, tenant_id, rolling_summary, updated_episode)
+               VALUES ($1,$2,$3,$4)
+               ON CONFLICT (series_id) DO UPDATE SET
+                   rolling_summary = EXCLUDED.rolling_summary,
+                   updated_episode = EXCLUDED.updated_episode,
+                   updated_at      = now()""",
+            _uid(series_id), _uid(tenant_id), (summary or "")[:4000],
+            (int(episode) if episode is not None else None),
+            tenant=str(tenant_id))
+    except Exception as e:
+        log.warning("upsert_series_summary (non-fatal): %s", e)
+
+
+async def get_series_summary(tenant_id, series_id) -> str:
+    """Read the rolling summary for a series (or '' if none). Best-effort."""
+    try:
+        val = await _q_fetchval(
+            "SELECT rolling_summary FROM series_summary WHERE series_id=$1 AND tenant_id=$2",
+            _uid(series_id), _uid(tenant_id), tenant=str(tenant_id))
+        return val or ""
+    except Exception as e:
+        log.warning("get_series_summary (non-fatal): %s", e); return ""
+
 async def get_chapters_for_rating(tenant_id, job_id) -> list:
     """Chapters of a job with their latest 1-5 rating, for the per-chapter rating UI
     (Step 1.4). Returns [{id, chapter_index, rating}] ordered by chapter_index."""
@@ -788,16 +937,30 @@ async def get_chapters_for_rating(tenant_id, job_id) -> list:
 
 async def save_approval(tenant_id, user_id, chapter_id, rating) -> str:
     """Record a 1-5 rating for a chapter (Step 1.4 moat signal). approved=true when
-    rating >= 4; also reflects that flag onto narasi_chapters.approved."""
+    rating >= 4; also reflects that flag onto narasi_chapters.approved.
+
+    Tenant-scoped WRITE (Dalang v2 Slice 0 / IDOR fix): the prod runtime role is
+    BYPASSRLS, so the client-supplied chapter_id MUST be verified tenant-owned in SQL —
+    RLS alone won't stop a cross-tenant id probe. The INSERT is gated on the chapter
+    belonging to tenant_id (INSERT…SELECT…WHERE nc.tenant_id) and the UPDATE carries an
+    explicit AND tenant_id. A cross-tenant / unknown chapter_id writes NOTHING and this
+    returns "" so the caller can surface not-found."""
     approved = bool(rating and int(rating) >= 4)
     try:
         aid = await _q_fetchval(
             """INSERT INTO approvals (tenant_id, user_id, chapter_id, approved, rating)
-               VALUES ($1,$2,$3,$4,$5) RETURNING id""",
+               SELECT $1,$2,nc.id,$4,$5 FROM narasi_chapters nc
+               WHERE nc.id=$3 AND nc.tenant_id=$1
+               RETURNING id""",
             _uid(tenant_id), _uid(user_id), _uid(chapter_id), approved, int(rating),
             tenant=str(tenant_id))
-        await _q_exec("UPDATE narasi_chapters SET approved=$2, updated_at=now() WHERE id=$1",
-                      _uid(chapter_id), approved, tenant=str(tenant_id))
+        if not aid:
+            log.warning("save_approval: chapter %s not owned by tenant %s — no write",
+                        chapter_id, tenant_id)
+            return ""
+        await _q_exec("UPDATE narasi_chapters SET approved=$2, updated_at=now() "
+                      "WHERE id=$1 AND tenant_id=$3",
+                      _uid(chapter_id), approved, _uid(tenant_id), tenant=str(tenant_id))
         return str(aid)
     except Exception as e:
         log.error("save_approval: %s", e); raise
@@ -808,17 +971,22 @@ async def save_approval_all(tenant_id, user_id, job_id, rating) -> int:
     the number of chapters rated."""
     approved = bool(rating and int(rating) >= 4)
     try:
+        # Dalang v2 Slice 0 / IDOR defense-in-depth: BYPASSRLS role ⟹ every write is
+        # explicitly AND tenant_id scoped (the handler already resolves job_id via
+        # get_job_by_external(tenant_id, …); this guards the DB layer regardless).
         await _q_exec(
             """INSERT INTO approvals (tenant_id, user_id, chapter_id, approved, rating)
-               SELECT $1,$2,nc.id,$4,$5 FROM narasi_chapters nc WHERE nc.job_id=$3""",
+               SELECT $1,$2,nc.id,$4,$5 FROM narasi_chapters nc
+               WHERE nc.job_id=$3 AND nc.tenant_id=$1""",
             _uid(tenant_id), _uid(user_id), _uid(job_id), approved, int(rating),
             tenant=str(tenant_id))
         await _q_exec(
-            "UPDATE narasi_chapters SET approved=$2, updated_at=now() WHERE job_id=$1",
-            _uid(job_id), approved, tenant=str(tenant_id))
+            "UPDATE narasi_chapters SET approved=$2, updated_at=now() "
+            "WHERE job_id=$1 AND tenant_id=$3",
+            _uid(job_id), approved, _uid(tenant_id), tenant=str(tenant_id))
         cnt = await _q_fetchval(
-            "SELECT count(*) FROM narasi_chapters WHERE job_id=$1",
-            _uid(job_id), tenant=str(tenant_id))
+            "SELECT count(*) FROM narasi_chapters WHERE job_id=$1 AND tenant_id=$2",
+            _uid(job_id), _uid(tenant_id), tenant=str(tenant_id))
         return int(cnt or 0)
     except Exception as e:
         log.error("save_approval_all: %s", e); raise
