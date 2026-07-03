@@ -1061,6 +1061,14 @@ class _NarasiFailoverClient:
                 cli = OpenAI(api_key=key, base_url=base_url,
                              timeout=rung_timeout, max_retries=0)
                 resp = cli.chat.completions.create(**call_kw)
+                if _resp_content(resp) is None:
+                    # Empty 200 (choices=None / no content). A mislabeled or unavailable model id
+                    # (e.g. opus-4-6) returns an error BODY with HTTP 200 rather than raising, so
+                    # without this the chain would return the empty resp and never try the next
+                    # aggregator. Treat it as a rung failure and advance.
+                    errors.append(f"{name}:empty({_resp_err_detail(resp)})")
+                    print(f"[narasi-failover] {name} returned empty ({model_id}) → next")
+                    continue
                 if name != primary:
                     print(f"[narasi-failover] served by {name} ({model_id})")
                 return resp
