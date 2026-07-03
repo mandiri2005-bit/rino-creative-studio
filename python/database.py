@@ -693,6 +693,18 @@ async def checkpoint_narasi_meter(tenant_id, job_id, meter_actual) -> None:
         log.warning("checkpoint_narasi_meter (non-fatal): %s", e)
 
 
+async def get_narasi_job_status(tenant_id, job_id):
+    """Read a narasi run's current status by its jobs.id (tenant-scoped). Used by the crash-safe
+    loop to self-abort (F1) if a premature orphan sweep reaped it to 'error' — after which the
+    sweep has already committed the partial checkpoint on our op_id, so continuing would deliver
+    later chapters for free. Best-effort: returns None on any error / missing row."""
+    try:
+        return await _q_fetchval("SELECT status::text FROM jobs WHERE id=$1 AND tenant_id=$2",
+                                 _uid(job_id), _uid(tenant_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.warning("get_narasi_job_status (non-fatal): %s", e); return None
+
+
 async def sweep_stale_narasi_jobs(older_than_secs: int) -> list:
     """Cross-tenant orphan sweep (Dalang v2 Slice 2): mark stale 'processing'/'running'
     narasi jobs 'error' and return [{tenant_id, op_id, meter_actual, user_id}] so the app
@@ -939,12 +951,13 @@ async def save_approval(tenant_id, user_id, chapter_id, rating) -> str:
     """Record a 1-5 rating for a chapter (Step 1.4 moat signal). approved=true when
     rating >= 4; also reflects that flag onto narasi_chapters.approved.
 
-    Tenant-scoped WRITE (Dalang v2 Slice 0 / IDOR fix): the prod runtime role is
-    BYPASSRLS, so the client-supplied chapter_id MUST be verified tenant-owned in SQL —
-    RLS alone won't stop a cross-tenant id probe. The INSERT is gated on the chapter
-    belonging to tenant_id (INSERT…SELECT…WHERE nc.tenant_id) and the UPDATE carries an
-    explicit AND tenant_id. A cross-tenant / unknown chapter_id writes NOTHING and this
-    returns "" so the caller can surface not-found."""
+    Tenant-scoped WRITE (Dalang v2 Slice 0 / IDOR fix): the prod runtime role app_user is
+    NOBYPASSRLS (migration 0016), so the tenant_isolation RLS policy DOES apply — but the
+    explicit tenant_id predicate is kept as intentional defense-in-depth ALONGSIDE it (never
+    remove the SQL filter). The INSERT is gated on the chapter belonging to tenant_id
+    (INSERT…SELECT…WHERE nc.tenant_id) and the UPDATE carries an explicit AND tenant_id. A
+    cross-tenant / unknown chapter_id writes NOTHING and this returns "" so the caller can
+    surface not-found."""
     approved = bool(rating and int(rating) >= 4)
     try:
         aid = await _q_fetchval(
@@ -971,8 +984,9 @@ async def save_approval_all(tenant_id, user_id, job_id, rating) -> int:
     the number of chapters rated."""
     approved = bool(rating and int(rating) >= 4)
     try:
-        # Dalang v2 Slice 0 / IDOR defense-in-depth: BYPASSRLS role ⟹ every write is
-        # explicitly AND tenant_id scoped (the handler already resolves job_id via
+        # Dalang v2 Slice 0 / IDOR defense-in-depth: app_user is NOBYPASSRLS (migration 0016) so
+        # the tenant_isolation RLS policy applies; the explicit AND tenant_id is kept ALONGSIDE it
+        # as belt-and-suspenders (the handler already resolves job_id via
         # get_job_by_external(tenant_id, …); this guards the DB layer regardless).
         await _q_exec(
             """INSERT INTO approvals (tenant_id, user_id, chapter_id, approved, rating)

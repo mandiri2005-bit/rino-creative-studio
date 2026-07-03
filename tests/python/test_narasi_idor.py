@@ -1,8 +1,9 @@
 """
 Dalang v2 — Slice 0 IDOR fix on /narasi/rate (hermetic).
 
-The prod role is BYPASSRLS, so the client-supplied chapter_id MUST be verified
-tenant-owned in SQL. Two guards:
+The prod role app_user is NOBYPASSRLS (migration 0016) so the tenant_isolation RLS policy
+applies; the explicit tenant-owned SQL predicate is kept as defense-in-depth ALONGSIDE it
+(never removed). Two guards:
   1. Source inspection of database.save_approval / save_approval_all — the tenant scope
      is present in the SQL (matches the repo's RLS-migration test convention). A revert
      of the fix fails these.

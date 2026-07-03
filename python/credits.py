@@ -316,6 +316,20 @@ async def commit(tenant_id: str, op_id: str, actual: int, *,
         return await refund(tenant_id, op_id)
     cl = rc.client()
     if cl is not None:
+        # F4: clamp the settled charge to the amount actually HELD, so a commit can NEVER
+        # debit past the reservation. The hold was the pre-funded 402 gate; charging beyond it
+        # (an under-estimated hold) is the unsafe direction — it drives the durable balance
+        # negative and over-debits the live cache (_LUA_COMMIT diff<0). Read the hold before the
+        # Lua DELs it. If the hold is gone (expired / already settled), leave `actual` as-is: a
+        # repeat commit is idempotent on charge:{op_id}, so the first (clamped) settle sticks.
+        try:
+            _held = await cl.get(_hold_key(tenant_id, op_id))
+            if _held is not None:
+                actual = min(actual, max(0, int(_held)))
+        except Exception as e:
+            log.warning("commit hold-read(%s): %s", op_id, e)
+        if actual == 0:
+            return await refund(tenant_id, op_id)
         s = _script("commit", _LUA_COMMIT)
         try:
             await s(keys=[_bal_key(tenant_id), _hold_key(tenant_id, op_id)], args=[actual])

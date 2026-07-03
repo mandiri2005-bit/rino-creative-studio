@@ -44,7 +44,13 @@ class TestRequireProdAuth:
 
 
 class TestLifespanWiring:
-    def test_lifespan_invokes_guard_gated_by_flag(self):
+    def test_lifespan_invokes_guard_unconditionally(self):
+        # F11: the prod auth-bypass boot guard is DECOUPLED from DALANG_ADMISSION_ENABLED —
+        # it must run on every boot (it is a no-op outside production / when CLERK_JWT_ISSUER is
+        # set), so the auth-bypass risk is defended regardless of the narasi feature flag.
         src = inspect.getsource(laozhang_api.lifespan)
-        assert "_require_prod_auth" in src, "lifespan must call the boot guard"
-        assert "_dalang_admission_enabled" in src, "boot guard must be flag-gated in lifespan"
+        assert "_require_prod_auth()" in src, "lifespan must call the boot guard"
+        # the call must NOT be nested under the admission flag anymore
+        for line in src.splitlines():
+            if "_require_prod_auth()" in line and not line.lstrip().startswith("#"):
+                assert "_dalang_admission_enabled" not in line, "boot guard must not be flag-gated"

@@ -129,7 +129,12 @@ def search_vec(vec, series_id, tenant_id, episode_index: int, threshold: float =
     if not qdrant_ready() or not vec:
         return None
     import requests as _req
-    flt = {"must":     [{"key": "series_id", "match": {"value": str(series_id)}}],
+    # F9 (defense-in-depth): scope the shared dalang_episodes collection to BOTH series_id AND
+    # tenant_id. series_id is a server-generated per-tenant UUID today (so no leak yet), but an
+    # explicit tenant_id predicate hard-guards any future caller (Showrunner/Persona) that reuses
+    # a shared/client-influenced series_id. tenant_id is already written to the payload at upsert.
+    flt = {"must":     [{"key": "series_id", "match": {"value": str(series_id)}},
+                        {"key": "tenant_id", "match": {"value": str(tenant_id)}}],
            "must_not": [{"key": "episode_index", "match": {"value": int(episode_index)}}]}
     try:
         r = _req.post(f"{_QDRANT_URL.rstrip('/')}/collections/{_COLLECTION}/points/search",

@@ -707,10 +707,14 @@ from auth_middleware import (get_current_user, get_current_user_optional, Curren
 
 @asynccontextmanager
 async def lifespan(application):
-    # Slice 0 (§7): refuse to boot in prod without Clerk configured (auth-bypass guard).
-    # Gated by the same admission flag; no-op until Rino enables DALANG_ADMISSION_ENABLED.
-    if _dalang_admission_enabled():
-        _require_prod_auth()
+    # Slice 0 (§7) + F11: refuse to boot in prod without Clerk configured (auth-bypass guard).
+    # DECOUPLED from DALANG_ADMISSION_ENABLED — the bypass it defends (empty CLERK_JWT_ISSUER ⟹
+    # any token authenticates as the fixed dev tenant) is a prod risk regardless of the narasi
+    # feature flag, so it must not wait on it. _require_prod_auth() is a no-op outside
+    # NODE_ENV=production and whenever CLERK_JWT_ISSUER is set.
+    # ⚠️ DEPLOY PREREQ: CLERK_JWT_ISSUER MUST be set in prod (it is — real Clerk logins resolve to
+    # real tenants, so the issuer is configured), else the python service refuses to boot.
+    _require_prod_auth()
     await db.init_db()
     await rc.init_redis()
     # Async image-job orphan sweep: reap 'running' jobs left by a process restart (refund their held
@@ -8212,54 +8216,80 @@ async def narasi_generate(body: dict,
     # Slice 0 (§7): admission BEFORE any auth-DB call or credit hold — clamp fan-out +
     # whitelist model (→400), then reject when the narasi service is saturated (→429).
     _narasi_admit(body, kind="generate")
-    if _dalang_admission_enabled() and _narasi_inflight >= DALANG_MAX_INFLIGHT:
-        raise HTTPException(429, "narasi service busy — try again in a moment")
-    # Resolve tenant/user from auth (reliable) and pass into the background task.
-    _tenant = user.tenant_id
-    _user   = await _resolve_user_uuid(user.tenant_id, user.user_id)
-
-    chapters = body.get("chapters") or []
-    topic    = (body.get("topic") or "").strip()
-    model    = (body.get("model") or "gemini-2.5-flash").strip()
-    job_id = (body.get("pre_job_id") or str(uuid.uuid4())[:8])[:16]
-
-    # ── Step 4 metering: HOLD an estimate for the whole job up front ────────
-    # Raises HTTP 402 before any chapter is generated if the balance is short;
-    # the background task settles the ACTUAL total (refunding the unused hold)
-    # or refunds entirely on cancel/zero-output. op_id keyed to the job id.
-    _meter_op = None
-    if chapters and not _byok_active():   # BYOK pays upstream directly → no hold
-        _est_units = {
-            "tokens_in":  1500 * len(chapters),
-            "tokens_out": sum(int(c.get("words") or 400) for c in chapters) * 2,
-        }
-        # Unique per generation RUN (not per external job_id): a client retry that
-        # reuses the same pre_job_id must get its own hold + its own durable charge,
-        # never collide with the prior run's op_id (which would skip the durable
-        # charge while still debiting the live cache).
-        _meter_op = f"narasi:{job_id}:{uuid.uuid4().hex[:8]}"
-        await metering.begin_charge(
-            tenant_id=_tenant, user_id=_user, operation="narasi",
-            model=model, estimate_units=_est_units, op_id=_meter_op)
-
-    # Create the jobs-table row up front so polling can see it immediately.
-    try:
-        # Slice 2 (H4): stamp the billing op_id on the row (input_payload._meter) when
-        # crash-safe billing is on, so an orphan sweep can settle the hold after a crash.
-        await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters),
-                                   op_id=(_meter_op if _dalang_crashsafe_enabled() else None))
-    except Exception as _e:
-        import logging as _lg; _lg.getLogger("narasi").warning("create_narasi_job failed (non-fatal): %s", _e)
-    await rc.set_progress(job_id, "Memulai narasi...")
-
-    # Slice 0 (§7): reserve the inflight slot synchronously (no await before create_task
-    # ⟹ no leak); _narasi_generate_impl_guarded's finally is the sole release point.
+    # F5: check-and-reserve the inflight slot ATOMICALLY — no await between the saturation
+    # check and the increment — so DALANG_MAX_INFLIGHT is a HARD ceiling under concurrent
+    # bursts (the old code reserved only after ~4 awaits → TOCTOU over-admit). The slot is
+    # released by the guarded task's finally once spawned, or by our finally below if we fail
+    # (e.g. a 402 hold or a DB error) before handing off to the task.
     _reserved = False
     if _dalang_admission_enabled():
+        if _narasi_inflight >= DALANG_MAX_INFLIGHT:
+            raise HTTPException(429, "narasi service busy — try again in a moment")
         _narasi_inflight += 1
         _reserved = True
-    # Spawn the actual generation on the main loop; return the id immediately.
-    asyncio.create_task(_narasi_generate_impl_guarded(body, job_id, _tenant, _user, _meter_op, _reserved))
+    _spawned = False
+    try:
+        # Resolve tenant/user from auth (reliable) and pass into the background task.
+        _tenant = user.tenant_id
+        _user   = await _resolve_user_uuid(user.tenant_id, user.user_id)
+
+        chapters = body.get("chapters") or []
+        topic    = (body.get("topic") or "").strip()
+        model    = (body.get("model") or "gemini-2.5-flash").strip()
+        job_id = (body.get("pre_job_id") or str(uuid.uuid4())[:8])[:16]
+
+        # ── Step 4 metering: HOLD an estimate for the whole job up front ────────
+        # Raises HTTP 402 before any chapter is generated if the balance is short;
+        # the background task settles the ACTUAL total (refunding the unused hold)
+        # or refunds entirely on cancel/zero-output. op_id keyed to the job id.
+        _meter_op = None
+        if chapters and not _byok_active():   # BYOK pays upstream directly → no hold
+            # F4: fold enforcement headroom into the hold when v2 is ON, so the settled actual
+            # stays WITHIN the reservation (Slice-3 continuation may re-call an undershooting
+            # chapter up to DALANG_MAX_CHAPTER_RETRIES×; Slice-4 critic + one bounded revise add
+            # ~a chapter-worth). The commit() clamp is the backstop; this keeps a real run from
+            # being under-charged by that clamp. Flags OFF ⟹ estimate byte-identical to v1.
+            _hf = 1
+            if _dalang_v2_enabled():
+                _hf = 1 + DALANG_MAX_CHAPTER_RETRIES
+                if _dalang_critic_enabled():
+                    _hf += 1
+            _est_units = {
+                "tokens_in":  1500 * len(chapters) * _hf,
+                "tokens_out": sum(int(c.get("words") or 400) for c in chapters) * 2 * _hf,
+            }
+            # Unique per generation RUN (not per external job_id): a client retry that
+            # reuses the same pre_job_id must get its own hold + its own durable charge,
+            # never collide with the prior run's op_id (which would skip the durable
+            # charge while still debiting the live cache).
+            _meter_op = f"narasi:{job_id}:{uuid.uuid4().hex[:8]}"
+            await metering.begin_charge(
+                tenant_id=_tenant, user_id=_user, operation="narasi",
+                model=model, estimate_units=_est_units, op_id=_meter_op)
+
+        # Create the jobs-table row up front so polling can see it immediately.
+        try:
+            # Slice 2 (H4): stamp the billing op_id on the row (input_payload._meter) when
+            # crash-safe billing is on, so an orphan sweep can settle the hold after a crash.
+            _job_uuid = await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters),
+                                                   op_id=(_meter_op if _dalang_crashsafe_enabled() else None))
+            if _job_uuid:
+                # clobber-fix: pin THIS run's exact jobs.id so the impl writes its checkpoint to
+                # its OWN row — not get_job_by_external's newest, which a same-pre_job_id concurrent
+                # run would share + clobber. Threaded via the body dict already passed to the task.
+                body["_job_uuid"] = _job_uuid
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("create_narasi_job failed (non-fatal): %s", _e)
+        await rc.set_progress(job_id, "Memulai narasi...")
+
+        # Spawn the actual generation on the main loop; return the id immediately.
+        asyncio.create_task(_narasi_generate_impl_guarded(body, job_id, _tenant, _user, _meter_op, _reserved))
+        _spawned = True
+    finally:
+        # F5: if we reserved a slot but never handed off to the task (402 / DB error before
+        # create_task), release it here — the guarded task's finally only covers the spawned path.
+        if _reserved and not _spawned:
+            _narasi_inflight -= 1
     return {"ok": True, "job_id": job_id, "status": "started"}
 
 
@@ -8338,10 +8368,14 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     previous_chapters = []   # accumulate generated text for inter-chapter context
     # Resolve internal jobs.id (UUID) once for usage logging — narasi uses the
     # external 8-char id everywhere, but usage_logs.job_id FKs to jobs.id.
-    _narasi_job_uuid = None
+    # clobber-fix: prefer THIS run's exact jobs.id (pinned by the route in body["_job_uuid"]) so a
+    # concurrent double-submit sharing pre_job_id can't make us resolve the OTHER run's newest row
+    # and clobber its _meter checkpoint. Fall back to by-external only if it wasn't pinned.
+    _narasi_job_uuid = body.get("_job_uuid")
     try:
-        _jrow = await db.get_job_by_external(_narasi_tenant, job_id)
-        _narasi_job_uuid = _jrow.get("id") if _jrow else None
+        if not _narasi_job_uuid:
+            _jrow = await db.get_job_by_external(_narasi_tenant, job_id)
+            _narasi_job_uuid = _jrow.get("id") if _jrow else None
     except Exception:
         _narasi_job_uuid = None
     # ── Slice 3 (Series State): series.id == the narasi jobs.id; create the row (kind='book')
@@ -8361,6 +8395,15 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
         if cancel_ev.is_set() or await rc.is_cancelled(f"narasi_{job_id}"):
             errors.append({"id": "cancelled", "error": "Job cancelled by user"})
             break
+
+        # F1 (crash-safe): if a premature orphan sweep already reaped THIS job to 'error', it has
+        # committed the partial checkpoint on our op_id — our further commit() would be a durable
+        # no-op (charge:{op_id} first-write-wins), so any chapter we keep delivering would be FREE.
+        # Self-abort. Cheap once-per-chapter read, gated + best-effort (a read hiccup never aborts).
+        if _dalang_crashsafe_enabled() and _narasi_job_uuid:
+            if (await db.get_narasi_job_status(_narasi_tenant, _narasi_job_uuid)) == "error":
+                errors.append({"id": "swept", "error": "Reaped by orphan sweep — aborting to avoid free delivery"})
+                break
 
         # Step 4: keep the credit hold alive across a long multi-chapter job so its
         # TTL never lapses mid-flight and strands the unused reservation.
@@ -8589,17 +8632,18 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                         if (p.get("passage_id") or p.get("id"))
                     ]
                 if _dalang_crashsafe_enabled():
-                    # ── Slice 2 (H4/H5): persist the chapter AND bump the delivered-cost
-                    # checkpoint ATOMICALLY (one txn, scoped to this run's jobs.id) so a
-                    # crash can't land between them, then count it in-memory only after the
-                    # durable write succeeds (never 'charged but invisible', never free-on-
-                    # crash beyond the current chapter). ──
-                    _new_meter = _meter_actual + _chap_cr
+                    # ── Slice 2 (H4/H5) + F3: the chapter is ALREADY delivered (R2 + tmp above),
+                    # so bill it in-memory FIRST — a failed narasi_chapters write must NOT make a
+                    # delivered chapter free (mirrors v1's persist-independent charge at the
+                    # crash-safe-OFF branch above). The durable _meter checkpoint is written in the
+                    # SAME txn as the chapter (scoped to this run's jobs.id) for crash recovery; if
+                    # that write fails, _meter_actual still carries the cost to settle at commit and
+                    # the sweep merely UNDER-recovers (safe direction) rather than delivering free. ──
+                    _meter_actual += _chap_cr
                     await db.save_narasi_chapter(
                         _narasi_tenant, _narasi_job_uuid, i, text,
                         len(text.split()), user, _retrieved_ids,
-                        version=1, approved=False, meter_checkpoint=_new_meter)
-                    _meter_actual = _new_meter
+                        version=1, approved=False, meter_checkpoint=_meter_actual)
                 else:
                     await db.save_narasi_chapter(
                         _narasi_tenant, _narasi_job_uuid, i, text,
@@ -8620,8 +8664,15 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 # Slice 4: fill the moat capture's monetizable fields for real (were 0,0,0 →
                 # lossy training/eval asset). Uses the main write's usage; continuation/critic
                 # add marginal tokens but the chapter write dominates.
-                _mt_ti = int(getattr(_kept_usage, "prompt_tokens", 0) or 0)
-                _mt_to = int(getattr(_kept_usage, "completion_tokens", 0) or 0)
+                # F6: gate the fill on v2 so the flags-OFF path stays byte-identical to v1
+                # (which wrote model,0,0,0). moat_sessions is a non-money training/eval table, so
+                # this is purely to keep the dormant deploy provably identical; real tokens flow
+                # once DALANG_V2_ENABLED is ON (when the enforcement compute worth capturing runs).
+                if _dalang_v2_enabled():
+                    _mt_ti = int(getattr(_kept_usage, "prompt_tokens", 0) or 0)
+                    _mt_to = int(getattr(_kept_usage, "completion_tokens", 0) or 0)
+                else:
+                    _mt_ti = _mt_to = 0
                 _moat_sid = await db.save_moat_session(
                     _narasi_tenant or None,
                     _narasi_user or None,
