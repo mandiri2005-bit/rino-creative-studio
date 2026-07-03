@@ -10292,6 +10292,106 @@ async def video_segment(req: VideoSegmentReq,
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Avatar VI-mode segmenter (Slice 1 — Dalang-owned; spec ~/docs/wimba-avatar-slice1-spec.md).
+# ADDITIVE sibling to /video/segment: role-tags a talking-head script into scenes
+# (presenter → kind 'avatar', b-roll → kind 'clip'). GATE-ONLY — no render, no metering/debit
+# (the money-path lives in /assemble batch dispatch, which Slice 1 never triggers). The existing
+# /video/segment route + VideoSegmentReq are untouched; the recipe path stays live.
+# ─────────────────────────────────────────────────────────────────────────────
+class VideoAvatarSegmentReq(BaseModel):
+    topic: str = ""              # subject to script (Mode A) when no script is given
+    script: str = ""             # optional user-provided voiceover (kept verbatim if present)
+    language: str = "id"
+    seconds: Optional[int] = None
+    broll: bool = True           # interleave b-roll cutaways (presenter ↔ broll beats)
+    cta: str = ""
+    vibe: str = "friendly"
+
+
+def _avatar_scenes_from_segments(segments, fallback_text="", max_segments=8, max_seconds=45):
+    """Pure transform (unit-testable, no LLM): planner segments → VI avatar scenes.
+    presenter → kind 'avatar', broll → kind 'clip'. Caps scene COUNT at max_segments and each
+    scene's DURATION at max_seconds by splitting an over-long segment into same-role scenes
+    (est_seconds = words/2.2; a scene never carries more than int(max_seconds*2.2) words).
+    Empty/blank input → a single presenter scene from fallback_text. Emits exactly the fields
+    store.createJob reads (number/text/visual_prompt/kind/est_seconds; snake_case OK)."""
+    max_words = max(1, int(max_seconds * 2.2))
+    scenes = []
+
+    def _emit(role, text, vp):
+        n = len((text or "").split())
+        scenes.append({
+            "number": len(scenes) + 1,
+            "text": text,
+            "visual_prompt": vp if role == "broll" else "",
+            "kind": "clip" if role == "broll" else "avatar",
+            "est_seconds": round(n / 2.2, 1),
+        })
+
+    for seg in (segments or []):
+        if len(scenes) >= max_segments:
+            break
+        if not isinstance(seg, dict):
+            continue
+        role = "broll" if seg.get("role") == "broll" else "presenter"
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        vp = (seg.get("broll_brief") or "").strip()
+        words = text.split()
+        if len(words) > max_words:   # over-cap → split into same-role scenes, each ≤ max_seconds
+            for p in range(0, len(words), max_words):
+                if len(scenes) >= max_segments:
+                    break
+                piece = " ".join(words[p:p + max_words]).strip()
+                if piece:
+                    _emit(role, piece, vp)
+        else:
+            _emit(role, text, vp)
+
+    if not scenes:   # planner produced nothing usable → one presenter beat (fallback invariant)
+        _emit("presenter", (fallback_text or "").strip() or "…", "")
+
+    for i, s in enumerate(scenes):   # stable 1-based numbering after any splits/skips
+        s["number"] = i + 1
+    return scenes
+
+
+@app.post("/video/segment/avatar")
+async def video_segment_avatar(req: VideoAvatarSegmentReq,
+                               request: Request,
+                               user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Avatar VI-mode segmenter (Slice 1). Plans a talking-head script (reusing the proven
+    Spokesperson planner — single source of truth) into role-tagged scenes: presenter beats →
+    kind 'avatar' (the OmniHuman render is Slice 2), b-roll cutaways → kind 'clip'. GATE-ONLY:
+    no render, no metering/debit — mirrors /video/segment's 'no charge until /assemble' (Slice 1
+    never dispatches a render batch)."""
+    import recipe_spokesperson as _spk
+    plan_input = {
+        "topic": req.topic or "",
+        "voiceover": {"script": req.script or ""},
+        "language": req.language or "id",
+        "cta": req.cta or "",
+        "vibe": req.vibe or "friendly",
+        "seconds": req.seconds,
+        "broll": {"on": bool(req.broll)},   # on → interleaved presenter/broll segments
+    }
+    try:
+        result = await _spk.plan(plan_input)
+    except Exception as e:   # the planner must never block a segment → degrade to one presenter beat
+        print(f"[video/segment/avatar] plan failed ({e}) → single presenter scene")
+        result = {}
+    script = (result.get("script") or req.script or req.topic or "").strip()
+    segments = result.get("segments") or []
+    if not segments:   # b-roll off (plan returns {script}) or empty → one presenter segment
+        segments = [{"role": "presenter", "text": script, "broll_brief": ""}]
+    scenes = _avatar_scenes_from_segments(
+        segments, fallback_text=script,
+        max_segments=_spk.SPK_MAX_SEGMENTS, max_seconds=_spk.SPK_MAX_SECONDS)
+    return {"scenes": scenes, "script": script}
+
+
 @app.post("/video/decide")
 async def video_decide(req: VideoDecideReq,
                        user: Optional[CurrentUser] = Depends(get_current_user_optional)):
