@@ -6266,6 +6266,11 @@ NARASI_JOB_SWEEP_EVERY = float(os.getenv("NARASI_JOB_SWEEP_EVERY", "300"))
 # premature orphan sweep. Generous (long thinking chapters are legit) but well under the stale
 # window. Only enforced under DALANG_CRASHSAFE_ENABLED (else the write path is byte-identical to v1).
 DALANG_CHAPTER_LLM_TIMEOUT = float(os.getenv("DALANG_CHAPTER_LLM_TIMEOUT", "900"))
+# F4b: MODEST headroom multiplier on the up-front hold when v2 is ON. The commit() clamp (F4a) is
+# the real over-charge backstop; this only keeps the clamp from UNDER-charging on a typical run
+# (continuation/critic side-calls). Kept small (1.5×) so a run doesn't dip the live balance 3-4× or
+# strand a huge hold on a mid-run crash. Bump via env if platform under-charge ever shows up.
+DALANG_HOLD_HEADROOM = float(os.getenv("DALANG_HOLD_HEADROOM", "1.5"))
 # Slice 3: bounded continuation re-calls per undershooting/truncated chapter (§4.4), and the
 # cheap model for fact-extraction / rolling-summary side-calls (§3.1/§3.2). Both env-tunable.
 DALANG_MAX_CHAPTER_RETRIES = int(os.getenv("DALANG_MAX_CHAPTER_RETRIES", "2"))
@@ -8252,19 +8257,15 @@ async def narasi_generate(body: dict,
         # or refunds entirely on cancel/zero-output. op_id keyed to the job id.
         _meter_op = None
         if chapters and not _byok_active():   # BYOK pays upstream directly → no hold
-            # F4: fold enforcement headroom into the hold when v2 is ON, so the settled actual
-            # stays WITHIN the reservation (Slice-3 continuation may re-call an undershooting
-            # chapter up to DALANG_MAX_CHAPTER_RETRIES×; Slice-4 critic + one bounded revise add
-            # ~a chapter-worth). The commit() clamp is the backstop; this keeps a real run from
-            # being under-charged by that clamp. Flags OFF ⟹ estimate byte-identical to v1.
-            _hf = 1
-            if _dalang_v2_enabled():
-                _hf = 1 + DALANG_MAX_CHAPTER_RETRIES
-                if _dalang_critic_enabled():
-                    _hf += 1
+            # F4: add a MODEST headroom to the hold when v2 is ON, so the settled actual (continuation
+            # + critic side-calls) usually stays WITHIN the reservation WITHOUT inflating the hold 3-4×
+            # (which dips the live balance hard during a run + strands a big hold on a mid-run crash).
+            # The commit() clamp (F4a) is the real over-charge backstop; this just keeps the clamp from
+            # UNDER-charging a typical run. Flags OFF ⟹ estimate byte-identical to v1.
+            _hf = (DALANG_HOLD_HEADROOM if _dalang_v2_enabled() else 1.0)
             _est_units = {
-                "tokens_in":  1500 * len(chapters) * _hf,
-                "tokens_out": sum(int(c.get("words") or 400) for c in chapters) * 2 * _hf,
+                "tokens_in":  int(1500 * len(chapters) * _hf),
+                "tokens_out": int(sum(int(c.get("words") or 400) for c in chapters) * 2 * _hf),
             }
             # Unique per generation RUN (not per external job_id): a client retry that
             # reuses the same pre_job_id must get its own hold + its own durable charge,
