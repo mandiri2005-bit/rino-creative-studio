@@ -35,23 +35,120 @@ def verify_enabled() -> bool:
     return str(os.environ.get("FACTGATE_SEARCH_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
-_ID_PREFIX = {"date": "tanggal", "quantitative_unverified": "cek fakta",
-              "negative_existence_unscoped": "apakah benar",
-              "causal_mechanism_unhedged": "bukti",
-              "attributed_quote": "sumber kutipan",
-              "proper_relation": "", "etymology_gloss": "etimologi",
-              "date_tokens": "tanggal", "superlative_qualitative": "",
-              "proper_noun_institution": "apakah lembaga",
-              "gap_fill_date": "tanggal", "gap_fill_general": "cek fakta"}
-_EN_PREFIX = {"quantitative_unverified": "fact check",
-              "negative_existence_unscoped": "is it true",
-              "causal_mechanism_unhedged": "evidence",
-              "attributed_quote": "primary source quote",
-              "proper_relation": "", "etymology_gloss": "etymology",
-              "date_tokens": "date", "date": "date",
-              "superlative_qualitative": "",
-              "proper_noun_institution": "does the institution exist",
-              "gap_fill_date": "date", "gap_fill_general": "fact check"}
+# Per-language query-prefix table. EN is the international-scholarship default; the
+# manuscript's own language runs first (native sources); a per-language `_COMPANION_LANGS`
+# map adds the archive/scholarship languages that historically DOCUMENT that region's
+# subjects (nl for ID/JV/MS — Dutch colonial archives are primary; ar for Islamic-history
+# ID/MS topics; fr for Vietnam; es for the Philippines; etc). Every prefix is short so
+# it doesn't dominate the query; language routing does the real work.
+_QUERY_PREFIX: dict[str, dict[str, str]] = {
+    "en": {"date": "date", "date_tokens": "date",
+           "quantitative_unverified": "fact check",
+           "negative_existence_unscoped": "is it true",
+           "causal_mechanism_unhedged": "evidence",
+           "attributed_quote": "primary source quote",
+           "proper_relation": "", "etymology_gloss": "etymology",
+           "superlative_qualitative": "",
+           "proper_noun_institution": "does the institution exist",
+           "gap_fill_date": "date", "gap_fill_general": "fact check"},
+    "id": {"date": "tanggal", "date_tokens": "tanggal",
+           "quantitative_unverified": "cek fakta",
+           "negative_existence_unscoped": "apakah benar",
+           "causal_mechanism_unhedged": "bukti",
+           "attributed_quote": "sumber kutipan",
+           "proper_relation": "", "etymology_gloss": "etimologi",
+           "superlative_qualitative": "",
+           "proper_noun_institution": "apakah lembaga",
+           "gap_fill_date": "tanggal", "gap_fill_general": "cek fakta"},
+    "nl": {"date": "datum", "quantitative_unverified": "controleer feit",
+           "attributed_quote": "primaire bron", "proper_noun_institution": "bestaat instelling",
+           "gap_fill_date": "datum", "gap_fill_general": "controleer feit"},
+    "ms": {"date": "tarikh", "quantitative_unverified": "semak fakta",
+           "attributed_quote": "sumber utama", "proper_noun_institution": "adakah institusi",
+           "gap_fill_date": "tarikh", "gap_fill_general": "semak fakta"},
+    "ar": {"date": "تاريخ", "quantitative_unverified": "تحقق من الحقيقة",
+           "attributed_quote": "مصدر أولي", "proper_noun_institution": "هل المؤسسة موجودة",
+           "gap_fill_date": "تاريخ", "gap_fill_general": "تحقق"},
+    "es": {"date": "fecha", "quantitative_unverified": "verificar dato",
+           "attributed_quote": "fuente primaria", "proper_noun_institution": "existe la institución",
+           "gap_fill_date": "fecha", "gap_fill_general": "verificar"},
+    "fr": {"date": "date de", "quantitative_unverified": "vérifier fait",
+           "attributed_quote": "source primaire", "proper_noun_institution": "l'institution existe",
+           "gap_fill_date": "date", "gap_fill_general": "vérifier"},
+    "de": {"date": "Datum", "quantitative_unverified": "Faktencheck",
+           "attributed_quote": "Primärquelle", "proper_noun_institution": "existiert die Institution",
+           "gap_fill_date": "Datum", "gap_fill_general": "Faktencheck"},
+    "pt": {"date": "data", "quantitative_unverified": "verificar fato",
+           "attributed_quote": "fonte primária", "proper_noun_institution": "a instituição existe",
+           "gap_fill_date": "data", "gap_fill_general": "verificar"},
+    "zh": {"date": "日期", "quantitative_unverified": "事实核查",
+           "attributed_quote": "原始资料", "proper_noun_institution": "该机构是否存在",
+           "gap_fill_date": "日期", "gap_fill_general": "核查"},
+    "ja": {"date": "日付", "quantitative_unverified": "事実確認",
+           "attributed_quote": "一次資料", "proper_noun_institution": "その機関は実在するか",
+           "gap_fill_date": "日付", "gap_fill_general": "確認"},
+    "ko": {"date": "날짜", "quantitative_unverified": "사실 확인",
+           "attributed_quote": "일차 자료", "proper_noun_institution": "기관 실재 여부",
+           "gap_fill_date": "날짜", "gap_fill_general": "확인"},
+    "hi": {"date": "तिथि", "quantitative_unverified": "तथ्य जांच",
+           "attributed_quote": "प्राथमिक स्रोत", "proper_noun_institution": "क्या संस्था मौजूद है",
+           "gap_fill_date": "तिथि", "gap_fill_general": "तथ्य जांच"},
+    "th": {"date": "วันที่", "quantitative_unverified": "ตรวจสอบข้อเท็จจริง",
+           "attributed_quote": "แหล่งข้อมูลปฐมภูมิ", "proper_noun_institution": "สถาบันมีอยู่จริงหรือ",
+           "gap_fill_date": "วันที่", "gap_fill_general": "ตรวจสอบ"},
+    "vi": {"date": "ngày", "quantitative_unverified": "kiểm tra sự thật",
+           "attributed_quote": "nguồn chính", "proper_noun_institution": "tổ chức có tồn tại",
+           "gap_fill_date": "ngày", "gap_fill_general": "kiểm tra"},
+    "tl": {"date": "petsa", "quantitative_unverified": "suriin ang katotohanan",
+           "attributed_quote": "pangunahing pinagmulan", "proper_noun_institution": "may institusyong ito ba",
+           "gap_fill_date": "petsa", "gap_fill_general": "suriin"},
+    "jv": {"date": "tanggal", "attributed_quote": "sumber primer",
+           "proper_noun_institution": "apa lembaga iku ana",
+           "gap_fill_date": "tanggal", "gap_fill_general": "cek"},
+    "su": {"date": "tanggal", "attributed_quote": "sumber primer",
+           "proper_noun_institution": "naha lembaga aya",
+           "gap_fill_date": "tanggal", "gap_fill_general": "cek"},
+    "ban": {"date": "tanggal", "proper_noun_institution": "lembaga puniki wenten",
+            "gap_fill_date": "tanggal", "gap_fill_general": "cek"},
+    "min": {"date": "tanggal", "proper_noun_institution": "adokah lembago",
+            "gap_fill_date": "tanggal", "gap_fill_general": "cek"},
+}
+
+# Companion source languages — the archive/scholarship languages that HISTORICALLY
+# document that region's subjects. Every list already includes "en" implicitly (the
+# international scholarship default) — companions are the languages BEYOND that.
+# For the Diponegoro case: ID native + Dutch archives (Louw & De Klerck; De Kock's
+# correspondence) + EN international. Rationale is documented per row.
+_COMPANION_LANGS: dict[str, list[str]] = {
+    # Indonesian archipelago languages → Dutch colonial + English + Arabic (Islamic
+    # scholarship). Insular ID languages also inherit ID (their sources overlap).
+    "id":  ["nl", "en"],
+    "jv":  ["nl", "id", "en"],
+    "su":  ["nl", "id", "en"],
+    "ban": ["nl", "id", "en"],
+    "min": ["nl", "id", "en"],
+    "ms":  ["nl", "en", "ar"],
+    "ar":  ["fr", "en"],                  # colonial-era Arabic archives → French + English
+    # Iberian world → Spanish/Portuguese + Latin (colonial admin) + English scholarship.
+    "es":  ["pt", "la", "en"],
+    "pt":  ["es", "la", "en"],
+    "fr":  ["nl", "la", "en"],            # France + Low Countries archive overlap
+    "de":  ["la", "en"],
+    "nl":  ["id", "de", "en"],            # NL scholarship has heavy ID history overlap
+    # East Asia — Chinese primary + Japanese/Korean overlapping historiography.
+    "zh":  ["ja", "en"],
+    "ja":  ["zh", "en"],
+    "ko":  ["zh", "ja", "en"],
+    # South & Southeast Asia
+    "hi":  ["ur", "en"],
+    "th":  ["en"],
+    "vi":  ["fr", "zh", "en"],            # French colonial + Chinese classical
+    "tl":  ["es", "en"],                  # Spanish colonial primary
+    # English-native manuscripts: still add ES for Iberian topics, DE/FR for European,
+    # NL for anything colonial-Dutch — the caller's manuscript language is EN but the
+    # SUBJECT often speaks another language. Keep the list short so cost stays bounded.
+    "en":  [],                             # topic-driven companions handled at callsite
+}
 
 
 def _mk_query(sentence: str, klass: str, lang: str = "en") -> str:
@@ -61,21 +158,47 @@ def _mk_query(sentence: str, klass: str, lang: str = "en") -> str:
     s = re.sub(r"\s+", " ", s).strip()
     words = s.split()
     core = " ".join(words[:18])
-    tbl = _ID_PREFIX if (lang or "en").split("-")[0].lower() == "id" else _EN_PREFIX
+    lg = (lang or "en").split("-")[0].lower()
+    tbl = _QUERY_PREFIX.get(lg) or _QUERY_PREFIX["en"]
     prefix = tbl.get(klass, "")
     return (prefix + " " + core).strip()
 
 
-def _mk_bilingual_queries(sentence: str, klass: str, lang: str) -> list[str]:
-    """FG-SEARCH Phase-1: for non-EN manuscripts, generate BOTH the localized query and
-    the EN query — the Kyai Mojo date lives almost entirely in ID-language sources and
-    an EN-only query would miss it; the reverse is true for EN-native subjects.
-    Dedupe when the two happen to be identical (short numeric-only cores)."""
-    q_native = _mk_query(sentence, klass, lang=lang)
-    if (lang or "en").split("-")[0].lower() == "en":
-        return [q_native]
-    q_en = _mk_query(sentence, klass, lang="en")
-    return list(dict.fromkeys([q_native, q_en]))
+def _mk_multilingual_queries(sentence: str, klass: str, lang: str,
+                             *, extra_langs: Optional[list] = None) -> list[str]:
+    """FG-SEARCH Phase-1 (Rino: 'harusnya multilanguage'): the manuscript language's
+    query runs first (native sources), then EN (international scholarship default),
+    then the region's companion archive languages (Dutch for ID/JV/MS colonial topics;
+    French for Vietnam/Arabic-colonial; Latin for Iberian/German early modern; etc.).
+    Kyai Mojo's date lives in ID + NL sources; an EN-only query would miss both.
+
+    `extra_langs`: caller-scoped override — a topic-driven addition (e.g. EN manuscript
+    about Cortés → +ES/+LA). Deduped against the automatic set."""
+    lg = (lang or "en").split("-")[0].lower()
+    langs: list[str] = [lg]
+    if lg != "en":
+        langs.append("en")
+    for c in _COMPANION_LANGS.get(lg, []):
+        if c not in langs:
+            langs.append(c)
+    for x in (extra_langs or []):
+        x = str(x).split("-")[0].lower().strip()
+        if x and x not in langs:
+            langs.append(x)
+    # Bound the fan-out so cost stays predictable — 4 languages max is enough for the
+    # most doc-rich topics (native + international + 2 archive tongues).
+    langs = langs[:4]
+    queries: list[str] = []
+    seen: set[str] = set()
+    for lgc in langs:
+        q = _mk_query(sentence, klass, lang=lgc)
+        if q and q not in seen:
+            seen.add(q); queries.append(q)
+    return queries
+
+
+# Back-compat alias for tests/older callers.
+_mk_bilingual_queries = _mk_multilingual_queries
 
 
 async def _verdict_llm(claim: str, snippets: list, klass: str, *,
@@ -194,7 +317,7 @@ async def verify_report(fact_report: dict, *, project_id=None, tenant_id=None,
             out["capped_dropped"] = dropped
 
         async def _one(klass: str, sentence: str, token: str, gap: bool) -> dict:
-            qs = _mk_bilingual_queries(sentence, klass, lang=lang)
+            qs = _mk_multilingual_queries(sentence, klass, lang=lang)
             snips = None
             for q in qs:
                 snips = await asyncio.to_thread(sp.search, q, 5)
