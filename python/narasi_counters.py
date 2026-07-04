@@ -44,7 +44,7 @@ LANGUAGE_PACKS: dict[str, dict[str, Any]] = {
             r"|(?:\b(?P<name2>[A-Z][a-z]+(?:\s+[A-Z][a-zA-Z]+)+)\s+"
             r"(?:argues?|argued|contends?|contended|notes?|noted|recorded|recalls?|recalled|"
             r"documented|estimated|has\s+challenged|has\s+argued|pushed\s+further|emphasizes?|suggests?)\b)"),
-        "epithet": re.compile(r",\s+(?:an?|the)\s+[^,]{4,60},"),
+        "epithet": re.compile(r",\s+(?:an?|the)\s+[^,]{4,140},"),
         "homographs": ["read", "lead", "wound", "tear", "bass", "row"],
         "wpm": {"min": 140, "max": 155},
     },
@@ -79,8 +79,11 @@ LANGUAGE_PACKS: dict[str, dict[str, Any]] = {
             r"menekankan|melihat|mengakui|merekonstruksi|mengingatkan|menawarkan|"
             r"membantah|menyebutnya|mengidentifikasi)\b)"),
         # ID appositive epithet: ", sejarawan Inggris yang …," after a name (R-E3)
+        # ID historian appositives run long ("sejarawan Universitas London yang
+        # mendokumentasikan ekonomi Minangkabau pra-kolonial," ~78 chars). Cap 140 covers
+        # realistic prose without accepting a whole sentence between commas.
         "epithet": re.compile(r",\s+(?:seorang\s+)?(?:sejarawan|arkeolog|filolog|peneliti|"
-                              r"antropolog|pakar|ahli)\s+[^,]{4,70},"),
+                              r"antropolog|pakar|ahli)\s+[^,]{4,140},"),
         "homographs": ["apel", "serang", "tahu", "bisa", "kali"],
         "wpm": {"min": 130, "max": 150},
         # §3: hedge vocabulary comes from the pack, NEVER hardcoded EN.

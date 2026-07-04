@@ -134,6 +134,56 @@ def _snip(text: str, s: int, e: int, before: int = 40, after: int = 100) -> str:
     return text[max(0, s - before):min(len(text), e + after)].replace("\n", " ").strip()[:200]
 
 
+def _table_independent_r_e3(text: str, lang: str, report: dict) -> str:
+    """SPEC v1 §3.6 R-E3 within-doc, TABLE-INDEPENDENT: after the FIRST full-name +
+    appositive introduction of ANY person (whether or not they're in ENTITY_TABLE),
+    every LATER `Full Name, <appositive>,` collapses to bare surname. The Christine-
+    Dobbin regression on the Imam-Bonjol live run: 4 different epithets on 4 mentions
+    because Dobbin wasn't in the table. Now the pack's own epithet regex is enough.
+
+    We keep the FIRST introduction verbatim (its epithet establishes the person); every
+    subsequent `Full Name, <epithet…>,` swap becomes just the surname. Full-name-only
+    (no comma-epithet) later mentions are untouched — they're already legal."""
+    try:
+        from narasi_counters import LANGUAGE_PACKS
+        pack = LANGUAGE_PACKS.get((lang or "id").split("-")[0].lower())
+    except Exception:  # noqa: BLE001
+        pack = None
+    if not pack or not pack.get("epithet"):
+        return text
+    epi_rx = pack["epithet"]
+    full_rx = re.compile(r"\b([A-Z][a-zA-Z.]+(?:\s+[A-Z][a-zA-Z.]+)+)")
+    seen_first: set[str] = set()
+    out_parts: list[str] = []
+    pos = 0
+    for m in full_rx.finditer(text):
+        full = m.group(1)
+        parts = full.split()
+        if parts[0] in _STOP or parts[-1] in _STOP:
+            continue
+        surname = parts[-1]
+        tail = text[m.end():m.end() + 200]
+        epi_m = epi_rx.match(tail)
+        if not epi_m:
+            continue
+        if surname not in seen_first:
+            # first full+epithet mention — keep verbatim
+            seen_first.add(surname)
+            continue
+        # RE-introduction: keep the surname only; drop the full name AND its appositive
+        drop_end = m.end() + epi_m.end()
+        # (append text since last cursor, then surname, then jump past drop_end)
+        out_parts.append(text[pos:m.start()])
+        out_parts.append(surname)
+        pos = drop_end
+        report.setdefault("collapsed_table_independent", []).append(
+            {"scholar": full, "kept": surname})
+    if pos == 0:
+        return text
+    out_parts.append(text[pos:])
+    return "".join(out_parts)
+
+
 def verify_pass(text: str, *, title: str = "", lang: str = "id",
                 extra_rows: Optional[list] = None) -> tuple[str, dict]:
     """One-shot unified proper_noun_verify. Returns (patched_text, report).
@@ -199,6 +249,12 @@ def verify_pass(text: str, *, title: str = "", lang: str = "id",
             if k:
                 out = head + tail
                 report["collapsed"].append({"scholar": full, "count": k})
+
+        # 1c — TABLE-INDEPENDENT R-E3: collapse epithet re-intros for scholars not in
+        # ENTITY_TABLE (Christine Dobbin ×4 on the Imam-Bonjol run). Must run AFTER
+        # variant unification (so re-intros of canonical names collapse) and AFTER
+        # table-driven collapse (so no double-processing on table-listed scholars).
+        out = _table_independent_r_e3(out, lang, report)
 
         # 2 — wrong-subject downgrade (persons + institutions).
         for w in wrong:
