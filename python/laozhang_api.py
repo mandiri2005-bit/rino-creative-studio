@@ -1006,15 +1006,66 @@ def _narasi_failover_on() -> bool:
     return str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _narasi_failover_chain() -> list[tuple[str, str, str, str]]:
-    """(name, base_url, api_key, per-provider model id), cheapest-first. Keys are read at
-    call time so newly-set env vars are picked up. A rung with an empty key is skipped by
-    the caller. The LaoZhang rung honours a per-request BYOK key (_req_key)."""
+def _narasi_failover_chain() -> list[tuple[str, str, str, str, str]]:
+    """(name, protocol, endpoint, api_key, per-provider model id), cheapest-first. protocol is
+    'anthropic' (native Messages API — KIE serves Claude at /claude/v1/messages) or 'openai'
+    (OpenAI-compatible /v1/chat/completions — LaoZhang, AtlasCloud). Keys read at call time so
+    newly-set env vars are picked up; an empty-key rung is skipped. LaoZhang honours BYOK (_req_key)."""
     return [
-        ("kie",        "https://api.kie.ai/api/v1",         os.environ.get("KIE_API_KEY", ""),         "claude-opus-4-6"),
-        ("laozhang",   BASE_URL,                            _req_key.get() or API_KEY,                  "claude-opus-4-6"),
-        ("atlascloud", "https://api.atlascloud.ai/api/v1",  os.environ.get("ATLASCLOUD_API_KEY", ""),   "claude-opus-4-8"),
+        ("kie",        "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""),        "claude-opus-4-6"),
+        ("laozhang",   "openai",    BASE_URL,                                _req_key.get() or API_KEY,                 "claude-opus-4-6"),
+        ("atlascloud", "openai",    "https://api.atlascloud.ai/api/v1",      os.environ.get("ATLASCLOUD_API_KEY", ""),  "claude-opus-4-8"),
     ]
+
+
+class _AdaptedResp:
+    """Minimal OpenAI-shaped wrapper around an Anthropic Messages response, so the failover
+    client's consumers (_resp_content / _log_narasi_usage / the generation loop) work unchanged
+    across protocols. choices=None when the reply carried no text (→ chain advances)."""
+    class _Msg:
+        def __init__(self, content): self.content = content
+    class _Choice:
+        def __init__(self, content, finish):
+            self.message = _AdaptedResp._Msg(content)
+            self.finish_reason = finish
+    class _Usage:
+        def __init__(self, tin, tout):
+            self.prompt_tokens = tin
+            self.completion_tokens = tout
+
+    def __init__(self, content, finish, tin, tout):
+        self.choices = [_AdaptedResp._Choice(content, finish)] if content is not None else None
+        self.usage = _AdaptedResp._Usage(tin, tout)
+
+
+def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout):
+    """POST to an Anthropic-native Messages endpoint (e.g. KIE https://api.kie.ai/claude/v1/messages)
+    and adapt the reply to the OpenAI shape. Splits any `system` role out to the top-level system
+    param (Anthropic requirement). Raises on transport failure so the caller advances the chain."""
+    import http.client, ssl
+    from urllib.parse import urlparse
+    u = urlparse(url)
+    system = "\n\n".join(m.get("content", "") for m in messages
+                         if m.get("role") == "system" and m.get("content"))
+    conv = [{"role": m["role"], "content": m.get("content", "")}
+            for m in messages if m.get("role") in ("user", "assistant")]
+    body = {"model": model_id, "max_tokens": int(max_tokens), "stream": False, "messages": conv}
+    if system:
+        body["system"] = system
+    conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=float(timeout),
+                                       context=ssl.create_default_context())
+    try:
+        conn.request("POST", u.path or "/v1/messages", json.dumps(body),
+                     {"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        raw = conn.getresponse().read().decode("utf-8", "replace")
+    finally:
+        conn.close()
+    d = json.loads(raw)
+    blocks = d.get("content")
+    text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict)) if isinstance(blocks, list) else ""
+    usage = d.get("usage") or {}
+    return _AdaptedResp(text or None, d.get("stop_reason") or "stop",
+                        int(usage.get("input_tokens", 0) or 0), int(usage.get("output_tokens", 0) or 0))
 
 
 class _NarasiFailoverClient:
@@ -1045,14 +1096,14 @@ class _NarasiFailoverClient:
 
     def _create(self, **kw):
         chain = _narasi_failover_chain()
-        primary = next((c[0] for c in chain if c[2]), "")
+        primary = next((c[0] for c in chain if c[3]), "")
         # Bound the whole cheapest-first walk to a budget < the caller's outer per-chapter
         # wait_for, giving each rung the REMAINING budget (not a fresh full timeout) so a hung
         # early rung cannot consume the whole window and strand later rungs / the worker thread.
         deadline = time.monotonic() + _NARASI_FAILOVER_CHAIN_BUDGET
         errors: list[str] = []
         attempted = 0
-        for name, base_url, key, model_id in chain:
+        for name, proto, endpoint, key, model_id in chain:
             if not key:
                 continue
             remaining = deadline - time.monotonic()
@@ -1064,9 +1115,13 @@ class _NarasiFailoverClient:
             call_kw = dict(kw)
             call_kw["model"] = model_id
             try:
-                cli = OpenAI(api_key=key, base_url=base_url,
-                             timeout=rung_timeout, max_retries=0)
-                resp = cli.chat.completions.create(**call_kw)
+                if proto == "anthropic":
+                    resp = _anthropic_messages_create(endpoint, key, model_id,
+                                                      call_kw.get("messages") or [],
+                                                      call_kw.get("max_tokens") or 4000, rung_timeout)
+                else:
+                    cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
+                    resp = cli.chat.completions.create(**call_kw)
                 if _resp_content(resp) is None:
                     # Empty 200 (choices=None / no content). A mislabeled or unavailable model id
                     # (e.g. opus-4-6) returns an error BODY with HTTP 200 rather than raising, so
