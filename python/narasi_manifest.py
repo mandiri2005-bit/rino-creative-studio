@@ -33,6 +33,10 @@ PIPELINE_RULES = (
     "counters.anchors",     # §6.2 anchor budget 3
     "counters.scene_dup",   # §6.1 cross-chapter scene dedup
     "counters.thesis",      # R-H6 (embed-based)
+    "counters.same_scholar",     # SPEC v1 §3.6 (Aceh: Carey ×10 / Reid ×5)
+    "counters.debate_pairing",   # SPEC v1 §3.6 (Aceh: Reid-vs-vantVeer every-chapter)
+    "counters.subtotal_scope",   # SPEC v1 §3.1 troop/crowd (Aceh: Kuta Reh 313)
+    "counters.sequence",         # SPEC v1 §3.1 modifier (Aceh: Concentratie inversion)
     "register_gate",        # R-H10 scorecard
     "factscan",             # R-FG9/FG10 sweep
     "verify_search",        # R-FG8 search-backed verify (dispatch)
@@ -104,6 +108,16 @@ def build_manifest(*, style_entry: dict | None, lang: str, regime: str, mode: st
     _set("counters.epithet", "active" if pack.get("epithet") else "UNMEASURED",
          "" if pack.get("epithet") else f"no epithet pattern for '{lang_key}'")
     _set("counters.word_budget", "active")
+    # SPEC v1 §3.6 Aceh deltas — deterministic counters, always active when attribution
+    # regex exists for the language. The `subtotal_scope` + `sequence` counters live in
+    # fact_scan but ride on the fact_report → verify pipeline (they're report-only until
+    # verify runs on them, which the T1/T2 dispatch does).
+    _set("counters.same_scholar", "active" if pack.get("attribution") else "UNMEASURED",
+         "" if pack.get("attribution") else f"no attribution regex for '{lang_key}'")
+    _set("counters.debate_pairing", "active" if pack.get("attribution") else "UNMEASURED",
+         "" if pack.get("attribution") else f"no attribution regex for '{lang_key}'")
+    _set("counters.subtotal_scope", "active")
+    _set("counters.sequence", "active")
     _set("counters.anchors", "active")
     _set("counters.scene_dup", "active")
     _set("counters.thesis", "active" if budgets.get("thesis_restatement_max") is not None

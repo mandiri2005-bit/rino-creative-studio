@@ -1,9 +1,9 @@
 # NARASI ⚡ PIPELINE-SPEC — canonical, versioned
 
-**Version: 1.1.0 (2026-07-04)** · Adds FG-SEARCH Phase-1 wiring (dates + proper-nouns +
-gap_fill) per `cc-instruksi-wire-fg-search-now.md` and the `gap_fill` mechanic per
-`cc-instruksi-ledger-seed-diponegoro.md` §2. Supersedes 15 CC instruction addenda now
-archived to `/changelog` — the code + this spec are the source of truth.
+**Version: 2.0.0 (2026-07-04)** · Ratifies user's `PIPELINE-SPEC-v1.md` as v2 canonical:
+adds Aceh review rule deltas (R-E3 within-doc + `same_scholar_max` + `debate_pairing_variance`
++ `subtotal_scope` + `sequence-claim` classes + synonym-swap dedup) and the 16-CC-addenda
+consolidation. Supersedes 16 addenda now archived to `/changelog`.
 
 ## 0. Rule zero — no silent deployment gaps
 

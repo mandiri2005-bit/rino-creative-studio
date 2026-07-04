@@ -88,6 +88,23 @@ _INSTITUTION_NOUNS = (r"(?:[Kk]as|[Dd]ewan|[Kk]antor|[Kk]omisi|[Ll]embaga|[Bb]ad
                       r"[Tt]raktat|[Rr]esolusi|[Aa]turan|[Kk]eputusan)")
 _INSTITUTION_RX = re.compile(
     r"\b(" + _INSTITUTION_NOUNS + r"\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\b")
+
+# SPEC v1 §3.1 troop/crowd row (Aceh review): "Kuta Reh 313 total" where 313 is the
+# SUBTOTAL of adult men (Kempees). Detect claims of the form <NUMBER> <TOTALIZER> where
+# the sentence ALSO carries "sebagian besar bukan …" — the auto-undercut signature. Not
+# blocking; a signal for the verify pass to check scope specifically.
+_SUBTOTAL_TRAP_RX = re.compile(
+    r"(?i)\b(\d{2,5})\s+(?:orang|jiwa|penduduk|tewas|korban)[^.\n]{0,60}?"
+    r"(?:sebagian\s+besar|kebanyakan|mayoritas)\s+(?:bukan|tidak)")
+
+# SPEC v1 §3.1 modifier: "sequence claims" (X as response to Y, X after Y) are verify-
+# eligible — causal-order inversions (Concentratie-stelsel-as-response-to-Umar class,
+# mosque-burning-after-second-expedition class) are contradicted, not style notes.
+_SEQUENCE_RX = re.compile(
+    r"(?i)\b(?:sebagai\s+respons(?:i|)?\s+atas|setelah|sesudah|menyusul|"
+    r"as\s+a\s+response\s+to|in\s+response\s+to|after|following)\b"
+    r"[^.\n]{0,80}?(?:\b(?:membangun|meluncurkan|mendirikan|memerintahkan|"
+    r"mengeluarkan|menandatangani|built|launched|ordered|signed)\b)")
 _FOREIGN_NEAR = re.compile(r"\*[^*]{2,30}\*|\b[a-z]+tl\b|\b[A-Z][a-z]+ah\b")
 _SUPERL_QUAL = re.compile(r"(?i)\b(?:most\s+detailed|greatest|finest|unmatched|unrivalled|unrivaled|"
                           r"most\s+sophisticated|most\s+advanced)\b")
@@ -191,6 +208,34 @@ def fact_scan(text: str, *, factual_regime: str = "strict", lang: str = "en") ->
             "count": len(inst_hits),
             "samples": [h["sentence"] for h in inst_hits[:8]],
             "tokens": inst_hits[:40],
+        }
+
+        # SPEC v1 §3.1 troop/crowd — subtotal-vs-total trap (Aceh: Kuta Reh 313)
+        subtotal = []
+        for s in body_sents:
+            if _known_good(s):
+                continue
+            m = _SUBTOTAL_TRAP_RX.search(s)
+            if m:
+                subtotal.append({"sentence": s[:200], "token": m.group(1),
+                                 "note": "figure may be a subtotal (adult men); verify against full breakdown"})
+        rep["classes"]["subtotal_scope"] = {
+            "count": len(subtotal),
+            "samples": [h["sentence"] for h in subtotal[:6]],
+            "tokens": subtotal[:20],
+        }
+
+        # SPEC v1 §3.1 modifier — sequence claims (causal-order verify-eligible)
+        sequence = []
+        for s in body_sents:
+            if _known_good(s):
+                continue
+            if _SEQUENCE_RX.search(s):
+                sequence.append({"sentence": s[:200], "token": ""})
+        rep["classes"]["sequence"] = {
+            "count": len(sequence),
+            "samples": [h["sentence"] for h in sequence[:8]],
+            "tokens": sequence[:30],
         }
 
         if factual_regime == "fictional":

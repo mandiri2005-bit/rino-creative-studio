@@ -50,6 +50,7 @@ _QUERY_PREFIX: dict[str, dict[str, str]] = {
            "proper_relation": "", "etymology_gloss": "etymology",
            "superlative_qualitative": "",
            "proper_noun_institution": "does the institution exist",
+           "subtotal_scope": "total vs subtotal", "sequence": "chronology",
            "gap_fill_date": "date", "gap_fill_general": "fact check"},
     "id": {"date": "tanggal", "date_tokens": "tanggal",
            "quantitative_unverified": "cek fakta",
@@ -59,6 +60,7 @@ _QUERY_PREFIX: dict[str, dict[str, str]] = {
            "proper_relation": "", "etymology_gloss": "etimologi",
            "superlative_qualitative": "",
            "proper_noun_institution": "apakah lembaga",
+           "subtotal_scope": "total atau subtotal", "sequence": "urutan waktu",
            "gap_fill_date": "tanggal", "gap_fill_general": "cek fakta"},
     "nl": {"date": "datum", "quantitative_unverified": "controleer feit",
            "attributed_quote": "primaire bron", "proper_noun_institution": "bestaat instelling",
@@ -278,6 +280,7 @@ async def verify_report(fact_report: dict, *, project_id=None, tenant_id=None,
         # first; gap_fill_general/date always fully searched before the cap.
         _PRIORITY = ("gap_fill_date", "gap_fill_general",
                      "date", "proper_noun_institution",
+                     "subtotal_scope", "sequence",     # SPEC v1 §3.1 modifiers
                      "quantitative_unverified", "date_tokens",
                      "proper_relation", "etymology_gloss",
                      "attributed_quote", "negative_existence_unscoped",

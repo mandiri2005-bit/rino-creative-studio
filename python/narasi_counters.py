@@ -450,25 +450,34 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
                 "sentences": [s[:200] for _, s in standalone],
             }
 
-        # ── R-E3 epithet-once ──
-        # A RE-introduction is "Full Name, an/the <epithet>," for a surname the manuscript
-        # has already introduced (attribution match OR earlier full-name+epithet). Checked on
-        # every sentence — not only attribution-verb sentences (Hassig-4x came as bare
-        # appositives, no verb).
+        # ── R-E3 epithet-once (SPEC v1 §3.6: WITHIN-DOCUMENT, TABLE-INDEPENDENT) ──
+        # A RE-introduction is "Full Name, <epithet appositive>," for a surname the
+        # manuscript has ALREADY introduced. Regression on the Aceh run: Reid ×5 with
+        # full epithet on the ID path — because the old reintro regex was hardcoded
+        # English "an/the". Now the appositive detector is the language pack's own
+        # `epithet` regex, so any language whose pack defines it enforces R-E3 without
+        # any per-project scholar table.
         if pack is None or pack.get("attribution") is None or pack.get("epithet") is None:
             report["counters"]["epithet"] = {"status": "UNMEASURED"}
         else:
             rx = pack["attribution"]
-            reintro = re.compile(r"\b([A-Z][a-z]+\s+[A-Z][a-zA-Z]+),\s+(?:an?|the)\s+[^,]{4,60},")
+            epi_rx = pack["epithet"]   # pack's language-local appositive pattern
+            # Match "Full Name" IMMEDIATELY followed by the pack-defined appositive.
+            _full_name_rx = re.compile(r"\b([A-Z][a-zA-Z.]+(?:\s+[A-Z][a-zA-Z.]+)+)")
             seen: set[str] = set()
             violations = []
             for i, s in enumerate(sents):
-                hits_full = [m.group(1) for m in reintro.finditer(s)]
+                hits_full: list[str] = []
+                for m in _full_name_rx.finditer(s):
+                    tail = s[m.end():m.end() + 130]
+                    epi_m = epi_rx.match(tail)
+                    if epi_m:
+                        hits_full.append(m.group(1))
                 for full in hits_full:
                     surname = full.split()[-1]
                     if surname in seen:
                         violations.append((i, s))
-                # register names AFTER the violation check so first-mention epithets are legal
+                # register AFTER the check so a first-mention epithet is legal
                 for m in rx.finditer(s):
                     name = _names_from(m)
                     if name:
@@ -480,6 +489,62 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
                 "count": len(violations),
                 "sentences": [s[:200] for _, s in violations],
             }
+
+        # ── same_scholar_max (SPEC §3.6, Aceh review): one scholar ≤4 total sentence
+        # mentions (Carey ×10 / Reid ×5 class). Independent of R-E3 (which fires on
+        # re-introductions with epithet); this fires on RAW sentence-count regardless
+        # of whether an epithet accompanies the mention.
+        if pack is not None and pack.get("attribution") is not None:
+            rx = pack["attribution"]
+            per_scholar: dict[str, int] = {}
+            per_scholar_sents: dict[str, list] = {}
+            for i, s in enumerate(sents):
+                for m in rx.finditer(s):
+                    n = _names_from(m)
+                    if not n:
+                        continue
+                    surname = n.split()[-1]
+                    per_scholar[surname] = per_scholar.get(surname, 0) + 1
+                    per_scholar_sents.setdefault(surname, []).append(s[:180])
+            ss_max = int(budgets.get("same_scholar_max", 4))
+            over_sch = {s_: c for s_, c in per_scholar.items() if c > ss_max}
+            report["counters"]["same_scholar"] = {
+                "status": "OVER" if over_sch else "PASS",
+                "budget": ss_max,
+                "over": [{"scholar": s_, "count": c,
+                          "sentences": per_scholar_sents.get(s_, [])[:6]}
+                         for s_, c in over_sch.items()],
+            }
+
+            # ── debate_pairing_variance (SPEC §3.6, Aceh review): the SAME two scholars
+            # may be staged against each other in ≤2 chapters. "Reid-vs-van 't Veer every
+            # chapter" is a formula tell independent of citation count. A "pairing" is
+            # two distinct scholar surnames co-occurring within one chapter.
+            ch_pairs: dict[frozenset, set] = {}
+            for ci, ch in enumerate(chapters):
+                surnames_here: set[str] = set()
+                for m in rx.finditer(ch):
+                    n = _names_from(m)
+                    if n:
+                        surnames_here.add(n.split()[-1])
+                if len(surnames_here) >= 2:
+                    surnames_list = list(surnames_here)
+                    for a in range(len(surnames_list)):
+                        for b in range(a + 1, len(surnames_list)):
+                            key = frozenset((surnames_list[a], surnames_list[b]))
+                            ch_pairs.setdefault(key, set()).add(ci)
+            dp_max = int(budgets.get("debate_pairing_max", 2))
+            over_pairs = [(list(k), sorted(v)) for k, v in ch_pairs.items()
+                          if len(v) > dp_max]
+            report["counters"]["debate_pairing"] = {
+                "status": "OVER" if over_pairs else "PASS",
+                "budget": dp_max,
+                "over": [{"scholars": p[0], "chapters": [c + 1 for c in p[1]]}
+                         for p in over_pairs[:6]],
+            }
+        else:
+            report["counters"]["same_scholar"] = {"status": "UNMEASURED"}
+            report["counters"]["debate_pairing"] = {"status": "UNMEASURED"}
 
         # ── R-E4 word budget (±10%) ──
         # UNDER and OVER are distinct: an UNDERSHOOTING manuscript must NEVER enter the
@@ -536,8 +601,23 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
                          "juta", "seribu", "seratus", "tahun", "one", "two", "three", "four",
                          "five", "six", "seven", "eight", "nine", "ten", "hundred", "thousand"}
 
+            # SPEC v1 §3.9 synonym-swap dedup: paraphrase-resistant scene detection —
+            # "roda gerobak hingga poros" and "roda gerobak hingga as" share a template
+            # even though the shingles differ. Canonicalize synonym groups so both forms
+            # collapse to the same shingle. Grow the map from real reviews.
+            _SYNONYM_CANON = {
+                "poros": "as", "gandar": "as",             # mechanical axle
+                "lumpur": "lumpur", "berlumpur": "lumpur",  # mud family
+                "hujan": "hujan", "gerimis": "hujan",       # rain family
+                "cermin": "cermin", "ceureumen": "cermin",  # Aceh loan
+            }
+
+            def _canon_word(w: str) -> str:
+                return _SYNONYM_CANON.get(w, w)
+
             def _shingles(t: str) -> set:
-                w = re.sub(r"[^\wàâéèêîôûáíóúäëïöü' -]", " ", t.lower()).split()
+                w0 = re.sub(r"[^\wàâéèêîôûáíóúäëïöü' -]", " ", t.lower()).split()
+                w = [_canon_word(x) for x in w0]
                 out = set()
                 for i in range(max(0, len(w) - 5)):
                     six = w[i:i + 6]
@@ -758,4 +838,20 @@ def surgical_prompt(report: dict, *, language: str = "English") -> str:
             "narration — they read as invented testimony. Rewrite each to the narrator's POV, "
             "or attribute it explicitly to a documented source, or mark it in-text as an "
             "imagined voice. Lines:\n- " + "\n- ".join(av.get("sentences", [])[:6]))
+    if c.get("same_scholar", {}).get("status") == "OVER":
+        ss = c["same_scholar"]
+        _who = "; ".join(f"{o['scholar']} ×{o['count']}" for o in ss.get("over", [])[:3])
+        parts.append(
+            f"SAME SCHOLAR OVER-REPRESENTED: {_who} exceed the budget of {ss['budget']} sentence "
+            "mentions per scholar. Keep the strongest instances; replace the rest with adjacent "
+            "attribution names (or fold into unattributed prose). One scholar cited across every "
+            "chapter is a formula tell.")
+    if c.get("debate_pairing", {}).get("status") == "OVER":
+        dp = c["debate_pairing"]
+        _pairs = "; ".join(f"{'/'.join(o['scholars'])} in bab {o['chapters']}"
+                            for o in dp.get("over", [])[:3])
+        parts.append(
+            f"DEBATE PAIRING VARIANCE: {_pairs}. The same two scholars staged against each "
+            f"other in >{dp['budget']} chapters is a formula. Vary the pairing — introduce a "
+            "different second voice, or fold one side into unattributed synthesis.")
     return "\n\n".join(parts)
