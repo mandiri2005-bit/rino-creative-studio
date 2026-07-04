@@ -737,6 +737,20 @@ async def lifespan(application):
     # ⚠️ DEPLOY PREREQ: CLERK_JWT_ISSUER MUST be set in prod (it is — real Clerk logins resolve to
     # real tenants, so the issuer is configured), else the python service refuses to boot.
     _require_prod_auth()
+    # NARASI_EXECUTOR_THREADS (env): widen the event loop's default ThreadPoolExecutor.
+    # EVERY blocking LLM call in the app runs through asyncio.to_thread (narasi chapters,
+    # the ⚡ orchestrator's run_worker, outlines, failover, TTS…) and they ALL share this
+    # one pool, whose stock size is min(32, cpu+4) ≈ 12-32 — the process-wide concurrency
+    # ceiling. Under load (tens of concurrent narration jobs) chapter calls queue behind
+    # each other and the SYNCHRONOUS outline request starves into proxy timeouts. Threads
+    # here are I/O-idle (waiting on upstream HTTP), so a bigger pool is nearly free.
+    # Unset/0 = stock behavior (zero-risk deploy); recommended 128 in prod.
+    _exec_threads = int(os.environ.get("NARASI_EXECUTOR_THREADS", "0") or 0)
+    if _exec_threads > 0:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        asyncio.get_running_loop().set_default_executor(
+            _TPE(max_workers=_exec_threads, thread_name_prefix="llm"))
+        print(f"[executor] default ThreadPoolExecutor widened to {_exec_threads} threads")
     await db.init_db()
     await rc.init_redis()
     # Async image-job orphan sweep: reap 'running' jobs left by a process restart (refund their held
@@ -1043,7 +1057,7 @@ class _AdaptedResp:
         self.usage = _AdaptedResp._Usage(tin, tout)
 
 
-def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout):
+def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout, temperature=None):
     """POST to an Anthropic-native Messages endpoint (e.g. KIE https://api.kie.ai/claude/v1/messages)
     and adapt the reply to the OpenAI shape. Splits any `system` role out to the top-level system
     param (Anthropic requirement). Raises on transport failure so the caller advances the chain."""
@@ -1057,6 +1071,11 @@ def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout
     body = {"model": model_id, "max_tokens": int(max_tokens), "stream": False, "messages": conv}
     if system:
         body["system"] = system
+    if temperature is not None:
+        try:
+            body["temperature"] = float(temperature)
+        except (TypeError, ValueError):
+            pass
     conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=float(timeout),
                                        context=ssl.create_default_context())
     try:
@@ -1123,7 +1142,8 @@ class _NarasiFailoverClient:
                 if proto == "anthropic":
                     resp = _anthropic_messages_create(endpoint, key, model_id,
                                                       call_kw.get("messages") or [],
-                                                      call_kw.get("max_tokens") or 4000, rung_timeout)
+                                                      call_kw.get("max_tokens") or 4000, rung_timeout,
+                                                      temperature=call_kw.get("temperature"))
                 else:
                     cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
                     resp = cli.chat.completions.create(**call_kw)

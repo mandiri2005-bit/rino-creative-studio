@@ -45,7 +45,12 @@ log = logging.getLogger("orchestrator")
 _USING_LAOZHANG = False
 try:  # pragma: no cover - depends on environment deps
     from laozhang_api import (  # type: ignore
-        make_client as _lz_make_client,
+        # make_narasi_client = the narasi AGGREGATOR-FAILOVER factory (KIE → LaoZhang →
+        # AtlasCloud for the Opus narasi models when NARASI_FAILOVER_ENABLED; plain
+        # make_client otherwise — byte-identical no-op for non-opus/flag-off/BYOK).
+        # Previously this imported plain make_client, so the ⚡ engine's chapter calls
+        # NEVER used the cheap KIE rung even with the keys set (classic-only wiring).
+        make_narasi_client as _lz_make_client,
         MODELS as _LZ_MODELS,
         MODEL_MAX_TOKENS as _LZ_MODEL_MAX_TOKENS,
         DEFAULT_MAX_TOKENS as _LZ_DEFAULT_MAX_TOKENS,
