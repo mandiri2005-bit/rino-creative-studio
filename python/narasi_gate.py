@@ -1,0 +1,264 @@
+# ── narasi_gate — CC INSTRUCTION v3 (R-FG4/R-FG5/R-FG6): deterministic post-generation
+# gates for the narasi engines. NO LLM calls, NO network, stdlib only — importable from
+# both laozhang_api.py and the orchestrator without cycles.
+#
+#   R-FG6  resolve→hedge→cut: a flagged number ([VERIFY: ...]) has exactly three legal
+#          exits — hedged value ("around 1547"), hedge-into-prose ("several times"), or
+#          cut. A raw [VERIFY] is NEVER a legal output.
+#   R-FG5  terminal bracket-block scan: after every rewrite (incl. the ⚡ polish), a
+#          deterministic regex pass strips any surviving directive token so a manuscript
+#          with [VERIFY]/TODO/FIXME residue can never ship. Whitelisted: VO performance
+#          markers ([pause]/[beat]/[silence]/[ANCHOR]), the failed-chapter placeholder,
+#          the "> **Gaya:** ..." metadata header (no brackets, untouched by design).
+#   R-FG4  known_bad_claims: a per-project store of previously-flagged wrong claims
+#          (seeded: siege of Tenochtitlan = 93 days — 75/79/80-day variants shipped
+#          THREE times). Deterministic regex check auto-corrects (action=replace) or
+#          flags (action=flag) on every gated text; also exported as a KNOWN CORRECTIONS
+#          prompt block so generation is prevented, not just patched.
+#
+# Kill switch: NARASI_TERMINAL_GATE=0 disables the whole module (default ON — these are
+# blocking bugs per the v3 spec, not style preferences).
+from __future__ import annotations
+
+import os
+import re
+from typing import Any, Optional
+
+__all__ = [
+    "gate_enabled", "gate_text", "resolve_flags", "apply_known_bad",
+    "terminal_scan", "known_corrections_prompt", "set_db_claims", "BANNED_DICTION",
+]
+
+
+def gate_enabled() -> bool:
+    return str(os.environ.get("NARASI_TERMINAL_GATE", "1")).strip().lower() not in ("0", "false", "no", "off")
+
+
+# ── R-FG4 seed — in-process fallback so the gate works even before/without the DB
+# table (narasi_known_bad_claims, migration 0057). Rows loaded from the DB are merged
+# in via set_db_claims() at job start (best-effort).
+#   pattern       must contain a named group (?P<bad>...) — the span that gets replaced
+#                 (action=replace) or reported (action=flag).
+#   action        "replace" → substitute the <bad> span with `correct`;
+#                 "flag"    → never mutate, only report (logic errors can't be regexed
+#                             safely into truth — they go to the report + the KNOWN
+#                             CORRECTIONS prompt block).
+KNOWN_BAD_SEED: list[dict[str, Any]] = [
+    {
+        # Siege of Tenochtitlan duration — shipped as "75/79/80 days" three times.
+        # Context-scoped (same sentence must mention the siege/demolition/Tenochtitlan)
+        # so an unrelated legitimate "75 days" in another narration is never touched.
+        "name": "tenochtitlan-siege-93-days",
+        "pattern": r"(?is)(?:siege|demolition|tenochtitlan|blockade)[^.!?\n]{0,200}?"
+                   r"(?P<bad>(?:seventy[-\s]?five|seventy[-\s]?nine|75|79|80)[-\s]*(?:days?|hari))\b",
+        "correct": "93 days",
+        "action": "replace",
+        "source": "human flag x3 (R-FG4 seed); siege = 93 days, May 22 - Aug 13, 1521",
+    },
+    {
+        # Reverse order: the number precedes the siege mention in the sentence.
+        "name": "tenochtitlan-siege-93-days-rev",
+        "pattern": r"(?is)\b(?P<bad>(?:seventy[-\s]?five|seventy[-\s]?nine|75|79|80)[-\s]*(?:days?|hari))"
+                   r"[^.!?\n]{0,200}?(?:siege|tenochtitlan)",
+        "correct": "93 days",
+        "action": "replace",
+        "source": "human flag x3 (R-FG4 seed)",
+    },
+    {
+        # Smallpox-immunity logic error: Indigenous allies (Tlaxcalans etc.) framed as
+        # having Old World exposure/immunity. Flag-only — a logic claim can't be safely
+        # regex-rewritten; prevention lives in the KNOWN CORRECTIONS prompt block.
+        "name": "tlaxcalan-immunity-error",
+        "pattern": r"(?is)(?P<bad>\b(?:tlaxcal\w+|totonac\w*|indigenous|native)\b[^.!?\n]{0,120}?"
+                   r"(?:immun\w+|survived\s+childhood\s+smallpox|prior\s+exposure|old[-\s]world\s+exposure))",
+        "correct": ("Indigenous allies (Tlaxcalans, Totonacs, etc.) had NO Old World disease exposure "
+                    "or immunity — only Europeans with prior exposure did. Smallpox struck Indigenous "
+                    "populations broadly; Tenochtitlan's fall was decisive because of density, timing, "
+                    "leadership deaths, and siege pressure."),
+        "action": "flag",
+        "source": "backend-rules fix #2 (R-FG4 seed)",
+    },
+]
+
+_DB_CLAIMS: list[dict[str, Any]] = []   # merged in by set_db_claims() (per-process cache)
+
+
+def set_db_claims(rows: list[dict[str, Any]]) -> None:
+    """Merge DB-loaded known_bad_claims rows into the in-process registry (best-effort,
+    called at job start). Rows need: pattern (with (?P<bad>...)), correct, action."""
+    global _DB_CLAIMS
+    ok = []
+    for r in rows or []:
+        try:
+            pat = r.get("bad_pattern") or r.get("pattern") or ""
+            if not pat or "(?P<bad>" not in pat:
+                continue
+            re.compile(pat)   # reject broken patterns at load, not at gate time
+            ok.append({
+                "name": r.get("name") or "db-claim",
+                "pattern": pat,
+                "correct": r.get("correct_value") or r.get("correct") or "",
+                "action": (r.get("action") or "replace").strip().lower(),
+                "source": r.get("source") or "db",
+            })
+        except Exception:
+            continue
+    _DB_CLAIMS = ok
+
+
+def _claims() -> list[dict[str, Any]]:
+    return KNOWN_BAD_SEED + _DB_CLAIMS
+
+
+def apply_known_bad(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """R-FG4 check. Returns (corrected_text, report_rows). action=replace substitutes the
+    <bad> span with the correct value; action=flag only reports (never mutates)."""
+    report: list[dict[str, Any]] = []
+    if not text:
+        return text, report
+    for c in _claims():
+        try:
+            rx = re.compile(c["pattern"])
+        except Exception:
+            continue
+        # Iterate manually so we replace ONLY the named <bad> span, keeping the context.
+        while True:
+            m = rx.search(text)
+            if not m or not m.group("bad"):
+                break
+            if c["action"] == "replace" and c.get("correct"):
+                s, e = m.span("bad")
+                text = text[:s] + c["correct"] + text[e:]
+                report.append({"claim": c["name"], "action": "corrected",
+                               "from": m.group("bad")[:80], "to": c["correct"][:80]})
+                continue   # re-search: there may be more occurrences
+            report.append({"claim": c["name"], "action": "flagged",
+                           "span": m.group("bad")[:160], "note": c.get("correct", "")[:200]})
+            break          # flag-only: report once per claim, never loop
+    return text, report
+
+
+# ── R-FG6: [VERIFY]/TODO/FIXME resolution — three legal exits, never a raw bracket. ──
+# Optional preceding qualifier is consumed so "at least [VERIFY: number] times" reads
+# "several times", and "in [VERIFY: 1547]" reads "around 1547" (not "in around 1547").
+_VERIFY_RX = re.compile(
+    r"(?i)(?P<prep>\b(?:in|at|of|by|on)\s+)?(?P<qual>\b(?:at\s+least|exactly|precisely|approximately)\s+)?"
+    r"\[\s*VERIFY\b[:\-]?\s*(?P<inner>[^\]]*)\]")
+_CUT_RX = re.compile(r"(?i)\[\s*(?:TODO|FIXME|CITE|STYLE)\b[^\]]*\]")
+_HEDGES = ("roughly", "about", "around", "approximately", "some", "circa", "nearly")
+
+
+def resolve_flags(text: str) -> tuple[str, dict[str, int]]:
+    """Resolve every [VERIFY: ...] via hedge-value / hedge-prose / cut; cut TODO/FIXME."""
+    stats = {"hedged_value": 0, "hedged_prose": 0, "cut": 0}
+    if not text:
+        return text, stats
+
+    def _verify_sub(m: re.Match) -> str:
+        inner = (m.group("inner") or "").strip()
+        if any(ch.isdigit() for ch in inner):
+            # Exit 1 — a value exists inside the flag: emit it hedged. Start from the
+            # hedge word if the flag already carries one ("roughly 60-80 km"), else from
+            # the first digit with an "around" prefix.
+            low = inner.lower()
+            start = None
+            for h in _HEDGES:
+                i = low.find(h)
+                if i >= 0 and (start is None or i < start):
+                    start = i
+            if start is not None:
+                val = inner[start:].strip()
+            else:
+                di = next(i for i, ch in enumerate(inner) if ch.isdigit())
+                val = "around " + inner[di:].strip()
+            stats["hedged_value"] += 1
+            # A numeric hedge replaces the preposition ("in [VERIFY: 1547]" → "around 1547").
+            return val
+        # Exit 2 — no value: hedge into prose (qualifier consumed: "at least X times" → "several times").
+        stats["hedged_prose"] += 1
+        prep = m.group("prep") or ""
+        return (prep + "several").strip() if prep else "several"
+
+    text = _VERIFY_RX.sub(_verify_sub, text)
+    text, n = _CUT_RX.subn("", text)
+    stats["cut"] += n
+    # tidy: collapse doubled spaces / space-before-punctuation the substitutions leave
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" +([,.;:!?])", r"\1", text)
+    return text, stats
+
+
+# ── R-FG5: terminal scan + deterministic strip of survivors. ──
+# Whitelist: VO performance markers (the PRODUCT in video mode), the orchestrator's
+# failed-chapter placeholder (an explicit signal, not residue).
+_WHITELIST_RX = re.compile(
+    r"(?i)^\[(?:pause|beat|silence|anchor)[^\]]*\]$|^\[CHAPTER \d+ [—-].*FAILED TO GENERATE.*\]$")
+_DIRECTIVE_RX = re.compile(r"(?i)\[[^\]]*(?:VERIFY|TODO|FIXME|CITE:|STYLE:)[^\]]*\]|\[\s*\]")
+
+
+def terminal_scan(text: str) -> list[str]:
+    """Return surviving directive tokens (post-resolution). Empty list = clean."""
+    hits = []
+    for m in _DIRECTIVE_RX.finditer(text or ""):
+        tok = m.group(0)
+        if not _WHITELIST_RX.match(tok):
+            hits.append(tok[:80])
+    return hits
+
+
+def gate_text(text: str) -> tuple[str, dict[str, Any]]:
+    """Full deterministic gate: known-bad correct → resolve flags → terminal scan →
+    strip survivors. Never raises; returns the original text on any internal error."""
+    report: dict[str, Any] = {"known_bad": [], "flags": {}, "stripped": 0, "enabled": gate_enabled()}
+    if not text or not gate_enabled():
+        return text, report
+    try:
+        out, kb = apply_known_bad(text)
+        out, stats = resolve_flags(out)
+        survivors = terminal_scan(out)
+        if survivors:
+            # Never ship a directive bracket: deterministic last-resort strip.
+            out = _DIRECTIVE_RX.sub(lambda m: "" if not _WHITELIST_RX.match(m.group(0)) else m.group(0), out)
+            out = re.sub(r"[ \t]{2,}", " ", out)
+            out = re.sub(r" +([,.;:!?])", r"\1", out)
+        report.update({"known_bad": kb, "flags": stats, "stripped": len(survivors)})
+        return out, report
+    except Exception:
+        return text, report
+
+
+def known_corrections_prompt() -> str:
+    """KNOWN CORRECTIONS block for the generation prompts (prevention, not patching).
+    Injected into the shared system prefix so every worker sees the same hard facts."""
+    lines = []
+    seen = set()
+    for c in _claims():
+        note = (c.get("correct") or "").strip()
+        if not note or note in seen:
+            continue
+        seen.add(note)
+        if c["action"] == "replace":
+            lines.append(f"- The siege of Tenochtitlan lasted 93 days (May 22 - August 13, 1521). "
+                         f"NEVER write 75, 79, or 80 days." if c["name"].startswith("tenochtitlan")
+                         else f"- {note}")
+        else:
+            lines.append(f"- {note}")
+    if not lines:
+        return ""
+    return "KNOWN CORRECTIONS (hard facts — never contradict these):\n" + "\n".join(dict.fromkeys(lines))
+
+
+# ── R-H10 helper: banned source-branded diction (the anti-pastiche tells). Deterministic
+# count used by the register scorecard; the LLM half (scale-shift / contingency-reveal)
+# lives with the critic. ──
+BANNED_DICTION = (
+    # singular forms substring-match their plurals — do not list both
+    "imagined order", "operating system of belief",
+    "shared fiction", "universal fiction", "collective fiction",
+    "gold-standard economy",   # anachronism (backend-rules fix #4)
+)
+
+
+def banned_diction_hits(text: str) -> list[str]:
+    low = (text or "").lower()
+    return [p for p in BANNED_DICTION if p in low]

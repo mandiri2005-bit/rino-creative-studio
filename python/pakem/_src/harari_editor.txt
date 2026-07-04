@@ -93,3 +93,11 @@ Do **not** rewrite the manuscript yourself. The editor pass produces an edit lis
 The system this manuscript was generated under is mostly working. Your job is not to dismantle it. Your job is to find the moves that worked the first time and were reused until they became signatures — and to break the pattern on the second or third recurrence.
 
 A manuscript that passes every rule and still sounds like itself across ten chapters is the failure mode. Diversity of shape, across chapters, is the prestige signal.
+
+## REGISTER CALIBRATION (R-H9 / R-H10)
+
+Confirm BOTH, independently — one can never satisfy the other:
+1. At least one genuine SCALE-SHIFT is present (frame snaps from the scene to deep time / the species and back, as vertigo — exposition about deep time does NOT count).
+2. Zero source-branded diction: "imagined order(s)", belief-"operating system(s)", "shared/universal/collective fiction".
+
+A chapter with the banned vocabulary fails. A manuscript with no scale-shift also fails — flag it as off-register, do not pass it as harari. Also verify: at least one passage reveals an institution/order as a contingent human invention; the confidence ladder is respected (no invented precision, disputes named); the final paragraph closes the thesis.

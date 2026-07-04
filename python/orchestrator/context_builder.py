@@ -293,6 +293,16 @@ class SharedContext:
         WS-4's prefix cache pays for it once per job.
         """
         parts = [COHERENCE_RULES.rstrip()]
+        # CC v3 R-FG4 prevention: previously-flagged wrong claims are corrected at the
+        # SOURCE — every worker sees the same hard corrections in the cached prefix, so
+        # the known-bad error is prevented, not just patched by the terminal gate.
+        try:  # pragma: no cover - soft dependency
+            import narasi_gate as _ngate
+            _kc = _ngate.known_corrections_prompt()
+            if _kc:
+                parts.append(_kc)
+        except Exception:  # noqa: BLE001
+            pass
         if self.style_guide and self.style_guide.strip():
             parts.append("STYLE GUIDE (hold this register for the entire book):\n"
                          + self.style_guide.strip())

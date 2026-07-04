@@ -292,6 +292,14 @@ async def _run_narration_job(
     started = time.monotonic()
     charge_settled = False
 
+    # CC v3 R-FG4: refresh the known-bad-claims registry (global reference data) into the
+    # gate's in-process cache — best-effort; the gate carries a seed fallback regardless.
+    try:
+        import narasi_gate as _ngate
+        _ngate.set_db_claims(await db.get_known_bad_claims())
+    except Exception as e:  # noqa: BLE001
+        log.warning("known_bad_claims refresh skipped (non-fatal): %s", e)
+
     # Per-chapter checkbox driver. generate_narration doesn't stream chapter
     # completions back to us, so we approximate live checkbox lighting by polling
     # the durable narasi_chapters writes the runtime makes — but the orchestrator
@@ -392,6 +400,10 @@ async def _run_narration_job(
 
     # Success: persist chapters + the assembled script, settle the hold at ACTUAL.
     await _set_status(job_id, _STATUS_POLISHING if result.get("polished") else _STATUS_DONE)
+    # CC v3 gates — terminal bracket/known-bad gate (R-FG4/5/6, ALL scenarios incl. C/D/E
+    # whose result carries "output" not "book"), the harari register scorecard (R-H10,
+    # report-only), and the "> **Gaya:** ..." metadata header. Never raises.
+    await _apply_v3_gates(result, body, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -405,6 +417,100 @@ async def _run_narration_job(
     # Defensive: if we somehow reached here without settling, refund.
     if not charge_settled:
         await _refund(meter_op, tenant_id, job_id)
+
+
+# ---------------------------------------------------------------------------
+# CC v3 (Stop the Pendulum) — terminal gates for the ⚡ engine. All best-effort.
+# ---------------------------------------------------------------------------
+async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=None, job_uuid=None) -> None:
+    """Mutates `result` in place: (1) R-FG4/5/6 deterministic gate on the final book +
+    every chapter record (the per-chapter gate in static.py covers scenario A/B workers;
+    this terminal pass also covers C/D/E outputs and anything the polish reintroduced);
+    (2) R-H10 register scorecard for harari (report-only, one cheap call); (3) the
+    "> **Gaya:** ..." metadata header, so ⚡ output matches the classic engine."""
+    try:
+        import narasi_gate as _ngate
+    except Exception:  # noqa: BLE001
+        return
+    style = str(body.get("style") or "").strip()
+    language = str(body.get("language") or "id").strip()
+
+    # ── (1) terminal deterministic gate ──
+    gate_report: dict = {}
+    try:
+        key = "book" if result.get("book") else "output"
+        book = result.get(key) or ""
+        if book:
+            gated, gate_report = _ngate.gate_text(book)
+            result[key] = gated
+        for rec in result.get("chapters") or []:
+            if rec.get("content"):
+                rec["content"], _r = _ngate.gate_text(rec["content"])
+        result["gate_report"] = gate_report
+    except Exception as e:  # noqa: BLE001
+        log.warning("v3 terminal gate failed (non-fatal): %s", e)
+
+    # ── (2) R-H10 register scorecard — entry-driven (any style with a register_spec in
+    # the pakem registry), report-only, one cheap call. Deterministic half = banned-tells
+    # substring scan; LLM half = counting the style's required moves. ──
+    try:
+        if str(os.environ.get("NARASI_REGISTER_GATE", "1")).strip().lower() not in ("0", "false", "no", "off"):
+            spec = None
+            style_key = style
+            try:
+                from pakem import resolve_style, resolve_style_key
+                entry = resolve_style(style)
+                spec = entry.get("register_spec")
+                style_key = resolve_style_key(style) or style
+            except Exception:  # noqa: BLE001
+                spec = None
+            if spec and (spec.get("required_moves") or spec.get("banned_tells")):
+                book = result.get("book") or result.get("output") or ""
+                low = book.lower()
+                banned = [t for t in (spec.get("banned_tells") or []) if t and t.lower() in low]
+                moves = list(spec.get("required_moves") or [])
+                counts: dict = {}
+                if moves and book:
+                    try:
+                        from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
+                        _sys = ("You are a strict register auditor. For the declared style, count how many times "
+                                "each REQUIRED MOVE genuinely occurs in the text (a real, executed instance — not a "
+                                "faint echo). Moves: " + ", ".join(moves) + ". "
+                                "Return ONLY JSON mapping each move name to an integer count.")
+                        raw, _cr = await _narasi_cheap_call(_sys, (book or "")[:12000],
+                                                            tenant_id=tenant_id, user_id=user_id,
+                                                            job_uuid=job_uuid, json_mode=True)
+                        d = _narasi_parse_json(raw) if isinstance(raw, str) else (raw or {})
+                        if isinstance(d, dict):
+                            counts = {m: int(d.get(m) or 0) for m in moves}
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("register-gate LLM scan failed (non-fatal): %s", e)
+                on_register = (not banned) and all(counts.get(m, 0) >= 1 for m in moves) if counts or not moves else False
+                verdict = "on_register" if on_register else "off_register"
+                result["register_gate"] = {
+                    "style": style_key, "moves": counts,
+                    "banned_tells": banned, "verdict": verdict,
+                }
+                if verdict != "on_register":
+                    log.warning("register-gate: manuscript flagged off_register for %s (moves=%s banned=%s)",
+                                style_key, counts, banned)
+    except Exception as e:  # noqa: BLE001
+        log.warning("register gate failed (non-fatal): %s", e)
+
+    # ── (3) Gaya metadata header (matches the classic stitch header; gate-whitelisted) ──
+    try:
+        key = "book" if result.get("book") else "output"
+        book = result.get(key) or ""
+        if book and not book.lstrip().startswith("> **Gaya:**"):
+            try:
+                from laozhang_api import _resolve_narasi_lang  # lazy
+                lang_label = _resolve_narasi_lang(language)
+            except Exception:  # noqa: BLE001
+                lang_label = language
+            words = len(book.split())
+            result[key] = f"> **Gaya:** {style or 'narasi'} | **Bahasa:** {lang_label} | **{words} kata**\n\n---\n\n" + book
+    except Exception as e:  # noqa: BLE001
+        log.warning("Gaya header failed (non-fatal): %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +531,9 @@ def _result_payload(result: dict) -> dict:
         "n_total": result.get("n_total"),
         "settings": result.get("settings"),
         "outline_source": result.get("outline_source"),
+        # CC v3 reports (bounded dicts; absent when the gates didn't run)
+        "gate_report": result.get("gate_report"),
+        "register_gate": result.get("register_gate"),
     }
 
 

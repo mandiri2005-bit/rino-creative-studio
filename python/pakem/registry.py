@@ -270,9 +270,19 @@ STYLES: dict[str, dict] = {
     },
 
     "harari": {
-        "display_name": "Harari / Big History",
+        # Renamed from "Harari / Big History" (Rino 2026-07-04): descriptive public label,
+        # no living-person name in the paid-product UI (registry-expansion doc note #3).
+        # Internal key + aliases keep "harari" so existing jobs/localStorage resolve.
+        "display_name": "Big History",
         "aliases": ["harari", "big_history", "big history", "diamond", "jared diamond"],
         "is_fiction": False,
+        # R-H10 register spec (CC v3): the calibration gate counts required_moves and
+        # bans source-branded diction. Mirrors narasi_gate.BANNED_DICTION for harari.
+        "register_spec": {
+            "required_moves": ["scale_shift", "contingency_reveal"],
+            "banned_tells": ["imagined order", "operating system of belief",
+                             "shared fiction", "universal fiction", "collective fiction"],
+        },
         "rag": {
             "query_instruction": (
                 "Retrieve a passage that explains large-scale historical patterns, "
@@ -528,6 +538,35 @@ STYLES: dict[str, dict] = {
         "style_rules_editor": "",
     },
 }
+
+
+# ── Dual-path medium layer (CC dual-path doc §1) — every style's NATIVE medium. ──
+# ear = anchor born in narration/VO; page = anchor born in written prose. The selector in
+# build_style_block compares this with the job's output target (video|book): native match →
+# light normalization only; mismatch → R-VO (page→ear) or R-PAGE (ear→book) transform block.
+# Applied programmatically so the 14 existing entry bodies stay untouched (Rino-approved).
+# Data, not code: if a style's transform output feels wrong, FLIP the mapping first.
+_MEDIUM_ORIGIN = {
+    # ear-native (anchor = narration)
+    "storytelling": "ear", "bedtime_story": "ear", "pov": "ear", "natgeo": "ear",
+    "youtube": "ear", "podcast_narrative": "ear", "cinematic_voiceover": "ear",
+    # page-native (anchor = written prose)
+    "creative_nonfiction": "page", "harari": "page", "journalistic": "page",
+    "literary_essay": "page", "academic_popular": "page",
+    "narrative_nonfiction": "page", "fiction": "page",
+}
+for _k, _m in _MEDIUM_ORIGIN.items():
+    if _k in STYLES:
+        STYLES[_k].setdefault("medium_origin", _m)
+
+# ── P1 expansion wave (pakem-style-registry-expansion.md) — isolated module so the
+# core 14 stay reviewable; a broken/absent P1 file must never take down the registry. ──
+try:  # pragma: no cover - additive
+    from .registry_p1 import P1_STYLES
+    for _k, _v in P1_STYLES.items():
+        STYLES.setdefault(_k, _v)
+except Exception:  # noqa: BLE001
+    P1_STYLES = {}
 
 
 # Default style when nothing resolves — matches the legacy get_style_rules

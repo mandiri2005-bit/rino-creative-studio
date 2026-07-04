@@ -44,21 +44,68 @@ from .resolvers import (
 
 # Bump on any change to style rules, assets, or resolver behaviour so callers
 # (caches, eval baselines) can invalidate. MAJOR.MINOR.PATCH.
-PAKEM_VERSION = "1.0.0"
+PAKEM_VERSION = "1.2.0"
+
+# ── Dual-path medium layer (CC dual-path doc §2/§3) — transform blocks injected at
+# GENERATION (option b: the draft is born near-target; no whole-text rewrite pass).
+# They run ONLY on medium mismatch; native-match jobs never see them (protects voice).
+R_VO = """
+MEDIUM ADAPTATION — THIS STYLE WAS BORN ON THE PAGE, YOU ARE WRITING FOR THE EAR (R-VO):
+- Breath units: average 8-15 words per sentence, hard max ~25. Split long sentences without mercy.
+- Front-load subject-verb; no deep center-embedding; long parentheticals become their own sentence.
+- Typography dies: no semicolons (use periods), no footnote asides (speak them), written lists become spoken enumeration ("Three things. First—").
+- Numbers speakable and rounded: "around two hundred thousand", never "217,432". Dates spoken: "June thirtieth, fifteen twenty".
+- Attribution BEFORE the quote ("Diaz recorded that...") — listeners cannot scroll back.
+- Re-anchor names/pronouns every ~3 sentences in multi-actor scenes; lower name density overall.
+- Repetition is a FEATURE here (audible signposting); make transitions audible ("But here's where it gets strange—").
+- TTS hygiene: expand acronyms on first use; avoid homograph ambiguity; no digit-heavy dates.
+The medium tax is real: some page elegance dies in the split. Pay it — clarity for the ear wins.
+"""
+
+R_PAGE = """
+MEDIUM ADAPTATION — THIS STYLE WAS BORN FOR THE EAR, YOU ARE WRITING A BOOK PAGE (R-PAGE):
+- De-signpost: strip verbal tics ("here's the thing", "but wait", "now—") — on the page they read as filler.
+- Restore subordination: merge choppy breath-unit sentences where rhythm allows; the eye handles complexity the ear can't.
+- Repetition cap TIGHTENED: audible signposting is a bug on the page. Vary instead.
+- Reduce rhetorical questions and direct address "you" (unless the style REQUIRES them).
+- Precision restored: exact figures preferred where verified ("217,432 registered"); hedge only what is genuinely uncertain.
+- Typography allowed: semicolons, parentheticals; vary paragraph length for the eye.
+"""
+
+# ── Universal claim discipline (CC v3 / backend-rules #4-5) — appended to EVERY
+# style's generation block (Rino 2026-07-04: "semua"). Style-agnostic factual
+# hygiene; style-specific craft (zoom, agency, endings) stays in the per-style text.
+CLAIM_DISCIPLINE = """
+CLAIM DISCIPLINE (applies to every factual statement):
+- CERTAIN -> state directly. PROBABLE -> "likely" / "appears" / "the evidence suggests".
+- DISPUTED -> name the disagreement in one clause. UNCERTAIN -> soften or cut. Never invent precision.
+- No anachronistic frame-terms (e.g. "gold-standard economy" for a pre-modern state -> "bullion-hungry economy"). Modern explanatory terms only when they clarify, never when they decorate.
+"""
 
 
 def build_style_block(style, video_mode: bool = False) -> str:
     """Return the GENERATION-time style block for a style.
 
     This is the pakem replacement for laozhang_api.get_style_rules():
-      core rules (+ VIDEO_MODIFIER when video_mode) — and NEVER the editor block.
+      core rules + universal CLAIM_DISCIPLINE (+ VIDEO_MODIFIER when video_mode) —
+      and NEVER the editor block.
 
     `style` may be a raw user string OR an already-resolved entry dict.
     """
     entry = style if isinstance(style, dict) else resolve_style(style)
     rules = entry.get("style_rules_core", "")
+    rules = rules.rstrip() + "\n" + CLAIM_DISCIPLINE
+    # Dual-path selector (dual-path doc §1): compare the style's NATIVE medium with the
+    # job's output target. Native match → light normalization only (VIDEO_MODIFIER on the
+    # video path, nothing extra on book). Mismatch → the aggressive transform block.
+    origin = entry.get("medium_origin", "page")
     if video_mode:
         rules = rules.rstrip() + "\n" + VIDEO_MODIFIER
+        if origin == "page":
+            rules = rules.rstrip() + "\n" + R_VO          # page→ear: aggressive adaptation
+    else:
+        if origin == "ear":
+            rules = rules.rstrip() + "\n" + R_PAGE        # ear→page: de-signpost for the eye
     return rules
 
 

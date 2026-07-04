@@ -930,6 +930,32 @@ async def get_series_summary(tenant_id, series_id) -> str:
     except Exception as e:
         log.warning("get_series_summary (non-fatal): %s", e); return ""
 
+async def get_known_bad_claims() -> list:
+    """CC v3 R-FG4: read the GLOBAL known-bad-claims registry (0057). Reference data —
+    no tenant scoping by design. Returns [{name, bad_pattern, correct_value, action,
+    source}] for enabled rows; [] on any error (the gate has an in-process seed)."""
+    try:
+        rows = await _q_fetch(
+            """SELECT name, bad_pattern, correct_value, action, source
+                 FROM narasi_known_bad_claims WHERE enabled
+                ORDER BY created_at""")
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.warning("get_known_bad_claims (non-fatal): %s", e); return []
+
+
+async def add_known_bad_claim(name, bad_pattern, correct_value, *, action="replace", source="") -> None:
+    """R-FG4: a human review flag becomes a permanent rule. Idempotent on bad_pattern."""
+    try:
+        await _q_exec(
+            """INSERT INTO narasi_known_bad_claims (name, bad_pattern, correct_value, action, source)
+               VALUES ($1,$2,$3,$4,$5) ON CONFLICT (bad_pattern) DO NOTHING""",
+            (name or "claim")[:120], bad_pattern, correct_value or "",
+            ("flag" if str(action).lower() == "flag" else "replace"), (source or "")[:300])
+    except Exception as e:
+        log.warning("add_known_bad_claim (non-fatal): %s", e)
+
+
 async def get_chapters_for_rating(tenant_id, job_id) -> list:
     """Chapters of a job with their latest 1-5 rating, for the per-chapter rating UI
     (Step 1.4). Returns [{id, chapter_index, rating}] ordered by chapter_index."""

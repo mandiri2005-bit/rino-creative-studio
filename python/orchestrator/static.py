@@ -66,6 +66,22 @@ except Exception:  # noqa: BLE001 - keep module importable
     _Chapter = None  # type: ignore
     _COMPOSE_OK = False
 
+# narasi_gate (CC v3 R-FG4/5/6): deterministic post-generation gate — resolve/hedge/cut
+# [VERIFY] flags, auto-correct known-bad claims, block bracket residue. Soft-import so
+# the orchestrator stays importable standalone; gate degrades to identity when absent.
+try:  # pragma: no cover
+    import narasi_gate as _ngate  # type: ignore
+except Exception:  # noqa: BLE001
+    _ngate = None  # type: ignore
+
+
+def _gate(text: str) -> str:
+    """Per-chapter deterministic gate (identity when narasi_gate absent/disabled)."""
+    if _ngate is None or not text:
+        return text
+    out, _rep = _ngate.gate_text(text)
+    return out
+
 log = logging.getLogger("orchestrator.static")
 
 
@@ -414,7 +430,9 @@ async def narrate_chapters(
         no = r.get("no", i)
         ch = chapters[no] if 0 <= no < total else {}
         ok = bool(r.get("ok")) and bool(r.get("output"))
-        content = r.get("output") if ok else _placeholder(ch, no, str(r.get("error", "unknown")))
+        # R-FG4/5/6 per-chapter gate on real output only — the failure placeholder IS a
+        # deliberate bracket signal and must survive (the gate whitelists it anyway).
+        content = _gate(r.get("output")) if ok else _placeholder(ch, no, str(r.get("error", "unknown")))
         chapter_records.append({
             "no": no,
             "id": str(ch.get("id", no + 1)),
@@ -448,6 +466,9 @@ async def narrate_chapters(
         telemetry_sink=telemetry_sink,
         any_failures=(n_ok < total),
     )
+    # R-FG5 TERMINAL: the polish is the last LLM touch and can reintroduce brackets —
+    # the deterministic gate must run AFTER it, so residue can never ship.
+    polished_book = _gate(polished_book)
 
     return {
         "ok": n_ok > 0,
