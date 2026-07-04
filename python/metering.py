@@ -137,15 +137,22 @@ class Charge:
                      session_id=None, job_id=None,
                      tok_in: int = 0, tok_out: int = 0,
                      provider: Optional[str] = None,
-                     usd: Optional[float] = None) -> int:
+                     usd: Optional[float] = None,
+                     credits_actual: Optional[int] = None) -> int:
         """Finalise at ACTUAL cost. Returns credits actually charged.
 
+        `credits_actual`: the caller ALREADY priced every call at CATALOG rates
+        (per-call, per-model — the ⚡ sink's blended credit total). Highest
+        precedence; commit still clamps to the hold. This is the catalog-parity
+        path: usd_to_credits(sink.cost_usd) priced from the orchestrator's
+        PROVIDER-usd table and undercharged narasi ~4x vs the catalog
+        (itaatga7: 488 charged where the catalog said 1988).
         `usd`: the REAL upstream cost the caller already accumulated. Pass it for
         multi-model runs (e.g. a narration where cheap workers + an expensive
         manager use different-priced models) — credits are then derived from the
         true blended cost via usd_to_credits, instead of mis-pricing the whole
-        token total at this Charge's single `model`. When omitted, behaviour is
-        unchanged: price `units` at `self.model`."""
+        token total at this Charge's single `model`. When both omitted, behaviour
+        is unchanged: price `units` at `self.model`."""
         if self._done:
             return 0
         self._done = True
@@ -154,8 +161,11 @@ class Charge:
         # single-model estimate from the token total.
         eff_usd = float(usd) if usd is not None else _cat.operation_usd(self.operation, self.model, units)
         if not self.byok:
-            actual = (_cat.usd_to_credits(eff_usd) if usd is not None
-                      else _cat.credit_cost(self.operation, self.model, units))
+            if credits_actual is not None and int(credits_actual) > 0:
+                actual = int(credits_actual)
+            else:
+                actual = (_cat.usd_to_credits(eff_usd) if usd is not None
+                          else _cat.credit_cost(self.operation, self.model, units))
             try:
                 await _credits.commit(self.tenant_id, self.op_id, actual,
                                       user_id=self.user_id,

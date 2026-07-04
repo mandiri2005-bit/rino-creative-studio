@@ -266,10 +266,17 @@ class _UsageSink:
                 http_status=200 if t.ok else 502, credits=0)
         except Exception as e:  # noqa: BLE001
             log.debug("usage sink log_one failed (non-fatal): %s", e)
-        # A1: durable per-call billing checkpoint (classic parity). credit_cost prices the
-        # call the same way _log_narasi_usage does; checkpoint_narasi_meter no-ops when the
-        # row carries no _meter (crashsafe off / BYOK / no hold) so this stays cheap.
+        # Catalog-parity credit total (classic parity, per-call per-model): _settle
+        # charges THIS number — the orchestrator's provider-usd table undercharged narasi
+        # ~4x vs the catalog. Accumulated for EVERY ok call; the A1 durable checkpoint
+        # write below stays gated on DALANG_CRASHSAFE_ENABLED (checkpoint_narasi_meter
+        # also no-ops when the row carries no _meter).
         try:
+            if t.ok:
+                import credit_catalog as _cat
+                self.credits += int(_cat.credit_cost(
+                    "narasi", t.model,
+                    {"tokens_in": int(t.tokens_in or 0), "tokens_out": int(t.tokens_out or 0)}) or 0)
             if self._ckpt is None:
                 try:
                     from laozhang_api import _dalang_crashsafe_enabled as _cse
@@ -277,10 +284,6 @@ class _UsageSink:
                 except Exception:  # noqa: BLE001
                     self._ckpt = False
             if self._ckpt and self.job_uuid and t.ok:
-                import credit_catalog as _cat
-                self.credits += int(_cat.credit_cost(
-                    "narasi", t.model,
-                    {"tokens_in": int(t.tokens_in or 0), "tokens_out": int(t.tokens_out or 0)}) or 0)
                 await db.checkpoint_narasi_meter(self.tenant_id, self.job_uuid, self.credits)
         except Exception as e:  # noqa: BLE001
             log.debug("usage sink meter checkpoint failed (non-fatal): %s", e)
@@ -891,10 +894,14 @@ async def _settle(meter_op: Optional[str], tenant_id: str, user_id: Optional[str
         charge = metering.Charge(
             tenant_id=tenant_id, user_id=user_id, op_id=meter_op,
             operation="narasi", model=model, held=0)
+        # Catalog parity: sink.credits priced EVERY call at catalog rates (per model,
+        # blended). The usd path priced from the orchestrator's provider table and
+        # undercharged ~4x (itaatga7: 488 vs catalog 1988). usd stays as fallback + the
+        # COGS number on the usage row.
         await charge.settle(
             {"tokens_in": sink.tokens_in, "tokens_out": sink.tokens_out},
             job_id=job_uuid, tok_in=sink.tokens_in, tok_out=sink.tokens_out,
-            usd=_usd)
+            usd=_usd, credits_actual=(sink.credits if (sink.credits or 0) > 0 else None))
     except Exception as e:  # noqa: BLE001
         log.warning("settle hold(%s) failed (non-fatal): %s", meter_op, e)
 
@@ -1137,12 +1144,20 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
     meter_op = None
     try:
         if not is_byok:
+            # Hold shape must track REALITY or the F4 clamp (settle ≤ hold) silently
+            # under-bills: itaatga7 actually consumed ~150k in / ~40k out (shared prefix
+            # ~12k×chapter + continuations + gates) but the old 1500×n/words×2 estimate
+            # held only 488cr where the catalog said 1988 — settle got clamped to the
+            # hold. Tunable without deploy: NARASI_HOLD_TOKENS_IN_PER_CH /
+            # NARASI_HOLD_OUT_MULT. Unused hold is refunded at settle as always.
+            _in_per_ch = int(os.environ.get("NARASI_HOLD_TOKENS_IN_PER_CH", "13000"))
+            _out_mult = float(os.environ.get("NARASI_HOLD_OUT_MULT", "3.0"))
+            _total_words = sum(
+                int((c.get("word_target") or c.get("words") or 800))
+                for c in (body.get("chapters") or [{}] * total)) or (800 * total)
             est_units = {
-                "tokens_in": 1500 * max(1, total),
-                "tokens_out": sum(
-                    int((c.get("word_target") or c.get("words") or 800))
-                    for c in (body.get("chapters") or [{}] * total)
-                ) * 2 or (800 * total * 2),
+                "tokens_in": _in_per_ch * max(1, total),
+                "tokens_out": int(_total_words * _out_mult),
             }
             meter_op = f"narration:{job_id}:{uuid.uuid4().hex[:8]}"
             await metering.begin_charge(
