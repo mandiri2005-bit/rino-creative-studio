@@ -73,7 +73,7 @@ import redis_client as rc
 import database as db
 import metering
 import credits as credits_lib
-from auth_middleware import get_current_user, CurrentUser
+from auth_middleware import get_current_user, get_current_user_optional, CurrentUser
 
 # The orchestration engine front door (WS-6). NEVER raises into us.
 from orchestrator.router import generate_narration
@@ -299,9 +299,14 @@ async def _run_narration_job(
     # gate's in-process cache — best-effort; the gate carries a seed fallback regardless.
     try:
         import narasi_gate as _ngate
-        _ngate.set_db_claims(await db.get_known_bad_claims())
+        _ngate.set_db_claims(await db.get_known_bad_claims(body.get("project_id")))
     except Exception as e:  # noqa: BLE001
         log.warning("known_bad_claims refresh skipped (non-fatal): %s", e)
+    try:
+        import narasi_factscan as _nfs
+        _nfs.set_known_good(await db.get_known_good_claims(body.get("project_id")))
+    except Exception as e:  # noqa: BLE001
+        log.warning("known_good_claims refresh skipped (non-fatal): %s", e)
 
     # Per-chapter checkbox driver. generate_narration doesn't stream chapter
     # completions back to us, so we approximate live checkbox lighting by polling
@@ -438,6 +443,79 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     style = str(body.get("style") or "").strip()
     language = str(body.get("language") or "id").strip()
 
+    # ── (0) CC v4 §1: deterministic counters + surgical diet loop (max 2). Budgets come
+    # from the style's style_spec (only harari is tuned today; others = OFF/UNMEASURED).
+    # Runs BEFORE the terminal gate so a diet rewrite can never ship bracket residue.
+    try:
+        import narasi_counters as _nc
+        entry = None
+        try:
+            from pakem import resolve_style as _rs
+            entry = _rs(style)
+        except Exception:  # noqa: BLE001
+            entry = None
+        has_budgets = bool(((entry or {}).get("style_spec") or {}).get("counters"))
+        key = "book" if result.get("book") else "output"
+        book = result.get(key) or ""
+        if book and entry is not None:
+            wt = 0
+            for c in (body.get("chapters") or []):
+                if isinstance(c, dict):
+                    try:
+                        wt += int(c.get("word_target") or c.get("words") or 0)
+                    except (TypeError, ValueError):
+                        pass
+            embed = None
+            try:
+                import dalang_dedup as _dd
+                embed = getattr(_dd, "embed", None)
+            except Exception:  # noqa: BLE001
+                embed = None
+            rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
+                                      word_target=wt or None, embed_fn=embed)
+            loops = 0
+            while has_budgets and rep.get("over_budget") and loops < 2:
+                loops += 1
+                try:
+                    from laozhang_api import make_narasi_client, _resolve_narasi_lang as _rl
+                    instr = _nc.surgical_prompt(rep, language=_rl(language))
+                    model = str(body.get("worker_model") or "claude-opus-4-6")
+                    cli = make_narasi_client(model)
+                    mt = min(32000, int(len(book.split()) * 1.45 * 1.25) + 800)
+                    resp = await asyncio.wait_for(asyncio.to_thread(
+                        lambda: cli.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": instr + "\n\nMANUSCRIPT:\n" + book}],
+                            max_tokens=mt, stream=False)), timeout=600)
+                    out = ""
+                    try:
+                        out = (resp.choices[0].message.content or "").strip()
+                    except Exception:  # noqa: BLE001
+                        out = ""
+                    # a surgical edit can only shrink modestly — reject a gutted rewrite
+                    if out and len(out.split()) >= int(len(book.split()) * 0.7):
+                        book = out
+                        result[key] = book
+                        rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
+                                                  word_target=wt or None, embed_fn=embed)
+                    else:
+                        break
+                except Exception as e:  # noqa: BLE001
+                    log.warning("counter diet loop failed (non-fatal): %s", e)
+                    break
+            rep["diet_loops"] = loops
+            result["counter_report"] = {
+                "over_budget": rep.get("over_budget", []),
+                "diet_loops": loops,
+                "counters": {k: {kk: vv for kk, vv in v.items() if kk != "sentences"}
+                             for k, v in rep.get("counters", {}).items()},
+            }
+            if rep.get("over_budget"):
+                log.warning("counters still over budget after %d diet loop(s): %s",
+                            loops, rep["over_budget"])
+    except Exception as e:  # noqa: BLE001
+        log.warning("counter engine failed (non-fatal): %s", e)
+
     # ── (1) terminal deterministic gate ──
     gate_report: dict = {}
     try:
@@ -500,6 +578,27 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("register gate failed (non-fatal): %s", e)
 
+    # ── (2.7) R-FG9/R-FG10 fact scan — scan-and-report on the FINAL text (post-gates,
+    # pre-header). Report-only by spec ("scan first, block second"); regime = style
+    # default, job-overridable via body.factual_regime (refactor §4).
+    try:
+        import narasi_factscan as _nfs
+        regime = str(body.get("factual_regime") or "").strip().lower()
+        if regime not in ("strict", "hybrid", "fictional"):
+            try:
+                from pakem import resolve_style as _rs2
+                regime = (_rs2(style) or {}).get("factual_regime", "strict")
+            except Exception:  # noqa: BLE001
+                regime = "strict"
+        _book = result.get("book") or result.get("output") or ""
+        if _book:
+            result["fact_report"] = _nfs.fact_scan(_book, factual_regime=regime)
+            _of = result["fact_report"].get("overfiring")
+            if _of:
+                log.warning("fact-scan detectors over-firing (tune before enforcement): %s", _of)
+    except Exception as e:  # noqa: BLE001
+        log.warning("fact scan failed (non-fatal): %s", e)
+
     # ── (3) Gaya metadata header (matches the classic stitch header; gate-whitelisted) ──
     try:
         key = "book" if result.get("book") else "output"
@@ -511,7 +610,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             except Exception:  # noqa: BLE001
                 lang_label = language
             words = len(book.split())
-            result[key] = f"> **Gaya:** {style or 'narasi'} | **Bahasa:** {lang_label} | **{words} kata**\n\n---\n\n" + book
+            # v4 §5: header gains the Output field so the editor/dual-path filters are auditable.
+            _out_path = "video" if str(body.get("mode") or "").strip() == "video" else "book"
+            result[key] = (f"> **Gaya:** {style or 'narasi'} | **Output:** {_out_path} | "
+                           f"**Bahasa:** {lang_label} | **{words} kata**\n\n---\n\n") + book
     except Exception as e:  # noqa: BLE001
         log.warning("Gaya header failed (non-fatal): %s", e)
 
@@ -534,9 +636,11 @@ def _result_payload(result: dict) -> dict:
         "n_total": result.get("n_total"),
         "settings": result.get("settings"),
         "outline_source": result.get("outline_source"),
-        # CC v3 reports (bounded dicts; absent when the gates didn't run)
+        # CC v3/v4 reports (bounded dicts; absent when the gates didn't run)
         "gate_report": result.get("gate_report"),
         "register_gate": result.get("register_gate"),
+        "counter_report": result.get("counter_report"),
+        "fact_report": result.get("fact_report"),
     }
 
 
@@ -719,6 +823,17 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
 
     body = dict(body or {})
     _narration_admit(body)   # CC v3: ⚡ caps (chapters/words) — 400 BEFORE any hold
+    # BullMQ S3 fairness: cap concurrent narasi jobs per tenant (0 = off, default).
+    _cap = int(os.environ.get("NARRATION_MAX_ACTIVE_PER_TENANT", "0") or 0)
+    if _cap > 0:
+        try:
+            if await db.count_active_narasi_jobs(tenant_id) >= _cap:
+                raise HTTPException(429, f"too many narrations in flight (max {_cap}) — "
+                                         "wait for one to finish")
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001 - never block on a count hiccup
+            pass
     job_id = (str(body.get("pre_job_id") or uuid.uuid4().hex[:8]))[:16]
     topic = str(body.get("topic") or body.get("goal") or body.get("brief") or "").strip()
     model = str(body.get("worker_model") or os.environ.get("WORKER_MODEL")
@@ -765,12 +880,49 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
     await _safe_progress(job_id, "Memulai narasi...")
 
     # ── Kick off generation; return the id immediately ──
+    # ── BullMQ S1 (NARRATION_BULLMQ_ENABLED, default OFF): enqueue to the durable
+    # `narration` queue instead of running in-process — the narration-worker service
+    # picks it up (survives API restarts; S2 resume continues checkpointed chapters).
+    # Any enqueue failure falls back to the in-process path (never lose a job).
+    if str(os.environ.get("NARRATION_BULLMQ_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from bullmq import Queue as _BullQueue
+            _q = _BullQueue(os.environ.get("NARRATION_QUEUE", "narration"),
+                            {"connection": os.environ.get("REDIS_URL", "redis://localhost:6379")})
+            await _q.add("narration", {
+                "job_id": job_id, "job_uuid": job_uuid, "tenant_id": tenant_id,
+                "user_id": user_uuid, "total": total, "meter_op": meter_op,
+                "model": model, "body": body,
+            }, {"jobId": job_id, "removeOnComplete": True, "attempts": 2})
+            await _q.close()
+            return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING,
+                    "total": total, "queued": True}
+        except Exception as e:  # noqa: BLE001
+            log.warning("bullmq enqueue failed — falling back in-process: %s", e)
+
     asyncio.create_task(_run_narration_job(
         body=body, job_id=job_id, job_uuid=job_uuid,
         tenant_id=tenant_id, user_id=user_uuid, total=total,
         meter_op=meter_op, model=model,
     ))
     return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING, "total": total}
+
+
+@app.get("/narration/queue/health")
+async def narration_queue_health(user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """BullMQ S4: queue depth/health for ops. `enabled` mirrors the S1 flag; counts are
+    best-effort (absent when bullmq isn't installed or the flag is off)."""
+    enabled = str(os.environ.get("NARRATION_BULLMQ_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+    out: dict = {"enabled": enabled, "queue": os.environ.get("NARRATION_QUEUE", "narration")}
+    if enabled:
+        try:
+            from bullmq import Queue as _BullQueue
+            _q = _BullQueue(out["queue"], {"connection": os.environ.get("REDIS_URL", "redis://localhost:6379")})
+            out["counts"] = await _q.getJobCounts("waiting", "active", "failed", "delayed")
+            await _q.close()
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"{type(e).__name__}: {e}"
+    return out
 
 
 @app.get("/narration/{job_id}")

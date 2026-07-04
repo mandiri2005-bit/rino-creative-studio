@@ -44,7 +44,7 @@ from .resolvers import (
 
 # Bump on any change to style rules, assets, or resolver behaviour so callers
 # (caches, eval baselines) can invalidate. MAJOR.MINOR.PATCH.
-PAKEM_VERSION = "1.2.0"
+PAKEM_VERSION = "2.0.0"   # schema v2: category + factual_regime + style_spec (refactor doc §7.6)
 
 # ── Dual-path medium layer (CC dual-path doc §2/§3) — transform blocks injected at
 # GENERATION (option b: the draft is born near-target; no whole-text rewrite pass).
@@ -83,6 +83,32 @@ CLAIM DISCIPLINE (applies to every factual statement):
 """
 
 
+# ── Epistemic render rules per factual_regime (R-FG8 §1 render column + R-FG10 §1),
+# enforced at GENERATION so the scan-and-report pass finds little to flag. ──
+_REGIME_BLOCKS = {
+    "strict": """
+FACTUAL RENDERING (strict):
+- A period figure that exists only inside a chronicle is a SOURCE-CLAIM: frame it as one ("according to Cortes's own letter...") — never in the narrator's bare voice.
+- A contested modern reconstruction (populations, casualties) is a SCHOLARLY-ESTIMATE: ALWAYS a range with estimate-language ("estimates place..."), never a bare number.
+- Measurable facts (distances, altitudes, dates): exact or "roughly X" — max ONE hedge-word per figure; a claim needing more hedging gets cut.
+- NEVER ship an unscoped absolute ("no parallel", "the only", "unprecedented"): scope it ("no parallel in the Iberian experience") or soften ("few if any").
+- An unhedged causal claim must be mechanical necessity; contested mechanisms get ONE of: attribution, "likely", or downgrade to observed correlation.
+- Superlatives without numbers only when scholarship itself uses them; otherwise "among the most...".
+""",
+    "hybrid": """
+FACTUAL RENDERING (hybrid — invented narrative on real-world anchors):
+- Real places, institutions, events, dates, period technology = ANCHORS: treat them with strict-regime care (accurate, hedged where uncertain).
+- Invented characters/events are yours — but their attributes may NEVER drift (eye color, rank, name spelling stay fixed across chapters).
+- Never attribute invented actions to real named historical figures.
+""",
+    "fictional": """
+FACTUAL RENDERING (fictional):
+- Continuity is the fact-check: established character/world facts may never contradict earlier chapters.
+- Keep the world's internal rules stable once stated.
+""",
+}
+
+
 def build_style_block(style, video_mode: bool = False) -> str:
     """Return the GENERATION-time style block for a style.
 
@@ -95,6 +121,8 @@ def build_style_block(style, video_mode: bool = False) -> str:
     entry = style if isinstance(style, dict) else resolve_style(style)
     rules = entry.get("style_rules_core", "")
     rules = rules.rstrip() + "\n" + CLAIM_DISCIPLINE
+    _regime = entry.get("factual_regime", "strict")
+    rules = rules.rstrip() + "\n" + _REGIME_BLOCKS.get(_regime, _REGIME_BLOCKS["strict"])
     # Dual-path selector (dual-path doc §1): compare the style's NATIVE medium with the
     # job's output target. Native match → light normalization only (VIDEO_MODIFIER on the
     # video path, nothing extra on book). Mismatch → the aggressive transform block.

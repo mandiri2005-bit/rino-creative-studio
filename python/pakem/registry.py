@@ -568,6 +568,14 @@ try:  # pragma: no cover - additive
 except Exception:  # noqa: BLE001
     P1_STYLES = {}
 
+# P2/P3 wave — same isolation contract as P1.
+try:  # pragma: no cover - additive
+    from .registry_p23 import P23_STYLES
+    for _k, _v in P23_STYLES.items():
+        STYLES.setdefault(_k, _v)
+except Exception:  # noqa: BLE001
+    P23_STYLES = {}
+
 
 # ── Signature moves — the one-line hover copy per style (UI tooltip; served via
 # /narration/styles → "moves"). P1 values verbatim from pakem-style-registry-expansion.md;
@@ -618,6 +626,77 @@ _SIGNATURE_MOVES = {
 for _k, _sm in _SIGNATURE_MOVES.items():
     if _k in STYLES:
         STYLES[_k].setdefault("signature_moves", _sm)
+# Styles without a hand-written hover line (P2/P3 wave) synthesize one from their
+# register_spec.required_moves so the picker popup is never empty.
+for _k, _e in STYLES.items():
+    if not _e.get("signature_moves"):
+        _mv = ((_e.get("register_spec") or {}).get("required_moves")) or []
+        if _mv:
+            _e["signature_moves"] = ", ".join(str(m).replace("_", " ") for m in _mv[:4])
+
+
+# ═══ SCHEMA v2 (refactor: pipeline_rules × style_spec — cc-instruksi-refactor doc) ═══
+# Two orthogonal per-style axes applied programmatically (entry bodies untouched):
+#   category        A Dokumenter/YouTube · B Suara Penulis · C Audio-first ·
+#                   D Sinematik/Genre · E Nusantara · F Edukasi/Motivasi  (UI grouping)
+#   factual_regime  strict | hybrid | fictional (refactor §4 defaults; job-overridable)
+# plus style_spec counters/ratios for the deterministic counter engine (v4 §1) —
+# ONLY harari is hand-tuned (refactor §3, values frozen = round-4 behavior); other
+# styles get counters=None ⟹ the engine reports UNMEASURED/off, tuned on first
+# production use (refactor §8: don't fill 74 specs blind).
+_CATEGORY = {
+    # core 14
+    "creative_nonfiction": "B", "storytelling": "D", "bedtime_story": "C", "harari": "B",
+    "pov": "D", "natgeo": "A", "youtube": "A", "journalistic": "A", "literary_essay": "B",
+    "podcast_narrative": "C", "academic_popular": "B", "cinematic_voiceover": "D",
+    "narrative_nonfiction": "B", "fiction": "D",
+    # P1
+    "true_crime_procedural": "A", "true_crime_host": "A", "internet_mystery": "A",
+    "existential_science": "A", "systems_logistics": "A", "tech_rise_fall": "A",
+    "elegiac_ruins": "A", "conversational_epic": "A", "countdown_listicle": "A",
+    "cosmic_poetic": "B", "counterintuitive_thesis": "B",
+    "folklore_creepy": "C", "sleep_story_adult": "C",
+    "epic_fantasy_prologue": "D", "trailer_voice": "D", "gothic_cosmic_horror": "D",
+    "internet_horror": "D", "warm_omniscient": "D",
+    "dongeng_nusantara": "E", "horor_viral_indonesia": "E", "legenda_asal_usul": "E",
+    "first_principles": "F", "stoic_daily": "F", "motivational_grind": "F", "business_case": "F",
+}
+_FACTUAL_REGIME = {
+    # refactor §4: core 14 default strict, exceptions:
+    "fiction": "fictional", "bedtime_story": "fictional", "storytelling": "fictional",
+    "pov": "hybrid",
+    # P1 exceptions (A/B/F strict by default; D fictional; C sleep fictional; E per doc)
+    "sleep_story_adult": "fictional",
+    "epic_fantasy_prologue": "fictional", "trailer_voice": "fictional",
+    "gothic_cosmic_horror": "fictional", "internet_horror": "fictional",
+    "warm_omniscient": "strict",
+    "dongeng_nusantara": "fictional", "horor_viral_indonesia": "hybrid",
+    "legenda_asal_usul": "hybrid",
+}
+for _k, _e in STYLES.items():
+    _e.setdefault("category", _CATEGORY.get(_k, "B"))
+    _e.setdefault("factual_regime", _FACTUAL_REGIME.get(_k, "strict"))
+
+# harari style_spec — MIGRATED VALUES, frozen (refactor §3; regression = round-4 outcomes).
+# v4 §2: the scale-shift taxonomy makes the TEMPORAL zoom explicitly required (round 4
+# satisfied spatial/systemic but flinched from temporal); placement = the chapter with
+# the largest unexplained causal claim. banned_tells += "is just a story we tell".
+STYLES["harari"]["register_spec"] = {
+    "required_moves": [
+        "scale_shift_temporal",            # ≥1 REQUIRED — deep-time reframe as vertigo
+        "contingent_institution_reveal",   # systemic zoom (credited, round-4 strength)
+        "thesis_image",                    # outline-nominated concrete image
+    ],
+    "banned_tells": ["imagined order", "operating system of belief", "shared fiction",
+                     "universal fiction", "collective fiction", "is just a story we tell"],
+}
+STYLES["harari"]["style_spec"] = {
+    "counters": {"citations_max": 5, "citations_distribution": "varied",
+                 "aporia_max": 3, "thesis_restatement_max": 2, "triplet_per_1000w": 4},
+    "ratios": {"scene_min_pct": 40},
+    "positive_exemplars": ["round4_ch8_gold_drowning", "round4_ch2_requerimiento",
+                           "round4_closing_line"],
+}
 
 
 # Default style when nothing resolves — matches the legacy get_style_rules

@@ -930,30 +930,100 @@ async def get_series_summary(tenant_id, series_id) -> str:
     except Exception as e:
         log.warning("get_series_summary (non-fatal): %s", e); return ""
 
-async def get_known_bad_claims() -> list:
-    """CC v3 R-FG4: read the GLOBAL known-bad-claims registry (0057). Reference data —
-    no tenant scoping by design. Returns [{name, bad_pattern, correct_value, action,
-    source}] for enabled rows; [] on any error (the gate has an in-process seed)."""
+async def get_known_bad_claims(project_id=None) -> list:
+    """CC v3 R-FG4 + refactor §6: GLOBAL rows plus (when project_id given) that project's
+    rows. Falls back to the pre-0058 shape if the scope columns don't exist yet. [] on any
+    error (the gate carries an in-process seed)."""
     try:
-        rows = await _q_fetch(
-            """SELECT name, bad_pattern, correct_value, action, source
-                 FROM narasi_known_bad_claims WHERE enabled
-                ORDER BY created_at""")
+        try:
+            rows = await _q_fetch(
+                """SELECT name, bad_pattern, correct_value, action, source
+                     FROM narasi_known_bad_claims
+                    WHERE enabled AND (COALESCE(scope,'global')='global'
+                          OR (scope='project' AND project_id = $1))
+                    ORDER BY created_at""",
+                (_uid(project_id) if project_id else None))
+        except Exception:
+            rows = await _q_fetch(
+                """SELECT name, bad_pattern, correct_value, action, source
+                     FROM narasi_known_bad_claims WHERE enabled ORDER BY created_at""")
         return [_row(r) for r in rows]
     except Exception as e:
         log.warning("get_known_bad_claims (non-fatal): %s", e); return []
 
 
-async def add_known_bad_claim(name, bad_pattern, correct_value, *, action="replace", source="") -> None:
-    """R-FG4: a human review flag becomes a permanent rule. Idempotent on bad_pattern."""
+async def add_known_bad_claim(name, bad_pattern, correct_value, *, action="replace",
+                              source="", scope="global", project_id=None) -> None:
+    """R-FG4: a human review flag becomes a permanent rule. Idempotent on bad_pattern.
+    scope='project' (+project_id) confines it to one project (refactor §6)."""
     try:
         await _q_exec(
-            """INSERT INTO narasi_known_bad_claims (name, bad_pattern, correct_value, action, source)
-               VALUES ($1,$2,$3,$4,$5) ON CONFLICT (bad_pattern) DO NOTHING""",
+            """INSERT INTO narasi_known_bad_claims
+               (name, bad_pattern, correct_value, action, source, scope, project_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (bad_pattern) DO NOTHING""",
             (name or "claim")[:120], bad_pattern, correct_value or "",
-            ("flag" if str(action).lower() == "flag" else "replace"), (source or "")[:300])
+            ("flag" if str(action).lower() == "flag" else "replace"), (source or "")[:300],
+            ("project" if str(scope).lower() == "project" and project_id else "global"),
+            (_uid(project_id) if project_id else None))
     except Exception as e:
         log.warning("add_known_bad_claim (non-fatal): %s", e)
+
+
+async def get_known_good_claims(project_id=None) -> list:
+    """R-FG8 §4 cache: global + this project's verified-claim patterns (sweep-exempt)."""
+    try:
+        rows = await _q_fetch(
+            """SELECT claim_pattern, verified_value, epistemic_class, source
+                 FROM narasi_known_good_claims
+                WHERE enabled AND (scope='global' OR (scope='project' AND project_id=$1))
+                ORDER BY created_at""",
+            (_uid(project_id) if project_id else None))
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.warning("get_known_good_claims (non-fatal): %s", e); return []
+
+
+async def add_known_good_claim(claim_pattern, verified_value, *, epistemic_class="world",
+                               source="", scope="global", project_id=None) -> None:
+    """R-FG8 §4: a verification result becomes a cached, sweep-exempt fact."""
+    try:
+        await _q_exec(
+            """INSERT INTO narasi_known_good_claims
+               (claim_pattern, verified_value, epistemic_class, source, scope, project_id)
+               VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (claim_pattern) DO NOTHING""",
+            claim_pattern, (verified_value or "")[:300],
+            (epistemic_class if epistemic_class in ("world", "source", "scholarly", "attribution") else "world"),
+            (source or "")[:300],
+            ("project" if str(scope).lower() == "project" and project_id else "global"),
+            (_uid(project_id) if project_id else None))
+    except Exception as e:
+        log.warning("add_known_good_claim (non-fatal): %s", e)
+
+
+async def count_active_narasi_jobs(tenant_id) -> int:
+    """BullMQ S3 fairness: how many narasi jobs this tenant currently has in flight."""
+    try:
+        n = await _q_fetchval(
+            """SELECT count(*) FROM jobs
+                WHERE tenant_id=$1 AND job_type='narasi'
+                  AND status::text IN ('processing','running','polishing')""",
+            _uid(tenant_id), tenant=str(tenant_id))
+        return int(n or 0)
+    except Exception as e:
+        log.warning("count_active_narasi_jobs (non-fatal): %s", e); return 0
+
+
+async def get_narasi_chapter_contents(tenant_id, job_uuid) -> list:
+    """BullMQ S2 resume: the checkpointed chapters of a job — [{chapter_index, content}].
+    job_uuid = jobs.id UUID. [] on any error (resume then just rewrites everything)."""
+    try:
+        rows = await _q_fetch(
+            """SELECT chapter_index, content FROM narasi_chapters
+                WHERE job_id=$1 AND tenant_id=$2 ORDER BY chapter_index""",
+            _uid(job_uuid), _uid(tenant_id), tenant=str(tenant_id))
+        return [_row(r) for r in rows]
+    except Exception as e:
+        log.warning("get_narasi_chapter_contents (non-fatal): %s", e); return []
 
 
 async def get_chapters_for_rating(tenant_id, job_id) -> list:

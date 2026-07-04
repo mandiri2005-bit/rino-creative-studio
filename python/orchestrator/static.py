@@ -470,14 +470,47 @@ async def narrate_chapters(
     #    so a 40-chapter book doesn't open 40 sockets at once.
     sem = asyncio.Semaphore(max(1, int(max_parallel or 1)))
 
+    # ── BullMQ S2 (resume): with NARRATION_RESUME_ENABLED=1, chapters already
+    # checkpointed in narasi_chapters are SKIPPED (a stalled-retry continues instead of
+    # rewriting) and each completing chapter is checkpointed durably. Soft-import db;
+    # any failure degrades to today's behavior. Default OFF (ship dormant).
+    _resume_on = str(os.environ.get("NARRATION_RESUME_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+    _ckpt_uuid = None
+    _pre: dict[int, str] = {}
+    if _resume_on and tenant_id and job_id:
+        try:
+            import database as _db
+            _row = await _db.get_job_by_external(tenant_id, job_id)
+            _ckpt_uuid = (_row or {}).get("id")
+            if _ckpt_uuid:
+                _pre = {int(r["chapter_index"]): r["content"]
+                        for r in await _db.get_narasi_chapter_contents(tenant_id, _ckpt_uuid)
+                        if r.get("content")}
+                if _pre:
+                    log.info("narrate_chapters: resuming — %d/%d chapters checkpointed", len(_pre), total)
+        except Exception as _re:  # noqa: BLE001
+            log.warning("resume preload failed (non-fatal): %s", _re)
+            _ckpt_uuid, _pre = None, {}
+
     async def _bounded(no: int, ch: dict) -> dict[str, Any]:
+        if no in _pre:   # S2: checkpointed on a previous attempt — reuse, zero spend
+            return {"ok": True, "output": _pre[no], "no": no, "model": w_model, "resumed": True}
         async with sem:
-            return await _write_chapter(
+            res = await _write_chapter(
                 ctx=ctx, ch=ch, no=no, total=total,
                 style=style, language=language, mode=mode, job_id=job_id,
                 worker_model=w_model, timeout=worker_timeout,
                 telemetry_sink=telemetry_sink,
             )
+        if _resume_on and _ckpt_uuid and res.get("ok") and res.get("output"):
+            try:
+                import database as _db
+                await _db.save_narasi_chapter(
+                    tenant_id, _ckpt_uuid, no, res["output"],
+                    len(str(res["output"]).split()), "", [])
+            except Exception as _ce:  # noqa: BLE001
+                log.warning("chapter checkpoint failed (non-fatal): %s", _ce)
+        return res
 
     tasks = [asyncio.ensure_future(_bounded(i, ch)) for i, ch in enumerate(chapters)]
 

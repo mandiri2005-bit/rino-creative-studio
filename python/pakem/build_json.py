@@ -50,6 +50,10 @@ def styles_catalog() -> list[dict[str, Any]]:
             "is_fiction": bool(entry.get("is_fiction", False)),
             # one-line hover copy for the picker (signature moves)
             "moves": entry.get("signature_moves", ""),
+            # schema v2: UI grouping + featured flag + regime (job-overridable)
+            "category": entry.get("category", "B"),
+            "tier": entry.get("tier", "core"),
+            "factual_regime": entry.get("factual_regime", "strict"),
         })
     return out
 

@@ -491,7 +491,11 @@ Some paragraphs may be quieter, plainer, rougher, more procedural, less quotable
 
 Two rules that are ORTHOGONAL, not a tradeoff. Never sacrifice one for the other:
 
-1. **STRUCTURE (mandatory):** at least one genuine SCALE-SHIFT must occur in the manuscript — the immediate event reframed against a vast timescale or the whole species, delivered as vertigo, not textbook exposition. The reader's frame must actually SNAP from the scene to deep time and back.
+1. **STRUCTURE (mandatory):** scale-shifts come in three types — know which you are making:
+   - **TEMPORAL (deep time) — ≥1 REQUIRED per manuscript.** The immediate event reframed against millennia (ice-age separation → the causeway meeting), delivered as vertigo: the reader's frame must SNAP from the scene to deep time and back. Exposition ABOUT deep time does not count.
+   - SPATIAL (planetary) — the local event as a world-circuit. Optional, credited.
+   - SYSTEMIC (civilizational) — an institution revealed as contingent invention. Optional, credited.
+   **Placement:** put the temporal zoom where it CLOSES AN EXPLANATORY GAP, never as decoration — the chapter with the largest unexplained causal claim (e.g. in any contact/epidemic narrative, the millennia of livestock co-evolution → immunity IS the explanation for what the disease did). One paragraph doing dual duty: the signature move and the missing "why" in the same stroke.
 2. **DICTION (banned):** never use the source-branded phrases: "imagined order(s)", "operating system(s)" as belief-metaphor, "shared/universal/collective fiction".
 
 Dropping the zoom to avoid the vocabulary is the failure mode. Three renderings of the same idea:
