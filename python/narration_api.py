@@ -543,7 +543,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             while has_budgets and _diet_worthy(rep) and loops < 2:
                 loops += 1
                 if job_id:
-                    await _safe_progress(job_id, f"Editorial refinement (diet pass {loops})…")
+                    await _safe_progress(job_id, "Editorial refinement …")
                 try:
                     from laozhang_api import make_narasi_client, _resolve_narasi_lang as _rl
                     instr = _nc.surgical_prompt(rep, language=_rl(language))
@@ -707,7 +707,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     import narasi_verify as _nv
                     if _nv.verify_enabled():
                         if job_id:
-                            await _safe_progress(job_id, "Fact verification (web search)…")
+                            await _safe_progress(job_id, "Fact verification …")
                         # gap_fill claims (§2 file-2): a claim ADDED to satisfy a
                         # previously-flagged gap is guilty-until-verified. Sources:
                         # (1) outline's angka_tesis strings (final chapter's payoff stats)
