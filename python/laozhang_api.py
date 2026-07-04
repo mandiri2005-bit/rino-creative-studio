@@ -10278,6 +10278,12 @@ class VideoParamsReq(BaseModel):
     image_model: str = "nano-banana-hd"
     tts_model: str = "tts-1"            # selected voiceover model → estimate == real per-scene charge
     clip_ratio: float = 0.3
+    # 2026-07-05 Rino: WB videos got a generic estimate (nano-banana-hd × sc) that ignored
+    # the actual Recraft cost + the flat 3 cr/sec render fee, so Color vs Detail both
+    # displayed the same number. When whiteboard_genre is set, _video_credit_estimate
+    # switches to per-genre pricing (color → recraft-v4_1-vector, detail → recraft-v4_1 +
+    # recraft-vectorize, lineart/diagram → 0 image gen) and adds the WB render fee.
+    whiteboard_genre: Optional[str] = None
 
 class VideoSegmentReq(BaseModel):
     text: str = ""
@@ -10379,19 +10385,25 @@ class VideoTtsSceneReq(BaseModel):
     meter_only: bool = False   # worker generated Gemini TTS itself → just gate+debit here
 
 def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
-                           image_model="nano-banana-hd", tts_model="tts-1", clip_ratio=0.3) -> dict:
+                           image_model="nano-banana-hd", tts_model="tts-1", clip_ratio=0.3,
+                           whiteboard_genre=None) -> dict:
     """Honest per-asset credit estimate (Model B), priced with the SAME catalog the
     charges use (metering.quote == credit_cost). TTS scales with the word target;
     visuals split into clips (expensive) vs images per the chosen mode. Returns the
     point estimate plus an all-images floor / all-clips ceiling so the UI can show
-    a range — the real cost lands inside it once the decide stage runs."""
+    a range — the real cost lands inside it once the decide stage runs.
+
+    2026-07-05 Rino: when whiteboard_genre is set, image_each is overridden to the
+    ACTUAL Recraft model the WB path calls (color → recraft-v4_1-vector; detail →
+    recraft-v4_1 + recraft-vectorize; lineart/diagram → 0 image gen). The 3 cr/sec
+    WB render fee (post-hoc metered in workers.mjs, markup-exempt) is also added
+    so the badge equals the real charge instead of under-quoting."""
     sc = int(p.scene_count)
     total_chars = int(p.target_words * 6.5)                 # ~6.5 chars/word incl. spaces (id)
     # Price TTS at the ACTUAL selected model. Provider-routed models (elevenlabs/*, minimax/*,
     # budget/*) carry per-model registry rates, so a hardcoded flat rate would make the shown
     # estimate diverge from the real per-scene debit (quote == charge only when the SAME model).
     tts = metering.quote("tts", tts_model or "tts-1", {"chars": total_chars})
-    image_each = metering.quote("image", image_model, {"count": 1})
     clip_secs = min(8, max(1, round(p.seconds_per_scene)))
     clip_each = metering.quote("video", clip_model, {"seconds": clip_secs})
     vm = (visual_mode or "hybrid").lower()
@@ -10403,19 +10415,42 @@ def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
     else:  # hybrid: clips only when a scene actually fits one, capped at clip_ratio
         n_clip = round(sc * max(0.0, min(1.0, float(clip_ratio)))) if fits else 0
     n_img = sc - n_clip
-    point = tts + n_clip * clip_each + n_img * image_each
-    floor = tts + sc * image_each                           # all-images
+
+    # Per-genre WB pricing (overrides the FE-passed image_model, which is
+    # nano-banana-hd by default — wrong for WB whose actual gen uses Recraft).
+    wb = (whiteboard_genre or "").strip().lower()
+    if wb == "color":
+        image_each = metering.quote("image", "recraft-v4_1-vector", {"count": 1})
+    elif wb == "detail":
+        image_each = (metering.quote("image", "recraft-v4_1", {"count": 1})
+                      + metering.quote("image", "recraft-vectorize", {"count": 1}))
+    elif wb in ("lineart", "diagram"):
+        image_each = 0  # no per-scene image gen — handwriting only for lineart; diagram is LLM+SVG
+    else:
+        image_each = metering.quote("image", image_model, {"count": 1})
+
+    # WB flat render fee (3 cr/sec, markup-exempt per credit_catalog._op_markup) —
+    # metered POST-hoc via workers.mjs meterUsage("video","whiteboard",{seconds}),
+    # so the FE estimate needs to fold it in to match "badge == charge".
+    wb_render_cr = 0
+    if wb:
+        total_seconds = int(round(p.seconds_per_scene * sc))
+        wb_render_cr = metering.quote("video", "whiteboard", {"seconds": total_seconds})
+
+    point = tts + n_clip * clip_each + n_img * image_each + wb_render_cr
+    floor = tts + sc * image_each + wb_render_cr             # all-images
     # only quote an all-clips ceiling when clips are actually on the table (they
     # fit the scene length, or the user forced full_clips) — otherwise a scary
     # ceiling that can never happen just confuses the picker.
     clips_possible = fits or vm in ("full_clips", "all_clips", "clips")
-    ceil_ = tts + sc * clip_each if clips_possible else point
+    ceil_ = tts + sc * clip_each + wb_render_cr if clips_possible else point
     return {
         "credits": point,
         "credits_min": min(floor, point),
         "credits_max": max(ceil_, point),
         "credits_breakdown": {"tts": tts, "image_each": image_each, "clip_each": clip_each,
-                              "clips": n_clip, "images": n_img},
+                              "clips": n_clip, "images": n_img,
+                              "wb_render": wb_render_cr, "wb_genre": wb or None},
     }
 
 
@@ -10430,7 +10465,8 @@ async def video_params(req: VideoParamsReq):
     try:
         out.update(_video_credit_estimate(
             p, visual_mode=req.visual_mode, clip_model=req.clip_model,
-            image_model=req.image_model, tts_model=req.tts_model, clip_ratio=req.clip_ratio))
+            image_model=req.image_model, tts_model=req.tts_model, clip_ratio=req.clip_ratio,
+            whiteboard_genre=req.whiteboard_genre))
     except Exception as _e:
         print(f"[video/params] honest estimate failed (non-fatal, using flat): {_e}")
     return out
