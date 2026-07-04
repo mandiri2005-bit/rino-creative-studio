@@ -122,13 +122,24 @@ double-hedge normalizer, placeholder-prose cut, foreign-token replacement.
 
 ## 5. Fact-gate stores & seed protocol
 
-- `narasi_known_bad_claims` (17): python regex with `(?P<bad>)`, action replace|flag,
-  global scope w/ context guards. ID seeds MUST cover spelled-number variants and
-  cross-sentence `[\s\S]{0,N}` windows (0062 lesson).
-- `narasi_known_good_claims` (43): sweep-exempt + EXACT-render + verify cache.
-  Both word orders for a fact (0064 lesson). Verify pass writes back at conf ≥ 0.75.
+- `narasi_known_bad_claims`: python regex with `(?P<bad>)`, action replace|flag, global
+  scope w/ context guards. ID seeds MUST cover spelled-number variants and cross-
+  sentence `[\s\S]{0,N}` windows (0062 lesson).
+- `narasi_known_good_claims`: sweep-exempt + EXACT-render + verify cache. Both word
+  orders for a fact (0064 lesson). Verify pass writes back at conf ≥ 0.75.
+- **Seed-verify discipline (0065 lesson, blocking rule)**: EVERY fact in a
+  review-driven seed migration MUST be search-verified before landing — reviewer facts
+  are claims-to-check, not verdicts. 0063 shipped `Kyai Mojo menyerah Februari 1829` as
+  `known_good` from reviewer memory; correct date is 12 November 1828 (Mlangi/Sleman).
+  The wrong `known_good` **caused** the round-3 hallucination (gap flagged missing →
+  filled from memory → error). A wrong exemption is worse than an empty cache. Rule:
+  seeds land only after (a) an external source is cited in the SQL comment, OR (b) an
+  FG-SEARCH verify at ≥0.75 confidence writes them back. NEVER from reviewer recall
+  alone.
 - Review protocol: every human review's verdicts become the next migration
-  (0060 Cortés → 0061/0062/0063/0064 Diponegoro). 4/4 seeded facts corrected in round-2.
+  (0060 Cortés → 0061/0062/0063/0064/0065 Diponegoro). Round-3 correction (0065) is
+  the mechanism working correctly — the store SELF-CORRECTS when reality contradicts a
+  prior seed.
 
 ## 6. Entity layer (`narasi_entities`)
 

@@ -599,18 +599,64 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         if _fp_rx is None:
             _fp_rx = re.compile(r"(?i)\b(?:kami|kita|aku)\b") if (lang or "").startswith("id") \
                 else re.compile(r"\b(?:we|our|us|I|my)\b")
-        voice_hits = []
+        voice_hits: list[str] = []
         try:
             body_fp = len(_fp_rx.findall(text or ""))
             per_100_sent = body_fp / max(1, len(sents)) * 100
-            first_person_narration = per_100_sent > 25   # POV styles: skip the check
-            if anchor_lines and not first_person_narration:
-                voice_hits = [ln for ln in anchor_lines if _fp_rx.search(ln)]
+            # POV detector: only treat as first-person narration if BOTH the ratio is
+            # high (>50%) AND we have enough absolute hits (>=5) — a third-person book
+            # with a single "kami" anchor break in a short excerpt used to sail through
+            # as "POV" because 1/3 sentences trip a 25% threshold.
+            first_person_narration = per_100_sent > 50 and body_fp >= 5
+            if not first_person_narration:
+                # (a) explicit [ANCHOR]-tagged lines (marker still present)
+                if anchor_lines:
+                    voice_hits.extend(ln for ln in anchor_lines if _fp_rx.search(ln))
+                # Round-3 review: the model NOW ships without brackets, but the
+                # first-person voice-break survives ("Hutan adalah benteng kami…" as a
+                # standalone paragraph). Detect the CONTENT shape: a short (≤20 word)
+                # single-sentence paragraph that reads like a quotable line and carries
+                # a first-person plural pronoun in a third-person book. Same failure
+                # class, no marker required.
+                for para in (text or "").split("\n\n"):
+                    p = para.strip()
+                    if not p or len(p.split()) > 20 or "\n" in p:
+                        continue
+                    if p.startswith(("#", ">", "- ", "* ", "|")):
+                        continue
+                    # single-sentence (has a terminator; not just a heading fragment)
+                    if not re.search(r"[.!?…]\s*$", p):
+                        continue
+                    if _fp_rx.search(p) and p not in voice_hits:
+                        voice_hits.append(p[:200])
         except Exception:  # noqa: BLE001
-            voice_hits = []
+            pass
+        # Grammar-broken anchor detector (round-3 review §craft): an anchor line where
+        # the second clause opens with "maka + noun + relative-pronoun" is missing its
+        # verb ("…, maka kepalsuan sebuah jabat tangan yang menyelesaikannya"). Report-
+        # only — needs an editor pass.
+        # "…, maka <noun-phrase> yang <verb+suffix>" is a nominal predicate that lost its
+        # finite verb ("…gagal menundukkannya, maka kepalsuan sebuah jabat tangan yang
+        # menyelesaikannya"). Missing-verb signature: after "maka/dan" comes a NP → yang
+        # → verb-with-clitic, with no other finite verb between.
+        _BROKEN_ANCHOR_RX = re.compile(
+            r",\s+(?:maka|dan)\s+(?:\w+\s+){1,5}yang\s+[a-zA-Z]+(?:nya|kannya|kanya)\b")
+        broken_grammar: list[str] = []
+        # Scan short standalone paragraphs (anchor-shape) AND explicit anchor lines.
+        _short_paras = []
+        for para in (text or "").split("\n\n"):
+            p = para.strip()
+            if p and len(p.split()) <= 25 and "\n" not in p \
+                    and not p.startswith(("#", ">", "- ", "* ", "|")) \
+                    and re.search(r"[.!?…]\s*$", p):
+                _short_paras.append(p)
+        for cand in (anchor_lines + voice_hits + _short_paras):
+            if _BROKEN_ANCHOR_RX.search(cand) and cand[:180] not in broken_grammar:
+                broken_grammar.append(cand[:180])
         report["counters"]["anchor_voice"] = {
             "status": "OVER" if voice_hits else "PASS",
             "count": len(voice_hits), "sentences": voice_hits[:6],
+            "broken_grammar": broken_grammar[:4],
         }
 
         # ── R-H6 thesis restatement (embed-based; UNMEASURED without thesis+embed) ──
