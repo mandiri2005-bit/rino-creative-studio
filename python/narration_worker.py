@@ -42,6 +42,19 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
     tenant_id = data.get("tenant_id")
     log.info("job %s picked up (bull id %s, attempt %s)", job_id, job.id, getattr(job, "attemptsMade", "?"))
 
+    # RLS tenant context: database._current_tenant() reads the auth middleware's
+    # per-REQUEST contextvar — which never exists in this worker process. Without this,
+    # every db call that doesn't pass tenant= explicitly runs set_config('', ...) and the
+    # RLS policy cast ''::uuid blows up ("invalid input syntax for type uuid") → the
+    # terminal-status write fails and the job strands in 'processing' forever (first hit:
+    # job 758k9iqa). Seed the ctx from the job payload so the whole run is tenant-scoped.
+    try:
+        from auth_middleware import _tenant_ctx, TenantContext
+        _tenant_ctx.set(TenantContext(tenant_id=str(tenant_id or ""),
+                                      user_id=str(data.get("user_id") or "")))
+    except Exception as e:  # noqa: BLE001
+        log.warning("tenant ctx seed failed (db calls fall back to explicit tenant=): %s", e)
+
     # Idempotency: a stalled-retry of an already-finished job must not re-run/settle.
     try:
         row = await db.get_job_by_external(tenant_id, job_id)

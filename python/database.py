@@ -672,7 +672,8 @@ async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapte
                VALUES ($1,$2,'narasi'::job_type_enum,'processing','Memulai narasi...',
                        0,$3,$4,$5,now(),$6) RETURNING id""",
             _uid(tenant_id), _uid(user_id), int(total_chapters or 0),
-            external_id, (topic or "")[:200], _meter)
+            external_id, (topic or "")[:200], _meter,
+            tenant=str(tenant_id or ""))
         return str(jid)
     except Exception as e:
         log.error("create_narasi_job: %s", e); raise
@@ -722,30 +723,36 @@ async def sweep_stale_narasi_jobs(older_than_secs: int) -> list:
         log.error("sweep_stale_narasi_jobs: %s", e); return []
 
 async def update_narasi_progress(tenant_id, external_id, current, total, message) -> None:
-    """Update progress_current/total + message for a narasi job (by external id)."""
+    """Update progress_current/total + message for a narasi job (by external id).
+    tenant= explicit — see get_job_by_external (worker-process RLS context)."""
     try:
         await _q_exec(
             """UPDATE jobs SET progress_current=$3, progress_total=$4,
                progress_message=$5, status='processing',
                logs=logs||to_jsonb($5::text)
                WHERE external_job_id=$2 AND tenant_id=$1""",
-            _uid(tenant_id), external_id, int(current), int(total), message)
+            _uid(tenant_id), external_id, int(current), int(total), message,
+            tenant=str(tenant_id or ""))
     except Exception as e:
         log.error("update_narasi_progress: %s", e); raise
 
 async def get_job_by_external(tenant_id, external_id) -> Optional[dict]:
-    """Look up the most recent job by external_job_id (narasi 8-char id, etc.)."""
+    """Look up the most recent job by external_job_id (narasi 8-char id, etc.).
+    tenant= is passed EXPLICITLY: this runs in the narration-worker too, where the
+    auth-middleware contextvar (_current_tenant) is empty and RLS set_config('')
+    would blow up the ''::uuid cast."""
     try:
         row = await _q_fetchrow(
             "SELECT * FROM jobs WHERE external_job_id=$1 AND tenant_id=$2 "
             "ORDER BY created_at DESC LIMIT 1",
-            external_id, _uid(tenant_id))
+            external_id, _uid(tenant_id), tenant=str(tenant_id or ""))
         return _row(row) if row else None
     except Exception as e:
         log.error("get_job_by_external: %s", e); raise
 
 async def finish_narasi_job(tenant_id, external_id, status, result=None, error=None) -> None:
-    """Terminal status for a narasi job (done/cancelled/error), by external id."""
+    """Terminal status for a narasi job (done/cancelled/error), by external id.
+    tenant= explicit — see get_job_by_external (worker-process RLS context)."""
     try:
         await _q_exec(
             """UPDATE jobs SET status=$3::job_status_enum,
@@ -753,7 +760,8 @@ async def finish_narasi_job(tenant_id, external_id, status, result=None, error=N
                progress_message=CASE WHEN $3='done' THEN 'Selesai' ELSE progress_message END,
                completed_at=now()
                WHERE external_job_id=$2 AND tenant_id=$1""",
-            _uid(tenant_id), external_id, status, result, error)
+            _uid(tenant_id), external_id, status, result, error,
+            tenant=str(tenant_id or ""))
     except Exception as e:
         log.error("finish_narasi_job: %s", e); raise
 

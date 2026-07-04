@@ -9470,7 +9470,18 @@ async def narasi_stitch(job_id: str, body: dict,
         raise HTTPException(404, f"Job {job_id} not found")
 
     total_words = len(body_text.split())
-    markdown = (f"> **Gaya:** {style} | **Bahasa:** {lang_label} | **{total_words} kata**\n\n---\n\n"
+    # Stored ⚡ markdown already carries the full gated header — never wrap a second one.
+    if body_text.lstrip().startswith("> **Gaya:**"):
+        return {"ok": True, "markdown": body_text, "total_words": total_words,
+                "partial": _partial, "undershoot_report": _report}
+    # Gaya shows the DISPLAY name ("Big History"), never the raw registry key ("harari").
+    _style_label = style
+    try:
+        from pakem import resolve_style as _rs_st
+        _style_label = (_rs_st(style) or {}).get("display_name") or style
+    except Exception:
+        pass
+    markdown = (f"> **Gaya:** {_style_label} | **Bahasa:** {lang_label} | **{total_words} kata**\n\n---\n\n"
                 + body_text)
     return {"ok": True, "markdown": markdown, "total_words": total_words,
             "partial": _partial, "undershoot_report": _report}

@@ -699,11 +699,19 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             except Exception:  # noqa: BLE001
                 lang_label = language
             words = len(book.split())
+            # Gaya shows the DISPLAY name ("Big History"), never the raw registry key
+            # ("harari") the FE submits.
+            _style_label = style or "narasi"
+            try:
+                from pakem import resolve_style as _rs3
+                _style_label = (_rs3(style) or {}).get("display_name") or _style_label
+            except Exception:  # noqa: BLE001
+                pass
             # v4 §5: header gains the Output field so the editor/dual-path filters are auditable.
             _out_path = "video" if str(body.get("mode") or "").strip() == "video" else "book"
             # alt_history (§3): the pipeline writes the disclaimer marker, not the user.
             _alt = " | **Catatan:** sejarah alternatif (alternate history)" if body.get("alt_history") else ""
-            result[key] = (f"> **Gaya:** {style or 'narasi'} | **Output:** {_out_path} | "
+            result[key] = (f"> **Gaya:** {_style_label} | **Output:** {_out_path} | "
                            f"**Bahasa:** {lang_label} | **{words} kata**{_alt}\n\n---\n\n") + book
     except Exception as e:  # noqa: BLE001
         log.warning("Gaya header failed (non-fatal): %s", e)
