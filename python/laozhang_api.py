@@ -8315,7 +8315,13 @@ def _resolve_narasi_lang(language: str) -> str:
 
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
-    model = (body.get("model") or "gemini-2.5-flash").strip()
+    # Outline + brief are structural planning served as a SYNCHRONOUS blocking request — a slow model
+    # (Opus at 5000+ tokens ≈ 100-200s) exceeds the edge proxy read-timeout so the result never
+    # reaches the client (even though the backend finishes + persists it: "outline gak keluar").
+    # FORCE a fast, env-configurable model here regardless of what the FE sends; only the chapter
+    # NARRATION path uses the heavy model. Tune with NARASI_OUTLINE_MODEL on the python svc (no FE
+    # rebuild). Set it to claude-opus-4-6 etc. if you ever want a heavier outline.
+    model = (os.environ.get("NARASI_OUTLINE_MODEL") or "gemini-2.5-flash").strip()
     topic = (body.get("topic") or "").strip()
     style = (body.get("style") or "storytelling").strip()
     language = (body.get("language") or "id").strip()
