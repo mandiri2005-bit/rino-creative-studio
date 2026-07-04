@@ -82,6 +82,21 @@ async def main() -> None:
     await db.init_db()
     await rc.init_redis()
 
+    # A1 crash-safe billing: run the narasi orphan sweep HERE too — the lifespan-registered
+    # loop only lives in the API process, but with BullMQ on the jobs run in THIS process,
+    # so this worker's own crashes must also be reaped (settle the delivered checkpoint /
+    # refund, mark 'error', free the per-tenant cap). Same idempotent loop as the API's
+    # (commit/refund are op_id-idempotent; the sweep UPDATE...RETURNING hands each row to
+    # exactly one sweeper), gated on the same flag.
+    _sweep_task = None
+    try:
+        from laozhang_api import _dalang_crashsafe_enabled, _narasi_jobs_sweep_loop
+        if _dalang_crashsafe_enabled():
+            _sweep_task = asyncio.create_task(_narasi_jobs_sweep_loop())
+            log.info("narasi orphan-sweep loop started (crash-safe billing ON)")
+    except Exception as e:  # noqa: BLE001
+        log.warning("narasi sweep loop failed to start (non-fatal): %s", e)
+
     from bullmq import Worker  # official package; add `bullmq` to requirements
 
     stop_event = asyncio.Event()
@@ -105,6 +120,12 @@ async def main() -> None:
     log.info("narration-worker up: queue=%s concurrency=%d", QUEUE_NAME, CONCURRENCY)
     await stop_event.wait()
     await worker.close()   # waits for active jobs, stops taking new ones
+    if _sweep_task:
+        _sweep_task.cancel()
+        try:
+            await _sweep_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
     log.info("narration-worker drained — bye")
 
 

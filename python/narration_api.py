@@ -212,7 +212,7 @@ class _UsageSink:
     raise back into the generation path (the orchestrator guards this too)."""
 
     __slots__ = ("tenant_id", "user_id", "job_uuid", "tokens_in", "tokens_out",
-                 "cost_usd", "calls", "_loop")
+                 "cost_usd", "calls", "credits", "_ckpt", "_loop")
 
     def __init__(self, tenant_id: str, user_id: Optional[str], job_uuid: Optional[str]):
         self.tenant_id = tenant_id
@@ -222,6 +222,14 @@ class _UsageSink:
         self.tokens_out = 0
         self.cost_usd = 0.0
         self.calls = 0
+        # A1 crash-safe billing (mirrors classic _meter_actual): running CREDIT total,
+        # durably checkpointed to jobs.input_payload._meter.actual after each call so the
+        # orphan sweep can COMMIT delivered work after a crash instead of refunding it.
+        # The UPDATE also bumps jobs.updated_at (trg_jobs_updated_at) → an actively
+        # generating job can never look stale to the sweep. _ckpt: None=unresolved,
+        # False=crashsafe off (skip), True=on.
+        self.credits = 0
+        self._ckpt: Optional[bool] = None
         try:
             self._loop = asyncio.get_event_loop()
         except Exception:  # noqa: BLE001
@@ -258,6 +266,24 @@ class _UsageSink:
                 http_status=200 if t.ok else 502, credits=0)
         except Exception as e:  # noqa: BLE001
             log.debug("usage sink log_one failed (non-fatal): %s", e)
+        # A1: durable per-call billing checkpoint (classic parity). credit_cost prices the
+        # call the same way _log_narasi_usage does; checkpoint_narasi_meter no-ops when the
+        # row carries no _meter (crashsafe off / BYOK / no hold) so this stays cheap.
+        try:
+            if self._ckpt is None:
+                try:
+                    from laozhang_api import _dalang_crashsafe_enabled as _cse
+                    self._ckpt = bool(_cse())
+                except Exception:  # noqa: BLE001
+                    self._ckpt = False
+            if self._ckpt and self.job_uuid and t.ok:
+                import credit_catalog as _cat
+                self.credits += int(_cat.credit_cost(
+                    "narasi", t.model,
+                    {"tokens_in": int(t.tokens_in or 0), "tokens_out": int(t.tokens_out or 0)}) or 0)
+                await db.checkpoint_narasi_meter(self.tenant_id, self.job_uuid, self.credits)
+        except Exception as e:  # noqa: BLE001
+            log.debug("usage sink meter checkpoint failed (non-fatal): %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +418,18 @@ async def _run_narration_job(
         await _finalize(
             job_id, job_uuid, tenant_id, status=_STATUS_CANCELLED,
             result=None, error="Job cancelled by user")
-        await _refund(meter_op, tenant_id, job_id)
+        # A7 (Rino 2026-07-04): cancel charges the chapters ALREADY generated (partial
+        # commit), refunding only the unused remainder — the sink holds the real cost of
+        # every completed call at cancel time, and charge.settle() commits actual + refunds
+        # the rest. Cancel before ANY chapter completed (sink empty) → full refund as
+        # before. Completed chapters stay recoverable via their narasi_chapters
+        # checkpoints (S2 resume writes them as each chapter lands).
+        if (sink.tokens_out or 0) > 0:
+            log.info("narration job %s cancelled after %d calls — settling partial "
+                     "(tok_out=%d) instead of full refund", job_id, sink.calls, sink.tokens_out)
+            await _settle(meter_op, tenant_id, user_id, model, job_uuid, sink)
+        else:
+            await _refund(meter_op, tenant_id, job_id)
         return
 
     result = dict(result or {})
@@ -1036,9 +1073,20 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
         meter_op = None
 
     # ── Durable jobs row (poll can see it immediately) ──
+    # A1 (crash-safe billing, mirrors classic laozhang_api narasi_start): stamp the hold's
+    # op_id into input_payload._meter so the orphan sweep (narasi_jobs_sweep_stale / 0054)
+    # can settle/refund the hold after a crash — without it a SIGKILL/OOM/redeploy mid-run
+    # strands the hold ~6h AND leaks the per-tenant active cap via the stuck-'processing'
+    # row. Gated on DALANG_CRASHSAFE_ENABLED exactly like the classic callsite.
     job_uuid = None
     try:
-        await db.create_narasi_job(tenant_id, user_uuid, job_id, topic, total)
+        _ckpt_op = None
+        try:
+            from laozhang_api import _dalang_crashsafe_enabled as _cse  # lazy — no top-level cycle
+            _ckpt_op = meter_op if _cse() else None
+        except Exception:  # noqa: BLE001
+            _ckpt_op = None
+        await db.create_narasi_job(tenant_id, user_uuid, job_id, topic, total, op_id=_ckpt_op)
         _row = await db.get_job_by_external(tenant_id, job_id)
         job_uuid = _row.get("id") if _row else None
     except Exception as e:  # noqa: BLE001
