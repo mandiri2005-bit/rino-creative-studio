@@ -758,6 +758,10 @@ app.get("/credits/balance", requireAuth, (req, res) => pyProxy(req, res, "/credi
 app.get("/credits/history", requireAuth, (req, res) => pyProxy(req, res, "/credits/history" + (req.url.indexOf("?") >= 0 ? req.url.slice(req.url.indexOf("?")) : "")));
 // Effective model-gating config (tier_rank + model_min_tier + labels) so the studio UI mirrors the backend 403.
 app.get("/credits/gating", requireAuth, (req, res) => pyProxy(req, res, "/credits/gating"));
+// Live-vs-durable drift report; ?fix=1 resyncs the live Redis cache to the durable ledger
+// (source of truth — can never grant free credits). The storyboard 🔄 button calls this;
+// without this proxy line it 404'd at Node and the badge drift never healed.
+app.get("/credits/reconcile", requireAuth, (req, res) => pyProxy(req, res, "/credits/reconcile" + (req.url.indexOf("?") >= 0 ? req.url.slice(req.url.indexOf("?")) : "")));
 
 // Current subscription state (Account page + post-checkout return poll). Read-only.
 app.get("/subscription/status", requireAuth, async (req, res) => {
