@@ -130,6 +130,7 @@ export function syntheticGenerationClient(opts = {}) {
     },
     async refundVideoJob() { return { skipped: "synthetic" }; },
     async meterUsage() { return { credits: 0, skipped: "synthetic" }; },
+    async registerVideoAsset() { return { skipped: "synthetic" }; },
     async generateDiagramGraph() { return null; },  // → buildDiagramSvg uses its example graph
     async generateWhiteboardPlan() { return null; }, // → scene degrades to handwriting in synthetic mode
     async generateWhiteboardRaster() { return null; }, // → falls back to recraft/handwriting in synthetic mode
@@ -379,6 +380,36 @@ export function httpGenerationClient(opts = {}) {
       } catch (e) {
         console.warn(`[meter] ${operation}/${model} failed: ${e.message}`);
         return { credits: 0 };
+      }
+    },
+
+    // Register a video the worker just uploaded to R2 as a queryable `assets` row so it
+    // appears in Media Vault. Before this, VI/WB video mode outputs uploaded to R2 but
+    // never got a row → invisible in Vault (only visible during the 24h Redis TTL of the
+    // job state). Best-effort: a registry hiccup MUST NOT fail the job — the video is
+    // safely in R2 already. Idempotent on (bucket, s3_key) via db.insert_asset's
+    // ON CONFLICT, so a BullMQ retry re-registers the same row without dup.
+    async registerVideoAsset({ tenantId, userId, jobId, s3Key, contentType,
+                                sizeBytes, sourceJobType, metadata, projectId }) {
+      if (!internalSecret) return { skipped: "no-internal-secret" };
+      try {
+        const r = await fetch(`${PYTHON_API}/video/asset/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders({ tenantId, userId, jobId }) },
+          body: JSON.stringify({
+            job_id: jobId, s3_key: s3Key,
+            content_type: contentType || "video/mp4",
+            size_bytes: sizeBytes || 0,
+            source_job_type: sourceJobType || "veo",
+            metadata: metadata || {},
+            project_id: projectId || null,
+          }),
+        });
+        if (!r.ok) { console.warn(`[asset-register ${jobId}] ${r.status}`); return { skipped: `http-${r.status}` }; }
+        return await r.json();
+      } catch (e) {
+        console.warn(`[asset-register ${jobId}] failed: ${e.message}`);
+        return { skipped: `error-${(e.message || "").slice(0, 80)}` };
       }
     },
 

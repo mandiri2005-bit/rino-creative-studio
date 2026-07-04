@@ -11035,6 +11035,55 @@ async def video_meter(req: VideoMeterReq,
     return {"metered": True, "credits": credits}
 
 
+class VideoAssetRegisterReq(BaseModel):
+    """Register a video the WORKER uploaded directly to R2 as an assets row so it
+    appears in Media Vault. Idempotent on (bucket, s3_key) via db.insert_asset's
+    ON CONFLICT clause — a BullMQ retry re-registers the same row without dup."""
+    job_id: str
+    s3_key: str
+    content_type: str = "video/mp4"
+    size_bytes: int = 0
+    source_job_type: str = "veo"     # existing job_type_enum; VI/WB reuse veo (metadata.visualMode distinguishes)
+    metadata: dict = {}
+    project_id: Optional[str] = None
+
+
+@app.post("/video/asset/register")
+async def video_asset_register(req: VideoAssetRegisterReq,
+                                user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: video-worker (workers.mjs) calls this after a successful R2 upload
+    (workers.mjs:744 uploadBytes) so the video appears in Media Vault. Without this
+    row, the mp4 lives in R2 but is invisible to the Vault (Vault reads `assets`).
+    Pre-fix behavior: video mode outputs never got a row → invisible in Vault.
+    Internal-service auth only (X-Internal-Secret). Best-effort — the worker treats
+    a non-2xx as non-fatal (the video is still safely in R2)."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    from storage import BUCKET as R2_BUCKET
+    if not R2_BUCKET:
+        raise HTTPException(503, "storage not configured on API service (missing R2_BUCKET)")
+    tenant_id = getattr(user, "tenant_id", None) or ""
+    if not tenant_id:
+        raise HTTPException(400, "tenant_id missing on internal ctx")
+    _uid = await _resolve_user_uuid(tenant_id, getattr(user, "user_id", None))
+    try:
+        asset_id = await db.insert_asset(
+            tenant_id=tenant_id, user_id=_uid, job_id=(req.job_id or None),
+            bucket=R2_BUCKET, s3_key=req.s3_key,
+            content_type=req.content_type or "video/mp4",
+            size_bytes=int(req.size_bytes or 0),
+            asset_type="video",
+            source_job_type=(req.source_job_type or "veo"),
+            metadata=(req.metadata or {}),
+            project_id=req.project_id,
+        )
+        return {"id": str(asset_id) if asset_id else None,
+                "registered": True, "bucket": R2_BUCKET, "s3_key": req.s3_key}
+    except Exception as e:  # noqa: BLE001
+        print(f"[video/asset/register] {req.job_id}: {e}")
+        raise HTTPException(500, f"insert_asset failed: {str(e)[:200]}")
+
+
 class VideoDiagramReq(BaseModel):
     description: str
     model: str = "deepseek-chat"   # the user's Model Narasi (gen_model)

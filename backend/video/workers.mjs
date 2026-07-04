@@ -744,13 +744,37 @@ export async function stitchProcessor(job, deps) {
       }
     }
     // upload the final MP4 under the lifecycle-managed `videos/` prefix (Step 6f)
-    let up = { path: outPath, key: null };
+    let up = { path: outPath, key: null, size: 0 };
     const s = await storage();
     if (s) {
       const { readFile } = await import("node:fs/promises");
       const key = s.videoKey(meta.tenantId, jobId);
-      await s.uploadBytes(key, await readFile(outPath), "video/mp4");
-      up = { path: outPath, key };
+      const bytes = await readFile(outPath);
+      await s.uploadBytes(key, bytes, "video/mp4");
+      up = { path: outPath, key, size: bytes.length };
+      // Register the video as a queryable `assets` row so it appears in Media Vault.
+      // Before this hook the video mode (VI/WB/standard clip) uploaded to R2 but never
+      // got a Postgres row → invisible in Vault (only visible during the 24h Redis TTL
+      // of `vjob:{id}`). Best-effort — a registry failure MUST NOT fail the job (the
+      // video is safely in R2 already). Idempotent on (bucket, s3_key) via
+      // db.insert_asset's ON CONFLICT. Uses source_job_type=veo for BOTH WB and
+      // standard-clip; metadata.visualMode distinguishes in Vault.
+      try {
+        await deps.generationClient?.registerVideoAsset?.({
+          tenantId: meta.tenantId, userId: meta.userId, jobId,
+          s3Key: key, contentType: "video/mp4", sizeBytes: up.size,
+          sourceJobType: "veo",
+          metadata: {
+            visualMode: meta.visualMode || "video",
+            whiteboardGenre: meta.whiteboardGenre || null,
+            durationSec: Math.round(result?.duration || 0),
+            aspectRatio: meta.aspectRatio || "16:9",
+          },
+          projectId: meta.projectId || null,
+        });
+      } catch (regErr) {
+        console.warn(`[asset-register ${jobId}] non-fatal: ${regErr.message}`);
+      }
     }
     await deps.store.setStatus(jobId, "done", {
       mp4Path: up.path, mp4Key: up.key, durationActual: result.duration, progress: 100,
