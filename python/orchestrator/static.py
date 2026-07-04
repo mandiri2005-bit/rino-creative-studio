@@ -689,6 +689,22 @@ async def _polish_reduce(
         log.info("_polish_reduce: skipping polish — book %d words > NARASI_POLISH_MAX_WORDS %d "
                  "(output-ceiling truncation risk)", _book_words, _pmax)
         return book, False
+    # DYNAMIC ceiling guard: the static cap above assumes a 32k-token editor, but the
+    # ACTUAL polish model may be far smaller — sonnet's 8192-token ceiling ≈ 5,650 words,
+    # so a ~5,200-word book comes back at exactly 8192 tokens (truncated) and the post-
+    # guard discards it: ~3 minutes of guaranteed-wasted work on every long book
+    # (itaatga7 + 758k9iqa both hit this). Skip polish when the book can't round-trip
+    # through the polish model's real output ceiling.
+    try:
+        from .core import max_tokens_for as _mt4
+        _need = int(_book_words * 1.45 * 1.08)     # tokens to reproduce the book + slack
+        _ceil = int(_mt4(manager_model or "") or 0)
+        if _ceil and _need > int(_ceil * 0.95):
+            log.info("_polish_reduce: skipping polish — book needs ~%d tokens but %s ceiling "
+                     "is %d (guaranteed truncation)", _need, manager_model, _ceil)
+            return book, False
+    except Exception:  # noqa: BLE001
+        pass
 
     if mode == "heavy":
         instruction = (

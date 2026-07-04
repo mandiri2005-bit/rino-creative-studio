@@ -458,7 +458,7 @@ async def _run_narration_job(
     # whose result carries "output" not "book"), the harari register scorecard (R-H10,
     # report-only), and the "> **Gaya:** ..." metadata header. Never raises.
     await _apply_v3_gates(result, body, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                          sink=sink)
+                          sink=sink, job_id=job_id)
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -478,7 +478,7 @@ async def _run_narration_job(
 # CC v3 (Stop the Pendulum) — terminal gates for the ⚡ engine. All best-effort.
 # ---------------------------------------------------------------------------
 async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=None, job_uuid=None,
-                          sink: "Optional[_UsageSink]" = None) -> None:
+                          sink: "Optional[_UsageSink]" = None, job_id: Optional[str] = None) -> None:
     """Mutates `result` in place: (1) R-FG4/5/6 deterministic gate on the final book +
     every chapter record (the per-chapter gate in static.py covers scenario A/B workers;
     this terminal pass also covers C/D/E outputs and anything the polish reintroduced);
@@ -521,9 +521,29 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 embed = None
             rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
                                       word_target=wt or None, embed_fn=embed)
+
+            # Tolerance band: one diet round = ONE full-book Opus stream (~5-6 min on a
+            # 5k-word book — itaatga7's whole "why is it stuck" phase). Not worth it for
+            # a marginal overshoot: budgeted counters must exceed budget × TOLERANCE to
+            # justify the rewrite; discrete violations (scene_dup/anchor_voice/epithet,
+            # no numeric budget) always qualify.
+            _diet_tol = float(os.environ.get("NARASI_DIET_TOLERANCE", "1.3"))
+
+            def _diet_worthy(r: dict) -> list:
+                worthy = []
+                for k in r.get("over_budget") or []:
+                    v = (r.get("counters") or {}).get(k) or {}
+                    b = v.get("budget")
+                    if b and int(v.get("count") or 0) <= int(b) * _diet_tol:
+                        continue   # marginal overshoot — report it, don't burn a rewrite
+                    worthy.append(k)
+                return worthy
+
             loops = 0
-            while has_budgets and rep.get("over_budget") and loops < 2:
+            while has_budgets and _diet_worthy(rep) and loops < 2:
                 loops += 1
+                if job_id:
+                    await _safe_progress(job_id, f"Perapian editorial (diet pass {loops})…")
                 try:
                     from laozhang_api import make_narasi_client, _resolve_narasi_lang as _rl
                     instr = _nc.surgical_prompt(rep, language=_rl(language))
@@ -686,6 +706,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 try:
                     import narasi_verify as _nv
                     if _nv.verify_enabled():
+                        if job_id:
+                            await _safe_progress(job_id, "Verifikasi fakta (web search)…")
                         result["fact_report"]["verify"] = await _nv.verify_report(
                             result["fact_report"], project_id=body.get("project_id"),
                             tenant_id=tenant_id)
