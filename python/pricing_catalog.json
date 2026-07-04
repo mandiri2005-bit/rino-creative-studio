@@ -1087,6 +1087,30 @@
         "sell": null
       },
       {
+        "model": "recraft-v4_1",
+        "provider": "recraft",
+        "slug": "recraftv4_1",
+        "features": [
+          "create",
+          "create_vector",
+          "edit"
+        ],
+        "unit": "per_image",
+        "price": 0.04,
+        "sell": null
+      },
+      {
+        "model": "recraft-v4_1-vector",
+        "provider": "recraft",
+        "slug": "recraftv4_1",
+        "features": [
+          "create_vector"
+        ],
+        "unit": "per_image",
+        "price": 0.08,
+        "sell": null
+      },
+      {
         "model": "flux-schnell",
         "provider": "atlascloud",
         "slug": "black-forest-labs/flux-schnell",
