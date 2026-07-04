@@ -1,9 +1,9 @@
 # NARASI ⚡ PIPELINE-SPEC — canonical, versioned
 
-**Version: 1.0.0 (2026-07-04)** · Supersedes the 13 CC instruction addenda (v1–v4,
-refactor, dual-path, registry-expansion, fact-gate ×3, regime-precedence, id-path ×2,
-round-2 patch), which are now **changelog** — the code + this spec are the source of
-truth. Per round-2 §8: one artifact says what is actually wired.
+**Version: 1.1.0 (2026-07-04)** · Adds FG-SEARCH Phase-1 wiring (dates + proper-nouns +
+gap_fill) per `cc-instruksi-wire-fg-search-now.md` and the `gap_fill` mechanic per
+`cc-instruksi-ledger-seed-diponegoro.md` §2. Supersedes 15 CC instruction addenda now
+archived to `/changelog` — the code + this spec are the source of truth.
 
 ## 0. Rule zero — no silent deployment gaps
 

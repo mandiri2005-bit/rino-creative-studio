@@ -35,10 +35,13 @@ PIPELINE_RULES = (
     "counters.thesis",      # R-H6 (embed-based)
     "register_gate",        # R-H10 scorecard
     "factscan",             # R-FG9/FG10 sweep
-    "verify_search",        # R-FG8 search-backed verify
+    "verify_search",        # R-FG8 search-backed verify (dispatch)
+    "verify.date",          # FG-SEARCH Phase-1 Class-1 (file-1 §2)
+    "verify.proper_noun",   # FG-SEARCH Phase-1 Class-2 (file-1 §2)
+    "verify.gap_fill",      # gap_fill mandatory-search (file-2 §2)
     "entity_pass",          # §5 scholar resolution
-    "attribution_verify",   # FG3-b wrong-subject scholar check (round-2 §4 — needs search)
-    "style_spec",           # round-2 §6: the style label MUST resolve; spec-load asserted
+    "attribution_verify",   # FG3-b wrong-subject scholar check (Phase 2)
+    "style_spec",           # round-2 §6
     "number_rendering",     # §7 output-keyed number pass
     "header",               # Gaya/Output header
     "living_guard",         # regime-precedence §2
@@ -126,6 +129,19 @@ def build_manifest(*, style_entry: dict | None, lang: str, regime: str, mode: st
          "" if (verify_on and keyed and regime == "strict") else
          (f"regime={regime}" if regime != "strict" else
           ("FACTGATE_SEARCH_ENABLED=0" if not verify_on else "no search provider keys")))
+    # FG-SEARCH Phase-1: the two priority classes get their own rows so the manifest
+    # tells the truth about coverage per file-1 §3 acceptance. verify_search=active is
+    # the necessary condition; date + proper_noun follow it.
+    _phase1_active = verify_on and keyed and regime == "strict"
+    _set("verify.date", "active" if _phase1_active else
+         ("n/a" if regime != "strict" else "UNMEASURED"),
+         "" if _phase1_active else "Phase 1: dates need FG-SEARCH")
+    _set("verify.proper_noun", "active" if _phase1_active else
+         ("n/a" if regime != "strict" else "UNMEASURED"),
+         "" if _phase1_active else "Phase 1: institutional/proper-noun verify needs FG-SEARCH")
+    _set("verify.gap_fill", "active" if _phase1_active else
+         ("n/a" if regime != "strict" else "UNMEASURED"),
+         "" if _phase1_active else "gap_fill claims mandatory-search when FG-SEARCH is up")
 
     _set("entity_pass", "active")
     # FG3-b (round-2 §4): "is this person a scholar OF this field" needs live search —

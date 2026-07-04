@@ -65,6 +65,29 @@ _SPEECH = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:wrote|said|recall
 _RELATION = re.compile(r"(?i)\b(?:his|her|their)\s+(?:brother|nephew|uncle|cousin|son|daughter|father|"
                        r"mother|wife|husband|heir|successor)\b|\bdrafted\s+by\b|\bauthored\s+by\b")
 _GLOSS = re.compile(r"(?i)(?:\bliterally\b|\bmeans\b|['‘“][^'’”]{2,40}['’”]\s*[—-]|the\s+word\s+for)")
+
+# FG-SEARCH Phase-1 Class-1: dedicated `date` extraction. A DATE is a bare year, a
+# spelled year (ID), a "day month year", or a "month year" — verbatim tokens are the
+# verifiable unit for R-FG8. Bilingual month lists (ID + EN).
+_MONTH_RX = (r"(?:jan(?:uari)?|feb(?:ruari)?|mar(?:et|ch)?|apr(?:il)?|mei|may|jun[ie]?|"
+             r"jul[iy]?|agustus|aug(?:ust)?|sep(?:tember)?|okt(?:ober)?|oct(?:ober)?|"
+             r"nov(?:ember)?|des(?:ember)?|dec(?:ember)?)")
+_DATE_EXTRACT_RX = re.compile(
+    r"(?i)"
+    r"\b(\d{1,2}\s+" + _MONTH_RX + r"\s+\d{3,4})\b"
+    r"|\b(" + _MONTH_RX + r"\s+\d{3,4})\b"
+    r"|\b(1\d{3}|20\d{2})\b"
+    r"|\b((?:seribu|seratus)(?:\s+(?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|"
+    r"sembilan|puluh|belas|ratus|ribu))+)\b")
+
+# FG-SEARCH Phase-1 Class-2: proper-noun in INSTITUTIONAL position. Detects capitalized
+# multi-word phrases in slots where an institution/office/policy would sit ("Kas Kasasi"
+# in Bab 7). Whitelist of pronouns/function words that must NOT anchor a match.
+_INSTITUTION_NOUNS = (r"(?:[Kk]as|[Dd]ewan|[Kk]antor|[Kk]omisi|[Ll]embaga|[Bb]adan|"
+                      r"[Mm]ajelis|[Bb]enteng|[Ss]istem|[Pp]erjanjian|[Uu]ndang|"
+                      r"[Tt]raktat|[Rr]esolusi|[Aa]turan|[Kk]eputusan)")
+_INSTITUTION_RX = re.compile(
+    r"\b(" + _INSTITUTION_NOUNS + r"\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\b")
 _FOREIGN_NEAR = re.compile(r"\*[^*]{2,30}\*|\b[a-z]+tl\b|\b[A-Z][a-z]+ah\b")
 _SUPERL_QUAL = re.compile(r"(?i)\b(?:most\s+detailed|greatest|finest|unmatched|unrivalled|unrivaled|"
                           r"most\s+sophisticated|most\s+advanced)\b")
@@ -141,6 +164,34 @@ def fact_scan(text: str, *, factual_regime: str = "strict", lang: str = "en") ->
         _collect("quantitative_unverified", numeric)
         years = [s for s in body_sents if _YEAR.search(s) and not _known_good(s)]
         _collect("date_tokens", years)
+
+        # FG-SEARCH Phase-1: emit `date` and `proper_noun` as separately-verifiable
+        # classes so the verify pass can apply per-class policy (date: exact/hedge-prose/
+        # cut, never wrong-value; proper_noun: verified/fabricated/wrong-referent).
+        # tokens carry the SENTENCE (context for the verdict) + the token itself.
+        date_hits = []
+        for s in body_sents:
+            if _known_good(s):
+                continue
+            for m in _DATE_EXTRACT_RX.finditer(s):
+                tok = next((g for g in m.groups() if g), "").strip()
+                if tok:
+                    date_hits.append({"sentence": s[:200], "token": tok})
+        rep["classes"]["date"] = {"count": len(date_hits),
+                                  "samples": [h["sentence"] for h in date_hits[:8]],
+                                  "tokens": date_hits[:80]}
+
+        inst_hits = []
+        for s in body_sents:
+            if _known_good(s):
+                continue
+            for m in _INSTITUTION_RX.finditer(s):
+                inst_hits.append({"sentence": s[:200], "token": m.group(1)})
+        rep["classes"]["proper_noun_institution"] = {
+            "count": len(inst_hits),
+            "samples": [h["sentence"] for h in inst_hits[:8]],
+            "tokens": inst_hits[:40],
+        }
 
         if factual_regime == "fictional":
             rep["skipped"] = "external-claim classes skipped (fictional regime; FG2b continuity applies elsewhere)"

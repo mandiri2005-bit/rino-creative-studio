@@ -708,9 +708,27 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     if _nv.verify_enabled():
                         if job_id:
                             await _safe_progress(job_id, "Fact verification (web search)…")
+                        # gap_fill claims (§2 file-2): a claim ADDED to satisfy a
+                        # previously-flagged gap is guilty-until-verified. Sources:
+                        # (1) outline's angka_tesis strings (final chapter's payoff stats)
+                        # (2) body._gap_fill_claims (reviewer/CI-injected: "the manuscript
+                        # is missing X" beats added on the next draft). Mandatory-search.
+                        _gap: list = []
+                        for ch in (body.get("chapters") or []):
+                            for k in ("angka_tesis", "gap_fill", "required_beat"):
+                                v = (ch or {}).get(k) if isinstance(ch, dict) else None
+                                if isinstance(v, str) and v.strip():
+                                    _gap.append(v.strip())
+                                elif isinstance(v, list):
+                                    _gap.extend(x for x in v if isinstance(x, str) and x.strip())
+                        for x in (body.get("_gap_fill_claims") or []):
+                            if isinstance(x, str) and x.strip():
+                                _gap.append(x.strip())
                         result["fact_report"]["verify"] = await _nv.verify_report(
                             result["fact_report"], project_id=body.get("project_id"),
-                            tenant_id=tenant_id)
+                            tenant_id=tenant_id,
+                            lang=str(language or "en"),
+                            gap_fill_claims=_gap or None)
                 except Exception as _ve:  # noqa: BLE001
                     log.warning("verify pass failed (non-fatal): %s", _ve)
             # Regime-mismatch detector (§4, warn-only): a FICTIONAL job dense with real
