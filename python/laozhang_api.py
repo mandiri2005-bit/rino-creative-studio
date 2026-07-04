@@ -11066,19 +11066,29 @@ async def video_asset_register(req: VideoAssetRegisterReq,
     if not tenant_id:
         raise HTTPException(400, "tenant_id missing on internal ctx")
     _uid = await _resolve_user_uuid(tenant_id, getattr(user, "user_id", None))
+    # BullMQ job_id (e.g. "vid_mr6wuges_01k979") is NOT a UUID — it's the video-worker's
+    # opaque BullMQ id. assets.job_id column is UUID + NULL is allowed; passing the string
+    # directly threw "invalid input syntax for type uuid" (2026-07-04 first-live 500).
+    # Match the recipe/spokesperson row that shipped 2026-06-30 (job_id=NULL, opaque id
+    # stashed under metadata) — keeps the BullMQ id queryable for support/backfill without
+    # violating the UUID constraint.
+    _md = dict(req.metadata or {})
+    if req.job_id and "bullmq_job_id" not in _md:
+        _md["bullmq_job_id"] = req.job_id
     try:
         asset_id = await db.insert_asset(
-            tenant_id=tenant_id, user_id=_uid, job_id=(req.job_id or None),
+            tenant_id=tenant_id, user_id=_uid, job_id=None,
             bucket=R2_BUCKET, s3_key=req.s3_key,
             content_type=req.content_type or "video/mp4",
             size_bytes=int(req.size_bytes or 0),
             asset_type="video",
             source_job_type=(req.source_job_type or "veo"),
-            metadata=(req.metadata or {}),
+            metadata=_md,
             project_id=req.project_id,
         )
         return {"id": str(asset_id) if asset_id else None,
-                "registered": True, "bucket": R2_BUCKET, "s3_key": req.s3_key}
+                "registered": True, "bucket": R2_BUCKET, "s3_key": req.s3_key,
+                "bullmq_job_id": req.job_id or None}
     except Exception as e:  # noqa: BLE001
         print(f"[video/asset/register] {req.job_id}: {e}")
         raise HTTPException(500, f"insert_asset failed: {str(e)[:200]}")
