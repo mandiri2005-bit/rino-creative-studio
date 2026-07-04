@@ -669,7 +669,7 @@ async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapte
             """INSERT INTO jobs
                    (tenant_id,user_id,job_type,status,progress_message,
                     progress_current,progress_total,external_job_id,output_prefix,started_at,input_payload)
-               VALUES ($1,$2,'narasi'::job_type_enum,'processing','Memulai narasi...',
+               VALUES ($1,$2,'narasi'::job_type_enum,'processing','Starting narration…',
                        0,$3,$4,$5,now(),$6) RETURNING id""",
             _uid(tenant_id), _uid(user_id), int(total_chapters or 0),
             external_id, (topic or "")[:200], _meter,

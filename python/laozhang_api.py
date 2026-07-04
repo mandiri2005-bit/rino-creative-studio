@@ -8612,7 +8612,7 @@ async def narasi_generate(body: dict,
                 body["_job_uuid"] = _job_uuid
         except Exception as _e:
             import logging as _lg; _lg.getLogger("narasi").warning("create_narasi_job failed (non-fatal): %s", _e)
-        await rc.set_progress(job_id, "Memulai narasi...")
+        await rc.set_progress(job_id, "Starting narration…")
 
         # Spawn the actual generation on the main loop; return the id immediately.
         asyncio.create_task(_narasi_generate_impl_guarded(body, job_id, _tenant, _user, _meter_op, _reserved))
