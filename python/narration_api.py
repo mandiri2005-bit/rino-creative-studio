@@ -346,6 +346,9 @@ async def _run_narration_job(
     # writes chapters all at once at the end. To still light checkboxes AS work
     # lands, we pass a telemetry sink that flips the chapter field when its worker
     # call returns. CallTelemetry.task_id is "chN" (1-based) for chapter workers.
+    _chapters_done: set = set()
+    _polish_progress_fired = [False]
+
     def _checkbox_from_telemetry(t: CallTelemetry) -> None:
         sink(t)  # keep accounting + usage logging
         tid = (t.task_id or "")
@@ -355,6 +358,15 @@ async def _run_narration_job(
             try:
                 loop = asyncio.get_event_loop()
                 loop.create_task(_set_chapter_state(job_id, no, state))
+                _chapters_done.add(no)
+                # Rino: "Composing narration gak bisa dibuat lebih cepat" — chapters
+                # write in parallel already; the lingering banner after all boxes green
+                # is polish. Flip the progress message the moment the last chapter's
+                # telemetry lands so the UI doesn't stall on "Composing".
+                if (not _polish_progress_fired[0]
+                        and len(_chapters_done) >= max(1, int(total))):
+                    _polish_progress_fired[0] = True
+                    loop.create_task(_safe_progress(job_id, "Polishing final draft…"))
             except Exception:  # noqa: BLE001
                 pass
 
@@ -549,12 +561,19 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     instr = _nc.surgical_prompt(rep, language=_rl(language))
                     model = str(body.get("worker_model") or "claude-opus-4-6")
                     cli = make_narasi_client(model)
-                    mt = min(32000, int(len(book.split()) * 1.45 * 1.25) + 800)
+                    # Rino: "editorial refinement paling lama" — b92lvku8 diet call
+                    # burned 4800 output tokens over 3.5 min on a 2200-word book. The
+                    # surgical prompt tells Opus to touch only listed sentences and
+                    # return the WHOLE book — so max_tokens ≈ book size × ~1.15 is
+                    # plenty. Older 1.45 × 1.25 = 1.81 bloat gave Opus room to expand.
+                    _mult = float(os.environ.get("NARASI_DIET_MAX_TOKENS_MULT", "1.15"))
+                    mt = min(32000, int(len(book.split()) * 1.45 * _mult) + 400)
                     resp = await asyncio.wait_for(asyncio.to_thread(
                         lambda: cli.chat.completions.create(
                             model=model,
                             messages=[{"role": "user", "content": instr + "\n\nMANUSCRIPT:\n" + book}],
-                            max_tokens=mt, stream=False)), timeout=600)
+                            max_tokens=mt, stream=False)),
+                        timeout=float(os.environ.get("NARASI_DIET_TIMEOUT", "300")))
                     # A2: this is a real (up to 32k-token Opus) call — it MUST be metered
                     # and logged, or an over-budget book delivers a large rewrite billed to
                     # nobody and invisible in usage_logs. Feed the job's sink: it accumulates
@@ -1339,11 +1358,25 @@ async def narration_status(job_id: str, user: CurrentUser = Depends(get_current_
 
     # Prefer the durable terminal status when the job has finished; otherwise the
     # live Redis status (running/polishing).
+    #
+    # RACE FIX (Rino "kejadian lagi" — b92lvku8 blank output): `_set_status` writes to
+    # REDIS first, then `finish_narasi_job` writes the DB status + result_payload later.
+    # If the FE polled during the ~100ms window between those, Redis said "done" but the
+    # DB row still had `status='processing'` and NULL `result_payload`. Old code:
+    # eff_status = status or _RUNNING → "done" — but out["output"] stayed undefined
+    # (no dict payload yet). FE saw status=done + empty output → setNarasi("") → blank.
+    # New rule: NEVER report `done` unless the DB row has BOTH status=done AND a
+    # non-empty result_payload. Otherwise stay `polishing`, let the FE keep polling.
     db_status = (row or {}).get("status")
+    _payload_ready = bool(row and row.get("result_payload"))
     eff_status = status or _STATUS_RUNNING
     if db_status in ("done", "error", "cancelled"):
         eff_status = {"done": _STATUS_DONE, "error": _STATUS_FAILED,
                       "cancelled": _STATUS_CANCELLED}.get(db_status, eff_status)
+    elif status == _STATUS_DONE and not _payload_ready:
+        # Redis says done but DB is mid-commit → downgrade so the FE keeps polling
+        # instead of resolving with an empty output.
+        eff_status = _STATUS_POLISHING
 
     if row:
         total = total or int(row.get("progress_total") or 0)
