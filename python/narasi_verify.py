@@ -43,9 +43,12 @@ def _mk_query(sentence: str, klass: str) -> str:
     return (prefix + " " + core).strip()
 
 
-async def _verdict_llm(claim: str, snippets: list, klass: str) -> dict:
-    """Top-tier judged verdict, constrained enum. One schema-retry, then unverifiable."""
-    from laozhang_api import make_narasi_client, _narasi_parse_json  # lazy
+async def _verdict_llm(claim: str, snippets: list, klass: str, *,
+                       tenant_id=None) -> dict:
+    """Top-tier judged verdict, constrained enum. One schema-retry, then unverifiable.
+    Every attempt is logged to usage_logs (endpoint narasi, provider stamped) — a verify
+    pass over 80 claims is real Opus spend and must be visible in COGS."""
+    from laozhang_api import make_narasi_client, _narasi_parse_json, _log_narasi_usage  # lazy
     ev = "\n\n".join(
         f"[{i+1}] {s.title} ({s.url}){' [TRUSTED-DOMAIN]' if _TRUSTED.search(s.url or '') else ''}\n"
         + (f"SUMMARY: {s.answer}\n" if s.answer else "") + s.text
@@ -67,6 +70,11 @@ async def _verdict_llm(claim: str, snippets: list, klass: str) -> dict:
                 lambda: cli.chat.completions.create(
                     model=model, messages=[{"role": "user", "content": prompt}],
                     max_tokens=300, stream=False)), timeout=90)
+            if tenant_id:
+                try:
+                    await _log_narasi_usage(tenant_id, None, model, resp)
+                except Exception:  # noqa: BLE001
+                    pass
             d = _narasi_parse_json((resp.choices[0].message.content or "")) or {}
             if isinstance(d, dict) and d.get("verdict") in _VERDICTS:
                 return {"verdict": d["verdict"],
@@ -111,7 +119,7 @@ async def verify_report(fact_report: dict, *, project_id=None, tenant_id=None) -
             if snips == sp.PROVIDER_DOWN or not snips:
                 return {"claim": claim[:160], "class": klass, "verdict": "NEEDS-VERIFY",
                         "reason": "provider_down"}
-            v = await _verdict_llm(claim, snips, klass)
+            v = await _verdict_llm(claim, snips, klass, tenant_id=tenant_id)
             return {"claim": claim[:160], "class": klass, **v}
 
         results: list[dict] = []

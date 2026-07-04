@@ -8417,6 +8417,14 @@ async def _narasi_outline_impl(body: dict):
             f"- Chapters with deeper/complex/climactic topics get MORE words\n"
             f"- Intro and conclusion get FEWER words\n"
             f"- Total must sum to a value between {word_min} and {word_max}\n\n"
+            # ID-path fixes §3 (R-H4 extension): for factual/historical topics the outline
+            # must NOMINATE the payoff statistic up front, so its absence in the final
+            # manuscript is a flagged gap, not an invisible one (the Diponegoro run
+            # shipped with the war's total-cost figures missing entirely).
+            f"ANGKA TESIS: if the topic is factual/historical, the FINAL chapter's "
+            f"description MUST name the payoff statistic(s) of the whole story (the human "
+            f"or material cost, the scale number the narrative has been building toward), "
+            f"with the actual figures.\n\n"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array of exactly {chap_count} objects, each with:\n"
             f"    \"id\": chapter number as string\n"

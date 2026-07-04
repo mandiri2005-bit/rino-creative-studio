@@ -76,11 +76,17 @@ except Exception:  # noqa: BLE001
     _ngate = None  # type: ignore
 
 
-def _gate(text: str) -> str:
-    """Per-chapter deterministic gate (identity when narasi_gate absent/disabled)."""
+def _gate(text: str, lang: str = "en") -> str:
+    """Per-chapter deterministic gate (identity when narasi_gate absent/disabled).
+    vo_strip=False: [ANCHOR]/[BEAT] markers survive HERE so the counters (which run on
+    the assembled book, before the terminal pass) can measure the anchor budget — the
+    terminal _apply_v3_gates pass does the real marker strip."""
     if _ngate is None or not text:
         return text
-    out, _rep = _ngate.gate_text(text)
+    try:
+        out, _rep = _ngate.gate_text(text, lang=lang, vo_strip=False)
+    except TypeError:  # older gate signature
+        out, _rep = _ngate.gate_text(text)
     return out
 
 log = logging.getLogger("orchestrator.static")
@@ -562,7 +568,7 @@ async def narrate_chapters(
         ok = bool(r.get("ok")) and bool(r.get("output"))
         # R-FG4/5/6 per-chapter gate on real output only — the failure placeholder IS a
         # deliberate bracket signal and must survive (the gate whitelists it anyway).
-        content = _gate(r.get("output")) if ok else _placeholder(ch, no, str(r.get("error", "unknown")))
+        content = _gate(r.get("output"), lang=language) if ok else _placeholder(ch, no, str(r.get("error", "unknown")))
         chapter_records.append({
             "no": no,
             "id": str(ch.get("id", no + 1)),
@@ -598,7 +604,7 @@ async def narrate_chapters(
     )
     # R-FG5 TERMINAL: the polish is the last LLM touch and can reintroduce brackets —
     # the deterministic gate must run AFTER it, so residue can never ship.
-    polished_book = _gate(polished_book)
+    polished_book = _gate(polished_book, lang=language)
 
     return {
         "ok": n_ok > 0,

@@ -574,17 +574,39 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("counter engine failed (non-fatal): %s", e)
 
-    # ── (1) terminal deterministic gate ──
+    _mode = "video" if str(body.get("mode") or "").strip() == "video" else "book"
+
+    # ── (0.7) ID-path §5: scholar entity resolution — split-person repair, wrong-domain
+    # downgrade, self-debate flag. Deterministic; runs before the terminal gate so its
+    # corrections are themselves swept. ──
+    try:
+        import narasi_entities as _nent
+        key = "book" if result.get("book") else "output"
+        book = result.get(key) or ""
+        if book:
+            fixed, ent_report = _nent.entity_pass(book)
+            result[key] = fixed
+            for rec in result.get("chapters") or []:
+                if rec.get("content"):
+                    rec["content"], _er = _nent.entity_pass(rec["content"])
+            result["entity_report"] = ent_report
+            if ent_report.get("self_debate"):
+                log.warning("entity pass: self-debate conflict(s) flagged: %s",
+                            [d.get("scholar") for d in ent_report["self_debate"]])
+    except Exception as e:  # noqa: BLE001
+        log.warning("entity pass failed (non-fatal): %s", e)
+
+    # ── (1) terminal deterministic gate (localized per §2/§3) ──
     gate_report: dict = {}
     try:
         key = "book" if result.get("book") else "output"
         book = result.get(key) or ""
         if book:
-            gated, gate_report = _ngate.gate_text(book)
+            gated, gate_report = _ngate.gate_text(book, lang=language, mode=_mode)
             result[key] = gated
         for rec in result.get("chapters") or []:
             if rec.get("content"):
-                rec["content"], _r = _ngate.gate_text(rec["content"])
+                rec["content"], _r = _ngate.gate_text(rec["content"], lang=language, mode=_mode)
         result["gate_report"] = gate_report
     except Exception as e:  # noqa: BLE001
         log.warning("v3 terminal gate failed (non-fatal): %s", e)
@@ -688,6 +710,27 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("fact scan failed (non-fatal): %s", e)
 
+    # ── (2.9) ID-path §7: number rendering keyed to Output — video = speakable spelled
+    # forms (uniform; ends the '"seribu delapan ratus…" beside "1827"' mix), book = digits.
+    try:
+        if _mode == "video" and str(language or "").split("-")[0].lower() == "id":
+            from narasi_counters import render_numbers_id as _rn
+            key = "book" if result.get("book") else "output"
+            book = result.get(key) or ""
+            if book:
+                rendered, n_sp = _rn(book)
+                result[key] = rendered
+                for rec in result.get("chapters") or []:
+                    if rec.get("content"):
+                        rec["content"], _n2 = _rn(rec["content"])
+                result["number_rendering"] = {"path": "video", "spelled": n_sp}
+    except Exception as e:  # noqa: BLE001
+        log.warning("number rendering failed (non-fatal): %s", e)
+
+    # §1: the manifest built at job start ships in the editor report.
+    if body.get("_gates_manifest"):
+        result["gates_manifest"] = body["_gates_manifest"]
+
     # ── (3) Gaya metadata header (matches the classic stitch header; gate-whitelisted) ──
     try:
         key = "book" if result.get("book") else "output"
@@ -740,6 +783,10 @@ def _result_payload(result: dict) -> dict:
         "register_gate": result.get("register_gate"),
         "counter_report": result.get("counter_report"),
         "fact_report": result.get("fact_report"),
+        # ID-path fixes: §1 manifest + §5 entity report + §7 rendering stats
+        "gates_manifest": result.get("gates_manifest"),
+        "entity_report": result.get("entity_report"),
+        "number_rendering": result.get("number_rendering"),
     }
 
 
@@ -806,10 +853,13 @@ async def _finalize(job_id: str, job_uuid: Optional[str], tenant_id: str, *,
     except Exception:  # noqa: BLE001
         pass
     try:
+        # Pass the dict RAW — the pool's jsonb codec encodes it. json.dumps here would
+        # DOUBLE-ENCODE (payload stored as a JSON string → result_payload->>'markdown'
+        # NULL, every consumer needs a defensive json.loads). Same rule as
+        # rcs-ledger-metadata-double-encode.
         await db.finish_narasi_job(
             tenant_id, job_id, _DB_STATUS.get(status, "error"),
-            result=json.dumps(result) if result is not None else None,
-            error=error)
+            result=result, error=error)
     except Exception as e:  # noqa: BLE001
         log.warning("finish_narasi_job(%s,%s) failed (non-fatal): %s", job_id, status, e)
 
@@ -1024,6 +1074,27 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
     body = dict(body or {})
     _narration_admit(body)   # CC v3: ⚡ caps (chapters/words) — 400 BEFORE any hold
     await _living_person_guard(body, user.tenant_id)   # §2: blocking, pre-hold, pre-tokens
+    # ID-path §1: gates-active manifest — BEFORE the hold, zero tokens on a job whose
+    # enforcement state can't be fully resolved. UNMEASURED/n-a are honest states and
+    # pass; a rule with NO state fails the start (silent absence is the killed class).
+    try:
+        import narasi_manifest as _nm
+        _entry = None
+        try:
+            from pakem import resolve_style as _rs_m
+            _entry = _rs_m(str(body.get("style") or ""))
+        except Exception:  # noqa: BLE001
+            _entry = None
+        body["_gates_manifest"] = _nm.build_manifest(
+            style_entry=_entry, lang=str(body.get("language") or "id"),
+            regime=_effective_regime(body),
+            mode="video" if str(body.get("mode") or "").strip() == "video" else "book")
+    except Exception as _me:
+        # ManifestError = deliberate fail-closed; anything else must not block a job.
+        import narasi_manifest as _nm2
+        if isinstance(_me, _nm2.ManifestError):
+            raise HTTPException(422, {"error": "gates_manifest", "message": str(_me)})
+        log.warning("gates manifest build failed (non-fatal): %s", _me)
     # BullMQ S3 fairness: cap concurrent narasi jobs per tenant (0 = off, default).
     _cap = int(os.environ.get("NARRATION_MAX_ACTIVE_PER_TENANT", "0") or 0)
     if _cap > 0:

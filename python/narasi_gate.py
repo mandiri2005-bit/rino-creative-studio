@@ -172,25 +172,58 @@ def apply_known_bad(text: str) -> tuple[str, list[dict[str, Any]]]:
 # ── R-FG6: [VERIFY]/TODO/FIXME resolution — three legal exits, never a raw bracket. ──
 # Optional preceding qualifier is consumed so "at least [VERIFY: number] times" reads
 # "several times", and "in [VERIFY: 1547]" reads "around 1547" (not "in around 1547").
+# ID-path fixes §3: hedge vocabulary comes from the LANGUAGE PACK, never hardcoded EN —
+# the Diponegoro run shipped "sekitar several" and "tahun around 1830" because this pass
+# enforced with the wrong language's templates. And the hedge pass may NEVER delete or
+# replace a value: a bracket carrying ANY substantive text keeps that text (hedged).
 _VERIFY_RX = re.compile(
     r"(?i)(?P<prep>\b(?:in|at|of|by|on)\s+)?(?P<qual>\b(?:at\s+least|exactly|precisely|approximately)\s+)?"
     r"\[\s*VERIFY\b[:\-]?\s*(?P<inner>[^\]]*)\]")
 _CUT_RX = re.compile(r"(?i)\[\s*(?:TODO|FIXME|CITE|STYLE)\b[^\]]*\]")
-_HEDGES = ("roughly", "about", "around", "approximately", "some", "circa", "nearly")
+_HEDGES = ("roughly", "about", "around", "approximately", "some", "circa", "nearly",
+           "sekitar", "kurang lebih", "kira-kira", "hampir")
+# generic bracket fillers that carry NO information — the only case where prose-hedge
+# (which discards the inner text) is legal. Anything else = a value → keep it.
+_GENERIC_INNER = {"", "number", "value", "amount", "date", "year", "angka", "jumlah",
+                  "tahun", "nilai", "n", "x", "?", "tbd", "..."}
 
 
-def resolve_flags(text: str) -> tuple[str, dict[str, int]]:
-    """Resolve every [VERIFY: ...] via hedge-value / hedge-prose / cut; cut TODO/FIXME."""
-    stats = {"hedged_value": 0, "hedged_prose": 0, "cut": 0}
+def _hedge_pack(lang: str) -> tuple[str, str, bool]:
+    """(hedge_value_template, hedge_prose_word, measured) from the language pack.
+    measured=False → the pack has no hedge vocab for this language: per refactor §5 the
+    pass must NOT enforce with another language's templates (UNMEASURED, keep values)."""
+    try:
+        from narasi_counters import LANGUAGE_PACKS
+        pack = LANGUAGE_PACKS.get((lang or "en").split("-")[0].lower()) or {}
+        hv, hp = pack.get("hedge_value"), pack.get("hedge_prose")
+        if hv and hp:
+            return hv, hp, True
+    except Exception:  # noqa: BLE001
+        pass
+    return "around {v}", "several", (lang or "en").split("-")[0].lower() == "en"
+
+
+def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
+    """Resolve every [VERIFY: ...] via hedge-value / hedge-prose / cut; cut TODO/FIXME.
+    Localized (§3): hedge words come from the language pack; a value inside a bracket is
+    NEVER deleted. Unmeasured language → brackets are unwrapped verbatim (keep inner)."""
+    stats = {"hedged_value": 0, "hedged_prose": 0, "cut": 0, "unwrapped_unmeasured": 0}
     if not text:
         return text, stats
+    hv_tpl, hp_word, measured = _hedge_pack(lang)
 
     def _verify_sub(m: re.Match) -> str:
         inner = (m.group("inner") or "").strip()
+        if not measured:
+            # §3.2: no hedge vocab for this language → do not enforce; strip the bracket,
+            # KEEP the inner text untouched (never let the wrong language's words in).
+            stats["unwrapped_unmeasured"] += 1
+            prep = m.group("prep") or ""
+            qual = m.group("qual") or ""
+            return (prep + qual + inner).strip()
         if any(ch.isdigit() for ch in inner):
-            # Exit 1 — a value exists inside the flag: emit it hedged. Start from the
-            # hedge word if the flag already carries one ("roughly 60-80 km"), else from
-            # the first digit with an "around" prefix.
+            # Exit 1 — a numeric value exists: emit it hedged (localized). Start from an
+            # existing hedge word ("roughly 60-80 km") else hedge-wrap from the first digit.
             low = inner.lower()
             start = None
             for h in _HEDGES:
@@ -201,14 +234,19 @@ def resolve_flags(text: str) -> tuple[str, dict[str, int]]:
                 val = inner[start:].strip()
             else:
                 di = next(i for i, ch in enumerate(inner) if ch.isdigit())
-                val = "around " + inner[di:].strip()
+                val = hv_tpl.format(v=inner[di:].strip())
             stats["hedged_value"] += 1
             # A numeric hedge replaces the preposition ("in [VERIFY: 1547]" → "around 1547").
             return val
-        # Exit 2 — no value: hedge into prose (qualifier consumed: "at least X times" → "several times").
+        if inner.lower() not in _GENERIC_INNER:
+            # Exit 1b (§3.1) — NON-numeric but substantive inner ("dua hari perjalanan"):
+            # a value in words. NEVER delete it — hedge-wrap the text itself.
+            stats["hedged_value"] += 1
+            return hv_tpl.format(v=inner)
+        # Exit 2 — genuinely empty/generic: hedge into prose (localized), qualifier consumed.
         stats["hedged_prose"] += 1
         prep = m.group("prep") or ""
-        return (prep + "several").strip() if prep else "several"
+        return (prep + hp_word).strip() if prep else hp_word
 
     text = _VERIFY_RX.sub(_verify_sub, text)
     text, n = _CUT_RX.subn("", text)
@@ -220,11 +258,60 @@ def resolve_flags(text: str) -> tuple[str, dict[str, int]]:
 
 
 # ── R-FG5: terminal scan + deterministic strip of survivors. ──
-# Whitelist: VO performance markers (the PRODUCT in video mode), the orchestrator's
-# failed-chapter placeholder (an explicit signal, not residue).
-_WHITELIST_RX = re.compile(
-    r"(?i)^\[(?:pause|beat|silence|anchor)[^\]]*\]$|^\[CHAPTER \d+ [—-].*FAILED TO GENERATE.*\]$")
+# ID-path fixes §2: NO raw marker token ever ships (the Diponegoro run shipped 35, incl.
+# lowercase [beat]). [ANCHOR] strips its TOKEN but KEEPS the line's text (anchors are
+# protected lines, not disposable); [BEAT]/[pause]/[silence] strip clean — they already
+# sit on their own paragraph, so the break they signal survives as layout. The only
+# whitelisted bracket is the failed-chapter placeholder (an explicit signal, not residue).
+_WHITELIST_RX = re.compile(r"(?i)^\[CHAPTER \d+ [—-].*FAILED TO GENERATE.*\]$")
 _DIRECTIVE_RX = re.compile(r"(?i)\[[^\]]*(?:VERIFY|TODO|FIXME|CITE:|STYLE:)[^\]]*\]|\[\s*\]")
+_MARKER_ANCHOR_RX = re.compile(r"(?i)\[\s*anchor[^\]]*\]\s*")
+_MARKER_BREAK_RX = re.compile(r"(?i)[ \t]*\[\s*(?:beat|pause|silence)[^\]]*\][ \t]*")
+
+
+def strip_markers(text: str) -> tuple[str, int]:
+    """§2.2/§2.3: remove every VO marker token, case-insensitive. Anchor TEXT survives;
+    break markers vanish (their paragraph break already exists in the layout)."""
+    if not text:
+        return text, 0
+    n = 0
+    out, k = _MARKER_ANCHOR_RX.subn("", text)
+    n += k
+    out, k = _MARKER_BREAK_RX.subn("", out)
+    n += k
+    if n:
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        out = re.sub(r"\n{4,}", "\n\n\n", out)
+    return out, n
+
+
+def foreign_token_scan(text: str, lang: str = "en") -> tuple[str, list[str]]:
+    """§2.4: per-language blocklist of placeholder/hedge tokens from OTHER languages.
+    A standalone EN token inside ID output ("sekitar several") = placeholder leakage —
+    replaced with the pack's equivalent (or cut), reported like a bracket."""
+    if not text:
+        return text, []
+    try:
+        from narasi_counters import LANGUAGE_PACKS
+        toks = (LANGUAGE_PACKS.get((lang or "en").split("-")[0].lower()) or {}).get("foreign_tokens") or {}
+    except Exception:  # noqa: BLE001
+        toks = {}
+    if not toks:
+        return text, []
+    hits: list[str] = []
+
+    def _sub(m: re.Match) -> str:
+        w = m.group(0)
+        hits.append(w)
+        rep = toks.get(w.lower(), "")
+        return rep
+
+    rx = re.compile(r"(?i)\b(" + "|".join(re.escape(t) for t in toks) + r")\b")
+    out = rx.sub(_sub, text)
+    if hits:
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        out = re.sub(r" +([,.;:!?])", r"\1", out)
+    return out, hits
 
 
 def terminal_scan(text: str) -> list[str]:
@@ -237,22 +324,35 @@ def terminal_scan(text: str) -> list[str]:
     return hits
 
 
-def gate_text(text: str) -> tuple[str, dict[str, Any]]:
-    """Full deterministic gate: known-bad correct → resolve flags → terminal scan →
-    strip survivors. Never raises; returns the original text on any internal error."""
-    report: dict[str, Any] = {"known_bad": [], "flags": {}, "stripped": 0, "enabled": gate_enabled()}
+def gate_text(text: str, lang: str = "en", mode: str = "book", *,
+              vo_strip: bool = True) -> tuple[str, dict[str, Any]]:
+    """Full deterministic gate: known-bad correct → resolve flags (localized) → marker
+    strip → foreign-token scan → terminal scan → strip survivors. Never raises; returns
+    the original text on any internal error.
+
+    vo_strip=False (per-chapter calls): keep [ANCHOR]/[BEAT] markers so the DOWNSTREAM
+    counters can still measure the anchor budget on the assembled book — the terminal
+    _apply_v3_gates pass (which runs AFTER the counters) does the actual marker strip."""
+    report: dict[str, Any] = {"known_bad": [], "flags": {}, "stripped": 0,
+                              "markers_stripped": 0, "foreign_tokens": [],
+                              "enabled": gate_enabled()}
     if not text or not gate_enabled():
         return text, report
     try:
         out, kb = apply_known_bad(text)
-        out, stats = resolve_flags(out)
+        out, stats = resolve_flags(out, lang=lang)
+        n_markers = 0
+        if vo_strip:
+            out, n_markers = strip_markers(out)
+        out, foreign = foreign_token_scan(out, lang=lang)
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
             out = _DIRECTIVE_RX.sub(lambda m: "" if not _WHITELIST_RX.match(m.group(0)) else m.group(0), out)
             out = re.sub(r"[ \t]{2,}", " ", out)
             out = re.sub(r" +([,.;:!?])", r"\1", out)
-        report.update({"known_bad": kb, "flags": stats, "stripped": len(survivors)})
+        report.update({"known_bad": kb, "flags": stats, "stripped": len(survivors),
+                       "markers_stripped": n_markers, "foreign_tokens": foreign[:20]})
         return out, report
     except Exception:
         return text, report

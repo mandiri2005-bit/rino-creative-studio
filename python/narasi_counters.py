@@ -49,20 +49,111 @@ LANGUAGE_PACKS: dict[str, dict[str, Any]] = {
         "wpm": {"min": 140, "max": 155},
     },
     "id": {
-        # seeded stub (refactor §5) — expand from real ID drafts, same growth mechanic
+        # ID-path fixes §4: functional pack, seeded from the Diponegoro manuscript
+        # (the standard growth mechanic — expand from every real ID run).
         "aporia": re.compile(
-            r"(?i)(?:sumber\s+tidak\s+mencatat|tidak\s+ada\s+catatan\s+yang"
-            r"|sejarah\s+tidak\s+menyimpan|tak\s+ada\s+yang\s+tahu\s+pasti)"),
+            r"(?i)(?:sumber\s+tidak\s+mencatat|tidak\s+ada\s+catatan\s+(?:yang|tentang)"
+            r"|sejarah\s+tidak\s+menyimpan|tak\s+ada\s+yang\s+tahu\s+pasti"
+            r"|tidak\s+mencatat\s+dengan\s+pasti|tidak\s+seragam\s+dalam\s+berbagai\s+catatan"
+            r"|belum\s+bisa\s+dijawab\s+oleh\s+dokumen\s+mana\s*pun"
+            r"|tidak\s+ada\s+satu\s+penjelasan\s+yang\s+memadai"
+            r"|tidak\s+cukup\s+untuk\s+(?:memisahkan|memastikan)"
+            r"|tidak\s+akan\s+pernah\s+selesai\s+dijawab"
+            r"|tidak\s+ada\s+metode\s+yang\s+bisa\s+memverifikasi"
+            r"|bukti\s+arsip\s+tidak|yang\s+tidak\s+diperdebatkan\s+adalah)"),
         "attribution": re.compile(
-            r"(?:\b(?:[Ss]ejarawan|[Aa]rkeolog|[Aa]ntropolog|[Pp]eneliti)\s+"
-            r"(?P<name1>[A-Z][a-z]+(?:\s+[A-Z][a-zA-Z]+)+))"
-            r"|(?:\b(?P<name2>[A-Z][a-z]+(?:\s+[A-Z][a-zA-Z]+)+)\s+"
-            r"(?:berpendapat|mencatat|menunjukkan|menegaskan|memperkirakan)\b)"),
-        "epithet": None,           # not yet seeded → epithet gate reports UNMEASURED for id
+            r"(?:\b(?:[Ss]ejarawan|[Aa]rkeolog|[Aa]ntropolog|[Pp]eneliti|[Ff]ilolog)\s+"
+            r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
+            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
+            r"(?:berpendapat|mencatat|menunjukkan|menegaskan|memperkirakan|berargumen|"
+            r"menekankan|melihat|mengakui|merekonstruksi|mengingatkan)\b)"),
+        # ID appositive epithet: ", sejarawan Inggris yang …," after a name (R-E3)
+        "epithet": re.compile(r",\s+(?:seorang\s+)?(?:sejarawan|arkeolog|filolog|peneliti|"
+                              r"antropolog|pakar|ahli)\s+[^,]{4,70},"),
         "homographs": ["apel", "serang", "tahu", "bisa", "kali"],
         "wpm": {"min": 130, "max": 150},
+        # §3: hedge vocabulary comes from the pack, NEVER hardcoded EN.
+        "hedge_value": "sekitar {v}",
+        "hedge_prose": "beberapa",
+        # §2.4: standalone tokens from OTHER languages = placeholder leakage. Replacement
+        # map (token → ID equivalent); tokens mapping to "" are cut outright.
+        "foreign_tokens": {
+            "several": "beberapa", "around": "sekitar", "roughly": "kira-kira",
+            "approximately": "kurang lebih", "about": "sekitar", "some": "beberapa",
+            "nearly": "hampir", "circa": "sekitar", "tbd": "",
+        },
     },
 }
+
+# §3/§7 hedge + number-spellout helpers for the EN pack too (uniform interface).
+LANGUAGE_PACKS["en"]["hedge_value"] = "around {v}"
+LANGUAGE_PACKS["en"]["hedge_prose"] = "several"
+LANGUAGE_PACKS["en"]["foreign_tokens"] = {}
+
+
+def spell_number_id(n: int) -> str:
+    """ID spellout for 0..999_999 (§4 number_spellout, video-path speakable numbers).
+    1825 → 'seribu delapan ratus dua puluh lima'."""
+    units = ["nol", "satu", "dua", "tiga", "empat", "lima", "enam", "tujuh", "delapan", "sembilan"]
+    if n < 0 or n > 999_999:
+        raise ValueError("out of spellout range")
+    if n < 10:
+        return units[n]
+    if n == 10:
+        return "sepuluh"
+    if n == 11:
+        return "sebelas"
+    if n < 20:
+        return units[n - 10] + " belas"
+    if n < 100:
+        rest = n % 10
+        return units[n // 10] + " puluh" + (" " + units[rest] if rest else "")
+    if n < 200:
+        rest = n % 100
+        return "seratus" + (" " + spell_number_id(rest) if rest else "")
+    if n < 1000:
+        rest = n % 100
+        return units[n // 100] + " ratus" + (" " + spell_number_id(rest) if rest else "")
+    if n < 2000:
+        rest = n % 1000
+        return "seribu" + (" " + spell_number_id(rest) if rest else "")
+    rest = n % 1000
+    return spell_number_id(n // 1000) + " ribu" + (" " + spell_number_id(rest) if rest else "")
+
+
+LANGUAGE_PACKS["id"]["spell_number"] = spell_number_id
+
+
+_NUM_TOKEN_RX = re.compile(r"(?<![\d.,\-/])\b(\d{1,6})\b(?![\d.,\-/%])")
+
+
+def render_numbers_id(text: str) -> tuple[str, int]:
+    """§7 number rendering, video path: standalone integers → speakable ID spellout
+    ('1825' → 'seribu delapan ratus dua puluh lima'). UNIFORM — one pass owns this.
+    Skips: markdown headings (## Bab N is structural), decimals/ranges/percent-symbol
+    forms, digit-adjacent compounds, and anything above the spellout range."""
+    if not text:
+        return text, 0
+    out_lines: list[str] = []
+    n = 0
+    for line in text.split("\n"):
+        if line.lstrip().startswith(("#", ">", "|")):
+            out_lines.append(line)
+            continue
+
+        def _sub(m: re.Match) -> str:
+            nonlocal n
+            try:
+                v = int(m.group(1))
+                if v > 999_999:
+                    return m.group(0)
+                n += 1
+                return spell_number_id(v)
+            except Exception:  # noqa: BLE001
+                return m.group(0)
+
+        out_lines.append(_NUM_TOKEN_RX.sub(_sub, line))
+    return "\n".join(out_lines), n
 
 _COMPARATIVE = re.compile(
     r"(?i)\b(?:larger|bigger|greater|smaller|older|richer|more\s+populous|taller)\s+than\s+[A-Z][a-zA-Z]+"
@@ -200,6 +291,44 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             "sentences": [s[:200] for _, s in comps],
         }
 
+        # ── anchors (ID-path §6.2): deterministic counter, budget 3 — the original
+        # narasi rule (9 shipped in the Diponegoro run). Counted PRE-strip, so this scan
+        # must run before the terminal gate removes the [ANCHOR] tokens. ──
+        anchor_budget = int(budgets.get("anchors_max", 3))
+        anchor_lines = [ln.strip()[:200] for ln in (text or "").splitlines()
+                        if re.match(r"(?i)\s*\[anchor", ln)]
+        report["counters"]["anchors"] = {
+            "status": "OVER" if len(anchor_lines) > anchor_budget else "PASS",
+            "count": len(anchor_lines), "budget": anchor_budget,
+            "sentences": anchor_lines[:12],
+        }
+
+        # ── scene-dedup (ID-path §6.1): cross-chapter near-verbatim sensory beats.
+        # Deterministic: normalized sentences (≥6 words) sharing an 8-word shingle across
+        # DIFFERENT chapters = a stamped template ("lumpur … roda … hingga ke poros" in
+        # Bab 4 AND Bab 7). OVER when any pair found. ──
+        dup_hits: list[str] = []
+        if len(chapters) > 1:
+            def _shingles(t: str) -> set:
+                w = re.sub(r"[^\wàâéèêîôûáíóúäëïöü' -]", " ", t.lower()).split()
+                return {" ".join(w[i:i + 8]) for i in range(max(0, len(w) - 7))}
+            seen_sh: dict[str, int] = {}
+            for ci, ch in enumerate(chapters):
+                for s in _sentences(ch):
+                    if len(s.split()) < 6:
+                        continue
+                    for sh in _shingles(s):
+                        prev = seen_sh.get(sh)
+                        if prev is not None and prev != ci:
+                            dup_hits.append(s.strip()[:200])
+                            break
+                        seen_sh.setdefault(sh, ci)
+        dup_hits = list(dict.fromkeys(dup_hits))
+        report["counters"]["scene_dup"] = {
+            "status": "OVER" if dup_hits else "PASS",
+            "count": len(dup_hits), "sentences": dup_hits[:10],
+        }
+
         # ── R-H6 thesis restatement (embed-based; UNMEASURED without thesis+embed) ──
         th_budget = budgets.get("thesis_restatement_max")
         if not thesis or embed_fn is None or th_budget is None:
@@ -276,4 +405,17 @@ def surgical_prompt(report: dict, *, language: str = "English") -> str:
             f"THESIS RESTATEMENTS: {th['count']} restatements exceed the budget of {th['budget']}. "
             "Keep the strongest two; delete or sharpen the rest into NEW claims. Sentences:\n- "
             + "\n- ".join(th.get("sentences", [])[:10]))
+    if c.get("anchors", {}).get("status") == "OVER":
+        an = c["anchors"]
+        parts.append(
+            f"ANCHOR LINES: {an['count']} [ANCHOR] lines exceed the budget of {an['budget']}. "
+            f"Keep only the {an['budget']} strongest anchors (delete the [ANCHOR] line entirely, "
+            "including its text). Anchor lines:\n- " + "\n- ".join(an.get("sentences", [])[:12]))
+    if c.get("scene_dup", {}).get("status") == "OVER":
+        sd = c["scene_dup"]
+        parts.append(
+            "DUPLICATED SCENE BEATS: these sensory sentences repeat near-verbatim across "
+            "chapters (a stamped template). Rewrite EACH duplicate with a DIFFERENT sensory "
+            "register (rotate: cuaca, bau, suara, tekstur, cahaya) while keeping its factual "
+            "content. Sentences:\n- " + "\n- ".join(sd.get("sentences", [])[:10]))
     return "\n\n".join(parts)
