@@ -538,9 +538,19 @@ async def narrate_chapters(
         if _resume_on and _ckpt_uuid and res.get("ok") and res.get("output"):
             try:
                 import database as _db
+                # Checkpoint the GATED text (markers stripped too): the classic stitch
+                # falls back to these rows while the job is still in its gates phase, and
+                # the Diponegoro user downloaded raw [VERIFY]/[BEAT] residue that way.
+                # Whatever leaves this process durably must already be clean.
+                _ck_txt = res["output"]
+                if _ngate is not None:
+                    try:
+                        _ck_txt, _ckr = _ngate.gate_text(_ck_txt, lang=language)
+                    except TypeError:
+                        _ck_txt, _ckr = _ngate.gate_text(_ck_txt)
                 await _db.save_narasi_chapter(
-                    tenant_id, _ckpt_uuid, no, res["output"],
-                    len(str(res["output"]).split()), "", [])
+                    tenant_id, _ckpt_uuid, no, _ck_txt,
+                    len(str(_ck_txt).split()), "", [])
             except Exception as _ce:  # noqa: BLE001
                 log.warning("chapter checkpoint failed (non-fatal): %s", _ce)
         return res

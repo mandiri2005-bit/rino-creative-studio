@@ -448,6 +448,9 @@ async def _run_narration_job(
 
     # Success: persist chapters + the assembled script, settle the hold at ACTUAL.
     await _set_status(job_id, _STATUS_POLISHING if result.get("polished") else _STATUS_DONE)
+    # The gates phase (counters/diet → strip → register → factscan/verify → header) can
+    # take minutes on a big book — surface it so the UI doesn't look hung at 10/10 done.
+    await _safe_progress(job_id, "Finalisasi: quality gates & verifikasi…")
     # CC v3 gates — terminal bracket/known-bad gate (R-FG4/5/6, ALL scenarios incl. C/D/E
     # whose result carries "output" not "book"), the harari register scorecard (R-H10,
     # report-only), and the "> **Gaya:** ..." metadata header. Never raises.

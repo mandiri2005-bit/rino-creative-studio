@@ -186,6 +186,11 @@ _HEDGES = ("roughly", "about", "around", "approximately", "some", "circa", "near
 # (which discards the inner text) is legal. Anything else = a value → keep it.
 _GENERIC_INNER = {"", "number", "value", "amount", "date", "year", "angka", "jumlah",
                   "tahun", "nilai", "n", "x", "?", "tbd", "..."}
+# an inner STARTING with these is a META-REQUEST ("jumlah surat yang disita dalam arsip
+# KITLV"), not a value — wrapping it with a hedge would ship the request as prose.
+_GENERIC_PREFIX_RX = re.compile(
+    r"(?i)^(?:jumlah|berapa|angka|nilai|tanggal|number\s+of|how\s+many|amount\s+of|"
+    r"the\s+number|the\s+exact|exact\s+(?:number|date|figure))\b")
 
 
 def _hedge_pack(lang: str) -> tuple[str, str, bool]:
@@ -238,10 +243,15 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
             stats["hedged_value"] += 1
             # A numeric hedge replaces the preposition ("in [VERIFY: 1547]" → "around 1547").
             return val
-        if inner.lower() not in _GENERIC_INNER:
+        if inner.lower() not in _GENERIC_INNER and not _GENERIC_PREFIX_RX.match(inner):
             # Exit 1b (§3.1) — NON-numeric but substantive inner ("dua hari perjalanan"):
-            # a value in words. NEVER delete it — hedge-wrap the text itself.
+            # a value in words. NEVER delete it — hedge-wrap the text itself. If the inner
+            # ALREADY starts with a hedge word ("sekitar empat puluh persen"), keep it
+            # as-is — wrapping again shipped "sekitar sekitar…" in the Diponegoro run.
             stats["hedged_value"] += 1
+            low_i = inner.lower()
+            if any(low_i.startswith(h) for h in _HEDGES) or low_i.startswith(hp_word):
+                return inner
             return hv_tpl.format(v=inner)
         # Exit 2 — genuinely empty/generic: hedge into prose (localized), qualifier consumed.
         stats["hedged_prose"] += 1
