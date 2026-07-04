@@ -37,6 +37,19 @@ SCHOLAR_TABLE: list[dict[str, Any]] = [
         "epithet": "sejarawan Australia yang menekuni sejarah islamisasi Jawa",
         "epithet_fixes": [],
     },
+    {
+        # Diponegoro-2 review: Dutch name-particle CONFABULATION — the run shipped
+        # "Hendrik Merkus de Groot van Amstel de Kock" (invented "de Groot van Amstel")
+        # in Bab 6 while Bab 8 said "Jenderal De Kock" (split-person, particle edition).
+        "canonical": "Hendrik Merkus de Kock",
+        "surname": "De Kock",
+        "variants": ["Hendrik Merkus de Groot van Amstel de Kock",
+                     "Hendrik Merkus, Baron de Kock",
+                     "Hendrik Merkus Baron de Kock"],
+        "domain": "letnan gubernur-jenderal Hindia Belanda, arsitek Benteng Stelsel",
+        "epithet": "",
+        "epithet_fixes": [],
+    },
 ]
 
 # §5.3 wrong-domain: a real person attributed OUTSIDE their field is downgraded to an
@@ -48,6 +61,14 @@ WRONG_DOMAIN: list[dict[str, str]] = [
         "pattern": r"(?:(?:seorang\s+)?(?:filolog|sejarawan|peneliti)\s+)?M[ei]riam\s+Budiardjo",
         "replacement": "sejumlah filolog",
         "note": "Miriam Budiardjo = ilmuwan politik, bukan filolog babad (wrong-domain attribution)",
+    },
+    {
+        # Diponegoro-2: plausible-but-fabricated scholar ("Meriel Buiskool", filolog
+        # Kedu) — no such Java-War historian exists (a Dirk Buiskool researches North
+        # Sumatra). Same class as Budiardjo: downgrade-to-anonymous, never ship the name.
+        "pattern": r"(?:(?:seorang\s+)?(?:filolog|sejarawan|peneliti|arkeolog)\s+)?Meriel\s+Buiskool",
+        "replacement": "sejumlah sejarawan",
+        "note": "Meriel Buiskool = fabricated/wrong-subject scholar (Diponegoro-2 review)",
     },
 ]
 
@@ -119,25 +140,42 @@ def entity_pass(text: str) -> tuple[str, dict[str, Any]]:
                 report["wrong_domain"].append({"replaced": wd["pattern"], "with": wd["replacement"],
                                                "count": k, "note": wd["note"]})
 
-        # 3 — self-debate: same canonical surname on both sides of an adversative,
-        # inside one chapter
-        for ch in _CHAPTER_SPLIT.split(out):
-            for sch in SCHOLAR_TABLE:
-                sn = sch["surname"]
-                idxs = [m.start() for m in re.finditer(rf"\b{re.escape(sn)}\b", ch)]
-                if len(idxs) < 2:
-                    continue
-                for a, b in zip(idxs, idxs[1:]):
-                    between = ch[a:b]
-                    if _ADVERSATIVE_RX.search(between):
+        # 3 — self-debate: only meaningful when the ORIGINAL text used ≥2 DIFFERENT
+        # name-forms of the same person (the Ricklefs-vs-Merle case). A single canonical
+        # name across an adversative is normal historiography ("Carey mencatat… Tetapi…
+        # Carey juga…") — flagging that was pure noise (Diponegoro-2 replay: 9 false
+        # positives on Carey).
+        for sch in SCHOLAR_TABLE:
+            forms = [f for f in ([sch["canonical"]] + (sch.get("variants") or [])) if f in text]
+            if len(forms) < 2:
+                continue
+            for ch in _CHAPTER_SPLIT.split(text):
+                idxs = []
+                for f in forms:
+                    idxs += [(m.start(), f) for m in re.finditer(re.escape(f), ch)]
+                idxs.sort()
+                for (a, fa), (b, fb) in zip(idxs, idxs[1:]):
+                    if fa != fb and _ADVERSATIVE_RX.search(ch[a:b]):
                         snippet = ch[max(0, a - 40):min(len(ch), b + 60)].replace("\n", " ")
                         report["self_debate"].append({"scholar": sch["canonical"],
                                                       "snippet": snippet[:220]})
                         break
 
-        # 4 — surname clusters not covered by the table (report-only)
+        # 4 — surname clusters not covered by the table (report-only). Scan PER SENTENCE
+        # so capitalized bigrams never straddle a boundary ("Diponegoro. Tetapi" is not a
+        # name), and drop clusters led by capitalized function words.
+        _STOP = {"Yang", "Tetapi", "Pada", "Dalam", "Di", "Ketika", "Tidak", "Sang",
+                 "Lalu", "Dan", "Mereka", "Namun", "Setelah", "Sebelum", "Bab", "Jawa",
+                 "Belanda", "Perang", "Tanah", "Fort", "The", "But", "When", "After",
+                 "Babad", "Pasukan", "Koalisi", "Ratu", "Kota", "Gunung", "Sungai"}
         known_surnames = {s["surname"] for s in SCHOLAR_TABLE}
-        fullnames = set(re.findall(r"\b([A-Z][a-zA-Z.]+(?:\s+[A-Z][a-zA-Z.]+)+)\b", out))
+        fullnames = set()
+        for sent in re.split(r"(?<=[.!?])\s+|\n+", out):
+            for fn in re.findall(r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+)\b", sent):
+                parts = fn.split()
+                if parts[0] in _STOP or parts[-1] in _STOP:
+                    continue
+                fullnames.add(fn)
         by_surname: dict[str, set] = {}
         for fn in fullnames:
             sn = fn.split()[-1]

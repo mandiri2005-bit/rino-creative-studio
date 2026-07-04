@@ -8364,6 +8364,17 @@ async def _narasi_outline_impl(body: dict):
     _ou_user = (await _resolve_user_uuid(_ou_ctx.tenant_id, _ou_ctx.user_id)) if _ou_ctx.user_id else None
 
     video_mode_outline = bool(body.get("video_mode", False))
+    # R-H9 outline-driven (Diponegoro reviews: the temporal deep-time zoom is the ONE Big
+    # History move every round has flinched from — nominate it up front so its absence is
+    # a flagged gap, not an invisible one).
+    _zoom_note = (
+        "TEMPORAL ZOOM (Big History requirement): at least TWO chapter descriptions must "
+        "nominate a deep-time zoom-out moment — pull back from the event to a "
+        "civilizational or universal pattern across centuries/millennia, then return. "
+        "Name the pattern in the description.\n\n"
+        if ("harari" in (style or "").lower() or "big history" in (style or "").lower())
+        else "")
+
     vo_note = (
         "\n\nVO GENERATION MODE — ACTIVE: This outline will be used to generate DOCUMENTARY NARRATION. "
         "For each chapter description, specify:\n"
@@ -8425,6 +8436,7 @@ async def _narasi_outline_impl(body: dict):
             f"description MUST name the payoff statistic(s) of the whole story (the human "
             f"or material cost, the scale number the narrative has been building toward), "
             f"with the actual figures.\n\n"
+            f"{_zoom_note}"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array of exactly {chap_count} objects, each with:\n"
             f"    \"id\": chapter number as string\n"

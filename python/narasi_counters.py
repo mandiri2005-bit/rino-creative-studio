@@ -488,7 +488,9 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         # ── anchors (ID-path §6.2): deterministic counter, budget 3 — the original
         # narasi rule (9 shipped in the Diponegoro run). Counted PRE-strip, so this scan
         # must run before the terminal gate removes the [ANCHOR] tokens. ──
-        anchor_budget = _scaled(budgets.get("anchors_max", 3))
+        # anchors are ABSOLUTE (the original narasi rule: 3 per manuscript, any length) —
+        # deliberately NOT length-scaled; an anchor's power comes from scarcity.
+        anchor_budget = int(budgets.get("anchors_max", 3))
         # count EVERY [ANCHOR] token (leading OR trailing — the Diponegoro run used both
         # "…badai. [ANCHOR]" and "[ANCHOR] Bagi yang tertindas…"); samples = their lines
         anchor_lines = [ln.strip()[:200] for ln in (text or "").splitlines()
@@ -538,6 +540,27 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
                             dup_hits.append(s.strip()[:200])
                             break
                         seen_sh.setdefault(sh, ci)
+        # Weather-opener template (Diponegoro-1 AND -2 both stamped it): sentences that
+        # OPEN with the same weather noun in ≥3 different chapters ("Hujan …" in Bab 4,
+        # 5, 6, 7) are a formula even when the wording paraphrases past the shingles.
+        if len(chapters) > 2:
+            _wx = re.compile(r"(?i)^(hujan|udara|angin|kabut|debu|gerimis|matahari)\b")
+            _wx_by: dict[str, set] = {}
+            _wx_sents: dict[str, list] = {}
+            for ci, ch in enumerate(chapters):
+                for s in _sentences(ch):
+                    # heading-glue: the chapter's first "sentence" carries the heading
+                    # line — match the LAST line's start, not the glued blob's
+                    s_clean = s.strip().split("\n")[-1].strip()
+                    mwx = _wx.match(s_clean)
+                    if mwx:
+                        k = mwx.group(1).lower()
+                        _wx_by.setdefault(k, set()).add(ci)
+                        _wx_sents.setdefault(k, []).append(s_clean[:200])
+            for k, chs in _wx_by.items():
+                if len(chs) >= 3:
+                    dup_hits.extend(_wx_sents[k][:4])
+
         dup_hits = list(dict.fromkeys(dup_hits))
         # floor: a stamped template shows up as a CLUSTER of repeats — 1-2 incidental
         # cross-chapter phrase matches in a long book are coincidence, not a formula, and

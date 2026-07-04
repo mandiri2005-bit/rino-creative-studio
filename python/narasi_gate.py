@@ -212,10 +212,57 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
     """Resolve every [VERIFY: ...] via hedge-value / hedge-prose / cut; cut TODO/FIXME.
     Localized (§3): hedge words come from the language pack; a value inside a bracket is
     NEVER deleted. Unmeasured language → brackets are unwrapped verbatim (keep inner)."""
-    stats = {"hedged_value": 0, "hedged_prose": 0, "cut": 0, "unwrapped_unmeasured": 0}
+    stats = {"hedged_value": 0, "hedged_prose": 0, "cut": 0, "unwrapped_unmeasured": 0,
+             "exact_known_good": 0, "idempotent_skip": 0}
     if not text:
         return text, stats
     hv_tpl, hp_word, measured = _hedge_pack(lang)
+
+    # Hedge IDEMPOTENCY guard (Diponegoro-2 review): the PROSE before the bracket often
+    # already carries a qualifier ("lebih dari …", "hanya …", "rata-rata …") — stacking
+    # our hedge on top shipped "lebih dari sekitar sekitar empat puluh persen". If the
+    # ~28 chars before the bracket end with a qualifier, emit the BARE value.
+    _PRE_QUAL_RX = re.compile(
+        r"(?i)(?:lebih\s+dari|kurang\s+dari|hanya|sekitar|kurang\s+lebih|kira-kira|hampir|"
+        r"nyaris|rata-rata|setidaknya|paling\s+tidak|mencapai|melebihi|"
+        r"more\s+than|less\s+than|only|about|around|roughly|approximately|nearly|"
+        r"at\s+least|up\s+to|as\s+many\s+as|averaging)\s*$")
+
+    def _pre_qualified(m: re.Match) -> bool:
+        seg = m.string[max(0, m.start() - 28):m.start()]
+        return bool(_PRE_QUAL_RX.search(seg))
+
+    def _known_good_ctx(m: re.Match) -> bool:
+        """R-FG8 epistemic class: a bracket whose SENTENCE matches a known_good pattern
+        is a VERIFIED world fact — render EXACT, never hedged ('sekitar 1825' on a
+        certain date was the Diponegoro-2 tell). Uses the per-job known_good context."""
+        try:
+            from narasi_factscan import _known_good
+            s = m.string
+            a = max(0, m.start() - 170)
+            b = min(len(s), m.end() + 170)
+            seg = s[a:b]
+            # trim to the containing sentence-ish segment
+            cut = max(seg.rfind(". ", 0, m.start() - a), seg.rfind("\n", 0, m.start() - a))
+            if cut > 0:
+                seg = seg[cut + 1:]
+            return _known_good(seg)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _strip_inner_hedge(inner: str) -> str:
+        low = inner.lower()
+        for h in sorted(_HEDGES, key=len, reverse=True):
+            if low.startswith(h):
+                return inner[len(h):].lstrip()
+        return inner
+
+    def _whole_sentence_bracket(m: re.Match) -> bool:
+        s = m.string
+        # strip only spaces/tabs — a NEWLINE is a sentence boundary and must survive
+        before = s[max(0, m.start() - 4):m.start()].rstrip(" \t")
+        after = s[m.end():m.end() + 4].lstrip(" \t")
+        return (not before or before[-1] in ".!?…\n") and (not after or after[0] in ".!?…\n")
 
     def _verify_sub(m: re.Match) -> str:
         inner = (m.group("inner") or "").strip()
@@ -226,6 +273,16 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
             prep = m.group("prep") or ""
             qual = m.group("qual") or ""
             return (prep + qual + inner).strip()
+        generic = inner.lower() in _GENERIC_INNER or bool(_GENERIC_PREFIX_RX.match(inner))
+        if not generic:
+            # R-FG8: verified world fact → EXACT (no hedge at all, drop inner's own hedge).
+            if _known_good_ctx(m):
+                stats["exact_known_good"] += 1
+                return _strip_inner_hedge(inner)
+            # idempotency: prose already qualified this value → bare value, no new hedge.
+            if _pre_qualified(m):
+                stats["idempotent_skip"] += 1
+                return _strip_inner_hedge(inner)
         if any(ch.isdigit() for ch in inner):
             # Exit 1 — a numeric value exists: emit it hedged (localized). Start from an
             # existing hedge word ("roughly 60-80 km") else hedge-wrap from the first digit.
@@ -243,7 +300,7 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
             stats["hedged_value"] += 1
             # A numeric hedge replaces the preposition ("in [VERIFY: 1547]" → "around 1547").
             return val
-        if inner.lower() not in _GENERIC_INNER and not _GENERIC_PREFIX_RX.match(inner):
+        if not generic:
             # Exit 1b (§3.1) — NON-numeric but substantive inner ("dua hari perjalanan"):
             # a value in words. NEVER delete it — hedge-wrap the text itself. If the inner
             # ALREADY starts with a hedge word ("sekitar empat puluh persen"), keep it
@@ -253,7 +310,12 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
             if any(low_i.startswith(h) for h in _HEDGES) or low_i.startswith(hp_word):
                 return inner
             return hv_tpl.format(v=inner)
-        # Exit 2 — genuinely empty/generic: hedge into prose (localized), qualifier consumed.
+        # Exit 2 — genuinely empty/generic. A bracket standing as its OWN sentence would
+        # leave a naked prose fragment ("beberapa.") — CUT it instead (the third legal
+        # R-FG6 exit; Diponegoro-2 shipped "sekitar jumlah surat yang disita…" this way).
+        if _whole_sentence_bracket(m):
+            stats["cut"] += 1
+            return ""
         stats["hedged_prose"] += 1
         prep = m.group("prep") or ""
         return (prep + hp_word).strip() if prep else hp_word
@@ -261,9 +323,14 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
     text = _VERIFY_RX.sub(_verify_sub, text)
     text, n = _CUT_RX.subn("", text)
     stats["cut"] += n
-    # tidy: collapse doubled spaces / space-before-punctuation the substitutions leave
+    # tidy: collapse doubled spaces / space-before-punctuation the substitutions leave,
+    # and orphaned punctuation from whole-sentence cuts
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" +([,.;:!?])", r"\1", text)
+    text = re.sub(r"(?m)^[ \t]*[.!?…]+[ \t]*$\n?", "", text)
+    # belt-and-braces: any double hedge the model itself wrote ("sekitar sekitar")
+    text = re.sub(r"(?i)\b(sekitar|kira-kira|kurang lebih|hampir|around|roughly|about|"
+                  r"approximately)\s+\1\b", r"\1", text)
     return text, stats
 
 
@@ -277,6 +344,48 @@ _WHITELIST_RX = re.compile(r"(?i)^\[CHAPTER \d+ [—-].*FAILED TO GENERATE.*\]$"
 _DIRECTIVE_RX = re.compile(r"(?i)\[[^\]]*(?:VERIFY|TODO|FIXME|CITE:|STYLE:)[^\]]*\]|\[\s*\]")
 _MARKER_ANCHOR_RX = re.compile(r"(?i)\[\s*anchor[^\]]*\]\s*")
 _MARKER_BREAK_RX = re.compile(r"(?i)[ \t]*\[\s*(?:beat|pause|silence)[^\]]*\][ \t]*")
+
+
+_DEHEDGE_RX = re.compile(r"(?i)\b(sekitar|kira-kira|kurang lebih|around|roughly|about|"
+                         r"approximately|circa)\s+")
+
+
+def dehedge_known_good(text: str) -> tuple[str, int]:
+    """R-FG8 render discipline: a CACHE-VERIFIED fact renders EXACT — 'sekitar 1825' on a
+    known_good date is epistemically wrong (Diponegoro-2: hedges glued to certain dates
+    all over). For every known_good pattern match, drop a hedge word IMMEDIATELY before
+    the matched span. Only fires on cache-verified facts; everything else keeps its hedge."""
+    if not text:
+        return text, 0
+    try:
+        from narasi_factscan import _KNOWN_GOOD
+        pats = _KNOWN_GOOD.get()
+    except Exception:  # noqa: BLE001
+        return text, 0
+    n = 0
+    _inner_rx = re.compile(_DEHEDGE_RX.pattern + r"(?=\d)")
+    for p in pats or []:
+        # right-to-left so earlier offsets stay valid after each splice
+        for m in sorted(p.finditer(text), key=lambda x: -x.start()):
+            s0, e0 = m.start(), m.end()
+            # (a) hedge word immediately BEFORE the verified span
+            seg_start = max(0, s0 - 18)
+            pre = text[seg_start:s0]
+            mh = _DEHEDGE_RX.search(pre)
+            if mh and mh.end() == len(pre):
+                text = text[:seg_start + mh.start()] + text[seg_start + mh.end():]
+                n += 1
+                continue
+            # (b) hedge INSIDE the span glued to a digit ("pahlawan nasional pada
+            # sekitar 1973" where the whole clause is the verified pattern)
+            span = text[s0:e0]
+            new_span, k = _inner_rx.subn("", span)
+            if k:
+                text = text[:s0] + new_span + text[e0:]
+                n += k
+    if n:
+        text = re.sub(r"[ \t]{2,}", " ", text)
+    return text, n
 
 
 def strip_markers(text: str) -> tuple[str, int]:
@@ -324,6 +433,21 @@ def foreign_token_scan(text: str, lang: str = "en") -> tuple[str, list[str]]:
     return out, hits
 
 
+# Diponegoro-2: manuscript-structure references leaking into prose ("reputasi taktisnya
+# telah dibangun dalam bab-bab sebelumnya pertempuran") — meta-leak, report-only.
+_META_LEAK_RX = re.compile(r"(?i)\b(?:bab(?:-bab)?|chapters?)\s+"
+                           r"(?:sebelumnya|berikutnya|selanjutnya|di\s+atas|earlier|previous|later|above)\b")
+
+
+def meta_leak_scan(text: str) -> list[str]:
+    """Sentences that reference the manuscript's own structure (report-only)."""
+    hits = []
+    for m in _META_LEAK_RX.finditer(text or ""):
+        a = max(0, m.start() - 60)
+        hits.append(text[a:m.end() + 40].replace("\n", " ").strip()[:140])
+    return hits[:8]
+
+
 def terminal_scan(text: str) -> list[str]:
     """Return surviving directive tokens (post-resolution). Empty list = clean."""
     hits = []
@@ -351,6 +475,8 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
     try:
         out, kb = apply_known_bad(text)
         out, stats = resolve_flags(out, lang=lang)
+        out, n_dehedged = dehedge_known_good(out)
+        stats["dehedged_known_good"] = n_dehedged
         n_markers = 0
         if vo_strip:
             out, n_markers = strip_markers(out)
@@ -362,7 +488,8 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             out = re.sub(r"[ \t]{2,}", " ", out)
             out = re.sub(r" +([,.;:!?])", r"\1", out)
         report.update({"known_bad": kb, "flags": stats, "stripped": len(survivors),
-                       "markers_stripped": n_markers, "foreign_tokens": foreign[:20]})
+                       "markers_stripped": n_markers, "foreign_tokens": foreign[:20],
+                       "meta_leak": meta_leak_scan(out)})
         return out, report
     except Exception:
         return text, report
