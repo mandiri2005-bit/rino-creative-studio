@@ -91,13 +91,23 @@ KNOWN_BAD_SEED: list[dict[str, Any]] = [
     },
 ]
 
-_DB_CLAIMS: list[dict[str, Any]] = []   # merged in by set_db_claims() (per-process cache)
+# Per-JOB, not per-process: the project-scoped known_bad rows are set at job start and
+# read during that job's generation. Under the narration-worker (concurrency=4) and the
+# 128-thread executor MANY jobs share ONE process, so a module global would let job B's
+# set_db_claims() wipe job A's rules mid-scan (cross-project canon bleed, incl. a
+# wrong-project "hard fact" baked into A's cached prompt). ContextVar isolates each job:
+# set_db_claims runs before the job's gen task spawns, children inherit the context, and
+# asyncio.to_thread copies it — mirrors the _ALT_HISTORY fix above.
+_DB_CLAIMS: contextvars.ContextVar[list] = contextvars.ContextVar("narasi_db_claims", default=[])
+# Hard cap on the apply_known_bad replace loop — belt-and-braces against a self-matching
+# correction (a 'replace' whose corrected value re-matches its own pattern would otherwise
+# spin forever and wedge the worker with no exception for gate_text to catch).
+_MAX_REPLACE_ITERS = 200
 
 
 def set_db_claims(rows: list[dict[str, Any]]) -> None:
-    """Merge DB-loaded known_bad_claims rows into the in-process registry (best-effort,
-    called at job start). Rows need: pattern (with (?P<bad>...)), correct, action."""
-    global _DB_CLAIMS
+    """Load DB known_bad_claims rows into THIS job's context (best-effort, called at job
+    start). Rows need: pattern (with (?P<bad>...)), correct, action."""
     ok = []
     for r in rows or []:
         try:
@@ -114,11 +124,11 @@ def set_db_claims(rows: list[dict[str, Any]]) -> None:
             })
         except Exception:
             continue
-    _DB_CLAIMS = ok
+    _DB_CLAIMS.set(ok)
 
 
 def _claims() -> list[dict[str, Any]]:
-    return KNOWN_BAD_SEED + _DB_CLAIMS
+    return KNOWN_BAD_SEED + list(_DB_CLAIMS.get())
 
 
 def apply_known_bad(text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -136,8 +146,14 @@ def apply_known_bad(text: str) -> tuple[str, list[dict[str, Any]]]:
         except Exception:
             continue
         # Iterate manually so we replace ONLY the named <bad> span, keeping the context.
-        while True:
-            m = rx.search(text)
+        # `pos` advances past each replacement so the corrected value can NEVER be re-scanned
+        # (prevents an infinite loop when a correction re-matches its own pattern); the hard
+        # iteration cap is a second backstop.
+        pos = 0
+        iters = 0
+        while iters < _MAX_REPLACE_ITERS:
+            iters += 1
+            m = rx.search(text, pos)
             if not m or not m.group("bad"):
                 break
             if c["action"] == "replace" and c.get("correct"):
@@ -145,7 +161,8 @@ def apply_known_bad(text: str) -> tuple[str, list[dict[str, Any]]]:
                 text = text[:s] + c["correct"] + text[e:]
                 report.append({"claim": c["name"], "action": "corrected",
                                "from": m.group("bad")[:80], "to": c["correct"][:80]})
-                continue   # re-search: there may be more occurrences
+                pos = s + len(c["correct"])   # skip past the insert — no re-scan of it
+                continue   # re-search from pos: there may be more occurrences
             report.append({"claim": c["name"], "action": "flagged",
                            "span": m.group("bad")[:160], "note": c.get("correct", "")[:200]})
             break          # flag-only: report once per claim, never loop

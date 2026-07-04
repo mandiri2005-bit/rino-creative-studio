@@ -123,18 +123,25 @@ async def verify_report(fact_report: dict, *, project_id=None, tenant_id=None) -
         out["verdicts"] = results
         out["needs_verify"] = sum(1 for r in results if r["verdict"] in ("NEEDS-VERIFY", "unverifiable"))
 
-        # cache writes (§2/§4): verified → known_good; contradicted → known_bad flag-only
+        # cache writes (§2/§4): verified → known_good; contradicted → known_bad flag-only.
+        # HIGH-CONFIDENCE ONLY for known_good (a wrong "verified" would PERMANENTLY exempt
+        # that claim prefix from every future scan via ON CONFLICT DO NOTHING) — a low-conf
+        # verdict stays report-only. known_bad patterns MUST carry a (?P<bad>) span or
+        # set_db_claims drops them at load (the gate matches m.group("bad")) — without the
+        # group the whole learning loop was silently dead.
+        _MIN_CACHE_CONF = float(os.environ.get("FACTGATE_CACHE_MIN_CONFIDENCE", "0.75"))
         for r in results:
             try:
-                if r["verdict"] == "verified" and r.get("value_or_range"):
-                    pat = re.escape(r["claim"][:80])
+                if (r["verdict"] == "verified" and r.get("value_or_range")
+                        and float(r.get("confidence") or 0.0) >= _MIN_CACHE_CONF):
+                    pat = "(?i)" + re.escape(r["claim"][:80])
                     await db.add_known_good_claim(pat, r["value_or_range"],
                                                   epistemic_class="world",
                                                   source=r.get("source_url", ""),
                                                   scope="project" if project_id else "global",
                                                   project_id=project_id)
                 elif r["verdict"] == "contradicted":
-                    pat = "(?i)" + re.escape(r["claim"][:80])
+                    pat = "(?i)(?P<bad>" + re.escape(r["claim"][:80]) + ")"
                     await db.add_known_bad_claim("verify:" + r["claim"][:40], pat,
                                                  r.get("value_or_range", ""),
                                                  action="flag", source=r.get("source_url", ""),

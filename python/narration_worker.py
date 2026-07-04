@@ -62,11 +62,22 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
 
 async def main() -> None:
     # laozhang_api must import FIRST (prod import order) — it wires narration_api, db,
-    # redis, pakem, the failover client, and the NARASI_EXECUTOR_THREADS executor.
+    # redis, pakem, and the failover client. NOTE: the NARASI_EXECUTOR_THREADS widening
+    # lives in laozhang_api's FastAPI *lifespan*, which this worker never runs — so we MUST
+    # widen the default ThreadPoolExecutor here ourselves (A20). Without it the worker runs
+    # every blocking to_thread LLM call on the stock min(32,cpu+4) pool, throttling
+    # concurrency and (with the failover chain) stranding blocked rung threads.
     os.environ.setdefault("NARASI_EXECUTOR_THREADS", os.environ.get("NARASI_EXECUTOR_THREADS", "64"))
     import laozhang_api  # noqa: F401
     import database as db
     import redis_client as rc
+
+    _exec_threads = int(os.environ.get("NARASI_EXECUTOR_THREADS", "0") or 0)
+    if _exec_threads > 0:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        asyncio.get_running_loop().set_default_executor(
+            _TPE(max_workers=_exec_threads, thread_name_prefix="llm"))
+        log.info("default ThreadPoolExecutor widened to %d threads", _exec_threads)
 
     await db.init_db()
     await rc.init_redis()

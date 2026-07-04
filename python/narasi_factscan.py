@@ -22,6 +22,7 @@
 #          marked unknowables, idiom whitelist.
 from __future__ import annotations
 
+import contextvars
 import re
 from typing import Any, Optional
 
@@ -69,13 +70,18 @@ _SUPERL_QUAL = re.compile(r"(?i)\b(?:most\s+detailed|greatest|finest|unmatched|u
                           r"most\s+sophisticated|most\s+advanced)\b")
 _AMONG = re.compile(r"(?i)\bamong\s+the\b|\bone\s+of\s+the\b")
 
-_KNOWN_GOOD: list[re.Pattern] = []   # compiled patterns; matched claims are exempt
+# Per-JOB (ContextVar), not a module global: known_good is loaded per project at job
+# start and read during that job's scan. Many jobs share one process (worker
+# concurrency=4 / 128-thread executor), so a global would let job B's set_known_good()
+# exempt job A's real errors from the fact scan (cross-project bleed). ContextVar isolates
+# each job — set before the gen task spawns; to_thread copies the context.
+_KNOWN_GOOD: contextvars.ContextVar[list] = contextvars.ContextVar("narasi_known_good", default=[])
 
 
 def set_known_good(rows: list[dict[str, Any]]) -> None:
-    """Load known_good_claims patterns (per-project + global) — matched sentences are
-    exempt from the sweep (cache/noise damping; the future verify pass writes these)."""
-    global _KNOWN_GOOD
+    """Load known_good_claims patterns (per-project + global) into THIS job's context —
+    matched sentences are exempt from the sweep (cache/noise damping; the verify pass
+    writes these)."""
     pats = []
     for r in rows or []:
         p = (r.get("claim_pattern") or "").strip()
@@ -85,11 +91,11 @@ def set_known_good(rows: list[dict[str, Any]]) -> None:
             pats.append(re.compile(p))
         except Exception:  # noqa: BLE001
             continue
-    _KNOWN_GOOD = pats
+    _KNOWN_GOOD.set(pats)
 
 
 def _known_good(s: str) -> bool:
-    return any(p.search(s) for p in _KNOWN_GOOD)
+    return any(p.search(s) for p in _KNOWN_GOOD.get())
 
 
 def fact_scan(text: str, *, factual_regime: str = "strict") -> dict:

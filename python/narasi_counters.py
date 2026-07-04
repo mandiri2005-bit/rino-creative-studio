@@ -177,11 +177,17 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             }
 
         # ── R-E4 word budget (±10%) ──
+        # UNDER and OVER are distinct: an UNDERSHOOTING manuscript must NEVER enter the
+        # surgical DIET loop (dieting = shrinking → it can only make an already-short book
+        # shorter, or no-op and re-loop, burning un-metered Opus). Undershoot is the
+        # word-gate/continuation path's job (per-chapter). So word_budget is reported here
+        # but excluded from `over_budget` below — length is not a "surgical density" fix.
         words = len((text or "").split())
         if word_target:
             lo, hi = int(word_target * 0.9), int(word_target * 1.1)
+            _wb_status = "PASS" if lo <= words <= hi else ("UNDER" if words < lo else "OVER")
             report["counters"]["word_budget"] = {
-                "status": "PASS" if lo <= words <= hi else "OVER",
+                "status": _wb_status,
                 "count": words, "target": int(word_target), "range": [lo, hi],
             }
         else:
@@ -221,7 +227,11 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             except Exception:  # noqa: BLE001
                 report["counters"]["thesis"] = {"status": "UNMEASURED"}
 
-        report["over_budget"] = [k for k, v in report["counters"].items() if v.get("status") == "OVER"]
+        # word_budget is deliberately EXCLUDED from the diet trigger (see note above): a
+        # too-long book isn't a density defect the surgical prompt can fix, and a too-short
+        # one belongs to the word-gate. Only real editorial-density counters drive the loop.
+        report["over_budget"] = [k for k, v in report["counters"].items()
+                                 if v.get("status") == "OVER" and k != "word_budget"]
         return report
     except Exception:  # noqa: BLE001 — a broken scan must never break generation
         report["error"] = "scan_failed"

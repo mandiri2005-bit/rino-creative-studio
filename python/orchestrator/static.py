@@ -263,11 +263,23 @@ def _placeholder(ch: dict, no: int, reason: str) -> str:
 # Floor = 0.9×word_target: an undershooting chapter is CONTINUED (never restarted) in
 # bounded follow-up calls — the model extends ITS OWN draft from the last sentence, so
 # length never comes from splitting (splitting = drift; continuation = drift-free).
-# Truncation (finish_reason=length) needs no separate check here: it only bites above
-# ~22k words/chapter (32k-token output ceiling), unreachable under the 8k admission cap —
-# any truncated chapter is therefore also under the word floor and gets continued anyway.
-# Kill switch: NARASI_WORDGATE=0 (default ON).
+# Truncation (finish_reason ∈ length/max_tokens) IS checked separately: it does NOT only
+# bite above the 32k-token ceiling — the manager-routed styles (harari/academic/literary)
+# run their WORKER on claude-sonnet-4-6, whose real ceiling is 8192 tokens ≈ 5650 words.
+# A ~6000-word chapter there returns ~5650 words truncated mid-sentence, CLEARS the
+# 0.9×6000=5400 floor, and would ship truncated-but-billed-complete. So we continue on
+# truncation regardless of word count. Kill switch: NARASI_WORDGATE=0 (default ON).
 _WORDGATE_RETRIES = int(os.environ.get("DALANG_MAX_CHAPTER_RETRIES", "2"))
+_TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_length")
+
+
+def _res_truncated(r: Any) -> bool:
+    """True if a worker result's telemetry says the model hit its output ceiling. Handles
+    both OpenAI ('length') and Anthropic/KIE ('max_tokens') stop reasons."""
+    if not isinstance(r, dict):
+        return False
+    fr = str((r.get("telemetry") or {}).get("finish_reason") or "").strip().lower()
+    return fr in _TRUNC_REASONS
 
 
 def _wordgate_on() -> bool:
@@ -278,11 +290,21 @@ def _scaled_timeout(base: float, word_target: int) -> float:
     """Per-chapter LLM timeout scaled to the word target so a big chapter (≤8k words
     admission cap) is not killed by the flat 120s default: est = words×1.45 tok/word ÷
     40 tok/s ×1.3 buffer (8k words → ~380s). Never below `base`; capped by
-    NARASI_WORKER_TIMEOUT_MAX (default 900s, matching the classic chapter timeout)."""
+    NARASI_WORKER_TIMEOUT_MAX (default 900s, matching the classic chapter timeout).
+
+    A19: when the aggregator-failover chain is ARMED, this outer per-chapter wait_for MUST
+    outlive the whole chain budget — otherwise a HUNG rung (KIE black-hole; errors advance
+    in sub-seconds, a hang does not) is killed by the outer timeout at ~120-380s and the
+    chain restarts at rung 1 on retry, so LaoZhang/AtlasCloud are never reached. Floor the
+    timeout to chain_budget + buffer so the whole walk can complete inside one attempt."""
     try:
         cap = float(os.environ.get("NARASI_WORKER_TIMEOUT_MAX", "900"))
         est = int(word_target) * 1.45 / 40.0 * 1.3
-        return max(float(base), min(cap, est))
+        t = max(float(base), min(cap, est))
+        if str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            budget = float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET", "840")) + 90.0
+            t = max(t, budget)   # deliberately allowed to exceed `cap` — failover wants the wait
+        return t
     except Exception:  # noqa: BLE001
         return float(base)
 
@@ -298,7 +320,11 @@ async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
     floor = int(int(word_target) * 0.9)
     text = str(res["output"])
     rounds = 0
-    while len(text.split()) < floor and rounds < _WORDGATE_RETRIES:
+    last = res  # the result whose truncation flag we track as the tail grows
+    # Continue while the chapter is UNDER the floor OR the last call was truncated by the
+    # model's output ceiling (a truncated chapter above the floor would otherwise ship
+    # mid-sentence). Bounded by _WORDGATE_RETRIES either way.
+    while (len(text.split()) < floor or _res_truncated(last)) and rounds < _WORDGATE_RETRIES:
         rounds += 1
         need = max(50, floor - len(text.split()))
         cont_task = (
@@ -314,9 +340,10 @@ async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
         if not add:
             break
         text = text.rstrip() + "\n\n" + add
+        last = cres
     if rounds:
-        log.info("%s: word-gate continued %d round(s) → %d words (target %d)",
-                 task_id, rounds, len(text.split()), word_target)
+        log.info("%s: word-gate continued %d round(s) → %d words (target %d, truncated_tail=%s)",
+                 task_id, rounds, len(text.split()), word_target, _res_truncated(last))
         res = {**res, "output": text, "continued": rounds}
     return res
 
@@ -660,7 +687,10 @@ async def _polish_reduce(
             "so nothing reads as an abrupt break. Return ONLY the "
             f"edited book in {language}, no notes or preamble."
         )
-        role = "merge"
+        # A16: NOT "merge" — synthesize() short-circuits role=="merge" with a single input
+        # and returns the book verbatim, so heavy polish silently no-ops while reporting
+        # polished=True. "synthesize" runs the actual editor pass on the one whole-book part.
+        role = "synthesize"
     else:  # "light" (default) and any unknown value
         instruction = (
             "You are the editor-in-chief doing a LIGHT final pass of a multi-chapter "

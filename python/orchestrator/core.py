@@ -378,6 +378,13 @@ def _extract(resp: Any) -> tuple[str, int, int, str]:
     usage = getattr(resp, "usage", None)
     tok_in = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
     tok_out = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+    if not tok_in and not tok_out and text:
+        # Some failover rungs return real content but omit/zero `usage` → estimate_cost=0
+        # → a genuine chapter billed FREE. Estimate from content (~4 chars/token) so the
+        # sink never settles delivered work at 0. Mirrors the classic net in
+        # laozhang_api._log_narasi_usage. (No-op when the rung reports usage.)
+        tok_out = max(1, len(text) // 4)
+        tok_in = min(tok_out, 2000)
     return text, tok_in, tok_out, finish
 
 

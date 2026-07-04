@@ -78,7 +78,7 @@ from auth_middleware import get_current_user, get_current_user_optional, Current
 # The orchestration engine front door (WS-6). NEVER raises into us.
 from orchestrator.router import generate_narration
 # Telemetry record type so the usage sink can read tokens/cost off each call.
-from orchestrator.core import CallTelemetry
+from orchestrator.core import CallTelemetry, _extract as _core_extract, estimate_cost as _core_cost
 
 log = logging.getLogger("narration_api")
 
@@ -414,7 +414,8 @@ async def _run_narration_job(
     # CC v3 gates — terminal bracket/known-bad gate (R-FG4/5/6, ALL scenarios incl. C/D/E
     # whose result carries "output" not "book"), the harari register scorecard (R-H10,
     # report-only), and the "> **Gaya:** ..." metadata header. Never raises.
-    await _apply_v3_gates(result, body, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+    await _apply_v3_gates(result, body, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                          sink=sink)
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -433,7 +434,8 @@ async def _run_narration_job(
 # ---------------------------------------------------------------------------
 # CC v3 (Stop the Pendulum) — terminal gates for the ⚡ engine. All best-effort.
 # ---------------------------------------------------------------------------
-async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=None, job_uuid=None) -> None:
+async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=None, job_uuid=None,
+                          sink: "Optional[_UsageSink]" = None) -> None:
     """Mutates `result` in place: (1) R-FG4/5/6 deterministic gate on the final book +
     every chapter record (the per-chapter gate in static.py covers scenario A/B workers;
     this terminal pass also covers C/D/E outputs and anything the polish reintroduced);
@@ -490,18 +492,34 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             model=model,
                             messages=[{"role": "user", "content": instr + "\n\nMANUSCRIPT:\n" + book}],
                             max_tokens=mt, stream=False)), timeout=600)
-                    out = ""
-                    try:
-                        out = (resp.choices[0].message.content or "").strip()
-                    except Exception:  # noqa: BLE001
-                        out = ""
-                    # a surgical edit can only shrink modestly — reject a gutted rewrite
-                    if out and len(out.split()) >= int(len(book.split()) * 0.7):
+                    # A2: this is a real (up to 32k-token Opus) call — it MUST be metered
+                    # and logged, or an over-budget book delivers a large rewrite billed to
+                    # nobody and invisible in usage_logs. Feed the job's sink: it accumulates
+                    # cost_usd for _settle AND fans out a usage_logs row. Also extract the
+                    # finish_reason so a truncated rewrite is rejected (A15), not shipped.
+                    out, _din, _dout, _dfin = _core_extract(resp)
+                    if sink is not None:
+                        try:
+                            sink(CallTelemetry(
+                                model=model, role="editor", ok=True,
+                                tokens_in=_din, tokens_out=_dout,
+                                cost_usd=_core_cost(model, _din, _dout),
+                                finish_reason=_dfin, task_id=f"diet{loops}",
+                                provider=str(getattr(resp, "_narasi_served_by", "") or "")))
+                        except Exception:  # noqa: BLE001 - never let metering break the gate
+                            pass
+                    _dtrunc = str(_dfin or "").strip().lower() in ("length", "max_tokens", "max_output_tokens")
+                    # a surgical edit can only shrink modestly — reject a gutted rewrite;
+                    # A15: reject a truncated rewrite regardless of ratio (it would replace
+                    # the full book with a mid-sentence cut).
+                    if out and not _dtrunc and len(out.split()) >= int(len(book.split()) * 0.7):
                         book = out
                         result[key] = book
                         rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
                                                   word_target=wt or None, embed_fn=embed)
                     else:
+                        if _dtrunc:
+                            log.warning("counter diet loop: rewrite truncated (finish=%s) — kept original", _dfin)
                         break
                 except Exception as e:  # noqa: BLE001
                     log.warning("counter diet loop failed (non-fatal): %s", e)
@@ -760,6 +778,17 @@ async def _settle(meter_op: Optional[str], tenant_id: str, user_id: Optional[str
     model is more expensive)."""
     if not meter_op:
         return
+    # A4: never settle DELIVERED work at usd=0 — a 0.0 cost makes charge.settle() treat the
+    # job as free and FULL-REFUND the hold. sink.cost_usd is 0 only when every model name
+    # missed the pricing table (an operator routing to a genuinely new model family). Floor
+    # from the token totals at a conservative blended rate so the platform recovers
+    # something and the hold isn't wiped; log loudly so the misconfig is visible.
+    _usd = float(sink.cost_usd or 0.0)
+    if _usd <= 0.0 and (sink.tokens_out or 0) > 0:
+        _usd = (int(sink.tokens_in) * 1.0 + int(sink.tokens_out) * 5.0) / 1_000_000.0
+        log.warning("settle(%s): sink priced 0 for %d out tokens (pricing-table miss for model=%s?) "
+                    "— flooring usd=%.5f to avoid a free-book full refund",
+                    meter_op, sink.tokens_out, model, _usd)
     try:
         charge = metering.Charge(
             tenant_id=tenant_id, user_id=user_id, op_id=meter_op,
@@ -767,7 +796,7 @@ async def _settle(meter_op: Optional[str], tenant_id: str, user_id: Optional[str
         await charge.settle(
             {"tokens_in": sink.tokens_in, "tokens_out": sink.tokens_out},
             job_id=job_uuid, tok_in=sink.tokens_in, tok_out=sink.tokens_out,
-            usd=sink.cost_usd)
+            usd=_usd)
     except Exception as e:  # noqa: BLE001
         log.warning("settle hold(%s) failed (non-fatal): %s", meter_op, e)
 
@@ -968,10 +997,27 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
     total = _count_chapters(body)
 
     # ── Credit HOLD up front (HTTP 402 if short). BYOK pays upstream → no hold. ──
+    # A6: price the hold at the model the workers will ACTUALLY run on. Manager-routed
+    # styles (harari/academic-popular/literary-essay) route their worker to
+    # MANAGER_MODEL=claude-sonnet-4-6 (~14× the gemini `model` estimate); pricing the hold
+    # at the cheap `model` under-reserves, then the F4 clamp caps the debit at the too-small
+    # hold and the platform eats the delta. Resolve the routed model here so the hold covers
+    # the real blended cost. (settle still bills the sink's true per-call USD.)
+    _style_for_hold = str(body.get("style") or "").strip()
+    hold_model = model
+    try:
+        from orchestrator.core import route_model as _route_model
+        hold_model = _route_model(role="worker", style=_style_for_hold,
+                                  override=body.get("worker_model")) or model
+    except Exception:  # noqa: BLE001
+        hold_model = model
+    try:
+        is_byok = bool(_byok())
+    except Exception:  # noqa: BLE001
+        is_byok = False
     meter_op = None
     try:
-        byok = _byok()
-        if not byok:
+        if not is_byok:
             est_units = {
                 "tokens_in": 1500 * max(1, total),
                 "tokens_out": sum(
@@ -982,7 +1028,7 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
             meter_op = f"narration:{job_id}:{uuid.uuid4().hex[:8]}"
             await metering.begin_charge(
                 tenant_id=tenant_id, user_id=user_uuid, operation="narasi",
-                model=model, estimate_units=est_units, op_id=meter_op)
+                model=hold_model, estimate_units=est_units, op_id=meter_op)
     except HTTPException:
         raise  # 402 surfaces to the client untouched
     except Exception as e:  # noqa: BLE001 - never let a metering hiccup block a job
@@ -1011,21 +1057,37 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
     # `narration` queue instead of running in-process — the narration-worker service
     # picks it up (survives API restarts; S2 resume continues checkpointed chapters).
     # Any enqueue failure falls back to the in-process path (never lose a job).
-    if str(os.environ.get("NARRATION_BULLMQ_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on"):
+    # A8: a BYOK job must NEVER be enqueued. The worker runs in a separate process that
+    # cannot reconstruct the per-request BYOK key (a contextvar), so it would generate on
+    # the PLATFORM key while meter_op=None means _settle never runs — platform pays the full
+    # upstream cost and recovers nothing. BYOK always runs in-process.
+    _bullmq_on = str(os.environ.get("NARRATION_BULLMQ_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+    if _bullmq_on and not is_byok:
+        _enq_ok = False
         try:
             from bullmq import Queue as _BullQueue
             _q = _BullQueue(os.environ.get("NARRATION_QUEUE", "narration"),
                             {"connection": os.environ.get("REDIS_URL", "redis://localhost:6379")})
-            await _q.add("narration", {
-                "job_id": job_id, "job_uuid": job_uuid, "tenant_id": tenant_id,
-                "user_id": user_uuid, "total": total, "meter_op": meter_op,
-                "model": model, "body": body,
-            }, {"jobId": job_id, "removeOnComplete": True, "attempts": 2})
-            await _q.close()
-            return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING,
-                    "total": total, "queued": True}
+            try:
+                await _q.add("narration", {
+                    "job_id": job_id, "job_uuid": job_uuid, "tenant_id": tenant_id,
+                    "user_id": user_uuid, "total": total, "meter_op": meter_op,
+                    "model": model, "body": body,
+                }, {"jobId": job_id, "removeOnComplete": True, "attempts": 2})
+                _enq_ok = True   # the job is durably enqueued the instant add() returns
+            finally:
+                try:
+                    await _q.close()   # a close() error must NOT trigger the in-process fallback
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as e:  # noqa: BLE001
             log.warning("bullmq enqueue failed — falling back in-process: %s", e)
+        # A9: only fall through to the in-process path if the ADD itself failed. Enqueued +
+        # in-process = the same job_id runs twice (doubled COGS, duplicate usage_logs,
+        # racing Redis/gate state) even though customer credits stay op_id-idempotent.
+        if _enq_ok:
+            return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING,
+                    "total": total, "queued": True}
 
     asyncio.create_task(_run_narration_job(
         body=body, job_id=job_id, job_uuid=job_uuid,
