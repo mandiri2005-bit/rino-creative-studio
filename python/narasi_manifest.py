@@ -96,7 +96,9 @@ def build_manifest(*, style_entry: dict | None, lang: str, regime: str, mode: st
     _set("factscan", "n/a" if regime == "fictional" else
          ("active" if lang_key == "en" else "UNMEASURED"),
          "fictional regime skips external claims" if regime == "fictional" else
-         ("" if lang_key == "en" else "FG10 detectors are EN-only; numeric sweep still runs"))
+         ("" if lang_key == "en" else
+          ("numeric+spelled-quantity sweep active; FG10 prose detectors EN-only"
+           if pack.get("spelled_quantity") else "FG10 detectors EN-only; numeric sweep still runs")))
 
     verify_on = _flag_on("FACTGATE_SEARCH_ENABLED", "0")
     keyed = bool(os.environ.get("TAVILY_API_KEY") or os.environ.get("SERPER_API_KEY"))

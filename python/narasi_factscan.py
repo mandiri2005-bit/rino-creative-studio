@@ -98,13 +98,23 @@ def _known_good(s: str) -> bool:
     return any(p.search(s) for p in _KNOWN_GOOD.get())
 
 
-def fact_scan(text: str, *, factual_regime: str = "strict") -> dict:
+def fact_scan(text: str, *, factual_regime: str = "strict", lang: str = "en") -> dict:
     """Deterministic scan → fact_report. Report-only (no blocking, no LLM, no search).
     fictional regime: external-claim classes are skipped (only the numeric sweep runs,
-    labeled canon-scope). Never raises."""
+    labeled canon-scope). Never raises.
+
+    lang: enables the language pack's spelled-quantity detector — ID prose SPELLS its
+    numbers ("dua ratus prajurit", "tiga puluh ribu kilometer persegi"), so a digits-only
+    sweep is blind on the ID path (the Diponegoro run's invented statistics all passed)."""
     rep: dict[str, Any] = {"regime": factual_regime, "classes": {}, "mode": "scan-and-report",
                            "note": "pattern-swept, not guaranteed (R-FG10 §5); verification "
                                    "protocols pending search infra"}
+    _spelled_qty = None
+    try:
+        from narasi_counters import LANGUAGE_PACKS as _LP
+        _spelled_qty = (_LP.get((lang or "en").split("-")[0].lower()) or {}).get("spelled_quantity")
+    except Exception:  # noqa: BLE001
+        _spelled_qty = None
     try:
         # drop heading/header LINES first (else the first prose sentence glues to the
         # preceding "## ..." heading and gets filtered out with it), then sentence-split
@@ -122,6 +132,8 @@ def fact_scan(text: str, *, factual_regime: str = "strict") -> dict:
                 continue
             toks = [m.group(0) for m in _DIGITS.finditer(s) if any(ch.isdigit() for ch in m.group(0))]
             toks += [m.group(0) for m in _SPELLED.finditer(s)]
+            if _spelled_qty is not None:
+                toks += [m.group(0) for m in _spelled_qty.finditer(s)]
             # bare years are reported separately (dates class — binary, low-noise)
             toks = [t for t in toks if not _YEAR.fullmatch(t.strip())]
             if toks:

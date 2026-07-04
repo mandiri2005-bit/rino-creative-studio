@@ -80,6 +80,9 @@ CLAIM DISCIPLINE (applies to every factual statement):
 - CERTAIN -> state directly. PROBABLE -> "likely" / "appears" / "the evidence suggests".
 - DISPUTED -> name the disagreement in one clause. UNCERTAIN -> soften or cut. Never invent precision.
 - No anachronistic frame-terms (e.g. "gold-standard economy" for a pre-modern state -> "bullion-hungry economy"). Modern explanatory terms only when they clarify, never when they decorate.
+- A [VERIFY: ...] flag MUST carry your best-estimate value INSIDE the bracket ("[VERIFY: 3-5 km]") — never an empty or generic flag; a flag asks to CHECK a value, it is not a placeholder for one.
+- Write ENTIRELY in the output language: never drop standalone English placeholder/hedge words (several, around, roughly, some, approximately) into non-English prose.
+- [ANCHOR] lines: MAXIMUM 3 per manuscript. Each must speak in the narration's own POV or carry explicit attribution — an unattributed first-person anchor inside third-person narration reads as invented testimony.
 """
 
 

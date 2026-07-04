@@ -61,12 +61,19 @@ LANGUAGE_PACKS: dict[str, dict[str, Any]] = {
             r"|tidak\s+akan\s+pernah\s+selesai\s+dijawab"
             r"|tidak\s+ada\s+metode\s+yang\s+bisa\s+memverifikasi"
             r"|bukti\s+arsip\s+tidak|yang\s+tidak\s+diperdebatkan\s+adalah)"),
+        # Three shapes seen in real ID manuscripts: "sejarawan NAMA", "Menurut NAMA",
+        # and "NAMA[, aposisi panjang,] VERBA" — the dominant Diponegoro form puts a full
+        # appositive BETWEEN name and verb, so the optional `(?:,[^,]{4,120},)?` bridge is
+        # load-bearing. Single-word surnames count too ("Carey berargumen").
         "attribution": re.compile(
             r"(?:\b(?:[Ss]ejarawan|[Aa]rkeolog|[Aa]ntropolog|[Pp]eneliti|[Ff]ilolog)\s+"
             r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
-            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
+            r"|(?:\b[Mm]enurut\s+(?:pembacaan\s+|catatan\s+|analisis\s+)?"
+            r"(?P<name3>[A-Z][a-zA-Z.]+(?:\s+[A-Z][a-zA-Z.]+)?))"
+            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]+(?:\s+[A-Z][a-zA-Z.]+)*)(?:,\s+[^,]{4,120},)?\s+"
             r"(?:berpendapat|mencatat|menunjukkan|menegaskan|memperkirakan|berargumen|"
-            r"menekankan|melihat|mengakui|merekonstruksi|mengingatkan)\b)"),
+            r"menekankan|melihat|mengakui|merekonstruksi|mengingatkan|menawarkan|"
+            r"membantah|menyebutnya|mengidentifikasi)\b)"),
         # ID appositive epithet: ", sejarawan Inggris yang …," after a name (R-E3)
         "epithet": re.compile(r",\s+(?:seorang\s+)?(?:sejarawan|arkeolog|filolog|peneliti|"
                               r"antropolog|pakar|ahli)\s+[^,]{4,70},"),
@@ -89,6 +96,169 @@ LANGUAGE_PACKS: dict[str, dict[str, Any]] = {
 LANGUAGE_PACKS["en"]["hedge_value"] = "around {v}"
 LANGUAGE_PACKS["en"]["hedge_prose"] = "several"
 LANGUAGE_PACKS["en"]["foreign_tokens"] = {}
+
+# ── ID spelled-quantity detector: ID prose spells numbers ("dua ratus prajurit",
+# "tiga puluh ribu kilometer persegi"), so a digits-only sweep is BLIND on the ID path —
+# the Diponegoro run's invented statistics sailed through unflagged. Feeds factscan. ──
+LANGUAGE_PACKS["id"]["spelled_quantity"] = re.compile(
+    r"(?i)\b(?:se)?(?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh|sebelas|"
+    r"puluh|belas|ratus|ribu|juta)"
+    r"(?:[-\s](?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|puluh|belas|ratus|ribu|juta))*"
+    r"\s+(?:orang|prajurit|tentara|serdadu|jiwa|tahun|hari|bulan|jilid|halaman|gulden|"
+    r"kilometer|meter|mdpl|kaki|hektar|ton|pos|kapal|kuda|persen|dekade|abad|kali)\b")
+
+# ── multi-language packs (Rino 2026-07-04: "consider other lang as well"). Every served
+# language gets AT MINIMUM hedge vocab + a foreign-token blocklist, so the FG6 resolve
+# pass is localized everywhere and EN placeholder tokens can never leak into any non-EN
+# manuscript. Latin-script languages with clear conventions also get starter
+# attribution/aporia patterns (counters measure); the rest stay honestly UNMEASURED for
+# those counters (visible in the §1 manifest) until seeded from real manuscripts. ──
+_EN_LEAK = ("several", "around", "roughly", "approximately", "about", "some",
+            "nearly", "circa", "tbd")
+
+
+def _leak_map(*repls: str) -> dict:
+    """Zip the EN leak tokens against per-language replacements ('' = cut)."""
+    return dict(zip(_EN_LEAK, repls))
+
+
+_EXTRA_PACKS: dict[str, dict[str, Any]] = {
+    "ms": {
+        "hedge_value": "kira-kira {v}", "hedge_prose": "beberapa",
+        "foreign_tokens": _leak_map("beberapa", "sekitar", "kira-kira", "kurang lebih",
+                                    "sekitar", "beberapa", "hampir", "sekitar", ""),
+        "aporia": re.compile(r"(?i)(?:sumber\s+tidak\s+mencatat|tiada\s+catatan|"
+                             r"tidak\s+dapat\s+dipastikan|tidak\s+diketahui\s+dengan\s+pasti)"),
+        "attribution": re.compile(
+            r"(?:\b(?:[Ss]ejarawan|[Aa]hli\s+sejarah|[Pp]enyelidik)\s+"
+            r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
+            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
+            r"(?:berhujah|mencatat|menegaskan|berpendapat|menganggarkan)\b)"),
+    },
+    "jv": {
+        "hedge_value": "watara {v}", "hedge_prose": "sawetara",
+        "foreign_tokens": _leak_map("sawetara", "watara", "kira-kira", "kirang langkung",
+                                    "watara", "sawetara", "meh", "watara", ""),
+        "aporia": re.compile(r"(?i)(?:ora\s+ana\s+cathetan|sumber\s+ora\s+nyathet|"
+                             r"ora\s+bisa\s+dipesthekake)"),
+    },
+    "su": {
+        "hedge_value": "kira-kira {v}", "hedge_prose": "sababaraha",
+        "foreign_tokens": _leak_map("sababaraha", "kira-kira", "kira-kira", "kurang leuwih",
+                                    "kira-kira", "sababaraha", "ampir", "kira-kira", ""),
+    },
+    "ban": {
+        "hedge_value": "kirang langkung {v}", "hedge_prose": "makudang",
+        "foreign_tokens": _leak_map("makudang", "kirang langkung", "kira-kira", "kirang langkung",
+                                    "kirang langkung", "makudang", "meh", "kirang langkung", ""),
+    },
+    "min": {
+        "hedge_value": "sakitar {v}", "hedge_prose": "babarapo",
+        "foreign_tokens": _leak_map("babarapo", "sakitar", "kiro-kiro", "kurang labiah",
+                                    "sakitar", "babarapo", "ampia", "sakitar", ""),
+    },
+    "es": {
+        "hedge_value": "alrededor de {v}", "hedge_prose": "varios",
+        "foreign_tokens": _leak_map("varios", "alrededor de", "aproximadamente", "aproximadamente",
+                                    "cerca de", "algunos", "casi", "hacia", ""),
+        "aporia": re.compile(r"(?i)(?:las\s+fuentes\s+no\s+registran|no\s+hay\s+constancia|"
+                             r"no\s+se\s+puede\s+determinar|no\s+queda\s+registro)"),
+        "attribution": re.compile(
+            r"(?:\b(?:[Ee]l\s+)?(?:[Hh]istoriador|[Aa]rque[oó]log[oa]|[Ii]nvestigador)\s+"
+            r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
+            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
+            r"(?:sostiene|argumenta|se[ñn]ala|documenta|registra|estima)\b)"),
+    },
+    "fr": {
+        "hedge_value": "environ {v}", "hedge_prose": "plusieurs",
+        "foreign_tokens": _leak_map("plusieurs", "environ", "environ", "approximativement",
+                                    "environ", "quelques", "près de", "vers", ""),
+        "aporia": re.compile(r"(?i)(?:les\s+sources\s+ne\s+mentionnent\s+pas|aucune\s+trace|"
+                             r"impossible\s+[àa]\s+d[ée]terminer|nul\s+ne\s+sait)"),
+        "attribution": re.compile(
+            r"(?:\b(?:[Ll]'historien(?:ne)?|[Ll]'arch[ée]ologue)\s+"
+            r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
+            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
+            r"(?:soutient|note|souligne|documente|estime|rappelle)\b)"),
+    },
+    "de": {
+        "hedge_value": "etwa {v}", "hedge_prose": "mehrere",
+        # "circa" is NATIVE German — not in the blocklist.
+        "foreign_tokens": {"several": "mehrere", "around": "etwa", "roughly": "ungefähr",
+                           "approximately": "annähernd", "about": "etwa", "some": "einige",
+                           "nearly": "fast", "tbd": ""},
+        "aporia": re.compile(r"(?i)(?:die\s+Quellen\s+verzeichnen\s+nicht|keine\s+Aufzeichnung|"
+                             r"l[äa]sst\s+sich\s+nicht\s+feststellen)"),
+        "attribution": re.compile(
+            r"(?:\b(?:[Dd]er\s+)?(?:[Hh]istoriker(?:in)?|[Aa]rch[äa]ologe)\s+"
+            r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
+            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
+            r"(?:argumentiert|betont|dokumentiert|sch[äa]tzt|vermerkt)\b)"),
+    },
+    "pt": {
+        "hedge_value": "cerca de {v}", "hedge_prose": "vários",
+        "foreign_tokens": _leak_map("vários", "cerca de", "aproximadamente", "aproximadamente",
+                                    "cerca de", "alguns", "quase", "por volta de", ""),
+        "aporia": re.compile(r"(?i)(?:as\s+fontes\s+n[ãa]o\s+registram|n[ãa]o\s+h[áa]\s+registro|"
+                             r"n[ãa]o\s+se\s+pode\s+determinar)"),
+        "attribution": re.compile(
+            r"(?:\b(?:[Oo]\s+)?(?:[Hh]istoriador(?:a)?|[Aa]rque[óo]log[oa])\s+"
+            r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
+            r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
+            r"(?:argumenta|observa|registra|documenta|estima)\b)"),
+    },
+    "nl": {
+        "hedge_value": "ongeveer {v}", "hedge_prose": "verscheidene",
+        # "circa" is native Dutch too — excluded.
+        "foreign_tokens": {"several": "verscheidene", "around": "ongeveer", "roughly": "ruwweg",
+                           "approximately": "bij benadering", "about": "ongeveer",
+                           "some": "enkele", "nearly": "bijna", "tbd": ""},
+        "aporia": re.compile(r"(?i)(?:de\s+bronnen\s+vermelden\s+niet|geen\s+verslag|"
+                             r"valt\s+niet\s+vast\s+te\s+stellen)"),
+    },
+    "vi": {
+        "hedge_value": "khoảng {v}", "hedge_prose": "vài",
+        "foreign_tokens": _leak_map("vài", "khoảng", "khoảng", "xấp xỉ", "khoảng",
+                                    "một vài", "gần", "khoảng", ""),
+    },
+    "tl": {
+        "hedge_value": "humigit-kumulang {v}", "hedge_prose": "ilang",
+        "foreign_tokens": _leak_map("ilang", "mga", "humigit-kumulang", "humigit-kumulang",
+                                    "mga", "ilang", "halos", "noong mga", ""),
+    },
+    "ar": {
+        "hedge_value": "حوالي {v}", "hedge_prose": "عدة",
+        "foreign_tokens": _leak_map("عدة", "حوالي", "تقريبًا", "تقريبًا", "نحو", "بعض",
+                                    "قرابة", "نحو", ""),
+    },
+    "zh": {
+        "hedge_value": "大约{v}", "hedge_prose": "若干",
+        "foreign_tokens": _leak_map("若干", "大约", "大致", "大约", "约", "一些", "将近", "约", ""),
+    },
+    "ja": {
+        "hedge_value": "およそ{v}", "hedge_prose": "いくつか",
+        "foreign_tokens": _leak_map("いくつか", "およそ", "おおよそ", "約", "約", "一部",
+                                    "近く", "約", ""),
+    },
+    "ko": {
+        "hedge_value": "약 {v}", "hedge_prose": "여러",
+        "foreign_tokens": _leak_map("여러", "약", "대략", "약", "약", "일부", "거의", "약", ""),
+    },
+    "hi": {
+        "hedge_value": "लगभग {v}", "hedge_prose": "कई",
+        "foreign_tokens": _leak_map("कई", "लगभग", "मोटे तौर पर", "लगभग", "लगभग", "कुछ",
+                                    "लगभग", "लगभग", ""),
+    },
+    "th": {
+        "hedge_value": "ประมาณ {v}", "hedge_prose": "หลาย",
+        "foreign_tokens": _leak_map("หลาย", "ประมาณ", "ราว ๆ", "ประมาณ", "ราว", "บางส่วน",
+                                    "เกือบ", "ราว", ""),
+    },
+}
+for _lk, _lp in _EXTRA_PACKS.items():
+    LANGUAGE_PACKS.setdefault(_lk, {})
+    for _pk, _pv in _lp.items():
+        LANGUAGE_PACKS[_lk].setdefault(_pk, _pv)
 
 
 def spell_number_id(n: int) -> str:
@@ -173,7 +343,8 @@ def _chapters(text: str) -> list[str]:
 
 
 def _names_from(m: re.Match) -> Optional[str]:
-    return m.groupdict().get("name1") or m.groupdict().get("name2")
+    gd = m.groupdict()
+    return gd.get("name1") or gd.get("name2") or gd.get("name3")
 
 
 def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] = None,
@@ -295,8 +466,10 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         # narasi rule (9 shipped in the Diponegoro run). Counted PRE-strip, so this scan
         # must run before the terminal gate removes the [ANCHOR] tokens. ──
         anchor_budget = int(budgets.get("anchors_max", 3))
+        # count EVERY [ANCHOR] token (leading OR trailing — the Diponegoro run used both
+        # "…badai. [ANCHOR]" and "[ANCHOR] Bagi yang tertindas…"); samples = their lines
         anchor_lines = [ln.strip()[:200] for ln in (text or "").splitlines()
-                        if re.match(r"(?i)\s*\[anchor", ln)]
+                        if re.search(r"(?i)\[\s*anchor", ln)]
         report["counters"]["anchors"] = {
             "status": "OVER" if len(anchor_lines) > anchor_budget else "PASS",
             "count": len(anchor_lines), "budget": anchor_budget,
@@ -304,18 +477,37 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         }
 
         # ── scene-dedup (ID-path §6.1): cross-chapter near-verbatim sensory beats.
-        # Deterministic: normalized sentences (≥6 words) sharing an 8-word shingle across
-        # DIFFERENT chapters = a stamped template ("lumpur … roda … hingga ke poros" in
-        # Bab 4 AND Bab 7). OVER when any pair found. ──
+        # Two deterministic nets: (a) 6-word shingles (true near-verbatim), (b) 4-word
+        # shingles where EVERY word is ≥4 chars — catches the stamped template phrase
+        # ("turun hampir setiap sore", "roda gerobak hingga poros") without firing on
+        # function-word runs. OVER when any cross-chapter hit. ──
         dup_hits: list[str] = []
         if len(chapters) > 1:
+            # spelled numbers/dates repeat legitimately across chapters ("tahun seribu
+            # delapan ratus dua puluh lima") — a shingle dominated by number words is a
+            # DATE, not a stamped scene template. Skip those.
+            _NUMWORDS = {"satu", "dua", "tiga", "empat", "lima", "enam", "tujuh", "delapan",
+                         "sembilan", "sepuluh", "sebelas", "puluh", "belas", "ratus", "ribu",
+                         "juta", "seribu", "seratus", "tahun", "one", "two", "three", "four",
+                         "five", "six", "seven", "eight", "nine", "ten", "hundred", "thousand"}
+
             def _shingles(t: str) -> set:
                 w = re.sub(r"[^\wàâéèêîôûáíóúäëïöü' -]", " ", t.lower()).split()
-                return {" ".join(w[i:i + 8]) for i in range(max(0, len(w) - 7))}
+                out = set()
+                for i in range(max(0, len(w) - 5)):
+                    six = w[i:i + 6]
+                    if sum(1 for x in six if x in _NUMWORDS) < 3:
+                        out.add(" ".join(six))
+                for i in range(max(0, len(w) - 3)):
+                    quad = w[i:i + 4]
+                    if all(len(x) >= 4 for x in quad) and \
+                       sum(1 for x in quad if x in _NUMWORDS) < 2:
+                        out.add(" ".join(quad))
+                return out
             seen_sh: dict[str, int] = {}
             for ci, ch in enumerate(chapters):
                 for s in _sentences(ch):
-                    if len(s.split()) < 6:
+                    if len(s.split()) < 5:
                         continue
                     for sh in _shingles(s):
                         prev = seen_sh.get(sh)
@@ -327,6 +519,28 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         report["counters"]["scene_dup"] = {
             "status": "OVER" if dup_hits else "PASS",
             "count": len(dup_hits), "sentences": dup_hits[:10],
+        }
+
+        # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
+        # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the
+        # whole manuscript is first-person narration (POV styles) — detected by pronoun
+        # density, language-pack driven. ──
+        _fp_rx = (pack or {}).get("first_person")
+        if _fp_rx is None:
+            _fp_rx = re.compile(r"(?i)\b(?:kami|kita|aku)\b") if (lang or "").startswith("id") \
+                else re.compile(r"\b(?:we|our|us|I|my)\b")
+        voice_hits = []
+        try:
+            body_fp = len(_fp_rx.findall(text or ""))
+            per_100_sent = body_fp / max(1, len(sents)) * 100
+            first_person_narration = per_100_sent > 25   # POV styles: skip the check
+            if anchor_lines and not first_person_narration:
+                voice_hits = [ln for ln in anchor_lines if _fp_rx.search(ln)]
+        except Exception:  # noqa: BLE001
+            voice_hits = []
+        report["counters"]["anchor_voice"] = {
+            "status": "OVER" if voice_hits else "PASS",
+            "count": len(voice_hits), "sentences": voice_hits[:6],
         }
 
         # ── R-H6 thesis restatement (embed-based; UNMEASURED without thesis+embed) ──
@@ -418,4 +632,11 @@ def surgical_prompt(report: dict, *, language: str = "English") -> str:
             "chapters (a stamped template). Rewrite EACH duplicate with a DIFFERENT sensory "
             "register (rotate: cuaca, bau, suara, tekstur, cahaya) while keeping its factual "
             "content. Sentences:\n- " + "\n- ".join(sd.get("sentences", [])[:10]))
+    if c.get("anchor_voice", {}).get("status") == "OVER":
+        av = c["anchor_voice"]
+        parts.append(
+            "ANCHOR VOICE: these [ANCHOR] lines use first-person voice inside third-person "
+            "narration — they read as invented testimony. Rewrite each to the narrator's POV, "
+            "or attribute it explicitly to a documented source, or mark it in-text as an "
+            "imagined voice. Lines:\n- " + "\n- ".join(av.get("sentences", [])[:6]))
     return "\n\n".join(parts)

@@ -22,6 +22,10 @@ SCHOLAR_TABLE: list[dict[str, Any]] = [
         "variants": [],   # canonical + bare surname only; the failure was epithet drift
         "domain": "sejarawan Inggris (Oxford), arsip Yogyakarta & Perang Jawa",
         "epithet": "sejarawan Inggris yang menghabiskan sekitar empat dekade meneliti arsip Yogyakarta",
+        # epithet-canon substitutions applied INSIDE this scholar's appositives (the
+        # Diponegoro run drifted tiga-dekade/empat-dekade/puluhan-tahun across 10 intros)
+        "epithet_fixes": [(r"(?i)(?:lebih\s+dari\s+)?tiga\s+dekade", "sekitar empat dekade"),
+                          (r"(?i)puluhan\s+tahun", "sekitar empat dekade")],
     },
     {
         "canonical": "M.C. Ricklefs",
@@ -31,6 +35,7 @@ SCHOLAR_TABLE: list[dict[str, Any]] = [
                      "M. C. Ricklefs"],
         "domain": "sejarawan Australia, islamisasi Jawa",
         "epithet": "sejarawan Australia yang menekuni sejarah islamisasi Jawa",
+        "epithet_fixes": [],
     },
 ]
 
@@ -73,6 +78,38 @@ def entity_pass(text: str) -> tuple[str, dict[str, Any]]:
                 if var and var in out and var != sch["canonical"]:
                     out = out.replace(var, sch["canonical"])
                     report["unified"].append({"from": var, "to": sch["canonical"]})
+
+        # 1b — R-E3 first-mention discipline (§5.4): the FIRST full-name mention keeps its
+        # appositive epithet (canon-fixed); EVERY later mention collapses to the bare
+        # surname with the appositive dropped — Carey was introduced 10× with drifting
+        # epithets in the Diponegoro run.
+        for sch in SCHOLAR_TABLE:
+            full = sch["canonical"]
+            sn = sch["surname"]
+            if full not in out:
+                continue
+            first_idx = out.index(full)
+            first_end = first_idx + len(full)
+            # canon-fix the FIRST mention's appositive in place ("tiga dekade" drift)
+            m_app = re.match(r",\s+[^,]{4,110},", out[first_end:])
+            if m_app:
+                app = m_app.group(0)
+                fixed_app = app
+                for pat, rep in (sch.get("epithet_fixes") or []):
+                    fixed_app = re.sub(pat, rep, fixed_app)
+                if fixed_app != app:
+                    out = out[:first_end] + fixed_app + out[first_end + len(app):]
+                    report.setdefault("epithet_fixed", []).append(
+                        {"scholar": full, "from": app[:80], "to": fixed_app[:80]})
+            # collapse every LATER full-name mention (+ its appositive) to bare surname
+            head = out[:first_end]
+            tail = out[first_end:]
+            tail, k = re.subn(
+                re.escape(full) + r"(?:,\s+(?:seorang\s+)?sejarawan[^,]{0,110},)?",
+                sn, tail)
+            if k:
+                out = head + tail
+                report.setdefault("collapsed", []).append({"scholar": full, "count": k})
 
         # 2 — wrong-domain downgrade
         for wd in WRONG_DOMAIN:

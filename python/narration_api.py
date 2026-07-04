@@ -670,7 +670,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             regime = "hybrid"
         _book = result.get("book") or result.get("output") or ""
         if _book:
-            result["fact_report"] = _nfs.fact_scan(_book, factual_regime=regime)
+            result["fact_report"] = _nfs.fact_scan(_book, factual_regime=regime, lang=language)
             _of = result["fact_report"].get("overfiring")
             if _of:
                 log.warning("fact-scan detectors over-firing (tune before enforcement): %s", _of)
