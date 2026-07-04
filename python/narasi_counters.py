@@ -294,7 +294,12 @@ def spell_number_id(n: int) -> str:
 LANGUAGE_PACKS["id"]["spell_number"] = spell_number_id
 
 
-_NUM_TOKEN_RX = re.compile(r"(?<![\d.,\-/])\b(\d{1,6})\b(?![\d.,\-/%])")
+# Standalone integer, NOT part of a thousands group / decimal / range / percent. The
+# trailing guard excludes a following digit or %, or a .,-/ that JOINS another digit
+# ("1,825", "3,5", "1825-1830") — but NOT a plain sentence comma/period ("tahun 1825,"
+# / "wafat 1855."), which the earlier over-broad guard wrongly skipped, leaving years as
+# digits in video output.
+_NUM_TOKEN_RX = re.compile(r"(?<![\d.,\-/])\b(\d{1,6})\b(?![\d%]|[.,\-/]\d)")
 
 
 def render_numbers_id(text: str) -> tuple[str, int]:
@@ -361,8 +366,26 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         chapters = _chapters(text)
         sents = _sentences(text)
 
+        # Density budgets (citations/aporia/anchors/thesis) were calibrated on a
+        # ~single-chapter Sapiens-length piece; a full 10-chapter book that keeps the same
+        # whole-book budget forces a wasteful, LLM-imperfect diet loop that can't (and
+        # shouldn't) gut a long-form piece's real scholarly texture (Rino 2026-07-04:
+        # "scale budget by length"). Scale the budget with the manuscript's actual word
+        # count against a baseline; epithet (0-tolerance re-intro) and scene_dup (not a
+        # budget) are NOT scaled. Baseline configurable; scale never drops below the base.
+        _mswords = len((text or "").split())
+        _baseline = max(500, int(os.environ.get("NARASI_BUDGET_BASELINE_WORDS", "1500")))
+
+        def _scaled(base):
+            if base is None:
+                return None
+            return max(int(base), math.ceil(int(base) * max(1.0, _mswords / _baseline)))
+
+        report["budget_scale"] = {"words": _mswords, "baseline": _baseline,
+                                  "factor": round(max(1.0, _mswords / _baseline), 2)}
+
         # ── R-H2 citations ──
-        cit_budget = budgets.get("citations_max")
+        cit_budget = _scaled(budgets.get("citations_max"))
         if pack is None or pack.get("attribution") is None:
             report["counters"]["citations"] = {"status": "UNMEASURED"}
             attrib_sent_idx: set[int] = set()
@@ -389,7 +412,7 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             }
 
         # ── R-H3 aporia (±2-sentence attribution exemption) ──
-        ap_budget = budgets.get("aporia_max")
+        ap_budget = _scaled(budgets.get("aporia_max"))
         if pack is None or pack.get("aporia") is None:
             report["counters"]["aporia"] = {"status": "UNMEASURED"}
         else:
@@ -465,7 +488,7 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         # ── anchors (ID-path §6.2): deterministic counter, budget 3 — the original
         # narasi rule (9 shipped in the Diponegoro run). Counted PRE-strip, so this scan
         # must run before the terminal gate removes the [ANCHOR] tokens. ──
-        anchor_budget = int(budgets.get("anchors_max", 3))
+        anchor_budget = _scaled(budgets.get("anchors_max", 3))
         # count EVERY [ANCHOR] token (leading OR trailing — the Diponegoro run used both
         # "…badai. [ANCHOR]" and "[ANCHOR] Bagi yang tertindas…"); samples = their lines
         anchor_lines = [ln.strip()[:200] for ln in (text or "").splitlines()
@@ -516,9 +539,13 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
                             break
                         seen_sh.setdefault(sh, ci)
         dup_hits = list(dict.fromkeys(dup_hits))
+        # floor: a stamped template shows up as a CLUSTER of repeats — 1-2 incidental
+        # cross-chapter phrase matches in a long book are coincidence, not a formula, and
+        # shouldn't drive the expensive diet loop. Threshold scales gently with length.
+        _dup_floor = max(3, math.ceil(_mswords / 2000))
         report["counters"]["scene_dup"] = {
-            "status": "OVER" if dup_hits else "PASS",
-            "count": len(dup_hits), "sentences": dup_hits[:10],
+            "status": "OVER" if len(dup_hits) >= _dup_floor else "PASS",
+            "count": len(dup_hits), "floor": _dup_floor, "sentences": dup_hits[:10],
         }
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
@@ -544,7 +571,7 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         }
 
         # ── R-H6 thesis restatement (embed-based; UNMEASURED without thesis+embed) ──
-        th_budget = budgets.get("thesis_restatement_max")
+        th_budget = _scaled(budgets.get("thesis_restatement_max"))
         if not thesis or embed_fn is None or th_budget is None:
             report["counters"]["thesis"] = {"status": "UNMEASURED" if th_budget is not None else "OFF"}
         else:
