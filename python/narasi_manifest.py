@@ -37,6 +37,8 @@ PIPELINE_RULES = (
     "factscan",             # R-FG9/FG10 sweep
     "verify_search",        # R-FG8 search-backed verify
     "entity_pass",          # §5 scholar resolution
+    "attribution_verify",   # FG3-b wrong-subject scholar check (round-2 §4 — needs search)
+    "style_spec",           # round-2 §6: the style label MUST resolve; spec-load asserted
     "number_rendering",     # §7 output-keyed number pass
     "header",               # Gaya/Output header
     "living_guard",         # regime-precedence §2
@@ -47,10 +49,27 @@ def _flag_on(name: str, default: str = "1") -> bool:
     return str(os.environ.get(name, default)).strip().lower() not in ("0", "false", "no", "off")
 
 
-def build_manifest(*, style_entry: dict | None, lang: str, regime: str, mode: str) -> dict[str, dict]:
+def build_manifest(*, style_entry: dict | None, lang: str, regime: str, mode: str,
+                   style: str = "") -> dict[str, dict]:
     """Resolve every PIPELINE_RULE to its status for THIS job. Raises ManifestError if
-    any rule resolves to nothing (fail-to-start, per §1)."""
+    any rule resolves to nothing (fail-to-start, per §1) — or, round-2 §6, if the style
+    label doesn't resolve to a registry entry (NO silent fallback to a default spec)."""
     lang_key = (lang or "en").split("-")[0].lower()
+
+    # Round-2 §6 schema-validation gate: the style string must hit the alias index —
+    # a garbage label silently falling back to creative_nonfiction is exactly the
+    # "spec never loaded" failure mode. Empty style = legit default; junk style = 422.
+    style_key = ""
+    if (style or "").strip():
+        try:
+            from pakem.resolvers import _ALIAS_INDEX, _norm  # registry's own index
+            style_key = _ALIAS_INDEX.get(_norm(style), "")
+            if not style_key:
+                raise ManifestError(f"unknown style: {style!r} — resolves to no registry entry")
+        except ManifestError:
+            raise
+        except Exception:  # noqa: BLE001 — resolver internals moved; don't block jobs
+            style_key = ""
     try:
         from narasi_counters import LANGUAGE_PACKS
         pack = LANGUAGE_PACKS.get(lang_key) or {}
@@ -109,6 +128,17 @@ def build_manifest(*, style_entry: dict | None, lang: str, regime: str, mode: st
           ("FACTGATE_SEARCH_ENABLED=0" if not verify_on else "no search provider keys")))
 
     _set("entity_pass", "active")
+    # FG3-b (round-2 §4): "is this person a scholar OF this field" needs live search —
+    # UNMEASURED until wired; the table-seeded downgrades (Budiardjo/Buiskool class) are
+    # the only coverage. NEVER shown as active; named citations stay human-review items.
+    _set("attribution_verify", "n/a" if regime == "fictional" else "UNMEASURED",
+         "fictional regime" if regime == "fictional"
+         else "FG3-b wrong-subject check needs FG-SEARCH; table-seeded names only")
+    # Round-2 §6: assert the spec actually loaded (the R-H9-absence routing hypothesis).
+    _set("style_spec", "active",
+         (f"{style_key or 'default'} loaded"
+          + ("+register_spec" if (style_entry or {}).get("register_spec") else "")
+          + ("+style_spec" if (style_entry or {}).get("style_spec") else "")))
     _set("number_rendering", "active" if (mode == "video" and pack.get("spell_number")) else "n/a",
          "" if (mode == "video" and pack.get("spell_number")) else
          ("book path keeps digits" if mode != "video" else f"no spellout rules for '{lang_key}'"))

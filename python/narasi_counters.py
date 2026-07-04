@@ -60,7 +60,11 @@ LANGUAGE_PACKS: dict[str, dict[str, Any]] = {
             r"|tidak\s+cukup\s+untuk\s+(?:memisahkan|memastikan)"
             r"|tidak\s+akan\s+pernah\s+selesai\s+dijawab"
             r"|tidak\s+ada\s+metode\s+yang\s+bisa\s+memverifikasi"
-            r"|bukti\s+arsip\s+tidak|yang\s+tidak\s+diperdebatkan\s+adalah)"),
+            r"|bukti\s+arsip\s+tidak|yang\s+tidak\s+diperdebatkan\s+adalah"
+            # round-2 manuscript additions (the growth mechanic):
+            r"|(?:bukti|sumber)\s+yang\s+tersedia\s+tidak\s+memungkinkan"
+            r"|tidak\s+memungkinkan\s+(?:kita\s+)?(?:memisahkan|memastikan|merekonstruksi)"
+            r"|tidak\s+cukup\s+untuk\s+merekonstruksi)"),
         # Three shapes seen in real ID manuscripts: "sejarawan NAMA", "Menurut NAMA",
         # and "NAMA[, aposisi panjang,] VERBA" — the dominant Diponegoro form puts a full
         # appositive BETWEEN name and verb, so the optional `(?:,[^,]{4,120},)?` bridge is
@@ -425,8 +429,24 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
                 if not near_attrib:
                     standalone.append((i, s))
             status = "OFF" if ap_budget is None else ("OVER" if len(standalone) > int(ap_budget) else "PASS")
+            # Round-2 §5: a REPEATED aporia phrase is worse than the budget exceeded —
+            # "Bukti yang tersedia tidak memungkinkan…" ×4 near-verbatim is a template,
+            # not natural aporia. Same 4-gram in ≥2 aporia sentences → OVER regardless
+            # of budget, with the repeated phrase named for the surgical prompt.
+            repeated: list[str] = []
+            if len(standalone) >= 2:
+                seen_g: dict[str, int] = {}
+                for _, s in standalone:
+                    w = re.sub(r"[^\w' -]", " ", s.lower()).split()
+                    grams = {" ".join(w[i:i + 4]) for i in range(max(0, len(w) - 3))}
+                    for g in grams:
+                        seen_g[g] = seen_g.get(g, 0) + 1
+                repeated = [g for g, c in seen_g.items() if c >= 2][:5]
+                if repeated and status != "OFF":
+                    status = "OVER"
             report["counters"]["aporia"] = {
                 "status": status, "count": len(standalone), "budget": ap_budget,
+                "repeated_template": repeated,
                 "sentences": [s[:200] for _, s in standalone],
             }
 
@@ -652,9 +672,12 @@ def surgical_prompt(report: dict, *, language: str = "English") -> str:
             + "\n- ".join(cit.get("sentences", [])[:20]))
     if c.get("aporia", {}).get("status") == "OVER":
         ap = c["aporia"]
+        _tmpl = (" REPEATED TEMPLATE detected (" + "; ".join(ap["repeated_template"]) +
+                 ") — a repeated aporia phrase is WORSE than the budget: every kept aporia "
+                 "must use a DIFFERENT construction.") if ap.get("repeated_template") else ""
         parts.append(
             f"APORIA CLOSERS: {ap['count']} stand-alone 'the sources do not record…'-class closers "
-            f"exceed the budget of {ap['budget']}. Keep the strongest {ap['budget']}; end the other "
+            f"exceed the budget of {ap['budget']}.{_tmpl} Keep the strongest {ap['budget']}; end the other "
             "paragraphs plainly (a concrete image or a flat statement). Offending sentences:\n- "
             + "\n- ".join(ap.get("sentences", [])[:12]))
     if c.get("epithet", {}).get("status") == "OVER":

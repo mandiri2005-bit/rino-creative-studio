@@ -1120,7 +1120,8 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
         body["_gates_manifest"] = _nm.build_manifest(
             style_entry=_entry, lang=str(body.get("language") or "id"),
             regime=_effective_regime(body),
-            mode="video" if str(body.get("mode") or "").strip() == "video" else "book")
+            mode="video" if str(body.get("mode") or "").strip() == "video" else "book",
+            style=str(body.get("style") or ""))
     except Exception as _me:
         # ManifestError = deliberate fail-closed; anything else must not block a job.
         import narasi_manifest as _nm2

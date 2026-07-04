@@ -224,9 +224,23 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
     # ~28 chars before the bracket end with a qualifier, emit the BARE value.
     _PRE_QUAL_RX = re.compile(
         r"(?i)(?:lebih\s+dari|kurang\s+dari|hanya|sekitar|kurang\s+lebih|kira-kira|hampir|"
-        r"nyaris|rata-rata|setidaknya|paling\s+tidak|mencapai|melebihi|"
+        r"nyaris|rata-rata|setidaknya|paling\s+tidak|mencapai|melebihi|menjelang|"
+        r"di\s+atas|di\s+bawah|"
         r"more\s+than|less\s+than|only|about|around|roughly|approximately|nearly|"
         r"at\s+least|up\s+to|as\s+many\s+as|averaging)\s*$")
+
+    # R-FG8 class-gating (round-2 §1): a DATE is a world-claim, not an estimate —
+    # "sekitar 1825" is the tell that class-gating is absent. Pure year / day-month-year /
+    # month-year tokens go on the never-hedge whitelist unconditionally.
+    # bare-number branch restricted to plausible YEARS (1000-2099) — "200 prajurit" is a
+    # quantity (hedge once), "1825" is a date (never hedge). The word branches require a
+    # MONTH NAME — "12 days"/"40 km" are durations/measures, not dates.
+    _MONTH = (r"(?:jan(?:uari)?|feb(?:ruari)?|mar(?:et|ch)?|apr(?:il)?|mei|may|jun[ie]?|"
+              r"jul[iy]?|agustus|aug(?:ust)?|sep(?:tember)?|okt(?:ober)?|oct(?:ober)?|"
+              r"nov(?:ember)?|des(?:ember)?|dec(?:ember)?)")
+    _DATE_TOKEN_RX = re.compile(
+        r"(?i)^(?:(?:1\d{3}|20\d{2})|\d{1,2}\s+" + _MONTH + r"\s+(?:1\d{3}|20\d{2})|"
+        + _MONTH + r"\s+(?:1\d{3}|20\d{2})|\d{1,2}\s+" + _MONTH + r")$")
 
     def _pre_qualified(m: re.Match) -> bool:
         seg = m.string[max(0, m.start() - 28):m.start()]
@@ -277,6 +291,11 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
         if not generic:
             # R-FG8: verified world fact → EXACT (no hedge at all, drop inner's own hedge).
             if _known_good_ctx(m):
+                stats["exact_known_good"] += 1
+                return _strip_inner_hedge(inner)
+            # R-FG8 class-gating: a bare date/year token is a world-claim — NEVER hedged
+            # (a date is not an estimate), cached or not.
+            if _DATE_TOKEN_RX.match(_strip_inner_hedge(inner)):
                 stats["exact_known_good"] += 1
                 return _strip_inner_hedge(inner)
             # idempotency: prose already qualified this value → bare value, no new hedge.
@@ -435,8 +454,53 @@ def foreign_token_scan(text: str, lang: str = "en") -> tuple[str, list[str]]:
 
 # Diponegoro-2: manuscript-structure references leaking into prose ("reputasi taktisnya
 # telah dibangun dalam bab-bab sebelumnya pertempuran") — meta-leak, report-only.
+# Round-2 §7 extends the phrase list (prompt bleed, not authored prose).
 _META_LEAK_RX = re.compile(r"(?i)\b(?:bab(?:-bab)?|chapters?)\s+"
-                           r"(?:sebelumnya|berikutnya|selanjutnya|di\s+atas|earlier|previous|later|above)\b")
+                           r"(?:sebelumnya|berikutnya|selanjutnya|di\s+atas|earlier|previous|later|above)\b"
+                           r"|\bseperti\s+disebutkan\b|\bsebagaimana\s+(?:dibahas|diuraikan)\b"
+                           r"|\bpada\s+bagian\s+(?:sebelumnya|berikut)\b")
+
+# Round-2 §2 terminal patterns — the [VERIFY] leak wearing prose:
+# (a) placeholder-prose: "[hedge] <quantity-noun> …" with NO numeral in the sentence =
+#     an unresolved value description ("sekitar jumlah surat yang disita…") → CUT.
+_PLACEHOLDER_PROSE_RX = re.compile(
+    r"(?i)\b(?:sekitar|kira-kira|kurang\s+lebih|beberapa|around|roughly|about|some|several)\s+"
+    r"(?:jumlah|angka|banyaknya|nilai|total|the\s+number\s+of|the\s+amount\s+of)\b")
+# (b) broken-substitution: stray pronoun immediately before a proper name — "Mereka Louw
+#     dan De Klerck", "Ia Smissaert" — the corpse of a substitution that ate the verb.
+_BROKEN_SUB_RX = re.compile(r"\b(?:Mereka|Ia|Dia|They|He|She)\s+[A-Z][a-z]+\s+(?:dan|de|van|und|and)\b")
+
+
+def placeholder_prose_scan(text: str) -> tuple[str, list[str]]:
+    """Cut sentences that describe a quantity with a hedge but carry NO numeral (§2a).
+    Returns (text_without_them, cut_sentences)."""
+    if not text or not _PLACEHOLDER_PROSE_RX.search(text):
+        return text, []
+    cut: list[str] = []
+    out_parts: list[str] = []
+    for para in text.split("\n"):
+        if not _PLACEHOLDER_PROSE_RX.search(para):
+            out_parts.append(para)
+            continue
+        sents = re.split(r"(?<=[.!?])\s+", para)
+        kept = []
+        for s in sents:
+            if _PLACEHOLDER_PROSE_RX.search(s) and not any(ch.isdigit() for ch in s) \
+                    and len(s.split()) <= 28:
+                cut.append(s.strip()[:160])
+                continue
+            kept.append(s)
+        out_parts.append(" ".join(kept))
+    return "\n".join(out_parts), cut
+
+
+def broken_substitution_scan(text: str) -> list[str]:
+    """§2b: flag substitution corpses (report-only — the repair needs an editor)."""
+    hits = []
+    for m in _BROKEN_SUB_RX.finditer(text or ""):
+        a = max(0, m.start() - 30)
+        hits.append(text[a:m.end() + 40].replace("\n", " ").strip()[:120])
+    return hits[:8]
 
 
 def meta_leak_scan(text: str) -> list[str]:
@@ -477,6 +541,8 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
         out, stats = resolve_flags(out, lang=lang)
         out, n_dehedged = dehedge_known_good(out)
         stats["dehedged_known_good"] = n_dehedged
+        out, placeholder_cut = placeholder_prose_scan(out)
+        stats["placeholder_prose_cut"] = len(placeholder_cut)
         n_markers = 0
         if vo_strip:
             out, n_markers = strip_markers(out)
@@ -489,7 +555,9 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             out = re.sub(r" +([,.;:!?])", r"\1", out)
         report.update({"known_bad": kb, "flags": stats, "stripped": len(survivors),
                        "markers_stripped": n_markers, "foreign_tokens": foreign[:20],
-                       "meta_leak": meta_leak_scan(out)})
+                       "meta_leak": meta_leak_scan(out),
+                       "placeholder_prose": placeholder_cut,
+                       "broken_substitution": broken_substitution_scan(out)})
         return out, report
     except Exception:
         return text, report
