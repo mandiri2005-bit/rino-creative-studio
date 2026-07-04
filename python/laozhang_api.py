@@ -557,10 +557,14 @@ _IMAGE_COSTS: dict[str, float] = {
     # Sora image
     "sora-image":        0.04,
     # Recraft (whiteboard mode): vector-native SVG gen, raster gen, raster→SVG vectorize.
-    # Longest-prefix match resolves -v3-vector / -vectorize before the -v3 / bare key.
-    "recraft-v3-vector": 0.08,
-    "recraft-vectorize": 0.01,
-    "recraft-v3":        0.04,
+    # Longest-prefix match resolves -v3-vector / -vectorize / -v4_1-vector before bare keys.
+    # v4_1 rows added 2026-07-05 when visuals.mjs switched Color/Detail to recraftv4_1
+    # (same $/img as v3, better quality). Kept legacy v3 rows for the icon fallback path.
+    "recraft-v4_1-vector": 0.08,
+    "recraft-v4_1":        0.04,
+    "recraft-v3-vector":   0.08,
+    "recraft-vectorize":   0.01,
+    "recraft-v3":          0.04,
 }
 _IMAGE_COST_DEFAULT = 0.04
 

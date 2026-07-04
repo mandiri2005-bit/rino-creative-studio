@@ -140,7 +140,7 @@ _DEFAULT_IMAGE_MIN_TIER = {
     "flux-schnell": "free", "gpt-image-1-mini": "free", "ernie-image-turbo": "free", "z-image-turbo": "free",
     "flux-dev": "starter", "grok-imagine": "starter", "qwen-image": "starter", "seedream-5": "starter",
     "mai-image-2-5": "starter",
-    "imagen-4": "pro", "recraft-v3": "pro",
+    "imagen-4": "pro", "recraft-v3": "pro", "recraft-v4_1": "pro",
     "youchuan-v8": "enterprise", "nano-banana-pro-ultra": "enterprise",
     # Vertex (google route) ids — nano-banana family via /generate-image/vertex.
     "gemini-2.5-flash-image": "free", "gemini-3.1-flash-image": "starter",
