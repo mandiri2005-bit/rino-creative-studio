@@ -54,6 +54,12 @@ def _load_registry() -> dict:
 
 
 _REGISTRY = _load_registry()
+# Boot-log the loaded state — 2026-07-04 Rino: tts_registry.json wasn't in the
+# python Dockerfile COPY list, so silently loaded empty and every "budget/*" call
+# died with "unknown tts provider: 'budget'" → all scenes SILENT. A one-line
+# print at boot makes this class of misconfig trivially visible via grep.
+print(f"[tts_providers] loaded {len(_REGISTRY.get('providers') or {})} providers: "
+      f"{sorted((_REGISTRY.get('providers') or {}).keys())}")
 
 
 def reload_registry() -> dict:

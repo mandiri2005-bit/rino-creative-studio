@@ -57,6 +57,11 @@ COPY video_registry.json ./
 # resolver SILENTLY degrades to the legacy registry order + cheapest-cogs pricing (no crash, but the
 # cheapest-first reorder + option-A boncos guard do nothing). Same class as the registry COPYs above.
 COPY pricing_catalog.json ./
+# Wimba TTS provider registry (elevenlabs / minimax / budget models + costs). NOT matched by
+# `COPY *.py`, so without this tts_providers._load_registry() silently degrades to {} and every
+# call through the budget / elevenlabs / minimax tier fails with "unknown tts provider" → the
+# audio worker falls back to a SILENT track for every scene (Rino 2026-07-04: all scenes silent).
+COPY tts_registry.json ./
 # Nusantara Corpus seed + ref images. NOT matched by `COPY *.py`, so without this
 # data/nusantara_seed.json is absent at runtime → _load_seed() empty → BM25 retrieval
 # returns nothing (the corpus silently does nothing on the BM25 path).
