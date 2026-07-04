@@ -282,6 +282,9 @@ MODELS = {
     "deepseek-r1": "deepseek-r1",
     "grok-4-fast": "grok-4-fast",
     "gemini-3-flash": "gemini-3-flash-preview",
+    # NARASI_OUTLINE_MODEL in prod (Rino 2026-07-04) — proven serving on LaoZhang;
+    # registered so usage is PRICED (was billed 0 credits while off-catalog).
+    "gemini-3.5-flash": "gemini-3.5-flash",
 }
 
 # Models that support tool/function calling via OpenAI-compatible endpoint
@@ -405,6 +408,7 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "deepseek-r1": 65536,
     "grok-4-fast": 8192,
     "gemini-3-flash-preview": 8192,
+    "gemini-3.5-flash": 8192,
 }
 DEFAULT_MAX_TOKENS = 16384
 
@@ -492,6 +496,7 @@ _MODEL_COSTS_PER_M: dict[str, tuple[float, float]] = {
     "gemini-2.5-flash":       (0.15,   0.60),
     "gemini-2.5-pro":         (1.25,  10.00),
     "gemini-3-flash":         (0.15,   0.60),
+    "gemini-3.5-flash":       (1.50,   9.00),
     "gemini-1.5-flash":       (0.075,  0.30),
     "gemini-1.5-pro":         (1.25,   5.00),
     # Others (best-effort estimates)

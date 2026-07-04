@@ -642,6 +642,45 @@ async def _refund(meter_op: Optional[str], tenant_id: str, job_id: str) -> None:
 # ===========================================================================
 # Endpoints — the ONE job contract. Registered on the shared laozhang_api.app.
 # ===========================================================================
+def _narration_admit(body: dict) -> None:
+    """CC v3 admission for the ⚡ engine — mirrors the classic _narasi_admit caps (same
+    env-tunable constants): ≤20 chapters, ≤8,000 words/chapter, ≤120,000 words total.
+    Previously /narration/start had NO cap (the classic caps live on /narasi/*), so a
+    direct API caller could exceed them. Raises HTTPException(400)."""
+    try:
+        from laozhang_api import (DALANG_MAX_CHAPTERS, DALANG_MAX_TOTAL_WORDS,
+                                  DALANG_MAX_WORDS_PER_CHAPTER)  # lazy: import-order safe
+    except Exception:  # noqa: BLE001 - never block a job on an import hiccup
+        return
+    chapters = None
+    for key in ("chapters", "outline", "titles"):
+        v = body.get(key)
+        if isinstance(v, list) and v:
+            chapters = v
+            break
+    n = len(chapters) if chapters else 0
+    if not n:
+        try:
+            n = int(body.get("n_chapters") or body.get("num_chapters") or 1)
+        except (TypeError, ValueError):
+            n = 1
+    if n > DALANG_MAX_CHAPTERS:
+        raise HTTPException(400, f"too many chapters: {n} > {DALANG_MAX_CHAPTERS}")
+    total = 0
+    for c in chapters or []:
+        if not isinstance(c, dict):
+            continue
+        try:
+            w = int(c.get("word_target") or c.get("words") or 800)
+        except (TypeError, ValueError):
+            w = 800
+        if w > DALANG_MAX_WORDS_PER_CHAPTER:
+            raise HTTPException(400, f"chapter words {w} > {DALANG_MAX_WORDS_PER_CHAPTER}")
+        total += max(0, w)
+    if total > DALANG_MAX_TOTAL_WORDS:
+        raise HTTPException(400, f"total words {total} > {DALANG_MAX_TOTAL_WORDS}")
+
+
 def _count_chapters(body: dict) -> int:
     """Best-effort estimate of how many chapters the run will produce, so we can
     seed the right number of checkboxes up front. Mirrors the router's shape
@@ -676,6 +715,7 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
         user_uuid = None
 
     body = dict(body or {})
+    _narration_admit(body)   # CC v3: ⚡ caps (chapters/words) — 400 BEFORE any hold
     job_id = (str(body.get("pre_job_id") or uuid.uuid4().hex[:8]))[:16]
     topic = str(body.get("topic") or body.get("goal") or body.get("brief") or "").strip()
     model = str(body.get("worker_model") or os.environ.get("WORKER_MODEL")

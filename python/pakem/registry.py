@@ -431,7 +431,7 @@ STYLES: dict[str, dict] = {
     },
 
     "academic_popular": {
-        "display_name": "Academic Popular (Sapiens)",
+        "display_name": "Academic Popular",
         "aliases": ["academic popular", "academic_popular", "sapiens", "expository",
                     "finance", "economics", "business"],
         "is_fiction": False,
@@ -567,6 +567,57 @@ try:  # pragma: no cover - additive
         STYLES.setdefault(_k, _v)
 except Exception:  # noqa: BLE001
     P1_STYLES = {}
+
+
+# ── Signature moves — the one-line hover copy per style (UI tooltip; served via
+# /narration/styles → "moves"). P1 values verbatim from pakem-style-registry-expansion.md;
+# core-14 written to match. Applied programmatically so entry bodies stay untouched.
+_SIGNATURE_MOVES = {
+    # core 14
+    "creative_nonfiction":  "Fiction techniques on real facts — concrete scenes, specific POV, sensory detail",
+    "storytelling":         "Dramatic narrative arc, tension and reversal, vivid scene-setting",
+    "bedtime_story":        "Gentle rhythmic prose, soothing repetition, soft landing ending",
+    "harari":               "Macro-zoom scale shifts, institutions revealed as human inventions, deep time against concrete detail",
+    "pov":                  "First-person immersion, present-tense sensory experience, interiority",
+    "natgeo":               "Reverent observational wonder, precise natural detail, patient pacing",
+    "youtube":              "Hook-first opening, punchy explainers, curiosity gaps with payoffs",
+    "journalistic":         "Sourced reporting voice, scene-led long form, evidence and attribution",
+    "literary_essay":       "Idea-driven reflection, elegant digression, argument as narrative",
+    "podcast_narrative":    "Host intimacy, episodic beats, audible signposting",
+    "academic_popular":     "Big-idea synthesis, accessible authority, structured argument",
+    "cinematic_voiceover":  "Sparse evocative lines, image-led pacing, trailer gravitas",
+    "narrative_nonfiction": "Novelistic reconstruction of real events, character-driven chapters, cinematic history",
+    "fiction":              "Invented characters and scenes, genre-matched craft, immersive sensory detail",
+    # P1 wave (verbatim from the registry-expansion doc)
+    "true_crime_procedural": "Detached timeline voice, evidence unveiled in sequence, no speculation until the end, dates as beats",
+    "true_crime_host":       "First-person doubt, interviews paraphrased, unresolved threads owned",
+    "internet_mystery":      "Digital-forensics framing, timestamps/usernames as clues, escalating rabbit hole, agnostic verdict",
+    "existential_science":   "Direct second-person address, scale shocks (atoms→galaxies), optimistic-nihilist closer",
+    "systems_logistics":     "How-infrastructure-works, dry wit, economics of mundane things, maps-in-prose",
+    "tech_rise_fall":        "Calm measured arc: garage → peak → hubris → collapse, archival quotes, inflection-point beats",
+    "elegiac_ruins":         "What was it like to watch your world end — civilization arc, present-day ruins framing, mournful awe",
+    "conversational_epic":   "Rhetorical questions, 'imagine you're standing there', tangents acknowledged, visceral hypotheticals",
+    "countdown_listicle":    "Ranked segments, snappy per-item hook + payoff, teaser for #1",
+    "cosmic_poetic":         "Wonder + humility, humanity-from-orbit perspective, cosmic register in original words",
+    "counterintuitive_thesis": "Anecdote → study → reveal loop, 'we've been thinking about X wrong', named-character openers",
+    "folklore_creepy":       "Calm cadence over dark material, historical anecdote → universal fear",
+    "sleep_story_adult":     "Second-person slow descent, sensory softness, deliberately anticlimactic, sentences that lengthen",
+    "epic_fantasy_prologue": "'The world is changed' preamble, mythic exposition, artifact/prophecy framing",
+    "trailer_voice":         "Punchy fragments, escalating stakes in 60–90 seconds — built for Shorts/promos",
+    "gothic_cosmic_horror":  "Unreliable senses, dread by implication, forbidden-knowledge arc, archaic diction",
+    "internet_horror":       "'This happened to me', escalating rules-based dread, ambiguous ending",
+    "warm_omniscient":       "Gentle authoritative reflection, humanity-affirming closers, patient pacing",
+    "dongeng_nusantara":     "'Pada zaman dahulu kala…', tokoh binatang/rakyat, pesan moral penutup eksplisit",
+    "horor_viral_indonesia": "Thread-style orang pertama ('gue'), setting KKN/kampung, pantangan dilanggar, slow-burn penasaran",
+    "legenda_asal_usul":     "Etiological arc (kenapa gunung/danau ini ada), kutukan/sumpah, nama tempat sebagai payoff",
+    "first_principles":      "Build from zero, homemade analogies, delight in not-knowing",
+    "stoic_daily":           "Aphoristic, imperative mood, ancient quote → modern application, memento mori beats",
+    "motivational_grind":    "Confrontational second person, obstacle-as-gift, cadence builds to a charge",
+    "business_case":         "How X built Y — founder arc, decision points as cliffhangers, numbers as drama",
+}
+for _k, _sm in _SIGNATURE_MOVES.items():
+    if _k in STYLES:
+        STYLES[_k].setdefault("signature_moves", _sm)
 
 
 # Default style when nothing resolves — matches the legacy get_style_rules

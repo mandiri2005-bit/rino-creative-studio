@@ -48,6 +48,8 @@ def styles_catalog() -> list[dict[str, Any]]:
             "value": key,
             "label": entry.get("display_name", key),
             "is_fiction": bool(entry.get("is_fiction", False)),
+            # one-line hover copy for the picker (signature moves)
+            "moves": entry.get("signature_moves", ""),
         })
     return out
 

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Optional, Sequence
 
 from .core import (
@@ -258,6 +259,68 @@ def _placeholder(ch: dict, no: int, reason: str) -> str:
     return f"[CHAPTER {no + 1} — \"{title}\" FAILED TO GENERATE: {reason}. RETRY THIS CHAPTER.]"
 
 
+# ── CC v3 word-gate for the ⚡ engine (port of the classic Slice-3 gate). ──
+# Floor = 0.9×word_target: an undershooting chapter is CONTINUED (never restarted) in
+# bounded follow-up calls — the model extends ITS OWN draft from the last sentence, so
+# length never comes from splitting (splitting = drift; continuation = drift-free).
+# Truncation (finish_reason=length) needs no separate check here: it only bites above
+# ~22k words/chapter (32k-token output ceiling), unreachable under the 8k admission cap —
+# any truncated chapter is therefore also under the word floor and gets continued anyway.
+# Kill switch: NARASI_WORDGATE=0 (default ON).
+_WORDGATE_RETRIES = int(os.environ.get("DALANG_MAX_CHAPTER_RETRIES", "2"))
+
+
+def _wordgate_on() -> bool:
+    return str(os.environ.get("NARASI_WORDGATE", "1")).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _scaled_timeout(base: float, word_target: int) -> float:
+    """Per-chapter LLM timeout scaled to the word target so a big chapter (≤8k words
+    admission cap) is not killed by the flat 120s default: est = words×1.45 tok/word ÷
+    40 tok/s ×1.3 buffer (8k words → ~380s). Never below `base`; capped by
+    NARASI_WORKER_TIMEOUT_MAX (default 900s, matching the classic chapter timeout)."""
+    try:
+        cap = float(os.environ.get("NARASI_WORKER_TIMEOUT_MAX", "900"))
+        est = int(word_target) * 1.45 / 40.0 * 1.3
+        return max(float(base), min(cap, est))
+    except Exception:  # noqa: BLE001
+        return float(base)
+
+
+async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
+                           timeout: float, task_id: str) -> dict:
+    """Continue an undershooting chapter (< 0.9×target) up to _WORDGATE_RETRIES rounds.
+    The continuation reuses the SAME worker (same cached system prefix: style rules +
+    coherence contract) with the full model output ceiling, so a follow-up round can
+    never itself be length-starved for targets under the admission cap."""
+    if not _wordgate_on() or not res.get("ok") or not res.get("output"):
+        return res
+    floor = int(int(word_target) * 0.9)
+    text = str(res["output"])
+    rounds = 0
+    while len(text.split()) < floor and rounds < _WORDGATE_RETRIES:
+        rounds += 1
+        need = max(50, floor - len(text.split()))
+        cont_task = (
+            "You are continuing YOUR OWN chapter draft. The chapter so far:\n\n---\n"
+            + text +
+            "\n---\n\nCONTINUE the chapter EXACTLY from its last sentence — do NOT repeat or "
+            "summarize anything already written, do NOT restart, do NOT add a new heading or "
+            f"closing recap. Add at least {need} words, deepening the scene or argument already "
+            "in progress, in the same language and register. Return ONLY the continuation text."
+        )
+        cres = await run_worker(worker, cont_task, timeout=timeout, task_id=f"{task_id}:cont{rounds}")
+        add = (cres.get("output") or "").strip() if isinstance(cres, dict) else ""
+        if not add:
+            break
+        text = text.rstrip() + "\n\n" + add
+    if rounds:
+        log.info("%s: word-gate continued %d round(s) → %d words (target %d)",
+                 task_id, rounds, len(text.split()), word_target)
+        res = {**res, "output": text, "continued": rounds}
+    return res
+
+
 async def _write_chapter(
     *,
     ctx: SharedContext,
@@ -281,6 +344,9 @@ async def _write_chapter(
     Returns a dict tagged with `no` so the MAP can be sorted back into book order.
     """
     word_target = int(ch.get("word_target", ch.get("words", 800)) or 800)
+    # CC v3: scale the per-chapter timeout to the target so big chapters (≤8k words)
+    # aren't killed by the flat default while small ones keep the tight bound.
+    timeout = _scaled_timeout(timeout, word_target)
 
     if not _COMPOSE_OK or compose is None:
         # Assembler unavailable: degrade to a minimal direct prompt so the
@@ -295,6 +361,8 @@ async def _write_chapter(
             style=style, telemetry_sink=telemetry_sink,
         )
         res = await run_worker(worker, prompt, timeout=timeout, task_id=f"ch{no + 1}")
+        res = await _apply_word_gate(res, worker=worker, word_target=word_target,
+                                     timeout=timeout, task_id=f"ch{no + 1}")
         res["no"] = no
         return res
 
@@ -334,6 +402,8 @@ async def _write_chapter(
         timeout=timeout,
         task_id=f"ch{no + 1}",
     )
+    res = await _apply_word_gate(res, worker=worker, word_target=word_target,
+                                 timeout=timeout, task_id=f"ch{no + 1}")
     res["no"] = no
     res["cache_key"] = composed.cache_key
     return res
@@ -525,6 +595,25 @@ async def _polish_reduce(
         log.info("_polish_reduce: skipping polish — book has failed-chapter placeholders")
         return book, False
 
+    # NARASI_POLISH_MODEL (env, python svc): run the polish/merge pass on a cheaper
+    # editor-tier model than the worker (polish is editing, not writing — it doesn't
+    # need the full worker model). Unset = today's behavior (manager_model = worker).
+    # Restores the cost lever the removed Model-Manager picker used to provide,
+    # server-side per the server-driven-model direction (Rino 2026-07-04).
+    _env_polish = (os.environ.get("NARASI_POLISH_MODEL") or "").strip()
+    if _env_polish:
+        manager_model = _env_polish
+
+    # CC v3 anti-truncate guard (pre): the polish returns the WHOLE book in one call, so a
+    # book beyond the manager's output ceiling (~32k tokens ≈ 22k words) would come back
+    # silently truncated and REPLACE the full text. Skip polish for big books instead.
+    _pmax = int(os.environ.get("NARASI_POLISH_MAX_WORDS", "15000"))
+    _book_words = len(book.split())
+    if _book_words > _pmax:
+        log.info("_polish_reduce: skipping polish — book %d words > NARASI_POLISH_MAX_WORDS %d "
+                 "(output-ceiling truncation risk)", _book_words, _pmax)
+        return book, False
+
     if mode == "heavy":
         instruction = (
             "You are the editor-in-chief doing a HEAVY final edit of a multi-chapter "
@@ -565,7 +654,15 @@ async def _polish_reduce(
         task_id=f"polish:{mode}",
     )
     if res.get("ok") and res.get("output"):
-        return res["output"], True
+        # CC v3 anti-truncate guard (post): a truncated polish still returns ok=True. If the
+        # "polished" book lost >25% of its words, it was cut by the output ceiling (or the
+        # editor over-deleted) — discard it and keep the full original.
+        _out = str(res["output"])
+        if len(_out.split()) < int(_book_words * 0.75):
+            log.warning("_polish_reduce: polished output %d words < 75%% of book %d — "
+                        "discarding polish (truncation guard)", len(_out.split()), _book_words)
+            return book, False
+        return _out, True
     # Polish failed — return the unpolished book rather than nothing.
     log.warning("_polish_reduce: polish pass failed (%s) — returning unpolished book",
                 res.get("error"))
