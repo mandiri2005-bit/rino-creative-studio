@@ -602,25 +602,47 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
 
     _mode = "video" if str(body.get("mode") or "").strip() == "video" else "book"
 
-    # ── (0.7) ID-path §5: scholar entity resolution — split-person repair, wrong-domain
-    # downgrade, self-debate flag. Deterministic; runs before the terminal gate so its
-    # corrections are themselves swept. ──
+    # ── (0.7) SPEC v1 §3.2: UNIFIED proper_noun_verify pass — persons + institutions +
+    # places + treaties in ONE call. Falls back to the legacy scholar-only entity_pass
+    # if the unified module isn't importable. Runs before the terminal gate so its
+    # corrections are themselves swept. Title/body treaty consistency now checked here. ──
     try:
-        import narasi_entities as _nent
+        _title = str(body.get("topic") or body.get("goal") or body.get("brief") or "")
+        _pnv = None
+        try:
+            import narasi_proper_noun as _pnv
+        except Exception:  # noqa: BLE001
+            _pnv = None
         key = "book" if result.get("book") else "output"
         book = result.get(key) or ""
-        if book:
+        if book and _pnv is not None:
+            fixed, ent_report = _pnv.verify_pass(book, title=_title, lang=language)
+            result[key] = fixed
+            for rec in result.get("chapters") or []:
+                if rec.get("content"):
+                    rec["content"], _er = _pnv.verify_pass(rec["content"], title=_title,
+                                                            lang=language)
+            result["entity_report"] = ent_report
+            if ent_report.get("self_debate"):
+                log.warning("proper_noun: self-debate conflict(s) flagged: %s",
+                            [d.get("scholar") for d in ent_report["self_debate"]])
+            if ent_report.get("title_body_conflict"):
+                log.warning("proper_noun: treaty title/body conflict: %s",
+                            ent_report["title_body_conflict"])
+            if ent_report.get("merge_candidates"):
+                log.info("proper_noun: same-surname merge candidates: %s",
+                         [c.get("surname") for c in ent_report["merge_candidates"]])
+        elif book:
+            # legacy fallback (scholars only)
+            import narasi_entities as _nent
             fixed, ent_report = _nent.entity_pass(book)
             result[key] = fixed
             for rec in result.get("chapters") or []:
                 if rec.get("content"):
                     rec["content"], _er = _nent.entity_pass(rec["content"])
             result["entity_report"] = ent_report
-            if ent_report.get("self_debate"):
-                log.warning("entity pass: self-debate conflict(s) flagged: %s",
-                            [d.get("scholar") for d in ent_report["self_debate"]])
     except Exception as e:  # noqa: BLE001
-        log.warning("entity pass failed (non-fatal): %s", e)
+        log.warning("proper_noun_verify pass failed (non-fatal): %s", e)
 
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
     gate_report: dict = {}

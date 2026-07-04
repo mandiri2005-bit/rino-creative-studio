@@ -327,37 +327,84 @@ async def verify_report(fact_report: dict, *, project_id=None, tenant_id=None,
         if dropped:
             out["capped_dropped"] = dropped
 
+        # SPEC v1 §3.7 tier taxonomy — T1 = one authoritative source suffices (binary
+        # existence questions: dates, distances/geo, institutional existence). T2 = two
+        # CONCORDANT sources required (contested reconstructions: population/casualty
+        # estimates, historiographical positions, economic figures, subtotal-scope traps,
+        # sequence claims). A T2 claim that returns only one supporting snippet stays
+        # `unverifiable` (report-only), not verified — even if Opus judges it verified —
+        # because a single SEO-concordance is exactly the false-positive class that
+        # shipped 3 contradicted verdicts on the Aceh live run.
+        _TIER1 = {"date", "date_tokens", "proper_noun_institution", "gap_fill_date"}
+        _TIER2 = {"quantitative_unverified", "gap_fill_general",
+                  "subtotal_scope", "sequence",
+                  "attributed_quote", "proper_relation",
+                  "causal_mechanism_unhedged", "negative_existence_unscoped",
+                  "etymology_gloss", "superlative_qualitative"}
+        # Domains we accept as INDEPENDENT concordance evidence (different-domain rule):
+        # two snippets from the SAME site count as one, per file-1 §5. Domain extractor
+        # normalizes subdomains ("news.detik.com" and "detik.com" = one domain).
+        _DOM_RX = re.compile(r"https?://(?:www\.)?(?:[\w-]+\.)*([\w-]+\.[a-z]{2,6})/", re.I)
+
+        def _tier(klass: str) -> str:
+            return "T1" if klass in _TIER1 else ("T2" if klass in _TIER2 else "T1")
+
+        def _domain(url: str) -> str:
+            m = _DOM_RX.match(url or "")
+            return (m.group(1).lower() if m else (url or "").lower())[:60]
+
+        def _hedge_target(klass: str, gap: bool) -> bool:
+            return (gap or klass in _TIER1 or klass in ("subtotal_scope", "sequence",
+                                                        "gap_fill_general"))
+
         async def _one(klass: str, sentence: str, token: str, gap: bool) -> dict:
             qs = _mk_multilingual_queries(sentence, klass, lang=lang)
-            snips = None
+            tier = _tier(klass)
+            # T2 runs ALL queries and looks for two-concordant across different domains;
+            # T1 short-circuits on the first successful search.
+            all_snips: list = []
+            provider_down_only = True
             for q in qs:
                 snips = await asyncio.to_thread(sp.search, q, 5)
-                if snips != sp.PROVIDER_DOWN and snips:
-                    break
-            if snips == sp.PROVIDER_DOWN or not snips:
-                # Phase-1 policy on NEEDS-VERIFY: date + institution + gap_fill → the
-                # CALLER must not ship a confident specific ("hedge_or_cut"). Everything
-                # else stays report-only.
-                _needs_hedge = (gap or klass in ("date", "gap_fill_date",
-                                                 "proper_noun_institution",
-                                                 "gap_fill_general"))
+                if snips == sp.PROVIDER_DOWN:
+                    continue
+                provider_down_only = False
+                if snips:
+                    all_snips.extend(snips)
+                    if tier == "T1":
+                        break
+            if provider_down_only or not all_snips:
                 return {"claim": sentence[:160], "class": klass, "token": token[:80],
-                        "gap_fill": gap, "verdict": "NEEDS-VERIFY",
-                        "reason": "provider_down",
-                        "policy": "hedge_or_cut" if _needs_hedge else "flag_only"}
-            v = await _verdict_llm(sentence, snips, klass, tenant_id=tenant_id)
-            # File-1 §2 per-class policy
+                        "gap_fill": gap, "tier": tier,
+                        "verdict": "NEEDS-VERIFY", "reason": "provider_down",
+                        "policy": "hedge_or_cut" if _hedge_target(klass, gap) else "flag_only"}
+            v = await _verdict_llm(sentence, all_snips[:8], klass, tenant_id=tenant_id)
+            # T2 two-concordant-sources rule: even if the judge said `verified`, we
+            # require at least 2 snippets from DIFFERENT domains that support the value.
+            # The verdict prompt already tags TRUSTED-DOMAIN sources; we approximate the
+            # concordance by counting distinct domains in the snippet set. Below the
+            # threshold → downgrade the verdict to `unverifiable`.
+            concordant_domains = len({_domain(getattr(s, "url", "")) for s in all_snips
+                                       if getattr(s, "url", "")})
+            downgraded = False
+            if tier == "T2" and v["verdict"] == "verified" and concordant_domains < 2:
+                v = {**v, "verdict": "unverifiable",
+                     "reason": "T2 requires 2 concordant domains, got %d" % concordant_domains}
+                downgraded = True
+            # Per-class + tier policy on the (possibly downgraded) verdict.
             policy = "flag_only"
             if v["verdict"] == "contradicted":
-                policy = "block_and_correct"   # dates + institutions never keep a wrong value
+                policy = "block_and_correct"
             elif v["verdict"] == "unverifiable":
-                policy = "hedge_or_cut" if klass in ("date", "gap_fill_date",
-                                                     "proper_noun_institution",
-                                                     "gap_fill_general") else "flag_only"
+                policy = "hedge_or_cut" if _hedge_target(klass, gap) else "flag_only"
             elif v["verdict"] == "verified":
                 policy = "exact_render"
-            return {"claim": sentence[:160], "class": klass, "token": token[:80],
-                    "gap_fill": gap, "policy": policy, **v}
+            r = {"claim": sentence[:160], "class": klass, "token": token[:80],
+                 "gap_fill": gap, "tier": tier, "policy": policy,
+                 "concordant_domains": concordant_domains, **v}
+            if downgraded:
+                r["downgraded_from"] = "verified"
+            return r
 
         results: list[dict] = []
         for i in range(0, len(claims), _BATCH):
@@ -367,7 +414,11 @@ async def verify_report(fact_report: dict, *, project_id=None, tenant_id=None,
         out["searched"] = len(results)
         out["verdicts"] = results
         out["needs_verify"] = sum(1 for r in results if r["verdict"] in ("NEEDS-VERIFY", "unverifiable"))
-        # per-class rollup for the manifest/report
+        # per-class + per-tier rollup for the manifest/report
+        out["by_tier"] = {"T1": {"searched": 0, "verified": 0, "contradicted": 0,
+                                 "needs_verify": 0, "downgraded": 0},
+                          "T2": {"searched": 0, "verified": 0, "contradicted": 0,
+                                 "needs_verify": 0, "downgraded": 0}}
         for r in results:
             b = out["by_class"].setdefault(r["class"], {"searched": 0, "verified": 0,
                                                         "contradicted": 0, "needs_verify": 0})
@@ -376,6 +427,20 @@ async def verify_report(fact_report: dict, *, project_id=None, tenant_id=None,
             if v == "verified": b["verified"] += 1
             elif v == "contradicted": b["contradicted"] += 1
             else: b["needs_verify"] += 1
+            t = out["by_tier"].get(r.get("tier", "T1"))
+            if t:
+                t["searched"] += 1
+                if v == "verified": t["verified"] += 1
+                elif v == "contradicted": t["contradicted"] += 1
+                else: t["needs_verify"] += 1
+                if r.get("downgraded_from"): t["downgraded"] += 1
+        # SPEC v1 §3.7 budget guard: 85% of _CAP → quota warning in the report so the
+        # editor sees that some claims stayed NEEDS-VERIFY only because the manuscript
+        # was dense, not because search actually failed.
+        used_pct = int(100 * len(results) / max(1, _CAP))
+        if used_pct >= 85:
+            out["quota_warning"] = (f"used {len(results)}/{_CAP} search slots ({used_pct}%) — "
+                                     "next run may hit the cap; NEEDS-VERIFY count reflects capacity, not quality")
 
         # cache writes (§2/§4): verified → known_good; contradicted → known_bad flag-only.
         # HIGH-CONFIDENCE ONLY for known_good (a wrong "verified" would PERMANENTLY exempt
