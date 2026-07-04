@@ -20,9 +20,20 @@
 # blocking bugs per the v3 spec, not style preferences).
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 from typing import Any, Optional
+
+# alt_history (regime-precedence spec §3): canon-contradiction enforcement OFF for the
+# job — known-bad REPLACE actions and the KNOWN CORRECTIONS prompt block are suppressed
+# so deliberate departures ("what if Cortés drowned at the Noche Triste") survive.
+# ContextVar (not a module global) so concurrent worker jobs can't race each other.
+_ALT_HISTORY: contextvars.ContextVar[bool] = contextvars.ContextVar("narasi_alt_history", default=False)
+
+
+def set_alt_history(on: bool) -> None:
+    _ALT_HISTORY.set(bool(on))
 
 __all__ = [
     "gate_enabled", "gate_text", "resolve_flags", "apply_known_bad",
@@ -116,6 +127,9 @@ def apply_known_bad(text: str) -> tuple[str, list[dict[str, Any]]]:
     report: list[dict[str, Any]] = []
     if not text:
         return text, report
+    if _ALT_HISTORY.get():
+        return text, [{"claim": "alt_history", "action": "skipped",
+                       "note": "canon-contradiction enforcement OFF for this job"}]
     for c in _claims():
         try:
             rx = re.compile(c["pattern"])
@@ -230,6 +244,8 @@ def gate_text(text: str) -> tuple[str, dict[str, Any]]:
 def known_corrections_prompt() -> str:
     """KNOWN CORRECTIONS block for the generation prompts (prevention, not patching).
     Injected into the shared system prefix so every worker sees the same hard facts."""
+    if _ALT_HISTORY.get():
+        return ""     # alt_history: departures from canon are the point
     lines = []
     seen = set()
     for c in _claims():

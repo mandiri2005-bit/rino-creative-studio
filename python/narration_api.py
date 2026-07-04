@@ -300,6 +300,9 @@ async def _run_narration_job(
     try:
         import narasi_gate as _ngate
         _ngate.set_db_claims(await db.get_known_bad_claims(body.get("project_id")))
+        # alt_history (§3): contextvar — inherited by every task this job spawns, so
+        # concurrent worker jobs can't race each other's canon enforcement.
+        _ngate.set_alt_history(bool(body.get("alt_history")))
     except Exception as e:  # noqa: BLE001
         log.warning("known_bad_claims refresh skipped (non-fatal): %s", e)
     try:
@@ -583,19 +586,50 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # default, job-overridable via body.factual_regime (refactor §4).
     try:
         import narasi_factscan as _nfs
-        regime = str(body.get("factual_regime") or "").strip().lower()
-        if regime not in ("strict", "hybrid", "fictional"):
-            try:
-                from pakem import resolve_style as _rs2
-                regime = (_rs2(style) or {}).get("factual_regime", "strict")
-            except Exception:  # noqa: BLE001
-                regime = "strict"
+        regime = _effective_regime(body)
+        # Biopic rule (precedence §1): a named historical person floats person-claim
+        # scanning to hybrid even when the style regime is fictional.
+        if body.get("_person_floor") == "hybrid" and regime == "fictional":
+            regime = "hybrid"
         _book = result.get("book") or result.get("output") or ""
         if _book:
             result["fact_report"] = _nfs.fact_scan(_book, factual_regime=regime)
             _of = result["fact_report"].get("overfiring")
             if _of:
                 log.warning("fact-scan detectors over-firing (tune before enforcement): %s", _of)
+            # FG-SEARCH verify pass (dormant: FACTGATE_SEARCH_ENABLED=0 / keyless →
+            # PROVIDER_DOWN → NEEDS-VERIFY). Report-only per §6; writes the cache stores.
+            if regime == "strict":
+                try:
+                    import narasi_verify as _nv
+                    if _nv.verify_enabled():
+                        result["fact_report"]["verify"] = await _nv.verify_report(
+                            result["fact_report"], project_id=body.get("project_id"),
+                            tenant_id=tenant_id)
+                except Exception as _ve:  # noqa: BLE001
+                    log.warning("verify pass failed (non-fatal): %s", _ve)
+            # Regime-mismatch detector (§4, warn-only): a FICTIONAL job dense with real
+            # anchors probably meant hybrid/strict. Cheap call; log always.
+            if regime == "fictional" and str(os.environ.get("NARRATION_MISMATCH_DETECT", "1")).strip().lower() not in ("0", "false", "no", "off"):
+                try:
+                    from laozhang_api import _narasi_cheap_call, _narasi_parse_json
+                    _sys2 = ("Count REAL-WORLD anchors in this fiction: recognizable real persons, "
+                             "places, events, institutions. Return ONLY JSON "
+                             "{\"real_persons\": [str], \"real_anchor_count\": int}")
+                    raw2, _c2 = await _narasi_cheap_call(_sys2, _book[:12000], tenant_id=tenant_id,
+                                                         user_id=user_id, json_mode=True)
+                    d2 = _narasi_parse_json(raw2) if isinstance(raw2, str) else {}
+                    persons2 = (d2 or {}).get("real_persons") or []
+                    anchors = int((d2 or {}).get("real_anchor_count") or 0)
+                    per_1k = anchors / max(1, len(_book.split()) / 1000.0)
+                    if len(persons2) > 3 or per_1k > 8:
+                        result["regime_mismatch_warn"] = {
+                            "real_persons": persons2[:6], "anchors_per_1000w": round(per_1k, 1),
+                            "message": "Fictional job references substantial real-world material "
+                                       "and none of it is verified — did you mean hybrid/strict?"}
+                        log.warning("regime-mismatch WARN: %s", result["regime_mismatch_warn"])
+                except Exception as _me:  # noqa: BLE001
+                    log.warning("mismatch detector failed (non-fatal): %s", _me)
     except Exception as e:  # noqa: BLE001
         log.warning("fact scan failed (non-fatal): %s", e)
 
@@ -612,8 +646,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             words = len(book.split())
             # v4 §5: header gains the Output field so the editor/dual-path filters are auditable.
             _out_path = "video" if str(body.get("mode") or "").strip() == "video" else "book"
+            # alt_history (§3): the pipeline writes the disclaimer marker, not the user.
+            _alt = " | **Catatan:** sejarah alternatif (alternate history)" if body.get("alt_history") else ""
             result[key] = (f"> **Gaya:** {style or 'narasi'} | **Output:** {_out_path} | "
-                           f"**Bahasa:** {lang_label} | **{words} kata**\n\n---\n\n") + book
+                           f"**Bahasa:** {lang_label} | **{words} kata**{_alt}\n\n---\n\n") + book
     except Exception as e:  # noqa: BLE001
         log.warning("Gaya header failed (non-fatal): %s", e)
 
@@ -749,6 +785,96 @@ async def _refund(meter_op: Optional[str], tenant_id: str, job_id: str) -> None:
 # ===========================================================================
 # Endpoints — the ONE job contract. Registered on the shared laozhang_api.app.
 # ===========================================================================
+# ── CONTENT-SAFETY SCOPE MARKER (regime-precedence spec §5) ──────────────────
+# The fact-gate + living-person guard reduce ACCURACY and DEFAMATION exposure. They do
+# NOT cover content safety: harmful-instruction-in-fiction, medical misinformation framed
+# as story ("ramuan X menyembuhkan Y" in a dongeng), or platform-policy violations wrapped
+# in narrative. The strict regime was never a safety net for these; the fictional regime
+# just makes the absence visible. This is a SEPARATE, currently-UNBUILT layer — owner
+# decision pending (Rino). Do not mistake the guards below for covering it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _effective_regime(body: dict) -> str:
+    """Precedence chain floor input (regime-precedence spec §1): job override else style
+    default. The living-guard and person-floor sit ABOVE this."""
+    r = str(body.get("factual_regime") or "").strip().lower()
+    if r in ("strict", "hybrid", "fictional"):
+        return r
+    try:
+        from pakem import resolve_style
+        return (resolve_style(str(body.get("style") or "")) or {}).get("factual_regime", "strict")
+    except Exception:  # noqa: BLE001
+        return "strict"
+
+
+async def _living_person_guard(body: dict, tenant_id) -> None:
+    """Regime-precedence spec §2 — BLOCKING, pre-generation, zero tokens spent on a
+    blocked job. Fires only when regime ∈ {fictional, hybrid} and a living/recently-
+    deceased real person is the subject/central character. Deaths are monotonic, so the
+    model's knowledge suffices for 'historical'; uncertain → treated as LIVING
+    (fail-closed on status). Internal detector errors fail-OPEN (log, never block users
+    on our bug). Kill switch NARRATION_LIVING_GUARD=0; admin override via
+    LIVING_GUARD_ADMIN_TENANTS + body.override_living_guard (always logged)."""
+    if str(os.environ.get("NARRATION_LIVING_GUARD", "1")).strip().lower() in ("0", "false", "no", "off"):
+        return
+    regime = _effective_regime(body)
+    if regime == "strict":
+        return
+    if body.get("override_living_guard"):
+        admins = {t.strip() for t in os.environ.get("LIVING_GUARD_ADMIN_TENANTS", "").split(",") if t.strip()}
+        if str(tenant_id) in admins:
+            log.warning("living-guard OVERRIDDEN by admin tenant %s (job topic: %.60s)",
+                        tenant_id, str(body.get("topic") or ""))
+            return
+    try:
+        text = " | ".join(filter(None, [
+            str(body.get("topic") or ""), str(body.get("brief") or "")[:800],
+            " ; ".join(f"{c.get('title','')}: {c.get('summary', c.get('description',''))}"
+                       for c in (body.get("chapters") or [])[:20] if isinstance(c, dict))[:1200],
+        ]))[:2500]
+        if not text.strip():
+            return
+        from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
+        _sys = ("You screen story briefs for REAL, identifiable people. List every real person "
+                "named in the text. For each: role = subject|central|minor, and status = "
+                "living|recently_deceased (died in the last ~20 years)|historical (died longer ago)"
+                "|unsure. Fictional/invented characters and generic unnamed roles are NOT listed. "
+                "Return ONLY JSON: {\"persons\": [{\"name\": str, \"role\": str, \"status\": str}]}")
+        raw, _cr = await _narasi_cheap_call(_sys, text, tenant_id=tenant_id, user_id=None,
+                                            json_mode=True)
+        d = _narasi_parse_json(raw) if isinstance(raw, str) else (raw or {})
+        persons = (d or {}).get("persons") or []
+        hits, historical = [], []
+        for p in persons:
+            if not isinstance(p, dict):
+                continue
+            status = str(p.get("status") or "unsure").lower()
+            role = str(p.get("role") or "minor").lower()
+            if status in ("living", "recently_deceased", "unsure") and role in ("subject", "central"):
+                hits.append(p.get("name") or "?")
+            elif status == "historical":
+                historical.append(p.get("name") or "?")
+        if hits:
+            log.warning("living-person guard BLOCKED job (regime=%s): %s", regime, hits)
+            raise HTTPException(422, {
+                "error": "living_person_guard",
+                "persons": hits[:5],
+                "message": ("Cerita fiksi/hybrid tentang tokoh nyata yang masih hidup (atau baru "
+                            "wafat) diblokir. Dua jalur: (1) jadikan komposit — ganti nama & "
+                            "samarkan detail identitas, atau (2) tulis sebagai nonfiksi strict "
+                            "dengan fact-gate penuh (set factual_regime: strict)."),
+            })
+        # Biopic rule (§1): named HISTORICAL person + fictional regime → person-claims
+        # float to hybrid; the world stays unverified. alt_history lowers it for the dead.
+        if historical and regime == "fictional" and not body.get("alt_history"):
+            body["_person_floor"] = "hybrid"
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — detector bug must never block a user
+        log.warning("living-person guard failed OPEN (non-fatal): %s", e)
+
+
 def _narration_admit(body: dict) -> None:
     """CC v3 admission for the ⚡ engine — mirrors the classic _narasi_admit caps (same
     env-tunable constants): ≤20 chapters, ≤8,000 words/chapter, ≤120,000 words total.
@@ -823,6 +949,7 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
 
     body = dict(body or {})
     _narration_admit(body)   # CC v3: ⚡ caps (chapters/words) — 400 BEFORE any hold
+    await _living_person_guard(body, user.tenant_id)   # §2: blocking, pre-hold, pre-tokens
     # BullMQ S3 fairness: cap concurrent narasi jobs per tenant (0 = off, default).
     _cap = int(os.environ.get("NARRATION_MAX_ACTIVE_PER_TENANT", "0") or 0)
     if _cap > 0:
