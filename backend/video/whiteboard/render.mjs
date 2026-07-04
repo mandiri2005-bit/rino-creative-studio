@@ -42,13 +42,27 @@ const dataUri = (p) => {
   return `data:${mime};base64,${readFileSync(p).toString("base64")}`;
 };
 
-// 3–4 words per handwritten line (lineart). Narration is the audio; this is the board text.
-function wrapLines(text, per = 4) {
+// Handwritten board text — words match the narration. 2026-07-04 Rino:
+// the old `per=4` + `slice(0, 4)` cap silently DROPPED any scene text past word 16
+// (Rino observed missing "iridescent" + "insects" on the junglefowl demo). Words that
+// weren't on the board were still SPOKEN by TTS → out-of-sync board vs VO.
+//
+// Fix: derive line count from actual word count so the board keeps pace with the VO.
+// - per = 6 words/line (readable handwritten line width at 1080p)
+// - maxLines clamped [4, 12]: 4 lines of visual weight even for short scenes; 12 lines
+//   is a generous ceiling that only truncates on ≥ ~72-word (30+ sec) scenes, which
+//   the segmenter almost never emits.
+// Env override: WB_TEXT_MAX_LINES (bump to 16 if scenes routinely run long).
+function wrapLines(text, per = 6) {
   const w = String(text || "").trim().split(/\s+/).filter(Boolean);
   if (!w.length) return [];
   const out = [];
   for (let i = 0; i < w.length; i += per) out.push(w.slice(i, i + per).join(" "));
-  return out.slice(0, 4); // keep it to a few lines so the writing fits the narration
+  const maxLines = Math.min(
+    Math.max(4, Math.ceil(w.length / per)),
+    Number(process.env.WB_TEXT_MAX_LINES) || 12
+  );
+  return out.slice(0, maxLines);
 }
 
 // build the per-scene `illustration` from the upstream visual asset (no API)

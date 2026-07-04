@@ -531,8 +531,14 @@ export async function renderWhiteboardPlanSvg(scenes, meta, outPath, opts = {}) 
         plan = null;
       }
       if (!plan) {
+        // Fallback text — 2026-07-04 Rino: the old `.slice(0, 14)` cap dropped
+        // words past #14 (screenshot 2 stopped at "It ate seeds," omitting the
+        // spoken "insects, fallen fruit, and, increasingly, …"). Drop the cap and
+        // pass the full scene text; the SVG label renderer can wrap or shrink to
+        // fit its box (which was already sized for a small caption; a very long
+        // fallback text is a "plan failed" signal, not a normal path).
         const fd = Math.max(1, Math.round(sceneDur * fps));
-        const txt = String(sc.text || sc.visualPrompt || "").trim().split(/\s+/).slice(0, 14).join(" ");
+        const txt = String(sc.text || sc.visualPrompt || "").trim();
         plan = { fps, duration: sceneDur, durationInFrames: fd, canvas: { width, height }, mode: "icons",
           elements: txt ? [{ id: "fallback", type: "text", box: { x: Math.round(width / 2), y: Math.round(height / 2), w: Math.round(width * 0.7), h: 160 },
             label: txt, viewBox: "0 0 100 100", strokes: [], draw: { startFrame: 0, durFrames: Math.max(6, Math.round(fd * 0.45)) } }] : [],

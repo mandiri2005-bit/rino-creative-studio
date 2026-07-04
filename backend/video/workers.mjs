@@ -619,9 +619,17 @@ export async function stitchProcessor(job, deps) {
   // behind other renders. Stamp renderStartedAt when the processor ACTUALLY starts → the UI shows an
   // honest "Antre" view until now, then the render bar (no more frozen-looking 4% bar for waiting jobs).
   await deps.store.patchMeta(jobId, { renderStartedAt: Date.now() }).catch(() => {});
+  // Per-phase wallclock instrumentation (2026-07-04 Rino: WB < 1min still slow after env flips;
+  // need to isolate whether time goes to asset-resolve / render / upload / register / concat).
+  // Prefix "[stitch <jobId>]" so grep in Railway logs is trivial. Never throws.
+  const _t0 = Date.now();
+  const _phases = {};
+  const _mark = (name, from = _t0) => { _phases[name] = Date.now() - from; };
+  const _phaseTimer = () => { const s = Date.now(); return () => Date.now() - s; };
   const tmpDir = jobTmpDir(jobId);
   try {
     await mkdir(tmpDir, { recursive: true });
+    const _tAssetsStart = Date.now();
     const scenesRaw = await deps.store.getScenes(jobId, meta.sceneCount);
     // A breath between scenes: pad each scene with trailing silence so narrations
     // don't run back-to-back (the acrossfade used to OVERLAP them → "mepet"). The
@@ -678,6 +686,8 @@ export async function stitchProcessor(job, deps) {
     } else if (meta.captions) {
       console.warn(`[stitch ${jobId}] captions requested but ffmpeg has no 'subtitles' filter (no libass) — rendering without burn-in`);
     }
+    _phases.assets_resolve_ms = Date.now() - _tAssetsStart;
+    const _tRenderStart = Date.now();
     let result;
     if (meta.visualMode === "whiteboard") {
       // Opt B: render the WHOLE video with the Remotion whiteboard engine instead of
@@ -743,6 +753,8 @@ export async function stitchProcessor(job, deps) {
         } else throw e;
       }
     }
+    _phases.render_ms = Date.now() - _tRenderStart;
+    const _tUploadStart = Date.now();
     // upload the final MP4 under the lifecycle-managed `videos/` prefix (Step 6f)
     let up = { path: outPath, key: null, size: 0 };
     const s = await storage();
@@ -752,6 +764,8 @@ export async function stitchProcessor(job, deps) {
       const bytes = await readFile(outPath);
       await s.uploadBytes(key, bytes, "video/mp4");
       up = { path: outPath, key, size: bytes.length };
+      _phases.upload_ms = Date.now() - _tUploadStart;
+      const _tRegStart = Date.now();
       // Register the video as a queryable `assets` row so it appears in Media Vault.
       // Before this hook the video mode (VI/WB/standard clip) uploaded to R2 but never
       // got a Postgres row → invisible in Vault (only visible during the 24h Redis TTL
@@ -775,7 +789,14 @@ export async function stitchProcessor(job, deps) {
       } catch (regErr) {
         console.warn(`[asset-register ${jobId}] non-fatal: ${regErr.message}`);
       }
+      _phases.register_ms = Date.now() - _tRegStart;
     }
+    _phases.total_ms = Date.now() - _t0;
+    _phases.visualMode = meta.visualMode || "video";
+    _phases.sceneCount = meta.sceneCount || (scenesRaw && scenesRaw.length) || 0;
+    _phases.videoDurationSec = Math.round(result?.duration || 0);
+    // Single-line JSON for grep: [stitch-timing <jobId>] {...}. Never throws.
+    console.log(`[stitch-timing ${jobId}] ${JSON.stringify(_phases)}`);
     await deps.store.setStatus(jobId, "done", {
       mp4Path: up.path, mp4Key: up.key, durationActual: result.duration, progress: 100,
     });
