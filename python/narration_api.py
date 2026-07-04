@@ -385,7 +385,7 @@ async def _run_narration_job(
     cancelled = False
     try:
         await _set_status(job_id, _STATUS_RUNNING)
-        await _safe_progress(job_id, "Menyusun narasi...")
+        await _safe_progress(job_id, "Composing narration…")
 
         done, pending = await asyncio.wait(
             {gen_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED,
@@ -453,7 +453,7 @@ async def _run_narration_job(
     await _set_status(job_id, _STATUS_POLISHING if result.get("polished") else _STATUS_DONE)
     # The gates phase (counters/diet → strip → register → factscan/verify → header) can
     # take minutes on a big book — surface it so the UI doesn't look hung at 10/10 done.
-    await _safe_progress(job_id, "Finalisasi: quality gates & verifikasi…")
+    await _safe_progress(job_id, "Finalizing: quality gates & verification…")
     # CC v3 gates — terminal bracket/known-bad gate (R-FG4/5/6, ALL scenarios incl. C/D/E
     # whose result carries "output" not "book"), the harari register scorecard (R-H10,
     # report-only), and the "> **Gaya:** ..." metadata header. Never raises.
@@ -543,7 +543,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             while has_budgets and _diet_worthy(rep) and loops < 2:
                 loops += 1
                 if job_id:
-                    await _safe_progress(job_id, f"Perapian editorial (diet pass {loops})…")
+                    await _safe_progress(job_id, f"Editorial refinement (diet pass {loops})…")
                 try:
                     from laozhang_api import make_narasi_client, _resolve_narasi_lang as _rl
                     instr = _nc.surgical_prompt(rep, language=_rl(language))
@@ -707,7 +707,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     import narasi_verify as _nv
                     if _nv.verify_enabled():
                         if job_id:
-                            await _safe_progress(job_id, "Verifikasi fakta (web search)…")
+                            await _safe_progress(job_id, "Fact verification (web search)…")
                         result["fact_report"]["verify"] = await _nv.verify_report(
                             result["fact_report"], project_id=body.get("project_id"),
                             tenant_id=tenant_id)
@@ -875,8 +875,8 @@ async def _finalize(job_id: str, job_uuid: Optional[str], tenant_id: str, *,
     try:
         await rc.set_progress(
             job_id,
-            {"done": "Selesai", "failed": f"Gagal: {error}",
-             "cancelled": "Dibatalkan"}.get(status, status),
+            {"done": "Done", "failed": f"Failed: {error}",
+             "cancelled": "Cancelled"}.get(status, status),
             ttl=_CHAPTERS_TTL)
     except Exception:  # noqa: BLE001
         pass
@@ -1218,7 +1218,7 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
     except Exception:  # noqa: BLE001
         pass
     await _init_checkboxes(job_id, total)
-    await _safe_progress(job_id, "Memulai narasi...")
+    await _safe_progress(job_id, "Starting narration…")
 
     # ── Kick off generation; return the id immediately ──
     # ── BullMQ S1 (NARRATION_BULLMQ_ENABLED, default OFF): enqueue to the durable
