@@ -34,10 +34,16 @@ __all__ = ["detect_entities", "verify_pass", "ENTITY_TABLE"]
 # the `narasi_proper_nouns` DB table (mig 0067 — deferred).
 ENTITY_TABLE: list[dict[str, Any]] = [
     # ── persons (scholars) ──
+    # SPEC §3.2 affiliation field: `institution` is load-bearing (Hadler-Berkeley class:
+    # real scholar at wrong university ships silently otherwise). When set, verify_pass
+    # flags any wrong-institution attribution in the manuscript.
     {"kind": "person",
      "canonical": "Peter Carey", "surname": "Carey",
      "variants": [],
      "domain": "sejarawan Inggris (Oxford), arsip Yogyakarta & Perang Jawa",
+     "institution": "Oxford",
+     "institution_alt": ["University of Oxford", "Oxford University", "Trinity College Oxford"],
+     "institution_wrong": [],
      "epithet": "sejarawan Inggris yang menghabiskan sekitar empat dekade meneliti arsip Yogyakarta",
      "epithet_fixes": [(r"(?i)(?:lebih\s+dari\s+)?tiga\s+dekade", "sekitar empat dekade"),
                        (r"(?i)puluhan\s+tahun", "sekitar empat dekade")]},
@@ -46,6 +52,9 @@ ENTITY_TABLE: list[dict[str, Any]] = [
      "variants": ["Merijn Ricklefs", "Merle Calvin Ricklefs", "Merle Ricklefs",
                   "M. C. Ricklefs"],
      "domain": "sejarawan Australia, islamisasi Jawa",
+     "institution": "Australian National University",
+     "institution_alt": ["ANU", "Monash University", "Australian National"],
+     "institution_wrong": [],
      "epithet": "sejarawan Australia yang menekuni sejarah islamisasi Jawa",
      "epithet_fixes": []},
     {"kind": "person",
@@ -55,6 +64,27 @@ ENTITY_TABLE: list[dict[str, Any]] = [
                   "Hendrik Merkus Baron de Kock"],
      "domain": "letnan gubernur-jenderal Hindia Belanda, Benteng Stelsel",
      "epithet": "", "epithet_fixes": []},
+    # ── §12.1 Bonjol seed: Hadler affiliation LOAD-BEARING (real scholar wrong uni). ──
+    {"kind": "person",
+     "canonical": "Jeffrey Hadler", "surname": "Hadler",
+     "variants": [],
+     "domain": "sejarawan Minangkabau/Padri (Cornell 2008, Muslims and Matriarchs)",
+     "institution": "UC Berkeley",
+     "institution_alt": ["University of California Berkeley", "University of California, Berkeley",
+                          "Berkeley", "UC Berkeley History"],
+     "institution_wrong": ["Universitas Virginia", "University of Virginia", "UVA",
+                            "Virginia", "Univ of Virginia"],
+     "epithet": "sejarawan Minangkabau di UC Berkeley yang menulis Muslims and Matriarchs",
+     "epithet_fixes": []},
+    {"kind": "person",
+     "canonical": "Christine Dobbin", "surname": "Dobbin",
+     "variants": [],
+     "domain": "ekonomi pra-kolonial Minangkabau + revivalisme Islam (Curzon 1983)",
+     "institution": "Australian National University",
+     "institution_alt": ["ANU"],
+     "institution_wrong": [],
+     "epithet": "sejarawan yang mendokumentasikan ekonomi pra-kolonial Minangkabau",
+     "epithet_fixes": []},
     # ── wrong-subject (person + institution) — canonical is the ANONYMIZED replacement ──
     {"kind": "person_wrong_domain",
      "canonical": "sejumlah filolog",
@@ -64,6 +94,10 @@ ENTITY_TABLE: list[dict[str, Any]] = [
      "canonical": "sejumlah sejarawan",
      "pattern": r"(?:(?:seorang\s+)?(?:filolog|sejarawan|peneliti|arkeolog)\s+)?Meriel\s+Buiskool",
      "note": "Meriel Buiskool = fabricated Java-War scholar"},
+    {"kind": "person_wrong_domain",
+     "canonical": "sejumlah peneliti",
+     "pattern": r"(?:(?:seorang\s+)?(?:filolog|sejarawan|peneliti|arkeolog)\s+)?M[uo]rkalala\s+Firman",
+     "note": "Murkalala Firman = fabricated Minangkabau scholar (Bonjol review, §12.1)"},
     # ── treaties (title/body consistency: Bab-header vs body) ──
     {"kind": "treaty",
      "canonical": "Traktat Sumatra 1871",
@@ -204,7 +238,9 @@ def verify_pass(text: str, *, title: str = "", lang: str = "id",
     report: dict[str, Any] = {"unified": [], "collapsed": [], "epithet_fixed": [],
                               "wrong_domain": [], "self_debate": [],
                               "title_body_conflict": [], "cluster": [],
-                              "merge_candidates": []}
+                              "merge_candidates": [],
+                              # SPEC §3.2 affiliation field — Hadler-Berkeley class.
+                              "institution_mismatch": []}
     if not text:
         return text, report
     try:
@@ -255,6 +291,60 @@ def verify_pass(text: str, *, title: str = "", lang: str = "id",
         # variant unification (so re-intros of canonical names collapse) and AFTER
         # table-driven collapse (so no double-processing on table-listed scholars).
         out = _table_independent_r_e3(out, lang, report)
+
+        # 1d — SPEC §3.2 affiliation-mismatch flag. For every person with a defined
+        # `institution` field, scan the manuscript for that name paired with a WRONG
+        # institution (from institution_wrong list, or any string that isn't in
+        # institution + institution_alt) within a 240-char window. Real scholar +
+        # wrong university ships silently otherwise (Hadler-Virginia class). Flag only,
+        # never auto-correct — reviewer/spot-fixer resolves.
+        for r in persons:
+            canon = r.get("canonical")
+            correct = r.get("institution")
+            if not (canon and correct):
+                continue
+            correct_all = {correct.lower()} | {a.lower() for a in (r.get("institution_alt") or [])}
+            wrongs = [w for w in (r.get("institution_wrong") or [])]
+            surname = r.get("surname") or canon.split()[-1]
+            # Search for the person mention + a nearby institution mention in the SAME
+            # sentence (bounded by sentence terminators or paragraph breaks). Prior wider
+            # window admitted the next scholar's institution as a false positive.
+            for m in re.finditer(r"\b" + re.escape(canon) + r"\b|\b" + re.escape(surname) + r"\b",
+                                  out):
+                # find sentence-start (nearest .!?/newline before the name, or 0)
+                lo = m.start()
+                while lo > 0 and out[lo - 1] not in ".!?\n":
+                    lo -= 1
+                # find sentence-end (nearest .!?/newline after the name, or end)
+                hi = m.end()
+                while hi < len(out) and out[hi] not in ".!?\n":
+                    hi += 1
+                window = out[lo:hi]
+                # Case A: explicit wrong-institution listed
+                for w in wrongs:
+                    if re.search(r"\b" + re.escape(w) + r"\b", window, re.IGNORECASE):
+                        report["institution_mismatch"].append(
+                            {"scholar": canon, "wrong": w, "correct": correct,
+                             "context": window.strip()[:200]})
+                        break
+                else:
+                    # Case B: any Uni/College-style token near the name that is NOT
+                    # in the correct set. Detect institution-of-attribution shape:
+                    # "di X University" / "of X University" / "Universitas X" / "at X".
+                    inst_m = re.search(
+                        r"(?:(?:di|dari|at|of|from|based\s+at)\s+"
+                        r"(?:the\s+)?)((?:University\s+of\s+[A-Z][a-zA-Z]+"
+                        r"|(?:UC|University\s+of\s+California)[,\s]+[A-Z][a-zA-Z]+"
+                        r"|Universitas\s+[A-Z][a-zA-Z]+"
+                        r"|[A-Z][a-zA-Z]+\s+University"
+                        r"|Berkeley|Oxford|Cambridge|Yale|Harvard|Princeton))",
+                        window)
+                    if inst_m:
+                        cand = inst_m.group(1).strip().lower()
+                        if not any(c in cand or cand in c for c in correct_all):
+                            report["institution_mismatch"].append(
+                                {"scholar": canon, "wrong": inst_m.group(1),
+                                 "correct": correct, "context": window.strip()[:200]})
 
         # 2 — wrong-subject downgrade (persons + institutions).
         for w in wrong:

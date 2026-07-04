@@ -407,6 +407,35 @@ def dehedge_known_good(text: str) -> tuple[str, int]:
     return text, n
 
 
+def strip_world_date_hedge(text: str, lang: str = "en") -> tuple[str, list[dict[str, Any]]]:
+    """SPEC §3.4.2: world-documented values are NEVER hedged. If the pack defines a
+    `world_date_hedge_rx` (fr: matches "vers le 14 mai 1643" class), strip the hedge
+    word — the date itself stays. Flags reported for the audit."""
+    if not text:
+        return text, []
+    try:
+        from narasi_counters import LANGUAGE_PACKS
+        pack = LANGUAGE_PACKS.get((lang or "en").split("-")[0].lower())
+    except Exception:  # noqa: BLE001
+        pack = None
+    if not pack or not pack.get("world_date_hedge_rx"):
+        return text, []
+    rx = pack["world_date_hedge_rx"]
+    report: list[dict[str, Any]] = []
+    # right-to-left so offsets stay valid
+    for m in sorted(rx.finditer(text), key=lambda x: -x.start()):
+        hedge = m.group("hedge")
+        date = m.group("date")
+        # Replace the whole match with just the date span (drops the hedge word + space)
+        text = text[:m.start()] + date + text[m.end():]
+        report.append({"claim": "world_date_hedge_strip",
+                       "action": "stripped",
+                       "from": m.group(0)[:120],
+                       "to": date,
+                       "note": f"§3.4.2: world-documented date not hedged (dropped '{hedge}')"})
+    return text, report
+
+
 def strip_markers(text: str) -> tuple[str, int]:
     """§2.2/§2.3: remove every VO marker token, case-insensitive. Anchor TEXT survives;
     break markers vanish (their paragraph break already exists in the layout)."""

@@ -187,6 +187,20 @@ _EXTRA_PACKS: dict[str, dict[str, Any]] = {
             r"(?P<name1>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+))"
             r"|(?:\b(?P<name2>[A-Z][a-zA-Z.]*(?:\s+[A-Z][a-zA-Z.]+)+)\s+"
             r"(?:soutient|note|souligne|documente|estime|rappelle)\b)"),
+        # §12.3 Louis XIV: "vraisemblablement" is a LEGITIMATE hedge for genuinely-
+        # uncertain dates (mariage secret ~1683). Kept in hedge_prose_alt so the
+        # gate can recognize it as a hedge marker without confusing it with a
+        # bare-value hedge.
+        "hedge_prose_alt": ("vraisemblablement", "sans doute", "probablement", "à peu près"),
+        # §3.4.2 world-date hedge guard: "vers" prepended to a famous exact date
+        # (Louis XIII †14 mai 1643) violates the "world-documented values are NEVER
+        # hedged" invariant. The gate strips the hedge on any date that matches
+        # WORLD_DATE_RX and is inside a KNOWN_GOOD or the FR world-dates seed.
+        "world_date_hedge_rx": re.compile(
+            r"(?i)\b(?P<hedge>vers|environ|autour\s+de|aux\s+alentours\s+de)\s+"
+            r"(?P<date>le\s+\d{1,2}(?:er)?\s+"
+            r"(?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|"
+            r"octobre|novembre|d[ée]cembre)\s+\d{4})"),
     },
     "de": {
         "hedge_value": "etwa {v}", "hedge_prose": "mehrere",

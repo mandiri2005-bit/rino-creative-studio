@@ -1428,6 +1428,82 @@ FORBIDDEN: Hero worship -- every triumph is priced with what it cost or nearly c
             ],
         },
     },
+
+    # ── SPEC v1 §12.3/§13 — style_spec instance #2. Distinct from harari:
+    # scene-open + woven closing-aphorism + "what the standard account omits" turn;
+    # no forced temporal-zoom; over-analysis breaking scene is a banned_tell; the
+    # omits-turn is capped as a near-duplicate. Confirmed live on the Louis XIV run.
+    "creative_non_fiction": {
+        "display_name": "Creative Non-Fiction",
+        "aliases": [
+            "creative non-fiction", "creative_non_fiction", "cnf",
+            "literary non-fiction", "literary nonfiction", "narrative non-fiction",
+            "narrative nonfiction", "book-length essay",
+        ],
+        "is_fiction": False,
+        "medium_origin": "page",
+        "tier": "P1",
+        "tts_risk": False,
+        "output_support": "book",
+        "rag": {
+            "query_instruction": (
+                "Retrieve a literary non-fiction passage that opens on a scene with "
+                "sensory grounding and closes on a woven aphorism — subordination "
+                "intact, no signposting, exact figures rendered as book-digits:"
+            ),
+            "framing": (
+                "Study how the writer opens each chapter at ground level (scene, "
+                "object, moment) before analysis, weaves a closing aphorism into the "
+                "final paragraph, and — at most twice per piece — turns to what the "
+                "standard account omits. Notice that the register stays formal without "
+                "arcane vocabulary."
+            ),
+            "min_quality": 4,
+            "top_k": 3,
+        },
+        "style_rules_core": """STYLE: Creative Non-Fiction
+= Book-length literary non-fiction: scene-first, argument-second, aphorism at close.
+
+STRUCTURE PER CHAPTER:
+1. SCENE OPEN -- Every chapter opens at ground level: a person, a place, an object, a moment. No statistic is the first move.
+2. SUBORDINATED PROSE -- Paragraphs run long, subordination intact; short punctuating sentences appear as drama, not as default rhythm.
+3. WOVEN CLOSING APHORISM -- The closing paragraph earns ONE aphorism woven into the scene; never as a standalone maxim.
+4. OMITS-TURN (AT MOST TWICE) -- "What the standard account omits…" or its equivalent may appear at most TWO times in the whole piece; more = near-duplicate rewrite.
+
+VOICE: Third person omniscient with close-focus periods. Formal literary register without arcane vocabulary. Present tense for scene, past tense for consequence.
+
+SIGNATURE MOVES:
+- Choose sensory detail for scene-opening, never for erudition display.
+- Use short punctuation-sentences ("He was forty-nine.") between longer periods for cadence.
+- Render numbers as digits (357 miroirs, 30 000 workers), never spelled out on the book path.
+- Attribute contested figures once; do not repeat the attribution in every paragraph.
+
+FORBIDDEN: Over-analysis breaking the scene mid-paragraph (analyze after scene closes).
+FORBIDDEN: "Historians disagree" / "some argue" hedges used as a rhetorical crutch — commit or drop.
+FORBIDDEN: Signposting ("in this chapter I will show…"). The book path never signposts.
+""",
+        "style_rules_editor": "",
+        "register_spec": {
+            "required_moves": [
+                "scene_open",
+                "woven_closing_aphorism",
+            ],
+            "banned_tells": [
+                "in this chapter",
+                "as we will see",
+                "historians debate whether",
+                "some argue that",
+                "what is remarkable is",
+            ],
+            "counters": {
+                "omits_turn_max": 2,
+                "aphorism_density_target": 1,  # ~1 per chapter
+                "citations_max": 3,
+                "same_scholar_max": 3,
+                "temporal_zoom_required": False,  # explicit anti-harari signal
+            },
+        },
+    },
 }
 
 __all__ = ["P1_STYLES"]
