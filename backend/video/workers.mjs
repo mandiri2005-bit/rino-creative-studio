@@ -644,13 +644,15 @@ export async function stitchProcessor(job, deps) {
       // its own) — don't demand one; other modes always have a visual to resolve.
       const wbNoAsset = meta.visualMode === "whiteboard" && !s.visualKey && !s.visualPath;
       const audioPath = await resolveLocal(jobId, tmpDir, s.audioKey, s.audioPath, `aud_${i}.wav`);
-      // The scene window MUST cover the ACTUAL narration so the stitch never truncates it. The WB svg
-      // renderer already re-measures + extends its frames; do the SAME at the source for the NON-WB
-      // stitch path — buildSceneClipArgs/buildFilterComplex use atrim=0:dur, which CUTS audio longer
-      // than the window (happens when durationActual under-estimated via the estSeconds fallback). Only
-      // for non-WB → WB's window stays exactly as before (byte-identical). (Rino: audio truncation non-WB)
+      // The scene window MUST cover the ACTUAL narration so the stitch never truncates it. The svg
+      // WB renderer re-measures + extends its frames, but Remotion (legacy + plan) trusts the JSON
+      // duration and cuts audio when it runs out — so when durationActual under-estimated actual TTS
+      // length, WB scenes ended with a chopped VO tail before the next scene started. Rino 2026-07-05:
+      // "vo cut di pergantian scene". Fix: run ffprobe for WB too — the extension is only additive
+      // (base = max(base, aLen)), so short-audio scenes keep byte-identical windows and long-audio
+      // scenes now grow to cover the full VO.
       let base = Number(s.durationActual) || Number(s.estSeconds) || 2;
-      if (meta.visualMode !== "whiteboard" && audioPath) {
+      if (audioPath) {
         const aLen = await ffprobeDuration(audioPath);
         if (Number.isFinite(aLen) && aLen > base) base = aLen;
       }
