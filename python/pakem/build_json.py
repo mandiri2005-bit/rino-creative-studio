@@ -54,6 +54,8 @@ def styles_catalog() -> list[dict[str, Any]]:
             "category": entry.get("category", "B"),
             "tier": entry.get("tier", "core"),
             "factual_regime": entry.get("factual_regime", "strict"),
+            # picker UX: register-matched Title/Theme placeholder for this style
+            "sample": entry.get("sample_prompt", ""),
         })
     return out
 

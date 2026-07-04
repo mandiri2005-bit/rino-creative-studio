@@ -699,6 +699,97 @@ STYLES["harari"]["style_spec"] = {
 }
 
 
+# ── sample prompts (picker UX): two register-matched topic exemplars per style, shown
+# as the Title/Theme placeholder when the style is selected. Nusantara styles sample in
+# Bahasa. Served via styles_catalog() → /narration/styles → FE placeholder. Programmatic
+# (setdefault) like _CATEGORY so the 75 body entries stay untouched.
+_SAMPLE_PROMPTS: dict[str, str] = {
+    # A — documentary / explainer
+    "natgeo": "e.g. The secret life of the Sumatran rainforest canopy\nor: Okavango — the river that never reaches the sea",
+    "youtube": "e.g. Why the Sahara was green 6,000 years ago\nor: The physics hiding inside a soap bubble",
+    "journalistic": "e.g. How one container ship blocked 12% of world trade\nor: The rise and fall of the Concorde",
+    "true_crime_procedural": "e.g. The disappearance of the Sodder children, 1945\nor: The Isdal Woman — Norway's coldest case",
+    "true_crime_host": "e.g. D.B. Cooper — the hijacker who vanished mid-air\nor: The Somerton Man, found on a quiet beach",
+    "internet_mystery": "e.g. Cicada 3301 — the internet's hardest puzzle\nor: The Max Headroom broadcast intrusion",
+    "existential_science": "e.g. The heat death of the universe\nor: What happens if the Gulf Stream stops",
+    "systems_logistics": "e.g. How a banana reaches your table in 14 days\nor: The invisible machine that runs global shipping",
+    "tech_rise_fall": "e.g. Nokia — from world domination to fire sale\nor: The billion-dollar collapse of Theranos",
+    "elegiac_ruins": "e.g. Angkor — the city the jungle took back\nor: Detroit's abandoned Packard plant",
+    "conversational_epic": "e.g. The entire fall of Rome, over coffee\nor: How Genghis Khan actually happened",
+    "countdown_listicle": "e.g. 7 lost cities we've actually found\nor: 5 inventions that arrived too early",
+    "question_driven_explainer": "e.g. Why do we dream?\nor: Why can't we just print more money?",
+    "sports_mythic": "e.g. The Miracle on Ice, 1980\nor: Senna at Monaco — the lap of the gods",
+    "archival_elegiac": "e.g. The last voices of the Titanic survivors\nor: Letters home from the Somme, 1916",
+    "collage_history": "e.g. 1969 — the year everything happened at once\nor: Berlin, November 1989, hour by hour",
+    "intimate_nature": "e.g. A year in the life of one oak tree\nor: The octopus in the tide pool",
+    "ecstatic_doom_nature": "e.g. Toba — the eruption that nearly ended us\nor: The wolf that rewired Yellowstone",
+    "embedded_gritty": "e.g. Three weeks on a Bering Sea crab boat\nor: Night shift in a big-city ER",
+    # B — literary / essay
+    "creative_nonfiction": "e.g. The night the lighthouse keeper didn't come home\nor: A history of my grandmother's kitchen",
+    "harari": "e.g. Salt — the mineral that built and broke empires\nor: How wheat domesticated humans",
+    "literary_essay": "e.g. On waiting rooms\nor: The quiet tyranny of the to-do list",
+    "academic_popular": "e.g. How the Black Death rewired Europe's economy\nor: The cognitive revolution, 70,000 years ago",
+    "narrative_nonfiction": "e.g. The five days of Dunkirk\nor: Shackleton's open-boat voyage to South Georgia",
+    "cosmic_poetic": "e.g. We are the universe looking at itself\nor: Every atom in you was forged in a dying star",
+    "counterintuitive_thesis": "e.g. The Middle Ages were more innovative than the Renaissance\nor: Traffic jams are a sign your city works",
+    "witty_wonder": "e.g. The surprisingly dramatic life of the potato\nor: A brief history of the pause button",
+    "character_driven_systems": "e.g. The trucker who accidentally invented the container age\nor: How one Dutch engineer drained a sea",
+    "braided_thriller_history": "e.g. Two men racing to crack the Enigma\nor: The parallel hunts for the atomic bomb",
+    "comic_science": "e.g. Your gut bacteria are running the show\nor: The absurd physics of cats landing on their feet",
+    "clinical_compassion": "e.g. The last outbreak of smallpox\nor: Anatomy of a heart transplant, hour by hour",
+    "world_weary_travel": "e.g. Overnight train to Ulaanbaatar\nor: The last ferry out of Tangier",
+    "literary_true_crime": "e.g. The quiet town that hid a serial poisoner\nor: A vanishing on the Appalachian Trail",
+    "grand_sweep_history": "e.g. The Silk Road — 1,500 years in ten chapters\nor: The age of sail, from carrack to clipper",
+    "literary_reportage": "e.g. The last cassette factory on Earth\nor: A season inside a dying coal town",
+    "polyphonic_testimony": "e.g. Chernobyl, in the voices of those who stayed\nor: The 1965 blackout, told by nine strangers",
+    "gonzo": "e.g. 72 hours inside a Las Vegas pawn shop\nor: Riding shotgun with storm chasers in Tornado Alley",
+    # C — calm / audio-first
+    "bedtime_story": "e.g. The lighthouse cat who counted stars\nor: A sleepy village where the clocks run slow",
+    "podcast_narrative": "e.g. Episode one — the map that shouldn't exist\nor: A small-town mystery in three acts",
+    "folklore_creepy": "e.g. The thing that knocks twice in Appalachia\nor: Why you don't whistle at night in the forest",
+    "sleep_story_adult": "e.g. A slow night train through the winter Alps\nor: The bookshop at the end of the rain",
+    "sound_led_wonder": "e.g. What the deep ocean sounds like\nor: The hum of a glacier, melting",
+    "act_structure_personal": "e.g. The summer I worked the fire lookout\nor: How I lost and found my father's watch",
+    "guided_meditation": "e.g. A walk through a bamboo forest at dawn\nor: Letting the day settle like sand in water",
+    # D — fiction / cinematic
+    "storytelling": "e.g. The ferryman who rowed a king in disguise\nor: A thief who stole only memories",
+    "pov": "e.g. I am the last lighthouse keeper on the Atlantic\nor: You wake as the only engineer on a drifting station",
+    "cinematic_voiceover": "e.g. Dawn over a city that doesn't know it's the last day\nor: One take — the heist begins at midnight",
+    "fiction": "e.g. A cartographer who maps places that don't exist yet\nor: The village where everyone shares one dream",
+    "epic_fantasy_prologue": "e.g. Before the war of the nine crowns\nor: The forging of the blade that ended a god",
+    "trailer_voice": "e.g. One city. One night. No way out.\nor: This summer… the ocean fights back",
+    "gothic_cosmic_horror": "e.g. The lighthouse log ends mid-sentence\nor: Something in the ice has been counting",
+    "internet_horror": "e.g. My smart doorbell keeps ringing — from inside\nor: I moderate a forum that shouldn't exist",
+    "warm_omniscient": "e.g. The small kindnesses of a very ordinary street\nor: A postman who knew everyone's secrets",
+    "film_noir_vo": "e.g. She walked in with trouble and a fake name\nor: The city sweats at 2 a.m. — and so do I",
+    "ironic_moral_fable": "e.g. The king who taxed the rain\nor: A town that outsourced its conscience",
+    "whispered_existential": "e.g. What the mirror keeps when you leave\nor: The hour between night and morning",
+    "magical_realism": "e.g. The year it rained letters from the dead\nor: A grandmother who folds time into her batik",
+    "fairy_tale_classic": "e.g. The miller's daughter and the winter king\nor: Three brothers and a door in the mountain",
+    "mythic_epic": "e.g. The song of the first fire\nor: How the sea was given its salt",
+    "epistolary": "e.g. Letters between a soldier and a lighthouse keeper\nor: The diary of the last speaker of a dying language",
+    "second_person_adventure": "e.g. You inherit a shop that sells forgotten things\nor: You have one match, and the night is long",
+    "mockumentary_deadpan": "e.g. Inside the fierce world of competitive snail racing\nor: The office that runs the moon",
+    # E — Nusantara (sample in Bahasa)
+    "dongeng_nusantara": "cth. Asal mula Danau Toba\natau: Si Kancil dan raja hutan yang sombong",
+    "horor_viral_indonesia": "cth. KKN di desa yang tak ada di peta\natau: Penunggu lantai 4 kosan lama",
+    "legenda_asal_usul": "cth. Asal-usul nama Banyuwangi\natau: Legenda Gunung Tangkuban Perahu",
+    "babad_hikayat": "cth. Babad runtuhnya Majapahit\natau: Hikayat pelayaran ke negeri atas angin",
+    "pewayangan_ki_dalang": "cth. Lakon Gatotkaca gugur di Kurusetra\natau: Semar mbangun kahyangan",
+    # F — teaching / oratory
+    "first_principles": "e.g. Money, rebuilt from barter up\nor: Flight, explained from a falling leaf",
+    "stoic_daily": "e.g. On things not in our control\nor: The obstacle is the way — a morning meditation",
+    "motivational_grind": "e.g. Nobody is coming to save you — good\nor: The 4 a.m. advantage",
+    "business_case": "e.g. How Toyota out-built Detroit\nor: The day Netflix killed its own DVD business",
+    "eli5": "e.g. Why is the sky blue?\nor: How does a plane stay up?",
+    "socratic_dialogue": "e.g. Is a hot dog a sandwich — and why it matters\nor: What makes a country rich?",
+    "commencement_wisdom": "e.g. Advice to my 22-year-old self\nor: The unglamorous secret of good work",
+    "oratory_anaphora": "e.g. We build, we break, we build again\nor: This is the hour of the small and stubborn",
+}
+for _k, _e in STYLES.items():
+    _e.setdefault("sample_prompt", _SAMPLE_PROMPTS.get(_k, ""))
+
+
 # Default style when nothing resolves — matches the legacy get_style_rules
 # fallback (creative non-fiction).
 DEFAULT_STYLE = "creative_nonfiction"
