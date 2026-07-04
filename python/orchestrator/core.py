@@ -273,6 +273,10 @@ class CallTelemetry:
     finish_reason: str = ""
     error: str = ""
     task_id: str = ""
+    # The aggregator that ACTUALLY served (kie/laozhang/atlascloud) when the narasi
+    # failover client handled the call — stamped by _NarasiFailoverClient. Empty when
+    # the plain client served. Lets usage_logs.provider tell the truth per rung.
+    provider: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -424,6 +428,7 @@ async def run_worker(
                 cost_usd=estimate_cost(model, tok_in, tok_out),
                 latency_ms=latency_ms, attempts=attempts,
                 finish_reason=finish, task_id=task_id or worker.name,
+                provider=str(getattr(resp, "_narasi_served_by", "") or ""),
             )
             _emit(worker.telemetry_sink, tele)
             if not text:
