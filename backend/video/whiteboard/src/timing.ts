@@ -10,6 +10,10 @@ export interface PlannedScene {
   start: number; // frame the scene begins, relative to the whole video
   duration: number; // total frames for the scene
   writeFrames: number; // frames spent writing all the text
+  // Per-scene char rate — scaled to fill the scene when audio-driven so the
+  // hand keeps pace with the VO instead of finishing early. Falls back to the
+  // plan-wide framesPerChar when no scene-level duration is provided.
+  writeFramesPerChar: number;
   accent: boolean;
   accentLine: number; // which line the underline sits under
   icon: string | null;
@@ -63,8 +67,23 @@ export function planScenes(spec: Spec, fps: number): Plan {
           : 0;
 
     let duration = writeFrames + drawFrames + holdFrames;
+    let effectiveWriteFrames = writeFrames;
+    let effectiveFramesPerChar = framesPerChar;
     if (sc.durationSeconds && sc.durationSeconds > 0) {
       duration = Math.round(sc.durationSeconds * fps);
+      // Audio-driven scene: stretch the writing so the hand finishes just as the
+      // VO does. Prior code left `framesPerChar` at the global 0.05s/char rate,
+      // so a 200-char scene wrote for 10s while the VO ran 12s → last ~2s blank
+      // (Rino 2026-07-04: "hand drawing jalan lebih cepat dari vo"). Target =
+      // duration − drawFrames − holdFrames; scale framesPerChar to fit.
+      if (chars > 0) {
+        const available = Math.max(1, duration - drawFrames - holdFrames);
+        effectiveWriteFrames = Math.min(available, Math.max(1, available));
+        effectiveFramesPerChar = Math.max(
+          1,
+          Math.floor(effectiveWriteFrames / chars)
+        );
+      }
     }
 
     scenes.push({
@@ -72,7 +91,8 @@ export function planScenes(spec: Spec, fps: number): Plan {
       layout: sc.layout ?? "left",
       start: cursor,
       duration: Math.max(1, duration),
-      writeFrames,
+      writeFrames: Math.max(1, effectiveWriteFrames),
+      writeFramesPerChar: effectiveFramesPerChar,
       accent: Boolean(sc.accent),
       accentLine:
         sc.accent?.line != null ? sc.accent.line : sc.lines.length - 1,

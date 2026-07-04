@@ -38,7 +38,7 @@ export const Whiteboard: React.FC<Spec> = (spec) => {
           <SceneView
             lines={s.lines}
             layout={s.layout}
-            framesPerChar={plan.framesPerChar}
+            framesPerChar={s.writeFramesPerChar || plan.framesPerChar}
             writeFrames={s.writeFrames}
             accent={s.accent}
             icon={s.icon}
