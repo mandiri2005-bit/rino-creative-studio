@@ -11,6 +11,42 @@ import { getCachedAsset, setCachedAsset } from "../store.mjs";
 
 const RECRAFT = "https://external.api.recraft.ai/v1";
 
+// ── Stroke-thinning post-process (Rino 2026-07-05: "garis Recraft ketebalan terlalu tebal") ─
+// Recraft's vector output + potrace fallback + curated icon libs all emit SVG <path>/<rect>/
+// <circle>/etc that the whiteboard renderer honors per-path via `s.width || defaultWidth`
+// (DrawnIllustration L70 for lineart/color; DrawRevealIllustration L26/L55 for Color draw-
+// reveal; the parser in svg.mjs L137/L217 reads stroke-width into stroke.width for BOTH
+// modes). By injecting stroke-width="X" on every drawable element in the source SVG we thin
+// ALL color-mode variants (Premium/Regular Color draw-reveal) AND the Recraft-icon plan
+// paths (Ultra recraft-only + Lite generate-on-miss).
+//
+// LIMITATION: Realistic-Detail mode (raster-reveal) uses RasterRevealIllustration.tsx which
+// derives a UNIFORM inkW = (vw||100)/340 for every mask outline and ignores the parser's
+// per-path .width field entirely (path L108). We still inject stroke-width on the mask SVG
+// paths (safe: parser reads it, renderer harmlessly discards it) so the API is uniform and
+// a future renderer patch that respects u.width will thin detail automatically. There is no
+// pure-visuals.mjs fix for detail-mode thinning today — the only real levers (edit
+// RasterRevealIllustration or shrink viewBox and warp coords) are engine-side and the
+// current task explicitly forbids touching *.tsx / render.mjs / svgFfmpeg.mjs.
+//
+// Default 1.5 px feels visibly thinner than the previous stroke-width=4 the Recraft catalog
+// was baking (see plan/iconlibs.mjs). Override via WB_STROKE_WIDTH env.
+const WB_STROKE_WIDTH = Number(process.env.WB_STROKE_WIDTH || 1.5);
+const _THIN_TAGS = /<(path|circle|rect|ellipse|line|polyline|polygon)\b([^>]*?)(\/?)>/gi;
+function _thinPathStrokes(svg, widthPx = WB_STROKE_WIDTH) {
+  if (!svg || typeof svg !== "string") return svg;
+  const w = Number.isFinite(widthPx) && widthPx > 0 ? widthPx : WB_STROKE_WIDTH;
+  if (!(w > 0)) return svg; // WB_STROKE_WIDTH=0 → escape hatch: leave source SVG untouched
+  return svg.replace(_THIN_TAGS, (_full, tag, attrs, selfClose) => {
+    // Replace an existing stroke-width attribute; otherwise inject one. Applied per-element so
+    // the engine's per-path (s.width || defaultWidth) picks up the thinned value uniformly.
+    let a = String(attrs || "");
+    if (/\bstroke-width\s*=/.test(a)) a = a.replace(/\bstroke-width\s*=\s*"[^"]*"/i, `stroke-width="${w}"`);
+    else a = ` stroke-width="${w}"` + a;
+    return `<${tag}${a}${selfClose || ""}>`;
+  });
+}
+
 // Per-request timeout so a hung Recraft call can't hold the BullMQ visual slot until the
 // socket dies (mirrors generationClient.fetchT; kept local to keep this lazy-imported
 // module self-contained). GEN_FETCH_TIMEOUT_MS=0 disables it = escape hatch.
@@ -104,7 +140,9 @@ async function recraftGenerate(prompt, { model, style, size, seed } = {}) {
   const url = (await r.json())?.data?.[0]?.url;
   if (!url) throw new Error("recraft gen: no url in response");
   const a = await fetchT(url);
-  return isVector ? { text: await a.text() } : { buffer: Buffer.from(await a.arrayBuffer()) };
+  // Vector-mode SVG output → thin every drawable stroke so ALL variants (color draw-reveal +
+  // Recraft-icon plan paths) draw a lighter line. Raster stays untouched (no strokes in a PNG).
+  return isVector ? { text: _thinPathStrokes(await a.text()) } : { buffer: Buffer.from(await a.arrayBuffer()) };
 }
 
 // Generate-on-miss (guide §J step 5): one whiteboard-style vector ICON for an asset_query the
@@ -140,7 +178,12 @@ export async function generateRecraftIcon(query, { genre = "lineart", seed, mode
       : _model === "recraftv2" ? "recraft-v2"
       : _model === "recraftv3" ? "recraft-v3"
       : "recraft-v3-vector");
-  return { svg: text, meter: { operation: "image", model: _meter, units: { count: 1 } } };
+  // Belt-and-braces: recraftGenerate already thins vector output at its return, but the plan-mode
+  // Ultra (recraft-only) + Lite (icon fallback) paths bake this SVG into strokes via parseSvg →
+  // el.strokes → DrawnIllustration, which honors s.width. Re-thinning here is idempotent (regex
+  // replaces the existing stroke-width with the same value) and future-proofs against upstream
+  // refactor. WB_STROKE_WIDTH=0 escape-hatches out.
+  return { svg: _thinPathStrokes(text), meter: { operation: "image", model: _meter, units: { count: 1 } } };
 }
 
 // Recraft raster → SVG mask (the reveal map for raster-reveal).
@@ -160,7 +203,10 @@ async function recraftVectorize(pngBuffer) {
   if (!r.ok) { const t = await r.text(); noteRecraftFailure(r.status, t); throw new Error(`recraft vectorize ${r.status}: ${t.slice(0, 200)}`); }
   const url = (await r.json())?.image?.url;
   if (!url) throw new Error("recraft vectorize: no url in response");
-  return await (await fetchT(url)).text();
+  // Thin every drawable path in the raster→SVG mask. Realistic-Detail (raster-reveal) renderer
+  // currently ignores per-path stroke-width in favor of a uniform inkW derived from viewBox
+  // (see file-top comment) → this attribute is dead code today but harmless and future-proof.
+  return _thinPathStrokes(await (await fetchT(url)).text());
 }
 
 // Raster-reveal asset (genre "detail"): a REAL Recraft photo for one element + its vectorized
@@ -227,7 +273,11 @@ export async function traceMaskB64(b64, { maxShapes = 70 } = {}) {
     for (const p of remaining) { const dd = (p.c.x - cur.c.x) ** 2 + (p.c.y - cur.c.y) ** 2; if (dd < bd) { bd = dd; best = p; } }
     remaining.delete(best); ordered.push(best); cur = best;
   }
-  return { maskViewBox, maskShapes: ordered.map((p) => ({ d: p.d, fill: "#000" })) };
+  // Tag each shape with the tunable width. svgFfmpeg's raster-reveal renderer (L245) currently
+  // derives inkW from mvw/700 and ignores u.width — same engine-side limitation as
+  // RasterRevealIllustration — so this is harmless dead metadata today, but keeps the pipeline
+  // uniform and makes a future width-aware renderer patch a one-line change.
+  return { maskViewBox, maskShapes: ordered.map((p) => ({ d: p.d, fill: "#000", width: WB_STROKE_WIDTH })) };
 }
 
 // Recraft-vectorize reveal mask (genre detail, WB_HERO_MASK=recraft): vectorize the EXISTING hero PNG
@@ -255,7 +305,9 @@ export async function vectorizeMaskB64(b64, { maxShapes = 70 } = {}) {
     for (const p of remaining) { const dd = (p.c.x - cur.c.x) ** 2 + (p.c.y - cur.c.y) ** 2; if (dd < bd) { bd = dd; best = p; } }
     remaining.delete(best); ordered.push(best); cur = best;
   }
-  return { maskViewBox, maskShapes: ordered.map((p) => ({ d: p.d, fill: "#000" })), meter: { operation: "image", model: "recraft-vectorize", units: { count: 1 } } };
+  // Same width tag as traceMaskB64 (see comment there): dead metadata for the current
+  // uniform-inkW renderer, but keeps the pipeline uniform for future width-aware rendering.
+  return { maskViewBox, maskShapes: ordered.map((p) => ({ d: p.d, fill: "#000", width: WB_STROKE_WIDTH })), meter: { operation: "image", model: "recraft-vectorize", units: { count: 1 } } };
 }
 
 // ── diagram: LLM graph → deterministic flowchart SVG (ported from scripts/diagram.mjs) ──

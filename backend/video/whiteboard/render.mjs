@@ -123,7 +123,12 @@ export async function renderWhiteboard(scenes, meta, outPath, opts = {}) {
     return { ...base, layout: illustration ? "full" : "center", lines: illustration ? [] : wrapLines(sc.text), illustration: illustration || undefined };
   });
 
-  const spec = { theme: "marker", grid: false, fps: tier.fps, width, height, scenes: built };
+  // WB_RASTER_INK_DIVISOR (default 340) tunes the raster-reveal ink outline width — Detail-mode
+  // ink outlines (Illustration/Photorealism/Watercolor/Hand-drawn/etc.) can be thinned by raising
+  // this divisor. RasterRevealIllustration.tsx receives it via getInputProps(). Default 340 keeps
+  // legacy behavior byte-identical.
+  const inkDivisor = Number(process.env.WB_RASTER_INK_DIVISOR) || 340;
+  const spec = { theme: "marker", grid: false, fps: tier.fps, width, height, scenes: built, inkDivisor };
   const serveUrl = await bundle({ entryPoint: ENTRY, publicDir: pub });
   // Pass the system Chromium to BOTH selectComposition AND renderMedia — without it on
   // selectComposition, Remotion downloads its own Chrome Headless Shell (~92MB) on every cold
@@ -234,7 +239,9 @@ export async function renderWhiteboardPlan(scenes, meta, outPath, opts = {}) {
     return { plan, audioSrc };
   });
 
-  const spec = { fps, width, height, scenes: built };
+  // Same WB_RASTER_INK_DIVISOR knob for plan-mode Remotion render (see legacy path L127-131).
+  const inkDivisor = Number(process.env.WB_RASTER_INK_DIVISOR) || 340;
+  const spec = { fps, width, height, scenes: built, inkDivisor };
   const serveUrl = await bundle({ entryPoint: ENTRY, publicDir: pub });
   // system Chromium to BOTH calls (else selectComposition re-downloads Chrome Headless Shell ~92MB/boot)
   const browserExecutable = opts.browserExecutable || process.env.REMOTION_BROWSER_EXECUTABLE || undefined;

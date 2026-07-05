@@ -11513,6 +11513,212 @@ async def video_whiteboard_plan(req: VideoWhiteboardPlanReq,
     return {"plan": plan}                  # plan may be null → Node degrades that scene to handwriting
 
 
+# ── WB Reframe: subject-first visual_prompt rewriter ─────────────────────────
+# Rewrites a scene narration into a SUBJECT-FIRST visual prompt for an image generator,
+# stripping cinematography/lighting/medium adjectives so the renderer's own `style` parameter
+# is the only thing controlling look. Same auth + graceful-degrade pattern as whiteboard-plan;
+# NOT metered (the flat whiteboard render fee covers it). Redis-cached 7d on djb2 hash of
+# brief+narration+tier+api_style so repeat scenes cost $0.
+class VideoWbReframeReq(BaseModel):
+    narration: str
+    brief: str = ""
+    tier: str = "color"                    # "color" | "detail"
+    api_style: str = ""                    # renderer's own style parameter (Watercolor / Pop art / …)
+    character: str = ""                    # optional: named character to preserve
+    model: str = ""                        # ignored — see WB_REFRAME_MODEL
+    language: str = ""                     # unused (output is always English), kept for caller symmetry
+
+
+_WB_REFRAME_BANNED = (
+    "cinematic", "naturalistic light", "dappled light", "golden hour", "hard flash",
+    "soft light", "textured realism", "considered composition", "shallow depth of field",
+    "bokeh", "35mm", "anamorphic", "film grain", "lens flare", "wide shot", "close-up",
+    "close up", "medium shot", "tracking shot", "dolly", "handheld", "moody lighting",
+    "dramatic lighting", "rim light", "backlit", "cinematography", "photorealistic",
+    "watercolor style", "vector art", "pop art", "hand-drawn style", "hand drawn style",
+    "sketch style", "oil painting",
+)
+
+
+def _strip_style_adjectives(vp: str) -> str:
+    """Defensive belt-and-braces regex strip of banned style/cinematography words the model may
+    have slipped through despite the system-prompt ban. Case-insensitive whole-phrase removal;
+    collapses the resulting double-spaces and dangling connectors (', and', ' with .')."""
+    if not vp:
+        return vp
+    out = vp
+    for phrase in _WB_REFRAME_BANNED:
+        out = _re.sub(r"\b" + _re.escape(phrase) + r"\b", "", out, flags=_re.IGNORECASE)
+    # tidy up the debris left by phrase deletion
+    out = _re.sub(r"\s{2,}", " ", out)
+    out = _re.sub(r"\s+([,.;:])", r"\1", out)
+    out = _re.sub(r",\s*,", ",", out)
+    out = _re.sub(r",\s*\.", ".", out)
+    out = _re.sub(r"\(\s*\)", "", out)
+    return out.strip(" ,.;-")
+
+
+def _wb_reframe_djb2(s: str) -> str:
+    """djb2 hash → hex, matching the Node WB engine's caller-side cache key algorithm so a
+    cache miss here on repeat inputs would flag a divergence."""
+    h = 5381
+    for ch in s:
+        h = ((h * 33) + ord(ch)) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
+@app.post("/video/wb-reframe")
+async def video_wb_reframe(req: VideoWbReframeReq,
+                           user: Optional[CurrentUser] = Depends(get_current_user_optional)):
+    """Internal: scene narration → SUBJECT-FIRST visual_prompt for the image generator.
+    NOT metered (the flat whiteboard render fee covers it). Cache-first (Redis 7d), then
+    LLM via make_client(WB_REFRAME_MODEL, default gemini-2.5-flash-lite) with Vertex OAuth
+    fallback. On ANY failure returns {"prompt": null} — client falls back to raw scene.visualPrompt."""
+    if not user or not getattr(user, "is_internal", False):
+        raise HTTPException(403, "internal only")
+    narr = (req.narration or "").strip()
+    if not narr or len(narr) < 20 or len(narr) > 1200:
+        raise HTTPException(400, "narration required (20-1200 chars)")
+
+    # ── Cache lookup ──────────────────────────────────────────────────────
+    _sig = f"{req.brief}||{narr}||{req.tier}||{req.api_style}"
+    _cache_key = f"wbrfr:v1:{_wb_reframe_djb2(_sig)}"
+    try:
+        _cli = rc.client()
+        if _cli:
+            _hit = await _cli.get(_cache_key)
+            if _hit:
+                print(f"[video/wb-reframe] cache HIT ({_cache_key})")
+                return json.loads(_hit)
+            print(f"[video/wb-reframe] cache MISS → LLM (key={_cache_key})")
+        else:
+            print("[video/wb-reframe] cache SKIP: redis client unavailable → LLM")
+    except Exception as _e:
+        print(f"[video/wb-reframe] cache get failed → LLM: {_e}")
+
+    # ── System prompt ─────────────────────────────────────────────────────
+    # HARD RULES + BANNED word list + 2 few-shot examples (identical output for different
+    # api_style) are baked INTO the system prompt verbatim per the handler contract.
+    sys = (
+        "You rewrite a scene narration into a SUBJECT-FIRST visual prompt for an image generator. "
+        "HARD RULES:\n"
+        "1. Describe ONLY: SUBJECT (who/what), ACTION (what they are doing), SETTING (where/when — brief), "
+        "CHARACTER (only if given), and relevant PROPS.\n"
+        "2. NEVER include cinematography, lighting, camera, lens, film-stock, composition, or art-medium "
+        "adjectives. Visual style is applied SEPARATELY by the renderer via its own `style` parameter — "
+        "if you mention style words you will OVERRIDE and BREAK the user's chosen look.\n"
+        "3. BANNED words/phrases (non-exhaustive): cinematic, naturalistic light, dappled light, "
+        "golden hour, hard flash, soft light, textured realism, considered composition, shallow depth "
+        "of field, bokeh, 35mm, anamorphic, film grain, lens flare, wide shot, close-up, medium shot, "
+        "tracking shot, dolly, handheld, moody lighting, dramatic lighting, rim light, backlit, "
+        "cinematography, photorealistic, watercolor style, vector art, pop art, hand-drawn style, "
+        "sketch style, oil painting, and ANY name of an art medium or camera technique.\n"
+        "4. English regardless of narration language.\n"
+        "5. Length: 40-70 words, one paragraph, plain declarative sentences.\n"
+        "6. If narration mentions a SPECIFIC subject (e.g. 'red junglefowl', 'Corinthian pottery', "
+        "'sacred chickens eating grain', 'Mohenjo-daro terracotta figurine'), keep that specificity in "
+        "your output — don't collapse to a generic 'bird' or 'ancient artifact'.\n"
+        "7. Return strict JSON: {\"visual_prompt\": \"…\"}\n"
+        "\n"
+        "EXAMPLES — notice the output is IDENTICAL because style is handled separately by the renderer:\n"
+        "\n"
+        "Example 1:\n"
+        "  narration: \"A junglefowl in short reluctant flight over bamboo undergrowth\"\n"
+        "  api_style: \"Watercolor\"\n"
+        "  → {\"visual_prompt\": \"A wild junglefowl in mid-flight, wings flared and tilted downward, "
+        "only a couple of meters above the bamboo forest floor. Alert defensive posture. Dense bamboo "
+        "undergrowth surrounds it.\"}\n"
+        "\n"
+        "Example 2:\n"
+        "  narration: \"A junglefowl in short reluctant flight over bamboo undergrowth\"\n"
+        "  api_style: \"Pop art\"\n"
+        "  → {\"visual_prompt\": \"A wild junglefowl in mid-flight, wings flared and tilted downward, "
+        "only a couple of meters above the bamboo forest floor. Alert defensive posture. Dense bamboo "
+        "undergrowth surrounds it.\"}\n"
+    )
+
+    _char = (req.character or "").strip()
+    _brief = (req.brief or "").strip()
+    usr_parts = [f"narration: {narr}", f"api_style: {req.api_style or '(none)'}", f"tier: {req.tier or 'color'}"]
+    if _char:
+        usr_parts.append(f"character: {_char}")
+    if _brief:
+        usr_parts.append(f"brief (context only — do NOT copy style words from it): {_brief}")
+    usr_parts.append("Return strict JSON only: {\"visual_prompt\": \"…\"}")
+    usr = "\n".join(usr_parts)
+
+    def _extract(text):
+        t = (text or "").strip()
+        if t.startswith("```"):
+            t = _re.sub(r"^```[a-zA-Z]*\n?", "", t)
+            t = _re.sub(r"\n?```\s*$", "", t).strip()
+        try:
+            return json.loads(t)
+        except Exception:
+            m = _re.search(r"\{.*\}", t, _re.S)
+            if not m:
+                raise
+            return json.loads(m.group(0))
+
+    # Model is env-overridable. Default gemini-2.5-flash-lite (fast + cheap + strong JSON).
+    # Deliberately ignores req.model (avoids weak-JSON narasi models like DeepSeek).
+    _reframe_model = os.environ.get("WB_REFRAME_MODEL") or "gemini-2.5-flash-lite"
+
+    prompt = None
+    try:
+        _client = make_client(_reframe_model)
+        msgs = [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
+
+        def _call(use_fmt):
+            kw = dict(model=_reframe_model, messages=msgs, temperature=0.4, max_tokens=2500)
+            if use_fmt:
+                kw["response_format"] = {"type": "json_object"}
+            return _client.chat.completions.create(**kw)
+
+        try:
+            resp = await asyncio.to_thread(lambda: _call(True))
+        except Exception as fmt_err:
+            print(f"[video/wb-reframe] json_object rejected ({fmt_err}); retrying plain")
+            resp = await asyncio.to_thread(lambda: _call(False))
+        content = resp.choices[0].message.content
+        try:
+            cand = _extract(content)
+        except Exception:
+            cand = None
+        if cand:
+            vp = (cand.get("visual_prompt") or "").strip()
+            vp = _strip_style_adjectives(vp)
+            if vp and len(vp) >= 30:
+                prompt = {"visual_prompt": vp}
+    except Exception as e:
+        print(f"[video/wb-reframe] make_client path failed: {e}")
+
+    if prompt is None:
+        try:
+            txt = await asyncio.to_thread(_vertex_text, sys, usr)
+            if txt:
+                cand = _extract(txt)
+                vp = (cand.get("visual_prompt") or "").strip() if cand else ""
+                vp = _strip_style_adjectives(vp)
+                if vp and len(vp) >= 30:
+                    prompt = {"visual_prompt": vp}
+        except Exception as e:
+            print(f"[video/wb-reframe] vertex-oauth fallback failed: {e}")
+
+    result = {"prompt": prompt}                # prompt may be null → client falls back to raw scene.visualPrompt
+
+    # ── Cache write (only on success) ─────────────────────────────────────
+    if prompt is not None:
+        try:
+            _cli = rc.client()
+            if _cli:
+                await _cli.set(_cache_key, json.dumps(result), ex=7 * 24 * 3600)
+        except Exception as _e:
+            print(f"[video/wb-reframe] cache set failed (non-fatal): {_e}")
+
+    return result
+
+
 # ── NON-WB per-scene Visual Director (Visual Worker) ─────────────────────────
 # Mirrors the WB plan-engine pattern (whiteboard-plan route above), but for the NON-WB visualModes
 # (full_images / hybrid / full_clips). Replaces the regex-based per-scene visualPrompt built by

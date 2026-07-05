@@ -1,5 +1,5 @@
 import React from "react";
-import { interpolate, useCurrentFrame } from "remotion";
+import { getInputProps, interpolate, useCurrentFrame } from "remotion";
 import { Hand } from "./Hand";
 import type { Shape, Stroke } from "../types";
 
@@ -72,7 +72,14 @@ export const RasterRevealIllustration: React.FC<{
   // GOLPO-STYLE: forms drawn ONE AFTER ANOTHER along the nearest-neighbour path — for each, the pen
   // traces its ink outline then its colour fills. Each form's TIME ∝ its outline length (d-string
   // proxy) so big forms draw slower (natural) + even pacing. A catch-up band fills light regions.
-  const inkW = Math.max(1.6, (vw || 100) / 340);
+  // 2026-07-05 Rino: Detail-mode (Illustration/Photorealism/Watercolor/Hand-drawn/etc.) ink outlines
+  // looked too heavy over the raster. Threaded via inputProps (spec.inkDivisor set in render.mjs
+  // from env WB_RASTER_INK_DIVISOR; default 340 = unchanged). Raise to 680 to halve the outline
+  // width uniformly across every raster-reveal render. inkW floor stays 1.6 so hairline strokes
+  // never drop below the pixel grid. Remotion browser context can't read process.env directly —
+  // getInputProps() is the standard escape hatch to receive Node-side config.
+  const _rasterInkDiv = ((getInputProps() as { inkDivisor?: number }).inkDivisor) || 340;
+  const inkW = Math.max(1.6, (vw || 100) / _rasterInkDiv);
   const N = units.length;
   const lens = units.map((u) => Math.max(1, u.d.length));
   const totLen = lens.reduce((a, c) => a + c, 0) || 1;
