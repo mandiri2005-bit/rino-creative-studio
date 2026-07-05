@@ -18,6 +18,35 @@ import * as storage from "../storage.mjs";
 import { query } from "../db.js";
 import * as conc from "./concurrency.mjs";   // per-plan parallel-job cap (Phase 3)
 import { modeRequiredTier, tierAtLeast } from "./mode_gate.mjs";   // global VI mode tier gate
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+// 6-tier WB catalog (2026-07-05): the RENDERER (whiteboard/render.mjs, engine no-touch) reads
+// meta.whiteboardGenre — "color" | "detail" | "diagram" | "lineart" — to pick DrawReveal vs
+// SceneView vs handwriting. With the tier picker, FE no longer sends whiteboard_genre; we must
+// DERIVE it from the tier catalog so a Regular Color job doesn't silently render as lineart
+// (root cause of the 2026-07-05 handwriting bug: meta.whiteboardGenre defaulted to "lineart",
+// buildIllustration was never called even though the Recraft SVG was cached to disk).
+const _WB_CATALOG = (() => {
+  try {
+    const _here = dirname(fileURLToPath(import.meta.url));
+    return JSON.parse(readFileSync(join(_here, "whiteboard/recraft_catalog.json"), "utf8"));
+  } catch (e) { console.warn(`[routes] WB catalog unavailable: ${e.message} — tier→genre mapping DISABLED`); return { tiers: [] }; }
+})();
+const _WB_TIER_TO_GENRE = Object.fromEntries((_WB_CATALOG.tiers || []).map((t) => [t.tier, t.genre]));
+
+function deriveWhiteboardGenre(body) {
+  // Explicit whiteboard_genre wins (BC + power users bypassing wizard). Else map tier → genre
+  // via the catalog. Ultra/Lite catalog genre = "plan"; they hit the plan-mode renderer which
+  // reads the whole plan JSON, so meta.whiteboardGenre for those tiers isn't rendered by
+  // buildIllustration — but we still emit "color" (their spiritual sibling) so legacy log
+  // lines / mode-tier gate treat them consistently with the color family.
+  if (body.whiteboardGenre) return body.whiteboardGenre;
+  const g = _WB_TIER_TO_GENRE[body.whiteboard_tier];
+  if (g === "plan") return "color";
+  return g || "";
+}
 
 const PYTHON_API = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 // Avatar is a flag-gated VI mode (Slice 1 = mode plumbing only, NO render / NO charge).
@@ -148,9 +177,12 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
       //    mode BEFORE taking a concurrency slot or placing a credit hold (no
       //    hold→refund roundtrip). No-op on Indonesia (no mode_min_tier in config).
       //    This is where Recraft is gated: Color=starter+, Realistis(detail)=plus+.
-      const _reqTier = modeRequiredTier(b.visualMode || "hybrid", b.whiteboardGenre);
+      // Mode-tier gate: catalog-derived genre so a whiteboard_tier-based request gets the same
+      // Color=starter+ / Realistic=plus+ gating as a legacy whiteboard_genre request.
+      const _gateGenre = deriveWhiteboardGenre(b);
+      const _reqTier = modeRequiredTier(b.visualMode || "hybrid", _gateGenre);
       if (_reqTier && !tierAtLeast(_plan, _reqTier)) {
-        const _modeKey = b.visualMode === "whiteboard" ? ("wb:" + (b.whiteboardGenre || "lineart")) : (b.visualMode || "hybrid");
+        const _modeKey = b.visualMode === "whiteboard" ? ("wb:" + (_gateGenre || "lineart")) : (b.visualMode || "hybrid");
         return res.status(403).json({ error: "feature_not_available", required_plan: _reqTier, mode: _modeKey, plan: _plan,
           message: `This mode needs the ${_reqTier} plan or higher — upgrade to unlock it.` });
       }
@@ -181,10 +213,14 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
           anchorKey = a.key; anchorB64 = a.b64;
         } catch (e) { console.warn(`[anchor ${jobId}] failed (non-fatal): ${e.message}`); }
       }
+      // Derive whiteboardGenre from the tier catalog so render.mjs (engine no-touch) picks the
+      // correct branch (color→DrawReveal / detail→SceneView). Missing tier → keep the raw body
+      // value (BC with older FE clients that still send whiteboard_genre directly).
+      const _wbGenre = deriveWhiteboardGenre(b);
       const result = await startAssembly({
         jobId, tenantId, userId, scenes,
         tier: b.tier || "hd", clipModel: b.clipModel || "veo3",
-        visualMode: b.visualMode || "hybrid", whiteboardGenre: b.whiteboardGenre,
+        visualMode: b.visualMode || "hybrid", whiteboardGenre: _wbGenre,
         // 6-tier WB catalog (2026-07-05): FE picker sends 5 fields — persist on job meta so
         // resolveWBVariant() in workers.mjs can route via the catalog (Ultra/Lite = plan-mode +
         // svg_ffmpeg, Premium/Regular = legacy Remotion). Missing = falls back to legacy per
