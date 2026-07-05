@@ -735,6 +735,17 @@ STYLES["ironic_moral_fable"]["style_spec"] = {
     "ratios": {"repetition_bureaucracy_ratio_max": 0.15},
     "positive_exemplars": [],
 }
+# DALANG_MORALISTE_CALIBRATION: recalibrated caps for moraliste register.
+# Baseline (moral_asides_max=3) false-blocked a real 9.0/10 Dutch narasi
+# (Goedgemutst/EthiClean) with 10 aphoristic asides — moraliste voice USES
+# asides as a genre marker; strict cap punishes correct style. Raise to 8;
+# add narrator_opening_formula_budget=3 (audit found 6/6 formulaic openers,
+# R4 in the review); add final_image_required=True (audit R5).
+import os as _os_moraliste
+if _os_moraliste.environ.get("DALANG_MORALISTE_CALIBRATION") == "1":
+    STYLES["ironic_moral_fable"]["style_spec"]["counters"]["moral_asides_max"] = 8
+    STYLES["ironic_moral_fable"]["style_spec"]["counters"]["narrator_opening_formula_budget"] = 3
+    STYLES["ironic_moral_fable"]["style_spec"]["final_image_required"] = True
 
 
 # ── category-level register/style defaults (P0 rollout, Rino 2026-07-05)

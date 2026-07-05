@@ -230,12 +230,17 @@ _EXTRA_PACKS: dict[str, dict[str, Any]] = {
     },
     "nl": {
         "hedge_value": "ongeveer {v}", "hedge_prose": "verscheidene",
-        # "circa" is native Dutch too — excluded.
+        # native_hedge_whitelist below moves the "circa" exclusion from comment → data.
         "foreign_tokens": {"several": "verscheidene", "around": "ongeveer", "roughly": "ruwweg",
                            "approximately": "bij benadering", "about": "ongeveer",
                            "some": "enkele", "nearly": "bijna", "tbd": ""},
         "aporia": re.compile(r"(?i)(?:de\s+bronnen\s+vermelden\s+niet|geen\s+verslag|"
                              r"valt\s+niet\s+vast\s+te\s+stellen)"),
+        # DALANG_MORALISTE_CALIBRATION additions. Consumers must guard reads on the flag.
+        "native_hedge_whitelist": {"enkele", "circa"},  # resolves 'enkele' double-classification bug + moves 'circa' from comment to data
+        "tech_loan_tokens": {"feature": "functie", "dashboard": "overzicht",
+                             "update": "actualisering", "user": "gebruiker",
+                             "subscription": "abonnement"},
     },
     "vi": {
         "hedge_value": "khoảng {v}", "hedge_prose": "vài",

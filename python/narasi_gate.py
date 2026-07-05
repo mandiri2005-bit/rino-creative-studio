@@ -621,6 +621,65 @@ def terminal_scan(text: str) -> list[str]:
     return hits
 
 
+def _MORALISTE_CALIBRATION_ON() -> bool:
+    return os.environ.get("DALANG_MORALISTE_CALIBRATION") == "1"
+
+
+# R-FG11 narrator-opening formulas: canned rhetorical openers per language.
+# Extend by adding new lang keys; each value is a list of anchored regex patterns.
+_NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
+    "nl": [r"^\s*Sta ons toe\b", r"^\s*Beschouw,?\s+als u wilt\b"],
+    "en": [r"^\s*Allow (us|me) to introduce\b", r"^\s*Consider,?\s+if you will\b"],
+}
+
+# Chapter-heading splitter (permissive multi-lang): Dutch, English, Indonesian,
+# Spanish/Portuguese, German, French, CJK numbered chapter markers.
+_CHAPTER_SPLIT_RX = re.compile(
+    r"(?im)^\s*(?:Hoofdstuk|Chapter|Bab|Cap[íi]tulo|Kapitel|Chapitre|"
+    r"第\s*\S+\s*章|제\s*\S+\s*장)\b[^\n]*$"
+)
+
+
+def narrator_opening_ratio_scan(text: str, lang: str = "en",
+                                ratio_max: float = 0.5) -> tuple[float, int, int]:
+    """R-FG11: fraction of chapters whose first prose line matches a canned
+    narrator-opening formula for `lang`. Returns (ratio, matched, total).
+    Empty text / unknown lang / zero chapters → (0.0, 0, 0)."""
+    if not text:
+        return 0.0, 0, 0
+    formulas = _NARRATOR_OPENING_FORMULAS.get(lang) or []
+    if not formulas:
+        return 0.0, 0, 0
+    try:
+        compiled = [re.compile(p) for p in formulas]
+    except re.error:
+        return 0.0, 0, 0
+    # Split on chapter headings; drop the pre-first-heading preamble if any
+    # headings exist, otherwise treat the whole text as one chapter.
+    parts = _CHAPTER_SPLIT_RX.split(text)
+    if len(parts) > 1:
+        chapters = parts[1:]
+    else:
+        chapters = parts
+    matched = 0
+    total = 0
+    for ch in chapters:
+        # First non-empty line of the chapter body.
+        first_line = ""
+        for ln in (ch or "").splitlines():
+            if ln.strip():
+                first_line = ln
+                break
+        if not first_line:
+            continue
+        total += 1
+        if any(rx.match(first_line) for rx in compiled):
+            matched += 1
+    if total == 0:
+        return 0.0, 0, 0
+    return (matched / total), matched, total
+
+
 def gate_text(text: str, lang: str = "en", mode: str = "book", *,
               vo_strip: bool = True) -> tuple[str, dict[str, Any]]:
     """Full deterministic gate: known-bad correct → resolve flags (localized) → marker
@@ -648,6 +707,13 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
         if vo_strip:
             out, n_markers = strip_markers(out)
         out, foreign = foreign_token_scan(out, lang=lang)
+        if _MORALISTE_CALIBRATION_ON():
+            _r, _m, _t = narrator_opening_ratio_scan(out, lang=lang)
+            stats["narrator_opening_ratio"] = _r
+            stats["narrator_opening_matched"] = _m
+            stats["narrator_opening_total"] = _t
+            if _r > 0.5:
+                stats["r_fg11_violation"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.

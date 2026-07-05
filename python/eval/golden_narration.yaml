@@ -139,3 +139,51 @@ cases:
         - "Borobudur ana ing Magelang, Jawa Tengah."
       forbidden_facts:
         - "Borobudur ana ing Bali."
+
+  # --- 6. Fiction, Dutch, ironic_moral_fable — F7 Goedgemutst/EthiClean moraliste ---
+  - id: goedgemutst_nl_moraliste
+    topic: "een stadje besteedt zijn geweten uit aan een SaaS-abonnement"
+    style: ironic_moral_fable
+    language: nl
+    mode: text
+    fiction: true
+    chapters:
+      - title: "Het morele overschot van Goedgemutst"
+        summary: "Kleine stad lijdt aan ethical fatigue — moral overload paralyzes daily life. Gemeenteraad stemt om geweten uit te besteden."
+        word_target: 550
+      - title: "De geboorte van EthiClean Inc."
+        summary: "Consultant Florian Drecht arriveert; verkoopt Ethical-SaaS-app; bouwt morele motor; adoptie explodeert."
+        word_target: 550
+      - title: "De utopie van de gewetenlozen"
+        summary: "Drie maanden later — stad bloeit; niemand voelt schuld; consumptie stijgt; kleine lettertjes accumuleren."
+        word_target: 550
+      - title: "Het premium-tarief voor empathie"
+        summary: "App splitst in tiers (Basis Fatsoen / Premium Rechtvaardigheid / Platina Genade); klassenscheiding via moral abonnement."
+        word_target: 550
+      - title: "De grote morele crash"
+        summary: "EthiClean failliet; consultants verdwijnen; opgepotte schuld keert rauw terug; stad bevriest."
+        word_target: 550
+      - title: "De prijs van de deugd: Een bittere balans"
+        summary: "Nasleep — geweten als geatrofieerd orgaan; besluit dat men het niet meer kan dragen; ends on final sensory image."
+        word_target: 550
+    expectations:
+      recurring_entities: ["Goedgemutst", "EthiClean", "Florian Drecht", "Mevrouw Veldkamp"]
+      required_moves: ["protagonist_psychological_layer", "contingent_institution_reveal"]
+      forbidden_phrases:
+        - "Het is een bescheiden les"
+        - "The lesson is simple"
+      # F7 signal invariants — read by future eval/run.py extension.
+      # For now these are documentary: they encode the audit's required asserts.
+      signal_asserts:
+        chapter_count: 6
+        chapter_label_prefix: "Hoofdstuk"
+        foreign_leak_count_max: 0
+        numeric_placeholders_max: 0
+        banned_tell_hits_max: 0
+        narrator_opening_ratio_max: 0.5
+        moral_asides_max: 8
+        moral_asides_hard_max: 12
+        merk_op_min: 1
+        final_image_present: true
+        antagonist_name_in_first_and_last: "Florian Drecht"
+        emotional_anchor_name: "Mevrouw Veldkamp"
