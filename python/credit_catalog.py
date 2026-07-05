@@ -195,8 +195,13 @@ _DEFAULT_VIDEO_USD_PER_SEC: dict[str, float] = {
     "wan":            0.05,
     "runway":         0.20,
     # Whiteboard render (Opt B): flat SELL price per second of output video (render
-    # compute ≈ $0). Markup-exempt in _op_markup so credits == 3/sec exactly.
-    "whiteboard":     0.03,
+    # compute ≈ $0). Markup-exempt in _op_markup so credits stay linear per sec.
+    # 2026-07-05 Rino (feat/subscription-global): rate was $0.03/sec (= 3 cr/sec when
+    # CREDIT_USD_VALUE=$0.01, matching the original intent). Wimba runs at
+    # CREDIT_USD_VALUE=$0.002 which silently turned the same $0.03/sec into 15 cr/sec —
+    # a 5× hike Rino never approved. Reset to $0.006/sec → 3 cr/sec at $0.002/cr,
+    # keeps 3 cr/sec at $0.01/cr too. Env `WB_RENDER_USD_PER_SEC` overrides.
+    "whiteboard":     float(os.getenv("WB_RENDER_USD_PER_SEC", "0.006")),
 }
 _DEFAULT_VIDEO_USD_PER_SEC_DEFAULT = 0.50
 _DEFAULT_VIDEO_DEFAULT_SECONDS = 8     # a Veo/Sora clip is ~8s when length unknown
@@ -521,10 +526,18 @@ def credit_cost(operation: str, model: str, units: Union[int, float, dict]) -> i
     """Credits to charge for `operation` on `model` consuming `units`.
     This is the function the metering middleware calls. See operation_usd for the
     meaning of `units` per operation. Image/video carry a harga-jual markup; image
-    sell price is additionally rounded UP to the next multiple of IMG_CREDIT_ROUNDUP."""
+    and WB render (video/whiteboard) sell prices are additionally rounded UP to the
+    next multiple of IMG_CREDIT_ROUNDUP for a cleaner UX (never mid-5 pricing)."""
+    op = (operation or "").lower()
     usd = operation_usd(operation, model, units)
     credits = usd_to_credits(usd * _op_markup(operation, model, units, usd))
-    if (operation or "").lower() == "image":
+    if op == "image":
+        credits = _roundup_credits(credits)
+    # 2026-07-05 Rino: WB render fee also gets the kelipatan-5 roundup so a 42s job
+    # (3 × 42 = 126 cr) lands at 130 cr instead of a weird 126, matching how image
+    # meters already look on the badge. Only video/whiteboard — Veo/Sora keep their
+    # per-second precision.
+    elif op == "video" and (model or "").lower().startswith("whiteboard"):
         credits = _roundup_credits(credits)
     return credits
 
