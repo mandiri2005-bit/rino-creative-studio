@@ -187,3 +187,59 @@ cases:
         final_image_present: true
         antagonist_name_in_first_and_last: "Florian Drecht"
         emotional_anchor_name: "Mevrouw Veldkamp"
+
+  # --- F11. Phase 1 infra: CJK word_count fix (JJ) ---------------------------
+  # Documentary fixture (audit-derived). Sample-9 Salt (zh) reported "169 字" for a
+  # ~13k-character narasi; sample-12 Sahara (ja) reported "143 語" for a ~10k-char
+  # narasi. Both driven by `words = len(book.split())` producing 1-3 tokens on CJK
+  # scripts. Phase 1 patch JJ (gated on DALANG_INFRA_FIXES=1) detects zh/ja/ko/th
+  # and counts printable-alpha chars instead. Flag-OFF preserves prior behavior.
+  - id: infra_cjk_wordcount_zh
+    topic: "盐 — 建立与摧毁矿物"
+    style: harari
+    language: zh
+    mode: text
+    fiction: false
+    n_chapters: 1
+    words_per_chapter: 200
+    expectations:
+      recurring_entities: ["盐"]
+      verify_expected: false
+      style_contains: []
+      style_forbidden: []
+      # Signal invariants — read by future eval/run.py extension.
+      signal_asserts:
+        infra_fixes_flag_required: true
+        cjk_wordcount_uses_char_count: true
+        # Under the fix, a ~10k-char CJK narasi must not report <1000 words.
+        min_reported_words_10k_chars: 1000
+
+  # --- F12. Phase 1 infra: chapter double-prefix + markdown leak (O + JJJ) ---
+  # Documentary fixture (audit-derived). Sample-5 FR "Chapitre 1: Chapitre 1:"
+  # (flavor A double), sample-9 zh "第1章: 第一章:" (flavor B numeric+ordinal),
+  # sample-7 DE "Chapter N:" instead of "Kapitel N:" (flavor C wrong-lang), and
+  # sample-15 SW Ch2 "## Bab 2:" (JJJ markdown leak). Phase 1 patches gated on
+  # DALANG_INFRA_FIXES=1 collapse or rewrite all four. Flag-OFF is byte-identical.
+  - id: infra_chapter_prefix_cleanup
+    topic: "Documentary: chapter-heading pipeline hygiene"
+    style: harari
+    language: en
+    mode: text
+    fiction: false
+    n_chapters: 1
+    words_per_chapter: 100
+    expectations:
+      recurring_entities: []
+      verify_expected: false
+      style_contains: []
+      style_forbidden: []
+      signal_asserts:
+        infra_fixes_flag_required: true
+        # After _retrofit_legacy_chapter_labels() with flag ON, no chapter heading
+        # should contain the same "Word N:" prefix twice (flavor A) OR a "第N章:
+        # 第<ordinal>章:" sequence (flavor B) OR a foreign chapter word on the
+        # wrong language (flavor C) OR non-"## " heading marker (JJJ).
+        double_prefix_collapse: true
+        zh_numeric_ordinal_collapse: true
+        foreign_prefix_rewrite: true
+        markdown_leak_normalize: true

@@ -843,7 +843,22 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 lang_label = _resolve_narasi_lang(language)
             except Exception:  # noqa: BLE001
                 lang_label = language
+            # JJ (Phase 1 patch — DALANG_INFRA_FIXES): CJK tokenizer word_count fix.
+            # `.split()` on CJK produces 1-3 tokens for entire narasi (sample-9 Salt 169字
+            # claimed vs ~13k chars; sample-12 Sahara 143語 claimed vs ~10k chars). For CJK
+            # scripts count printable-alpha chars instead; non-CJK unchanged.
             words = len(book.split())
+            try:
+                from narasi_gate import _INFRA_FIXES_ON as _phase1_on  # local import to keep cycle-free
+            except Exception:  # noqa: BLE001
+                _phase1_on = lambda: False  # noqa: E731
+            if _phase1_on():
+                _lang_code = str(language or "").strip().lower().replace("_", "-").split("-", 1)[0]
+                if _lang_code in ("zh", "ja", "ko", "th"):
+                    # Count Unicode alpha chars only — skips whitespace, punctuation,
+                    # and the frontmatter markdown noise. Matches how CJK readers
+                    # actually measure narasi length ("字/文字/字符").
+                    words = sum(1 for _c in book if _c.isalpha())
             # Gaya shows the DISPLAY name ("Big History"), never the raw registry key
             # ("harari") the FE submits.
             _style_label = style or "narasi"
@@ -854,6 +869,24 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 pass
             # v4 §5: header gains the Output field so the editor/dual-path filters are auditable.
             _out_path = "video" if str(body.get("mode") or "").strip() == "video" else "book"
+            # UUUUU (Phase 1 patch — DALANG_INFRA_FIXES): metadata output_type default bug.
+            # CROSS-7-SAMPLE (sample-3 Oberon + sample-4 Flannan + sample-6 Vale + sample-7
+            # Drifting-Station + sample-11 King-Rain-v2 + sample-12 Sahara + sample-10
+            # Chicken) all mislabel non-video output as `Output: book`, including VO-first
+            # styles (popular_science, natgeo, cinematic_voiceover). Consult the style's
+            # pakem metadata: medium_origin=ear or output_support=video_only → emit
+            # "narration". `body["mode"] == "video"` continues to force "video" for the
+            # explicit VI path. Non-VO styles unchanged (default "book").
+            if _phase1_on() and _out_path == "book":
+                try:
+                    from pakem import resolve_style as _rs_p1  # cycle-free local import
+                    _sp = _rs_p1(style) or {}
+                    _mo = str(_sp.get("medium_origin", "")).strip().lower()
+                    _os = str(_sp.get("output_support", "")).strip().lower()
+                    if _mo == "ear" or _os == "video_only":
+                        _out_path = "narration"
+                except Exception:  # noqa: BLE001
+                    pass
             # Header labels rendered in the narrative's own language (id/en/es/fr/de/pt/nl/it/
             # ja/ko/zh/ar/hi/th/vi/ms/jv/su/tl); unknown language → English fallback.
             _lbl = _narasi_header_labels(language)

@@ -8468,14 +8468,94 @@ def _chapter_label(language: str, n) -> str:
 import re as _re_chap
 _LEGACY_BAB_RE = _re_chap.compile(r'^(##\s+)Bab\s+(\d+)([:\s])', _re_chap.MULTILINE)
 
+# Patch O flavor A (Phase 1 — DALANG_INFRA_FIXES): literal same-language double-prefix.
+# Sample-5 (FR "Chapitre 1: Chapitre 1:") + sample-16 (VI "Chương 1: Chương 1:"): pipeline
+# prepended the chapter prefix and the LLM also emitted its own → double. Collapses to
+# "## Word N: Title" regardless of language. Match requires the SAME word+digit repeated.
+_DOUBLE_PREFIX_RE = _re_chap.compile(
+    r'(?m)^(##\s+)([^:\n]+?\s+\d+):\s*\2:\s*'
+)
+
+# Patch O flavor B (Phase 1): Chinese numeric+ordinal redundancy.
+# Sample-9 Salt "第1章: 第一章:" — arabic-numeric header + Chinese-ordinal header. ZH-only
+# in the corpus; JA/KO chapter headers use different scripts and don't collide this way.
+# The capture group INCLUDES the numeric prefix ("## 第1章:") so the substitution preserves
+# it and drops only the redundant ordinal form; a colon-less title stays inline.
+_ZH_NUM_ORDINAL_RE = _re_chap.compile(
+    r'(?m)^(##\s+第\s*\d+\s*章:)\s*第\s*[一二三四五六七八九十百]+\s*章:\s*'
+)
+
+# Patch O flavor C (Phase 1): wrong-language chapter prefix.
+# Sample-7 Drifting-Station DE has "Chapter" (should be "Kapitel"); sample-15 Dawn SW has
+# "Chapter" (should be "Sura ya"); sample-10 Chicken had "Bab" on EN. Rewrite any foreign-
+# language chapter word to the current language's canonical prefix. The legacy _LEGACY_BAB_RE
+# already handles "Bab N:" on non-Indo narasi; this extends to other common chapter words.
+_FOREIGN_CHAPTER_WORDS = ("Chapter", "Chapitre", "Kapitel", "Capítulo", "Capitulo",
+                          "Capitolo", "Hoofdstuk", "Kabanata", "Chương", "Chapter")
+_FOREIGN_CHAP_RE = _re_chap.compile(
+    r'^(##\s+)(' + '|'.join(_re_chap.escape(w) for w in set(_FOREIGN_CHAPTER_WORDS)) +
+    r')\s+(\d+)([:\s])',
+    _re_chap.MULTILINE
+)
+
+# JJJ markdown-syntax leak (Phase 1): sample-15 Dawn SW Ch2 has "## Bab 2:" but the LLM
+# also emits `### Bab 2:` or worse — the assembled narasi ends up with H3/H4 chapter
+# headings that break the stitcher's chapter-splitter (`## ` prefix). Narasi output is
+# canonically all `## ` for chapter headings; any `###+` at line-start is always a leak.
+# We rewrite `###+` to `##` unconditionally at line-start; this is language-agnostic and
+# does not need to detect chapter-word content. Author-intended sub-headings within a
+# chapter would be rendered as bold or em-dashed prose in this pipeline, not as `###`.
+_MD_LEAK_RE = _re_chap.compile(r'^#{3,6}(\s+)', _re_chap.MULTILINE)
+
 
 def _retrofit_legacy_chapter_labels(md: str, language: str) -> str:
     """Rewrite '## Bab N:' headings baked into legacy stored markdown to the CURRENT
     language's chapter format. No-op for id/ms/jv/su (Indo family — Bab is correct) and
-    for narratives with no legacy heading to convert."""
+    for narratives with no legacy heading to convert.
+
+    Phase 1 (DALANG_INFRA_FIXES): additionally collapses same-language double-prefixes
+    (patch O flavor A), Chinese numeric+ordinal redundancy (flavor B), foreign-language
+    prefixes on the wrong-language narasi (flavor C), and markdown-heading-level leaks
+    (JJJ). Flag-OFF preserves the pre-Phase-1 behavior byte-identically."""
     if not md or not language:
         return md
     code = str(language).strip().lower().replace("_", "-").split("-", 1)[0]
+    # Phase 1 pass runs BEFORE the legacy-Bab retrofit so an "## Bab 1: Bab 1:" survivor
+    # gets its A-flavor duplicate collapsed first, then the legacy retrofit rewrites the
+    # single "Bab" into the target language (for non-Indo codes).
+    try:
+        from narasi_gate import _INFRA_FIXES_ON as _phase1_on  # cycle-free local import
+    except Exception:  # noqa: BLE001
+        _phase1_on = lambda: False  # noqa: E731
+    if _phase1_on():
+        # (JJJ) Normalize any '###+' heading marker at line-start to '##'. Language-
+        # agnostic; narasi output is canonically all '## ' for chapter headings and
+        # sub-headings are rendered as bold or em-dashed prose, never as '###'.
+        md = _MD_LEAK_RE.sub(r'##\1', md)
+        # (O flavor A) Collapse literal same-language double-prefix.
+        md = _DOUBLE_PREFIX_RE.sub(r'\1\2: ', md)
+        # (O flavor B) Collapse Chinese numeric+ordinal redundancy → keep numeric form + a
+        # single trailing space so the title stays legible after the collapse.
+        md = _ZH_NUM_ORDINAL_RE.sub(r'\1 ', md)
+        # Re-derive after JJJ+A+B normalization; keeps the closure working on cleaned md.
+        # (O flavor C) Rewrite foreign-language chapter prefixes to the current language.
+        _current_word = ""
+        try:
+            _sample = _chapter_label(language, 1)
+            if _sample and _sample.strip():
+                _current_word = _sample.strip().split()[0]
+        except Exception:  # noqa: BLE001
+            pass
+        def _foreign_repl(m):
+            _found_word = m.group(2)
+            if _current_word and _found_word == _current_word:
+                # Already in the target language; skip.
+                return m.group(0)
+            try:
+                return f"{m.group(1)}{_chapter_label(language, int(m.group(3)))}{m.group(4)}"
+            except (ValueError, TypeError):
+                return m.group(0)
+        md = _FOREIGN_CHAP_RE.sub(_foreign_repl, md)
     if code in ("id", "ms", "jv", "su"):
         return md   # native Indo languages — Bab is correct, don't touch
     def _repl(m):

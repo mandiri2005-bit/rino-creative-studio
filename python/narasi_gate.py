@@ -625,6 +625,40 @@ def _MORALISTE_CALIBRATION_ON() -> bool:
     return os.environ.get("DALANG_MORALISTE_CALIBRATION") == "1"
 
 
+def _INFRA_FIXES_ON() -> bool:
+    """Phase 1 corpus-audit infra bundle (patches W + O flavor A/B/C + JJJ + JJ + UUUUU).
+    All gated OFF by default; set DALANG_INFRA_FIXES=1 on the python service to activate.
+    Flag-OFF is byte-identical to prior behavior.
+
+    Sources: cross-15-sample audit 2026-07-05 surfaced 5 config/infra bugs that live
+    at the pipeline boundary rather than the LLM: metadata `Output: book` mislabel for
+    VO scripts (UUUUU, CROSS-7-SAMPLE), CJK word-count tokenizer (JJ, CROSS-2-SAMPLE),
+    chapter-title double-prefix in 3 flavors (patch O A/B/C, CROSS-5-LANG), markdown-
+    syntax leak in chapter titles (JJJ), and back-to-back duplicate-token typos (W)."""
+    return os.environ.get("DALANG_INFRA_FIXES") == "1"
+
+
+# W repeat_token_scan (Phase 1 patch): cross-language back-to-back duplicate-word detector.
+# Detects `os os ombros`-style typos where the same token appears twice consecutively.
+# Unicode-word-boundary aware; case-insensitive; requires ≥2 chars to skip pronoun collisions
+# ('la la', 'na na', 'ya ya' — legit interjections). Deterministic, cross-lang.
+_REPEAT_TOKEN_RX = re.compile(r"(?iu)\b(\w{2,})\s+\1\b")
+
+
+def repeat_token_scan(text: str) -> tuple[int, list[str]]:
+    """R-FG-W: back-to-back duplicate-token count + up to 10 sample matches.
+    Empty text → (0, []). Deterministic; unicode-aware."""
+    if not text:
+        return 0, []
+    hits: list[str] = []
+    count = 0
+    for m in _REPEAT_TOKEN_RX.finditer(text):
+        count += 1
+        if len(hits) < 10:
+            hits.append(m.group(0)[:60])
+    return count, hits
+
+
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
 # Extend by adding new lang keys; each value is a list of anchored regex patterns.
 _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
@@ -714,6 +748,16 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["narrator_opening_total"] = _t
             if _r > 0.5:
                 stats["r_fg11_violation"] = True
+        if _INFRA_FIXES_ON():
+            _rt_count, _rt_samples = repeat_token_scan(out)
+            stats["repeat_token_count"] = _rt_count
+            stats["repeat_token_samples"] = _rt_samples
+            if _rt_count > 2:
+                # Corpus signal: sample-6 Vale (PT) 'os os ombros', sample-16 Wheat
+                # near-verbatim Larsen re-intro Ch3+Ch5. Threshold conservative — a
+                # legitimate refrain ('há tempo, há tempo, há tempo') will typically
+                # trip 1-2 hits per narasi and stay under.
+                stats["r_fg_w_violation"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
