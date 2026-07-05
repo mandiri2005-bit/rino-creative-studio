@@ -13,13 +13,32 @@ import { DEFAULT_FPS, DEFAULT_CANVAS } from "./schema.mjs";
 import { resolveStylePack } from "./stylePacks.mjs";
 import { resolveIcon } from "./iconlibs.mjs";
 
-export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict = true } = {}) {
+export function resolvePlan(planOrPath, {
+  assetsDir,
+  fps = DEFAULT_FPS,
+  strict = true,
+  recraftOnly,
+  recraftModel,
+  recraftStyle,
+  iconFallbackStyle,
+} = {}) {
   const plan = typeof planOrPath === "string" ? JSON.parse(readFileSync(planOrPath, "utf8")) : planOrPath;
 
   const validation = validateWhiteboardPlan(plan);
   if (!validation.ok && strict) {
     throw new Error("Invalid whiteboard plan:\n - " + validation.errors.join("\n - "));
   }
+
+  // Per-tier ladder opts — caller-provided values win, otherwise pull from plan meta / scene ctx.
+  // Meta is the LLM-side hint ("tier":"ultra") the generator drops into whiteboard_visual_plan.
+  const meta = plan.meta || plan.render || {};
+  const tierOpts = {
+    recraftOnly: recraftOnly !== undefined ? recraftOnly
+      : (meta.recraftOnly === true || meta.tier === "ultra" || plan.tier === "ultra"),
+    recraftModel: recraftModel || meta.recraftModel || plan.recraftModel,
+    recraftStyle: recraftStyle || meta.recraftStyle || plan.recraftStyle,
+    iconFallbackStyle: iconFallbackStyle || meta.iconFallbackStyle || plan.iconFallbackStyle,
+  };
 
   const manifest = loadManifest(assetsDir);
   const pack = resolveStylePack(plan.style_pack);          // §O — palette/stroke/font
@@ -145,7 +164,7 @@ export function resolvePlan(planOrPath, { assetsDir, fps = DEFAULT_FPS, strict =
           assetId = r.asset?.id || null; assetSource = "manifest"; license = r.asset?.license || "curated"; fallback = false;
           resolved = true; break;
         }
-        const lib = resolveIcon(cand, { ink: pack.palette.ink, width: pack.stroke.width });
+        const lib = resolveIcon(cand, { ink: pack.palette.ink, width: pack.stroke.width, ...tierOpts });
         if (lib) {
           viewBox = lib.viewBox; assetId = `${lib.lib}:${lib.name}`; assetSource = lib.lib; license = lib.license || "unknown"; fallback = false;
           if (lib.strokes) strokes = lib.strokes;       // lucide / tabler → self-draw strokes

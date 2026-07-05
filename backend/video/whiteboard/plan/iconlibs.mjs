@@ -106,10 +106,36 @@ function bestInLib(qWords, lib) {
 }
 
 // Resolve a query to the best free icon across all libs. minScore avoids weak matches (→ Recraft).
-export function resolveIcon(query, { ink = "#1F2937", width = 4, minScore = 3 } = {}) {
+// Per-tier ladder: LITE (default) runs Lucide→Tabler→Phosphor→Iconify → Recraft "Icon" style on all-miss.
+// ULTRA (recraftOnly=true) SKIPS all free libs and returns a Recraft-generated icon straight away
+// (cache short-circuit lives UPSTREAM in workers.mjs, so we never re-pay for a cached asset).
+export function resolveIcon(query, {
+  ink = "#1F2937",
+  width = 4,
+  minScore = 3,
+  recraftOnly = false,
+  recraftModel,
+  recraftStyle,
+  iconFallbackStyle,
+} = {}) {
+  // ULTRA path — free-lib pipeline is skipped entirely; go straight to Recraft.
+  if (recraftOnly) {
+    const model = recraftModel || "recraftv2_vector";
+    const style = recraftStyle || "Vector art";
+    try { console.log(`[wb-plan-resolve] tier="ultra" query=${JSON.stringify(query)} → ${model}:${style}`); } catch {}
+    const shape = generateRecraftIcon(query, { model, style, ink, width });
+    return shape || null;
+  }
   query = aliasQuery(query); // route common synonyms to a known free icon BEFORE scoring
   const qWords = words(query);
-  if (!qWords.length) return null;
+  if (!qWords.length) {
+    // LITE path — no useful words to score, jump to the Recraft on-miss fallback.
+    const model = "recraftv2_vector";
+    const style = iconFallbackStyle || "Icon";
+    try { console.log(`[wb-plan-resolve] tier="lite" query=${JSON.stringify(query)} → ${model}:${style}`); } catch {}
+    const shape = generateRecraftIcon(query, { model, style, ink, width });
+    return shape || null;
+  }
   let winner = null;
   for (const lib of libs()) {
     const b = bestInLib(qWords, lib);
@@ -118,10 +144,23 @@ export function resolveIcon(query, { ink = "#1F2937", width = 4, minScore = 3 } 
     if (!winner || effective > winner.effective) winner = { ...b, lib, effective };
   }
   // curated libs (Lucide/Tabler/Phosphor) missed → fall to the ~188k Iconify gap-filler (free).
-  if (!winner || winner.score < minScore) return resolveIconify(query, { ink, width });
+  if (!winner || winner.score < minScore) {
+    const iconified = resolveIconify(query, { ink, width });
+    if (iconified) {
+      try { console.log(`[wb-plan-resolve] tier="lite" query=${JSON.stringify(query)} → iconify:${iconified.name || "?"}`); } catch {}
+      return iconified;
+    }
+    // Iconify missed too → PAID Recraft generate-on-miss (LITE style).
+    const model = "recraftv2_vector";
+    const style = iconFallbackStyle || "Icon";
+    try { console.log(`[wb-plan-resolve] tier="lite" query=${JSON.stringify(query)} → ${model}:${style}`); } catch {}
+    const shape = generateRecraftIcon(query, { model, style, ink, width });
+    return shape || null;
+  }
   const { lib } = winner;
   const realName = (lib.aliases && lib.aliases[winner.name]) || winner.name;
   const icon = lib.icons[realName] || winner.icon;
+  try { console.log(`[wb-plan-resolve] tier="lite" query=${JSON.stringify(query)} → ${lib.name}:${realName}`); } catch {}
 
   if (lib.kind === "fill") {
     const shapes = (icon.d || []).map((d) => ({ d, fill: ink }));
@@ -133,6 +172,15 @@ export function resolveIcon(query, { ink = "#1F2937", width = 4, minScore = 3 } 
     if (d) strokes.push({ d, stroke: ink, width });
   }
   return strokes.length ? { lib: lib.name, license: lib.license, name: realName, viewBox: lib.viewBox, strokes } : null;
+}
+
+// Placeholder Recraft-on-miss shim. The REAL generator lives upstream (workers.mjs cache path);
+// resolveIcon is called SYNCHRONOUSLY from resolvePlan so we can't await a Recraft HTTP call here.
+// Returning null lets resolvePlan fall through to the generic placeholder without crashing; the
+// upstream worker path is what actually mints and caches new Recraft SVGs and re-runs resolvePlan
+// with the baked strokes in-plan. The logs above still fire so we see per-element tier decisions.
+function generateRecraftIcon(_query, _opts) {
+  return null;
 }
 
 // is this query covered by ANY free lib? (gates the paid Recraft generate-on-miss)

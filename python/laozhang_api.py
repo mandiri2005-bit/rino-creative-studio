@@ -565,8 +565,78 @@ _IMAGE_COSTS: dict[str, float] = {
     "recraft-v3-vector":   0.08,
     "recraft-vectorize":   0.01,
     "recraft-v3":          0.04,
+    # v2 rows added 2026-07-05 when the whiteboard picker exposed regular_color /
+    # regular_detail / ultra_color / lite_color tiers (recraft_catalog.json), all of
+    # which meter as recraft-v2* on the visuals path. Longest-prefix match picks
+    # -v2-vector before -v2 for the vector-native SVG tier.
+    "recraft-v2-vector":   0.044,
+    "recraft-v2":          0.022,
 }
 _IMAGE_COST_DEFAULT = 0.04
+
+# ── Whiteboard Recraft catalog (recraft_catalog.json) ─────────────────────────
+# Loaded ONCE at import. Path search: WB_CATALOG_PATH env override → prod layout
+# (backend/video/whiteboard/recraft_catalog.json relative to the python svc dir)
+# → dev worktree fallback. Errors are swallowed so a missing file NEVER crashes
+# the estimator — it just falls back to the whiteboard_genre BC path.
+def _load_wb_catalog() -> dict:
+    override = os.environ.get("WB_CATALOG_PATH")
+    candidates = []
+    if override:
+        candidates.append(Path(override))
+    here = Path(__file__).resolve().parent
+    # Prod layout: python/ and backend/ are siblings under the repo root.
+    candidates.append(here.parent / "backend" / "video" / "whiteboard" / "recraft_catalog.json")
+    # Dev worktree fallback (rooted at cwd).
+    candidates.append(Path.cwd() / "backend" / "video" / "whiteboard" / "recraft_catalog.json")
+    # Legacy: colocated with python/ (rare, but harmless to check).
+    candidates.append(here / "recraft_catalog.json")
+    for path in candidates:
+        try:
+            if path and path.is_file():
+                with open(path, "r", encoding="utf-8") as fh:
+                    doc = json.load(fh)
+                if isinstance(doc, dict) and isinstance(doc.get("tiers"), list):
+                    return doc
+        except Exception as _e:
+            # A malformed override shouldn't hide a good default — try the next
+            # candidate; only log at the end if EVERY candidate fails.
+            print(f"[wb-catalog] failed to load {path}: {_e}")
+    return {"tiers": []}
+
+_WB_CATALOG: dict = _load_wb_catalog()
+_WB_TIERS_BY_KEY: dict[str, dict] = {
+    (t.get("tier") or ""): t for t in _WB_CATALOG.get("tiers", []) if isinstance(t, dict)
+}
+
+def _wb_tier(tier_key: str) -> Optional[dict]:
+    """Look up a tier row by its `tier` key (e.g. 'premium_color'). None if unknown."""
+    if not tier_key:
+        return None
+    return _WB_TIERS_BY_KEY.get(tier_key.strip().lower())
+
+def _wb_template_element_count(tier_row: dict, template_key: str) -> Optional[int]:
+    """Resolve `element_count` for a multi_subject template api_style (e.g. 'steps')
+    from a tier row. Returns None if the template can't be found — the caller then
+    falls back to a pessimistic range (4-8)."""
+    if not tier_row or not template_key:
+        return None
+    key = (template_key or "").strip().lower()
+    for cat in tier_row.get("categories") or []:
+        if not isinstance(cat, dict):
+            continue
+        if (cat.get("key") or "").lower() not in ("template", "templates"):
+            continue
+        for sub in cat.get("substyles") or []:
+            if not isinstance(sub, dict):
+                continue
+            if (sub.get("api_style") or "").strip().lower() == key:
+                ec = sub.get("element_count")
+                try:
+                    return int(ec) if ec is not None else None
+                except (TypeError, ValueError):
+                    return None
+    return None
 
 def _calc_image_cost(model: str, count: int = 1) -> float:
     """Estimate USD cost for `count` generated images of `model`."""
@@ -10284,6 +10354,17 @@ class VideoParamsReq(BaseModel):
     # switches to per-genre pricing (color → recraft-v4_1-vector, detail → recraft-v4_1 +
     # recraft-vectorize, lineart/diagram → 0 image gen) and adds the WB render fee.
     whiteboard_genre: Optional[str] = None
+    # 2026-07-05 Rino: recraft_catalog.json-driven picker replaces the flat genre knob.
+    # tier is one of {ultra_color, premium_color, premium_detail, regular_color,
+    # regular_detail, lite_color}; category is the picker column key (template/style/...);
+    # api_style is the Recraft `style` string; template is the multi_subject template
+    # api_style (problem_solution/steps/…). style is a legacy alias for api_style.
+    # whiteboard_genre stays for BC.
+    whiteboard_tier: Optional[str] = None
+    whiteboard_category: Optional[str] = None
+    whiteboard_api_style: Optional[str] = None
+    whiteboard_template: Optional[str] = None
+    whiteboard_style: Optional[str] = None
 
 class VideoSegmentReq(BaseModel):
     text: str = ""
@@ -10386,7 +10467,8 @@ class VideoTtsSceneReq(BaseModel):
 
 def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
                            image_model="nano-banana-hd", tts_model="tts-1", clip_ratio=0.3,
-                           whiteboard_genre=None) -> dict:
+                           whiteboard_genre=None, whiteboard_tier=None,
+                           whiteboard_template=None) -> dict:
     """Honest per-asset credit estimate (Model B), priced with the SAME catalog the
     charges use (metering.quote == credit_cost). TTS scales with the word target;
     visuals split into clips (expensive) vs images per the chosen mode. Returns the
@@ -10416,10 +10498,49 @@ def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
         n_clip = round(sc * max(0.0, min(1.0, float(clip_ratio)))) if fits else 0
     n_img = sc - n_clip
 
-    # Per-genre WB pricing (overrides the FE-passed image_model, which is
-    # nano-banana-hd by default — wrong for WB whose actual gen uses Recraft).
+    # Per-tier WB pricing (recraft_catalog.json). Preferred path: FE sends
+    # whiteboard_tier + whiteboard_template so the estimator knows exactly which
+    # Recraft model to meter (meter_model) and, for multi_subject tiers, how many
+    # elements per scene the picked template renders. When only whiteboard_genre
+    # is set (older FE), fall through to the legacy branch below.
+    #
+    # image_each = per-SCENE image cost (metering.quote already applies markup);
+    # for multi_subject tiers it's element_count × meter cost × 1 scene worth of
+    # image gen. n_img (below) then scales by scene_count.
+    wb_tier_key = (whiteboard_tier or "").strip().lower()
+    tier_row = _wb_tier(wb_tier_key) if wb_tier_key else None
+    image_each: float = 0.0
+    image_each_min: Optional[float] = None
+    image_each_max: Optional[float] = None
     wb = (whiteboard_genre or "").strip().lower()
-    if wb == "color":
+    if tier_row is not None:
+        # Non-BC catalog path — take pricing from the tier row's `recraft` block.
+        recraft_cfg = tier_row.get("recraft") or {}
+        meter_model = recraft_cfg.get("meter_model") or ""
+        multi_subject = bool(tier_row.get("multi_subject"))
+        per_img_cr = metering.quote("image", meter_model, {"count": 1}) if meter_model else 0
+        if multi_subject:
+            # ultra / lite: template picks element_count; missing template → pessimistic 4-8.
+            ec = _wb_template_element_count(tier_row, whiteboard_template or "")
+            if ec is None:
+                image_each_min = 4 * per_img_cr
+                image_each_max = 8 * per_img_cr
+                # Point estimate: midpoint (6 elements) — matches the 4-8 pessimistic band.
+                image_each = 6 * per_img_cr
+            else:
+                image_each = ec * per_img_cr
+        else:
+            # Non-multi tiers: premium_detail / regular_detail need +vectorize per image
+            # (raster then vectorize); color tiers are vector-native (single call).
+            genre = (tier_row.get("genre") or "").strip().lower()
+            engine = (tier_row.get("engine") or "").strip().lower()
+            needs_vectorize = engine == "sceneview" or genre == "detail"
+            image_each = per_img_cr
+            if needs_vectorize:
+                image_each = image_each + metering.quote("image", "recraft-vectorize", {"count": 1})
+        # Mark the WB fee path as active so the render fee below is added.
+        wb = wb or (tier_row.get("genre") or "").strip().lower() or wb_tier_key
+    elif wb == "color":
         # 2026-07-05 Rino: reverted from recraft-v4_1-vector back to recraft-v3-vector after
         # the Color job vid_mr72pl2u_xd824z produced ZERO image charges (Recraft API rejected
         # the v4_1 model string → visualPath never generated → render.mjs fell back to
@@ -10443,18 +10564,26 @@ def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
 
     point = tts + n_clip * clip_each + n_img * image_each + wb_render_cr
     floor = tts + sc * image_each + wb_render_cr             # all-images
+    # multi_subject WB tier with no template picked → widen the band so the FE
+    # shows an honest range instead of a single (midpoint) figure.
+    if image_each_min is not None:
+        floor = min(floor, tts + sc * image_each_min + wb_render_cr)
     # only quote an all-clips ceiling when clips are actually on the table (they
     # fit the scene length, or the user forced full_clips) — otherwise a scary
     # ceiling that can never happen just confuses the picker.
     clips_possible = fits or vm in ("full_clips", "all_clips", "clips")
     ceil_ = tts + sc * clip_each + wb_render_cr if clips_possible else point
+    if image_each_max is not None:
+        ceil_ = max(ceil_, tts + sc * image_each_max + wb_render_cr)
     return {
         "credits": point,
         "credits_min": min(floor, point),
         "credits_max": max(ceil_, point),
         "credits_breakdown": {"tts": tts, "image_each": image_each, "clip_each": clip_each,
                               "clips": n_clip, "images": n_img,
-                              "wb_render": wb_render_cr, "wb_genre": wb or None},
+                              "wb_render": wb_render_cr, "wb_genre": wb or None,
+                              "wb_tier": wb_tier_key or None,
+                              "wb_template": (whiteboard_template or None)},
     }
 
 
@@ -10470,7 +10599,9 @@ async def video_params(req: VideoParamsReq):
         out.update(_video_credit_estimate(
             p, visual_mode=req.visual_mode, clip_model=req.clip_model,
             image_model=req.image_model, tts_model=req.tts_model, clip_ratio=req.clip_ratio,
-            whiteboard_genre=req.whiteboard_genre))
+            whiteboard_genre=req.whiteboard_genre,
+            whiteboard_tier=req.whiteboard_tier,
+            whiteboard_template=(req.whiteboard_template or req.whiteboard_api_style)))
     except Exception as _e:
         print(f"[video/params] honest estimate failed (non-fatal, using flat): {_e}")
     return out

@@ -1,0 +1,918 @@
+{
+  "tiers": [
+    {
+      "tier": "ultra_color",
+      "label": "Ultra – Color (draw-reveal)",
+      "genre": "plan",
+      "engine": "WhiteboardPlan",
+      "renderer": "svg_ffmpeg",
+      "multi_subject": true,
+      "ladder": [
+        "cache",
+        "recraft"
+      ],
+      "recraft": {
+        "model": "recraftv2_vector",
+        "meter_model": "recraft-v2-vector",
+        "meter_usd": 0.044,
+        "aspect_size_map": {
+          "16:9": "16:9",
+          "9:16": "9:16",
+          "1:1": "1:1",
+          "4:5": "4:5",
+          "4:3": "4:3",
+          "3:4": "3:4",
+          "3:2": "3:2",
+          "2:3": "2:3",
+          "5:4": "5:4",
+          "6:10": "6:10",
+          "14:10": "14:10",
+          "10:14": "10:14",
+          "2:1": "2:1",
+          "1:2": "1:2"
+        }
+      },
+      "categories": [
+        {
+          "key": "template",
+          "label": "Template",
+          "substyles": [
+            {
+              "api_style": "problem_solution",
+              "label": "Problem/Solution (4 subjects)",
+              "element_count": 4
+            },
+            {
+              "api_style": "steps",
+              "label": "Steps (6 subjects)",
+              "element_count": 6
+            },
+            {
+              "api_style": "cycle",
+              "label": "Cycle (7 subjects)",
+              "element_count": 7
+            },
+            {
+              "api_style": "hub_spokes",
+              "label": "Hub & Spokes (8 subjects)",
+              "element_count": 8
+            },
+            {
+              "api_style": "flow",
+              "label": "Flow (7 subjects)",
+              "element_count": 7
+            }
+          ]
+        },
+        {
+          "key": "style",
+          "label": "Vector style",
+          "substyles": [
+            {
+              "api_style": "Vector art",
+              "label": "Vector art"
+            },
+            {
+              "api_style": "Line art",
+              "label": "Line art"
+            },
+            {
+              "api_style": "Linocut",
+              "label": "Linocut"
+            },
+            {
+              "api_style": "Cartoon",
+              "label": "Cartoon"
+            },
+            {
+              "api_style": "Flat 2.0",
+              "label": "Flat 2.0"
+            },
+            {
+              "api_style": "Color blobs",
+              "label": "Color blobs"
+            },
+            {
+              "api_style": "Vector Kawaii",
+              "label": "Vector Kawaii"
+            },
+            {
+              "api_style": "Doodle Line art",
+              "label": "Doodle Line art"
+            },
+            {
+              "api_style": "Seamless Vector",
+              "label": "Seamless Vector"
+            },
+            {
+              "api_style": "Engraving",
+              "label": "Engraving"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tier": "premium_color",
+      "label": "Premium – Color (draw-reveal)",
+      "genre": "color",
+      "engine": "DrawReveal",
+      "renderer": "remotion",
+      "multi_subject": false,
+      "ladder": [
+        "cache",
+        "recraft"
+      ],
+      "recraft": {
+        "model": "recraftv3_vector",
+        "meter_model": "recraft-v3-vector",
+        "meter_usd": 0.08,
+        "aspect_size_map": {
+          "16:9": "16:9",
+          "9:16": "9:16",
+          "1:1": "1:1",
+          "4:5": "4:5",
+          "4:3": "4:3",
+          "3:4": "3:4",
+          "3:2": "3:2",
+          "2:3": "2:3",
+          "5:4": "5:4",
+          "6:10": "6:10",
+          "14:10": "14:10",
+          "10:14": "10:14",
+          "2:1": "2:1",
+          "1:2": "1:2"
+        }
+      },
+      "categories": [
+        {
+          "key": "v3_vector",
+          "label": "V3 Vector Illustration",
+          "substyles": [
+            {
+              "api_style": "Vector art",
+              "label": "Vector art"
+            },
+            {
+              "api_style": "Line art",
+              "label": "Line art"
+            },
+            {
+              "api_style": "Linocut",
+              "label": "Linocut"
+            },
+            {
+              "api_style": "Color blobs",
+              "label": "Color blobs"
+            },
+            {
+              "api_style": "Engraving",
+              "label": "Engraving"
+            },
+            {
+              "api_style": "Bold stroke",
+              "label": "Bold stroke"
+            },
+            {
+              "api_style": "Chemistry",
+              "label": "Chemistry"
+            },
+            {
+              "api_style": "Colored stencil",
+              "label": "Colored stencil"
+            },
+            {
+              "api_style": "Cosmics",
+              "label": "Cosmics"
+            },
+            {
+              "api_style": "Cutout",
+              "label": "Cutout"
+            },
+            {
+              "api_style": "Depressive",
+              "label": "Depressive"
+            },
+            {
+              "api_style": "Editorial",
+              "label": "Editorial"
+            },
+            {
+              "api_style": "Emotional flat",
+              "label": "Emotional flat"
+            },
+            {
+              "api_style": "Marker outline",
+              "label": "Marker outline"
+            },
+            {
+              "api_style": "Mosaic",
+              "label": "Mosaic"
+            },
+            {
+              "api_style": "Naivector",
+              "label": "Naivector"
+            },
+            {
+              "api_style": "Roundish flat",
+              "label": "Roundish flat"
+            },
+            {
+              "api_style": "Segmented Colors",
+              "label": "Segmented Colors"
+            },
+            {
+              "api_style": "Sharp contrast",
+              "label": "Sharp contrast"
+            },
+            {
+              "api_style": "Thin",
+              "label": "Thin"
+            },
+            {
+              "api_style": "Vector Photo",
+              "label": "Vector Photo"
+            },
+            {
+              "api_style": "Vivid shapes",
+              "label": "Vivid shapes"
+            },
+            {
+              "api_style": "Seamless Vector",
+              "label": "Seamless Vector"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tier": "premium_detail",
+      "label": "Premium – Realistic detail",
+      "genre": "detail",
+      "engine": "SceneView",
+      "renderer": "remotion",
+      "multi_subject": false,
+      "ladder": [
+        "cache",
+        "recraft"
+      ],
+      "recraft": {
+        "model": "recraftv3",
+        "meter_model": "recraft-v3",
+        "meter_usd": 0.04,
+        "aspect_size_map": {
+          "16:9": "1820x1024",
+          "9:16": "1024x1820",
+          "1:1": "1024x1024",
+          "4:5": "1024x1280",
+          "4:3": "1365x1024",
+          "3:4": "1024x1365",
+          "3:2": "1536x1024",
+          "2:3": "1024x1536",
+          "5:4": "1280x1024",
+          "6:10": "1024x1707",
+          "14:10": "1434x1024",
+          "10:14": "1024x1434",
+          "2:1": "2048x1024",
+          "1:2": "1024x2048"
+        }
+      },
+      "categories": [
+        {
+          "key": "v3_photorealistic",
+          "label": "Photorealistic",
+          "substyles": [
+            {
+              "api_style": "Photorealism",
+              "label": "Photorealism"
+            },
+            {
+              "api_style": "Enterprise",
+              "label": "Enterprise"
+            },
+            {
+              "api_style": "Natural light",
+              "label": "Natural light"
+            },
+            {
+              "api_style": "Studio photo",
+              "label": "Studio photo"
+            },
+            {
+              "api_style": "HDR",
+              "label": "HDR"
+            },
+            {
+              "api_style": "Hard flash",
+              "label": "Hard flash"
+            },
+            {
+              "api_style": "Motion blur",
+              "label": "Motion blur"
+            },
+            {
+              "api_style": "Black & white",
+              "label": "Black & white"
+            },
+            {
+              "api_style": "Evening light",
+              "label": "Evening light"
+            },
+            {
+              "api_style": "Faded Nostalgia",
+              "label": "Faded Nostalgia"
+            },
+            {
+              "api_style": "Forest life",
+              "label": "Forest life"
+            },
+            {
+              "api_style": "Mystic Naturalism",
+              "label": "Mystic Naturalism"
+            },
+            {
+              "api_style": "Natural Tones",
+              "label": "Natural Tones"
+            },
+            {
+              "api_style": "Organic Calm",
+              "label": "Organic Calm"
+            },
+            {
+              "api_style": "Real-Life Glow",
+              "label": "Real-Life Glow"
+            },
+            {
+              "api_style": "Retro Realism",
+              "label": "Retro Realism"
+            },
+            {
+              "api_style": "Retro Snapshot",
+              "label": "Retro Snapshot"
+            },
+            {
+              "api_style": "Urban Drama",
+              "label": "Urban Drama"
+            },
+            {
+              "api_style": "Village Realism",
+              "label": "Village Realism"
+            },
+            {
+              "api_style": "Warm Folk",
+              "label": "Warm Folk"
+            },
+            {
+              "api_style": "Product photo",
+              "label": "Product photo"
+            }
+          ]
+        },
+        {
+          "key": "v3_illustration",
+          "label": "Illustration",
+          "substyles": [
+            {
+              "api_style": "Illustration",
+              "label": "Illustration"
+            },
+            {
+              "api_style": "Hand-drawn",
+              "label": "Hand-drawn"
+            },
+            {
+              "api_style": "Grain",
+              "label": "Grain"
+            },
+            {
+              "api_style": "Bold Sketch",
+              "label": "Bold Sketch"
+            },
+            {
+              "api_style": "Pencil sketch",
+              "label": "Pencil sketch"
+            },
+            {
+              "api_style": "Retro Pop",
+              "label": "Retro Pop"
+            },
+            {
+              "api_style": "Clay",
+              "label": "Clay"
+            },
+            {
+              "api_style": "Risograph",
+              "label": "Risograph"
+            },
+            {
+              "api_style": "Color engraving",
+              "label": "Color engraving"
+            },
+            {
+              "api_style": "Pixel art",
+              "label": "Pixel art"
+            },
+            {
+              "api_style": "Antiquarian",
+              "label": "Antiquarian"
+            },
+            {
+              "api_style": "Bold fantasy",
+              "label": "Bold fantasy"
+            },
+            {
+              "api_style": "Child book",
+              "label": "Child book"
+            },
+            {
+              "api_style": "Cover",
+              "label": "Cover"
+            },
+            {
+              "api_style": "Crosshatch",
+              "label": "Crosshatch"
+            },
+            {
+              "api_style": "Digital engraving",
+              "label": "Digital engraving"
+            },
+            {
+              "api_style": "Expressionism",
+              "label": "Expressionism"
+            },
+            {
+              "api_style": "Freehand details",
+              "label": "Freehand details"
+            },
+            {
+              "api_style": "Grain 2.0",
+              "label": "Grain 2.0"
+            },
+            {
+              "api_style": "Graphic intensity",
+              "label": "Graphic intensity"
+            },
+            {
+              "api_style": "Hard Comics",
+              "label": "Hard Comics"
+            },
+            {
+              "api_style": "Long shadow",
+              "label": "Long shadow"
+            },
+            {
+              "api_style": "Modern Folk",
+              "label": "Modern Folk"
+            },
+            {
+              "api_style": "Multicolor",
+              "label": "Multicolor"
+            },
+            {
+              "api_style": "Neon Calm",
+              "label": "Neon Calm"
+            },
+            {
+              "api_style": "Noir",
+              "label": "Noir"
+            },
+            {
+              "api_style": "Nostalgic pastel",
+              "label": "Nostalgic pastel"
+            },
+            {
+              "api_style": "Outline details",
+              "label": "Outline details"
+            },
+            {
+              "api_style": "Pastel gradient",
+              "label": "Pastel gradient"
+            },
+            {
+              "api_style": "Pastel sketch",
+              "label": "Pastel sketch"
+            },
+            {
+              "api_style": "Pop art",
+              "label": "Pop art"
+            },
+            {
+              "api_style": "Pop renaissance",
+              "label": "Pop renaissance"
+            },
+            {
+              "api_style": "Street art",
+              "label": "Street art"
+            },
+            {
+              "api_style": "Tablet sketch",
+              "label": "Tablet sketch"
+            },
+            {
+              "api_style": "Urban Glow",
+              "label": "Urban Glow"
+            },
+            {
+              "api_style": "Urban sketching",
+              "label": "Urban sketching"
+            },
+            {
+              "api_style": "Young adult book",
+              "label": "Young adult book"
+            },
+            {
+              "api_style": "Young adult book 2",
+              "label": "Young adult book 2"
+            },
+            {
+              "api_style": "Seamless Digital",
+              "label": "Seamless Digital"
+            }
+          ]
+        },
+        {
+          "key": "v3_emblem",
+          "label": "Emblem",
+          "substyles": [
+            {
+              "api_style": "Prestige Emblem",
+              "label": "Prestige Emblem"
+            },
+            {
+              "api_style": "Pop Graphic",
+              "label": "Pop Graphic"
+            },
+            {
+              "api_style": "Stamp",
+              "label": "Stamp"
+            },
+            {
+              "api_style": "Punk Graphic",
+              "label": "Punk Graphic"
+            },
+            {
+              "api_style": "Vintage Emblem",
+              "label": "Vintage Emblem"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tier": "regular_color",
+      "label": "Color (draw-reveal)",
+      "genre": "color",
+      "engine": "DrawReveal",
+      "renderer": "remotion",
+      "multi_subject": false,
+      "ladder": [
+        "cache",
+        "recraft"
+      ],
+      "recraft": {
+        "model": "recraftv2_vector",
+        "meter_model": "recraft-v2-vector",
+        "meter_usd": 0.044,
+        "aspect_size_map": {
+          "16:9": "16:9",
+          "9:16": "9:16",
+          "1:1": "1:1",
+          "4:5": "4:5",
+          "4:3": "4:3",
+          "3:4": "3:4",
+          "3:2": "3:2",
+          "2:3": "2:3",
+          "5:4": "5:4",
+          "6:10": "6:10",
+          "14:10": "14:10",
+          "10:14": "10:14",
+          "2:1": "2:1",
+          "1:2": "1:2"
+        }
+      },
+      "categories": [
+        {
+          "key": "v2_vector",
+          "label": "V2 Vector art",
+          "substyles": [
+            {
+              "api_style": "Vector art",
+              "label": "Vector art"
+            },
+            {
+              "api_style": "Line art",
+              "label": "Line art"
+            },
+            {
+              "api_style": "Linocut",
+              "label": "Linocut"
+            },
+            {
+              "api_style": "Cartoon",
+              "label": "Cartoon"
+            },
+            {
+              "api_style": "Flat 2.0",
+              "label": "Flat 2.0"
+            },
+            {
+              "api_style": "Color blobs",
+              "label": "Color blobs"
+            },
+            {
+              "api_style": "Vector Kawaii",
+              "label": "Vector Kawaii"
+            },
+            {
+              "api_style": "Doodle Line art",
+              "label": "Doodle Line art"
+            },
+            {
+              "api_style": "Seamless Vector",
+              "label": "Seamless Vector"
+            },
+            {
+              "api_style": "Engraving",
+              "label": "Engraving"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tier": "regular_detail",
+      "label": "Realistic detail",
+      "genre": "detail",
+      "engine": "SceneView",
+      "renderer": "remotion",
+      "multi_subject": false,
+      "ladder": [
+        "cache",
+        "recraft"
+      ],
+      "recraft": {
+        "model": "recraftv2",
+        "meter_model": "recraft-v2",
+        "meter_usd": 0.022,
+        "aspect_size_map": {
+          "16:9": "1820x1024",
+          "9:16": "1024x1820",
+          "1:1": "1024x1024",
+          "4:5": "1024x1280",
+          "4:3": "1365x1024",
+          "3:4": "1024x1365",
+          "3:2": "1536x1024",
+          "2:3": "1024x1536",
+          "5:4": "1280x1024",
+          "6:10": "1024x1707",
+          "14:10": "1434x1024",
+          "10:14": "1024x1434",
+          "2:1": "2048x1024",
+          "1:2": "1024x2048"
+        }
+      },
+      "categories": [
+        {
+          "key": "v2_photorealistic",
+          "label": "Photorealistic",
+          "substyles": [
+            {
+              "api_style": "Photorealism",
+              "label": "Photorealism"
+            },
+            {
+              "api_style": "Enterprise",
+              "label": "Enterprise"
+            },
+            {
+              "api_style": "Natural light",
+              "label": "Natural light"
+            },
+            {
+              "api_style": "Studio photo",
+              "label": "Studio photo"
+            },
+            {
+              "api_style": "HDR",
+              "label": "HDR"
+            },
+            {
+              "api_style": "Hard flash",
+              "label": "Hard flash"
+            },
+            {
+              "api_style": "Motion blur",
+              "label": "Motion blur"
+            },
+            {
+              "api_style": "Black & white",
+              "label": "Black & white"
+            },
+            {
+              "api_style": "Product photo",
+              "label": "Product photo"
+            }
+          ]
+        },
+        {
+          "key": "v2_illustration",
+          "label": "Illustration",
+          "substyles": [
+            {
+              "api_style": "Illustration",
+              "label": "Illustration"
+            },
+            {
+              "api_style": "3D render",
+              "label": "3D render"
+            },
+            {
+              "api_style": "Glow",
+              "label": "Glow"
+            },
+            {
+              "api_style": "Watercolor",
+              "label": "Watercolor"
+            },
+            {
+              "api_style": "Hand-drawn",
+              "label": "Hand-drawn"
+            },
+            {
+              "api_style": "Kawaii",
+              "label": "Kawaii"
+            },
+            {
+              "api_style": "Grain",
+              "label": "Grain"
+            },
+            {
+              "api_style": "Bold Sketch",
+              "label": "Bold Sketch"
+            },
+            {
+              "api_style": "Pencil sketch",
+              "label": "Pencil sketch"
+            },
+            {
+              "api_style": "Retro Pop",
+              "label": "Retro Pop"
+            },
+            {
+              "api_style": "Clay",
+              "label": "Clay"
+            },
+            {
+              "api_style": "Risograph",
+              "label": "Risograph"
+            },
+            {
+              "api_style": "Psychedelic",
+              "label": "Psychedelic"
+            },
+            {
+              "api_style": "Seamless Digital",
+              "label": "Seamless Digital"
+            },
+            {
+              "api_style": "Color engraving",
+              "label": "Color engraving"
+            },
+            {
+              "api_style": "Pixel art",
+              "label": "Pixel art"
+            },
+            {
+              "api_style": "80's",
+              "label": "80's"
+            },
+            {
+              "api_style": "Voxel art",
+              "label": "Voxel art"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tier": "lite_color",
+      "label": "Lite – Color (draw-reveal)",
+      "genre": "plan",
+      "engine": "WhiteboardPlan",
+      "renderer": "svg_ffmpeg",
+      "multi_subject": true,
+      "ladder": [
+        "cache",
+        "lucide",
+        "tabler",
+        "phosphor",
+        "iconify",
+        "recraft"
+      ],
+      "recraft": {
+        "model": "recraftv2_vector",
+        "meter_model": "recraft-v2-vector",
+        "meter_usd": 0.044,
+        "aspect_size_map": {
+          "16:9": "16:9",
+          "9:16": "9:16",
+          "1:1": "1:1",
+          "4:5": "4:5",
+          "4:3": "4:3",
+          "3:4": "3:4",
+          "3:2": "3:2",
+          "2:3": "2:3",
+          "5:4": "5:4",
+          "6:10": "6:10",
+          "14:10": "14:10",
+          "10:14": "10:14",
+          "2:1": "2:1",
+          "1:2": "1:2"
+        }
+      },
+      "categories": [
+        {
+          "key": "template",
+          "label": "Template",
+          "substyles": [
+            {
+              "api_style": "problem_solution",
+              "label": "Problem/Solution (4 subjects)",
+              "element_count": 4
+            },
+            {
+              "api_style": "steps",
+              "label": "Steps (6 subjects)",
+              "element_count": 6
+            },
+            {
+              "api_style": "cycle",
+              "label": "Cycle (7 subjects)",
+              "element_count": 7
+            },
+            {
+              "api_style": "hub_spokes",
+              "label": "Hub & Spokes (8 subjects)",
+              "element_count": 8
+            },
+            {
+              "api_style": "flow",
+              "label": "Flow (7 subjects)",
+              "element_count": 7
+            }
+          ]
+        },
+        {
+          "key": "icon_style",
+          "label": "Icon fallback style",
+          "substyles": [
+            {
+              "api_style": "Icon",
+              "label": "Icon"
+            },
+            {
+              "api_style": "Outline",
+              "label": "Outline"
+            },
+            {
+              "api_style": "Pictogram",
+              "label": "Pictogram"
+            },
+            {
+              "api_style": "Colored outline",
+              "label": "Colored outline"
+            },
+            {
+              "api_style": "Doodle",
+              "label": "Doodle"
+            },
+            {
+              "api_style": "Colored shape",
+              "label": "Colored shape"
+            },
+            {
+              "api_style": "Gradient outline",
+              "label": "Gradient outline"
+            },
+            {
+              "api_style": "Offset doodle",
+              "label": "Offset doodle"
+            },
+            {
+              "api_style": "Gradient shape",
+              "label": "Gradient shape"
+            },
+            {
+              "api_style": "Broken line",
+              "label": "Broken line"
+            },
+            {
+              "api_style": "Offset fill",
+              "label": "Offset fill"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

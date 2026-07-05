@@ -7,6 +7,7 @@
 // folded into the flat render fee. ONLY worker env key needed: RECRAFT_API_KEY.
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { getCachedAsset, setCachedAsset } from "../store.mjs";
 
 const RECRAFT = "https://external.api.recraft.ai/v1";
 
@@ -41,12 +42,31 @@ function noteRecraftFailure(status, bodyText) {
 // caller-side: a credit/breaker failure is already announced once above → don't spam per element.
 export function isRecraftCreditSkip(msg) { return /breaker open|not_enough_credits|insufficient|quota|balance/i.test(String(msg || "")); }
 
-// Recraft sizes are a fixed set; map the aspect → the nearest supported size.
-function sizeFor(aspect) {
-  if (aspect === "9:16") return "1024x1365";
-  if (aspect === "1:1") return "1024x1024";
-  if (aspect === "4:5") return "1024x1280";
-  return "1365x1024"; // 16:9
+// Recraft sizes: RASTER models (recraftv3 / recraftv2) accept a fixed set of WxH pixel sizes;
+// VECTOR models (recraftv3_vector / recraftv2_vector) accept an aspect ratio STRING instead
+// (they render as vector SVG so pixel dims are meaningless). Keep the two tables SEPARATE so
+// the vector caller doesn't accidentally pass "1820x1024" (rejected by the vector endpoint) and
+// the raster caller doesn't pass "16:9" (rejected by the raster endpoint).
+const RASTER_SIZES = {
+  "16:9": "1820x1024",
+  "9:16": "1024x1820",
+  "1:1": "1024x1024",
+  "4:5": "1024x1280",
+  "4:3": "1365x1024",
+  "3:4": "1024x1365",
+  "3:2": "1536x1024",
+  "2:3": "1024x1536",
+  "5:4": "1280x1024",
+  "6:10": "1024x1707",
+  "14:10": "1434x1024",
+  "10:14": "1024x1434",
+  "2:1": "2048x1024",
+  "1:2": "1024x2048",
+};
+function sizeFor(model, aspect) {
+  const isVector = String(model || "").endsWith("_vector");
+  if (isVector) return String(aspect || "16:9");
+  return RASTER_SIZES[String(aspect || "16:9")] || RASTER_SIZES["16:9"];
 }
 
 function recraftKey() {
@@ -55,18 +75,24 @@ function recraftKey() {
   return k;
 }
 
-// Recraft generation → SVG (vector_illustration) or PNG bytes (digital_illustration).
-// `seed` varies the composition so near-identical per-scene prompts don't collapse to
-// the same stock illustration; pass a per-scene value to keep each scene distinct.
-// `model` picks the Recraft version (default recraftv3 for backward-compat with the icon
-// path; color/detail asset callers pass recraftv4_1 — same $/img, better quality).
-async function recraftGenerate(prompt, { vector, substyle, size, seed, model } = {}) {
+// Recraft generation. Vector-mode is DERIVED from the model id — recraftv3_vector /
+// recraftv2_vector return SVG (text); the raster models return a PNG URL. The caller passes
+// the raw Recraft `style` string (e.g. "vector_illustration", "digital_illustration",
+// substyles like "vivid_shapes"/"line_art" for older models when supported) via opts.style —
+// this module no longer picks style from a boolean. `size` is chosen with sizeFor(model,aspect).
+// `seed` varies composition so near-identical per-scene prompts don't collapse to the same
+// stock illustration.
+async function recraftGenerate(prompt, { model, style, size, seed } = {}) {
+  const _model = model || process.env.RECRAFT_MODEL || "recraftv3";
+  const isVector = String(_model).endsWith("_vector");
   const body = {
-    prompt, model: model || process.env.RECRAFT_MODEL || "recraftv3",
-    style: vector ? "vector_illustration" : "digital_illustration",
-    ...(substyle ? { substyle } : {}),
+    prompt,
+    model: _model,
+    style,
+    size,
+    n: 1,
+    response_format: "url",
     ...(Number.isFinite(seed) ? { random_seed: seed } : {}),
-    size: size || "1365x1024", n: 1, response_format: "url",
   };
   recraftCreditGuard();
   const r = await fetchT(`${RECRAFT}/images/generations`, {
@@ -78,7 +104,7 @@ async function recraftGenerate(prompt, { vector, substyle, size, seed, model } =
   const url = (await r.json())?.data?.[0]?.url;
   if (!url) throw new Error("recraft gen: no url in response");
   const a = await fetchT(url);
-  return vector ? { text: await a.text() } : { buffer: Buffer.from(await a.arrayBuffer()) };
+  return isVector ? { text: await a.text() } : { buffer: Buffer.from(await a.arrayBuffer()) };
 }
 
 // Generate-on-miss (guide §J step 5): one whiteboard-style vector ICON for an asset_query the
@@ -94,13 +120,15 @@ const ICON_STYLE = {
   color: "rich flat vector illustration, 3-4 bold colours, clear detailed shapes, strong outlines, vibrant",
   detail: "highly detailed flat vector illustration, layered shapes, rich shading, clear single subject, strong outlines",
 };
-export async function generateRecraftIcon(query, { genre = "lineart", seed } = {}) {
+export async function generateRecraftIcon(query, { genre = "lineart", seed, model, style } = {}) {
   const styleHint = ICON_STYLE[genre] || ICON_STYLE.lineart;
   const prompt = `${query}. ${styleHint}. Whiteboard explainer style, centered, plain white background, no text, no words.`;
+  const _model = model || "recraftv2_vector";
+  const _style = style || "Icon";
   const { text } = await recraftGenerate(prompt, {
-    vector: true,
-    substyle: genre === "color" || genre === "detail" ? undefined : "line_art",
-    size: "1024x1024",
+    model: _model,
+    style: _style,
+    size: sizeFor(_model, "1:1"),
     seed: Number.isFinite(seed) ? seed : undefined,
   });
   return { svg: text, meter: { operation: "image", model: "recraft-v3-vector", units: { count: 1 } } };
@@ -131,7 +159,7 @@ async function recraftVectorize(pngBuffer) {
 // shapes) + meters. Two paid Recraft calls per element — only used for the "detail" genre.
 export async function generateRecraftRaster(query, { seed } = {}) {
   const prompt = `${query}. Detailed realistic illustration, single clear subject, centered, plain white background, no text, no words.`;
-  const { buffer } = await recraftGenerate(prompt, { vector: false, size: "1024x1024", seed });
+  const { buffer } = await recraftGenerate(prompt, { model: "recraftv3", style: "digital_illustration", size: sizeFor("recraftv3", "1:1"), seed });
   const maskSvg = await recraftVectorize(buffer);
   return {
     raster: "data:image/png;base64," + buffer.toString("base64"),
@@ -304,12 +332,40 @@ const _exampleGraph = () => ({
 // it in as opts.diagramGraph(description); this module only turns the graph into a clean
 // SVG via buildDiagramSvg, falling back to _exampleGraph if the LLM is unavailable.
 
+// Stable per-scene cache key fragment from the visual prompt: lowercase, punctuation stripped,
+// whitespace collapsed, truncated. Two near-identical prompts (whitespace/case only) collapse to
+// ONE cache entry so a re-run of the same script re-uses the paid Recraft asset. Kept short to
+// keep the Redis key bounded.
+function sceneKeySlug(prompt) {
+  return String(prompt || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+}
+
 /**
  * Generate the per-scene whiteboard asset for a genre. Writes file(s) to tmpDir.
  * @returns { visualPath?, maskPath?, kind, meters:[{operation,model,units}] }
- *   meters = what the caller should charge via /video/meter (empty for lineart/diagram).
+ *   meters = what the caller should charge via /video/meter (empty for lineart/diagram
+ *   AND for a cache HIT — cached assets were already paid for in a prior job).
+ *
+ * New (2026-07-05) opts: {tier, apiStyle, model, meterModel, tenantId, sceneKey} enable the
+ * cross-job Recraft cache for color/detail. When tier+apiStyle+model are ALL passed, we build
+ * the cache key `wbasset:v1:{genre}:{tier}:{model}:{apiStyle}:{sceneKeySlug}` and reuse any
+ * previously-generated asset from Redis/R2 → NO meter charged on hit. When those opts are
+ * absent, we fall back to the original V3-vector default behaviour (backward-compat with any
+ * caller that hasn't been updated to the catalog).
  */
-export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneIndex, aspect, diagramGraph }) {
+export async function generateWhiteboardAsset(genre, opts = {}) {
+  const {
+    prompt, tmpDir, sceneIndex, aspect, diagramGraph,
+    tier, apiStyle, model, meterModel, tenantId, sceneKey,
+  } = opts;
+  const _sceneIdx = Number.isFinite(sceneIndex) ? sceneIndex : 0;
+  const _keyFrag = sceneKey || sceneKeySlug(prompt);
+
   if (genre === "color") {
     // Drive a DISTINCT illustration per scene: keep the full per-scene visualPrompt as the
     // subject, frame it as a single standalone vector illustration, and vary the seed by
@@ -318,40 +374,109 @@ export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneInde
     const scenePrompt =
       `${subject}. A distinct standalone illustration focused entirely on this specific subject, ` +
       `unique composition, flat vector style on a plain white background.`;
-    const seed = 1000 + (Number.isFinite(sceneIndex) ? sceneIndex : 0) * 7919;
+    const seed = 1000 + _sceneIdx * 7919;
+
+    // ── NEW catalog path: tier + apiStyle + model all provided → cache-first ──────────
+    if (tier && apiStyle && model) {
+      const cacheKind = `color:${tier}:${model}:${apiStyle}`;
+      const cacheKey = `wbasset:v1:${cacheKind}:${_keyFrag}`;
+      let cached = null;
+      try { cached = await getCachedAsset(cacheKind, _keyFrag); } catch { /* cache best-effort */ }
+      const visualPath = join(tmpDir, `wb_${_sceneIdx}.svg`);
+      if (cached && typeof cached.svg === "string") {
+        console.log(`[wb-asset-cache HIT] key=${cacheKey}`);
+        await writeFile(visualPath, cached.svg);
+        return { visualPath, kind: "whiteboard-color", meters: [] };
+      }
+      console.log(`[wb-asset-cache MISS] key=${cacheKey}`);
+      const { text } = await recraftGenerate(scenePrompt, {
+        model,
+        style: apiStyle,
+        size: sizeFor(model, aspect),
+        seed,
+      });
+      await writeFile(visualPath, text);
+      try { await setCachedAsset(cacheKind, _keyFrag, { svg: text }); } catch { /* best-effort */ }
+      const _meter = meterModel || "recraft-v3-vector";
+      return { visualPath, kind: "whiteboard-color", meters: [{ operation: "image", model: _meter, units: { count: 1 } }] };
+    }
+
+    // ── Backward-compat path (no tier/apiStyle/model): original V3-vector default ────
     // 2026-07-05 Rino: reverted color default recraftv4_1 → recraftv3 after prod evidence
     // (Color job vid_mr72pl2u_xd824z produced ZERO image charges) suggested Recraft's
     // REST API doesn't accept "recraftv4_1" as the model string — the SVG never landed →
-    // buildIllustration("color") returned null → render.mjs fell back to handwriting. Meter
-    // label rolled back to recraft-v3-vector to keep the charge column honest. To retry
-    // V4.1 or newer: set RECRAFT_COLOR_MODEL to the exact API model string Recraft docs
-    // list ("recraftv3" / "recraftv2" for known-good; V4.1 string TBD — check the Recraft
-    // /images/generations schema before flipping) — and also update the meter to match.
-    const colorModel = process.env.RECRAFT_COLOR_MODEL || "recraftv3";
-    const { text } = await recraftGenerate(scenePrompt, { vector: true, substyle: "vivid_shapes", size: sizeFor(aspect), seed, model: colorModel });
-    const visualPath = join(tmpDir, `wb_${sceneIndex}.svg`);
+    // buildIllustration("color") returned null → render.mjs fell back to handwriting.
+    const colorModel = process.env.RECRAFT_COLOR_MODEL || "recraftv3_vector";
+    const { text } = await recraftGenerate(scenePrompt, {
+      model: colorModel,
+      style: "vector_illustration",
+      size: sizeFor(colorModel, aspect),
+      seed,
+    });
+    const visualPath = join(tmpDir, `wb_${_sceneIdx}.svg`);
     await writeFile(visualPath, text);
     return { visualPath, kind: "whiteboard-color", meters: [{ operation: "image", model: "recraft-v3-vector", units: { count: 1 } }] };
   }
+
   if (genre === "detail") {
+    // ── NEW catalog path: tier + apiStyle + model all provided → cache-first ──────────
+    if (tier && apiStyle && model) {
+      const cacheKind = `detail:${tier}:${model}:${apiStyle}`;
+      const cacheKey = `wbasset:v1:${cacheKind}:${_keyFrag}`;
+      let cached = null;
+      try { cached = await getCachedAsset(cacheKind, _keyFrag); } catch { /* cache best-effort */ }
+      const visualPath = join(tmpDir, `wb_${_sceneIdx}.png`);
+      const maskPath = join(tmpDir, `wb_${_sceneIdx}-mask.svg`);
+      if (cached && typeof cached.raster_b64 === "string" && typeof cached.mask_svg === "string") {
+        console.log(`[wb-asset-cache HIT] key=${cacheKey}`);
+        await writeFile(visualPath, Buffer.from(cached.raster_b64, "base64"));
+        await writeFile(maskPath, cached.mask_svg);
+        return { visualPath, maskPath, kind: "whiteboard-detail", meters: [] };
+      }
+      console.log(`[wb-asset-cache MISS] key=${cacheKey}`);
+      const { buffer } = await recraftGenerate(prompt, {
+        model,
+        style: apiStyle,
+        size: sizeFor(model, aspect),
+      });
+      await writeFile(visualPath, buffer);
+      const maskText = await recraftVectorize(buffer);
+      await writeFile(maskPath, maskText);
+      try {
+        await setCachedAsset(cacheKind, _keyFrag, {
+          raster_b64: buffer.toString("base64"),
+          mask_svg: maskText,
+        });
+      } catch { /* best-effort */ }
+      const _meter = meterModel || "recraft-v3";
+      return { visualPath, maskPath, kind: "whiteboard-detail",
+        meters: [{ operation: "image", model: _meter, units: { count: 1 } },
+                 { operation: "image", model: "recraft-vectorize", units: { count: 1 } }] };
+    }
+
+    // ── Backward-compat path (no tier/apiStyle/model): original V3 raster default ────
     // 2026-07-05 Rino: reverted detail default recraftv4_1 → recraftv3 (same class of Recraft
-    // API model-string uncertainty as color above). Override via RECRAFT_DETAIL_MODEL once
-    // the V4.1 API model string is verified.
+    // API model-string uncertainty as color above). Override via RECRAFT_DETAIL_MODEL.
     const detailModel = process.env.RECRAFT_DETAIL_MODEL || "recraftv3";
-    const { buffer } = await recraftGenerate(prompt, { vector: false, size: sizeFor(aspect), model: detailModel });
-    const visualPath = join(tmpDir, `wb_${sceneIndex}.png`);
+    const { buffer } = await recraftGenerate(prompt, {
+      model: detailModel,
+      style: "digital_illustration",
+      size: sizeFor(detailModel, aspect),
+    });
+    const visualPath = join(tmpDir, `wb_${_sceneIdx}.png`);
     await writeFile(visualPath, buffer);
     const maskText = await recraftVectorize(buffer);
-    const maskPath = join(tmpDir, `wb_${sceneIndex}-mask.svg`);
+    const maskPath = join(tmpDir, `wb_${_sceneIdx}-mask.svg`);
     await writeFile(maskPath, maskText);
     return { visualPath, maskPath, kind: "whiteboard-detail",
       meters: [{ operation: "image", model: "recraft-v3", units: { count: 1 } },
                { operation: "image", model: "recraft-vectorize", units: { count: 1 } }] };
   }
+
   if (genre === "diagram") {
     let graph = null;
     try { graph = await diagramGraph?.(prompt); } catch { /* fall back to the example graph */ }
-    const visualPath = join(tmpDir, `wb_${sceneIndex}.svg`);
+    const visualPath = join(tmpDir, `wb_${_sceneIdx}.svg`);
     await writeFile(visualPath, buildDiagramSvg(graph?.nodes?.length ? graph : _exampleGraph()));
     return { visualPath, kind: "whiteboard-diagram", meters: [] }; // LLM cost folded into render fee
   }

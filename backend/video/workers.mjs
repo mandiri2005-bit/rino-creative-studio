@@ -19,15 +19,135 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Worker, Queue } from "bullmq";
 import { mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { QUEUE, CONCURRENCY, makeConnection } from "./connection.mjs";
 import * as store from "./store.mjs";
 import { ffprobeDuration, stitch, buildAssFromScenes, hasSubtitlesFilter } from "./ffmpeg.mjs";
 import { advance } from "./orchestrator.mjs";
 import { startRecovery } from "./recovery.mjs";
 import { rm } from "node:fs/promises";
+
+// __dirname for ESM (needed to load the tier catalog next to this file).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Recraft tier catalog — loaded ONCE at module load. Drives tier-based routing
+// (visualProcessor + stitchProcessor) so a scene's tier fully determines engine,
+// renderer, ladder, meter model, and the picked Recraft style/template.
+// If the catalog is missing/malformed we log and fall back to genre-only legacy
+// routing (backward compatible with existing prod jobs that carry no tier).
+let RECRAFT_CATALOG = null;
+let TIER_MAP = {};
+try {
+  RECRAFT_CATALOG = JSON.parse(readFileSync(join(__dirname, "whiteboard/recraft_catalog.json"), "utf8"));
+  TIER_MAP = Object.fromEntries(RECRAFT_CATALOG.tiers.map((t) => [t.tier, t]));
+} catch (e) {
+  console.warn(`[workers] recraft_catalog.json load failed → legacy genre-only routing: ${e.message}`);
+}
+
+/**
+ * Resolve tier-based routing for a whiteboard scene.
+ *
+ * Reads scene/job meta (tier + user-picked substyles) and returns the full routing
+ * envelope used by visualProcessor + stitchProcessor. Backward-compatible: if
+ * `meta.whiteboardTier` is unset OR the catalog is unavailable OR the tier isn't
+ * in the catalog, we return {engine:"legacy", ...} so callers take the historic
+ * genre-driven path (unchanged prod behaviour for pre-tier jobs).
+ *
+ * Fields returned:
+ *   tier           — tier id (e.g. "ultra_color"); null on legacy
+ *   tierDef        — the raw catalog entry for tier; null on legacy
+ *   engine         — "DrawReveal" | "SceneView" | "WhiteboardPlan" | "legacy"
+ *   renderer       — "remotion" | "svg_ffmpeg" (for tiered scenes)
+ *   genre          — "color" | "detail" | "plan"  (from the tier)
+ *   model          — Recraft model id (e.g. "recraftv3_vector")
+ *   meterModel     — meter model id used for /video/meter (e.g. "recraft-v3-vector")
+ *   meterUsd       — unit cost the tier's Recraft calls charge at (per catalog)
+ *   apiStyle       — single-call tiers (premium/regular): the picked V2/V3 style
+ *                    ultra: the picked V2 Vector style (used as recraftStyle in plan-mode)
+ *                    lite: null (plan-mode uses iconStyle for the fallback)
+ *   template       — multi-call tiers (ultra/lite): picked template snake_case; else null
+ *   iconStyle      — lite: the picked V2-Icon fallback style; ultra: same as apiStyle; else null
+ *   elementCount   — multi-call tiers: template's element_count; else null
+ *   ladder         — tier's ladder (["cache","recraft"] for premium/regular/ultra,
+ *                    full ladder for lite)
+ */
+export function resolveWBVariant(meta) {
+  const tierId = meta && meta.whiteboardTier;
+  const tierDef = tierId && TIER_MAP[tierId];
+  if (!tierDef) {
+    // Legacy path — pre-tier jobs, or an unknown tier (e.g. catalog missed on this
+    // worker replica). Callers must fall through to the historic genre-driven code.
+    return {
+      tier: null, tierDef: null, engine: "legacy", renderer: null,
+      genre: meta?.whiteboardGenre || "lineart", model: null, meterModel: null, meterUsd: 0,
+      apiStyle: null, template: null, iconStyle: null, elementCount: null, ladder: null,
+    };
+  }
+  // meta.whiteboardApiStyle = the user's picked substyle (single-call tiers OR ultra's V2 Vector style);
+  // meta.whiteboardTemplate = the user's picked template (multi-call tiers: ultra/lite);
+  // meta.whiteboardIconStyle = the user's picked lite V2-Icon fallback style.
+  // Any missing pick falls back to the FIRST substyle in the relevant category → deterministic default.
+  const pickedApi = meta.whiteboardApiStyle || null;
+  const pickedTemplate = meta.whiteboardTemplate || null;
+  const pickedIcon = meta.whiteboardIconStyle || null;
+  const catByKey = (k) => (tierDef.categories || []).find((c) => c.key === k) || null;
+  const firstSubOf = (cat) => (cat && cat.substyles && cat.substyles[0]) || null;
+  const findSub = (cat, api) => (cat && cat.substyles || []).find((s) => s.api_style === api) || null;
+
+  let apiStyle = null, template = null, iconStyle = null, elementCount = null;
+  if (tierId === "ultra_color") {
+    // Ultra: multi-call plan → picks BOTH a template AND a V2 Vector style; iconStyle = apiStyle.
+    const templateCat = catByKey("template");
+    const styleCat = catByKey("style");
+    const tSub = findSub(templateCat, pickedTemplate) || firstSubOf(templateCat);
+    const sSub = findSub(styleCat, pickedApi) || firstSubOf(styleCat);
+    template = tSub ? tSub.api_style : null;
+    elementCount = tSub && tSub.element_count != null ? tSub.element_count : null;
+    apiStyle = sSub ? sSub.api_style : null;
+    iconStyle = apiStyle; // ultra: same V2 Vector style for the fallback path
+  } else if (tierId === "lite_color") {
+    // Lite: multi-call plan → picks a template + a V2-Icon fallback style. apiStyle stays null;
+    // recraftOnly:false path uses iconStyle only when the free ladder misses.
+    const templateCat = catByKey("template");
+    const iconCat = catByKey("icon_style");
+    const tSub = findSub(templateCat, pickedTemplate) || firstSubOf(templateCat);
+    const iSub = findSub(iconCat, pickedIcon) || firstSubOf(iconCat);
+    template = tSub ? tSub.api_style : null;
+    elementCount = tSub && tSub.element_count != null ? tSub.element_count : null;
+    iconStyle = iSub ? iSub.api_style : null;
+    apiStyle = null;
+  } else {
+    // Single-call tiers (premium_color / premium_detail / regular_color / regular_detail):
+    // one Recraft call per scene with a picked style out of the tier's category(-ies).
+    // The tier has one or more style categories; pick from whichever contains the api_style.
+    let sub = null;
+    for (const cat of (tierDef.categories || [])) {
+      const hit = findSub(cat, pickedApi);
+      if (hit) { sub = hit; break; }
+    }
+    if (!sub) sub = firstSubOf(tierDef.categories?.[0]);
+    apiStyle = sub ? sub.api_style : null;
+  }
+
+  return {
+    tier: tierId,
+    tierDef,
+    engine: tierDef.engine,        // "DrawReveal" | "SceneView" | "WhiteboardPlan"
+    renderer: tierDef.renderer,    // "remotion" | "svg_ffmpeg"
+    genre: tierDef.genre,          // "color" | "detail" | "plan"
+    model: tierDef.recraft?.model || null,
+    meterModel: tierDef.recraft?.meter_model || null,
+    meterUsd: Number(tierDef.recraft?.meter_usd) || 0,
+    apiStyle,
+    template,
+    iconStyle,
+    elementCount,
+    ladder: tierDef.ladder || null,
+  };
+}
 // NOTE: whiteboard render/visuals are imported LAZILY inside the worker-only branches
 // below (dynamic import), NEVER at top level — workers.mjs is loaded by the API/frontend
 // process too (server.js → routes.mjs → makeQueues), and render.mjs pulls @remotion +
@@ -284,11 +404,22 @@ export async function visualProcessor(job, deps) {
       // LLM diagram), revealed by the Remotion render. Each Recraft asset is metered
       // via /video/meter; lineart/diagram carry no Recraft meter. A failed asset
       // degrades the scene to handwriting (never kills the video).
-      const genre = meta.whiteboardGenre || "lineart";
+      //
+      // Tier-based routing (catalog): if meta.whiteboardTier is set + in the catalog,
+      // the tier's engine drives the branch — Ultra/Lite (WhiteboardPlan) FORCE the
+      // plan-mode path regardless of process.env.WB_ENGINE (prod-env-unchanged).
+      // Premium/Regular Color+Detail (DrawReveal/SceneView) take the single-call
+      // path with tier-picked model + apiStyle. Pre-tier jobs keep the legacy
+      // WB_ENGINE-gated behaviour byte-for-byte.
+      const variant = resolveWBVariant(meta);
+      const genre = (variant.engine !== "legacy" ? variant.genre : (meta.whiteboardGenre || "lineart"));
+      // Ultra/Lite tiers force plan-mode; else honour the historic env gate.
+      const usePlanEngine = variant.engine === "WhiteboardPlan"
+        || (variant.engine === "legacy" && (process.env.WB_ENGINE || "legacy") === "plan");
       // Plan-engine (Golpo-like): generate a per-scene whiteboard_visual_plan via the live
       // Visual Director (Python LLM route), validate it, and store it for the render phase.
       // Invalid/failed plan degrades the scene to handwriting (never kills the video).
-      if ((process.env.WB_ENGINE || "legacy") === "plan") {
+      if (usePlanEngine) {
         try {
           const { validateWhiteboardPlan } = await import("./whiteboard/plan/validate.mjs");
           const narration = scene.text || scene.visualPrompt || "";
@@ -298,9 +429,25 @@ export async function visualProcessor(job, deps) {
           let plan = await deps.store.getCachedPlan?.(planKey);
           const planFromCache = !!plan;
           if (!plan) {
+            // Tier-aware plan opts (Ultra/Lite): Ultra = recraftOnly (V2 Vector on every element,
+            // no free-icon fallback); Lite = recraftOnly:false with the free ladder + Recraft
+            // V2-Icon fallback style. Legacy jobs (variant.engine === "legacy") pass no tier hints
+            // → generateWhiteboardPlan behaves exactly as before this change.
+            const _tierPlanOpts = variant.tier === "ultra_color"
+              ? { tier: variant.tier, template: variant.template, recraftOnly: true,
+                  recraftModel: variant.model, recraftStyle: variant.apiStyle,
+                  meterModel: variant.meterModel, elementCount: variant.elementCount,
+                  ladder: variant.ladder }
+              : variant.tier === "lite_color"
+              ? { tier: variant.tier, template: variant.template, recraftOnly: false,
+                  recraftModel: variant.model, iconFallbackStyle: variant.iconStyle,
+                  meterModel: variant.meterModel, elementCount: variant.elementCount,
+                  ladder: variant.ladder }
+              : {};
             plan = await deps.generationClient?.generateWhiteboardPlan?.(
               { jobId, tenantId: meta.tenantId, userId: meta.userId },
-              { narration, duration, genre, model: meta.genModel, language: meta.language, sceneId: `s${sceneIndex}` });
+              { narration, duration, genre, model: meta.genModel, language: meta.language, sceneId: `s${sceneIndex}`,
+                ..._tierPlanOpts });
           }
           const v = plan ? validateWhiteboardPlan(plan) : { ok: false, errors: ["no plan returned"] };
           if (plan && v.ok) {
@@ -453,9 +600,20 @@ export async function visualProcessor(job, deps) {
             } catch (re) {
               console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] asset baking skipped: ${re.message}`);
             }
+            // Persist the tier envelope alongside the plan so a stitch re-run picks the SAME
+            // renderer/model/template/style (idempotent recovery — no drift after restart).
+            // Legacy path leaves these null → historic Redis rows unchanged.
             await deps.store.setSceneFields(jobId, sceneIndex, {
-              visualStatus: "done", visualKind: "whiteboard-plan", planJson: JSON.stringify(plan) });
-            return { sceneIndex, genre, engine: "plan" };
+              visualStatus: "done", visualKind: "whiteboard-plan", planJson: JSON.stringify(plan),
+              ...(variant.tier ? {
+                whiteboardTier: variant.tier,
+                whiteboardTemplate: variant.template || "",
+                whiteboardStyle: variant.apiStyle || "",
+                whiteboardApiStyle: variant.apiStyle || "",
+                iconStyle: variant.iconStyle || "",
+              } : {}),
+            });
+            return { sceneIndex, genre, engine: "plan", tier: variant.tier || null };
           }
           console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] invalid plan → handwriting: ${(v.errors || []).slice(0, 2).join("; ")}`);
         } catch (e) {
@@ -468,8 +626,19 @@ export async function visualProcessor(job, deps) {
       await mkdir(tmpDir, { recursive: true });
       try {
         const { generateWhiteboardAsset } = await import("./whiteboard/visuals.mjs"); // lazy (worker-only)
+        // Single-call tiers (premium_color / premium_detail / regular_color / regular_detail):
+        // pass the tier's Recraft model + picked apiStyle + meter model down into the asset
+        // generator. sceneKey (normalized prompt) lets the asset cache reuse a paid Recraft asset
+        // across scenes/jobs. Legacy jobs (variant.engine === "legacy") pass no tier hints → the
+        // asset generator falls back to its historic genre-driven defaults.
+        const _prompt = scene.visualPrompt || scene.text || "";
+        const _sceneKey = _prompt.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 200);
+        const _tierAssetOpts = (variant.tier && variant.engine !== "WhiteboardPlan")
+          ? { tier: variant.tier, apiStyle: variant.apiStyle, model: variant.model,
+              meterModel: variant.meterModel, sceneKey: _sceneKey }
+          : {};
         const a = await generateWhiteboardAsset(genre, {
-          prompt: scene.visualPrompt || scene.text || "", tmpDir, sceneIndex,
+          prompt: _prompt, tmpDir, sceneIndex,
           aspect: meta.aspectRatio || "16:9",
           // diagram genre: graph from Python (same LLM routing/failover + Model Narasi)
           diagramGraph: genre === "diagram"
@@ -477,6 +646,7 @@ export async function visualProcessor(job, deps) {
                 { jobId, tenantId: meta.tenantId, userId: meta.userId },
                 { description: desc, model: meta.genModel, language: meta.language })
             : undefined,
+          ..._tierAssetOpts,
         });
         const _wbMeters = a.meters || [];
         for (let mi = 0; mi < _wbMeters.length; mi++) {
@@ -492,8 +662,16 @@ export async function visualProcessor(job, deps) {
           visualStatus: "done", visualKind: a.kind || "whiteboard",
           ...(up.path ? { visualPath: up.path } : {}), ...(up.key ? { visualKey: up.key } : {}),
           ...(mk.path ? { maskPath: mk.path } : {}), ...(mk.key ? { maskKey: mk.key } : {}),
+          // Tier envelope for stitch-time renderer selection + recovery idempotency (legacy = no-op).
+          ...(variant.tier ? {
+            whiteboardTier: variant.tier,
+            whiteboardTemplate: variant.template || "",
+            whiteboardStyle: variant.apiStyle || "",
+            whiteboardApiStyle: variant.apiStyle || "",
+            iconStyle: variant.iconStyle || "",
+          } : {}),
         });
-        return { sceneIndex, genre };
+        return { sceneIndex, genre, tier: variant.tier || null };
       } catch (e) {
         console.warn(`[whiteboard ${jobId}/${sceneIndex}] ${genre} asset failed: ${e.message} → handwriting`);
         await deps.store.setSceneFields(jobId, sceneIndex, { visualStatus: "fallback", visualKind: "whiteboard", visualError: e.message });
@@ -692,10 +870,33 @@ export async function stitchProcessor(job, deps) {
     const _tRenderStart = Date.now();
     let result;
     if (meta.visualMode === "whiteboard") {
+      // Tier-based renderer selection: if the job's tier maps to renderer === "svg_ffmpeg"
+      // (Ultra/Lite) → force renderWhiteboardPlanSvg regardless of WB_ENGINE/WB_RENDER_BACKEND
+      // env. Legacy jobs (no tier) fall through to the historic env-gated branches.
+      //
+      // Per-job tier consistency: every scene in a job is generated with the SAME tier by
+      // construction (tier is a JOB-level pick, stored on meta and echoed onto each scene
+      // as it renders). We ASSERT that here and log a warning on drift — a mixed job would
+      // route to the tier we detected on scene 0 by construction.
+      const _stitchVariant = resolveWBVariant(meta);
+      const _perSceneTiers = new Set();
+      for (const _s of scenesRaw) if (_s && _s.whiteboardTier) _perSceneTiers.add(_s.whiteboardTier);
+      if (_stitchVariant.tier) _perSceneTiers.add(_stitchVariant.tier);
+      if (_perSceneTiers.size > 1) {
+        console.warn(`[stitch ${jobId}] per-job tier drift (${[..._perSceneTiers].join(",")}); routing on job tier ${_stitchVariant.tier}`);
+      }
+      const _forcePlanSvg = _stitchVariant.renderer === "svg_ffmpeg";
       // Opt B: render the WHOLE video with the Remotion whiteboard engine instead of
       // the ffmpeg stitch. render.mjs is imported LAZILY here (worker-only) so the API
       // process never loads @remotion/Chromium at startup.
-      if ((process.env.WB_ENGINE || "legacy") === "plan") {
+      if (_forcePlanSvg) {
+        // Ultra/Lite tier → svg_ffmpeg is the ONLY correct renderer (multi-subject plans built
+        // for the svg backend). No env override; on error we do NOT silently fall back to
+        // Remotion (a Remotion render of a multi-subject plan would look wrong).
+        const { renderWhiteboardPlanSvg } = await import("./whiteboard/renderers/svgFfmpeg.mjs");
+        result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir,
+          onProgress: (d, t) => deps.store.patchMeta(jobId, { renderProgress: Math.round(d / t * 100), renderScenesDone: d, renderScenesTotal: t }).catch(() => {}) });
+      } else if ((process.env.WB_ENGINE || "legacy") === "plan") {
         // Golpo-like plan engine: per-scene visual_plan → resolve → multi-scene render.
         // BACKEND is pluggable (Guide-2 §K/§L): default Remotion (proven); WB_RENDER_BACKEND=svg_ffmpeg
         // routes to the Chromium-free SVG/FFmpeg renderer. Falls back to Remotion on any svg-backend error.
