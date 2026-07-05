@@ -1,7 +1,15 @@
-# ── narasi_gate — CC INSTRUCTION v3 (R-FG4/R-FG5/R-FG6): deterministic post-generation
+# ── narasi_gate — CC INSTRUCTION v3 (R-FG4/R-FG5/R-FG6/R-FG9): deterministic post-generation
 # gates for the narasi engines. NO LLM calls, NO network, stdlib only — importable from
 # both laozhang_api.py and the orchestrator without cycles.
 #
+#   R-FG9  unbracketed numeric-placeholder residue: R-FG6 only sees text that lived inside
+#          a [VERIFY: ...] wrapper. When a model skips the [VERIFY] discipline entirely and
+#          writes "ongeveer 3?" or "sebanyak {N} orang" or "[TBD]" as bare prose, R-FG5's
+#          directive-scan doesn't fire (no VERIFY/TODO/FIXME/CITE/STYLE token) and the
+#          number-guess-plus-hedge ships. R-FG9 deterministically catches bare '3?', '{N}',
+#          '[X]', '<TBD>', 'XX', 'TBD', 'TKTK' etc. and CUTS the enclosing sentence — safer
+#          than emitting a hedge on a value we have zero confidence in. Aurelius Bab 4:
+#          "De regenbelasting had het voorgaande kwartaal ongeveer 3? opgebracht".
 #   R-FG6  resolve→hedge→cut: a flagged number ([VERIFY: ...]) has exactly three legal
 #          exits — hedged value ("around 1547"), hedge-into-prose ("several times"), or
 #          cut. A raw [VERIFY] is NEVER a legal output.
@@ -38,6 +46,7 @@ def set_alt_history(on: bool) -> None:
 __all__ = [
     "gate_enabled", "gate_text", "resolve_flags", "apply_known_bad",
     "terminal_scan", "known_corrections_prompt", "set_db_claims", "BANNED_DICTION",
+    "unplaced_numeric_placeholder_scan",
 ]
 
 
@@ -184,8 +193,17 @@ _HEDGES = ("roughly", "about", "around", "approximately", "some", "circa", "near
            "sekitar", "kurang lebih", "kira-kira", "hampir")
 # generic bracket fillers that carry NO information — the only case where prose-hedge
 # (which discards the inner text) is legal. Anything else = a value → keep it.
+# R-FG9: extended with the same placeholder tokens that the unbracketed scanner catches,
+# so a variant appearing INSIDE a [VERIFY: ...] wrapper (e.g., "[VERIFY: 3?]",
+# "[VERIFY: {N}]", "[VERIFY: TBD]") is treated as empty/generic and cut per R-FG6 Exit 2.
 _GENERIC_INNER = {"", "number", "value", "amount", "date", "year", "angka", "jumlah",
-                  "tahun", "nilai", "n", "x", "?", "tbd", "..."}
+                  "tahun", "nilai", "n", "x", "?", "tbd", "...",
+                  # R-FG9 additions
+                  "tba", "tk", "tktk", "xx", "xxx", "xxxx",
+                  "{n}", "{}", "{x}", "{0}",
+                  "[x]", "[n]", "[?]", "[tbd]",
+                  "<n>", "<x>", "<tbd>",
+                  "3?", "todo"}
 # an inner STARTING with these is a META-REQUEST ("jumlah surat yang disita dalam arsip
 # KITLV"), not a value — wrapping it with a hedge would ship the request as prose.
 _GENERIC_PREFIX_RX = re.compile(
@@ -523,6 +541,58 @@ def placeholder_prose_scan(text: str) -> tuple[str, list[str]]:
     return "\n".join(out_parts), cut
 
 
+# R-FG9: unbracketed numeric-placeholder residue — the [VERIFY] discipline was skipped
+# entirely, so R-FG6 never wrapped this and R-FG5's directive-scan can't see it either.
+# Aurelius Bab 4 shipped "ongeveer 3? opgebracht" (guess + question-mark hedge). Also
+# catches template holes ({N}, [X], <TBD>) and journalism/editorial 'to come' markers
+# (TBD, TBA, TK, TKTK, XX+) that the model shipped as bare prose.
+_UNPLACED_NUM_PLACEHOLDER_RX = re.compile(
+    r"(?<![\w.])"                              # left boundary — not mid-token / not part of a decimal
+    r"(?:"
+    r"\d+\s*\?"                                # bare '3?' or '42 ?' — model wrote a guess then hedged with '?'
+    r"|\d+\s*\(\s*\?\s*\)"                     # '3(?)' academic-uncertainty variant
+    r"|\{\s*[Nn0-9x]?\s*\}"                    # '{N}', '{}', '{n}', '{0}' template holes
+    r"|\[\s*(?:X|N|n|x|\?|TBD|tbd|number|angka|jumlah)\s*\]"  # '[X]', '[TBD]', '[?]', '[jumlah]'
+    r"|<\s*(?:X|N|n|x|TBD|number|angka|jumlah)\s*>"           # '<N>', '<TBD>' angle-bracket holes
+    r"|\bXX+\b"                                # 'XX', 'XXXX' as a stand-in
+    r"|\b(?:TBD|TBA|TK|TKTK)\b"                # journalism/editorial 'to come' markers
+    r")"
+    r"(?![\w.])"                               # right boundary
+)
+
+
+def unplaced_numeric_placeholder_scan(text: str) -> tuple[str, list[str]]:
+    """R-FG9: catch UNBRACKETED numeric-placeholder residue that R-FG6 misses.
+    A model that writes 'ongeveer 3?' or 'sebanyak {N} orang' shipped an unfilled
+    guess — the [VERIFY] discipline was skipped, so the terminal bracket scan
+    can't see it. Cut the enclosing sentence (safer than emitting a hedge on a
+    number we have zero confidence in) and report every hit."""
+    if not text:
+        return text, []
+    hits: list[str] = []
+    if not _UNPLACED_NUM_PLACEHOLDER_RX.search(text):
+        return text, []
+    out_parts: list[str] = []
+    for para in text.split("\n"):
+        if not _UNPLACED_NUM_PLACEHOLDER_RX.search(para):
+            out_parts.append(para)
+            continue
+        sents = re.split(r"(?<=[.!?])\s+", para)
+        kept = []
+        for s in sents:
+            m = _UNPLACED_NUM_PLACEHOLDER_RX.search(s)
+            if m:
+                hits.append(s.strip()[:200] + f" [hit: {m.group(0)!r}]")
+                continue  # drop the sentence — safer than hedging a zero-confidence number
+            kept.append(s)
+        out_parts.append(" ".join(kept))
+    out = "\n".join(out_parts)
+    # tidy: orphaned punctuation from the whole-sentence cuts
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"(?m)^[ \t]*[.!?…]+[ \t]*$\n?", "", out)
+    return out, hits
+
+
 def broken_substitution_scan(text: str) -> list[str]:
     """§2b: flag substitution corpses (report-only — the repair needs an editor)."""
     hits = []
@@ -572,6 +642,8 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
         stats["dehedged_known_good"] = n_dehedged
         out, placeholder_cut = placeholder_prose_scan(out)
         stats["placeholder_prose_cut"] = len(placeholder_cut)
+        out, unplaced_num_hits = unplaced_numeric_placeholder_scan(out)
+        stats["unplaced_numeric_placeholder_cut"] = len(unplaced_num_hits)
         n_markers = 0
         if vo_strip:
             out, n_markers = strip_markers(out)
@@ -586,6 +658,7 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
                        "markers_stripped": n_markers, "foreign_tokens": foreign[:20],
                        "meta_leak": meta_leak_scan(out),
                        "placeholder_prose": placeholder_cut,
+                       "unplaced_numeric_placeholder": unplaced_num_hits,
                        "broken_substitution": broken_substitution_scan(out)})
         return out, report
     except Exception:
@@ -610,6 +683,11 @@ def known_corrections_prompt() -> str:
                          else f"- {note}")
         else:
             lines.append(f"- {note}")
+    # R-FG9 prompt-side prevention: teach the model the ONE legal channel for uncertainty
+    # (the [VERIFY: ...] wrapper) so it never ships bare '3?' or '{N}' as prose. Emitted
+    # unconditionally — this is a hard emission rule, not a project-scoped canon claim.
+    lines.append("- Never emit a number followed by ? or a bare {N}/[X]/<TBD> — "
+                 "use [VERIFY: …] so the gate can hedge or cut.")
     if not lines:
         return ""
     return "KNOWN CORRECTIONS (hard facts — never contradict these):\n" + "\n".join(dict.fromkeys(lines))

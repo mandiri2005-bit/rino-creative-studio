@@ -698,6 +698,44 @@ STYLES["harari"]["style_spec"] = {
                            "round4_closing_line"],
 }
 
+# ironic_moral_fable style_spec — PIPELINE-SPEC v1 §4, style_spec instance (P2 tier;
+# base entry lives in registry_p23.py). Aurelius-run learnings: Rino flagged 1-dim
+# greed-only characters and Dutch moral-summary tells; the register_spec below adds
+# protagonist_psychological_layer + contingent_institution_reveal + a capped
+# narrator_moral_aside; the style_spec counters cap moral asides / direct address and
+# hold repetition/bureaucracy ratio ≤0.15 (10-15% cut target). Fables are page-native:
+# medium_origin OVERRIDES the shipped "ear" to "book" per §4 (output_support=book+video).
+# factual_regime=fictional (invented parables). positive_exemplars=[] — first production
+# use; seed on next review pass.
+STYLES["ironic_moral_fable"]["medium_origin"] = "book"
+STYLES["ironic_moral_fable"]["output_support"] = ["book", "video"]
+STYLES["ironic_moral_fable"]["factual_regime"] = "fictional"
+STYLES["ironic_moral_fable"]["tts_risk"] = "medium"
+STYLES["ironic_moral_fable"]["aliases"] = [
+    "Ironic Moral Fable", "Fable Satir Ironis", "Fable Satiris",
+    "ironic moral fable", "ironic_moral_fable", "rod serling", "serling",
+    "twilight zone", "twist fable", "moral twist tale",
+]
+STYLES["ironic_moral_fable"]["register_spec"] = {
+    "required_moves": [
+        "protagonist_psychological_layer",   # ≥1 REQUIRED — luka/ketakutan/motif; forbids 1-dim greed-only characters
+        "contingent_institution_reveal",     # ≥1 REQUIRED — absurd system has a specific mechanism, not vague
+        "narrator_moral_aside",              # capped ≤3; over-explaining kills satire
+    ],
+    "banned_tells": [
+        "Het is een bescheiden les",         # Dutch — Rino flagged literal moral-summary tell
+        "Sta ons toe u voor te stellen",     # Dutch narrator-intro cliche
+        "The lesson is simple",              # English equivalent
+        "Notice that",                       # English narrator-explain
+    ],
+}
+STYLES["ironic_moral_fable"]["style_spec"] = {
+    "counters": {"moral_asides_max": 3, "narrator_direct_address_max": 4,
+                 "merk_op_max": 3},
+    "ratios": {"repetition_bureaucracy_ratio_max": 0.15},
+    "positive_exemplars": [],
+}
+
 
 # ── sample prompts (picker UX): two register-matched topic exemplars per style, shown
 # as the Title/Theme placeholder when the style is selected. Nusantara styles sample in
