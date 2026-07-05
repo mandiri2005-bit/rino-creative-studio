@@ -319,21 +319,25 @@ export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneInde
       `${subject}. A distinct standalone illustration focused entirely on this specific subject, ` +
       `unique composition, flat vector style on a plain white background.`;
     const seed = 1000 + (Number.isFinite(sceneIndex) ? sceneIndex : 0) * 7919;
-    // Rino 2026-07-05: use recraftv4_1 for Color (draw-reveal) — vector illustration model,
-    // same $/img as v3 vector ($0.08), better quality output. `recraft-v4_1-vector` meter
-    // is priced identically to `recraft-v3-vector` in the pricing catalog for zero user
-    // charge diff. Override via RECRAFT_COLOR_MODEL env if a canary swap is needed.
-    const colorModel = process.env.RECRAFT_COLOR_MODEL || "recraftv4_1";
+    // 2026-07-05 Rino: reverted color default recraftv4_1 → recraftv3 after prod evidence
+    // (Color job vid_mr72pl2u_xd824z produced ZERO image charges) suggested Recraft's
+    // REST API doesn't accept "recraftv4_1" as the model string — the SVG never landed →
+    // buildIllustration("color") returned null → render.mjs fell back to handwriting. Meter
+    // label rolled back to recraft-v3-vector to keep the charge column honest. To retry
+    // V4.1 or newer: set RECRAFT_COLOR_MODEL to the exact API model string Recraft docs
+    // list ("recraftv3" / "recraftv2" for known-good; V4.1 string TBD — check the Recraft
+    // /images/generations schema before flipping) — and also update the meter to match.
+    const colorModel = process.env.RECRAFT_COLOR_MODEL || "recraftv3";
     const { text } = await recraftGenerate(scenePrompt, { vector: true, substyle: "vivid_shapes", size: sizeFor(aspect), seed, model: colorModel });
     const visualPath = join(tmpDir, `wb_${sceneIndex}.svg`);
     await writeFile(visualPath, text);
-    return { visualPath, kind: "whiteboard-color", meters: [{ operation: "image", model: "recraft-v4_1-vector", units: { count: 1 } }] };
+    return { visualPath, kind: "whiteboard-color", meters: [{ operation: "image", model: "recraft-v3-vector", units: { count: 1 } }] };
   }
   if (genre === "detail") {
-    // Rino 2026-07-05: use recraftv4_1 for Realistic detail — raster model, same $/img as
-    // v3 raster ($0.04), better quality output. Override via RECRAFT_DETAIL_MODEL env if a
-    // canary swap is needed. Mask sub-chain (recraftVectorize) unchanged.
-    const detailModel = process.env.RECRAFT_DETAIL_MODEL || "recraftv4_1";
+    // 2026-07-05 Rino: reverted detail default recraftv4_1 → recraftv3 (same class of Recraft
+    // API model-string uncertainty as color above). Override via RECRAFT_DETAIL_MODEL once
+    // the V4.1 API model string is verified.
+    const detailModel = process.env.RECRAFT_DETAIL_MODEL || "recraftv3";
     const { buffer } = await recraftGenerate(prompt, { vector: false, size: sizeFor(aspect), model: detailModel });
     const visualPath = join(tmpDir, `wb_${sceneIndex}.png`);
     await writeFile(visualPath, buffer);
@@ -341,7 +345,7 @@ export async function generateWhiteboardAsset(genre, { prompt, tmpDir, sceneInde
     const maskPath = join(tmpDir, `wb_${sceneIndex}-mask.svg`);
     await writeFile(maskPath, maskText);
     return { visualPath, maskPath, kind: "whiteboard-detail",
-      meters: [{ operation: "image", model: "recraft-v4_1", units: { count: 1 } },
+      meters: [{ operation: "image", model: "recraft-v3", units: { count: 1 } },
                { operation: "image", model: "recraft-vectorize", units: { count: 1 } }] };
   }
   if (genre === "diagram") {

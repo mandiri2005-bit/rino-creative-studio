@@ -10420,9 +10420,13 @@ def _video_credit_estimate(p, *, visual_mode="hybrid", clip_model="veo3",
     # nano-banana-hd by default — wrong for WB whose actual gen uses Recraft).
     wb = (whiteboard_genre or "").strip().lower()
     if wb == "color":
-        image_each = metering.quote("image", "recraft-v4_1-vector", {"count": 1})
+        # 2026-07-05 Rino: reverted from recraft-v4_1-vector back to recraft-v3-vector after
+        # the Color job vid_mr72pl2u_xd824z produced ZERO image charges (Recraft API rejected
+        # the v4_1 model string → visualPath never generated → render.mjs fell back to
+        # handwriting). visuals.mjs meter reverted to match; estimator stays in sync.
+        image_each = metering.quote("image", "recraft-v3-vector", {"count": 1})
     elif wb == "detail":
-        image_each = (metering.quote("image", "recraft-v4_1", {"count": 1})
+        image_each = (metering.quote("image", "recraft-v3", {"count": 1})
                       + metering.quote("image", "recraft-vectorize", {"count": 1}))
     elif wb in ("lineart", "diagram"):
         image_each = 0  # no per-scene image gen — handwriting only for lineart; diagram is LLM+SVG
