@@ -8417,25 +8417,25 @@ def _resolve_narasi_lang(language: str) -> str:
 # then leak English labels). Small canonical dict — extend by adding a new ISO code.
 # Any language not in the map falls through to English (safe default for the Wimba EN brand).
 _NARASI_HEADER_LABELS = {
-    "id":  {"style": "Gaya",   "output": "Output",  "language": "Bahasa",   "words": "kata",       "note": "Catatan", "alt": "sejarah alternatif (alternate history)"},
-    "en":  {"style": "Style",  "output": "Output",  "language": "Language", "words": "words",      "note": "Note",    "alt": "alternate history"},
-    "es":  {"style": "Estilo", "output": "Salida",  "language": "Idioma",   "words": "palabras",   "note": "Nota",    "alt": "historia alternativa"},
-    "fr":  {"style": "Style",  "output": "Sortie",  "language": "Langue",   "words": "mots",       "note": "Note",    "alt": "histoire alternative"},
-    "de":  {"style": "Stil",   "output": "Ausgabe", "language": "Sprache",  "words": "Wörter",     "note": "Hinweis", "alt": "alternative Geschichte"},
-    "pt":  {"style": "Estilo", "output": "Saída",   "language": "Idioma",   "words": "palavras",   "note": "Nota",    "alt": "história alternativa"},
-    "nl":  {"style": "Stijl",  "output": "Uitvoer", "language": "Taal",     "words": "woorden",    "note": "Notitie", "alt": "alternatieve geschiedenis"},
-    "it":  {"style": "Stile",  "output": "Uscita",  "language": "Lingua",   "words": "parole",     "note": "Nota",    "alt": "storia alternativa"},
-    "ja":  {"style": "スタイル", "output": "出力",     "language": "言語",       "words": "語",           "note": "注記",     "alt": "代替歴史"},
-    "ko":  {"style": "스타일",  "output": "출력",     "language": "언어",       "words": "단어",         "note": "참고",     "alt": "대체 역사"},
-    "zh":  {"style": "风格",   "output": "输出",     "language": "语言",       "words": "字",           "note": "注",      "alt": "架空历史"},
-    "ar":  {"style": "أسلوب",  "output": "الإخراج",  "language": "اللغة",     "words": "كلمة",         "note": "ملاحظة",   "alt": "تاريخ بديل"},
-    "hi":  {"style": "शैली",   "output": "आउटपुट",   "language": "भाषा",      "words": "शब्द",         "note": "नोट",     "alt": "वैकल्पिक इतिहास"},
-    "th":  {"style": "รูปแบบ",  "output": "ผลลัพธ์",   "language": "ภาษา",       "words": "คำ",          "note": "หมายเหตุ", "alt": "ประวัติศาสตร์ทางเลือก"},
-    "vi":  {"style": "Phong cách", "output": "Đầu ra", "language": "Ngôn ngữ", "words": "từ",          "note": "Ghi chú",  "alt": "lịch sử thay thế"},
-    "ms":  {"style": "Gaya",   "output": "Output",  "language": "Bahasa",   "words": "perkataan",  "note": "Nota",    "alt": "sejarah alternatif"},
-    "jv":  {"style": "Gaya",   "output": "Output",  "language": "Basa",     "words": "tembung",    "note": "Cathetan","alt": "sejarah alternatif"},
-    "su":  {"style": "Gaya",   "output": "Output",  "language": "Basa",     "words": "kecap",      "note": "Catetan", "alt": "sajarah alternatif"},
-    "tl":  {"style": "Estilo", "output": "Output",  "language": "Wika",     "words": "salita",     "note": "Tala",    "alt": "kahaliling kasaysayan"},
+    "id":  {"style": "Gaya",   "output": "Output",  "language": "Bahasa",   "words": "kata",       "note": "Catatan", "alt": "sejarah alternatif (alternate history)", "chapter": "Bab {n}"},
+    "en":  {"style": "Style",  "output": "Output",  "language": "Language", "words": "words",      "note": "Note",    "alt": "alternate history",                       "chapter": "Chapter {n}"},
+    "es":  {"style": "Estilo", "output": "Salida",  "language": "Idioma",   "words": "palabras",   "note": "Nota",    "alt": "historia alternativa",                    "chapter": "Capítulo {n}"},
+    "fr":  {"style": "Style",  "output": "Sortie",  "language": "Langue",   "words": "mots",       "note": "Note",    "alt": "histoire alternative",                    "chapter": "Chapitre {n}"},
+    "de":  {"style": "Stil",   "output": "Ausgabe", "language": "Sprache",  "words": "Wörter",     "note": "Hinweis", "alt": "alternative Geschichte",                  "chapter": "Kapitel {n}"},
+    "pt":  {"style": "Estilo", "output": "Saída",   "language": "Idioma",   "words": "palavras",   "note": "Nota",    "alt": "história alternativa",                    "chapter": "Capítulo {n}"},
+    "nl":  {"style": "Stijl",  "output": "Uitvoer", "language": "Taal",     "words": "woorden",    "note": "Notitie", "alt": "alternatieve geschiedenis",               "chapter": "Hoofdstuk {n}"},
+    "it":  {"style": "Stile",  "output": "Uscita",  "language": "Lingua",   "words": "parole",     "note": "Nota",    "alt": "storia alternativa",                      "chapter": "Capitolo {n}"},
+    "ja":  {"style": "スタイル", "output": "出力",     "language": "言語",       "words": "語",           "note": "注記",     "alt": "代替歴史",                                    "chapter": "第{n}章"},
+    "ko":  {"style": "스타일",  "output": "출력",     "language": "언어",       "words": "단어",         "note": "참고",     "alt": "대체 역사",                                    "chapter": "{n}장"},
+    "zh":  {"style": "风格",   "output": "输出",     "language": "语言",       "words": "字",           "note": "注",      "alt": "架空历史",                                    "chapter": "第{n}章"},
+    "ar":  {"style": "أسلوب",  "output": "الإخراج",  "language": "اللغة",     "words": "كلمة",         "note": "ملاحظة",   "alt": "تاريخ بديل",                                  "chapter": "الفصل {n}"},
+    "hi":  {"style": "शैली",   "output": "आउटपुट",   "language": "भाषा",      "words": "शब्द",         "note": "नोट",     "alt": "वैकल्पिक इतिहास",                                "chapter": "अध्याय {n}"},
+    "th":  {"style": "รูปแบบ",  "output": "ผลลัพธ์",   "language": "ภาษา",       "words": "คำ",          "note": "หมายเหตุ", "alt": "ประวัติศาสตร์ทางเลือก",                              "chapter": "บทที่ {n}"},
+    "vi":  {"style": "Phong cách", "output": "Đầu ra", "language": "Ngôn ngữ", "words": "từ",          "note": "Ghi chú",  "alt": "lịch sử thay thế",                                "chapter": "Chương {n}"},
+    "ms":  {"style": "Gaya",   "output": "Output",  "language": "Bahasa",   "words": "perkataan",  "note": "Nota",    "alt": "sejarah alternatif",                      "chapter": "Bab {n}"},
+    "jv":  {"style": "Gaya",   "output": "Output",  "language": "Basa",     "words": "tembung",    "note": "Cathetan","alt": "sejarah alternatif",                      "chapter": "Bab {n}"},
+    "su":  {"style": "Gaya",   "output": "Output",  "language": "Basa",     "words": "kecap",      "note": "Catetan", "alt": "sajarah alternatif",                      "chapter": "Bab {n}"},
+    "tl":  {"style": "Estilo", "output": "Output",  "language": "Wika",     "words": "salita",     "note": "Tala",    "alt": "kahaliling kasaysayan",                   "chapter": "Kabanata {n}"},
 }
 
 
@@ -8447,6 +8447,18 @@ def _narasi_header_labels(language: str) -> dict:
         return _NARASI_HEADER_LABELS["en"]
     code = str(language).strip().lower().replace("_", "-").split("-", 1)[0]
     return _NARASI_HEADER_LABELS.get(code, _NARASI_HEADER_LABELS["en"])
+
+
+def _chapter_label(language: str, n) -> str:
+    """Format a chapter prefix in the narrative's own language.
+    id/ms/jv/su → "Bab 1", en → "Chapter 1", es → "Capítulo 1", ja → "第1章",
+    ko → "1장", zh → "第1章". Unknown language → English fallback.
+    """
+    fmt = _narasi_header_labels(language).get("chapter", "Chapter {n}")
+    try:
+        return fmt.format(n=n)
+    except (KeyError, IndexError, ValueError):
+        return f"Chapter {n}"
 
 
 async def _narasi_outline_impl(body: dict):
@@ -8621,7 +8633,7 @@ async def _narasi_outline_impl(body: dict):
     if not result.get("outline_text", "").strip():
         _ot = []
         for c in result["chapters"]:
-            _ot.append(f"## Bab {c.get('id','??')}: {c.get('title','')}")
+            _ot.append(f"## {_chapter_label(language, c.get('id','??'))}: {c.get('title','')}")
             _ot.append(f"{c.get('description','')}")
             _ot.append(f"*Target: {c.get('words',0)} kata*\n")
         result["outline_text"] = "\n".join(_ot)
@@ -8885,7 +8897,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     # Truncate each to ~300 words. Slice 1 (H1): keep the chapter TAIL
                     # (its ending) when the flag is on, not the head (_narasi_prev_snippet).
                     snippet = _narasi_prev_snippet(pc["text"], 300)
-                    prev_lines.append(f"[Bab {pc['id']}: {pc['title']}]\n{snippet}")
+                    prev_lines.append(f"[{_chapter_label(language, pc['id'])}: {pc['title']}]\n{snippet}")
                 prev_tail = "\n\n".join(prev_lines)
             # ── Slice 3 (§3.1/§3.2): prepend the rolling summary + fact ledger so the model
             # stays consistent across a long book without re-reading every chapter. ──
@@ -9082,7 +9094,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # Crash-safe ON ⟹ the increment is DEFERRED to after the durable chapter write below.
             if not _dalang_crashsafe_enabled():
                 _meter_actual += _chap_cr
-            _chap_txt = f"## Bab {chap_id}: {chap_title}\n\n{text}\n"
+            _chap_txt = f"## {_chapter_label(language, chap_id)}: {chap_title}\n\n{text}\n"
             (tmp_dir / f"{chap_id}.txt").write_text(_chap_txt, encoding="utf-8")
             # ── Step 2: persist chapter text to R2 + assets row (capture) ──
             await _persist_asset(
@@ -9168,7 +9180,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
         except Exception as e:
             errors.append({"id": chap_id, "error": str(e)})
             (tmp_dir / f"{chap_id}.txt").write_text(
-                f"## Bab {chap_id}: {chap_title}\n\n<!-- ERROR bab {chap_id}: {e} -->\n",
+                f"## {_chapter_label(language, chap_id)}: {chap_title}\n\n<!-- ERROR chapter {chap_id}: {e} -->\n",
                 encoding="utf-8")
 
     # Clean up cross-container cancel flag.
@@ -9215,7 +9227,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                                        error=str(errors[:3]))
         else:
             _stitched_md = "\n\n".join(
-                f"## Bab {pc['id']}: {pc['title']}\n\n{pc['text']}"
+                f"## {_chapter_label(language, pc['id'])}: {pc['title']}\n\n{pc['text']}"
                 for pc in previous_chapters
             )
             _result = {
@@ -9262,6 +9274,7 @@ async def narasi_persist(body: dict,
     job_id  = (body.get("job_id") or str(uuid.uuid4())[:8])[:16]
     topic   = (body.get("topic") or "").strip()
     style   = (body.get("style") or "storytelling").strip()
+    language = (body.get("language") or "id").strip()   # for chapter-prefix i18n (Bab/Chapter/Capítulo/…)
     chapters = body.get("chapters") or []   # [{index, content, source_prompt, retrieved_ids, word_count, id?, title?}]
 
     # Idempotent: reuse the job row if one already exists for this external id.
@@ -9305,7 +9318,7 @@ async def narasi_persist(body: dict,
                                    job_id=_job_uuid, provider="gemini")
             except Exception as _e2:
                 import logging as _lg; _lg.getLogger("narasi").warning("persist moat/usage chapter %s failed (non-fatal): %s", ch.get("index"), _e2)
-            md_parts.append(f"## Bab {ch.get('id', _idx)}: {ch.get('title','')}\n\n{_text}")
+            md_parts.append(f"## {_chapter_label(language, ch.get('id', _idx))}: {ch.get('title','')}\n\n{_text}")
             saved += 1
         except Exception as _e:
             import logging as _lg; _lg.getLogger("narasi").warning("persist chapter %s failed: %s", ch.get("index"), _e)
@@ -9583,7 +9596,7 @@ async def narasi_stitch(job_id: str, body: dict,
                 _chs = await db.get_narasi_chapters(_tenant, _row["id"])
                 if _chs:
                     body_text = "\n\n".join(
-                        f"## Bab {int(c['chapter_index']) + 1}\n\n{c.get('content', '')}"
+                        f"## {_chapter_label(language, int(c['chapter_index']) + 1)}\n\n{c.get('content', '')}"
                         for c in _chs)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("stitch DB read failed (non-fatal): %s", _e)
