@@ -8461,6 +8461,28 @@ def _chapter_label(language: str, n) -> str:
         return f"Chapter {n}"
 
 
+# Legacy pre-2026-07-05 narratives baked "## Bab N:" into stored markdown regardless of the
+# narrative language (chapter labels were hardcoded Indonesian). Retrofit at retrieval time so
+# an English/Dutch/Japanese/… reader sees the correct chapter prefix without re-generating.
+# Only fires when the current language is NOT in the Indo family that natively uses "Bab".
+import re as _re_chap
+_LEGACY_BAB_RE = _re_chap.compile(r'^(##\s+)Bab\s+(\d+)([:\s])', _re_chap.MULTILINE)
+
+
+def _retrofit_legacy_chapter_labels(md: str, language: str) -> str:
+    """Rewrite '## Bab N:' headings baked into legacy stored markdown to the CURRENT
+    language's chapter format. No-op for id/ms/jv/su (Indo family — Bab is correct) and
+    for narratives with no legacy heading to convert."""
+    if not md or not language:
+        return md
+    code = str(language).strip().lower().replace("_", "-").split("-", 1)[0]
+    if code in ("id", "ms", "jv", "su"):
+        return md   # native Indo languages — Bab is correct, don't touch
+    def _repl(m):
+        return f"{m.group(1)}{_chapter_label(language, int(m.group(2)))}{m.group(3)}"
+    return _LEGACY_BAB_RE.sub(_repl, md)
+
+
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
     # Outline + brief are structural planning served as a SYNCHRONOUS blocking request — a slow model
@@ -9612,6 +9634,11 @@ async def narasi_stitch(job_id: str, body: dict,
 
     if not body_text.strip():
         raise HTTPException(404, f"Job {job_id} not found")
+
+    # Retrofit legacy "## Bab N:" chapter headers baked into pre-i18n stored markdown
+    # (2026-07-05: chapter labels were hardcoded Indonesian before _chapter_label landed;
+    # existing narratives now display the correct language prefix without regeneration).
+    body_text = _retrofit_legacy_chapter_labels(body_text, language)
 
     total_words = len(body_text.split())
     # Stored ⚡ markdown already carries the full gated header — never wrap a second one.

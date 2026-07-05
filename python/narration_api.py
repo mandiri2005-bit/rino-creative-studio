@@ -823,7 +823,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         key = "book" if result.get("book") else "output"
         book = result.get(key) or ""
         try:
-            from laozhang_api import _resolve_narasi_lang, _narasi_header_labels, _NARASI_HEADER_LABELS
+            from laozhang_api import (_resolve_narasi_lang, _narasi_header_labels,
+                                       _NARASI_HEADER_LABELS, _retrofit_legacy_chapter_labels)
             _hdr_prefixes = tuple(f"> **{_v['style']}:**" for _v in _NARASI_HEADER_LABELS.values())
         except Exception:  # noqa: BLE001
             _resolve_narasi_lang = lambda x: x
@@ -831,6 +832,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                                  "language": "Language", "words": "words",
                                                  "note": "Note", "alt": "alternate history"}
             _hdr_prefixes = ("> **Gaya:**", "> **Style:**")
+            _retrofit_legacy_chapter_labels = lambda md, _l: md
+        # Retrofit legacy "## Bab N:" chapter headers (pre-2026-07-05 stored markdown baked
+        # them in regardless of narrative language). Skip if the book already has the right
+        # prefix — no-op is safe.
+        book = _retrofit_legacy_chapter_labels(book, language)
+        result[key] = book
         if book and not book.lstrip().startswith(_hdr_prefixes):
             try:
                 lang_label = _resolve_narasi_lang(language)
