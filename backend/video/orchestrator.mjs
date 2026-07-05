@@ -92,7 +92,13 @@ export async function dispatchBatch(jobId, batchIndex, ctx, deps) {
 export async function startAssembly(ctx, deps) {
   const {
     jobId, tenantId, userId, scenes, tier = "hd",
-    clipModel = "veo3", visualMode = "hybrid", whiteboardGenre = "", captions = false,
+    clipModel = "veo3", visualMode = "hybrid", whiteboardGenre = "",
+    // 6-tier WB catalog (2026-07-05): tier/category/apiStyle drive the catalog-based routing in
+    // workers.mjs resolveWBVariant(). Ultra/Lite = plan-mode multi-subject; Premium/Regular =
+    // single-call. Missing = falls back to legacy per whiteboardGenre.
+    whiteboardTier = null, whiteboardCategory = null, whiteboardApiStyle = null,
+    whiteboardTemplate = null, whiteboardStyle = null,
+    captions = false,
     voice, imageModel, ttsModel, language, genModel, aspectRatio = "16:9", captionFont,
     anchorKey, anchorB64, heroStyle,
     avatarPresenter, avatarBroll, avatarAspect, captionsStyle,   // avatar-mode sub-selectors (Slice 1: persisted on meta, no render)
@@ -123,7 +129,9 @@ export async function startAssembly(ctx, deps) {
 
   const isAvatar = visualMode === "avatar";
   await deps.store.createJob({
-    jobId, tenantId, userId, tier: tierN, clipModel, visualMode, whiteboardGenre, captions,
+    jobId, tenantId, userId, tier: tierN, clipModel, visualMode, whiteboardGenre,
+    whiteboardTier, whiteboardCategory, whiteboardApiStyle, whiteboardTemplate, whiteboardStyle,
+    captions,
     avatarPresenter: avatarPresenter || "", avatarBroll: !!avatarBroll, avatarAspect: avatarAspect || "", captionsStyle: captionsStyle || "",   // avatar sub-selectors (schemaless meta)
     voice: voice || "", imageModel: imageModel || "",
     ttsModel: ttsModel || "", language: language || "", genModel: genModel || "", aspectRatio,

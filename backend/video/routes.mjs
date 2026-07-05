@@ -185,6 +185,15 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
         jobId, tenantId, userId, scenes,
         tier: b.tier || "hd", clipModel: b.clipModel || "veo3",
         visualMode: b.visualMode || "hybrid", whiteboardGenre: b.whiteboardGenre,
+        // 6-tier WB catalog (2026-07-05): FE picker sends 5 fields — persist on job meta so
+        // resolveWBVariant() in workers.mjs can route via the catalog (Ultra/Lite = plan-mode +
+        // svg_ffmpeg, Premium/Regular = legacy Remotion). Missing = falls back to legacy per
+        // whiteboardGenre for BC with older FE clients / mid-flight retries.
+        whiteboardTier: b.whiteboard_tier,
+        whiteboardCategory: b.whiteboard_category,
+        whiteboardApiStyle: b.whiteboard_api_style,
+        whiteboardTemplate: b.whiteboard_template,
+        whiteboardStyle: b.whiteboard_style,
         captions: !!b.captions,
         // avatar sub-selectors (Slice 1 plumbing — persisted on the schemaless meta; the
         // avatar renderer that consumes these is Slice 2, so nothing is dispatched here)
