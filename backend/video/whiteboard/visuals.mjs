@@ -342,16 +342,26 @@ const _exampleGraph = () => ({
 // SVG via buildDiagramSvg, falling back to _exampleGraph if the LLM is unavailable.
 
 // Stable per-scene cache key fragment from the visual prompt: lowercase, punctuation stripped,
-// whitespace collapsed, truncated. Two near-identical prompts (whitespace/case only) collapse to
-// ONE cache entry so a re-run of the same script re-uses the paid Recraft asset. Kept short to
-// keep the Redis key bounded.
+// FULL-PROMPT hash + short human tail. Two near-identical prompts (whitespace/case only)
+// still collapse to ONE cache entry (normalization strips punctuation + collapses whitespace),
+// but distinct per-scene prompts stay distinct — even when scenes share a long art-direction
+// PREAMBLE (>200 chars) with the unique subject in the tail. The old slice(0,200) implementation
+// collided every scene of a Regular Color job to the SAME key (2026-07-05: 5 scenes all rendered
+// scene 4's SVG because the "Setting: Prehistoric bamboo forests…" preamble was 210+ chars and
+// the unique subject sat at char ~250-350). Hash is djb2 → 8-char base36 (~2.8 trillion buckets,
+// collision-free at any real workload). Short human tail keeps the Redis key debuggable.
 function sceneKeySlug(prompt) {
-  return String(prompt || "")
+  const norm = String(prompt || "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]+/gu, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 200);
+    .trim();
+  if (!norm) return "empty";
+  let h = 5381;
+  for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) | 0; // djb2
+  const hash = (h >>> 0).toString(36); // 6-8 chars base36
+  const head = norm.slice(0, 40).replace(/\s+$/, ""); // short human tail for log debuggability
+  return `${hash}-${head}`;
 }
 
 /**

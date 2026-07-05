@@ -662,14 +662,16 @@ export async function visualProcessor(job, deps) {
         const { generateWhiteboardAsset } = await import("./whiteboard/visuals.mjs"); // lazy (worker-only)
         // Single-call tiers (premium_color / premium_detail / regular_color / regular_detail):
         // pass the tier's Recraft model + picked apiStyle + meter model down into the asset
-        // generator. sceneKey (normalized prompt) lets the asset cache reuse a paid Recraft asset
-        // across scenes/jobs. Legacy jobs (variant.engine === "legacy") pass no tier hints → the
-        // asset generator falls back to its historic genre-driven defaults.
+        // generator. Pass the FULL prompt (visuals.mjs.sceneKeySlug hashes it) — the previous
+        // slice(0,200) collided across scenes when the art-direction preamble was >200 chars
+        // (2026-07-05 bug: 5 Regular Color scenes shared the same "Setting: Prehistoric bamboo
+        // forests…" preamble, so all 5 scenes hit the same cache entry and rendered scene 4's
+        // SVG). Legacy jobs (variant.engine === "legacy") pass no tier hints → the asset
+        // generator falls back to its historic genre-driven defaults.
         const _prompt = scene.visualPrompt || scene.text || "";
-        const _sceneKey = _prompt.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 200);
         const _tierAssetOpts = (variant.tier && variant.engine !== "WhiteboardPlan")
           ? { tier: variant.tier, apiStyle: variant.apiStyle, model: variant.model,
-              meterModel: variant.meterModel, sceneKey: _sceneKey }
+              meterModel: variant.meterModel /* sceneKey OMITTED → visuals.mjs hashes _prompt */ }
           : {};
         const a = await generateWhiteboardAsset(genre, {
           prompt: _prompt, tmpDir, sceneIndex,
