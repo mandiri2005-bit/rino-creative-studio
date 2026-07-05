@@ -668,7 +668,40 @@ export async function visualProcessor(job, deps) {
         // forests…" preamble, so all 5 scenes hit the same cache entry and rendered scene 4's
         // SVG). Legacy jobs (variant.engine === "legacy") pass no tier hints → the asset
         // generator falls back to its historic genre-driven defaults.
-        const _prompt = scene.visualPrompt || scene.text || "";
+        let _prompt = scene.visualPrompt || scene.text || "";
+        // WB_REFRAME_ENABLED (default OFF → this whole block is skipped, _prompt stays the
+        // raw scene.visualPrompt so behaviour is byte-identical to pre-reframe). When ON
+        // AND the tier's engine is single-call (DrawReveal/SceneView), rewrite the raw
+        // visualPrompt into a scene-grounded prompt via generationClient.generateWBVisualReframe.
+        // Cache by {brief, narration, tier, apiStyle} so the same script re-renders reuse
+        // the (paid) reframe. Any error / null result → keep the raw scene.visualPrompt.
+        if ((variant.engine === "DrawReveal" || variant.engine === "SceneView")
+            && /^(1|true|yes)$/i.test(process.env.WB_REFRAME_ENABLED || "")) {
+          try {
+            const _reframeParts = {
+              brief: meta.brief,
+              narration: scene.text,
+              tier: variant.tier,
+              apiStyle: variant.apiStyle,
+            };
+            let reframedPrompt = await deps.store.getCachedReframe?.(_reframeParts);
+            const _reframeFromCache = !!reframedPrompt;
+            if (!reframedPrompt) {
+              reframedPrompt = await deps.generationClient?.generateWBVisualReframe?.(
+                { jobId, tenantId: meta.tenantId, userId: meta.userId },
+                { narration: scene.text, brief: meta.brief, tier: variant.tier,
+                  apiStyle: variant.apiStyle, character: meta.visualCast || "",
+                  model: process.env.WB_REFRAME_MODEL || meta.genModel,
+                  language: meta.language });
+            }
+            if (reframedPrompt) {
+              if (!_reframeFromCache) await deps.store.setCachedReframe?.(_reframeParts, reframedPrompt);
+              _prompt = reframedPrompt;
+            }
+          } catch (re) {
+            console.warn(`[whiteboard ${jobId}/${sceneIndex}] reframe failed → raw prompt: ${re.message}`);
+          }
+        }
         const _tierAssetOpts = (variant.tier && variant.engine !== "WhiteboardPlan")
           ? { tier: variant.tier, apiStyle: variant.apiStyle, model: variant.model,
               meterModel: variant.meterModel /* sceneKey OMITTED → visuals.mjs hashes _prompt */ }

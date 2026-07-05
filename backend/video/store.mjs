@@ -92,6 +92,28 @@ export async function setCachedPlan(parts, plan, ttlSeconds = 30 * 86400) {
   catch { /* cache is best-effort */ }
 }
 
+// ── Whiteboard REFRAME cache (cross-job reuse) ───────────────────────────────
+// The LLM reframe output (visual prompt) for a given brief+narration is SAVED so
+// a re-run with the SAME inputs never re-hits the (paid) LLM again. Keyed by
+// brief + tier + apiStyle + a stable hash of narration.
+function _reframeSlug({ brief, narration, tier, apiStyle }) {
+  let h = 5381; const s = String(brief || "") + "\0" + String(narration || "");
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; // djb2
+  const b = String(brief || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 32);
+  const t = String(tier || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const a = String(apiStyle || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return `${b}:${t}:${a}:${(h >>> 0).toString(36)}`;
+}
+export function reframeCacheKey(parts) { return `wbrfr:v1:${_reframeSlug(parts)}`; }
+export async function getCachedReframe(parts) {
+  try { const v = await r().get(reframeCacheKey(parts)); return v ? JSON.parse(v) : null; }
+  catch { return null; }
+}
+export async function setCachedReframe(parts, visualPrompt, ttlSeconds = 7 * 86400) {
+  try { await r().set(reframeCacheKey(parts), JSON.stringify(visualPrompt), "EX", ttlSeconds); }
+  catch { /* cache is best-effort */ }
+}
+
 // scene is "ready to stitch" when its narration exists and a visual exists
 // (a clip that fell back to an image counts as ready).
 export function sceneComplete(scene) {

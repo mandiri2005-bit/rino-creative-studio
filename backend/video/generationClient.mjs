@@ -510,5 +510,31 @@ export function httpGenerationClient(opts = {}) {
         return null;
       }
     },
+    // WB visual reframe: rewrites a narration line into a concrete, whiteboard-friendly
+    // visual_prompt via Python /video/wb-reframe (same LLM routing as narration). Mirrors
+    // generateWhiteboardPlan / generateVisualPrompt. Returns the visual_prompt string on
+    // success, null on any failure — caller MUST have a fallback (regex/handwriting).
+    async generateWBVisualReframe(ctx, { narration, brief, tier, apiStyle, character, model, language } = {}) {
+      try {
+        const r = await fetch(`${PYTHON_API}/video/wb-reframe`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders(ctx || {}) },
+          body: JSON.stringify({
+            narration: narration || "",
+            brief: brief || "",
+            tier: tier || "",
+            api_style: apiStyle || "",
+            character: character || "",
+            model: model || "deepseek-chat",
+            language: language || "",
+          }),
+        });
+        if (!r.ok) { console.warn(`[wb-reframe] ${r.status}`); return null; }
+        return (await r.json()).visual_prompt || null;
+      } catch (e) {
+        console.warn(`[wb-reframe] failed: ${e.message}`);
+        return null;
+      }
+    },
   };
 }
