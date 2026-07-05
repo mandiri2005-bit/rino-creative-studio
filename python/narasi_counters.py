@@ -282,6 +282,300 @@ for _lk, _lp in _EXTRA_PACKS.items():
         LANGUAGE_PACKS[_lk].setdefault(_pk, _pv)
 
 
+# ── PROVISIONAL language packs (batch 1, 2026-07-05). ───────────────────────────
+# Structured seed data (aporia_phrases / attribution_patterns / hedge_templates /
+# wpm / foreign_placeholder_blocklist / provisional flag). Compiled into the
+# existing pack schema below via `_install_provisional`, then registered with
+# `setdefault` so any hand-tuned entry above (en, id, plus the _EXTRA_PACKS
+# languages already merged) survives untouched.
+#
+# CONSUMERS (spec refs):
+#   - hedge_policy §3.4.4       → hedge_value / hedge_prose
+#   - deterministic_counters §3.6 → aporia / attribution regex
+#   - terminal_scan §3.5        → foreign_tokens blocklist
+#   - TTS wpm                    → wpm dict (min/max derived from normal±)
+#
+# Missing-lang stays UNMEASURED (spec §3.4.4): that path is for langs below the
+# coverage floor, NOT seeded entries with empty pattern lists. Seeded langs get
+# real (if provisional) entries so counters don't degrade to UNMEASURED here.
+
+_PROVISIONAL_SEEDS: dict[str, dict[str, Any]] = {
+    "ban": {
+        "aporia_phrases": ["nenten wenten sumber", "durung wenten cihna",
+                           "tan kacatet ring babad"],
+        "attribution_patterns": ["nyuratang", "maosang", "nyihnayang", "negesang"],
+        "hedge_templates": ["sawetara", "kirang langkung", "watara"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "min": {
+        "aporia_phrases": ["indak ado sumber", "alun tacatek",
+                           "indak tacatek dek sajarah"],
+        "attribution_patterns": ["manulih", "mancatek", "manaruangkan", "mangecek"],
+        "hedge_templates": ["lebiah kurang", "kiro-kiro", "sakitar"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "ceb": {
+        "aporia_phrases": ["walay tinubdan nga nag-ingon", "wala matala",
+                           "dili masulbad"],
+        "attribution_patterns": ["nagsulat", "nag-ingon", "nagpasabot", "nagbanabana"],
+        "hedge_templates": ["mga", "banabana", "duol sa"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "ilo": {
+        "aporia_phrases": ["awan ti pagtaudan", "saan a nailanad",
+                           "di pay narisut"],
+        "attribution_patterns": ["insurat", "kinuna", "impatalged", "ninamnama"],
+        "hedge_templates": ["agarup", "aginggana", "manipud"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "war": {
+        "aporia_phrases": ["waray tinikangan", "waray nahisurat",
+                           "diri masabtan"],
+        "attribution_patterns": ["nagsurat", "nagsiring", "nagpakita", "nagbanabana"],
+        "hedge_templates": ["mga", "banabana", "harani"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "cbk": {
+        "aporia_phrases": ["no hay fuente", "no ta anota", "no puede resolve"],
+        "attribution_patterns": ["ya escribi", "ya habla", "ya nota", "ya calcula"],
+        "hedge_templates": ["mas o menos", "cerca de", "casi"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "sk": {
+        "aporia_phrases": ["nezachovalo sa", "pramene neuvádzajú",
+                           "nemožno určiť"],
+        "attribution_patterns": ["napísal", "tvrdí", "poznamenal", "odhaduje"],
+        "hedge_templates": ["približne", "asi", "okolo"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "hr": {
+        "aporia_phrases": ["izvori ne bilježe", "ostaje neriješeno",
+                           "nije zabilježeno"],
+        "attribution_patterns": ["napisao je", "tvrdi", "primjećuje", "procjenjuje"],
+        "hedge_templates": ["približno", "otprilike", "oko"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "sl": {
+        "aporia_phrases": ["viri ne poročajo", "ostaja nerešeno",
+                           "ni zabeleženo"],
+        "attribution_patterns": ["je zapisal", "trdi", "opaža", "ocenjuje"],
+        "hedge_templates": ["približno", "okoli", "skoraj"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "lt": {
+        "aporia_phrases": ["šaltiniai nenurodo", "lieka neišspręsta",
+                           "nėra užfiksuota"],
+        "attribution_patterns": ["rašė", "teigia", "pažymėjo", "vertino"],
+        "hedge_templates": ["apie", "maždaug", "beveik"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "lv": {
+        "aporia_phrases": ["avoti neatzīmē", "paliek neatrisināts",
+                           "nav fiksēts"],
+        "attribution_patterns": ["rakstīja", "apgalvo", "atzīmēja", "novērtēja"],
+        "hedge_templates": ["aptuveni", "apmēram", "gandrīz"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "et": {
+        "aporia_phrases": ["allikad ei märgi", "jääb lahtiseks",
+                           "pole talletatud"],
+        "attribution_patterns": ["kirjutas", "väidab", "märkis", "hindas"],
+        "hedge_templates": ["umbes", "ligikaudu", "peaaegu"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "is": {
+        "aporia_phrases": ["heimildir geta ekki", "óleyst spurning",
+                           "ekki skráð"],
+        "attribution_patterns": ["skrifaði", "heldur fram", "benti á", "áætlaði"],
+        "hedge_templates": ["um það bil", "nálægt", "næstum"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "ga": {
+        "aporia_phrases": ["níl foinse ann", "fágtha gan réiteach",
+                           "níor taifeadadh"],
+        "attribution_patterns": ["scríobh", "áitíonn", "thug faoi deara", "mheas"],
+        "hedge_templates": ["timpeall", "beagnach", "thart ar"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "cy": {
+        "aporia_phrases": ["nid oes ffynhonnell", "heb ei ddatrys",
+                           "nid yw wedi'i gofnodi"],
+        "attribution_patterns": ["ysgrifennodd", "dadleua", "nododd",
+                                 "amcangyfrifodd"],
+        "hedge_templates": ["tua", "bron", "oddeutu"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "mt": {
+        "aporia_phrases": ["l-ebda sors", "għadha mhux solvuta",
+                           "mhux irreġistrat"],
+        "attribution_patterns": ["kiteb", "isostni", "innota", "stima"],
+        "hedge_templates": ["madwar", "kważi", "bejn wieħed u ieħor"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "eu": {
+        "aporia_phrases": ["iturriek ez dute", "argitu gabe", "ez da jaso"],
+        "attribution_patterns": ["idatzi zuen", "dio", "nabarmendu zuen",
+                                 "kalkulatu zuen"],
+        "hedge_templates": ["gutxi gorabehera", "inguru", "ia"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "ca": {
+        "aporia_phrases": ["cap font indica", "resta sense resoldre", "no consta"],
+        "attribution_patterns": ["va escriure", "argumenta", "va assenyalar",
+                                 "va estimar"],
+        "hedge_templates": ["aproximadament", "gairebé", "vora"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+    "gl": {
+        "aporia_phrases": ["ningunha fonte indica", "queda sen resolver",
+                           "non consta"],
+        "attribution_patterns": ["escribiu", "argumenta", "sinalou", "estimou"],
+        "hedge_templates": ["aproximadamente", "case", "preto de"],
+        "homographs": [],
+        "wpm": {"slow": 130, "normal": 160, "fast": 190},
+        "foreign_placeholder_blocklist": ["several", "around", "approximately",
+                                          "roughly", "some", "about"],
+        "provisional": True,
+    },
+}
+
+
+def _install_provisional(seeds: dict[str, dict[str, Any]]) -> None:
+    """Compile provisional structured seeds into the existing pack schema.
+    setdefault semantics: any pre-existing key (en, id, or an _EXTRA_PACKS lang)
+    is preserved verbatim — provisional data NEVER overrides curated entries."""
+    for lk, seed in seeds.items():
+        pack = LANGUAGE_PACKS.setdefault(lk, {})
+        # aporia — union of phrase alternates (case-insensitive)
+        if pack.get("aporia") is None and seed.get("aporia_phrases"):
+            alts = "|".join(re.escape(p) for p in seed["aporia_phrases"] if p)
+            if alts:
+                pack.setdefault("aporia", re.compile(r"(?i)(?:" + alts + r")"))
+        # attribution — NAME followed by any listed verb; also plain verb match
+        if pack.get("attribution") is None and seed.get("attribution_patterns"):
+            verbs = "|".join(re.escape(v) for v in seed["attribution_patterns"] if v)
+            if verbs:
+                pack.setdefault(
+                    "attribution",
+                    re.compile(
+                        r"(?:\b(?P<name2>[A-Z][a-zA-Z.]+(?:\s+[A-Z][a-zA-Z.]+)*)\s+"
+                        r"(?:" + verbs + r")\b)"
+                    ),
+                )
+        # hedge_value / hedge_prose — first template = value form, second = prose
+        tmpls = seed.get("hedge_templates") or []
+        if pack.get("hedge_value") is None and tmpls:
+            pack.setdefault("hedge_value", tmpls[0] + " {v}")
+        if pack.get("hedge_prose") is None and tmpls:
+            pack.setdefault("hedge_prose", tmpls[-1])
+        # foreign_tokens — every blocklist entry mapped to "" (cut outright);
+        # provisional packs have no vetted replacements yet.
+        if pack.get("foreign_tokens") is None and seed.get("foreign_placeholder_blocklist"):
+            pack.setdefault("foreign_tokens",
+                            {t: "" for t in seed["foreign_placeholder_blocklist"]})
+        # wpm — derive TTS min/max from normal ±15% (matches existing en/id shape)
+        wpm = seed.get("wpm") or {}
+        if pack.get("wpm") is None and wpm.get("normal"):
+            _n = int(wpm["normal"])
+            pack.setdefault("wpm", {"min": int(_n * 0.85), "max": int(_n * 1.15)})
+        # homographs list (empty for provisional; consumers tolerate empty)
+        if pack.get("homographs") is None:
+            pack.setdefault("homographs", list(seed.get("homographs") or []))
+        # keep the raw seed accessible for consumers that want the structured form
+        pack.setdefault("provisional", bool(seed.get("provisional", True)))
+        pack.setdefault("_seed", seed)
+
+
+_install_provisional(_PROVISIONAL_SEEDS)
+
+
+# ── Tier classification (Rino 2026-07-05). Consumers that need to distinguish
+# native-quality from PROVISIONAL data (e.g. surface a "provisional coverage"
+# badge in the UI, or gate a stricter counter) can read this constant rather
+# than probing individual packs. `top20` = curated packs with real
+# attribution/aporia regex + native hedge; `next40` = provisional seeds shipped
+# in this batch; `tail40` = remaining served langs that stay UNMEASURED for
+# counters until seeded.
+LANGUAGE_PACK_TIER: dict[str, list[str]] = {
+    "top20": ["en", "id", "ms", "jv", "su", "es", "fr", "de", "pt", "nl",
+              "vi", "tl", "ar", "zh", "ja", "ko", "hi", "th"],
+    "next40": sorted(_PROVISIONAL_SEEDS.keys()),
+    "tail40": [],  # reserved for the next seeding batch
+}
+
+
 def spell_number_id(n: int) -> str:
     """ID spellout for 0..999_999 (§4 number_spellout, video-path speakable numbers).
     1825 → 'seribu delapan ratus dua puluh lima'."""
