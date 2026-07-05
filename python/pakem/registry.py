@@ -737,6 +737,140 @@ STYLES["ironic_moral_fable"]["style_spec"] = {
 }
 
 
+# ── category-level register/style defaults (P0 rollout, Rino 2026-07-05)
+# PIPELINE-SPEC v1 §4 said "hand-tune on first production use", but 13 CORE styles
+# were running with ZERO explicit gates (register_spec/style_spec empty), meaning
+# the deterministic counter engine had nothing to measure against and the narrative
+# guard had no banned-tell / required-move floor. This is the minimum-viable
+# coverage — category-level defaults per the design_rationale — so every CORE
+# style has SOME gate the pipeline can enforce. Per-style hand-tuning (like
+# harari's frozen values at L684-699 and ironic_moral_fable's overrides at
+# L710-737) happens as production observation surfaces category-inadequate cases.
+#
+# Semantics — pure setdefault: any style that already has a non-empty
+# register_spec (harari) or style_spec (harari, ironic_moral_fable) is UNTOUCHED.
+# Empty holes fill from the style's category. Missing category → default "B".
+CATEGORY_DEFAULTS: dict[str, dict[str, dict]] = {
+    # A — documentary / explainer (natgeo, youtube, journalistic, + P1 A-tier)
+    "A": {
+        "register_spec": {
+            "required_moves": [
+                "source_or_provenance_anchor",
+                "concrete_number_or_date",
+                "mechanism_reveal",
+            ],
+            "banned_tells": [
+                "scientists say", "studies have shown", "it is widely believed",
+                "many experts agree", "throughout history", "since the dawn of time",
+            ],
+        },
+        "style_spec": {
+            "counters": {
+                "citations_max": 6, "same_source_max": 3,
+                "rhetorical_question_max": 2, "aside_max": 2,
+                "direct_address_max": 3, "hedge_max": 4, "superlative_max": 3,
+            },
+        },
+    },
+    # B — essayistic (creative_nonfiction, literary_essay, academic_popular,
+    # narrative_nonfiction, harari-class). harari's own register_spec/style_spec
+    # is set explicitly above; setdefault won't touch it.
+    "B": {
+        "register_spec": {
+            "required_moves": [
+                "thesis_image",
+                "scale_shift_temporal",
+                "contingent_institution_reveal",
+            ],
+            "banned_tells": [
+                "at the end of the day", "it is important to note",
+                "in a very real sense", "the question then becomes",
+                "one might argue", "as we shall see",
+            ],
+        },
+        "style_spec": {
+            "counters": {
+                "citations_max": 5, "same_scholar_max": 4, "debate_pairing_max": 2,
+                "aporia_max": 3, "anchors_max": 3, "triplet_per_1000w": 4,
+                "rhetorical_question_max": 3, "aside_max": 3,
+                "direct_address_max": 2, "moral_gloss_max": 1,
+            },
+        },
+    },
+    # C — audio-first, low-stakes (bedtime_story, podcast_narrative,
+    # + P1 folklore_creepy / sleep_story_adult)
+    "C": {
+        "register_spec": {
+            "required_moves": [
+                "sensory_breath_anchor",
+                "gentle_return_or_refrain",
+            ],
+            "banned_tells": [
+                "let us begin", "close your eyes and imagine", "take a deep breath",
+                "in this episode", "welcome back listeners", "so without further ado",
+            ],
+        },
+        "style_spec": {
+            "counters": {
+                "exclamation_max": 1, "rhetorical_question_max": 2, "aside_max": 2,
+                "direct_address_max": 6, "abstract_noun_per_1000w": 8,
+                "sentence_len_avg_max_words": 18, "adverb_ly_per_1000w": 12,
+            },
+        },
+    },
+    # D — dramatic / scene-first (storytelling, pov, cinematic_voiceover, fiction,
+    # + P1 epic_fantasy_prologue / trailer_voice / gothic_cosmic_horror /
+    # internet_horror / warm_omniscient)
+    "D": {
+        "register_spec": {
+            "required_moves": [
+                "in_scene_sensory_detail",
+                "character_specific_gesture_or_speech",
+                "pov_anchor",
+            ],
+            "banned_tells": [
+                "little did he know", "meanwhile back at", "as fate would have it",
+                "with a heavy heart", "in that moment he realized",
+                "and so it was that",
+            ],
+        },
+        "style_spec": {
+            "counters": {
+                "aside_max": 1, "direct_address_max": 1, "moral_gloss_max": 0,
+                "adverb_ly_per_1000w": 10, "epithet_repeat_max": 2,
+                "interior_thought_per_1000w": 6, "flashback_max": 2,
+                "adjective_stack_max": 2,
+            },
+        },
+    },
+}
+
+# Apply defaults: setdefault semantics — NEVER overwrite existing per-style values.
+# harari (register_spec + style_spec both set at L684-699) is fully protected.
+# ironic_moral_fable (register_spec + style_spec both set at L719-737) is fully
+# protected. Any future per-style override placed above this block is likewise safe.
+# Styles with a partial spec (e.g. register_spec set but style_spec empty) get the
+# missing half filled from their category; the set half is preserved.
+for _key, _entry in STYLES.items():
+    _cat = _entry.get("category", "B")
+    _defaults = CATEGORY_DEFAULTS.get(_cat, CATEGORY_DEFAULTS["B"])
+    _rs = _entry.setdefault("register_spec", {})
+    _rs.setdefault(
+        "required_moves",
+        list(_defaults["register_spec"]["required_moves"]),
+    )
+    _rs.setdefault(
+        "banned_tells",
+        list(_defaults["register_spec"]["banned_tells"]),
+    )
+    _ss = _entry.setdefault("style_spec", {})
+    _ss.setdefault(
+        "counters",
+        dict(_defaults["style_spec"]["counters"]),
+    )
+    _ss.setdefault("positive_exemplars", [])
+
+
 # ── sample prompts (picker UX): two register-matched topic exemplars per style, shown
 # as the Title/Theme placeholder when the style is selected. Nusantara styles sample in
 # Bahasa. Served via styles_catalog() → /narration/styles → FE placeholder. Programmatic
