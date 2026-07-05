@@ -664,16 +664,20 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         log.warning("proper_noun_verify pass failed (non-fatal): %s", e)
 
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
+    # Phase 3 (2026-07-05): pass `style` through so gate_text's per-style R-FG counters
+    # (M threshold table, J source-note density, LL factual-ending, HH human-anchor,
+    # IIIIII entity-consistency) can look up per-style thresholds. Backward-compatible:
+    # gate_text falls back to genre-agnostic defaults when style is None or unknown.
     gate_report: dict = {}
     try:
         key = "book" if result.get("book") else "output"
         book = result.get(key) or ""
         if book:
-            gated, gate_report = _ngate.gate_text(book, lang=language, mode=_mode)
+            gated, gate_report = _ngate.gate_text(book, lang=language, mode=_mode, style=style)
             result[key] = gated
         for rec in result.get("chapters") or []:
             if rec.get("content"):
-                rec["content"], _r = _ngate.gate_text(rec["content"], lang=language, mode=_mode)
+                rec["content"], _r = _ngate.gate_text(rec["content"], lang=language, mode=_mode, style=style)
         result["gate_report"] = gate_report
     except Exception as e:  # noqa: BLE001
         log.warning("v3 terminal gate failed (non-fatal): %s", e)

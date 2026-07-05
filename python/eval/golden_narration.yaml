@@ -313,3 +313,118 @@ cases:
         punakawan_humor_beats_min: 3
         modern_political_terms_max: 0
         canon_role_check: "gatekeeper=Cingkarabala+Balaupata"
+
+  # --- F15. Phase 3 patch M: R-FG11 style-conditional threshold table -------
+  # Documentary. Cross-4-style validated (moraliste 4/4 at 1.0 rated 8.9-9.2,
+  # babad 1/1 at 1.0 rated 8.9, pewayangan 1/1 at 0.5 rated 9.0, cinematic
+  # voiceover 2/2 at ~0.15). Extends moraliste calibration's fixed-0.5
+  # comparison. Under DALANG_INFRA_FIXES=1 the threshold becomes style-aware.
+  - id: r_fg11_style_conditional_threshold
+    topic: "Documentary: R-FG11 per-style threshold"
+    style: babad_hikayat
+    language: id
+    mode: text
+    fiction: false
+    n_chapters: 1
+    words_per_chapter: 100
+    expectations:
+      recurring_entities: []
+      signal_asserts:
+        infra_fixes_flag_required: true
+        moraliste_calibration_flag_required: true
+        r_fg11_threshold_ironic_moral_fable: 0.83
+        r_fg11_threshold_babad_hikayat: 1.0
+        r_fg11_threshold_pewayangan_dalang: 0.5
+        r_fg11_threshold_cinematic_voiceover: 0.15
+        r_fg11_threshold_default: 0.5
+
+  # --- F16. Phase 3 patch J: source_note_density counter --------------------
+  # Documentary. Cross-9-style validated for factual regimes. Per-style density
+  # minimums (mentions per 1000 words): CNF=2, natgeo=3, big_history=3,
+  # journalistic=2, popular_science=1.5, literary_essay=1, academic_popular=1.5.
+  # Mythic/fictional regimes: threshold 0 (patch does not apply).
+  - id: patch_j_source_note_density
+    topic: "Documentary: source_note_density per-style minimums"
+    style: creative_non_fiction
+    language: en
+    mode: text
+    fiction: false
+    n_chapters: 1
+    words_per_chapter: 200
+    expectations:
+      recurring_entities: []
+      signal_asserts:
+        infra_fixes_flag_required: true
+        source_note_density_min_cnf: 2.0
+        source_note_density_min_natgeo: 3.0
+        source_note_density_min_big_history: 3.0
+        source_note_density_min_journalistic: 2.0
+        source_note_density_min_moraliste: 0.0
+        source_note_density_min_babad_hikayat: 0.0
+        source_note_density_min_pewayangan_dalang: 0.0
+
+  # --- F17. Phase 3 patch LL: factual_ending_concrete_return ----------------
+  # Documentary. Cross-9-style. For factual regime styles, the final ~400 chars
+  # should include a sensory anchor (light/stone/bone/rain/salt/hand/breath/etc).
+  # For non-factual styles the scanner does not apply.
+  - id: patch_ll_factual_ending
+    topic: "Documentary: factual ending concrete return"
+    style: big_history
+    language: en
+    mode: text
+    fiction: false
+    n_chapters: 1
+    words_per_chapter: 100
+    expectations:
+      recurring_entities: []
+      signal_asserts:
+        infra_fixes_flag_required: true
+        factual_ending_applies_cnf: true
+        factual_ending_applies_natgeo: true
+        factual_ending_applies_big_history: true
+        factual_ending_applies_journalistic: true
+        factual_ending_applies_moraliste: false
+        factual_ending_applies_babad_hikayat: false
+        factual_ending_applies_pewayangan_dalang: false
+        factual_ending_tail_chars: 400
+
+  # --- F18. Phase 3 patch HH: human_anchor scanner --------------------------
+  # Documentary. Cross-4-genre. Latin-script heuristic: capitalized 1-3 word
+  # proper nouns, skipping stopword leaders (The/A/And/Chapter/Bab/etc.).
+  # Reports: unique count + first-8 sample + count of names ≥ 2 mentions.
+  - id: patch_hh_human_anchor
+    topic: "Documentary: human anchor detection"
+    style: journalistic_long_form
+    language: en
+    mode: text
+    fiction: false
+    n_chapters: 1
+    words_per_chapter: 100
+    expectations:
+      recurring_entities: []
+      signal_asserts:
+        infra_fixes_flag_required: true
+        human_anchor_min_repeats_for_recurring: 2
+        human_anchor_stopword_leaders_skipped: true
+
+  # --- F19. Phase 3 patch IIIIII: entity_consistency_pass -------------------
+  # Documentary. Cross-15-lens-2 samples. Shared front-end (extract capitalized
+  # entities from Bab 1-2 and Bab 3+); report abandoned + introduced-late.
+  # Downstream: nonfiction adds external verification, fiction adds continuity
+  # scoring — both defer to Phase 4+.
+  - id: patch_iiiiii_entity_consistency
+    topic: "Documentary: entity consistency pass"
+    style: storytelling
+    language: en
+    mode: text
+    fiction: true
+    n_chapters: 1
+    words_per_chapter: 100
+    expectations:
+      recurring_entities: []
+      signal_asserts:
+        infra_fixes_flag_required: true
+        entity_early_chapters: [1, 2]
+        entity_late_chapters: [3, 4, 5, 6]
+        report_only: true
+        external_verification_defers_to_phase_4: true

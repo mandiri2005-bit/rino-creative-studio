@@ -659,6 +659,279 @@ def repeat_token_scan(text: str) -> tuple[int, list[str]]:
     return count, hits
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Phase 3 (2026-07-05) — cross-validated R-FG counters, gated on DALANG_INFRA_FIXES=1.
+# 5 patches from cross-15-sample corpus audit. All scanners are report-only heuristics —
+# they surface stats into gate_text's report["flags"] but never block or rewrite text.
+# Downstream editors/dashboards can turn stats into actionable UI later.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Patch M — R-FG11 style-conditional threshold table.
+# Cross-4-style validated. Different genres have DIFFERENT natural rates of narrator-
+# opening-formula saturation. Moraliste at 4/4 samples with ratio=1.0 rated 8.9-9.2 —
+# saturated openers are genre convention. Babad at 6/6 chronicle-formula openers is
+# canonically correct. Pewayangan (dalang-narrated) typically 0.0-0.5. Cinematic
+# voiceover (present-tense atmospheric) typically 0.0-0.15. Everything else defaults
+# to 0.5. Extends the moraliste bundle's fixed-0.5 comparison (line 749 above).
+_R_FG11_STYLE_THRESHOLDS: dict[str, float] = {
+    # moraliste family — extends the moraliste calibration bundle default 0.5 → 0.83
+    "ironic_moral_fable": 0.83, "moraliste": 0.83, "moralist_fable": 0.83,
+    # babad_hikayat family — chronicle-opener saturation is genre-conventional
+    "babad_hikayat": 1.0, "babad": 1.0, "hikayat": 1.0, "chronicle": 1.0,
+    # pewayangan family — dalang narrator uses varied openers, not saturated formulas
+    "pewayangan_dalang": 0.5, "pewayangan": 0.5, "wayang": 0.5,
+    # cinematic voiceover family — atmospheric-scene openers, minimal formula
+    "cinematic_voiceover": 0.15, "cinematic_voice_over": 0.15, "voiceover": 0.15,
+    "documentary_voiceover": 0.15,
+}
+
+
+def _r_fg11_threshold(style: Optional[str]) -> float:
+    """Look up per-style R-FG11 ratio_max. None/unknown style → 0.5 default."""
+    if not style:
+        return 0.5
+    return _R_FG11_STYLE_THRESHOLDS.get(str(style).strip().lower(), 0.5)
+
+
+# Patch J — source_note_density counter. Per-style thresholds for factual regimes.
+# Cross-9-style validated. A citation-lite factual chapter often signals unhedged
+# invention. Regex patterns per language capture the common attribution shapes.
+_SOURCE_NOTE_PATTERNS: dict[str, str] = {
+    "en": r"\b(?:according\s+to|as\s+(?:noted|reported|argued)\s+by|per\s+the|"
+          r"cited\s+in|records?\s+of|argued\s+that|documented\s+by|"
+          r"[A-Z][a-z]+\s*\(\d{4}\)|(?:\d{4}[a-z]?))\b",
+    "id": r"(?:menurut\s+|catatan\s+|dalam\s+catatan|berdasarkan\s+|"
+          r"seperti\s+dicatat|(?:sejarawan|arkeolog|antropolog|peneliti)\s+"
+          r"[A-Z][a-z]+|\d{4}[a-z]?)",
+    "es": r"(?:seg[uú]n\s+|de\s+acuerdo\s+con|registrado\s+por|"
+          r"[A-Z][a-z]+\s+(?:sostiene|argumenta|se[ñn]ala)|\d{4}[a-z]?)",
+    "fr": r"(?:selon\s+|d[’']apr[èe]s\s+|comme\s+l[’']a\s+not[eé]|"
+          r"[A-Z][a-z]+\s+(?:soutient|argue|note)|\d{4}[a-z]?)",
+    "de": r"(?:laut\s+|nach\s+|wie\s+.+?\s+festh[äa]lt|"
+          r"[A-Z][a-z]+\s+(?:argumentiert|schreibt|notiert)|\d{4}[a-z]?)",
+    "pt": r"(?:segundo\s+|de\s+acordo\s+com|conforme\s+registrado|"
+          r"[A-Z][a-z]+\s+(?:argumenta|nota|documenta)|\d{4}[a-z]?)",
+    "nl": r"(?:volgens\s+|zoals\s+.+?\s+opmerkt|"
+          r"[A-Z][a-z]+\s+(?:betoogt|noteert|documenteert)|\d{4}[a-z]?)",
+    "ja": r"(?:によれば|によると|が指摘するように|"
+          r"[A-Z][a-z]+\s*\(\d{4}\)|\d{4}年)",
+    "ko": r"(?:에\s*따르면|가\s+지적하듯이|이\s+주장하듯이|"
+          r"[A-Z][a-z]+\s*\(\d{4}\)|\d{4}년)",
+    "zh": r"(?:根据|据|指出|论证|文献|"
+          r"[A-Z][a-z]+\s*\(\d{4}\)|\d{4}年)",
+    "vi": r"(?:theo\s+|nh(ư|u)\s+.+?\s+(l(ưu|uu)\s+ý|ghi\s+nh(ậ|a)n)|"
+          r"[A-Z][a-z]+\s+(?:l(ậ|a)p\s+lu(ậ|a)n)|\d{4})",
+    "ar": r"(?:وفقاً\s+ل|بحسب|كما\s+يذكر|"
+          r"[A-Z][a-z]+\s*\(\d{4}\)|\d{4})",
+}
+
+# Per-style density thresholds (mentions per 1000 words). Corpus signals:
+# sample-9 Salt heavy (6.35), sample-10 Chicken mild (4.03), sample-16 Wheat missing.
+_J_STYLE_DENSITY_MIN: dict[str, float] = {
+    "creative_non_fiction": 2.0, "cnf": 2.0,
+    "natgeo_documentary": 3.0, "natgeo": 3.0, "national_geographic": 3.0,
+    "big_history": 3.0, "harari": 3.0,
+    "journalistic_long_form": 2.0, "journalistic": 2.0,
+    "youtube_popular_science": 1.5, "popular_science": 1.5,
+    "literary_essay": 1.0,
+    "academic_popular": 1.5,
+    # explicit ZERO for non-factual + mythic regimes — patch J does not apply
+    "ironic_moral_fable": 0.0, "moraliste": 0.0,
+    "babad_hikayat": 0.0, "pewayangan_dalang": 0.0,
+    "cinematic_voiceover": 0.0,
+    "storytelling": 0.0, "bedtime_story": 0.0,
+    "pov_first_person_immersive": 0.0,
+}
+
+
+def source_note_density_scan(text: str, lang: str = "en",
+                              style: Optional[str] = None
+                              ) -> tuple[int, float, bool]:
+    """R-FG-J: count source-note/attribution markers + rate per 1000 words.
+    Returns (count, rate_per_1000_words, under_threshold).
+    under_threshold=True only when a per-style minimum applies and rate falls below.
+    Empty text or unknown-language language → (0, 0.0, False)."""
+    if not text:
+        return 0, 0.0, False
+    code = str(lang or "en").strip().lower().replace("_", "-").split("-", 1)[0]
+    pat = _SOURCE_NOTE_PATTERNS.get(code)
+    if not pat:
+        return 0, 0.0, False
+    try:
+        rx = re.compile(pat, re.IGNORECASE | re.UNICODE)
+    except re.error:
+        return 0, 0.0, False
+    count = sum(1 for _ in rx.finditer(text))
+    n_words = max(1, len(text.split()))
+    rate = 1000.0 * count / n_words
+    style_key = (style or "").strip().lower()
+    threshold = _J_STYLE_DENSITY_MIN.get(style_key, 0.0)
+    under = threshold > 0 and rate < threshold
+    return count, rate, under
+
+
+# Patch LL — factual_ending_concrete_return.
+# Cross-9-style validated for factual regimes. The final chapter's last 300 chars
+# should include a sensory noun or physical object (Flannan lamp / Okavango elephant
+# footprint / Salt tubulus / Chicken sediment). Report present/absent; only apply
+# to factual regime styles.
+_SENSORY_ANCHOR_PATTERNS: dict[str, str] = {
+    "en": r"\b(?:light|lamp|stone|bone|rain|dust|salt|blood|hand|foot|"
+          r"river|forest|sea|water|earth|sky|wind|fire|sun|moon|"
+          r"skin|breath|voice|silence|smell|taste|touch)\b",
+    "id": r"\b(?:cahaya|batu|tulang|hujan|debu|garam|darah|tangan|kaki|"
+          r"sungai|hutan|laut|air|tanah|langit|angin|api|matahari|bulan|"
+          r"kulit|nafas|suara|keheningan|bau|rasa|sentuhan)\b",
+    "es": r"\b(?:luz|piedra|hueso|lluvia|polvo|sal|sangre|mano|pie|"
+          r"r[ií]o|bosque|mar|agua|tierra|cielo|viento|fuego|sol|luna)\b",
+    "fr": r"\b(?:lumi[èe]re|pierre|os|pluie|poussi[èe]re|sel|sang|main|pied|"
+          r"rivi[èe]re|for[êe]t|mer|eau|terre|ciel|vent|feu|soleil|lune)\b",
+    "de": r"\b(?:Licht|Stein|Knochen|Regen|Staub|Salz|Blut|Hand|Fu[ßs]|"
+          r"Fluss|Wald|Meer|Wasser|Erde|Himmel|Wind|Feuer|Sonne|Mond)\b",
+    "pt": r"\b(?:luz|pedra|osso|chuva|poeira|sal|sangue|m[ãa]o|p[ée]|"
+          r"rio|floresta|mar|[áa]gua|terra|c[ée]u|vento|fogo|sol|lua)\b",
+    "nl": r"\b(?:licht|steen|been|regen|stof|zout|bloed|hand|voet|"
+          r"rivier|bos|zee|water|aarde|hemel|wind|vuur|zon|maan)\b",
+    "ja": r"(?:光|石|骨|雨|塵|塩|血|手|足|川|森|海|水|土|空|風|火|太陽|月)",
+    "ko": r"(?:빛|돌|뼈|비|먼지|소금|피|손|발|강|숲|바다|물|땅|하늘|바람|불|해|달)",
+    "zh": r"(?:光|石|骨|雨|尘|盐|血|手|脚|河|森|海|水|土|天|风|火|阳|月)",
+    "vi": r"\b(?:ánh sáng|đá|xương|mưa|bụi|muối|máu|tay|chân|"
+          r"sông|rừng|biển|nước|đất|trời|gió|lửa|mặt trời|mặt trăng)\b",
+    "ar": r"(?:ضوء|حجر|عظم|مطر|غبار|ملح|دم|يد|قدم|نهر|غابة|بحر|ماء|أرض|سماء)",
+}
+
+_FACTUAL_STYLES: frozenset = frozenset([
+    "creative_non_fiction", "cnf",
+    "natgeo_documentary", "natgeo", "national_geographic",
+    "big_history", "harari",
+    "journalistic_long_form", "journalistic",
+    "youtube_popular_science", "popular_science",
+    "literary_essay", "academic_popular",
+])
+
+
+def factual_ending_concrete_return_scan(text: str, lang: str = "en",
+                                         style: Optional[str] = None,
+                                         tail_chars: int = 400
+                                         ) -> tuple[bool, bool, list[str]]:
+    """R-FG-LL: for factual-regime styles, check whether the narrative's final
+    tail_chars contains a concrete sensory noun. Returns (applies, present, matches).
+    - applies=False when style is not in the factual set (patch not relevant)
+    - present=True when at least one sensory anchor matches the tail
+    - matches: up to 5 sample matches (for reporter)"""
+    style_key = (style or "").strip().lower()
+    if style_key not in _FACTUAL_STYLES:
+        return False, True, []
+    if not text:
+        return True, False, []
+    code = str(lang or "en").strip().lower().replace("_", "-").split("-", 1)[0]
+    pat = _SENSORY_ANCHOR_PATTERNS.get(code)
+    if not pat:
+        return True, True, []   # no pattern for language → assume present (avoid false-negative)
+    try:
+        rx = re.compile(pat, re.IGNORECASE | re.UNICODE)
+    except re.error:
+        return True, True, []
+    tail = text[-max(200, tail_chars):]
+    matches: list[str] = []
+    for m in rx.finditer(tail):
+        matches.append(m.group(0)[:40])
+        if len(matches) >= 5:
+            break
+    return True, bool(matches), matches
+
+
+# Patch HH — human_anchor scanner. Cross-4-genre (documentary + journalistic +
+# cinematic voiceover + chronicle). Detects named individuals — capitalized 1-3
+# word proper nouns. Heuristic: Latin-script only; unicode-word-boundary aware.
+# Reports count + first-8 unique names. Downstream can compute "recurring across
+# chapters" from split.
+_HUMAN_NAME_RX = re.compile(
+    r"(?u)\b([A-ZÀ-Ý][A-Za-zÀ-ÿ.'\-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ.'\-]+){0,2})\b"
+)
+_HUMAN_NAME_STOPWORDS: frozenset = frozenset([
+    # Common lead-of-sentence words that would otherwise match the regex.
+    "The", "A", "An", "In", "On", "At", "From", "To", "By", "For", "With",
+    "But", "And", "Or", "Yet", "So", "As", "Of", "This", "That", "These",
+    "Chapter", "Bab", "Kapitel", "Chapitre", "Cap", "Hoofdstuk", "Kabanata",
+])
+
+
+def human_anchor_scan(text: str, min_repeats: int = 2
+                      ) -> tuple[int, list[str], int]:
+    """R-FG-HH: count unique capitalized name-like tokens + list first N + count
+    those appearing ≥min_repeats. Returns (unique_count, sample_names, recurring_count).
+    Empty text → (0, [], 0). Heuristic; Latin-script narasi only."""
+    if not text:
+        return 0, [], 0
+    seen: dict[str, int] = {}
+    for m in _HUMAN_NAME_RX.finditer(text):
+        name = m.group(1).strip()
+        first = name.split(" ", 1)[0]
+        if first in _HUMAN_NAME_STOPWORDS:
+            continue
+        # Skip single-word entries that are all-caps (likely acronyms) or too short.
+        if len(name) < 3:
+            continue
+        seen[name] = seen.get(name, 0) + 1
+    unique = len(seen)
+    recurring = sum(1 for c in seen.values() if c >= min_repeats)
+    sample = sorted(seen.keys(), key=lambda k: -seen[k])[:8]
+    return unique, sample, recurring
+
+
+# Patch IIIIII — entity_consistency_pass (shared front-end + report-only back-end).
+# Cross-15-lens-2 samples. Audit refined the reviewer's original "single gate covers
+# fiction + nonfiction" claim: the gate needs a SHARED entity-extraction front-end
+# (same for both regimes) plus a GENRE-CONDITIONAL back-end (external lookup for
+# nonfiction, internal-continuity for fiction). This scanner ships the shared front-
+# end + internal-continuity check; external verification defers to Phase 4+.
+def entity_consistency_scan(text: str) -> dict[str, Any]:
+    """R-FG-IIIIII: extract capitalized entities from Bab 1-2 and Bab 3+ (using the
+    chapter splitter). Report:
+        early_entities: set of names appearing in Bab 1-2
+        late_entities: set of names appearing in Bab 3+
+        abandoned: early_entities - late_entities (Mode-B1 fiction character-abandonment
+                    OR Mode-B1 nonfiction proper-noun-drift signal)
+        introduced_late: late_entities - early_entities (new characters late in book)
+    Heuristic; Latin-script narasi only; empty text → all-empty dict."""
+    if not text:
+        return {
+            "early_entities_count": 0,
+            "late_entities_count": 0,
+            "abandoned_sample": [],
+            "abandoned_count": 0,
+            "introduced_late_sample": [],
+            "introduced_late_count": 0,
+        }
+    # Split on chapter headings using the existing splitter.
+    parts = _CHAPTER_SPLIT_RX.split(text)
+    chapters = parts[1:] if len(parts) > 1 else parts
+    early_text = "\n".join(chapters[:2])
+    late_text = "\n".join(chapters[2:]) if len(chapters) > 2 else ""
+    def _extract(t: str) -> set[str]:
+        names: set[str] = set()
+        for m in _HUMAN_NAME_RX.finditer(t):
+            n = m.group(1).strip()
+            first = n.split(" ", 1)[0]
+            if first in _HUMAN_NAME_STOPWORDS or len(n) < 3:
+                continue
+            names.add(n)
+        return names
+    early = _extract(early_text)
+    late = _extract(late_text)
+    abandoned = sorted(early - late)[:8]
+    introduced_late = sorted(late - early)[:8]
+    return {
+        "early_entities_count": len(early),
+        "late_entities_count": len(late),
+        "abandoned_sample": abandoned,
+        "abandoned_count": len(early - late),
+        "introduced_late_sample": introduced_late,
+        "introduced_late_count": len(late - early),
+    }
+
+
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
 # Extend by adding new lang keys; each value is a list of anchored regex patterns.
 _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
@@ -715,14 +988,20 @@ def narrator_opening_ratio_scan(text: str, lang: str = "en",
 
 
 def gate_text(text: str, lang: str = "en", mode: str = "book", *,
-              vo_strip: bool = True) -> tuple[str, dict[str, Any]]:
+              vo_strip: bool = True, style: Optional[str] = None
+              ) -> tuple[str, dict[str, Any]]:
     """Full deterministic gate: known-bad correct → resolve flags (localized) → marker
     strip → foreign-token scan → terminal scan → strip survivors. Never raises; returns
     the original text on any internal error.
 
     vo_strip=False (per-chapter calls): keep [ANCHOR]/[BEAT] markers so the DOWNSTREAM
     counters can still measure the anchor budget on the assembled book — the terminal
-    _apply_v3_gates pass (which runs AFTER the counters) does the actual marker strip."""
+    _apply_v3_gates pass (which runs AFTER the counters) does the actual marker strip.
+
+    style (Phase 3, kwarg-only, backward-compatible default None): pakem style key used
+    by the Phase 3 R-FG counters for per-style thresholds. When callers omit style, the
+    Phase 3 scanners fall back to genre-agnostic defaults (0.5 R-FG11 threshold,
+    zero factual-density minimum, factual-ending scan skipped)."""
     report: dict[str, Any] = {"known_bad": [], "flags": {}, "stripped": 0,
                               "markers_stripped": 0, "foreign_tokens": [],
                               "enabled": gate_enabled()}
@@ -746,7 +1025,14 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["narrator_opening_ratio"] = _r
             stats["narrator_opening_matched"] = _m
             stats["narrator_opening_total"] = _t
-            if _r > 0.5:
+            # Patch M (Phase 3, DALANG_INFRA_FIXES): style-conditional R-FG11 threshold.
+            # When Phase 3 is off, retain the moraliste bundle's fixed 0.5 comparison so
+            # the byte-identical flag-OFF invariant holds. When Phase 3 is on, look up
+            # per-style threshold (moraliste=0.83, babad=1.0, pewayangan=0.5, cinematic
+            # voiceover=0.15, unknown=0.5).
+            _r_fg11_max = _r_fg11_threshold(style) if _INFRA_FIXES_ON() else 0.5
+            stats["r_fg11_threshold"] = _r_fg11_max
+            if _r > _r_fg11_max:
                 stats["r_fg11_violation"] = True
         if _INFRA_FIXES_ON():
             _rt_count, _rt_samples = repeat_token_scan(out)
@@ -758,6 +1044,31 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
                 # legitimate refrain ('há tempo, há tempo, há tempo') will typically
                 # trip 1-2 hits per narasi and stay under.
                 stats["r_fg_w_violation"] = True
+            # Patch J — source_note_density: report count + rate + under-threshold flag.
+            _j_count, _j_rate, _j_under = source_note_density_scan(out, lang=lang, style=style)
+            stats["source_note_count"] = _j_count
+            stats["source_note_rate_per_1000w"] = round(_j_rate, 2)
+            if _j_under:
+                # Report-only — a downstream editor/dashboard can decide to surface this.
+                stats["r_fg_j_violation"] = True
+            # Patch LL — factual_ending_concrete_return: applies to factual regime only.
+            _ll_applies, _ll_present, _ll_matches = factual_ending_concrete_return_scan(
+                out, lang=lang, style=style
+            )
+            if _ll_applies:
+                stats["factual_ending_present"] = _ll_present
+                stats["factual_ending_matches"] = _ll_matches
+                if not _ll_present:
+                    stats["r_fg_ll_violation"] = True
+            # Patch HH — human_anchor: unique named individuals + recurring across text.
+            _hh_unique, _hh_sample, _hh_recurring = human_anchor_scan(out)
+            stats["human_anchor_unique"] = _hh_unique
+            stats["human_anchor_sample"] = _hh_sample
+            stats["human_anchor_recurring"] = _hh_recurring
+            # Patch IIIIII — entity_consistency_pass: shared front-end + report-only
+            # internal-continuity check. External verification (nonfiction) defers.
+            _ec = entity_consistency_scan(out)
+            stats["entity_consistency"] = _ec
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
