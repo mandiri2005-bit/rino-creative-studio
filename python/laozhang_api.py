@@ -9565,7 +9565,7 @@ async def narasi_stitch(job_id: str, body: dict,
 
     total_words = len(body_text.split())
     # Stored ⚡ markdown already carries the full gated header — never wrap a second one.
-    if body_text.lstrip().startswith("> **Gaya:**"):
+    if body_text.lstrip().startswith(("> **Gaya:**", "> **Style:**")):
         return {"ok": True, "markdown": body_text, "total_words": total_words,
                 "partial": _partial, "undershoot_report": _report}
     # Gaya shows the DISPLAY name ("Big History"), never the raw registry key ("harari").
@@ -9575,8 +9575,15 @@ async def narasi_stitch(job_id: str, body: dict,
         _style_label = (_rs_st(style) or {}).get("display_name") or style
     except Exception:
         pass
-    markdown = (f"> **Gaya:** {_style_label} | **Bahasa:** {lang_label} | **{total_words} kata**\n\n---\n\n"
-                + body_text)
+    # Language-aware header labels (Rino 2026-07-05: Wimba is EN-brand, headers were leaking
+    # Indonesian labels "Gaya/Bahasa/kata" on English narratives).
+    _is_id = str(language or "id").lower().startswith("id")
+    if _is_id:
+        markdown = (f"> **Gaya:** {_style_label} | **Bahasa:** {lang_label} | **{total_words} kata**\n\n---\n\n"
+                    + body_text)
+    else:
+        markdown = (f"> **Style:** {_style_label} | **Language:** {lang_label} | **{total_words} words**\n\n---\n\n"
+                    + body_text)
     return {"ok": True, "markdown": markdown, "total_words": total_words,
             "partial": _partial, "undershoot_report": _report}
 
