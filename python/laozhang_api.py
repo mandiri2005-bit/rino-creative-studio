@@ -8412,6 +8412,43 @@ def _resolve_narasi_lang(language: str) -> str:
         return _NARASI_LANG_NAMES.get(language.strip().lower(), language.strip())
 
 
+# Header labels rendered in the narrative's OWN language (Rino 2026-07-05: WB Script header
+# was leaking Indonesian "Gaya/Bahasa/kata" onto EN narratives; a Spanish narrative would
+# then leak English labels). Small canonical dict — extend by adding a new ISO code.
+# Any language not in the map falls through to English (safe default for the Wimba EN brand).
+_NARASI_HEADER_LABELS = {
+    "id":  {"style": "Gaya",   "output": "Output",  "language": "Bahasa",   "words": "kata",       "note": "Catatan", "alt": "sejarah alternatif (alternate history)"},
+    "en":  {"style": "Style",  "output": "Output",  "language": "Language", "words": "words",      "note": "Note",    "alt": "alternate history"},
+    "es":  {"style": "Estilo", "output": "Salida",  "language": "Idioma",   "words": "palabras",   "note": "Nota",    "alt": "historia alternativa"},
+    "fr":  {"style": "Style",  "output": "Sortie",  "language": "Langue",   "words": "mots",       "note": "Note",    "alt": "histoire alternative"},
+    "de":  {"style": "Stil",   "output": "Ausgabe", "language": "Sprache",  "words": "Wörter",     "note": "Hinweis", "alt": "alternative Geschichte"},
+    "pt":  {"style": "Estilo", "output": "Saída",   "language": "Idioma",   "words": "palavras",   "note": "Nota",    "alt": "história alternativa"},
+    "nl":  {"style": "Stijl",  "output": "Uitvoer", "language": "Taal",     "words": "woorden",    "note": "Notitie", "alt": "alternatieve geschiedenis"},
+    "it":  {"style": "Stile",  "output": "Uscita",  "language": "Lingua",   "words": "parole",     "note": "Nota",    "alt": "storia alternativa"},
+    "ja":  {"style": "スタイル", "output": "出力",     "language": "言語",       "words": "語",           "note": "注記",     "alt": "代替歴史"},
+    "ko":  {"style": "스타일",  "output": "출력",     "language": "언어",       "words": "단어",         "note": "참고",     "alt": "대체 역사"},
+    "zh":  {"style": "风格",   "output": "输出",     "language": "语言",       "words": "字",           "note": "注",      "alt": "架空历史"},
+    "ar":  {"style": "أسلوب",  "output": "الإخراج",  "language": "اللغة",     "words": "كلمة",         "note": "ملاحظة",   "alt": "تاريخ بديل"},
+    "hi":  {"style": "शैली",   "output": "आउटपुट",   "language": "भाषा",      "words": "शब्द",         "note": "नोट",     "alt": "वैकल्पिक इतिहास"},
+    "th":  {"style": "รูปแบบ",  "output": "ผลลัพธ์",   "language": "ภาษา",       "words": "คำ",          "note": "หมายเหตุ", "alt": "ประวัติศาสตร์ทางเลือก"},
+    "vi":  {"style": "Phong cách", "output": "Đầu ra", "language": "Ngôn ngữ", "words": "từ",          "note": "Ghi chú",  "alt": "lịch sử thay thế"},
+    "ms":  {"style": "Gaya",   "output": "Output",  "language": "Bahasa",   "words": "perkataan",  "note": "Nota",    "alt": "sejarah alternatif"},
+    "jv":  {"style": "Gaya",   "output": "Output",  "language": "Basa",     "words": "tembung",    "note": "Cathetan","alt": "sejarah alternatif"},
+    "su":  {"style": "Gaya",   "output": "Output",  "language": "Basa",     "words": "kecap",      "note": "Catetan", "alt": "sajarah alternatif"},
+    "tl":  {"style": "Estilo", "output": "Output",  "language": "Wika",     "words": "salita",     "note": "Tala",    "alt": "kahaliling kasaysayan"},
+}
+
+
+def _narasi_header_labels(language: str) -> dict:
+    """Return the header-label dict for the narrative's language, falling back to EN.
+    Normalizes "en-US" → "en", "id_ID" → "id" so BCP47 tags work.
+    """
+    if not language:
+        return _NARASI_HEADER_LABELS["en"]
+    code = str(language).strip().lower().replace("_", "-").split("-", 1)[0]
+    return _NARASI_HEADER_LABELS.get(code, _NARASI_HEADER_LABELS["en"])
+
+
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
     # Outline + brief are structural planning served as a SYNCHRONOUS blocking request — a slow model
@@ -9565,7 +9602,9 @@ async def narasi_stitch(job_id: str, body: dict,
 
     total_words = len(body_text.split())
     # Stored ⚡ markdown already carries the full gated header — never wrap a second one.
-    if body_text.lstrip().startswith(("> **Gaya:**", "> **Style:**")):
+    # Any of the 19 supported languages' style-prefix counts as an existing header.
+    _header_prefixes = tuple(f"> **{_v['style']}:**" for _v in _NARASI_HEADER_LABELS.values())
+    if body_text.lstrip().startswith(_header_prefixes):
         return {"ok": True, "markdown": body_text, "total_words": total_words,
                 "partial": _partial, "undershoot_report": _report}
     # Gaya shows the DISPLAY name ("Big History"), never the raw registry key ("harari").
@@ -9575,15 +9614,12 @@ async def narasi_stitch(job_id: str, body: dict,
         _style_label = (_rs_st(style) or {}).get("display_name") or style
     except Exception:
         pass
-    # Language-aware header labels (Rino 2026-07-05: Wimba is EN-brand, headers were leaking
-    # Indonesian labels "Gaya/Bahasa/kata" on English narratives).
-    _is_id = str(language or "id").lower().startswith("id")
-    if _is_id:
-        markdown = (f"> **Gaya:** {_style_label} | **Bahasa:** {lang_label} | **{total_words} kata**\n\n---\n\n"
-                    + body_text)
-    else:
-        markdown = (f"> **Style:** {_style_label} | **Language:** {lang_label} | **{total_words} words**\n\n---\n\n"
-                    + body_text)
+    # Header labels rendered in the narrative's own language (id/en/es/fr/de/pt/nl/it/ja/ko/
+    # zh/ar/hi/th/vi/ms/jv/su/tl); unknown language → English fallback.
+    _lbl = _narasi_header_labels(language)
+    markdown = (f"> **{_lbl['style']}:** {_style_label} | **{_lbl['language']}:** {lang_label} | "
+                f"**{total_words} {_lbl['words']}**\n\n---\n\n"
+                + body_text)
     return {"ok": True, "markdown": markdown, "total_words": total_words,
             "partial": _partial, "undershoot_report": _report}
 

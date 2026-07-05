@@ -822,9 +822,17 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     try:
         key = "book" if result.get("book") else "output"
         book = result.get(key) or ""
-        if book and not book.lstrip().startswith(("> **Gaya:**", "> **Style:**")):
+        try:
+            from laozhang_api import _resolve_narasi_lang, _narasi_header_labels, _NARASI_HEADER_LABELS
+            _hdr_prefixes = tuple(f"> **{_v['style']}:**" for _v in _NARASI_HEADER_LABELS.values())
+        except Exception:  # noqa: BLE001
+            _resolve_narasi_lang = lambda x: x
+            _narasi_header_labels = lambda _l: {"style": "Style", "output": "Output",
+                                                 "language": "Language", "words": "words",
+                                                 "note": "Note", "alt": "alternate history"}
+            _hdr_prefixes = ("> **Gaya:**", "> **Style:**")
+        if book and not book.lstrip().startswith(_hdr_prefixes):
             try:
-                from laozhang_api import _resolve_narasi_lang  # lazy
                 lang_label = _resolve_narasi_lang(language)
             except Exception:  # noqa: BLE001
                 lang_label = language
@@ -839,19 +847,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 pass
             # v4 §5: header gains the Output field so the editor/dual-path filters are auditable.
             _out_path = "video" if str(body.get("mode") or "").strip() == "video" else "book"
-            # Language-aware header labels (Rino 2026-07-05: Wimba is EN-brand, headers were
-            # leaking Indonesian labels "Gaya/Bahasa/kata" on English narratives). Indonesian
-            # narrative → Indonesian labels; everything else → English labels.
-            _is_id = str(language or "id").lower().startswith("id")
-            # alt_history (§3): the pipeline writes the disclaimer marker, not the user.
-            if _is_id:
-                _alt = " | **Catatan:** sejarah alternatif (alternate history)" if body.get("alt_history") else ""
-                result[key] = (f"> **Gaya:** {_style_label} | **Output:** {_out_path} | "
-                               f"**Bahasa:** {lang_label} | **{words} kata**{_alt}\n\n---\n\n") + book
-            else:
-                _alt = " | **Note:** alternate history" if body.get("alt_history") else ""
-                result[key] = (f"> **Style:** {_style_label} | **Output:** {_out_path} | "
-                               f"**Language:** {lang_label} | **{words} words**{_alt}\n\n---\n\n") + book
+            # Header labels rendered in the narrative's own language (id/en/es/fr/de/pt/nl/it/
+            # ja/ko/zh/ar/hi/th/vi/ms/jv/su/tl); unknown language → English fallback.
+            _lbl = _narasi_header_labels(language)
+            _alt = f" | **{_lbl['note']}:** {_lbl['alt']}" if body.get("alt_history") else ""
+            result[key] = (f"> **{_lbl['style']}:** {_style_label} | **{_lbl['output']}:** {_out_path} | "
+                           f"**{_lbl['language']}:** {lang_label} | **{words} {_lbl['words']}**{_alt}\n\n---\n\n") + book
     except Exception as e:  # noqa: BLE001
         log.warning("Gaya header failed (non-fatal): %s", e)
 
