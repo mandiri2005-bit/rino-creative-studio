@@ -530,7 +530,11 @@ export function httpGenerationClient(opts = {}) {
           }),
         });
         if (!r.ok) { console.warn(`[wb-reframe] ${r.status}`); return null; }
-        return (await r.json()).visual_prompt || null;
+        // Python returns {"prompt": {"visual_prompt": "…"}} — unwrap the nested envelope.
+        // Bug shipped 2026-07-05 read .visual_prompt at top level → always null → workers.mjs
+        // silently fell back to raw scene.visualPrompt so the LLM reframe never landed.
+        const _j = await r.json();
+        return _j?.prompt?.visual_prompt || null;
       } catch (e) {
         console.warn(`[wb-reframe] failed: ${e.message}`);
         return null;
