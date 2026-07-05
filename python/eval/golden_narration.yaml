@@ -428,3 +428,156 @@ cases:
         entity_late_chapters: [3, 4, 5, 6]
         report_only: true
         external_verification_defers_to_phase_4: true
+
+  # --- F20. kdrama_serial style_spec (id) ----------------------------------
+  # Documentary fixture (design-derived). kdrama_serial style_spec seeds the P1
+  # registry with the K-drama serial-episode register: present-tense close-third
+  # alternating between 2-4 principals; every chapter is one hourly-episode arc
+  # with cold-open shock, three-beat middle, and last-frame cliffhanger freeze.
+  # Activates under DALANG_INFRA_FIXES=1. Flag-OFF: style="kdrama_serial" falls
+  # through to CATEGORY_DEFAULTS as unknown-style.
+  - topic: "Bidal-Bidal Malam Ramyeon di Hongdae — sunbae yang tak pernah pulang tepat waktu"
+    style: kdrama_serial
+    language: id
+    expectations:
+      register: "K-Drama Serial — Melodramatic Episode Arc; present-tense close-third alternating between 2-4 principals; every chapter is one hourly-episode arc with cold-open shock, three-beat middle (public collision → private aftermath → quiet meal), and last-frame cliffhanger freeze; hallyu-era contemporary Seoul setting."
+      must_hit:
+        - "cold-open on a shock image (wrist-grab / umbrella-tilt / 3am phone / bowl of ramyeon set down between two people) within the first two pages of every chapter"
+        - "last-frame cliffhanger freeze per chapter — chapter ends BEFORE the reaction, on a reveal or a held look"
+        - "interior monologue in question-form ('Kenapa dia bilang begitu? Kenapa tangannya bergetar tadi?') at least once per chapter, italicized or clearly voice-broken"
+        - "at least one meal-as-emotional-scene per book (ramyeon at 2am, tteokbokki after a breakup, kimbap in the rain, soju + anju, banchan set down without a word)"
+        - "at least one honorific-shift threshold OR physical-contact threshold (banmal-drop / wrist-grab / umbrella-share / piggyback / hand-over-head in rain) per book, marked as an emotional beat"
+        - "second lead gets real interior monologue — minimum 3 beats across the book, minimum 1 per 2 chapters; their loss must be felt"
+        - "sensory anchor of weather (rain, first snow, dawn blue over the Han, humidity before a summer storm) OR light (streetlamp yellow through pojangmacha vinyl, hospital fluorescents, blue phone glow) per chapter"
+        - "class friction (jaebeol Cheongdam-dong world vs seomin ban-jiha world) shown through objects, space, and language — never as moral binary or explicit speech"
+        - "memory renders as unmarked tense-shift inside the paragraph ('Bahkan sekarang, dia masih ingat…'), NEVER as sectioned FLASHBACK header"
+      must_avoid:
+        - "generic Western romcom beats (meet-cute → misunderstanding → grand-gesture apology arc)"
+        - "physical-description-as-characterization ('doe-eyed', 'porcelain skin', 'raven hair', 'impossibly tall')"
+        - "ironic detachment or smirking narrator — K-drama does not wink at itself"
+        - "self-referential meta ('like a K-drama', 'binge-worthy', 'Netflix Korea')"
+        - "exoticizing italicized glosses ('kimbap, a Korean rice roll' / 'oppa, meaning older brother') outside narrative necessity"
+        - "'as they say in Korea…' narrator-tourism voice"
+        - "sectioned FLASHBACK / FIVE YEARS EARLIER headers instead of tense-shift memory"
+        - "second lead reduced to obstacle-prop with zero interior monologue in the entire book"
+        - "'chaebol heir with a heart of gold' as sole characterization for the jaebeol principal"
+        - "aegyo written as cringe-observation rather than committed-to as tenderness"
+      signal_asserts:
+        cold_open_per_chapter: true
+        episode_cliffhanger_min_per_chapter: 1
+        interior_monologue_beat_per_chapter: 1
+        interior_monologue_question_form_min_per_chapter: 1
+        meal_as_emotion_min: 1
+        honorific_shift_present: true
+        physical_contact_threshold_min_per_book: 1
+        second_lead_pov_min_beats: 3
+        second_lead_interior_min_per_2_chapters: 1
+        weather_or_light_anchor_min_per_chapter: 1
+        sectioned_flashback_headers_max: 0
+        meta_self_reference_max: 0
+        physical_description_as_characterization_max: 0
+        class_friction_moral_binary_max: 0
+        principal_pov_count_range: [2, 4]
+        pov_switch_at_chapter_boundary_only: true
+
+  # --- F21. Contemporary Romance style_spec (id) ---------------------------
+  # Documentary fixture (design-derived). romance_contemporary style_spec seeds
+  # the P1 registry with the literary-romance register (Sally Rooney adjacent /
+  # Emily Henry adjacent): close-3rd alternating between two leads, interior
+  # counter-melody beneath dialogue, proximity-grammar shortening arc, single
+  # noticed body detail per scene, one internal-shift scene. Activates under
+  # DALANG_INFRA_FIXES=1. Flag-OFF: style="romance_contemporary" falls through
+  # to CATEGORY_DEFAULTS as unknown-style.
+  - id: p1_romance_contemporary_id
+    topic: "Antiseptic Blue — dua dokter jaga malam di IGD Cikini yang belajar berhenti bicara"
+    style: romance_contemporary
+    language: id
+    mode: text
+    fiction: true
+    n_chapters: 8
+    words_per_chapter: 550
+    expectations:
+      recurring_entities: ["IGD Cikini", "shift malam", "kopi jam tiga pagi", "loker perawat"]
+      required_moves:
+        - "pov_alternation_between_two_leads"
+        - "interior_counter_melody_beneath_dialogue"
+        - "proximity_grammar_shortening_arc"
+        - "single_noticed_detail_body_description"
+        - "internal_shift_scene_no_external_event"
+        - "cultural_specificity_named_place"
+      style_forbidden:
+        - "heaving"
+        - "throbbing"
+        - "silken tresses"
+        - "molten core"
+        - "the moment their eyes met"
+        - "but he was different"
+        - "her heart skipped a beat"
+        - "electricity coursed through"
+        - "tall, dark, and handsome"
+        - "you two clearly love each other"
+      signal_asserts:
+        infra_fixes_flag_required: true
+        factual_regime: "fiction"
+        pov_alternation_min_per_book: 4
+        pov_leads_exact: 2
+        proximity_grammar_present: true
+        proximity_shortening_monotonic: true
+        internal_shift_scene_present: true
+        purple_prose_tells_max: 0
+        coup_de_foudre_signposted_max: 0
+        full_body_inventory_max: 0
+        narrated_body_reaction_shorthand_max: 0
+        cultural_specificity_named_place_min: 1
+        single_noticed_detail_per_scene_min: 1
+        tense_consistency_required: true
+        pov_rhythm_distinct_between_leads: true
+
+  # --- F22. Phase 2 Nusantara: remaja_coming_of_age style_spec (id) ---------
+  # Documentary fixture. Indonesian YA / novel-remaja register anchored in
+  # close-first-person teen POV (aku/gue), sentence-level trilingual code-switch
+  # (baku + gaul + English micro-borrowing), school-social geography specificity,
+  # and obsessive-re-reading interiority (WhatsApp dots / IG story timing).
+  # Distinguishes from translated-Anglo-YA (John Green voice) and from Wattpad
+  # fantasy-CEO harem sub-genre. Flag-OFF: style="remaja_coming_of_age" falls
+  # through to CATEGORY_DEFAULTS. Activates under DALANG_INFRA_FIXES=1.
+  # Display label at FE picker = "Coming of Age" (drop "Remaja" prefix per Rino
+  # 2026-07-06); aliases include remaja / coming_of_age / ya / young_adult / etc.
+  - id: nusantara_remaja_coming_of_age_id
+    topic: "Kereta Terakhir dari Rangkas — LDR sama Yang Belum Jelas"
+    style: remaja_coming_of_age
+    language: id
+    mode: text
+    fiction: true
+    n_chapters: 6
+    words_per_chapter: 500
+    expectations:
+      recurring_entities: ["Rangkas", "WhatsApp", "playlist", "kantin"]
+      required_moves:
+        - "code_switch_trilingual_per_chapter"
+        - "school_or_family_geography_anchor_per_chapter"
+        - "music_anchor_scene_per_book"
+        - "obsessive_re_reading_beat_per_chapter"
+        - "first_person_teen_voice_constitutive"
+      style_forbidden:
+        - "zaman sekarang tuh anak muda"
+        - "sebagai orang tua saya paham"
+        - "chairman muda tampan"
+        - "ceo ganteng jatuh cinta padaku"
+        - "air mataku berlinang bagai sungai"
+        - "I stared at my hands"
+        - "ciyus miapah"
+      signal_asserts:
+        infra_fixes_flag_required: true
+        factual_regime: "fiction"
+        first_person_teen_voice_ratio_min: 0.95
+        code_switch_min_per_chapter: 2
+        school_or_family_geography_anchor_per_chapter: 1
+        obsessive_re_reading_beat_min_per_chapter: 1
+        music_anchor_present_per_book: true
+        adult_reflection_tells_max: 0
+        wattpad_ceo_tropes_max: 0
+        generic_school_setting_max: 0
+        purple_prose_tells_max: 0
+        generational_anachronism_slang_max: 0
+        explicit_lesson_delivery_max: 0

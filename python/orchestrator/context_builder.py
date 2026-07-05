@@ -306,6 +306,35 @@ class SharedContext:
         if self.style_guide and self.style_guide.strip():
             parts.append("STYLE GUIDE (hold this register for the entire book):\n"
                          + self.style_guide.strip())
+        # Prompt-integration (Rino 2026-07-06): pull register_spec.required_moves +
+        # banned_tells from the pakem registry and inject as an explicit checklist
+        # section. style_rules_book already carries these constraints in prose; giving
+        # the LLM the same rules in list form materially improves compliance. Reads
+        # both P0 CATEGORY_DEFAULTS specs and P1_STYLES entries (Phase 2 + Phase 5).
+        # Flag-gated on DALANG_INFRA_FIXES so existing jobs keep prior behavior when
+        # the operator has not opted in.
+        try:  # pragma: no cover - soft dependency
+            import os as _os_reg
+            if _os_reg.environ.get("DALANG_INFRA_FIXES") == "1":
+                from pakem import resolve_style as _resolve_style
+                _entry = _resolve_style(self.style) if self.style else None
+                _rspec = (_entry or {}).get("register_spec") or {}
+                _required = _rspec.get("required_moves") or []
+                _banned = _rspec.get("banned_tells") or []
+                _reg_lines: list[str] = []
+                if _required:
+                    _reg_lines.append("MUST HIT — signature moves for this register:")
+                    _reg_lines.extend(f"- {m}" for m in _required)
+                if _banned:
+                    if _reg_lines:
+                        _reg_lines.append("")
+                    _reg_lines.append("MUST AVOID — tells that betray a fake register:")
+                    _reg_lines.extend(f"- {t}" for t in _banned)
+                if _reg_lines:
+                    parts.append("REGISTER CHECKLIST (structured pakem constraints):\n"
+                                 + "\n".join(_reg_lines))
+        except Exception:  # noqa: BLE001
+            pass
         if self.canonical_facts and self.canonical_facts.strip():
             parts.append(
                 "CANONICAL FACTS (the ONLY names/dates/numbers/quotes you may state as "

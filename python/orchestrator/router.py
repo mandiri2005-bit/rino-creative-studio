@@ -102,6 +102,24 @@ def _resolve_max_workers(req: dict) -> int:
         return _CORE_MAX_WORKERS
 
 
+_POLISH_ALLOWED = {"none", "light", "heavy"}
+
+
+def _resolve_polish(req: dict) -> str:
+    """Polish override — env WINS over req so the operator can enforce a mode
+    globally via Railway. Order: NARASI_POLISH_MODE (Rino's canonical name) →
+    legacy POLISH → req['polish'] → default 'light'. Values normalized to lower
+    case; out-of-range fall through to the next tier."""
+    for env_name in ("NARASI_POLISH_MODE", "POLISH"):
+        env_val = (os.environ.get(env_name) or "").strip().lower()
+        if env_val in _POLISH_ALLOWED:
+            return env_val
+    req_val = str(req.get("polish") or "").strip().lower()
+    if req_val in _POLISH_ALLOWED:
+        return req_val
+    return "light"
+
+
 class _Settings:
     """Resolved, validated per-request settings (one place so every scenario agrees)."""
     __slots__ = ("orch_mode", "polish", "max_workers", "rag_on")
@@ -109,8 +127,7 @@ class _Settings:
     def __init__(self, req: dict):
         self.orch_mode = _resolve_setting(
             req, "orch_mode", "ORCH_MODE", "auto", {"auto", "static", "dynamic"})
-        self.polish = _resolve_setting(
-            req, "polish", "POLISH", "light", {"none", "light", "heavy"})
+        self.polish = _resolve_polish(req)
         self.max_workers = _resolve_max_workers(req)
         self.rag_on = _resolve_setting(req, "rag", "RAG", "on", {"on", "off"}) == "on"
 

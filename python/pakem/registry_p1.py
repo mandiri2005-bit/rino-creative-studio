@@ -1741,9 +1741,593 @@ FORBIDDEN:
 }
 
 
+_KDRAMA_SERIAL_SPEC = {
+    "display_name": "K-Drama Serial — Melodramatic Episode Arc",
+    "aliases": [
+        "kdrama", "k-drama", "k_drama", "kdrama_serial", "kdrama-serial",
+        "korean_drama", "korean drama", "korean serial", "dorama",
+        "hallyu drama", "korean tv drama", "kdrama episode",
+    ],
+    "is_fiction": True,
+    "medium_origin": "screen",
+    "tier": "P1",
+    "tts_risk": False,
+    "output_support": "both",
+    "factual_regime": "fiction",
+    "rag": {
+        "query_instruction": (
+            "Retrieve a K-drama serial-episode passage in present-tense close-third, "
+            "alternating between 2-4 principals, with cold-open shock, three-beat middle, "
+            "and last-frame cliffhanger freeze — hallyu-era contemporary Korean setting:"
+        ),
+        "framing": (
+            "Study how the K-drama narrator lets each chapter carry the weight of one "
+            "hourly episode: the cold-open lands on a shock image (a hand releasing an "
+            "umbrella, a phone lighting up at 3am, a wrist grabbed at the elevator "
+            "closing), the middle unfolds in three beats — public collision, private "
+            "aftermath, quiet meal — and the last frame freezes on a reveal that would "
+            "make an audience wait a week. Notice how weather (rain, first snow, dawn "
+            "blue over the Han), light (streetlamp yellow through pojangmacha vinyl, "
+            "hospital fluorescents), and food (ramyeon at 2am, tteokbokki after a "
+            "breakup, kimbap in the rain) do emotional work that dialogue cannot. "
+            "Honorific-shifts (banmal-drop from a sunbae, unnie / oppa softening) mark "
+            "threshold moments. The second lead is never a prop — they get real "
+            "interior monologue in question-form ('Kenapa dia menoleh saat namaku "
+            "disebut?') even when destined to lose."
+        ),
+    },
+    "style_rules_book": """STYLE: K-Drama Serial — Melodramatic Episode Arc
+= Contemporary Korean serialized-episode fiction. Every chapter is one hourly
+= episode arc: cold-open shock (1-2 pages that would open episode-1-scene-1) →
+= three-beat middle (public collision → private aftermath → quiet meal or
+= two-hander) → last-frame cliffhanger reveal (freeze the frame, cue the OST).
+= Present-tense close-third, alternating between 2-4 principals across the run.
+= Melodrama is EARNED through sensory specificity, not withheld through irony.
+= The register commits INTO feeling.
+
+EPISODE ARC (mandatory shape per chapter):
+- COLD OPEN: open on a shock image that would make a viewer stop scrolling —
+  a wrist grabbed at closing elevator doors, an umbrella tilted over the wrong
+  head, a phone lighting up at 3am with a name that should not be there, a
+  bowl of ramyeon set down between two people who have not spoken in a year.
+  Do NOT ease in. Do NOT open on weather-as-mood-setter without a human beat
+  inside the same paragraph.
+- THREE-BEAT MIDDLE: public collision (a scene the world can see: office,
+  wedding hall, hospital corridor, gallery opening) → private aftermath (one
+  principal alone, or two principals cornered) → quiet meal or two-hander
+  (ramyeon, tteokbokki, soju + anju, convenience-store bench).
+- LAST-FRAME FREEZE: end on a reveal, a look held one beat too long, a text
+  message that arrives mid-sentence, a name spoken by the wrong voice. The
+  chapter ends BEFORE the reaction. Cue the OST. Roll credits.
+
+POV DISTRIBUTION (structural rule, not stylistic preference):
+- Alternating close-third between 2-4 principals across the book. Each chapter
+  anchors to ONE POV; POV switches happen at chapter boundaries, not mid-scene.
+- The SECOND LEAD is not a prop. They get real emotional interiority — at least
+  one interior-monologue beat every two chapters, minimum 3 beats per book.
+  When they lose, the loss must be felt. Second-lead syndrome exists because
+  K-drama writers wrote them with dignity. Match that.
+
+INTERIOR MONOLOGUE (register-defining):
+- Question-form: "Kenapa dia bilang begitu? Kenapa tangannya bergetar tadi?
+  Apa yang tidak dia katakan?"
+- Rendered in italics OR clear voice-break — never buried inside neutral
+  narration.
+- Memory intrudes as unmarked tense-shift ("Even now, she remembers the smell
+  of the raincoat he gave her." / "Bahkan sekarang, dia masih ingat bau jaket
+  hujan itu."). NO sectioned FLASHBACK headers. NO "FIVE YEARS EARLIER" cards.
+  Memory is a tense-shift inside the same paragraph.
+
+SENSORY GRAMMAR (weather + light + food, always concrete):
+- Weather: rain hitting a car window, first snow that stops traffic, dawn blue
+  over the Han, humidity before a summer storm. Weather is emotional weather.
+- Light: streetlamp yellow through pojangmacha vinyl, hospital fluorescents
+  buzzing at 4am, the blue glow of a phone screen in a dark bedroom, dawn blue
+  through hanok paper doors.
+- Food: ramyeon at 2am is grief, tteokbokki after a breakup is defiance, kimbap
+  in the rain is love, soju is confession, hotteok is childhood, banchan set
+  down without a word is forgiveness. Meals CARRY emotional beats; they are
+  not decoration. AT LEAST ONE meal-as-emotional-scene per book.
+
+CULTURE-SPECIFIC BEATS (load-bearing, not decoration):
+- HONORIFIC-SHIFT threshold: a sunbae drops banmal, a hyung-nim softens to
+  hyung, an oppa becomes a name. The shift IS the emotional beat. Mark it in
+  narration ("She had never heard him call her by her name alone before.").
+- WRIST-GRAB: the hand closes around the wrist mid-turn — arrival, prevention,
+  claim. Not a flirt. A stopped-motion beat.
+- UMBRELLA-SHARE: one umbrella, two people, one shoulder wet. The person
+  holding the umbrella tilts it TOWARD the other. That is the whole scene.
+- PIGGYBACK: after drinking, after collapse, after a fever. Physical trust
+  that the character would never admit to in daylight.
+- HAND-OVER-HEAD in sudden rain — a jacket, a bag, a bare hand as shelter.
+- At least ONE of {honorific_shift, wrist_grab, umbrella_share, piggyback,
+  hand_over_head} per book, embedded as a threshold beat.
+
+CLASS FRICTION (jaebeol vs seomin — texture, NEVER moral binary):
+- The chaebol world (marbled foyers, elevator keycards, hospital VIP wards,
+  Cheongdam-dong penthouses, private tutors, family lawyers who arrive faster
+  than paramedics) is real pressure, not caricature. Its inhabitants love and
+  suffer and fail.
+- The seomin world (반지하 half-basement apartments, night-shift convenience
+  stores, subway last-train, ramyeon budgets, mothers who work three jobs) is
+  dignity under weight, not virtue-porn poverty tourism.
+- Class friction shows in objects (whose phone, whose coat, whose car pulls
+  up), in space (who owns the room they are standing in), in language (who
+  can afford politeness). Not in speeches about inequality.
+- NEVER: "chaebol heir with a heart of gold" as sole characterization. The
+  jaebeol lead is compromised by their world, and the seomin lead is not
+  ennobled by lack.
+
+MELODRAMA COMMITMENT (register-defining):
+- K-drama commits INTO feeling. Rain scenes are ALLOWED to be operatic. The
+  OST swell is EARNED, not undercut. A character crying in a car parked
+  outside a hospital is not embarrassing prose — it is the register.
+- Withhold nothing through ironic detachment. If a scene would make a viewer
+  cry, WRITE it to make a reader cry. Specificity is the earning, not
+  restraint.
+
+FORBIDDEN:
+- Generic Western romcom beats (meet-cute → misunderstanding → grand-gesture
+  apology). K-drama arcs are longer, colder, and more patient.
+- Physical-description-as-characterization ("doe-eyed," "porcelain skin,"
+  "raven hair," "impossibly tall"). Describe what a character DOES in a
+  space, not what they look like on a poster.
+- Ironic detachment / smirking narrator. K-drama does not wink at itself.
+- Self-referential meta ("like a K-drama," "binge-worthy," "Netflix Korea").
+  The story does not know it is a K-drama.
+- Exoticizing English glosses ("kimbap, a Korean rice roll," "oppa, meaning
+  older brother"). Trust the reader OR trust the context. Gloss only when the
+  narrative demands it (a non-Korean character asking).
+- "As they say in Korea…" narrator-tourism voice.
+- Sectioned FLASHBACK / FIVE YEARS EARLIER headers. Memory is a tense-shift.
+- Second lead reduced to obstacle-prop with no interior beat. If the second
+  lead gets zero interior monologue in the entire book, the register has
+  failed.
+- The "chaebol heir with a heart of gold" as sole characterization for the
+  jaebeol principal.
+- Aegyo written as cringe-observation. If a character does aegyo, the
+  narration commits to it as tenderness, not as ironic distance.
+""",
+    "style_rules_editor": "",
+    "register_spec": {
+        "required_moves": [
+            "cold_open_shock_per_chapter",
+            "end_of_chapter_cliffhanger_freeze",
+            "interior_monologue_question_beat_per_chapter",
+            "meal_as_emotional_scene_min_per_book",
+            "honorific_shift_or_physical_contact_threshold_per_book",
+            "second_lead_interior_beat_min",
+            "weather_or_light_sensory_anchor_per_chapter",
+        ],
+        "banned_tells": [
+            "doe-eyed",
+            "porcelain skin",
+            "raven hair",
+            "as they say in Korea",
+            "like a K-drama",
+            "binge-worthy",
+            "meet-cute",
+            "FIVE YEARS EARLIER",
+            "chaebol heir with a heart of gold",
+            "oppa, meaning",
+            "kimbap, a Korean rice roll",
+            "impossibly tall",
+        ],
+        "counters": {
+            "cold_open_per_chapter": True,
+            "episode_cliffhanger_min_per_chapter": 1,
+            "interior_monologue_beat_per_chapter": 1,
+            "interior_monologue_question_form_min_per_chapter": 1,
+            "meal_as_emotion_min": 1,
+            "honorific_shift_present": True,
+            "physical_contact_threshold_min_per_book": 1,
+            "second_lead_pov_min_beats": 3,
+            "second_lead_interior_min_per_2_chapters": 1,
+            "principal_pov_count_range": [2, 4],
+            "pov_switch_at_chapter_boundary_only": True,
+            "weather_or_light_anchor_min_per_chapter": 1,
+            "sectioned_flashback_headers_max": 0,
+            "meta_self_reference_max": 0,
+            "physical_description_as_characterization_max": 0,
+            "class_friction_moral_binary_max": 0,
+            "narrator_opening_ratio_max": 0.5,
+            "aphorism_density_target": 1,
+        },
+    },
+}
+
+
+_ROMANCE_CONTEMPORARY_SPEC = {
+    "display_name": "Contemporary Romance — Literary Register",
+    "aliases": [
+        "romance", "contemporary_romance", "romance_contemporary",
+        "contemporary-romance", "romance-contemporary",
+        "love story", "love_story", "romance novel", "romance_novel",
+        "contemporary_love", "contemporary love",
+        "sally rooney", "sally_rooney", "emily henry", "emily_henry",
+        "casey mcquiston", "ocean vuong tender",
+        "literary romance", "literary_romance",
+    ],
+    "is_fiction": True,
+    "medium_origin": "page",
+    "tier": "P1",
+    "tts_risk": False,
+    "output_support": "both",
+    "factual_regime": "fiction",
+    "rag": {
+        "query_instruction": (
+            "Retrieve a contemporary literary-romance passage in close-3rd POV "
+            "alternating between two leads, where interiority runs BENEATH the "
+            "dialogue and physical proximity shortens by measured units across "
+            "the book:"
+        ),
+        "framing": (
+            "Study how the two leads' POV chapters carry distinct sentence-rhythms "
+            "(one long-serpentine when interior, the other short-punch when "
+            "defended), how each spoken line is shadowed by a four-line unspoken "
+            "paragraph the reader hears through free-indirect voice, and how "
+            "bodies are noticed as single specific details (a wrist tendon, the "
+            "seam of a T-shirt at the collarbone) rather than inventoried. Notice "
+            "the proximity grammar — the leads move from across-the-room in the "
+            "opening chapter to sharing one bed by the closing chapter, and every "
+            "chapter measurably shortens the space between them. Notice how "
+            "sexual tension is felt at word-level (verb choice, sentence landing "
+            "on the wrong word) rather than signposted with 'she wanted him.'"
+        ),
+    },
+    "style_rules_book": """STYLE: Contemporary Romance — Literary Register
+= Two leads, close-3rd POV alternating chapter-by-chapter, whose distance closes
+= by measured units across the book. The prose lives in the space between what
+= is said and what runs beneath. Bodies are noticed one detail at a time. Silence
+= is a beat, not a gap. The reader knows the two are moving toward each other
+= before either lead admits it — but the narrative NEVER signposts this in
+= advance; it earns it, chapter by chapter, at word-level.
+
+POV GRAMMAR (structural, non-negotiable):
+- Close-3rd, past-tense-close-3rd OR present tense — CHOOSE ONE and hold across
+  the whole book. Do not drift.
+- Chapters alternate between the two leads. Each lead's POV chapters carry a
+  distinct sentence-rhythm: one long-serpentine when interior (Marianne-adjacent);
+  the other short-punch when defended (Connell-adjacent). The reader can identify
+  whose chapter it is from paragraph 1 by rhythm alone, without a name.
+- No omniscient third party summarizes their relationship from outside. The
+  reader knows only what each lead knows, plus what free-indirect voice leaks.
+
+INTERIOR COUNTER-MELODY (register-defining move):
+- Every dialogue-heavy scene carries a running interior beneath the said lines.
+- Rule of thumb: for every three spoken beats, there is at least one interior
+  paragraph — what she wanted to say instead, what he registered but did not
+  respond to, the four lines she edited out before speaking.
+- The counter-melody uses free-indirect voice — no italics, no "she thought,"
+  just voice drifting between narrator and lead.
+
+PROXIMITY GRAMMAR (arc-level move):
+- Physical distance between the two leads shortens by measurable units across
+  the book. A rough scaffold — vary the beats but not the arc:
+  ch1: across the room at a party / on opposite sides of a shared workspace.
+  ch2-3: same table, not yet touching. First accidental touch.
+  ch4-5: next to. Shoulder-to-shoulder on a couch, in a cab, on a curb.
+  ch6-7: touching on purpose. A hand at the small of the back, a knee.
+  ch8+: alone in one room, one bed, one silence.
+- The arc must be TRACKABLE — a reader plotting proximity per chapter should
+  see monotonic shortening (small oscillations permitted, no full reversals).
+
+BODY DESCRIPTION — SINGLE NOTICED DETAIL:
+- Per scene, ONE specific body detail noticed by the POV lead. Not an inventory.
+- Wrist tendon under a rolled sleeve. The ridge of a collarbone under a T-shirt.
+- A scar on a knuckle. The way his jaw sets on a hard vowel. Not eye color, not
+  hair color, not height, not chest, not "chiseled anything." One thing, once.
+- The detail is chosen because THIS lead notices it — it characterizes the
+  looker, not the looked-at.
+
+SEXUAL TENSION — WORD-LEVEL, NOT SIGNPOSTED:
+- Tension is felt in verb choice (he set the glass down instead of put), in
+  sentences ending on the wrong word, in the paragraph that does not answer
+  the question the previous paragraph asked.
+- FORBIDDEN mode: "She wanted him." "She had never wanted anyone this much."
+  "Electricity coursed through her." The reader must feel the tension without
+  the narrator naming it.
+
+SILENCE AS BEAT:
+- Silence is written as a paragraph, not a dash. "He didn't say anything. She
+  watched the ice re-form on the glass." Silence CARRIES weight — it is the
+  interior-counter-melody's rest.
+
+DIALOGUE:
+- Snappy, contemporary, register-appropriate to the world (Dublin postgrad
+  reads different from Portland pottery studio reads different from Jakarta
+  expat sunset bar). Register-specific vocabulary — a barista in Kemang says
+  "iced Americano" and "kabur dulu," not generic-American coffee-shop dialogue.
+- Comma splices are permitted as intimacy-marker in interior paragraphs — they
+  are the sentence structure of a lead too close to their own thought to punctuate.
+
+CULTURAL SPECIFICITY (anchor the world):
+- Real named place. Not "the city" — Brooklyn co-op bar / Dublin postgrad
+  library / Portland pottery studio / Jakarta rooftop off Casablanca. Real
+  coffee shop names, real train lines, real weather months. The world is
+  specific because the leads live IN it, not on a stage set for them.
+
+THE ONE INTERNAL-SHIFT SCENE:
+- Exactly one scene per book (typically 2/3 through) where NOTHING external
+  happens — they wait for a train that comes on time, they wash dishes, they
+  sit on a fire escape — and everything internal shifts. The reader closes
+  the chapter knowing the arc has just turned, without a single external event.
+
+FORBIDDEN (register-breaks):
+- Bodice-ripper register in any form: heaving, throbbing, member (as
+  euphemism), silken tresses, molten core, molten heat.
+- Purple-prose color inventory: "his piercing blue eyes," "her emerald-green
+  eyes," "raven-black hair" — anything that reads like a character sheet.
+- Coup-de-foudre signposted in advance: "The moment their eyes met, she
+  knew." "From the second he walked in, everything changed." The reader
+  discovers the arc; the narrator does not announce it.
+- "But he was different." "Unlike any man she'd ever met." "He was
+  everything she never knew she needed." — the standard-genre tell.
+- Third-party observer voiceover: a side character telling one lead "you
+  two clearly love each other" / "anyone can see it." The reader does the
+  seeing; no side character does it for them.
+- Dialogue-only scenes with no interior counter-melody — flat surface, no
+  beneath.
+- Setting-decoration prose: paragraphs describing the coffee shop, the
+  autumn light, the exposed brick, instead of describing the person opposite.
+- "Her heart skipped a beat" / "electricity coursed through her" / "her
+  stomach did a little flip" — narrated-body-reaction shorthand for
+  attraction. Show the noticed detail; do not narrate the physiology.
+- Full-figure body inventory: "tall, dark, and handsome" / "long legs and a
+  killer smile" / any three-adjective run on a body.
+- Insta-love without proximity work: the leads confess love in ch2 with no
+  proximity-grammar arc earned. Love, if it lands, lands late and earned.
+- Register-drift across POV: both leads sounding identical in interior. The
+  rhythm distinction MUST hold.
+""",
+    "style_rules_editor": "",
+    "register_spec": {
+        "required_moves": [
+            "pov_alternation_between_two_leads",
+            "interior_counter_melody_beneath_dialogue",
+            "proximity_grammar_shortening_arc",
+            "single_noticed_detail_body_description",
+            "internal_shift_scene_no_external_event",
+            "cultural_specificity_named_place",
+        ],
+        "banned_tells": [
+            "heaving", "throbbing", "silken tresses", "molten core",
+            "molten heat", "piercing blue eyes", "emerald green eyes",
+            "raven-black hair",
+            "the moment their eyes met",
+            "but he was different",
+            "unlike any man she'd ever met",
+            "everything she never knew she needed",
+            "her heart skipped a beat",
+            "electricity coursed through",
+            "stomach did a little flip",
+            "melted into his arms",
+            "tall, dark, and handsome",
+            "you two clearly love each other",
+            "anyone can see it",
+            "she wanted him more than",
+        ],
+        "counters": {
+            "pov_alternation_min_per_book": 4,
+            "pov_leads_exact": 2,
+            "interior_counter_melody_min_per_dialogue_scene": 1,
+            "proximity_grammar_present": True,
+            "proximity_shortening_monotonic": True,
+            "single_noticed_detail_per_scene_min": 1,
+            "single_noticed_detail_per_scene_max": 2,
+            "full_body_inventory_max": 0,
+            "purple_prose_tells_max": 0,
+            "coup_de_foudre_signposted_max": 0,
+            "third_party_observer_voiceover_max": 0,
+            "narrated_body_reaction_shorthand_max": 0,
+            "internal_shift_scene_present": True,
+            "single_setting_over_inventory_ratio_max": 0.25,
+            "cultural_specificity_named_place_min": 1,
+            "tense_consistency_required": True,
+            "pov_rhythm_distinct_between_leads": True,
+            "silence_as_paragraph_min_per_book": 3,
+            "comma_splice_permitted_in_interior": True,
+            "insta_love_max_chapters": 0,
+        },
+    },
+}
+
+
+_REMAJA_COMING_OF_AGE_SPEC = {
+    "display_name": "Coming of Age",
+    "aliases": [
+        "remaja", "coming_of_age", "coming-of-age", "ya", "young_adult",
+        "novel_remaja", "teen_lit", "tumbuh_dewasa", "remaja_indonesia",
+        "remaja_coming_of_age", "remaja-coming-of-age",
+    ],
+    "is_fiction": True,
+    "medium_origin": "page",
+    "tier": "P1",
+    "tts_risk": False,
+    "output_support": "both",
+    "factual_regime": "fiction",
+    "rag": {
+        "query_instruction": (
+            "Retrieve an Indonesian young-adult / novel-remaja passage narrated "
+            "close-first-person by a teenage 'aku' or 'gue', with sentence-level "
+            "trilingual code-switch (Indonesian baku + gaul + English micro-"
+            "borrowing) anchored in specific school-social geography:"
+        ),
+        "framing": (
+            "Study how the teen narrator interleaves formal Indonesian, gaul slang, "
+            "and English micro-borrowings inside a single paragraph without register "
+            "collapse ('aku tuh sebenernya udah tau, tapi denial mode masih aktif'). "
+            "Notice the school-geography specificity — kantin belakang, lorong depan "
+            "lab, halte busway, warung Padang samping kos — never generic 'school'. "
+            "Notice the obsessive re-reading beat: WhatsApp typing dots, IG story "
+            "timing, seen-tapi-belum-dibalas. Notice the music-anchor scene — a "
+            "specific song lyric at a specific moment, quoted with attribution. "
+            "Notice that the narrator is CONSTITUTIVELY teen — no adult reflection "
+            "overwriting, no 'zaman sekarang tuh anak muda' diagnostic voice."
+        ),
+    },
+    "style_rules_book": """STYLE: Remaja — Indonesian YA / Coming-of-Age
+= Close-first-person Indonesian teen narrator (aku / gue), sometimes in journal/diary
+= form. Voice is CONSTITUTIVELY adolescent — never a grown-up looking back and
+= diagnosing youth. Emotional grammar runs on obsessive re-reading of small signals
+= (WhatsApp typing dots, IG story timing, seen-tapi-nggak-dibalas). School-social
+= geography and family-geography are load-bearing, not decoration.
+
+POV LOCK:
+- First-person aku/gue OR diary/journal address ('Dear diary', 'Kamu tau nggak, aku
+  tuh…', unaddressed monologue). Third-person close is permitted only if the
+  narrator's interior stays teen-locked without exception.
+- The narrator CAN be nostalgic-teen (writing tonight about last week) but is
+  NEVER grown-up-looking-back-with-macro-wisdom. No 'setelah dewasa aku baru
+  paham', no 'sebagai orang tua sekarang aku ngerti', no 20-years-later frame.
+
+TRILINGUAL CODE-SWITCH (register-defining):
+- Sentence-level or intra-paragraph switch across three registers:
+  (1) Indonesian baku — for framing, quoted authority, narration spine.
+  (2) Bahasa gaul — for interior voice ('tuh', 'sih', 'kok', 'banget', 'gue',
+      'elo', 'anjir', 'yaudah', 'gapapa', 'baper', 'bucin', 'santuy', 'gaskeun',
+      'y'ampun', 'literally', 'random banget').
+  (3) English micro-borrowing — one to three words, not sentences ('denial mode
+      aktif', 'red flag', 'green flag', 'main character energy', 'situationship',
+      'ghosting', 'overthinking', 'insecure', 'closure').
+- ≥2 code-switch beats per chapter minimum. Density calibrated to sound like
+  2020s Indonesian teens, NOT 2010s Twitter kids and NOT expat-school English-
+  first speakers.
+- Slang must be GENERATIONALLY LOCKED to 2020s. Forbidden throwbacks: 'jayus',
+  'garing', 'kece badai', 'ciyus miapah', 'kepo abis' (reads 2010s), 'nyokap
+  bokap gue keren' (90s ABG), 'boyband korea favoritku SS501' (dated K-anchor).
+
+SCHOOL-SOCIAL GEOGRAPHY (mandatory anchor):
+- Every chapter names ≥1 specific school-social OR family-social location:
+  kantin (belakang / depan / atas), lorong (depan lab bio, samping ruang guru,
+  antara kelas XI IPA 3 dan XI IPS 1), kelas (dengan nomor / jurusan), OSIS,
+  pramuka, ekskul (rohis, paskibra, teater, basket, mading, PMR), warung
+  (Yu Sum, Bu Ijah, warung Padang sebelah kos), halte busway, stasiun (Rangkas,
+  Tanah Abang, Manggarai, Sudirman), kos, kontrakan, rumah nenek.
+- Generic 'sekolah' / 'rumah' without micro-geography is a tell — flagged.
+- Jakarta/Bandung/Yogya specific (ganjil-genap, Rangkas last train, Malioboro,
+  Braga, TIM, Blok M, Kopi Kenangan, Janji Jiwa, Fore) is welcomed but not
+  required; small-kota geography (warung depan sekolah, alun-alun, terminal
+  angkot) is equally valid.
+
+FAMILY-GEOGRAPHY:
+- Family texture is economic + emotional, not abstract. Name the configuration:
+  mama-papa, single parent (mama aja / papa aja), tinggal sama nenek, kos jauh
+  dari rumah, ngekos sendiri di Depok, pulang kampung tiap lebaran. Name the
+  money texture without moralizing: uang jajan pas-pasan, transfer bulanan
+  telat, minta tambahan malu.
+
+OBSESSIVE RE-READING BEAT (mandatory ≥1 per chapter):
+- The narrator returns to a small signal and re-reads it: WhatsApp typing dots
+  ('titik-titik itu muncul, hilang, muncul lagi'), IG story timing ('dia
+  upload jam 11.47, aku tau karena aku ngecek dua menit sebelumnya'), 'seen'
+  tapi belum dibalas, DM tone shift, dia follow lagi mantannya, notif yang
+  di-mute, spam story yang cuma buat satu orang.
+- This beat carries interiority — it IS the coming-of-age texture. Skipping
+  it makes the register read as generic fiction.
+
+MUSIC-ANCHOR (mandatory ≥1 per book):
+- At least one scene anchored to a specific song at a specific moment.
+- Lyric may be quoted (1-2 lines) with attribution ('lagu Fiersa Besari,
+  Waktu yang Salah', 'Hindia — Evaluasi', 'Nadin Amizah — Rumpang', 'Feby
+  Putri — Halu', 'Juicy Luicy — Terlanjur Mencinta').
+- Playlist references (Spotify liked, replay tengah malam, headset satu
+  telinga di kereta) are register-canonical.
+
+THRESHOLD MOMENTS (choose ≥1 per book):
+- First ojol solo. First konser (Joyland, We The Fest, Synchronize).
+- First pacaran resmi. First LDR (Jakarta-Bandung / Jakarta-Jogja / dalam-luar
+  kota). First patah hati. First UN result / first SBMPTN result / first ditolak
+  PTN. First ngajakin pulang malem tanpa izin. First aku-bukan-anak-kecil-lagi
+  moment dengan orang tua.
+
+VOICE INTERIOR ADDRESS:
+- Narrator sometimes addresses self ('bego lu, ngapain di-reply lagi'), sometimes
+  an imagined 'kamu' (the crush, the mantan, the future self), sometimes nobody
+  ('yaudah, jalan aja dulu'). Rotate — don't sit only in one mode.
+
+STRUCTURAL:
+- Chapters can be diary-dated, mixtape-titled, WhatsApp-thread-titled, or plain.
+- 6/6 chapters may open with an interior beat (not a scene-setter) — high POV
+  saturation is genre-canonical for remaja.
+
+FORBIDDEN:
+- Translated-Anglo-YA voice: 'I stared at my hands', 'She was different', 'Life
+  was hard', 'The pain was real.' English-first prosody with Indonesian words on
+  top is a fail state.
+- Adult-narrator overwrite: 'zaman sekarang tuh anak muda…', 'kalau dipikir-pikir
+  sekarang setelah dewasa…', 'sebagai orang tua saya paham…', '20 tahun kemudian
+  aku baru sadar…'. If the narrator diagnoses generational patterns, the POV
+  broke.
+- Fantasy-remaja Wattpad tropes: 'Chairman muda tampan', 'CEO ganteng jatuh
+  cinta padaku', harem-jatuh-cinta-tiga-cowok-sekaligus, arranged-marriage-with-
+  billionaire. That's a different sub-genre; not this register.
+- Generic school setting: 'aku duduk di kelas', 'kami di kantin' without
+  specifying WHICH kelas / WHICH kantin / WHICH lorong.
+- Aegyo / kawaii texture mistranslated into Indonesian ('pipiku menggembung
+  imut', 'aku memasang wajah puppy-eyes'). That's kdrama register, not remaja.
+- English-heavy code-switch that reads as expat-school kid ('Guys, so today
+  was totally exhausting, I literally can't').
+- Purple prose ('air mataku berlinang bagai sungai', 'hatiku hancur berkeping-
+  keping', 'langit menangis bersamaku').
+- Generational anachronism in slang (2010s Twitter / 90s ABG / dated K-pop
+  anchor as CURRENT-favorite).
+- Explicit lesson-delivery at chapter close ('dari situ aku belajar bahwa
+  hidup itu…'). Remaja teaches through the moment, not a moral tag.
+- Third-person omniscient with adult reflection.
+""",
+    "style_rules_editor": "",
+    "register_spec": {
+        "required_moves": [
+            "code_switch_trilingual_per_chapter",
+            "school_or_family_geography_anchor_per_chapter",
+            "music_anchor_scene_per_book",
+            "obsessive_re_reading_beat_per_chapter",
+            "first_person_teen_voice_constitutive",
+        ],
+        "banned_tells": [
+            "zaman sekarang tuh anak muda",
+            "kalau dipikir-pikir sekarang setelah dewasa",
+            "sebagai orang tua saya paham",
+            "20 tahun kemudian aku baru sadar",
+            "air mataku berlinang bagai sungai",
+            "hatiku hancur berkeping-keping",
+            "langit menangis bersamaku",
+            "chairman muda tampan",
+            "ceo ganteng jatuh cinta padaku",
+            "pipiku menggembung imut",
+            "puppy-eyes",
+            "I stared at my hands",
+            "She was different",
+            "Life was hard",
+            "guys so today was totally exhausting",
+            "jayus", "ciyus miapah", "kece badai",
+            "dari situ aku belajar bahwa hidup",
+        ],
+        "counters": {
+            "code_switch_min_per_chapter": 2,
+            "school_or_family_geography_anchor_per_chapter": 1,
+            "music_anchor_present_per_book": True,
+            "obsessive_re_reading_beat_min_per_chapter": 1,
+            "first_person_teen_voice_ratio_min": 0.95,
+            "adult_reflection_tells_max": 0,
+            "wattpad_ceo_tropes_max": 0,
+            "generic_school_setting_max": 0,
+            "purple_prose_tells_max": 0,
+            "generational_anachronism_slang_max": 0,
+            "narrator_opening_ratio_max": 1.0,
+            "explicit_lesson_delivery_max": 0,
+        },
+    },
+}
+
+
 if _PHASE2_ON():
     P1_STYLES["babad_hikayat"] = _BABAD_HIKAYAT_SPEC
     P1_STYLES["pewayangan_dalang"] = _PEWAYANGAN_DALANG_SPEC
+    P1_STYLES["kdrama_serial"] = _KDRAMA_SERIAL_SPEC
+    P1_STYLES["romance_contemporary"] = _ROMANCE_CONTEMPORARY_SPEC
+    P1_STYLES["remaja_coming_of_age"] = _REMAJA_COMING_OF_AGE_SPEC
 
 
 __all__ = ["P1_STYLES"]
