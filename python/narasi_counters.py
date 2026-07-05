@@ -2252,3 +2252,124 @@ def surgical_prompt(report: dict, *, language: str = "English") -> str:
             f"other in >{dp['budget']} chapters is a formula. Vary the pairing — introduce a "
             "different second voice, or fold one side into unattributed synthesis.")
     return "\n\n".join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 2 (2026-07-05) — Nusantara language_pack augments, gated on DALANG_INFRA_FIXES=1.
+# Seeded from corpus samples 17 (Babad Tanah Jawi, id) + 19 (Cepot Membangun Kahyangan, su)
+# + 18 (Black Death, tl). Additions extend existing packs via setdefault; existing keys are
+# never overwritten. Consumers of nusantara_vocab/wayang_vocab/filipino_historical_terms
+# must guard reads on _PHASE2_ON() — flag-OFF preserves prior behavior byte-identically.
+# ─────────────────────────────────────────────────────────────────────────
+
+import os as _os_phase2_lp
+
+def _PHASE2_ON() -> bool:
+    """Same env knob as narasi_gate._INFRA_FIXES_ON. One flip activates the whole
+    corpus-audit bundle across gate + counters + pakem."""
+    return _os_phase2_lp.environ.get("DALANG_INFRA_FIXES") == "1"
+
+
+# id — Nusantara chronicle vocabulary + classical Islamic closing formulas.
+# Seeded from Babad Tanah Jawi audit (sample-17, lens-2). Extends existing id pack.
+_ID_NUSANTARA_VOCAB = {
+    "chronicle_registers": (
+        "keraton", "pendapa", "cacah", "pusaka", "wahyu", "wahyu keprabon",
+        "silsilah", "susuhunan", "kanjeng", "kanjeng ratu", "kanjeng sunan",
+        "baginda", "sang prabu", "adipati", "abdi dalem", "kraman",
+        "empunya cerita", "menurut empunya cerita", "menurut sesetengah riwayat",
+    ),
+    "chronicle_openers": (
+        "Adapun", "Syahdan", "Hatta", "Alkisah",
+        "Maka tersebutlah", "Tersebutlah pula", "Ada yang mengatakan",
+    ),
+    "classical_closing_formulas": (
+        "Wallahu a'lam bissawab",
+        "Wa Allahu a'lamu bishawab",
+        "Wassalam",
+    ),
+    "wayang_dewa_names": (
+        "Batara Guru", "Batara Narada", "Batara Brama", "Batara Wisnu",
+        "Batara Indra", "Sang Hyang Ismaya", "Dewi Sri", "Dewi Ratih",
+        "Cingkarabala", "Balaupata",   # canonical Suralaya gatekeepers per patch MMMM
+    ),
+    "chronicle_natural_signs": (
+        "bintang berekor", "gunung bergemuruh", "gunung meletus",
+        "laut selatan bergelora", "gerhana matahari", "gerhana bulan",
+        "sungai berubah keruh tanpa hujan",
+    ),
+}
+
+
+# su — wayang vocabulary + Sundanese chronicle-opener purity.
+# Seeded from Cepot Membangun Kahyangan audit (sample-19, lens-2). Chronicle-opener
+# purity note is patch LLLL: canonical Sundanese uses "Kocap"/"Kacaturkeun" for scene-
+# opening rather than the BI-import "Tersebutlah"/"Kacatur". Advisory only.
+_SU_WAYANG_VOCAB = {
+    "chronicle_openers_native": (
+        "Kocap",              # canonical Sundanese chronicle-opener
+        "Kacaturkeun",        # canonical Sundanese chronicle-opener
+    ),
+    "chronicle_openers_bi_import_advisory": (
+        # Advisory: these are BI-imports; purist reader may flag. NEVER hard-blocked.
+        "Tersebutlah",
+        "Kacatur",
+    ),
+    "stagecraft_elements": (
+        "kayon", "blencong", "kelir", "cempala",
+        "gong", "kendang", "suling", "rebab",
+    ),
+    "dalang_direct_address_openers": (
+        "Héh, dulur-dulur anu budiman",
+        "Simkuring rék nanyakeun",
+        "Kitu, dulur-dulur nu budiman",
+    ),
+    "punakawan_sunda": (
+        "Semar", "Cepot", "Astrajingga",   # Cepot = Astrajingga
+        "Dawala", "Garéng",
+    ),
+    "verse_forms": (
+        "kidung", "tembang", "pantun", "sisindiran", "pupuh",
+    ),
+}
+
+
+# tl — Filipino precolonial labor terms + religious/feudal vocabulary.
+# Seeded from Black Death audit (sample-18, lens-1) which flagged 'alipin' misapplied to
+# European medieval serf. Precolonial Filipino labor conditions are distinct from European
+# feudal — distinguishing them at the language_pack level lets narasi flag context-mismatched
+# usage without hard-blocking historically valid uses.
+_TL_FILIPINO_HISTORICAL_TERMS = {
+    "labor_terms_precolonial": {
+        "alipin": "chattel-slave (NOT equivalent to European medieval serf)",
+        "aliping_lupa": "serf-tied-to-land (closer to European serf)",
+        "aliping_saguiguilir": "household-servant (indoor domestic labor)",
+        "aliping_namamahay": "sharecropper (owed labor but kept own house)",
+        "maharlika": "freeman/noble (distinct from timawa)",
+        "timawa": "freeman (below maharlika)",
+    },
+    "religious_feudal_terms": (
+        "datu", "raja", "sultan",
+        "bahay-na-bato", "sacop", "barangay",
+        "encomienda", "polo", "tribute", "vandala",
+    ),
+    "historical_openers": (
+        "Noong unang panahon",        # long ago
+        "Sa panahon ng",               # in the era of
+        "Ayon sa mga kronika",         # according to the chronicles
+    ),
+    "chronicle_attribution": (
+        "ayon sa kasaysayan",
+        "sang-ayon sa mga kronika",
+        "sabi ng mga matatanda",
+    ),
+}
+
+
+if _PHASE2_ON():
+    # Env-gated activation. setdefault semantics — a hand-tuned id/su/tl entry added
+    # later takes precedence over the seed, and existing keys are never overwritten.
+    LANGUAGE_PACKS.setdefault("id", {}).setdefault("nusantara_vocab", _ID_NUSANTARA_VOCAB)
+    LANGUAGE_PACKS.setdefault("su", {}).setdefault("wayang_vocab", _SU_WAYANG_VOCAB)
+    LANGUAGE_PACKS.setdefault("tl", {}).setdefault("filipino_historical_terms",
+                                                    _TL_FILIPINO_HISTORICAL_TERMS)

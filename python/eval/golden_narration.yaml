@@ -243,3 +243,73 @@ cases:
         zh_numeric_ordinal_collapse: true
         foreign_prefix_rewrite: true
         markdown_leak_normalize: true
+
+  # --- F13. Phase 2 Nusantara: babad_hikayat style_spec (id) ----------------
+  # Documentary fixture (audit-derived). Sample-17 Babad Tanah Jawi (lens-1 8.9,
+  # lens-2 8.5) established mythic_history factual_regime with cross-2-judge
+  # validation. Phase 2 style_spec seed activates under DALANG_INFRA_FIXES=1.
+  # Flag-OFF: style="babad_hikayat" falls through to CATEGORY_DEFAULTS.
+  - id: nusantara_babad_hikayat_id
+    topic: "Runtuhnya Majapahit dan bangkitnya Kesultanan Demak"
+    style: babad_hikayat
+    language: id
+    mode: text
+    fiction: false
+    n_chapters: 6
+    words_per_chapter: 500
+    expectations:
+      recurring_entities: ["Majapahit", "Demak", "wahyu keprabon", "silsilah"]
+      required_moves:
+        - "chronicle_opener_per_chapter"
+        - "classical_closing_formula"
+        - "silsilah_threading"
+      style_forbidden:
+        - "demokrasi"
+        - "republik"
+        - "parlemen"
+        - "konstitusi"
+      signal_asserts:
+        infra_fixes_flag_required: true
+        factual_regime: "mythic_history"
+        narrator_opening_ratio_max: 1.0
+        classical_closing_present_ch_last: true
+        modern_political_terms_max: 0
+        chronicle_opener_count_min: 4
+        small_human_anchor_min_per_chapter: 1
+
+  # --- F14. Phase 2 Nusantara: pewayangan_dalang style_spec (su) ------------
+  # Documentary fixture (audit-derived). Sample-19 Cepot Membangun Kahyangan
+  # (lens-1 9.0, lens-2 8.5) established mythic_narrative factual_regime and
+  # surfaced canon-role check (patch MMMM), register-mixing check (patch AAAA
+  # 'Demokrasi'), siloka-over-explicit-teaching (patch CCCC), and stagecraft
+  # element requirement (patch DDDD).
+  - id: nusantara_pewayangan_dalang_su
+    topic: "Cepot ngajakan pandega ka Suralaya"
+    style: pewayangan_dalang
+    language: su
+    mode: text
+    fiction: true
+    n_chapters: 6
+    words_per_chapter: 500
+    expectations:
+      recurring_entities: ["Cepot", "Semar", "Batara Guru", "Kayon"]
+      required_moves:
+        - "stagecraft_elements"
+        - "dalang_direct_address_climax"
+        - "siloka_closing"
+        - "embedded_verse_form"
+        - "punakawan_humor_beats"
+      style_forbidden:
+        - "demokrasi"
+        - "republik"
+        - "parlemen"
+        - "konstitusi"
+        - "HAM"
+      signal_asserts:
+        infra_fixes_flag_required: true
+        factual_regime: "mythic_narrative"
+        stagecraft_element_min: 4
+        embedded_verse_min: 3
+        punakawan_humor_beats_min: 3
+        modern_political_terms_max: 0
+        canon_role_check: "gatekeeper=Cingkarabala+Balaupata"

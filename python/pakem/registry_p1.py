@@ -1506,4 +1506,244 @@ FORBIDDEN: Signposting ("in this chapter I will show…"). The book path never s
     },
 }
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 2 (2026-07-05) — Nusantara style_spec seeds, gated on DALANG_INFRA_FIXES=1.
+# Seeded from corpus samples 17 (Babad Tanah Jawi, id) + 19 (Cepot Membangun Kahyangan, su).
+# Both introduce factual_regime values distinct from the existing 'factual'/'fictional' pair:
+#   - babad_hikayat: 'mythic_history' — historical events + legendary silsilah + wahyu hybrid.
+#     Cross-judge validated (n=2 reviewers) on Babad Tanah Jawi lens-1 8.9 + lens-2 8.5.
+#   - pewayangan_dalang: 'mythic_narrative' — wayang cosmology with dalang direct-address,
+#     kayon/blencong/kelir stagecraft, punakawan tradition. Cepot lens-1 9.0 + lens-2 8.5.
+# ─────────────────────────────────────────────────────────────────────────
+
+import os as _os_phase2
+
+def _PHASE2_ON() -> bool:
+    """Same env knob as narasi_gate._INFRA_FIXES_ON — one flip activates the whole
+    corpus-audit bundle across gate + counters + pakem. Flag-OFF preserves prior
+    behavior; the two new styles fall through to CATEGORY_DEFAULTS as unknown-style."""
+    return _os_phase2.environ.get("DALANG_INFRA_FIXES") == "1"
+
+
+_BABAD_HIKAYAT_SPEC = {
+    "display_name": "Babad / Hikayat — Archaic Court Chronicle",
+    "aliases": [
+        "babad", "hikayat", "babad_hikayat", "babad-hikayat",
+        "chronicle", "court chronicle", "kronik istana",
+        "silsilah", "babad tanah jawi",
+    ],
+    "is_fiction": False,
+    "medium_origin": "page",
+    "tier": "P1",
+    "tts_risk": False,
+    "output_support": "both",
+    "factual_regime": "mythic_history",
+    "rag": {
+        "query_instruction": (
+            "Retrieve a court-chronicle passage in babad/hikayat register, "
+            "written by an anonymous 'empunya cerita' who reports without adjudicating "
+            "between mundane history and legendary wahyu:"
+        ),
+        "framing": (
+            "Study how the chronicler frames historical events (rulers, wars, dynastic "
+            "successions) alongside supernatural signs (bintang berekor, gunung "
+            "bergemuruh, wahyu keprabon) without ever claiming truth for either — the "
+            "narrator only says 'tersebutlah' / 'menurut empunya cerita' / 'ada yang "
+            "mengatakan'. Notice the classical Islamic closing formula 'Wallahu a'lam "
+            "bissawab' and the silsilah threading Adam → prophets → dewa → kings."
+        ),
+    },
+    "style_rules_book": """STYLE: Babad / Hikayat — Archaic Court Chronicle
+= Historical events retold in archaic Malay/Javanese chronicle register. The narrator
+= is anonymous 'empunya cerita' — reports without adjudicating between mundane fact
+= and mythic wahyu. Legendary silsilah, wahyu keprabon, and natural signs (bintang
+= berekor, gunung bergemuruh) sit alongside dated succession events without hierarchy.
+
+CHRONICLE OPENERS (idiomatic — vary across chapters):
+- Adapun / Syahdan / Hatta / Alkisah / Maka tersebutlah / Tersebutlah pula
+- Menurut empunya cerita / Menurut sesetengah riwayat / Ada yang mengatakan
+
+FACTUAL REGIME: mythic_history (NEW, distinct from factual/fictional).
+- Historical claims (dates, dynasties, wars, taxes) MAY be dated and named — but do
+  NOT require external source-note density; chronicle-attribution 'menurut empunya
+  cerita' or 'catatan penyalin' is a valid substitute for citation.
+- Legendary/wahyu elements (Dewa turun ke bumi, wahyu keprabon, silsilah dari Adam)
+  are reported flat, without hedging or rationalist scrubbing.
+- Natural signs (bintang berekor, gunung meletus, laut selatan bergelora) sit BESIDE
+  royal succession events, not below them. Both are 'apa yang tercatat'.
+
+CLASSICAL CLOSING FORMULA (mandatory on the final chapter):
+- "Wallahu a'lam bissawab" — Islamic 'God knows best' — signals epistemic humility
+  and closes the chronicle cycle.
+
+VOICE: Third-person impersonal chronicler ('empunya cerita' / 'penyalin'). NEVER
+first-person ('saya'). NEVER modern-political vocabulary (demokrasi, republik,
+parlemen) — these break the timeless-mythological register. Use archaic honorifics
+(baginda / sang prabu / kanjeng ratu / susuhunan).
+
+SIGNATURE MOVES:
+- 6/6 chapters may open with a chronicle-formula opener (patch M ratio=1.0 for babad —
+  genre convention, NOT flagged as narrator-formula-saturation like moraliste).
+- Silsilah threading: prophets → dewa → kings, unbroken chain established Bab 1.
+- Aphoristic pronouncements ~5/1000 words permitted (higher than most factual styles).
+- Small-human anchor: at least 1 named commoner or vignette PER chapter, not only royals.
+
+FORBIDDEN:
+- Modern political vocabulary (demokrasi, republik, konstitusi, parlemen, konsensus).
+- First-person narrator voice.
+- Explicit hedging of legendary elements ('ini mungkin mitos' / 'kemungkinan legenda').
+- Framing that reads the chronicle as folk-tale rather than as testimony.
+- AI-hedge placeholders like 'sekitar X atau tokoh Y lain' — commit to the silsilah OR
+  use classical hedge 'ada yang mengatakan'.
+""",
+    "style_rules_editor": "",
+    "register_spec": {
+        "required_moves": [
+            "chronicle_opener_per_chapter",
+            "classical_closing_formula",
+            "silsilah_threading",
+        ],
+        "banned_tells": [
+            "demokrasi", "republik", "parlemen", "konstitusi",
+            "sekitar X atau tokoh Y lain",
+            "kemungkinan besar mitos",
+            "ini adalah legenda belaka",
+        ],
+        "counters": {
+            "narrator_opening_ratio_max": 1.0,
+            "small_human_anchor_min_per_chapter": 1,
+            "aphorism_density_target": 5,
+            "modern_political_terms_max": 0,
+            "silsilah_present_ch1": True,
+            "classical_closing_present_ch_last": True,
+        },
+    },
+}
+
+
+_PEWAYANGAN_DALANG_SPEC = {
+    "display_name": "Pewayangan — Shadow-Play Master Narration",
+    "aliases": [
+        "pewayangan", "pewayangan_dalang", "pewayangan-dalang", "wayang",
+        "shadow play", "dalang narration", "punakawan tradition",
+        "wayang kulit", "wayang purwa",
+    ],
+    "is_fiction": True,
+    "medium_origin": "ear",
+    "tier": "P1",
+    "tts_risk": False,
+    "output_support": "both",
+    "factual_regime": "mythic_narrative",
+    "rag": {
+        "query_instruction": (
+            "Retrieve a wayang-tradition passage narrated by a dalang, blending "
+            "Mahabharata dewa (Batara Guru, Narada, Brama, Dorna) with Nusantara "
+            "punakawan (Semar, Cepot, Dawala, Garéng in Sunda; Petruk, Bagong in Jawa):"
+        ),
+        "framing": (
+            "Study how the dalang alternates scene-narration with direct address to "
+            "'para peraga' / 'dulur-dulur nu budiman', invoking stagecraft elements "
+            "(kayon dioyagkeun, blencong hurung, kelir geunjleung, cempala ditakol). "
+            "Notice the siloka structure — teachings arrive through parable, not "
+            "explicit sermon; the pak Dalang trusts the eunteung to speak for itself."
+        ),
+    },
+    "style_rules_book": """STYLE: Pewayangan — Shadow-Play Master Narration
+= Wayang cosmology retold by a dalang. Mahabharata dewa (Batara Guru, Narada,
+= Brama, Dorna) share the cosmos with Nusantara punakawan (Semar/Cepot/Dawala/
+= Garéng in Sundanese, Semar/Petruk/Bagong in Javanese). The dalang narrates
+= scenes, quotes dialog, AND directly addresses the audience — three registers
+= interleaved.
+
+FACTUAL REGIME: mythic_narrative (NEW — pure myth, distinct from mythic_history
+babad. Wayang is not chronicle; it is theater about the cosmos).
+
+STAGECRAFT ELEMENTS (must be present as sensory anchors, not decoration):
+- Kayon (tree-of-life puppet) — dioyagkeun / ditancebkeun / condong
+- Blencong (oil lamp behind the kelir) — hurung / meredong / ngiceupan
+- Kelir (screen) — geunjleung ku angin / kabuka / ditutup
+- Cempala (wooden knocker) — ditakol tilu kali (opening/climax/closing)
+- Gong / kendang / suling — as scene-transition punctuation
+
+DALANG DIRECT-ADDRESS (genre-canonical, use sparingly at climax + closing):
+- "Héh, dulur-dulur anu budiman, simkuring rék nanyakeun hiji hal…"
+- "Kitu, dulur-dulur nu budiman. Lalakon ieu sanés dongéng kosong."
+- "Anu daék muka ceuli leuwih agung tibatan anu ngan ukur muka mahkota."
+
+SIGNATURE MOVES:
+- Embedded verse forms (kidung / tembang / pantun / sisindiran) between prose
+  paragraphs — 3-4 line stanzas that punctuate scene transitions.
+- Aphoristic siloka at scene close, ~6-7 per 1000 words (highest permitted density
+  across Nusantara tier — corpus sample-19 measured ~6.4/1000).
+- Pupuh-like cadence with 8-11 syllable line rhythm on prose paragraphs.
+
+REGISTER MIXING (patch AAAA — audit-flagged risk):
+- Wayang is TIMELESS-MYTHOLOGICAL register. Modern political vocabulary
+  (demokrasi, republik, parlemen, konstitusi, HAM) BREAKS the register.
+- Anachronism via Cepot is a valid CANONICAL move in comedy Cepot register
+  (Asep Sunandar's Giri Harja tradition uses topical/anachronistic Cepot) —
+  but ONLY in explicitly comedic passages, never in khusyuk-liris passages.
+
+SILOKA OVER EXPLICIT TEACHING (patch CCCC — audit signal):
+- Wayang teaches through parable + eunteung; the audience learns by watching
+  the wayang be itself, not by being told the lesson.
+- Bab 6 (tanceb kayon / closing) may deliver piwulang, but must be SILOKA —
+  parabolic, indirect. AVOID full-khotbah restating the whole lesson.
+
+PUNAKAWAN TRADITION:
+- Semar (patriarch, titisan Sang Hyang Ismaya) — quiet wisdom.
+- Cepot / Astrajingga (Sunda) OR Petruk (Jawa) — the punakawan who speaks truth
+  to power through humor. Requires 3+ humor beats per 6 chapters (audit signal:
+  Cepot without humor beats reads as too somber for the tradition).
+- Dawala / Bagong — the loyal follower.
+
+CANONICAL ROLE ASSIGNMENTS (patch MMMM):
+- Suralaya gatekeeper: Cingkarabala + Balaupata (raksasa kembar), NOT Dorna.
+- Patih Astinapura: Sengkuni.
+- Guru Kurawa+Pandawa: Dorna.
+
+CROSSOVER: Mahabharata dewa + Nusantara punakawan is CANONICAL — this is the
+Sundanese/Javanese synthesis, not a mixing error.
+
+FORBIDDEN:
+- Modern political vocabulary in khusyuk-liris passages.
+- Cepot/Petruk role assigned to non-canonical positions.
+- Full-khotbah closing (dalang restates the lesson explicitly instead of siloka).
+- Mystical elements introduced without setup (Bab 4 climax powers should be
+  seeded Bab 1-3 with capability-boundary hints — patch KKKK).
+""",
+    "style_rules_editor": "",
+    "register_spec": {
+        "required_moves": [
+            "stagecraft_elements",
+            "dalang_direct_address_climax",
+            "siloka_closing",
+            "embedded_verse_form",
+            "punakawan_humor_beats",
+        ],
+        "banned_tells": [
+            "demokrasi", "republik", "parlemen", "konstitusi", "HAM",
+            "sistem pemerintahan modern",
+            "berdasarkan konstitusi",
+        ],
+        "counters": {
+            "narrator_opening_ratio_max": 0.5,
+            "stagecraft_element_min": 4,
+            "dalang_direct_address_uses": [1, 3],
+            "embedded_verse_min": 3,
+            "punakawan_humor_beats_min": 3,
+            "aphorism_density_target": 6,
+            "modern_political_terms_max": 0,
+            "mystical_element_setup_required": True,
+        },
+    },
+}
+
+
+if _PHASE2_ON():
+    P1_STYLES["babad_hikayat"] = _BABAD_HIKAYAT_SPEC
+    P1_STYLES["pewayangan_dalang"] = _PEWAYANGAN_DALANG_SPEC
+
+
 __all__ = ["P1_STYLES"]
