@@ -120,7 +120,7 @@ const ICON_STYLE = {
   color: "rich flat vector illustration, 3-4 bold colours, clear detailed shapes, strong outlines, vibrant",
   detail: "highly detailed flat vector illustration, layered shapes, rich shading, clear single subject, strong outlines",
 };
-export async function generateRecraftIcon(query, { genre = "lineart", seed, model, style } = {}) {
+export async function generateRecraftIcon(query, { genre = "lineart", seed, model, style, meterModel } = {}) {
   const styleHint = ICON_STYLE[genre] || ICON_STYLE.lineart;
   const prompt = `${query}. ${styleHint}. Whiteboard explainer style, centered, plain white background, no text, no words.`;
   const _model = model || "recraftv2_vector";
@@ -131,7 +131,16 @@ export async function generateRecraftIcon(query, { genre = "lineart", seed, mode
     size: sizeFor(_model, "1:1"),
     seed: Number.isFinite(seed) ? seed : undefined,
   });
-  return { svg: text, meter: { operation: "image", model: "recraft-v3-vector", units: { count: 1 } } };
+  // Meter tracks the model actually called — not hardcoded to V3 (that overcharged Ultra/Lite
+  // by 82%: a recraftv2_vector call = $0.044 but the meter said recraft-v3-vector = $0.08).
+  // Caller may override via `meterModel`; else infer from the model API string.
+  const _meter = meterModel
+    || (_model === "recraftv2_vector" ? "recraft-v2-vector"
+      : _model === "recraftv3_vector" ? "recraft-v3-vector"
+      : _model === "recraftv2" ? "recraft-v2"
+      : _model === "recraftv3" ? "recraft-v3"
+      : "recraft-v3-vector");
+  return { svg: text, meter: { operation: "image", model: _meter, units: { count: 1 } } };
 }
 
 // Recraft raster → SVG mask (the reveal map for raster-reveal).

@@ -86,35 +86,40 @@ export function resolveWBVariant(meta) {
       apiStyle: null, template: null, iconStyle: null, elementCount: null, ladder: null,
     };
   }
-  // meta.whiteboardApiStyle = the user's picked substyle (single-call tiers OR ultra's V2 Vector style);
-  // meta.whiteboardTemplate = the user's picked template (multi-call tiers: ultra/lite);
-  // meta.whiteboardIconStyle = the user's picked lite V2-Icon fallback style.
+  // meta.whiteboardApiStyle = the user's picked substyle (single-call tiers: Premium/Regular Color+Detail).
+  // meta.whiteboardTemplate = the user's picked template (multi-call tiers: ultra/lite).
+  // meta.whiteboardStyle    = the user's picked per-element style — Ultra's V2 Vector style ("Cartoon" etc)
+  //                           OR Lite's V2-Icon fallback style ("Pictogram" etc). FE sends the SAME body
+  //                           field (whiteboard_style) for both — the tier disambiguates. Prior code
+  //                           read meta.whiteboardIconStyle which the FE never populated → Lite's icon
+  //                           picker was silently ignored (always fell to firstSubOf → "Icon").
   // Any missing pick falls back to the FIRST substyle in the relevant category → deterministic default.
   const pickedApi = meta.whiteboardApiStyle || null;
   const pickedTemplate = meta.whiteboardTemplate || null;
-  const pickedIcon = meta.whiteboardIconStyle || null;
+  const pickedStyle = meta.whiteboardStyle || null;
   const catByKey = (k) => (tierDef.categories || []).find((c) => c.key === k) || null;
   const firstSubOf = (cat) => (cat && cat.substyles && cat.substyles[0]) || null;
   const findSub = (cat, api) => (cat && cat.substyles || []).find((s) => s.api_style === api) || null;
 
   let apiStyle = null, template = null, iconStyle = null, elementCount = null;
   if (tierId === "ultra_color") {
-    // Ultra: multi-call plan → picks BOTH a template AND a V2 Vector style; iconStyle = apiStyle.
+    // Ultra: multi-call plan → picks BOTH a template AND a V2 Vector style (whiteboardStyle);
+    // iconStyle = apiStyle since every element uses the SAME V2 Vector style.
     const templateCat = catByKey("template");
     const styleCat = catByKey("style");
     const tSub = findSub(templateCat, pickedTemplate) || firstSubOf(templateCat);
-    const sSub = findSub(styleCat, pickedApi) || firstSubOf(styleCat);
+    const sSub = findSub(styleCat, pickedStyle) || firstSubOf(styleCat);
     template = tSub ? tSub.api_style : null;
     elementCount = tSub && tSub.element_count != null ? tSub.element_count : null;
     apiStyle = sSub ? sSub.api_style : null;
-    iconStyle = apiStyle; // ultra: same V2 Vector style for the fallback path
+    iconStyle = apiStyle;
   } else if (tierId === "lite_color") {
-    // Lite: multi-call plan → picks a template + a V2-Icon fallback style. apiStyle stays null;
-    // recraftOnly:false path uses iconStyle only when the free ladder misses.
+    // Lite: multi-call plan → picks a template + a V2-Icon fallback style (whiteboardStyle).
+    // apiStyle stays null; recraftOnly:false path uses iconStyle only when the free ladder misses.
     const templateCat = catByKey("template");
     const iconCat = catByKey("icon_style");
     const tSub = findSub(templateCat, pickedTemplate) || firstSubOf(templateCat);
-    const iSub = findSub(iconCat, pickedIcon) || firstSubOf(iconCat);
+    const iSub = findSub(iconCat, pickedStyle) || firstSubOf(iconCat);
     template = tSub ? tSub.api_style : null;
     elementCount = tSub && tSub.element_count != null ? tSub.element_count : null;
     iconStyle = iSub ? iSub.api_style : null;
@@ -544,7 +549,27 @@ export async function visualProcessor(job, deps) {
               } else {
                 const { coveredByLibrary } = await import("./whiteboard/plan/resolver.mjs");
                 const { generateRecraftIcon, isRecraftCreditSkip } = await import("./whiteboard/visuals.mjs");
-                const kind = `icon-${genre}`; // genre-aware prompt → genre-aware cache
+                // Tier-aware ladder + Recraft params (2026-07-05 catalog build):
+                //  - Ultra: recraftOnly=true → SKIP the free-lib check entirely, every element goes
+                //    to Recraft V2 Vector with the user-picked style (Cartoon / Vector art / etc.).
+                //  - Lite: recraftOnly=false → free-lib ladder first; Recraft V2-Vector-Icon fallback
+                //    with the user-picked icon style (Pictogram / Colored shape / etc.).
+                //  - Legacy pre-tier jobs (variant.engine === "legacy"): historic behavior — free lib
+                //    first, Recraft V3-Vector default fallback.
+                const _isUltra = variant.tier === "ultra_color";
+                const _recraftModel = variant.model || "recraftv3_vector";
+                const _recraftStyle = _isUltra ? (variant.apiStyle || null) : (variant.iconStyle || null);
+                const _meterModel = variant.meterModel
+                  || (_recraftModel === "recraftv2_vector" ? "recraft-v2-vector"
+                    : _recraftModel === "recraftv3_vector" ? "recraft-v3-vector"
+                    : "recraft-v3-vector");
+                const _license = `${_meterModel}:provider-terms`;
+                // Cache key includes tier+model+style so Ultra "Cartoon" doesn't collide with
+                // Regular Color "Cartoon" (both V2 Vector but different pipelines) — and so
+                // legacy jobs continue to use the tier-less "icon-{genre}" key (BC).
+                const kind = variant.tier
+                  ? `icon-plan:${variant.tier}:${_recraftModel}:${_recraftStyle || "default"}`
+                  : `icon-${genre}`;
                 for (const el of plan.elements || []) {
                   // Connectors/arrows are flow FILLER that resolvePlan DROPS at render → never pay
                   // Recraft for them ("hug"/"Seperti pelukan" was generated then dropped). (Rino)
@@ -552,36 +577,45 @@ export async function visualProcessor(job, deps) {
                   const q = el.asset_query || el.id;
                   const labelQ = el.label ? String(el.label).trim() : "";
                   try {
-                    // LADDER (Rino): 1) REUSE a previously-PAID Recraft asset for this query (the corpus)
-                    // FIRST — a cached recraft (e.g. tusuk sate "skewer") must WIN over a generic free icon;
-                    // 2) else a FREE lib icon (asset_query OR label); 3) else generate a new Recraft. The
-                    // free icon is only a FALLBACK when nothing is cached — it never overrides a paid asset.
-                    const hit = await deps.store.getCachedAsset?.(kind, q); // reuse the paid asset (no meter)
+                    // LADDER: (1) cached-Recraft for THIS tier's cache key — cross-job reuse of a
+                    // paid asset; (2) free lib (Lite only — Ultra skips per recraftOnly); (3) paid
+                    // Recraft with the tier's model+style. Cached asset ALWAYS wins over free-lib
+                    // (a paid V2 Vector "skewer" beats a generic Lucide "utensil").
+                    const hit = await deps.store.getCachedAsset?.(kind, q);
                     if (hit && hit.strokes) {
                       el.viewBox = hit.viewBox; el.strokes = hit.strokes; if (hit.shapes) el.shapes = hit.shapes;
-                      el.assetSource = "recraft-cache"; el.license = hit.license || "recraft-v3-vector:provider-terms"; continue;
+                      el.assetSource = "recraft-cache"; el.license = hit.license || _license; continue;
                     }
-                    if (coveredByLibrary(q) || (labelQ && coveredByLibrary(labelQ))) continue; // free lib fallback
+                    // Ultra bypasses the free-lib check — every element MUST go to Recraft V2 Vector
+                    // (the whole tier's premise: user paid for a per-subject clean vector, not a
+                    // generic Lucide icon). Lite honors the free-lib fallback (its cost story).
+                    if (!_isUltra) {
+                      if (coveredByLibrary(q) || (labelQ && coveredByLibrary(labelQ))) continue; // free lib fallback
+                    }
                     // Lineart (free tier, priced "icons0") NEVER pays for Recraft → fall through
                     // to the free-lib / bohlam fallback. Recraft icon-fill is a PAID-mode
                     // differentiator (Color=starter+, Realistis=plus+, both mode-gated at submit).
-                    // Supersedes the old icon-ladder→Recraft step (48201cb), now that mode gating
-                    // exists. Closes the margin leak where a Free user spent credits on Recraft. (Rino)
-                    if (genre === "lineart") continue;
+                    // Ultra + Lite are already paid tiers (plan-mode) → skip this legacy check.
+                    if (!variant.tier && genre === "lineart") continue;
                     // GATE before the paid Recraft gen → at balance 0 skip it (free fallback) instead
-                    // of debiting into the negative (same guard as flux/TTS).
-                    if (!(await deps.generationClient?.gateUsage?.({ jobId, tenantId: meta.tenantId, userId: meta.userId }, "image", "recraft-v3-vector", { count: 1 }))) {
+                    // of debiting into the negative (same guard as flux/TTS). Gate against the ACTUAL
+                    // meter (v2-vector = $0.044 for Ultra/Lite, v3-vector = $0.08 for legacy).
+                    if (!(await deps.generationClient?.gateUsage?.({ jobId, tenantId: meta.tenantId, userId: meta.userId }, "image", _meterModel, { count: 1 }))) {
                       console.warn(`[whiteboard-plan ${jobId}/${sceneIndex}] recraft icon "${q}" skipped: insufficient credits → free fallback`); continue;
                     }
-                    const { svg, meter } = await generateRecraftIcon(q, { genre, seed: 1000 + sceneIndex * 13 });
+                    const { svg, meter } = await generateRecraftIcon(q, {
+                      genre, seed: 1000 + sceneIndex * 13,
+                      model: _recraftModel, style: _recraftStyle,
+                      meterModel: _meterModel,
+                    });
                     const parsed = parseSvg(svg, { dropBg: true, dropLight: true });
                     if (parsed.strokes && parsed.strokes.length) {
-                      el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft"; el.license = "recraft-v3-vector:provider-terms";
+                      el.viewBox = parsed.viewBox; el.strokes = parsed.strokes; el.assetSource = "recraft"; el.license = _license;
                       // colored fills (so Recraft icons aren't thin outlines — drawn under the strokes)
                       const { shapes } = parseSvgShapes(svg, { dropBg: true });
                       if (shapes && shapes.length) el.shapes = shapes;
                       await deps.store.setCachedAsset?.(kind, q, { viewBox: parsed.viewBox, strokes: parsed.strokes, shapes,
-                        source: "recraft", model: "recraft-v3-vector", license: "recraft-v3-vector:provider-terms", createdAt: new Date().toISOString() }); // §S provenance
+                        source: "recraft", model: _meterModel, license: _license, createdAt: new Date().toISOString() });
                       if (meter) meters.push(meter);
                     }
                   } catch (ge) {
