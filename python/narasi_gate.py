@@ -1445,76 +1445,81 @@ def duplicate_sentence_scan(text: str, ngram: int = 7) -> dict[str, Any]:
             "duplicate_sentence_samples": samples[:10]}
 
 
-# Merge-corruption lexicon: real words (>=3 chars) that start with a short standalone-
-# word prefix, from a bundled BSD-dict subset (the Python service has no runtime
-# dictionary). Lazy-loaded; a missing/corrupt file fails SAFE to an empty set — the
-# scanner then reports 0 hits and never raises.
-_MERGE_PREFIXES = ("of", "to", "in", "on", "at", "as", "is", "it", "or", "an",
-                   "be", "no", "so", "we", "he", "up", "by", "and", "the")
-_MERGE_INFLECT_SUF = ("s", "es", "ed", "ing", "er", "est", "en", "d", "ly",
-                      "ers", "ings", "ier", "iest", "ies", "ist", "ists")
-_MERGE_CAND_RX = re.compile(r"\b([a-z]{4,16})\b")
-_MERGE_LEXICON: Optional[frozenset] = None
+# ── Chapter-heading REPAIR (narasi-bed-of-orchid part-2, 2026-07-06). Deterministic +
+#    SAFE mutation — only touches heading-shaped spans, a clean book is byte-identical.
+#    Fixes two things the line-anchored _retrofit_legacy_chapter_labels misses:
+#      (1) a heading FUSED mid-line (the model bled "## Bab 4: ..." onto a sentence, because
+#          static.py used to emit "## Bab N" for every language and that taught the model the
+#          format) → split it onto its own line;
+#      (2) a WRONG-LANGUAGE chapter word ("## Bab 4" in an English book) → relabel to lang.
+#    Unlike a report-only scanner this REPAIRS, so the reader-visible defect never ships. ──
+_CH_WORDS = "Bab|Chapter|Cap[íi]tulo|Kapitel|Chapitre|Hoofdstuk|Capitolo"
+_FUSED_HEADING_RX = re.compile(r"(?<=\S)([ \t]*)(#{1,4}[ \t]*(?:" + _CH_WORDS + r")[ \t]*\d+)")
+_CH_HEADING_LINE_RX = re.compile(r"(?im)^([ \t]*#{1,4}[ \t]*)(" + _CH_WORDS + r")([ \t]*)(\d+)(.*)$")
+_LANG_CH_WORD = {"id": "Bab", "ms": "Bab", "jv": "Bab", "su": "Bab", "en": "Chapter",
+                 "es": "Capítulo", "fr": "Chapitre", "de": "Kapitel", "pt": "Capítulo",
+                 "nl": "Hoofdstuk", "it": "Capitolo"}
+_CH_WORD_SET = frozenset(("Bab", "Chapter", "Capítulo", "Capitulo", "Kapitel",
+                          "Chapitre", "Hoofdstuk", "Capitolo"))
 
 
-def _merge_lexicon() -> frozenset:
-    global _MERGE_LEXICON
-    if _MERGE_LEXICON is None:
-        try:
-            import gzip
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "merge_lexicon.txt.gz")
-            with gzip.open(path, "rt", encoding="utf-8") as fh:
-                _MERGE_LEXICON = frozenset(w.strip() for w in fh if w.strip())
-        except Exception:  # noqa: BLE001 — fail safe: no lexicon → scanner no-ops
-            _MERGE_LEXICON = frozenset()
-    return _MERGE_LEXICON
+def chapter_heading_repair(text: str, lang: str = "en") -> tuple[str, int]:
+    """Split fused chapter headings onto their own line + relabel a wrong-language chapter
+    word to `lang`. Returns (repaired_text, n_repairs). Never raises."""
+    if not text:
+        return text, 0
+    n = [0]
+
+    def _split(m):
+        n[0] += 1
+        return "\n\n" + m.group(2)
+    text = _FUSED_HEADING_RX.sub(_split, text)
+    code = str(lang or "en").strip().lower().replace("_", "-").split("-", 1)[0]
+    want = _LANG_CH_WORD.get(code)
+    if want:
+        def _relabel(m):
+            cur = m.group(2)
+            if cur != want and cur in _CH_WORD_SET:
+                n[0] += 1
+                return f"{m.group(1)}{want}{m.group(3)}{m.group(4)}{m.group(5)}"
+            return m.group(0)
+        text = _CH_HEADING_LINE_RX.sub(_relabel, text)
+    return text, n[0]
 
 
-def _merge_is_real(tok: str, lex: frozenset) -> bool:
-    """True if tok is a real word or a simple inflection of one in the lexicon.
-    Candidates start with a fragile prefix, so their stems almost always share it
-    (asked→ask, weeks→week, oncologists→oncology) — the prefix-subset lexicon
-    suffices without a full dictionary."""
-    if tok in lex:
-        return True
-    for suf in _MERGE_INFLECT_SUF:
-        if tok.endswith(suf) and len(tok) - len(suf) >= 2:
-            base = tok[:-len(suf)]
-            if base in lex or (base + "e") in lex:
-                return True
-            if suf in ("ier", "iest", "ies", "ist", "ists") and (base + "y") in lex:
-                return True
-            if len(base) >= 2 and base[-1] == base[-2] and base[:-1] in lex:
-                return True
-    return False
+# ── '-ite' merge-corruption detector (narasi-3 'ofite'←'of white'; bed-of-orchid part-2
+#    'mostlyite'←'mostly laterite'). REPORT-only by necessity: the dropped letters are
+#    UNRECOVERABLE, so the token cannot be deterministically repaired — but it CAN be caught
+#    precisely. Signal: a token ending in 'ite' whose prefix (minus 'ite') is a common
+#    function/adverb word AND the whole token is not a real -ite word. This replaces the old
+#    lexicon-backed merge_token_scan, which FP'd on inflections/technical words (began,
+#    intergeneric) AND missed 'mostlyite'. Zero FP on real -ite words (granite, definite,
+#    appetite, opposite, polite, ignite, unite) because their prefixes are not function words. ──
+_MERGE_ITE_PREFIXES = frozenset((
+    "of", "to", "in", "on", "at", "as", "is", "it", "or", "an", "be", "no", "so", "we",
+    "he", "up", "by", "and", "the", "all", "my", "mostly", "only", "really", "simply",
+    "nearly", "partly", "just", "almost", "fully", "barely", "hardly", "truly", "merely",
+    "purely", "largely", "mainly", "half", "quite"))
+_ITE_TOKEN_RX = re.compile(r"\b([a-z]{2,})ite\b")
 
 
-def merge_token_scan(text: str) -> dict[str, Any]:
-    """Report-only: flag a lowercase token that fuses a short standalone-word prefix
-    to a non-word remainder ("ofite" ← "of white"). Prefix-restricted + lowercase-only
-    (the [a-z] regex skips capitalised proper nouns) + a bundled lexicon with
-    morphological fallback keeps false positives near zero on rich literary/domain
-    vocabulary (distemper, reversionary, limewash never start with a fragile prefix).
-    Narrow by design — starts precise, broaden if the corpus demands."""
-    lex = _merge_lexicon()
-    if not text or not lex:
-        return {"merge_token_hits": 0, "merge_token_samples": []}
+def merge_fusion_scan(text: str) -> dict[str, Any]:
+    """Report-only: catch the '-ite' letter-loss fusion class precisely (can't auto-repair —
+    the dropped letters are gone). Flags 'ofite'/'mostlyite'; ignores real -ite words."""
+    if not text:
+        return {"merge_fusion_hits": 0, "merge_fusion_samples": []}
     samples: list[str] = []
     seen: set[str] = set()
-    for m in _MERGE_CAND_RX.finditer(text):
-        tok = m.group(1)
-        if tok in seen:
-            continue
-        pre = next((p for p in _MERGE_PREFIXES
-                    if tok.startswith(p) and len(tok) - len(p) >= 3), None)
-        if pre is None or _merge_is_real(tok, lex):
+    for m in _ITE_TOKEN_RX.finditer(text.lower()):
+        pre = m.group(1)
+        tok = pre + "ite"
+        if tok in seen or pre not in _MERGE_ITE_PREFIXES:
             continue
         seen.add(tok)
-        samples.append(f"{tok} (→ '{pre} {tok[len(pre):]}'?)")
+        samples.append(f"{tok} (letter-loss fusion of '{pre} …'?)")
         if len(samples) >= 8:
             break
-    return {"merge_token_hits": len(samples), "merge_token_samples": samples}
+    return {"merge_fusion_hits": len(samples), "merge_fusion_samples": samples}
 
 
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
@@ -1595,6 +1600,11 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
     try:
         out, kb = apply_known_bad(text)
         out, stats = resolve_flags(out, lang=lang)
+        # Chapter-heading REPAIR (bed-of-orchid part-2): unconditional + safe — splits a
+        # heading fused mid-line + relabels a wrong-language chapter word. A clean book is
+        # untouched. Runs always (not flag-gated) so the reader-visible defect never ships.
+        out, _chr = chapter_heading_repair(out, lang=lang)
+        stats["chapter_heading_repairs"] = _chr
         out, n_dehedged = dehedge_known_good(out)
         stats["dehedged_known_good"] = n_dehedged
         out, placeholder_cut = placeholder_prose_scan(out)
@@ -1714,11 +1724,11 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["duplicate_sentence_samples"] = _ds["duplicate_sentence_samples"]
             if _ds["duplicate_sentence_hits"]:
                 stats["duplicate_sentence_flag"] = True
-            _mt = merge_token_scan(out)
-            stats["merge_token_hits"] = _mt["merge_token_hits"]
-            stats["merge_token_samples"] = _mt["merge_token_samples"]
-            if _mt["merge_token_hits"]:
-                stats["merge_token_flag"] = True
+            _mt = merge_fusion_scan(out)
+            stats["merge_fusion_hits"] = _mt["merge_fusion_hits"]
+            stats["merge_fusion_samples"] = _mt["merge_fusion_samples"]
+            if _mt["merge_fusion_hits"]:
+                stats["merge_fusion_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.

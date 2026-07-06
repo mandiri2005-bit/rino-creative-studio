@@ -598,9 +598,23 @@ async def narrate_chapters(
     # Assemble WITH a per-chapter heading so the result is classified per-bab while
     # the manager polish keeps the prose flowing. Heading uses the outline title
     # (1-based by position); chapters with no title get a bare "## Bab N".
+    # Language-aware chapter label. Was hardcoded "Bab" (Indonesian) for EVERY language —
+    # it shipped "## Bab N" into English books AND, because chapters see prior headings in
+    # their context, taught the model to emit "## Bab N" mid-body (narasi-bed-of-orchid
+    # part-2, 2026-07-06: a leaked "## Bab 4" fused into an English chapter). Source the
+    # label from the canonical per-language map; fall back to "Chapter {n}".
+    try:
+        from laozhang_api import _narasi_header_labels as _nhl  # cycle-free at call time
+        _chap_fmt = (_nhl(language) or {}).get("chapter", "Chapter {n}")
+    except Exception:  # noqa: BLE001
+        _chap_fmt = "Chapter {n}"
     def _chapter_md(c: dict[str, Any]) -> str:
         title = (c.get("title") or "").strip()
-        head = f"## Bab {int(c.get('no', 0)) + 1}" + (f": {title}" if title else "")
+        try:
+            label = _chap_fmt.format(n=int(c.get("no", 0)) + 1)
+        except Exception:  # noqa: BLE001
+            label = f"Chapter {int(c.get('no', 0)) + 1}"
+        head = f"## {label}" + (f": {title}" if title else "")
         return f"{head}\n\n{(c.get('content') or '').strip()}"
     book = "\n\n".join(_chapter_md(c) for c in chapter_records)
 
@@ -725,8 +739,9 @@ async def _polish_reduce(
             "cross-chapter repetition and re-introductions, tighten flabby passages, "
             "and hold ONE consistent voice and tense for the whole book. PRESERVE "
             "every concrete fact, name, date, number and quote exactly. Keep every "
-            "`## Bab N: ...` heading line exactly as given — do not remove, rename, "
-            "renumber or move them. Between and within those sections, make the "
+            "chapter-heading line (each begins with `## `) exactly as given — do not "
+            "remove, rename, renumber, translate or move them, and never write a new "
+            "heading of your own. Between and within those sections, make the "
             "narration read as ONE seamless, continuous flow: smooth every transition "
             "so nothing reads as an abrupt break. Return ONLY the "
             f"edited book in {language}, no notes or preamble."
@@ -741,9 +756,10 @@ async def _polish_reduce(
             f"narrative about \"{topic}\". ONLY smooth the seams between chapters, "
             "remove obvious cross-chapter repetition, and keep the register "
             "consistent. Do NOT rewrite content, do NOT change any fact, name, date "
-            "or number, do NOT shorten the book. Keep every `## Bab N: ...` heading "
-            "line exactly as given (do not remove, rename, renumber or move them). "
-            "Make the narration flow as ONE seamless, uninterrupted piece — smooth "
+            "or number, do NOT shorten the book. Keep every chapter-heading line "
+            "(each begins with `## `) exactly as given — do not remove, rename, "
+            "renumber, translate or move them, and never write a new heading of your "
+            "own. Make the narration flow as ONE seamless, uninterrupted piece — smooth "
             "the transitions between sections so nothing reads as an abrupt break. "
             f"Return ONLY the lightly-edited book in {language}."
         )
