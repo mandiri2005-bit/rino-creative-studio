@@ -1087,6 +1087,18 @@ def make_client(model: str = "") -> OpenAI:
 # NARASI_FAILOVER_ENABLED=1 (+ KIE_API_KEY / ATLASCLOUD_API_KEY on the python service).
 NARASI_DEFAULT_MODEL = os.environ.get("NARASI_DEFAULT_MODEL") or "claude-opus-4-6"
 _NARASI_FAILOVER_MODELS = {"claude-opus-4-6", "claude-opus-4-8"}
+# Gemini narasi models eligible for the Vertex→LaoZhang failover chain (Rino
+# 2026-07-06). Vertex OAuth is the primary rung (GCP-billed, no aggregator
+# markup); LaoZhang aggregator is the failover. Extend by adding to the set;
+# aggregator gemini-* ids are pass-through both rungs so no model translation.
+_NARASI_GEMINI_FAILOVER_MODELS = {
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash",
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+}
 _NARASI_FAILOVER_TIMEOUT = int(os.environ.get("NARASI_FAILOVER_TIMEOUT") or 280)
 # Whole cheapest-first walk is bounded to this budget, kept < the caller's outer per-chapter
 # wait_for (DALANG_CHAPTER_LLM_TIMEOUT default 900s), so a hung EARLY rung can neither starve
@@ -1099,16 +1111,93 @@ def _narasi_failover_on() -> bool:
     return str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _narasi_failover_chain() -> list[tuple[str, str, str, str, str]]:
-    """(name, protocol, endpoint, api_key, per-provider model id), cheapest-first. protocol is
-    'anthropic' (native Messages API — KIE serves Claude at /claude/v1/messages) or 'openai'
-    (OpenAI-compatible /v1/chat/completions — LaoZhang, AtlasCloud). Keys read at call time so
-    newly-set env vars are picked up; an empty-key rung is skipped. LaoZhang honours BYOK (_req_key)."""
+def _narasi_failover_chain(model: str = "") -> list[tuple[str, str, str, str, str]]:
+    """(name, protocol, endpoint, api_key, per-provider model id), cheapest-first. protocol
+    is 'anthropic' (native Messages API — KIE serves Claude at /claude/v1/messages),
+    'openai' (OpenAI-compatible /v1/chat/completions — LaoZhang, AtlasCloud), or
+    'vertex_genai' (Google Vertex AI via google.genai OAuth — no aggregator markup).
+    Chain shape depends on model family: Claude Opus → 3-rung KIE/LaoZhang/AtlasCloud
+    chain; Gemini (Rino 2026-07-06) → 2-rung Vertex/LaoZhang chain. Keys read at call
+    time so newly-set env vars are picked up; an empty-key rung is skipped. LaoZhang
+    honours BYOK (_req_key)."""
+    if model in _NARASI_GEMINI_FAILOVER_MODELS:
+        return _narasi_gemini_failover_chain(model)
     return [
         ("kie",        "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""),        "claude-opus-4-6"),
         ("laozhang",   "openai",    BASE_URL,                                _req_key.get() or API_KEY,                 "claude-opus-4-6"),
         ("atlascloud", "openai",    "https://api.atlascloud.ai/api/v1",      os.environ.get("ATLASCLOUD_API_KEY", ""),  "claude-opus-4-8"),
     ]
+
+
+def _narasi_gemini_failover_chain(model: str) -> list[tuple[str, str, str, str, str]]:
+    """Vertex OAuth → LaoZhang aggregator failover for Gemini narasi models. Vertex
+    rung's "key" is the literal string "oauth" when _ensure_vertex() succeeds — this
+    passes the empty-key skip check in _create() but tells the vertex_genai path to
+    reach _genai_client() lazily. Model id passes through verbatim to both rungs so
+    no per-provider translation is needed (Vertex + LaoZhang both accept the same
+    gemini-3.1-pro-preview / gemini-2.5-flash / etc. id strings)."""
+    vertex_key = "oauth" if _ensure_vertex() else ""
+    return [
+        ("vertex",   "vertex_genai", "-",       vertex_key,                    model),
+        ("laozhang", "openai",       BASE_URL,  _req_key.get() or API_KEY,     model),
+    ]
+
+
+def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
+                          timeout: float, temperature=None):
+    """Call Vertex Gemini via google.genai OAuth. Translates the OpenAI messages
+    format to Vertex `contents` (system role hoisted to system_instruction, remaining
+    roles concatenated) and wraps the reply in _AdaptedResp so the rest of the
+    failover machinery is protocol-agnostic. Raises RuntimeError on transport failure
+    so the caller advances the chain to LaoZhang. Per-call timeout enforced via a
+    daemon thread + join(timeout) — google.genai has no per-call timeout knob."""
+    client = _genai_client()
+    if not client:
+        raise RuntimeError("vertex_genai: _genai_client() not configured")
+    from google.genai import types as _gt
+    system_txt = "\n\n".join(m.get("content", "") for m in messages
+                             if m.get("role") == "system" and m.get("content"))
+    conv_txt = "\n\n".join(m.get("content", "") for m in messages
+                           if m.get("role") in ("user", "assistant") and m.get("content"))
+    contents = conv_txt or system_txt
+    cfg_kwargs: dict = {"max_output_tokens": int(max_tokens)}
+    if system_txt and conv_txt:
+        cfg_kwargs["system_instruction"] = system_txt
+    if temperature is not None:
+        try:
+            cfg_kwargs["temperature"] = float(temperature)
+        except (TypeError, ValueError):
+            pass
+    try:
+        cfg = _gt.GenerateContentConfig(**cfg_kwargs)
+    except TypeError:
+        # Older google.genai builds may not accept system_instruction on the config;
+        # inline it into the contents instead so the call still lands.
+        if "system_instruction" in cfg_kwargs:
+            sys_inline = cfg_kwargs.pop("system_instruction")
+            contents = f"{sys_inline}\n\n{contents}" if contents else sys_inline
+        cfg = _gt.GenerateContentConfig(**cfg_kwargs)
+    import threading as _threading
+    result: dict = {"resp": None, "err": None}
+    def _run() -> None:
+        try:
+            result["resp"] = client.models.generate_content(
+                model=model, contents=contents, config=cfg)
+        except Exception as _e:
+            result["err"] = _e
+    t = _threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(float(timeout))
+    if t.is_alive():
+        raise RuntimeError(f"vertex_genai timeout after {timeout:.1f}s (thread abandoned)")
+    if result["err"] is not None:
+        raise result["err"]
+    resp = result["resp"]
+    text = (getattr(resp, "text", None) or "").strip() or None
+    usage = getattr(resp, "usage_metadata", None)
+    tin = int(getattr(usage, "prompt_token_count", 0) or 0) if usage else 0
+    tout = int(getattr(usage, "candidates_token_count", 0) or 0) if usage else 0
+    return _AdaptedResp(text, "stop", tin, tout)
 
 
 class _AdaptedResp:
@@ -1193,7 +1282,7 @@ class _NarasiFailoverClient:
         return self
 
     def _create(self, **kw):
-        chain = _narasi_failover_chain()
+        chain = _narasi_failover_chain(self._model)
         primary = next((c[0] for c in chain if c[3]), "")
         # Bound the whole cheapest-first walk to a budget < the caller's outer per-chapter
         # wait_for, giving each rung the REMAINING budget (not a fresh full timeout) so a hung
@@ -1218,6 +1307,11 @@ class _NarasiFailoverClient:
                                                       call_kw.get("messages") or [],
                                                       call_kw.get("max_tokens") or 4000, rung_timeout,
                                                       temperature=call_kw.get("temperature"))
+                elif proto == "vertex_genai":
+                    resp = _vertex_gemini_create(model_id,
+                                                  call_kw.get("messages") or [],
+                                                  call_kw.get("max_tokens") or 4000, rung_timeout,
+                                                  temperature=call_kw.get("temperature"))
                 else:
                     cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
                     resp = cli.chat.completions.create(**call_kw)
@@ -1249,13 +1343,21 @@ class _NarasiFailoverClient:
 
 
 def make_narasi_client(model: str = ""):
-    """Narasi client factory. Returns the multi-aggregator failover client for the Opus
-    narasi models when NARASI_FAILOVER_ENABLED is on; otherwise the standard make_client
-    (so non-opus models and the flag-off state keep today's exact behavior)."""
+    """Narasi client factory. Returns the multi-aggregator failover client for narasi
+    models when NARASI_FAILOVER_ENABLED is on; otherwise the standard make_client
+    (so unlisted models and the flag-off state keep today's exact behavior).
+
+    Two model families are eligible for failover, each with its own chain:
+      * Claude Opus (_NARASI_FAILOVER_MODELS): 3-rung KIE→LaoZhang→AtlasCloud
+      * Gemini (_NARASI_GEMINI_FAILOVER_MODELS): 2-rung Vertex→LaoZhang (Rino
+        2026-07-06, unblocks the outline path — NARASI_OUTLINE_MODEL=gemini-*
+        was routing straight to LaoZhang with no failover)."""
     # BYOK: the user pays their provider on their OWN key (credits=0). Never route BYOK through
     # a server-keyed failover rung — that would serve on the platform key yet bill 0. make_client
     # honours the per-request key, so BYOK always goes straight through it.
-    if _narasi_failover_on() and (model in _NARASI_FAILOVER_MODELS) and not _byok_active():
+    if not _narasi_failover_on() or _byok_active():
+        return make_client(model)
+    if model in _NARASI_FAILOVER_MODELS or model in _NARASI_GEMINI_FAILOVER_MODELS:
         return _NarasiFailoverClient(model)
     return make_client(model)
 
