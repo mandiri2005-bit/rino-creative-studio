@@ -2088,6 +2088,22 @@ FORBIDDEN (register-breaks):
   proximity-grammar arc earned. Love, if it lands, lands late and earned.
 - Register-drift across POV: both leads sounding identical in interior. The
   rhythm distinction MUST hold.
+- APHORISM SATURATION — closing scenes or chapters on a detachable one-line
+  maxim ("Cowardice has two hands.", "Ambition is just loneliness with a
+  schedule.", "Some walls hold better when you stop pretending they're yours
+  alone."). In literary register the convention is RESTRAINT: the image already
+  carries the theme — trust it. Keep the 1-2 strongest per book; let scenes
+  close on the noticed detail, not a thesis (~1 standalone maxim per 2 chapters,
+  and NEVER a chapter-ending epigram every chapter).
+- IMAGE→THESIS REDUNDANCY — stating a concrete image, then restating it as an
+  abstract maxim on the next line (stripping paint to bare plaster, then "The
+  wall was always this color underneath."). The image already did the work; the
+  maxim narrates what the reader just felt. Cut the maxim, keep the image.
+- SINGLE EMOTIONAL TEMPERATURE — holding one controlled register (restraint,
+  melancholy) for the whole book with no visible break. The restraint reads as
+  CHOSEN — and lands twice as hard — only if the control cracks ONCE somewhere in
+  the middle third: a message typed and deleted, a held breath that gives, one
+  sentence that runs past where the narrator meant to stop.
 """,
     "style_rules_editor": "",
     "register_spec": {
@@ -2098,6 +2114,10 @@ FORBIDDEN (register-breaks):
             "single_noticed_detail_body_description",
             "internal_shift_scene_no_external_event",
             "cultural_specificity_named_place",
+            # narasi-3 lens synthesis (2026-07-06): literary restraint needs ONE
+            # visible crack in the controlled register (mirrors remaja lens-#4) so
+            # the control everywhere else reads as chosen, not automatic.
+            "one_visible_crack_moment_per_book",
         ],
         "banned_tells": [
             "heaving", "throbbing", "silken tresses", "molten core",
@@ -2137,6 +2157,13 @@ FORBIDDEN (register-breaks):
             "silence_as_paragraph_min_per_book": 3,
             "comma_splice_permitted_in_interior": True,
             "insta_love_max_chapters": 0,
+            # narasi-3 lens synthesis (2026-07-06): literary-register aphorism cap
+            # (mirrors remaja), image→thesis redundancy ban, and one visible crack in
+            # the controlled register. Enforced in prompt via style_rules_book; the
+            # aphorism_density_scan (report-only) measures the count post-gen.
+            "aphorism_density_max_per_2_chapters": 1,
+            "image_then_thesis_redundancy_max": 0,
+            "visible_crack_moment_min_per_book": 1,
         },
     },
 }

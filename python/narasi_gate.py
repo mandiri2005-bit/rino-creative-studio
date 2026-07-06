@@ -1243,6 +1243,20 @@ _APHORISM_RX = re.compile(
     r"|\bsampai\s+(?:tiba-tiba|ia|dia|itu)\s+(?:menjadi|tidak|jadi|hilang|selesai|habis|berubah)\b"
     # "X bukan Y" as paragraph opener with hanya/melainkan follow-through
     r"|(?:^|\n)\s*\w+\s+bukan\b[^.!?\n]{0,80}[.!?]\s*(?:hanya|cuma|melainkan|itu\s+cuma)\b"
+    # English literary-maxim forms (narasi-3 "Long and Winding Road", 2026-07-06):
+    # short isolated gnomic sentences the id-centric branches above never matched
+    # ("Cowardice has two hands.", "Ambition is just loneliness with a schedule.",
+    # "Some walls hold better when you stop pretending they're yours alone.").
+    r"|\bwe\s+always\s+\w+"
+    r"|\b\w+\s+is\s+(?:the\s+only|just|not\s+the\s+same\s+as|always\s+the|never\s+the|only\s+ever)\b"
+    r"|\bit\s+takes\s+\w+\s+\w+\s+to\b"
+    r"|\bsome\s+\w+\s+(?:hold|holds|are|is|do|does|keep|keeps|remember|remembers|"
+    r"last|lasts|stay|stays|need|die|grow|grows|carry|know|knows|leave|break|fall|"
+    r"come|go|matter|remain|survive|forget|built|make|makes|mean|means|refuse|"
+    r"refuses|wait)\b"
+    r"|\b\w+\s+has\s+(?:two|three|four|no|only\s+one|its\s+own)\s+\w+"
+    r"|\b(?:silence|debt|ambition|cowardice|grief|love|memory|shame|hope|fear|"
+    r"truth|the\s+truth)\s+(?:is|has|does|never|always|only|grows|costs|keeps|waits)\b"
     r")"
 )
 # Quote characters (dialogue), including curly quotes and Indonesian-typographic pairs
@@ -1372,6 +1386,135 @@ def phonetic_collision_scan(text: str, style: Optional[str] = None) -> dict[str,
             break
     return {"applies": True, "phonetic_collision_hits": len(pairs),
             "phonetic_collision_pairs": pairs}
+
+
+# ── Duplicate-sentence + lexical merge-corruption scanners (narasi-3 "Long and
+#    Winding Road" lens synthesis, 2026-07-06). Both report-only, style-agnostic,
+#    dictionary-free. They surface two classes the aphorism/entity scanners
+#    structurally cannot see:
+#      (1) a whole sentence repeated verbatim, or a long contiguous phrase recurring
+#          at distant positions (L53==L87 "Debt is the only thing…"; the reused
+#          simile "like a stone dropped into still water" L137/L189).
+#      (2) a lexical merge-corruption — a short standalone-word prefix fused to a
+#          non-word remainder ("of white" → "ofite" L343), which voices as a nonsense
+#          token in TTS.
+_SENT_SPLIT_RX = re.compile(r"[.!?…]+[\s\"“”'’)]*\s+|\n+")
+_DUP_WORD_RX = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+
+
+def _normalize_sentence(s: str) -> str:
+    return " ".join(_DUP_WORD_RX.findall(s.lower()))
+
+
+def duplicate_sentence_scan(text: str, ngram: int = 7) -> dict[str, Any]:
+    """Report-only: verbatim whole-sentence repeats (>=5 words) + long contiguous
+    n-gram repeats at distant positions. Short refrains / epizeuxis (<5-word
+    sentences, <ngram-word phrases) are intentionally NOT flagged so a deliberate
+    bookend ("The corridor is narrow.") survives."""
+    if not text:
+        return {"duplicate_sentence_hits": 0, "duplicate_sentence_samples": []}
+    samples: list[str] = []
+    sent_norms: list[str] = []
+    raw_sents = [s.strip() for s in _SENT_SPLIT_RX.split(text) if s.strip()]
+    counts: dict[str, int] = {}
+    first: dict[str, str] = {}
+    for s in raw_sents:
+        n = _normalize_sentence(s)
+        if len(n.split()) < 5:
+            continue
+        counts[n] = counts.get(n, 0) + 1
+        first.setdefault(n, s)
+    for n, c in counts.items():
+        if c >= 2:
+            sent_norms.append(n)
+            samples.append(f"×{c} verbatim: “{first[n][:80]}”")
+    words = _DUP_WORD_RX.findall(text.lower())
+    positions: dict[str, list[int]] = {}
+    for i in range(len(words) - ngram + 1):
+        gram = " ".join(words[i:i + ngram])
+        positions.setdefault(gram, []).append(i)
+    for gram, pos in positions.items():
+        if len(pos) < 2 or pos[-1] - pos[0] < ngram * 2:
+            continue
+        if any(gram in n for n in sent_norms):   # already reported as a verbatim dup
+            continue
+        samples.append(f"×{len(pos)} phrase: “{gram[:80]}”")
+        if len(samples) >= 10:
+            break
+    return {"duplicate_sentence_hits": len(samples),
+            "duplicate_sentence_samples": samples[:10]}
+
+
+# Merge-corruption lexicon: real words (>=3 chars) that start with a short standalone-
+# word prefix, from a bundled BSD-dict subset (the Python service has no runtime
+# dictionary). Lazy-loaded; a missing/corrupt file fails SAFE to an empty set — the
+# scanner then reports 0 hits and never raises.
+_MERGE_PREFIXES = ("of", "to", "in", "on", "at", "as", "is", "it", "or", "an",
+                   "be", "no", "so", "we", "he", "up", "by", "and", "the")
+_MERGE_INFLECT_SUF = ("s", "es", "ed", "ing", "er", "est", "en", "d", "ly",
+                      "ers", "ings", "ier", "iest", "ies", "ist", "ists")
+_MERGE_CAND_RX = re.compile(r"\b([a-z]{4,16})\b")
+_MERGE_LEXICON: Optional[frozenset] = None
+
+
+def _merge_lexicon() -> frozenset:
+    global _MERGE_LEXICON
+    if _MERGE_LEXICON is None:
+        try:
+            import gzip
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "merge_lexicon.txt.gz")
+            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                _MERGE_LEXICON = frozenset(w.strip() for w in fh if w.strip())
+        except Exception:  # noqa: BLE001 — fail safe: no lexicon → scanner no-ops
+            _MERGE_LEXICON = frozenset()
+    return _MERGE_LEXICON
+
+
+def _merge_is_real(tok: str, lex: frozenset) -> bool:
+    """True if tok is a real word or a simple inflection of one in the lexicon.
+    Candidates start with a fragile prefix, so their stems almost always share it
+    (asked→ask, weeks→week, oncologists→oncology) — the prefix-subset lexicon
+    suffices without a full dictionary."""
+    if tok in lex:
+        return True
+    for suf in _MERGE_INFLECT_SUF:
+        if tok.endswith(suf) and len(tok) - len(suf) >= 2:
+            base = tok[:-len(suf)]
+            if base in lex or (base + "e") in lex:
+                return True
+            if suf in ("ier", "iest", "ies", "ist", "ists") and (base + "y") in lex:
+                return True
+            if len(base) >= 2 and base[-1] == base[-2] and base[:-1] in lex:
+                return True
+    return False
+
+
+def merge_token_scan(text: str) -> dict[str, Any]:
+    """Report-only: flag a lowercase token that fuses a short standalone-word prefix
+    to a non-word remainder ("ofite" ← "of white"). Prefix-restricted + lowercase-only
+    (the [a-z] regex skips capitalised proper nouns) + a bundled lexicon with
+    morphological fallback keeps false positives near zero on rich literary/domain
+    vocabulary (distemper, reversionary, limewash never start with a fragile prefix).
+    Narrow by design — starts precise, broaden if the corpus demands."""
+    lex = _merge_lexicon()
+    if not text or not lex:
+        return {"merge_token_hits": 0, "merge_token_samples": []}
+    samples: list[str] = []
+    seen: set[str] = set()
+    for m in _MERGE_CAND_RX.finditer(text):
+        tok = m.group(1)
+        if tok in seen:
+            continue
+        pre = next((p for p in _MERGE_PREFIXES
+                    if tok.startswith(p) and len(tok) - len(p) >= 3), None)
+        if pre is None or _merge_is_real(tok, lex):
+            continue
+        seen.add(tok)
+        samples.append(f"{tok} (→ '{pre} {tok[len(pre):]}'?)")
+        if len(samples) >= 8:
+            break
+    return {"merge_token_hits": len(samples), "merge_token_samples": samples}
 
 
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
@@ -1562,6 +1705,20 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
                     stats["phonetic_collision_pairs"] = _pc["phonetic_collision_pairs"]
                     if _pc["phonetic_collision_hits"]:
                         stats["phonetic_collision_flag"] = True
+            # Duplicate-sentence + merge-token (narasi-3 lens synthesis, 2026-07-06).
+            # Style-agnostic report-only — run for every gated text, not just fiction:
+            # verbatim/near-dup repeats and lexical merge-corruptions ('ofite') break
+            # any register (and TTS) regardless of genre.
+            _ds = duplicate_sentence_scan(out)
+            stats["duplicate_sentence_hits"] = _ds["duplicate_sentence_hits"]
+            stats["duplicate_sentence_samples"] = _ds["duplicate_sentence_samples"]
+            if _ds["duplicate_sentence_hits"]:
+                stats["duplicate_sentence_flag"] = True
+            _mt = merge_token_scan(out)
+            stats["merge_token_hits"] = _mt["merge_token_hits"]
+            stats["merge_token_samples"] = _mt["merge_token_samples"]
+            if _mt["merge_token_hits"]:
+                stats["merge_token_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
