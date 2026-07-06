@@ -1054,6 +1054,10 @@ _POV_SECOND_RX = re.compile(r"(?<![\w'])(?:[Yy]ou|[Yy]our|[Yy]ou're|[Yy]ourself|
 # 3rd-person: a Capitalised name as the subject at the START of a sentence, followed by
 # a lowercase verb (heuristic for "Arya mendengar", "Raka duduk"). Excludes dialogue.
 _POV_THIRD_RX = re.compile(r"(?m)^\s*([A-Z][a-z]{2,})\s+([a-z]{3,})")
+# Quoted-dialogue span — stripped before the persona tally so dialogue "you"/"I" doesn't
+# swamp the NARRATIVE person (a heavy-dialogue 3rd-person book would otherwise false-read
+# as 2nd/mixed — The Version He Loved dual-3rd regression, 2026-07-07).
+_POV_DIALOGUE_STRIP_RX = re.compile(r"[\"“”«»][^\"“”«»]{0,400}?[\"“”«»]")
 
 
 def pov_persona_drift_scan(text: str) -> dict[str, Any]:
@@ -1070,18 +1074,31 @@ def pov_persona_drift_scan(text: str) -> dict[str, Any]:
     for ch in chapters:
         if not ch or not ch.strip():
             continue
+        # Strip quoted dialogue first — count the NARRATIVE person only, so a 3rd-person
+        # book with heavy dialogue "you" isn't misread as 2nd-person (allows legit
+        # break-delimited dual-POV like The Version He Loved to pass).
+        cc = _POV_DIALOGUE_STRIP_RX.sub(" ", ch)
         # Tri-state: first (aku/gue/… + English "I"), second ("you"), third (Name+verb).
-        first = len(_POV_FIRST_RX.findall(ch)) + len(_POV_FIRST_EN_RX.findall(ch))
-        second = len(_POV_SECOND_RX.findall(ch))
-        third = len(_POV_THIRD_RX.findall(ch))
-        scores = {"first": first, "second": second, "third": third}
-        top = max(scores, key=scores.get)
-        if scores[top] == 0:
-            personas.append("none")
+        first = len(_POV_FIRST_RX.findall(cc)) + len(_POV_FIRST_EN_RX.findall(cc))
+        second = len(_POV_SECOND_RX.findall(cc))
+        third = len(_POV_THIRD_RX.findall(cc))
+        # ASYMMETRIC classification (dialogue already stripped, so these are narration):
+        #  • 1st-person "I" is DEFINITIVE — a real 3rd-person narrator never narrates in "I",
+        #    so substantial "I" ⟹ first, even when the narrator names a character ("Julian
+        #    stands" trips the weak Name+verb 3rd heuristic). Fixes Long-and-Winding-Road.
+        #  • 2nd-person "you" only wins if it clearly beats the Name+verb count (≥2×), so a
+        #    gnomic "you" ("the way you know where north is") in a 3rd-person book doesn't
+        #    flip it. Fixes The Version He Loved (dual-3rd with gnomic 'you').
+        if first >= 3 and first >= second:
+            personas.append("first")
+        elif second >= 3 and second >= first and second >= max(1, third * 2):
+            personas.append("second")
+        elif third > 0:
+            personas.append("third")
+        elif first or second:
+            personas.append("first" if first >= second else "second")
         else:
-            # dominant only if it clears the runner-up by 2× (else "mixed")
-            rest = sorted((v for k, v in scores.items() if k != top), reverse=True)
-            personas.append(top if scores[top] >= max(1, rest[0] * 2) else "mixed")
+            personas.append("none")
     voted = [p for p in personas if p in ("first", "second", "third")]
     dominant = max(set(voted), key=voted.count) if voted else None
     # drift = >1 distinct dominant persona across chapters (e.g. a 2nd-person book with one
@@ -1530,6 +1547,50 @@ def merge_fusion_scan(text: str) -> dict[str, Any]:
     return {"merge_fusion_hits": len(samples), "merge_fusion_samples": samples}
 
 
+# ── English instruction-residue / unresolved-placeholder scanner (narasi "The Version He
+#    Loved", 2026-07-07). The generator hides unfilled template slots behind hedge-words —
+#    "around appropriate Joseon-era genre painter", "around 8-12 billion", "around Jeongjo or
+#    Sunjo", "from arrival or from today", "[name of district]". These survive the fill step
+#    and are ship-blockers for book output (2 of 7 corpus pieces hit them). Report-only,
+#    high-precision: verified 0 FP on the clean literary pieces. The Indonesian cousin
+#    (sekitar/kira-kira + slot) is placeholder_leak_scan; this is the English pattern. ──
+_INSTRUCTION_RESIDUE_PATS = [
+    re.compile(r"\baround\s+(?:appropriate|relevant|suitable|the\s+relevant|a\s+suitable|an?\s+appropriate)\b", re.I),
+    re.compile(r"\b(?:appropriate|relevant|suitable)\s+(?:\w+[-\s]){0,4}?(?:painter|artist|period|era|name|names|"
+               r"district|neighbou?rhood|figure|place|region|dynasty|master|value|amount|price|character|song|city|street)\b", re.I),
+    re.compile(r"\baround\s+\d+\s*[-–—]\s*\d+\b"),
+    re.compile(r"\b(?:around|during|circa|about)\s+[A-Z][a-z]+\s+or\s+[A-Z][a-z]+\b"),
+    re.compile(r"\bname\s+of\s+(?:the\s+|an?\s+)?(?:district|neighbou?rhood|painter|artist|place|character|person|"
+               r"figure|city|street|region|company|brand|song|dynasty)\b", re.I),
+    re.compile(r"\[[^\]\n]{2,50}\]"),
+    re.compile(r"\b(?:TODO|FIXME|PLACEHOLDER|TBD)\b"),
+    re.compile(r"\bfrom\s+\w+\s+or\s+from\s+\w+\b", re.I),
+]
+
+
+def instruction_residue_scan(text: str) -> dict[str, Any]:
+    """Report-only: unresolved English template slots hiding behind hedge-words. High-
+    precision — a legit approximate ('around ten minutes') is NOT flagged; only slot-shaped
+    residue (instruction adjective + slot noun, digit-range hedge, unresolved Proper-or-
+    Proper / either-or, name-of-X, bracket, TODO)."""
+    if not text:
+        return {"instruction_residue_hits": 0, "instruction_residue_samples": []}
+    samples: list[str] = []
+    seen: set[str] = set()
+    for rx in _INSTRUCTION_RESIDUE_PATS:
+        for m in rx.finditer(text):
+            frag = re.sub(r"\s+", " ", m.group(0)).strip()
+            key = frag.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            samples.append(frag[:80])
+            if len(samples) >= 10:
+                return {"instruction_residue_hits": len(samples),
+                        "instruction_residue_samples": samples}
+    return {"instruction_residue_hits": len(samples), "instruction_residue_samples": samples}
+
+
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
 # Extend by adding new lang keys; each value is a list of anchored regex patterns.
 _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
@@ -1737,6 +1798,13 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["merge_fusion_samples"] = _mt["merge_fusion_samples"]
             if _mt["merge_fusion_hits"]:
                 stats["merge_fusion_flag"] = True
+            # Unresolved English template slots ("around appropriate …", "around 8-12
+            # billion", "[name of district]") — ship-blockers for book output.
+            _ir = instruction_residue_scan(out)
+            stats["instruction_residue_hits"] = _ir["instruction_residue_hits"]
+            stats["instruction_residue_samples"] = _ir["instruction_residue_samples"]
+            if _ir["instruction_residue_hits"]:
+                stats["instruction_residue_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
