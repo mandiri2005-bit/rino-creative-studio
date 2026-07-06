@@ -1211,6 +1211,104 @@ def genre_self_reference_scan(text: str) -> dict[str, Any]:
     return {"genre_self_ref_hits": len(samples), "genre_self_ref_samples": samples}
 
 
+# Aphorism-density scan (corpus sample-25). remaja register_spec caps aphorisms at ~1
+# per 2 chapters (~3 for a 6-chapter book); sample-25 shipped ~10 and lens-1 explicitly
+# flagged it. Signal = an ISOLATED short paragraph (a single-sentence maxim on its own
+# line) using generalizing/abstract form ("X adalah Y", "tidak semua", "kadang X berarti")
+# and NOT anchored to a scene (no dialogue quote, no character+action verb). Report-only.
+_APHORISM_RX = re.compile(
+    r"(?i)(?:"
+    # "X adalah <abstract-noun>" — "Kenyamanan adalah cara paling sopan…"
+    r"\b\w+\s+adalah\s+(?:cara|jenis|bentuk|bukti|hal|momen|salah\s+satu|proses|"
+    r"kebiasaan|kondisi|rencana|kalimat|jawaban|pertanyaan|yang)\b"
+    # "tidak semua X" / "not all X"
+    r"|\b(?:tidak|nggak|gak|tak)\s+(?:semua|selalu)\s+\w+"
+    r"|\bnot\s+all\s+\w+"
+    # "kadang X berarti" / "sometimes X means"
+    r"|\bkadang\s+\w+\s+berarti\b"
+    r"|\bsometimes\s+\w+\s+means\b"
+    # "yang paling X adalah/bukan/hanya…" / "the most X is/are…"
+    r"|\byang\s+paling\s+\w+\s+(?:adalah|justru|bukan|hanya|cuma)\b"
+    r"|\bthe\s+most\s+\w+\s+(?:is|are)\b"
+    # "means to/nothing/everything/the …"
+    r"|\bmeans?\s+(?:to|nothing|everything|the)\b"
+    # Twin negation: "aku tidak pernah X. aku hanya (tidak pernah) Y."
+    r"|\b(?:aku|dia|kau|ia|kita|kami)\s+(?:tidak|nggak|gak|tak)\s+pernah\s+\w+"
+    r"[^.!?]{0,60}[.!?]\s+"
+    r"(?:aku|dia|kau|ia|kita|kami)?\s*hanya\s+(?:tidak|nggak|gak|tak)?\s*(?:pernah\s+)?\w+"
+    # "Yang tersisa/hilang/paling…" as paragraph opener
+    r"|(?:^|\.\s+)yang\s+(?:tersisa|paling|jujur|hilang|penting|nyata|dalam)\b"
+    # "X tidak datang tiba-tiba" / "sampai (ia|tiba-tiba) (menjadi|tidak…)" — sample-25 patterns
+    r"|\btidak\s+datang\s+tiba-tiba\b"
+    r"|\bsampai\s+(?:tiba-tiba|ia|dia|itu)\s+(?:menjadi|tidak|jadi|hilang|selesai|habis|berubah)\b"
+    # "X bukan Y" as paragraph opener with hanya/melainkan follow-through
+    r"|(?:^|\n)\s*\w+\s+bukan\b[^.!?\n]{0,80}[.!?]\s*(?:hanya|cuma|melainkan|itu\s+cuma)\b"
+    r")"
+)
+# Quote characters (dialogue), including curly quotes and Indonesian-typographic pairs
+_DIALOGUE_QUOTE_RX = re.compile(r"[\"“”«»]")
+# A character-name + action verb (scene anchor) — "Rendra bilang", "Dia mengangguk", "he said"
+_CHARACTER_ACTION_RX = re.compile(
+    r"\b(?:[A-Z][a-z]{2,}|[Aa]ku|[Ii]a|[Dd]ia|[Mm]ereka|[Kk]ami|[Kk]ita|[Gg]ue|[Gg]ua|"
+    r"[Ll]u|[Ee]lu|[Ss]aya|[Kk]au|[Hh]e|[Ss]he|[Tt]hey|[Ww]e|[II])\s+"
+    r"(?:said|asked|replied|thought|walked|sat|stood|looked|took|opened|closed|smiled|"
+    r"nodded|shook|turned|leaned|whispered|shouted|kata|tanya|bilang|jawab|balas|lihat|"
+    r"liat|duduk|berdiri|senyum|angguk|tersenyum|menoleh|melihat|mengangguk|berkata|"
+    r"menjawab|bertanya|memandang|melangkah|mundur|maju|kirim|naruh|ketuk|geser|nulis|"
+    r"buka|tutup|ambil|kasih|beli|jalan|pulang|masuk|keluar|tarik|tunggu|nunggu|dengar)\b"
+)
+
+
+def aphorism_density_scan(text: str, style: Optional[str] = None) -> dict[str, Any]:
+    """Report-only (Track A, corpus sample-25): count ISOLATED aphoristic paragraphs —
+    short single-sentence maxims that sit on their own line, use generalizing form, and
+    don't anchor to scene (no dialogue, no character+action). Fiction-regime only (the
+    non-fiction essays legitimately state maxims). Sample-25 (persahabatan SMA memudar,
+    coming_of_age) shipped ~10 in 6 chapters; register_spec caps at ~3.
+    Returns rate_per_10_chapters so a value is comparable across book lengths."""
+    style_key = (style or "").strip().lower()
+    if style_key not in _FICTION_STYLES:
+        return {"applies": False, "aphorism_hits": 0, "aphorism_samples": [],
+                "aphorism_rate_per_10_chapters": 0.0}
+    if not text:
+        return {"applies": True, "aphorism_hits": 0, "aphorism_samples": [],
+                "aphorism_rate_per_10_chapters": 0.0}
+    paras = re.split(r"\n\s*\n", text)
+    samples: list[str] = []
+    for p in paras:
+        p = p.strip()
+        if not p or len(p) < 30 or len(p) > 260:
+            continue
+        # skip chapter headers + metadata / list lines
+        if re.match(r"(?i)^(?:bab|chapter|hoofdstuk|cap[íi]tulo|kapitel|chapitre|gaya|"
+                    r"style|output|bahasa|language)\b", p):
+            continue
+        if _DIALOGUE_QUOTE_RX.search(p):
+            continue
+        if _CHARACTER_ACTION_RX.search(p):
+            continue
+        sents = re.split(r"[.!?…]\s+", p)
+        if len(sents) > 3:
+            continue
+        if not _APHORISM_RX.search(p):
+            continue
+        samples.append(p if len(p) <= 120 else p[:117] + "…")
+        if len(samples) >= 20:
+            break
+    # rate: hits per 10 chapters (uses _CHAPTER_SPLIT_RX from below in the file).
+    n_ch = 0
+    try:
+        parts = _CHAPTER_SPLIT_RX.split(text)
+        n_ch = max(0, len(parts) - 1)
+    except Exception:  # noqa: BLE001
+        pass
+    n_ch = n_ch or 6   # default assumption for a book with no detected chapter marks
+    rate = round(10.0 * len(samples) / n_ch, 2)
+    return {"applies": True, "aphorism_hits": len(samples),
+            "aphorism_samples": samples[:10],
+            "aphorism_rate_per_10_chapters": rate}
+
+
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
 # Extend by adding new lang keys; each value is a list of anchored regex patterns.
 _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
@@ -1381,6 +1479,16 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
                 stats["genre_self_ref_samples"] = _gsr["genre_self_ref_samples"]
                 if _gsr["genre_self_ref_hits"]:
                     stats["genre_self_ref_flag"] = True
+                # Aphorism density (sample-25) — closes the register_spec counter loop
+                # (aphorism_density_max_per_2_chapters ≈ 1). Flag when rate is high.
+                _ap = aphorism_density_scan(out, style=style)
+                if _ap.get("applies"):
+                    stats["aphorism_hits"] = _ap["aphorism_hits"]
+                    stats["aphorism_samples"] = _ap["aphorism_samples"]
+                    stats["aphorism_rate_per_10_chapters"] = _ap["aphorism_rate_per_10_chapters"]
+                    # Cap = ~1 per 2 chapters = 5 per 10; flag when materially over.
+                    if _ap["aphorism_rate_per_10_chapters"] > 6.0:
+                        stats["aphorism_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.

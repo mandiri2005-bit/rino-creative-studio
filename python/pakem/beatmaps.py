@@ -1,23 +1,22 @@
-"""python/pakem/beatmaps.py — Beat-map library v1 (romance / coming-of-age family).
+"""python/pakem/beatmaps.py — Beat-map library v1 (romance + K-drama families).
 
 A beat-map governs PLOT ARCHITECTURE, orthogonal to `style` (which governs register). The
 selected beat-map's `structural_prompt` is injected into OUTLINE generation so the SAME
-style produces a DIFFERENT arc each time — fixing the corpus finding (sample-21/22/23) that
-the pipeline had ONE romance skeleton, re-skinned per topic.
+style produces a DIFFERENT arc each time — fixing the corpus finding (sample-21..25) that
+the pipeline had ONE mold per style, re-skinned per topic.
 
 Flag-gated by DALANG_BEATMAP_ENABLED on the python service (default OFF -> byte-identical:
 nothing here is imported/called unless the outline path opts in).
 
-The 10 structural_prompts were authored + adversarially verified (workflow
-`beatmap-romance-authoring`, 2026-07-06): 0 collapse into the default skeleton, all
-topic-agnostic (use user-supplied setting/topic via slots) and register-clean (no inline
-glossary, no stat-citation, POV locked per preset). Known texture-adjacencies (slow_fade ~
-the_almost; breakup_first ~ second_chance) are mitigated by anti-repeat rotation. Portfolio
-gaps (all first-person; earnest-to-melancholic tone; no we-vs-world obstacle) are tracked
-for a follow-up expansion — see ~/docs/beatmap-library-v1-spec.md.
+FAMILIES:
+  - romance (10 presets) — shipped 48de553; corpus sample-25 confirmed slow_fade fits
+    friendship-fade too (register-portable). Distinctness CLEAN, 0 collapse.
+  - kdrama  (12 presets) — braided A+B plot + midpoint reversal; authored+verified 2026-07-06.
+    Distinctness CLEAN, 0 collapse, 2 minor texture-adjacencies (fantasy_bond~timeslip_fate,
+    revenge_return~corporate_thriller) mitigated by anti-repeat.
 
 DO NOT hand-edit the BEAT_MAPS prompt strings — regenerate from the workflow result via
-scratchpad/gen_beatmaps.py so long strings never suffer transcription drift.
+scratchpad/gen_beatmaps_v2.py so long strings never suffer transcription drift.
 """
 from __future__ import annotations
 
@@ -32,11 +31,14 @@ def beatmaps_enabled() -> bool:
     return os.environ.get("DALANG_BEATMAP_ENABLED") == "1"
 
 
-# style registry_key -> beat-map family. Only these styles get a beat-map; everything
-# else returns None (outline path stays byte-identical). K-drama family lands later.
+# style registry_key -> beat-map family. Only styles listed here get a beat-map;
+# everything else returns None (outline path stays byte-identical).
 _ROMANCE_STYLES = frozenset({
     "remaja_coming_of_age", "coming_of_age",
     "romance_contemporary", "romance",
+})
+_KDRAMA_STYLES = frozenset({
+    "kdrama_serial", "kdrama",
 })
 
 
@@ -44,6 +46,8 @@ def beatmap_family_for_style(style: Optional[str]) -> Optional[str]:
     s = (style or "").strip().lower()
     if s in _ROMANCE_STYLES:
         return "romance"
+    if s in _KDRAMA_STYLES:
+        return "kdrama"
     return None
 
 
@@ -128,47 +132,167 @@ BEAT_MAPS = {
         "structural_prompt": "STRUKTUR CERITA — Group-to-Pair: alur linear, konflik biaya-sosial, pendaratan tenang, POV orang-pertama (\"aku\") terkunci di SEMUA bab (jangan pernah masuk kepala anggota lain; mereka dikenali lewat ucapan dan reaksi yang terlihat, bukan isi hati). Tokoh utama dan orang yang ia taksir SUDAH satu lingkaran pertemanan sejak cerita dibuka — bukan orang asing. DILARANG meet-cute (papan pengumuman, kenalan gugup, tabrakan tak sengaja). Buka di tengah dinamika grup yang sudah hangat — satu adegan kolektif (sesuai latar yang ditentukan user) saat \"aku\" sadar rasanya ke satu orang mulai beda dari ke yang lain. Konflik inti = BIAYA SOSIAL, bukan restu orang tua, nilai, atau minder. Taruhannya lingkaran itu sendiri: bila rasa ini keluar lalu gagal, grup yang jadi rumah bisa retak. DILARANG tiga tekanan klise (ibu telepon soal nilai, ragu-diri murni). Friksi tengah harus lahir DARI grup: pergeseran aliansi, satu anggota merasa tertinggal, memihak berarti mengorbankan yang lain — BUKAN cemburu satu-lawan-satu. Titik balik = keputusan sunyi. DILARANG confession di depan orang banyak, surat dramatis, gestur besar. Pasangan terbentuk lewat satu percakapan kecil dan privat; grup TIDAK bubar, ia menata ulang bentuk. HINDARI juga micro-beat pipeline: tukar-benda-kecil (pulpen/bekal/tumbler), berbagi satu earphone di hujan, rambut \"diikat asal\", baca ulang chat seperti puisi, metafora orbit/gravitasi, hujan/alam-sebagai-saksi, aforisme keberanian. Tutup tenang: keadaan baru yang lebih jujur. Jaga tekstur ensemble — anggota lain punya nama, suara, reaksi, bukan latar.",
         "chapter_spine": ["Bab1 — Grup sudah utuh: 'aku' di tengah rutinitas circle, sadar satu orang mulai terasa beda", "Bab2 — Rasa menguat diam-diam; 'aku' menimbang apa yang bisa hilang kalau grup tahu (tanpa tukar-benda, tanpa metafora orbit)", "Bab3 — Anggota lain mulai membaca situasi; keseimbangan pertemanan goyah, canggung menjalar ke seluruh grup", "Bab4 — Memihak berarti mengorbankan yang lain; satu anggota merasa tertinggal, grup nyaris retak", "Bab5 — Percakapan kecil dan privat: pengakuan tenang tanpa panggung, tanpa surat, tanpa gestur besar", "Bab6 — Grup menata ulang bentuknya, tidak bubar; keadaan baru yang lebih jujur, pendaratan sunyi tanpa alam-sebagai-saksi"],
     },
+    "chaebol_contract": {
+        "display_name": "Chaebol Contract",
+        "family": "kdrama",
+        "tone": "rom_com_to_melodrama",
+        "axes": {"arc": "linear", "a_conflict": "class_divide", "b_plot": "corporate_power", "twist": "chaebol_succession", "resolution": "earned_union_after_fallout", "tone": "rom_com_to_melodrama", "scale": "corporate"},
+        "structural_prompt": "Build a linear, two-thread K-drama. A-PLOT: a class divide between the lead (working-class, no leverage, works to survive) and the second lead (an heir inside a chaebol family the user names). B-PLOT ENGINE: a corporate-power struggle — a succession fight or hostile takeover inside that family's empire. Braid them from Chapter 1: the two threads must share ONE device — a CONTRACT (a fake engagement, a binding employment clause, a signed arrangement) that reads as rom-com friction on the surface but is secretly a piece on the succession board. Every act advances BOTH: the couple bicker, negotiate, and thaw (A) while the contract's terms quietly reposition who controls the company (B). Escalate from personal to corporate — boardroom votes, share blocks, a rival faction — never mere bickering.\n\nPlant early, re-readably, that the arrangement was never romantic logistics but a leverage play. At the MIDPOINT, fire the CHAEBOL-SUCCESSION REVEAL: the lead's true place in the family, or the real purpose of the contract, surfaces and recontextualizes every earlier scene — the meet, the terms, who chose whom. Harden the tone here from rom-com to melodrama.\n\nPost-midpoint: fallout — the contract weaponized, the couple split by duty and shame, the empire tightening. Penultimate chapter = B-PLOT CLIMAX: the takeover/succession resolves (won, lost, or exposed) at real corporate cost. Final chapter = A-PLOT lands: an EARNED UNION only after that fallout, chosen freely once the leverage is gone — not restored, rebuilt.\n\nDO NOT write two wounded adults on an unplanned road-trip drifting into love while fleeing their lives; no dying-parent reconciliation, no controlling-mother ultimatum, no ex's engagement announcement, no single-thread mood piece. The contract and the succession war must drive every chapter.\n\nTRUST THE READER: cite no real-world statistics; define no term inline (no glossary asides, no em-dash gloss for cultural or business words); never call the story \"the drama\" or address the reader (\"you already know\"). Be the story, do not narrate it.",
+        "chapter_spine": ["Ch 1: Class collision — lead and heir bound by the CONTRACT; succession board SEEDED as backdrop", "Ch 2: Terms enforced — forced proximity thaws the pair (A) while the contract quietly shifts share/vote leverage (B)", "Ch 3: Stakes named — rival faction moves on the empire; the couple's arrangement becomes strategically load-bearing", "Ch ~mid: MIDPOINT TWIST — chaebol-succession reveal recontextualizes the contract; rom-com hardens to melodrama", "Ch pen: B-PLOT CLIMAX — the takeover/succession resolves at corporate cost; contract weaponized, couple split by duty", "Ch final: A-PLOT resolution — earned union rebuilt after the fallout, chosen once the leverage is gone"],
+    },
+    "revenge_return": {
+        "display_name": "Revenge Return",
+        "family": "kdrama",
+        "tone": "dark_thriller",
+        "axes": {"arc": "dual_timeline", "a_conflict": "timing_wronged", "b_plot": "revenge", "twist": "hidden_identity_betrayal", "resolution": "justice_with_cost", "tone": "dark_thriller", "scale": "societal"},
+        "structural_prompt": "Build a dual-timeline revenge thriller on a societal scale. Two clocks run at once: PAST — who the lead used to be before the family the user names ruined them (a death, a framing, a home destroyed to protect the institution's rise); PRESENT — that same lead, returned years later under a manufactured identity, embedded inside that family to dismantle it from within. Braid two plotlines in EVERY act.\n\nA-PLOT (relationship): the lead falls, against their own will, for someone bound to the family that wronged them — an heir, a fixer, the one still loyal to the house. Right-person-wrong-time at its cruelest: you cannot love the face attached to the bloodline you came to burn. The wound is timing; the obstacle is the very person tied to the one who wronged the lead.\n\nB-PLOT (engine): a return-to-destroy campaign against a family that is also an institution — the setting the user gives (a conglomerate, a dynasty, a machine of power). Because it props up a whole system, its fall is societal, not private.\n\nEntangle A and B by the setup — cover and heart pull opposite directions. Plant the reveal early, re-readable in hindsight: the false identity, a witness who half-recognizes the lead, an old photograph, a scar.\n\nMIDPOINT: the twist fires — hidden identity surfaces AND a betrayal detonates (the love interest or a trusted ally exposed as complicit in the original crime). Everything before recontextualizes.\n\nPENULTIMATE chapter = B-plot climax: the institution falls, the wrongdoer exposed, justice lands. FINAL chapter = A-plot resolution: justice with a personal cost — the win costs the lead the relationship, or love survives only scorched.\n\nCold, controlled dread throughout; no warmth without menace beneath it. This is NOT a drifting two-hander: no unplanned journey, no slow-burn mood piece, no single thread — the revenge engine must drive every chapter. Cite no real-world statistics or dates; define no term inline; never reference \"the drama,\" the genre, or the reader's expectations.",
+        "chapter_spine": ["Ch 1-2 SETUP: present-day return under a false face + past-timeline glimpse of the ruin the family caused (B-plot seed); first collision with the love interest bound to the house", "Ch 3-4 ENTANGLE: the lead works the family from inside while the forbidden pull grows; stakes named as societal — the institution's fall implicates a whole system; reveal-clues planted (photograph/witness/scar)", "Ch ~mid MIDPOINT TWIST: hidden identity surfaces AND a betrayal detonates — the love interest or trusted ally exposed as complicit in the original crime; everything prior recontextualizes", "Ch mid+ FALLOUT: masks drop, the family strikes back, the two timelines converge; trust shatters and the revenge campaign turns lethal and personal", "Ch penultimate B-PLOT CLIMAX: the institution falls — the wrongdoer is exposed and justice lands on a societal scale", "Ch final A-PLOT RESOLUTION: justice-with-a-personal-cost — victory costs the lead the relationship, or love survives only scorched"],
+    },
+    "birth_secret_makjang": {
+        "display_name": "Birth-Secret Makjang",
+        "family": "kdrama",
+        "tone": "makjang",
+        "axes": {"arc": "linear", "a_conflict": "family_class", "b_plot": "family_secret", "twist": "birth_secret_incest_fakeout", "resolution": "rupture_then_reconcile", "tone": "makjang", "scale": "family"},
+        "structural_prompt": "Build a linear, escalating family saga where a class-divided romance (A-plot) and a concealed-parentage lie (B-plot) are the same secret seen from two angles — braid them, never run them apart. SLOTS: the lead (raised low-status), the second lead (raised high-status inside the powerful family the user's topic supplies), the matriarch/patriarch guarding the family's standing, the family institution the topic implies. Do NOT write two wounded strangers on an unplanned journey drifting into love while fleeing their lives; ban the dying-parent-for-reconciliation + controlling-mother + ex's-engagement-announcement + big-gesture-reunion skeleton and single-thread mood-over-incident. This is incident-driven and makjang: each post-midpoint chapter detonates a NEW reveal that raises stakes, never repeats a mood.\n\nSETUP: the leads fall despite a class gulf the elders enforce; plant — quietly, re-readably — a mismatch (a birth record, a kept token, a nurse's guilt, a face that echoes the wrong parent) that a first read takes as ordinary. Entangle: every scene of the courtship also tightens the parentage question; the same obstacle keeps them apart AND circles the lie.\n\nMIDPOINT TWIST (fire here, recontextualize everything before it): the birth-secret surfaces and stages the almost-incest fakeout — the two appear to share a parent, so the love reads as forbidden. Play the horror fully.\n\nFALLOUT: rupture. The fakeout is FALSE — a swap/switched lineage means they are NOT blood-related; the real scandal is who was displaced and who profited. Each chapter exposes a new party's complicity; class positions invert as true parentage lands.\n\nResolve in sequence: penultimate = B-PLOT CLIMAX — the lineage exposed publicly, the family reordered, the guilty faced. Final = A-PLOT — the couple, freed of the false taboo and the old class rank, reconcile after the rupture; earned, not gestured.\n\nBans: cite no real-world statistics; define no cultural term inline (weave terms into action, never gloss, never twice); never call this a drama/story or reference the genre — be the story.",
+        "chapter_spine": ["Ch 1-2 — SETUP: class-forbidden courtship begins; B-plot SEED planted as an ordinary birth-record/token mismatch", "Ch 3-4 — ENTANGLE: love deepens as the parentage question tightens; elders escalate the class barrier, stakes named", "Ch mid — MIDPOINT TWIST: birth-secret surfaces + almost-incest fakeout fires — the love now reads as forbidden, all prior beats recontextualized", "Ch mid+1 — RUPTURE: fakeout proven FALSE (a swap, not shared blood); they separate anyway as the real displacement scandal cracks open", "Ch mid+2..pen-1 — MAKJANG ESCALATION: each chapter a new reveal — who swapped whom, who profited, class ranks invert", "Ch pen → final — PEN: B-PLOT CLIMAX, true lineage exposed publicly and family reordered; FINAL: A-PLOT reconciliation, couple united past the false taboo and old rank"],
+    },
+    "fantasy_bond": {
+        "display_name": "Fantasy Bond",
+        "family": "kdrama",
+        "tone": "romantic_fantasy",
+        "axes": {"arc": "non_linear", "a_conflict": "fate", "b_plot": "fantasy_fate", "twist": "curse_reincarnation", "resolution": "sacrifice_or_reunion_across_time", "tone": "romantic_fantasy", "scale": "personal"},
+        "structural_prompt": "Braid two threads that share one supernatural cause. A-PLOT: the lead and the second lead are pulled together by a fate neither chose — recognition without a first meeting, a bond that should be impossible. B-PLOT (fantasy-fate): one of them is bound to a supernatural office or condition per the user's topic — an immortal, a soul-reaper, someone cursed — governed by hard rules with a running cost: a life for a life, a memory erased each crossing, a countdown of passages left. The B-plot advances by ITS OWN mechanism — a duty performed, a rule broken, the cost accruing — not by whether the couple grows closer.\n\nARC IS NON-LINEAR: open OUT of order — an earlier lifetime, or an ending glimpsed first. PLANT THE TWIST EARLY and re-readably: a wound that predates the meeting, a name the wrong person answers to, an object older than both.\n\nMIDPOINT CHAPTER: fire the reversal — a CURSE or REINCARNATION reveal. They met before across lifetimes, or a curse bound them and one already caused the other's death long ago. Everything prior recontextualizes: the pull was memory, the office was penance, the rules were built around this one soul. Now the cost targets the bond: loving them accelerates the ledger, or resets a memory.\n\nPENULTIMATE CHAPTER = B-PLOT CLIMAX: the debt comes due; office, curse, or ledger forces its price — the mechanism detonates, not the couple. FINAL CHAPTER = A-PLOT RESOLUTION: a SACRIFICE that pays the price so the other lives, OR a REUNION ACROSS TIME (a next life, a broken loop) — earned, not granted. Keep SCALE PERSONAL: one bond, one soul, one price. Tone ROMANTIC-FANTASY — luminous, aching, rule-bound wonder.\n\nDO NOT write two wounded strangers road-tripping into love while fleeing their lives — no dying parent for reconciliation, no controlling mother, no ex's engagement, no duty-versus-career pull, no airport gesture. The obstacle is METAPHYSICAL and RULE-BOUND, not familial. TRUST THE READER: reveal the supernatural rules through what they cost, never a spelled-out glossary or definition; cite no real-world statistics or dates; never wink at the audience or name the genre ('the drama', 'you already know', 'as in every love story'). Let the ledger and the bond carry it.",
+        "chapter_spine": ["SETUP: cold-open out of sequence (a death, a parting, an earlier life) + present-day meeting where an impossible pull lands + B-PLOT SEED — the supernatural office/condition and its running cost shown quietly, never explained [A+B]", "ENTANGLE: the pull deepens as the leads circle each other, while the mechanism keeps exacting its cost and the planted twist-objects surface as 'coincidence' [A+B]", "STAKES NAMED: proximity starts bending the rules — the cost begins tilting toward the other lead; both threads point at the same buried thing [A+B, twist primed]", "▶ MIDPOINT TWIST: CURSE / REINCARNATION reveal — they met before across lifetimes, or one already caused the other's death; the pull was memory, the office was penance [recontextualizes everything prior]", "FALLOUT + B-PLOT CLIMAX (penultimate): loving them accelerates the ledger; the debt comes due and the office/curse/ledger forces its price — the mechanism detonates, not the couple", "A-PLOT RESOLUTION (last): a SACRIFICE that pays the price so the other lives, OR a REUNION ACROSS TIME (a next life, a broken loop) — personal scale, earned not granted"],
+    },
+    "workplace_slow_burn": {
+        "display_name": "Workplace Slow-Burn",
+        "family": "kdrama",
+        "tone": "grounded_melodrama",
+        "axes": {"arc": "linear", "a_conflict": "rivalry_to_respect", "b_plot": "medical_legal_procedural", "twist": "villain_true_motive", "resolution": "partnership_both_senses", "tone": "grounded_melodrama", "scale": "institutional"},
+        "structural_prompt": "Build a linear workplace drama braiding TWO threads that must both advance in every chapter, never one alone.\n\nA-PLOT (relationship): the lead and the second lead are professional rivals inside the institution the topic names — competing for the same case, byline, or credit, each certain the other's method is wrong. Their arc is rivalry EARNING its way to respect: not attraction at first sight, but grudging proof-of-competence traded case by case until respect turns warmer. Keep the romance under the surface — the slow burn beneath the work, never its subject.\n\nB-PLOT (engine): one live medical, legal, or newsroom case — per the topic's institution — running as a procedure across the whole story: intake, investigation, the filing or broadcast, the verdict or aftermath. It escalates chapter to chapter and touches specific families, so stakes are institutional AND personal, never abstract. Keep it grounded melodrama: real weight, restrained delivery.\n\nSEED EARLY, then COLLIDE: in early chapters plant one buried irregularity and one figure who blocks the leads as \"just procedure.\" At the MIDPOINT, fire the reversal — that figure's true motive surfaces as a scandal, a cover-up, recontextualizing every earlier obstruction and realigning the leads from rivals-against-each-other to partners-against-the-cover-up. It must re-read as planted, not sprung.\n\nRESOLVE IN SEQUENCE: the B-plot climaxes in the PENULTIMATE chapter — the case closes, truth exposed at institutional cost. The A-plot lands LAST: partnership in both senses, chosen out loud — a professional team AND a couple.\n\nDO NOT write two wounded strangers on an unplanned journey falling in love while fleeing their lives. Ban a dying parent for reconciliation, a controlling mother, an ex's engagement, a duty-versus-love pull as the engine, an airport or altar reunion, and mood-over-incident drift. No invented statistics, no case numbers, no fabricated data, no defined jargon or glossary — convey the institution through action and consequence. Never break the frame: no narrator winks, no \"the drama,\" no \"you already know.\"",
+        "chapter_spine": ["Rivals assigned the same case — first clash of methods; the case's buried irregularity is quietly planted (B-plot seed).", "Forced to work the case together; grudging respect begins as the stakes reach a specific family, and a gatekeeper stalls them as \"just procedure.\"", "Respect deepens under pressure; the leads circle the irregularity while the gatekeeper's obstruction hardens — the trap set.", "▶ MIDPOINT TWIST: the gatekeeper's true motive breaks open as a scandal/cover-up — every earlier block re-reads as concealment; rivals realign into partners against it.", "B-PLOT CLIMAX (penultimate): fallout and institutional retaliation drive the case to its close — the truth is exposed at real cost, respect now unbreakable.", "A-PLOT RESOLUTION (last): with the work done, they choose partnership in both senses — a professional team and, finally, a couple."],
+    },
+    "second_lead_triangle": {
+        "display_name": "Second-Lead Triangle",
+        "family": "kdrama",
+        "tone": "melancholic_melodrama",
+        "axes": {"arc": "dual_pov", "a_conflict": "timing", "b_plot": "light_or_none", "twist": "second_lead_syndrome", "resolution": "first_lead_honor_second", "tone": "melancholic_melodrama", "scale": "personal"},
+        "structural_prompt": "Build a dual-POV melodrama on a personal scale: alternate the lead and the second lead so both desires stay alive. The A-plot is a timing wound — the lead and the first lead are right for each other but keep colliding at the wrong moment (a prior tie, a promise made too early, a beat missed by minutes). The B-plot engine is NOT an institution; it is the second lead's own campaign — a patient, decent pursuit of the lead with its own momentum and a private deadline. Braid every act: each first-lead beat pulling the lead one way is answered by a second-lead beat earning ground the other. In setup, entangle them — the second lead is not a rival dropped in to lose, but someone whose kindness the lead leans on, so choosing hurts. Plant the reversal re-readably: seed moments where the second lead shows up, remembers, waits — a first read files them as \"the friend,\" a re-read as the better love.\n\nAt the midpoint, fire second-lead-syndrome: the lead and the reader realize the \"wrong\" choice is the sympathetic, worthier one — recontextualizing every earlier dismissal. Do NOT resolve it here; let it ache. Post-midpoint, escalate the ache, not the plot: near-misses, an almost-yes, the second lead's hope cresting.\n\nPenultimate = the B-plot climax: the second lead's arc lands FIRST — they step back with dignity or make the sacrifice-choice, honored and whole, never humiliated. Final = the A-plot resolution: the lead chooses the first lead, the beloved harder-won right choice — but bow to the second lead with a true ending, not a discard.\n\nAnti-clone: NOT two wounded strangers falling in love on a road trip while fleeing their lives — no dying parent, no controlling mother, no rival's engagement announcement, no big-gesture reunion, no predictable single mood-thread. The three-way geometry of real interiorities IS the engine; keep all three POVs load-bearing. Never cite a statistic, never define a cultural term, never call this \"the drama.\"",
+        "chapter_spine": ["Ch 1-2 — Setup: dual-POV open; the lead and first lead spark but mistime; SEED the second lead's campaign as the one who quietly shows up", "Ch 3-4 — Entangle: first-lead pull vs second-lead ground each act; the lead comes to lean on the second lead's kindness; the timing wound named", "Ch ~mid — MIDPOINT TWIST (second-lead-syndrome): the lead and reader see the 'wrong' choice is the worthier one — every earlier dismissal recontextualized; unresolved, aching", "Ch mid+ — Fallout of the heart: escalate the ache not the plot; near-misses, an almost-yes, the second lead's hope cresting toward its private deadline", "Ch pen — B-PLOT CLIMAX: the second lead's arc lands FIRST — they step back with dignity or make the sacrifice-choice, honored and whole", "Ch final — A-PLOT RESOLUTION: the lead chooses the first lead (the beloved harder-won right choice) — but the ending bows to the second lead, not a discard"],
+    },
+    "terminal_melodrama": {
+        "display_name": "Terminal Melodrama",
+        "family": "kdrama",
+        "tone": "tearjerker",
+        "axes": {"arc": "linear", "a_conflict": "internal_fear_loss", "b_plot": "medical", "twist": "terminal_illness_reveal", "resolution": "un_healed_cherish_time", "tone": "tearjerker", "scale": "personal"},
+        "structural_prompt": "Tell a LINEAR two-thread K-drama. STAKES stay PERSONAL — the whole world is two people and one prognosis. TONE: controlled tearjerker melodrama — earn tears through incident, never wring them.\n\nA-PLOT (relationship, INTERNAL conflict = fear of loss): the leads are drawn together, but one enforces distance — declining the shared future, sabotaging closeness whenever it deepens. It reads as commitment-phobia; it is armor against grief. Every act must move this bond while leaving the distance unexplained.\n\nB-PLOT ENGINE (medical — a live hospital machine, not a mood): the distancing lead is secretly managing a terminal illness inside a real clinical apparatus — intercepted results, a hidden pill schedule, a fought-for trial slot, a doctor bound by confidentiality as a third party. This engine must generate INCIDENT: near-exposures, forged normalcy, a countdown, a trial that raises then dashes hope. Every act advances it too.\n\nPlant the twist EARLY and re-readably — an unexplained absence, a strange calm about \"later.\" At the MIDPOINT, concealment collapses: the illness is REVEALED, recontextualizing everything. The distance was never fear of commitment; it was mercy — a withdrawal to spare the other the coming loss.\n\nPost-midpoint, the reveal RUPTURES them — betrayal of the lie, or a flight to spare grief. PENULTIMATE = B-PLOT CLIMAX: the medical question closes — trial verdict lands, last protocol spent, prognosis fixed. NOT cured. FINAL = A-PLOT RESOLUTION, un-healed: they do not beat the illness; they choose the borrowed time. Fear of loss resolves not by escaping loss but by accepting that love with an expiry is still worth it.\n\nDO NOT write: a dying PARENT for reconciliation; a controlling mother; an ex's engagement; a duty-vs-love tug; a road trip of two fleeing adults; a grand airport reunion. Reject mood-over-incident single-thread drift — the hospital thread must carry plot, not atmosphere. NO statistics or survival-rate citations. NO defining medical or cultural terms; weave them into action. Never call this \"the drama\" or \"the story\" — be it.",
+        "chapter_spine": ["Ch 1 — Setup: the leads meet and pull close; one quietly enforces distance. B-PLOT SEED: a slipped symptom, a hidden appointment.", "Ch 2 — Entangle: the bond deepens against resistance while the clinical machine activates (results, a trial application); concealment's stakes are named.", "Ch 3 — Rising: a near-exposure and a hope spike (trial slot won) as the distancing lead keeps withdrawing, still unexplained.", "Ch 4 — ▶ MIDPOINT TWIST: concealment collapses — the terminal illness is REVEALED; every act of distance re-reads as mercy.", "Ch 5 — Fallout → B-PLOT CLIMAX (penultimate): rupture, then the medical question closes — trial fails, prognosis fixed, not cured.", "Ch 6 — A-PLOT RESOLUTION (final): un-healed; they stop fleeing the loss and choose the borrowed time together."],
+    },
+    "class_war_romance": {
+        "display_name": "Class-War Romance",
+        "family": "kdrama",
+        "tone": "social_drama",
+        "axes": {"arc": "ensemble_braided", "a_conflict": "family_class", "b_plot": "political", "twist": "villain_motive_corruption", "resolution": "system_costs_couple", "tone": "social_drama", "scale": "societal"},
+        "structural_prompt": "Build an ensemble-braided social drama where a romance across a class line and a fight over a corrupt institution advance together until they collide.\n\nA-PLOT (family-class): the lead and second lead sit on opposite sides of a class boundary the setting gives — one born into the privilege the topic names, one shut out by it. The pull is real from the first meeting, but every family treats the match as a threat: one guards its name, the other its pride. The obstacle is not one controlling parent or a duty-versus-love ache — it is a whole social order, enforced by many hands.\n\nB-PLOT (political — class, corruption, privilege): the same institution keeping them apart is quietly rotten — a rigged rule, a bought verdict, a comfort paid for by someone below. Run it through an ENSEMBLE: give two others (a striver, a fixer, a witness) their own stakes, so the class war is society's, not a couple's. Entangle early: the lead's love and the lead's place in the system are the SAME choice by chapter two.\n\nMIDPOINT — the reversal fires here and rewrites everything before it: expose the antagonist's TRUE motive, and through it the corruption at the institution's core — then reveal one lover, or their family, is bound to that rot as beneficiary or buried victim. Plant it early (an off-hand favor, a missing name, a too-clean record), re-readable once known. It turns the class line into a wound and splinters the ensemble.\n\nPENULTIMATE — B-plot climax: the corruption is forced into the open, and the system answers on its terms.\n\nFINAL — A-plot resolution: the system takes something permanent from the couple — a name, a home, a future, a person. They do not defeat it; they choose each other knowing the price.\n\nCONSTRAINTS. Avoid the default engine: no road-trip away from their lives, no rival's engagement announcement, no big-gesture reunion, no dying-parent reconciliation, no clean win — incident over mood, not mood over incident. Trust the reader: cite no real-world statistics or figures; never pause to define a term or gloss the class system inline — let it surface through scene; never name the genre or address the reader (\"the drama,\" \"as you know,\" \"you already know\"). Dramatize; do not annotate.",
+        "chapter_spine": ["Ch 1 — Meet across the class line; SEED the institution's quiet rot (A + B both open)", "Ch 2 — Families move against the match; ensemble (striver/fixer/witness) staked to the system; love and standing fused into one choice", "Ch 3 — ▶ MIDPOINT TWIST: antagonist's true motive exposed, corruption at the core revealed, one lover/their family bound to that rot (everything recontextualized)", "Ch 4 — Fallout: the reveal becomes a wound between them; ensemble fractures along the class line; stakes go societal", "Ch 5 — B-PLOT CLIMAX: corruption forced into the open, the system answers on its own terms", "Ch 6 — A-PLOT RESOLUTION: the system exacts a permanent cost; they choose each other knowing the price (no clean win)"],
+    },
+    "amnesia_reset": {
+        "display_name": "Amnesia Reset",
+        "family": "kdrama",
+        "tone": "melodrama",
+        "axes": {"arc": "non_linear", "a_conflict": "internal_identity", "b_plot": "family_secret", "twist": "memory_loss_refalling", "resolution": "love_past_memory", "tone": "melodrama", "scale": "family"},
+        "structural_prompt": "Build a NON-LINEAR two-strand K-drama. Open AFTER the rupture: the lead wakes with a hole in memory where the whole relationship used to be, then circle back through out-of-order fragments the reader reassembles. A-PLOT (relationship): the wound is INTERNAL and about IDENTITY — the lead cannot trust a self they no longer remember; the second lead must love someone who no longer knows they were loved. Ask each act: who am I if the self that chose this person is gone? B-PLOT (engine): a FAMILY SECRET braided causally to the amnesia — what was forgotten IS the secret, or the secret caused the injury (hidden parentage, a covered-up accident, a switched child). Entangle, never parallel: recovering a memory exposes the secret; protecting the secret means keeping the lead from remembering. A parent or guardian is quietly complicit — they prefer the amnesia.\n\nMIDPOINT: fire the twist at the middle chapter — the memory-loss is revealed as tied to the buried secret, not a plain accident, AND the re-falling ignites at once: the blank-slate lead falls for the second lead a SECOND time. Recontextualize earlier fragments so Ch1 re-reads differently. Plant it early; no cheap surprise.\n\nFALLOUT: the family closes ranks; remembering now threatens the family, not just the couple. Escalate melodrama at FAMILY scale — kin-sized and airless, no corporate war, no citywide stakes.\n\nPENULTIMATE = B-PLOT CLIMAX: the secret is exposed; the guardian's complicity breaks open. FINAL = A-PLOT RESOLUTION: love PERSISTS PAST MEMORY — the bond re-forms whether or not memory returns; the choosing, not the remembering, holds.\n\nUse SLOTS only (lead, second lead, family/guardian, given setting). Steer AWAY from the road-trip skeleton: no strangers fleeing on an unplanned journey, no dying-parent reconciliation, no controlling-mother-plus-ex's-engagement, no airport reunion. TRUST THE READER: dramatize through scene and fragment — never cite real-world statistics, never gloss a term inline, never break frame with genre self-reference (\"the drama,\" \"you already know\").",
+        "chapter_spine": ["Ch1 — Open post-rupture: the lead wakes memory-blank; a stranger (the second lead) insists on a shared past; family-secret SEEDED in a fragment that reads as innocent", "Ch2 — Out-of-order 'before' fragments accrue; the couple's prior bond and the guardian's odd vigilance both surface; stakes named — remembering endangers more than the heart", "Ch3 — Entangle: chasing one recovered memory brushes the secret; the guardian steers the lead away from remembering; the second lead is torn between honesty and protecting them", "Ch4 — MIDPOINT TWIST: the amnesia is exposed as bound to the buried family secret (not a plain accident) AND the re-fall ignites — blank-slate lead falls a SECOND time; earlier fragments recontextualized, Ch1 re-reads differently", "Ch5 — B-PLOT CLIMAX (penultimate): the family closes ranks, then the secret detonates; the guardian's complicity breaks open; the couple ruptures under the exposed truth", "Ch6 — A-PLOT RESOLUTION (final): love PERSISTS PAST MEMORY — whether or not the memories return, the lead chooses the second lead anew; the choosing, not the remembering, is what holds"],
+    },
+    "timeslip_fate": {
+        "display_name": "Time-Slip Fate",
+        "family": "kdrama",
+        "tone": "romantic_fantasy",
+        "axes": {"arc": "dual_timeline", "a_conflict": "timing_across_eras", "b_plot": "fantasy_fate", "twist": "time_slip_consequence", "resolution": "alter_fate_or_accept", "tone": "romantic_fantasy", "scale": "personal"},
+        "structural_prompt": "Build a DUAL-TIMELINE romantic-fantasy on a PERSONAL scale. Two eras run in parallel; the lead crosses between them through a specific, rule-bound slip mechanism (the exact trigger, threshold, and cost are set by the topic the user gives). BRAID two threads through every chapter. A-PLOT: the lead and the second lead keep loving each other in the WRONG era — one is always older, already-committed, not-yet-met, or a memory to the other. The obstacle is TIMING ACROSS ERAS, never forgetting and never a curse. B-PLOT ENGINE: the time-slip mechanic itself — its rules, its price on the body/memory/the world, and its worsening instability. Treat the mechanism as a system with logic and consequences; the lead learns and TESTS its rules like a puzzle. Reveal the rules only by dramatizing them — a slip that costs, a threshold that fails — NEVER by explaining or defining them to the reader. ENTANGLE early: the first slip must be caused by, and pay off in, the relationship. SEED the twist in Ch 1–2 as a small, re-readable detail (a changed object, a name that shouldn't exist, a scar, a date that won't line up).\n\nMIDPOINT TWIST — a time-slip CONSEQUENCE that REWRITES THE PRESENT. At the midpoint, the lead returns from a slip to find the present altered by something they did across eras: a person now alive or gone, a relationship that no longer happened, a self they no longer are. Everything before re-reads. After: each further slip risks unmaking the very bond they crossed to protect; the two pull further out of sync.\n\nRESOLUTION IN SEQUENCE. Penultimate = B-PLOT CLIMAX: the mechanism forces one last crossing that rewrites fate or seals it, at a named cost. Final = A-PLOT LANDING: they ALTER fate (reunite on the mechanism's terms) or ACCEPT it (release across time). Keep it personal — wonder and ache, not thriller.\n\nBANS: no real-world statistics, dates-as-facts, or cited figures; no glossary, footnote, or inline definition of the mechanic — show it working, don't gloss it; never reference \"the drama\"/\"the story\" or address the reader (\"you already know\"). DO NOT write two wounded adults on a road trip slowly thawing; no dying parent for reconciliation, no controlling mother, no ex's engagement announcement, no duty-vs-love speech, no airport grand gesture. Single-thread mood-piece = fail.",
+        "chapter_spine": ["Ch 1-2 SETUP: the two meet across a seam between eras; first rule-bound slip, caused by reaching for the other — and one seeded anomaly (changed object / impossible date), shown not explained", "Ch 3-4 ENTANGLE: they learn the mechanism's rules together by testing it; stakes named — every crossing costs, and they keep loving each other in the wrong era", "Ch ~mid ▶ MIDPOINT TWIST: the lead returns from a slip to a REWRITTEN PRESENT — a slip-consequence has altered who is alive / what happened / who they are; everything prior re-reads", "Ch mid+ FALLOUT: the timelines desync and destabilize; each further slip now threatens to unmake the bond they crossed to save", "Ch pen B-PLOT CLIMAX: the mechanism forces its final crossing — rewrite fate or seal it, at a named, irreversible cost", "Ch final A-PLOT LANDING: they ALTER fate (reunite on the mechanism's terms) or ACCEPT it (release across time) — personal, romantic-fantasy close"],
+    },
+    "ensemble_family_saga": {
+        "display_name": "Ensemble Family Saga",
+        "family": "kdrama",
+        "tone": "warm_weekend_melo",
+        "axes": {"arc": "ensemble_braided", "a_conflict": "internal_family", "b_plot": "family_secret", "twist": "distributed_reveals", "resolution": "family_reconvenes", "tone": "warm_weekend_melo", "scale": "family"},
+        "structural_prompt": "Build a warm weekend-drama at family scale around ONE family the user names — not one couple. Cast an ensemble of 3-5 kin (across two or three generations) sharing a home, table, or business; give each their own thread. A-PLOT: the relationship in strain is INTERNAL across this family — estrangement, a favored/overlooked sibling, a parent and grown child who cannot speak plainly, in-laws who never thawed. Advance these bonds every chapter through ordinary domestic ritual (a shared meal, an anniversary, a move, an illness scare), not romance-as-engine. B-PLOT: a single family-secret buried a generation ago, whose consequences surface differently in each thread. Braid tightly: every chapter must nudge BOTH a specific relationship AND leak one more fragment of the buried truth, so the two read as one fabric. Plant the secret early in mundane detail — a name avoided, a locked drawer, a birthday that doesn't add up, an heirloom that shouldn't exist — so a re-reader sees it seeded.\n\nMIDPOINT TWIST — distributed reveals: at the middle chapter, each thread's private secret surfaces AT ONCE, and they resolve into facets of the ONE generational secret. What looked like separate private shames recontextualize as a single concealed act and its long shadow. Everything prior re-reads.\n\nFALLOUT: the family fractures — sides taken, a walkout, silence at the table, an escalation per thread. B-PLOT CLIMAX (penultimate): the full origin of the secret is spoken aloud — who did what, why, and who paid — settling the generational debt. A-PLOT RESOLUTION (final): the family RECONVENES — a reunion around the same table/ritual from chapter one, bonds re-set on honest terms; warm, earned, not saccharine.\n\nSLOTS ONLY: the family, the setting, the era, the secret's nature all come from the user's topic — never invent names, a specific city, company, or event.\n\nDO NOT write the default K-drama skeleton: no two wounded strangers on an unplanned road-trip drifting into love while fleeing their lives; no single-couple spine with a dying parent + controlling mother + an ex's engagement announcement + duty-vs-love pull + one big-gesture reunion. This is a MULTI-THREAD household lattice, not a romance with relatives attached. No statistics, no term definitions, no calling this a \"drama\" or \"story.\"",
+        "chapter_spine": ["Ch1-2 — SETUP: the family gathers at the shared table/ritual; each thread's strain sketched; plant the buried secret in mundane detail (avoided name, drawer, mismatched date)", "Ch3-4 — ENTANGLE: threads press against each other; each member privately brushes their own concealment; the generational secret's pressure named without being seen", "Ch~mid — MIDPOINT TWIST (distributed reveals): every thread's private secret surfaces at once and resolves into facets of ONE generational secret — all prior chapters recontextualized", "Ch mid+ — FALLOUT: the family fractures; sides taken, a walkout, silence at the table; each thread escalates under the exposed truth", "Ch pen — B-PLOT CLIMAX: the secret's full origin is spoken aloud — who did what, why, who paid — the generational debt settled", "Ch final — A-PLOT RESOLUTION (family reconvenes): reunion at the same table/ritual from Ch1, bonds re-set on honest terms — warm, earned"],
+    },
+    "corporate_thriller": {
+        "display_name": "Corporate Thriller",
+        "family": "kdrama",
+        "tone": "taut_dark_thriller",
+        "axes": {"arc": "linear", "a_conflict": "ambition_clash", "b_plot": "corporate_power", "twist": "villain_motive_betrayal", "resolution": "win_company_lose_something", "tone": "taut_dark_thriller", "scale": "corporate"},
+        "structural_prompt": "Build a taut corporate thriller in strict linear time. A-plot: two ambitious equals — the lead and the second lead — want the same summit and cannot both have it. Braid it act by act with a B-plot corporate-power engine (a hostile takeover, or a whistleblower dossier that could gut the firm) inside the institution the topic names. Do NOT write the default K-drama: no aimless road trip, no two wounded strangers thawing while they flee their lives, no dying-parent reconciliation, no controlling-mother veto, no ex's engagement announcement, no duty-versus-love ache resolved by an airport gesture. Mood-over-incident and single-thread are failure here; every chapter moves ONE concrete plot lever AND one relationship beat.\n\nSETUP: the two meet as rivals-or-allies chasing the same win; plant the takeover/dossier as ambient background — a board memo, a leaked figure, a routine-looking offer. Bury the villain's true motive in plain sight so a re-read pays off.\n\nENTANGLE: their ambitions and the corporate war fuse — shared strategy, a co-authored move, mutual leverage. Name stakes in corporate terms: the chairmanship, the ledger, the exposure.\n\nMIDPOINT TWIST — fire it exactly at the middle chapter: reveal the villain's TRUE motive AND a betrayal that recontextualizes every earlier scene (the ally who briefed the lead was steering the takeover; the mentor's grief masked a grab; the trusted one planted the seed). The setup must now read differently.\n\nFALLOUT: alliance breaks, positions invert, the war turns personal and colder.\n\nPENULTIMATE = B-PLOT CLIMAX: the takeover closes or the dossier detonates; the company is won.\n\nFINAL = A-PLOT LANDING: winning the company costs something irreversible — the second lead, a principle, or the self who could still be loved. Win the empire, lose the person. No clean triumph, no reconciliation hug. Stay topic-agnostic: use the firm, the family, the setting the user gives. Never cite a statistic. Never define a term. Never call this a story.",
+        "chapter_spine": ["Ch 1-2 SETUP: two ambitious equals collide over the same summit; the takeover/dossier seeds as routine background (villain's true motive hidden in plain sight)", "Ch 3-4 ENTANGLE: rivalry sharpens into uneasy alliance; ambitions and the corporate war fuse; stakes named — chairmanship, ledger, exposure", "Ch ~mid ▶ MIDPOINT TWIST: villain's TRUE motive revealed + the betrayal — the trusted ally was steering the takeover all along; every earlier scene recontextualized", "Ch mid+ FALLOUT: alliance shatters, positions invert, leverage becomes weapon; the fight turns personal and colder", "Ch pen B-PLOT CLIMAX: the takeover closes / the dossier detonates — the company is won", "Ch final A-PLOT LANDING: victory exacts an irreversible cost — the second lead, a principle, or the self that could be loved; win the empire, lose the person"],
+    },
 }
 
 
 # ── topic-aware compatibility (spec section 6) ──────────────────────────────────
-# A plot-specific topic must not be forced into a clashing beat-map (e.g. "perpisahan"
-# should not become rival_to_love). Each hint maps a topic signal -> the FITTING subset.
-# No hint matched -> the whole family is eligible (generic topic = wide open). Heuristic,
-# free; the optional flash classifier for ambiguous titles is a later addition.
-_TOPIC_HINTS = [
-    (re.compile(r"(?i)\b(putus|perpisahan|pisah|mantan|patah\s*hati|berpisah|kandas|move\s*on)\b"),
-     ["breakup_first", "the_almost", "slow_fade", "second_chance"]),
-    (re.compile(r"(?i)\b(reuni|cinta\s*lama|masa\s*lalu|ketemu\s*lagi|jumpa\s*lagi|bertemu\s*kembali|nostalgia)\b"),
-     ["second_chance", "breakup_first"]),
-    (re.compile(r"(?i)\b(saingan|rival|lawan|kompetisi|lomba|rebutan|bersaing|kompetitor)\b"),
-     ["rival_to_love"]),
-    (re.compile(r"(?i)\b(rahasia|sembunyi|menyembunyikan|kejutan|tersembunyi)\b"),
-     ["secret_reveal"]),
-    (re.compile(r"(?i)\b(sahabat|teman|circle|geng|genk|kelompok|grup|komunitas|satu\s*circle)\b"),
-     ["group_to_pair"]),
-    (re.compile(r"(?i)\b(karir|karier|ambisi|mimpi|cita-cita|kerja|pekerjaan|beasiswa|impian)\b"),
-     ["ambition_collision"]),
-    (re.compile(r"(?i)\b(ldr|jarak\s*jauh|beda\s*kota|pindah|merantau|jauh)\b"),
-     ["ambition_collision", "slow_fade", "second_chance"]),
-    (re.compile(r"(?i)\b(nyaris|hampir|tak\s*sampai|tak\s*kesampaian|gagal\s*jadian)\b"),
-     ["the_almost"]),
-]
+# Per-family hint sets — a plot-specific topic must not be forced into a clashing preset.
+# Each hint maps a topic signal -> the FITTING subset (within the family). No hint matched
+# -> the whole family is eligible (generic topic = wide open). Heuristic + free.
+_TOPIC_HINTS = {
+    "romance": [
+        (re.compile(r"(?i)\b(putus|perpisahan|pisah|mantan|patah\s*hati|berpisah|kandas|move\s*on)\b"),
+         ["breakup_first", "the_almost", "slow_fade", "second_chance"]),
+        (re.compile(r"(?i)\b(reuni|cinta\s*lama|masa\s*lalu|ketemu\s*lagi|jumpa\s*lagi|bertemu\s*kembali|nostalgia)\b"),
+         ["second_chance", "breakup_first"]),
+        (re.compile(r"(?i)\b(saingan|rival|lawan|kompetisi|lomba|rebutan|bersaing|kompetitor)\b"),
+         ["rival_to_love"]),
+        (re.compile(r"(?i)\b(rahasia|sembunyi|menyembunyikan|kejutan|tersembunyi)\b"),
+         ["secret_reveal"]),
+        (re.compile(r"(?i)\b(sahabat|teman|circle|geng|genk|kelompok|grup|komunitas|satu\s*circle)\b"),
+         ["group_to_pair"]),
+        (re.compile(r"(?i)\b(karir|karier|ambisi|mimpi|cita-cita|kerja|pekerjaan|beasiswa|impian)\b"),
+         ["ambition_collision"]),
+        (re.compile(r"(?i)\b(ldr|jarak\s*jauh|beda\s*kota|pindah|merantau|jauh)\b"),
+         ["ambition_collision", "slow_fade", "second_chance"]),
+        (re.compile(r"(?i)\b(nyaris|hampir|tak\s*sampai|tak\s*kesampaian|gagal\s*jadian)\b"),
+         ["the_almost"]),
+    ],
+    "kdrama": [
+        (re.compile(r"(?i)\b(chaebol|conglomerate|hostile\s+takeover|succession|corporate|company\s+war|boardroom|merger|acquisition)\b"),
+         ["chaebol_contract", "corporate_thriller"]),
+        (re.compile(r"(?i)\b(revenge|revenj|balas\s*dendam|return\s+to\s+destroy|vendetta|payback)\b"),
+         ["revenge_return"]),
+        (re.compile(r"(?i)\b(birth\s*secret|hidden\s*parentage|swapped|adopted|birth\s+order|makjang|makjjang|long-lost)\b"),
+         ["birth_secret_makjang"]),
+        (re.compile(r"(?i)\b(reaper|grim\s*reaper|immortal|god|goblin|curse|reincarnation|past\s+life|deity|spirit)\b"),
+         ["fantasy_bond"]),
+        (re.compile(r"(?i)\b(hospital|surgeon|doctor|law\s*firm|prosecutor|lawyer|newsroom|reporter|procedural)\b"),
+         ["workplace_slow_burn", "terminal_melodrama"]),
+        (re.compile(r"(?i)\b(second\s*lead|love\s*triangle|triangle|the\s+one\s+who\s+got\s+away)\b"),
+         ["second_lead_triangle"]),
+        (re.compile(r"(?i)\b(illness|terminal|cancer|dying|sakit|tumor|leukemia|sekarat)\b"),
+         ["terminal_melodrama"]),
+        (re.compile(r"(?i)\b(class\s*war|social\s*class|beda\s*kelas|poor\s+rich|elite|prole|underclass|corruption)\b"),
+         ["class_war_romance", "chaebol_contract"]),
+        (re.compile(r"(?i)\b(amnesia|memory\s*loss|forgot|hilang\s*ingatan|coma|blackout)\b"),
+         ["amnesia_reset"]),
+        (re.compile(r"(?i)\b(time\s*slip|time\s*travel|dulu|masa\s*depan|joseon|goryeo|era|era-crossing)\b"),
+         ["timeslip_fate", "fantasy_bond"]),
+        (re.compile(r"(?i)\b(family\s*saga|ensemble|three\s+generations|siblings|father\s+and\s+son|weekend\s*drama)\b"),
+         ["ensemble_family_saga"]),
+    ],
+}
 
 
 def _family_keys(family: str) -> list:
     return [k for k, v in BEAT_MAPS.items() if v["family"] == family]
 
 
-def compatible_beatmaps(topic: Optional[str], family: str = "romance") -> list:
+def compatible_beatmaps(topic, family="romance"):
     """Return the beat-map keys that fit `topic` within `family`. No signal -> all keys."""
     keys = _family_keys(family)
     t = (topic or "").lower()
     matched: list = []
-    for rx, ks in _TOPIC_HINTS:
+    for rx, ks in _TOPIC_HINTS.get(family, []):
         if rx.search(t):
             matched.extend(k for k in ks if k in keys)
-    # dedupe preserving order; empty -> whole family eligible
     seen = set()
     ordered = [k for k in matched if not (k in seen or seen.add(k))]
     return ordered or keys
@@ -187,16 +311,13 @@ def _emit(key: str) -> dict:
     }
 
 
-def select_beatmap(topic: Optional[str], style: Optional[str], *,
-                   tenant_id: Optional[str] = None,
-                   override: Optional[str] = None,
-                   recent_ids: Optional[list] = None) -> Optional[dict]:
-    """Pick a beat-map for (topic, style). Pure function — the caller does Redis I/O and
-    passes `recent_ids` (the tenant's last-used ids) for anti-repeat.
+def select_beatmap(topic, style, *, tenant_id=None, override=None, recent_ids=None):
+    """Pick a beat-map for (topic, style). Pure — caller does Redis I/O and passes
+    `recent_ids` (the tenant's last-used ids) for anti-repeat.
 
     - style not in a beat-map family -> None (outline stays default).
     - override (a valid beatmap_id in the resolved family) wins.
-    - else: topic-compatible subset, minus recent_ids (reset if that empties it), random pick.
+    - else: topic-compatible subset, minus recent_ids (reset if that empties it), random.
     """
     family = beatmap_family_for_style(style)
     if not family:
@@ -211,7 +332,7 @@ def select_beatmap(topic: Optional[str], style: Optional[str], *,
     return _emit(random.choice(fresh))
 
 
-def structural_block(bm: dict) -> str:
+def structural_block(bm):
     """Render the STORY STRUCTURE block injected into the outline user-turn."""
     if not bm:
         return ""
