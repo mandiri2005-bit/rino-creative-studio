@@ -1098,6 +1098,13 @@ _NARASI_GEMINI_FAILOVER_MODELS = {
     "gemini-3-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
+    # Rino 2026-07-06: NARASI_POLISH_MODEL=gemini-3.5-flash polished a full book
+    # in 19.3s (vs sonnet 189s) but went via plain make_client → LaoZhang (marked
+    # up), NOT Vertex. Adding it here routes polish through Vertex OAuth first
+    # (GCP-billed, no aggregator markup) → LaoZhang fallback. If Vertex has no
+    # 3.5-flash in the configured GCP_LOCATION it returns empty → falls through to
+    # LaoZhang (today's behavior), so this is strictly a win-or-noop.
+    "gemini-3.5-flash",
 }
 # Sonnet narasi models eligible for the LaoZhang failover chain (Rino 2026-07-06).
 # MANAGER_MODEL defaults to claude-sonnet-4-6 (all polish/merge/synthesize). These
