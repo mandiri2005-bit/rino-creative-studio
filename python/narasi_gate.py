@@ -1045,6 +1045,12 @@ def glossary_definition_scan(text: str) -> dict[str, Any]:
 # proper-name subject at sentence start. We count per chapter and flag a book that
 # MIXES personas across chapters (the Bab-2-reverts-to-3rd-person failure mode).
 _POV_FIRST_RX = re.compile(r"(?<![\wÀ-ÿ])(aku|gue|gua|saya|ku)(?![\wÀ-ÿ])", re.IGNORECASE)
+# English 1st-person: standalone capital "I" (+ contractions). Case-SENSITIVE so it does
+# not match every 'i'. (bed-of-orchid part-2: Ch5 slipped to 1st-person in a 2nd-person book.)
+_POV_FIRST_EN_RX = re.compile(r"(?<![\w'])(?:I|I'm|I've|I'll|I'd)(?![\w'])")
+# 2nd-person narrative: "you/your" as a frequent subject (the Orchid pieces' register). A
+# little dialogue-"you" noise is fine — the per-chapter dominant vote absorbs it.
+_POV_SECOND_RX = re.compile(r"(?<![\w'])(?:[Yy]ou|[Yy]our|[Yy]ou're|[Yy]ourself|[Yy]ourselves)(?![\w'])")
 # 3rd-person: a Capitalised name as the subject at the START of a sentence, followed by
 # a lowercase verb (heuristic for "Arya mendengar", "Raka duduk"). Excludes dialogue.
 _POV_THIRD_RX = re.compile(r"(?m)^\s*([A-Z][a-z]{2,})\s+([a-z]{3,})")
@@ -1064,22 +1070,24 @@ def pov_persona_drift_scan(text: str) -> dict[str, Any]:
     for ch in chapters:
         if not ch or not ch.strip():
             continue
-        first = len(_POV_FIRST_RX.findall(ch))
+        # Tri-state: first (aku/gue/… + English "I"), second ("you"), third (Name+verb).
+        first = len(_POV_FIRST_RX.findall(ch)) + len(_POV_FIRST_EN_RX.findall(ch))
+        second = len(_POV_SECOND_RX.findall(ch))
         third = len(_POV_THIRD_RX.findall(ch))
-        if first == 0 and third == 0:
+        scores = {"first": first, "second": second, "third": third}
+        top = max(scores, key=scores.get)
+        if scores[top] == 0:
             personas.append("none")
-        elif first >= max(1, third * 2):
-            personas.append("first")
-        elif third >= max(1, first * 2):
-            personas.append("third")
         else:
-            personas.append("mixed")
-    voted = [p for p in personas if p in ("first", "third")]
+            # dominant only if it clears the runner-up by 2× (else "mixed")
+            rest = sorted((v for k, v in scores.items() if k != top), reverse=True)
+            personas.append(top if scores[top] >= max(1, rest[0] * 2) else "mixed")
+    voted = [p for p in personas if p in ("first", "second", "third")]
     dominant = max(set(voted), key=voted.count) if voted else None
-    # drift = the book uses BOTH first and third as a chapter's dominant persona,
-    # OR any single chapter is internally 'mixed'.
+    # drift = >1 distinct dominant persona across chapters (e.g. a 2nd-person book with one
+    # 1st-person chapter — bed-of-orchid part-2 Ch5), OR any single chapter reads 'mixed'.
     distinct = set(voted)
-    drift = ("first" in distinct and "third" in distinct) or ("mixed" in personas)
+    drift = len(distinct) > 1 or ("mixed" in personas)
     return {
         "chapters": len(personas),
         "personas": personas,

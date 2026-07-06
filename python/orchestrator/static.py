@@ -726,9 +726,21 @@ async def _polish_reduce(
         _need = int(_book_words * 1.45 * 1.08)     # tokens to reproduce the book + slack
         _ceil = int(_mt4(manager_model or "") or 0)
         if _ceil and _need > int(_ceil * 0.95):
-            log.info("_polish_reduce: skipping polish — book needs ~%d tokens but %s ceiling "
-                     "is %d (guaranteed truncation)", _need, manager_model, _ceil)
-            return book, False
+            # B (2026-07-07): skipping polish on every long book leaves it with ZERO whole-book
+            # pass (bed-of-orchid part-2: 8511 tok > gemini-3.5-flash 8192 → no polish at all).
+            # Promote to a bigger-ceiling editor if one is configured AND actually fits, instead
+            # of skipping. NARASI_POLISH_BIG_MODEL (env) is the opt-in lever; unset ⟹ today's
+            # skip behavior (byte-identical).
+            _big = (os.environ.get("NARASI_POLISH_BIG_MODEL") or "").strip()
+            _big_ceil = int(_mt4(_big) or 0) if _big else 0
+            if _big and _big_ceil and _need <= int(_big_ceil * 0.95):
+                log.info("_polish_reduce: book needs ~%d tokens > %s ceiling %d — promoting to "
+                         "%s (ceiling %d) instead of skipping", _need, manager_model, _ceil, _big, _big_ceil)
+                manager_model = _big
+            else:
+                log.info("_polish_reduce: skipping polish — book needs ~%d tokens but %s ceiling "
+                         "is %d (guaranteed truncation)", _need, manager_model, _ceil)
+                return book, False
     except Exception:  # noqa: BLE001
         pass
 

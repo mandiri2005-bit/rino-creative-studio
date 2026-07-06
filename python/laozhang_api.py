@@ -7389,11 +7389,15 @@ _CONSISTENCY_CRITIC_SYS = (
     "4. ENTITY/LABEL DRIFT — the same person or object named two ways ('the notebook' vs 'the "
     "diary'), or two distinct entities left confusably alike.\n"
     "5. SPATIAL/CONTINUITY — props that appear or vanish; geography that contradicts itself.\n"
+    "6. POV/PERSON/TENSE — the narrative person (first 'I' / second 'you' / third 'he/she') "
+    "and tense stay consistent across the WHOLE book. Flag a chapter that switches (a "
+    "second-person book with one first-person chapter; a present-tense book with a past-tense "
+    "chapter) — cite the chapter and the switched pronoun/tense.\n"
     "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
     "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
     "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
     '{"score": <0-10>, "violations": [{"type": "provenance|timeline|causality|entity_drift|'
-    'spatial", "severity": "critical|high|medium|low", "evidence": "<short quote(s)>", '
+    'spatial|pov", "severity": "critical|high|medium|low", "evidence": "<short quote(s)>", '
     '"fix": "<one-line directive>"}], "summary": "<1-2 sentences>"}'
 )
 

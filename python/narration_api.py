@@ -705,6 +705,50 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("v3 terminal gate failed (non-fatal): %s", e)
 
+    # ── (1.5) #53 whole-draft CONSISTENCY critic for the VIDEO/orchestrator path (2026-07-07).
+    # The critic lives in laozhang_api._narasi_generate_impl, but Output=video narasi run
+    # through the orchestrator and never hit that path — so wire the SAME critic here (it makes
+    # its own LLM call, so import-and-call is safe). Reads the FULL gated book (no truncation),
+    # object-provenance/timeline/causality/entity/spatial/POV checklist. Gated NARASI_CRITIQUE_
+    # ENABLED (report-only) + NARASI_CRITIQUE_REVISE (one bounded whole-book fix). OFF ⟹ inert. ──
+    try:
+        from laozhang_api import (_narasi_critique_enabled, _narasi_critique_revise_enabled,
+                                  _narasi_consistency_critique, _narasi_consistency_revise,
+                                  NARASI_CRITIQUE_MIN_CHAPTERS)
+        # Mirror the classic caller's MIN_CHAPTERS guard so tiny/1-chapter jobs don't pay for
+        # a whole-book critic call (body["chapters"] is the outline chapter list).
+        _nch = len(body.get("chapters") or [])
+        if _narasi_critique_enabled() and _nch >= NARASI_CRITIQUE_MIN_CHAPTERS:
+            _ckey = "book" if result.get("book") else "output"
+            _cbk = result.get(_ckey) or ""
+            if _cbk:
+                _cmodel = (body.get("model") or "")
+                _cq, _cqc = await _narasi_consistency_critique(
+                    _cbk, style, language, model=_cmodel,
+                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                # Fold the critic's cost into the sink so _settle actually bills it (the call
+                # meters charge=False and RETURNS the credit — the classic path does the same
+                # via `_meter_actual += _cqc`). Without this the platform eats the cost and
+                # usage_logs won't reconcile against the settled amount.
+                if sink is not None and _cqc:
+                    sink.credits += int(_cqc)
+                _cpay = _cq
+                _cbad = [v for v in (_cq.get("violations") or [])
+                         if str(v.get("severity", "")).lower() in ("critical", "high")]
+                if _narasi_critique_revise_enabled() and _cbad:
+                    _crev, _crevc = await _narasi_consistency_revise(
+                        _cbk, _cq, style, language, model=_cmodel,
+                        tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                    if sink is not None and _crevc:
+                        sink.credits += int(_crevc)
+                    if _crev and _crev != _cbk:
+                        result[_ckey] = _crev
+                        _cpay = dict(_cq)
+                        _cpay["revised"] = True
+                result["critique"] = _cpay
+    except Exception as e:  # noqa: BLE001
+        log.warning("consistency critic (video path) failed (non-fatal): %s", e)
+
     # ── (2) R-H10 register scorecard — entry-driven (any style with a register_spec in
     # the pakem registry), report-only, one cheap call. Deterministic half = banned-tells
     # substring scan; LLM half = counting the style's required moves. ──
@@ -749,6 +793,36 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 if verdict != "on_register":
                     log.warning("register-gate: manuscript flagged off_register for %s (moves=%s banned=%s)",
                                 style_key, counts, banned)
+                    # D (2026-07-07): ACT on off_register instead of only reporting. OPT-IN via
+                    # NARASI_REGISTER_GATE_ENFORCE (default OFF) because 'off_register' is often a
+                    # style-tagging mismatch (a single-POV literary piece tagged romance), NOT a
+                    # defect — enforcing would harm legit jobs. When set, feed the missing moves /
+                    # banned tells to ONE bounded whole-book revise (reuses the #53 revise infra +
+                    # its ≥90%-word guard). Never blocks; keeps the original on any failure.
+                    if str(os.environ.get("NARASI_REGISTER_GATE_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                        try:
+                            from laozhang_api import _narasi_consistency_revise
+                            _rv = [{"type": "register", "severity": "high",
+                                    "evidence": f"required move not executed: {m}",
+                                    "fix": f"execute the '{m}' move at least once in the book"}
+                                   for m in moves if counts.get(m, 0) < 1]
+                            _rv += [{"type": "register", "severity": "high",
+                                     "evidence": f"banned phrasing present: {t}",
+                                     "fix": f"remove the banned phrasing '{t}'"} for t in banned]
+                            _rkey = "book" if result.get("book") else "output"
+                            _rbk = result.get(_rkey) or ""
+                            if _rv and _rbk:
+                                _rnew, _rc = await _narasi_consistency_revise(
+                                    _rbk, {"violations": _rv}, style_key, language,
+                                    model=(body.get("model") or ""),
+                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                                if sink is not None and _rc:   # bill the revise (see block A note)
+                                    sink.credits += int(_rc)
+                                if _rnew and _rnew != _rbk:
+                                    result[_rkey] = _rnew
+                                    result["register_gate"]["revised"] = True
+                        except Exception as _e:  # noqa: BLE001
+                            log.warning("register-gate enforce revise failed (non-fatal): %s", _e)
     except Exception as e:  # noqa: BLE001
         log.warning("register gate failed (non-fatal): %s", e)
 
