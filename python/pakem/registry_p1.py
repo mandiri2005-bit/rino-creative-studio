@@ -2311,6 +2311,11 @@ FORBIDDEN:
             # Sample-21 (romansa-SMA V1+V2, 4 review lenses, 2026-07-06): lock ONE
             # grammatical persona for the whole book — do not drift gue→aku→3rd-person-Raka.
             "single_pov_persona_lock",
+            # Sample-25 lens-#4 (2026-07-06): controlled-melancholy needs ONE visible-crack
+            # moment somewhere in Bab 3-5 (a half-typed message erased then re-sent, a
+            # frustrated sigh, a small eye-roll at the safest alibi) — the restraint reads
+            # as poignant by contrast only when the control cracks once, visibly.
+            "one_visible_crack_moment_per_book",
         ],
         "banned_tells": [
             "zaman sekarang tuh anak muda",
@@ -2360,6 +2365,9 @@ FORBIDDEN:
             "glossary_definition_max": 0,          # zero parenthetical/em-dash glosses of native-known terms
             "pov_persona_lock": True,              # one persona (gue OR aku OR 3rd-person) held whole book
             "aphorism_density_max_per_2_chapters": 1,  # ~1 maxim per 2 bab, not per scene
+            "visible_crack_moment_min_per_book": 1,     # Sample-25 lens-#4: one small break
+                                                        # of control, so the restraint reads
+                                                        # as chosen rather than automatic.
         },
     },
 }

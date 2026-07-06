@@ -1,22 +1,20 @@
-"""python/pakem/beatmaps.py — Beat-map library v1 (romance + K-drama families).
+"""python/pakem/beatmaps.py — Beat-map library v2 (romance + K-drama + recombination).
 
-A beat-map governs PLOT ARCHITECTURE, orthogonal to `style` (which governs register). The
-selected beat-map's `structural_prompt` is injected into OUTLINE generation so the SAME
-style produces a DIFFERENT arc each time — fixing the corpus finding (sample-21..25) that
-the pipeline had ONE mold per style, re-skinned per topic.
+Structure layer for narasi outline generation. Beat-map governs PLOT ARCHITECTURE,
+orthogonal to `style` (register). Selected via mode:
+  - preset (default): one of the 26 authored presets (10 romance + 12 kdrama + 4 v2 portfolio).
+  - compose (romance only): free-composed from axis fragments (arc × conflict × resolution × pov),
+    pruned by validity matrix (~1400 valid combos in romance).
+  - off: no beat-map.
 
-Flag-gated by DALANG_BEATMAP_ENABLED on the python service (default OFF -> byte-identical:
-nothing here is imported/called unless the outline path opts in).
+TWIST layer (v2): 6 twist primitives roll independently per narasi. 60% of narasi ship
+with no twist (weighted default). Beat-maps with a signature twist skip the layer.
+Anti-repeat: separate Redis list `beatmap:recent_twist:{tenant}`.
 
-FAMILIES:
-  - romance (10 presets) — shipped 48de553; corpus sample-25 confirmed slow_fade fits
-    friendship-fade too (register-portable). Distinctness CLEAN, 0 collapse.
-  - kdrama  (12 presets) — braided A+B plot + midpoint reversal; authored+verified 2026-07-06.
-    Distinctness CLEAN, 0 collapse, 2 minor texture-adjacencies (fantasy_bond~timeslip_fate,
-    revenge_return~corporate_thriller) mitigated by anti-repeat.
+Flag-gated on DALANG_BEATMAP_ENABLED (default OFF, byte-identical).
 
-DO NOT hand-edit the BEAT_MAPS prompt strings — regenerate from the workflow result via
-scratchpad/gen_beatmaps_v2.py so long strings never suffer transcription drift.
+DO NOT hand-edit authored strings — regenerate via scratchpad/gen_beatmaps_v3.py from
+the workflow result JSON files.
 """
 from __future__ import annotations
 
@@ -27,12 +25,9 @@ from typing import Optional
 
 
 def beatmaps_enabled() -> bool:
-    """Master flag. OFF (default) -> the outline path never touches this module."""
     return os.environ.get("DALANG_BEATMAP_ENABLED") == "1"
 
 
-# style registry_key -> beat-map family. Only styles listed here get a beat-map;
-# everything else returns None (outline path stays byte-identical).
 _ROMANCE_STYLES = frozenset({
     "remaja_coming_of_age", "coming_of_age",
     "romance_contemporary", "romance",
@@ -228,13 +223,144 @@ BEAT_MAPS = {
         "structural_prompt": "Build a taut corporate thriller in strict linear time. A-plot: two ambitious equals — the lead and the second lead — want the same summit and cannot both have it. Braid it act by act with a B-plot corporate-power engine (a hostile takeover, or a whistleblower dossier that could gut the firm) inside the institution the topic names. Do NOT write the default K-drama: no aimless road trip, no two wounded strangers thawing while they flee their lives, no dying-parent reconciliation, no controlling-mother veto, no ex's engagement announcement, no duty-versus-love ache resolved by an airport gesture. Mood-over-incident and single-thread are failure here; every chapter moves ONE concrete plot lever AND one relationship beat.\n\nSETUP: the two meet as rivals-or-allies chasing the same win; plant the takeover/dossier as ambient background — a board memo, a leaked figure, a routine-looking offer. Bury the villain's true motive in plain sight so a re-read pays off.\n\nENTANGLE: their ambitions and the corporate war fuse — shared strategy, a co-authored move, mutual leverage. Name stakes in corporate terms: the chairmanship, the ledger, the exposure.\n\nMIDPOINT TWIST — fire it exactly at the middle chapter: reveal the villain's TRUE motive AND a betrayal that recontextualizes every earlier scene (the ally who briefed the lead was steering the takeover; the mentor's grief masked a grab; the trusted one planted the seed). The setup must now read differently.\n\nFALLOUT: alliance breaks, positions invert, the war turns personal and colder.\n\nPENULTIMATE = B-PLOT CLIMAX: the takeover closes or the dossier detonates; the company is won.\n\nFINAL = A-PLOT LANDING: winning the company costs something irreversible — the second lead, a principle, or the self who could still be loved. Win the empire, lose the person. No clean triumph, no reconciliation hug. Stay topic-agnostic: use the firm, the family, the setting the user gives. Never cite a statistic. Never define a term. Never call this a story.",
         "chapter_spine": ["Ch 1-2 SETUP: two ambitious equals collide over the same summit; the takeover/dossier seeds as routine background (villain's true motive hidden in plain sight)", "Ch 3-4 ENTANGLE: rivalry sharpens into uneasy alliance; ambitions and the corporate war fuse; stakes named — chairmanship, ledger, exposure", "Ch ~mid ▶ MIDPOINT TWIST: villain's TRUE motive revealed + the betrayal — the trusted ally was steering the takeover all along; every earlier scene recontextualized", "Ch mid+ FALLOUT: alliance shatters, positions invert, leverage becomes weapon; the fight turns personal and colder", "Ch pen B-PLOT CLIMAX: the takeover closes / the dossier detonates — the company is won", "Ch final A-PLOT LANDING: victory exacts an irreversible cost — the second lead, a principle, or the self that could be loved; win the empire, lose the person"],
     },
+    "light_comedic": {
+        "display_name": "Light Comedic",
+        "family": "romance",
+        "tone": "warm_comedic",
+        "axes": {"arc": "linear", "conflict": "misunderstanding_that_fizzles", "resolution": "earned_warm", "pov": "first", "twist": "none"},
+        "structural_prompt": "Tulis cerita romansa ringan-komedik dalam POV pertama (\"aku\") yang observasional dan sedikit sarkastis pada diri sendiri — BUKAN kontemplatif, BUKAN penuh tesis batin. Suara \"aku\" harus punya timing komedi: kalimat pendek yang menjatuhkan diri sendiri, jeda yang dipakai untuk lelucon kecil, bukan untuk menghela napas.\n\nARC LINEAR: waktu berjalan maju satu arah. Tidak ada flashback, tidak ada mimpi, tidak ada bingkai \"ia mengenang\". Satu hari, atau rentang pendek berurutan, dari salah-baca → salah-paham puncak → salah-paham kempis.\n\nKONFLIK: misunderstanding_that_fizzles. \"Aku\" menyimpulkan sesuatu tentang orang itu (atau perasaan orang itu ke aku) dari data yang terlalu sedikit. Konflik ini murni internal-persepsi, BUKAN cinta segitiga, BUKAN kecemburuan, BUKAN campur tangan orang tua. Salah paham naik bertingkat karena aku terus menafsir baru lewat lensa yang keliru. Puncaknya bukan pertengkaran — puncaknya adalah momen canggung yang, dari luar, terlihat konyol.\n\nCARA MENGEMPIS: bukan pengakuan besar. Satu kalimat sehari-hari dari orang itu — permintaan biasa, komentar sepele, koreksi kecil — yang membuat seluruh premis asumsiku runtuh dalam satu detik. Ledakan tawa (atau ledakan malu yang jadi tawa) menggantikan grand-gesture confession.\n\nLANDING: earned_warm. Bahagia tanpa ragu, tapi bukan lewat pelukan sinematik atau deklarasi. Dinyatakan lewat gestur kecil yang menandakan mereka akan lanjut: berbagi bangku, satu tawaran remeh diterima, rencana kecil untuk besok. Hangat, ringan, tidak menggurui, tidak manis berlebihan.\n\nTWIST: none. Tidak ada belokan identitas, tidak ada rahasia tersembunyi. Yang mengejutkan hanya seberapa sederhana kebenarannya dibanding bangunan asumsi \"aku\".\n\nTRUST THE READER: jangan kutip statistik, jangan definisikan istilah, jangan self-reference genre. Tunjukkan situasi, biarkan pembaca ikut menyimpulkan.",
+        "chapter_spine": ["Bab 1 — Aku salah baca situasi kecil hari ini, dan aku belum tahu itu akan jadi lucu", "Bab 2 — Salah bacaku menempel: aku bertindak seolah asumsiku benar, dan sikapku jadi aneh dengan cara yang bisa ditertawakan", "Bab 3 — Asumsiku bertemu bukti kecil yang seharusnya membatalkannya; aku memilih menafsirkannya sebagai konfirmasi", "Bab 4 — Salah paham naik ke titik canggung tertinggi — bukan lewat air mata, tapi lewat momen yang kalau diceritakan besok pasti bikin malu sendiri", "Bab 5 — Satu kalimat biasa dari orang itu mengempiskan seluruh bangunan asumsiku; aku ketawa duluan sebelum sempat malu", "Bab 6 — Kami melanjutkan hari dengan lebih ringan; sesuatu yang hangat tetap tinggal, dinyatakan lewat gestur kecil, bukan pidato"],
+    },
+    "we_vs_world_close_third": {
+        "display_name": "We-vs-World (Close-Third)",
+        "family": "romance",
+        "tone": "grounded_serious",
+        "axes": {"arc": "linear", "conflict": "external_sympathetic_force", "resolution": "earned_costly", "pov": "close_third", "twist": "none"},
+        "structural_prompt": "Write in CLOSE THIRD PERSON throughout — \"Ia\" or the character's name, never \"aku\", never \"kamu\"-as-narrator. The camera sits behind one shoulder; we hear one interior voice at a time, but the pronoun stays third. Switch shoulder at most once, at a clear scene break.\n\nThe bond forms early and is NEVER in doubt. Two people recognize each other cleanly — no misread signals, no jealousy, no third party. What they feel is real from the first real scene. The story is not \"will they\" — it is \"how do they carry this.\"\n\nThe OBSTACLE is a legitimate, sympathetic EXTERNAL force. Name it concretely: a duty owed to family, a caregiving obligation, a signed contract, a geography that will not bend, a promise made before they met. It has its own dignity. The person or institution embodying it is not cruel, not scheming, not a villain to be defeated — they have reasons a fair reader would nod at. The story must honor both sides of the obstacle: the couple's want AND why the force exists.\n\nOPENS: a quiet scene where the two are already inside each other's orbit; the obstacle is present but unnamed — a phone left face-down, a calendar, a suitcase that hasn't been unpacked. Establish tenderness without declaration.\n\nTURNS: the obstacle becomes concrete and unmovable in ONE specific scene — a date, a document, a person on the other end of a call. No one is wrong. Both characters see it at the same time. This is the axis the story pivots on, not a misunderstanding.\n\nLANDS: earned and costly. They choose each other, but something real is paid — a delay measured in seasons not chapters, a role given up, a distance kept for a named reason. The final image shows the cost AND the choosing, held together. Warm but not clean. No grand-gesture speech, no airport chase, no rain-kiss.\n\nFORBIDDEN: shared earphones in rain, hair \"diikat asal\", orbit/gravity metaphors, mom calling about grades, re-reading chats like poetry, \"keberanian bukan absennya rasa takut\", jealousy beats, misunderstandings, villains, first-person \"aku\" narration.",
+        "chapter_spine": ["Bab 1 — Sudah di orbit yang sama: buka pada satu adegan tenang di mana keduanya sudah akrab; sesuatu di latar (kalender, koper belum dibongkar, telepon tengkurap) diam-diam menandai halangan yang belum disebut namanya.", "Bab 2 — Nama untuk yang dirasakan: sebuah momen kecil dan jujur di mana keduanya, tanpa pengakuan besar, sama-sama tahu ini nyata; kamera close-third menempel pada satu bahu, suara batin ketiga tunggal.", "Bab 3 — Bentuk halangan itu: kewajiban eksternal muncul konkret — surat, jadwal, orang di ujung telepon yang punya alasan yang adil; ditulis dengan hormat, bukan sebagai antagonis.", "Bab 4 — Menimbang dengan jujur: keduanya duduk dengan kenyataan itu tanpa saling salahkan; percakapan yang pelan, dewasa, tanpa air mata dramatis; pergeseran bahu kamera boleh terjadi di sini.", "Bab 5 — Yang dibayar: sebuah keputusan yang memakan sesuatu yang nyata — peran, musim, jarak yang diberi nama; halangan tidak dikalahkan, dihormati dan dibawa serta.", "Bab 6 — Gambar terakhir: momen tenang setelahnya; ongkos itu masih terlihat, tetapi keduanya ada di dalam bingkai yang sama; hangat, matang, tidak manis berlebihan."],
+    },
+    "healing_slice": {
+        "display_name": "Healing Slice",
+        "family": "kdrama",
+        "tone": "warm_slice_of_life",
+        "axes": {"arc": "linear", "a_conflict": "gentle_wounds", "b_plot": "craft_or_hearth", "twist": "none", "resolution": "quiet_healing", "pov": "ensemble_close", "scale": "family_hearth"},
+        "structural_prompt": "Write a healing slice-of-life in the K-drama register. Two adults carry small, ordinary wounds — a father lately gone, a marriage that quietly ended, a career that thinned into nothing, a friendship that drifted. Neither wound is a secret bomb. Neither person is hiding a twin, an inheritance, or a betrayal. They meet at a hearth — a neighborhood bakery, a used-book shop, a soup kitchen that opens at dawn, a one-room clinic, a repair bench for old radios — and the craft of the place gathers them. The B-plot is the hearth itself: dough that must be started the night before, shelves reshelved, a kettle that whistles when the second person arrives. Everything the A-plot needs, the hearth teaches through small daily gestures.\n\nOpen on a morning routine at the hearth — one person alone, doing the small work well, the wound visible only in what they do not say. The other arrives as a customer, a neighbor, a temporary hand. They come back the next day. And the next. There is no meet-cute crash, no argument-to-love, no memory loss. Just weather, hands, tea, a chair pulled slightly closer.\n\nTurn on a shared small task — a wedding cake for someone else's grandmother, a lost cat in the alley, a power cut that means candles in the shop — that lets each person be tender toward the other without naming it. Nothing shatters. Nothing is revealed. The turn is that they let themselves be seen while doing something ordinary together.\n\nLand quietly and unambiguously healed. The hearth stays open. Both people are lighter, not fixed. A shared plan for the very next day exists — dough to start tonight, a shelf to finish tomorrow. Warmth without sweetness syrup: specific hands, specific weather, specific small food. No wedding, no confession-monologue, no grand reveal, no reunion at an airport. Just: the light turns on earlier now because two people open the shop.\n\nPOV is ensemble-close: rotate freely among the two leads and two or three regulars of the hearth (an elderly patron, an apprentice, a neighbor), each in warm close third. Indonesian narration uses \"ia\" and names, never \"aku\".",
+        "chapter_spine": ["Morning at the hearth — one person alone, working well, wound shown only in small omissions and the specific weather of the day", "The other arrives — a small errand at the hearth becomes a second visit, then a third, without either naming a reason", "Hands learn each other's rhythm — a regular of the hearth (elder patron, apprentice, neighbor) is drawn in; the craft carries what talking cannot", "A shared small task lands in their laps — a cake for someone else's celebration, a lost animal, a power cut — and each is tender toward the other in passing", "A quiet evening after the task — tea, leftover bread, a chair pulled closer; each says one true small thing about the wound; nothing is fixed, only witnessed", "Next morning at the hearth — the light is on earlier because two people open it; a plan for tonight's dough or tomorrow's shelf; the door swings and a regular walks in smiling"],
+    },
+    "uplifting_underdog": {
+        "display_name": "Uplifting Underdog",
+        "family": "kdrama",
+        "tone": "triumphant",
+        "axes": {"arc": "linear", "a_conflict": "shared_belief", "b_plot": "systemic_underdog_fight", "twist": "ally_true_capacity", "resolution": "unambiguous_win", "pov": "first_or_close_third", "scale": "community_to_societal"},
+        "structural_prompt": "Tulis kisah pemenang bawah-angin yang berakhir MENANG BERSIH. Bukan pahit, bukan mahal, bukan tragedi berbaju harapan. Landing = kemenangan yang tak bisa disangkal, dan pembaca ditinggalkan tegak, bukan pilu.\n\nOPENS: satu orang biasa — bukan pahlawan, bukan jenius — menabrak ketidakadilan sistemik yang dianggap semua orang sebagai \"ya sudah, memang begitu\": peraturan yang menekan, praktik yang membusuk pelan, pintu yang tertutup untuk orang seperti dia. Ia menolak menerimanya. Bukan karena marah. Karena ia melihat sesuatu yang belum dilihat orang lain, dan keyakinan itu tidak bisa ia matikan.\n\nTURNS: perlawanan tumbuh dari satu suara menjadi banyak. A-plot = kemitraan (bisa cinta yang matang perlahan, bisa persaudaraan tempaan) yang ditempa DALAM perjuangan, bukan mengganggu perjuangan — dua orang yang menemukan bahwa keyakinan mereka sama sebelum menemukan bahwa hati mereka sama. B-plot = pertarungan sistemik itu sendiri: bertambah sekutu, bertambah taruhan, sistem mulai membalas. Sekutu tampak biasa hingga TWIST: seorang sekutu ternyata membawa kapasitas tersembunyi — akses, pengetahuan, sejarah, atau kedudukan — yang mengubah geometri pertarungan. Bukan penyelamat dari langit; sesuatu yang selama ini ada di dalam gerakan, tak terbaca.\n\nLANDS: kemenangan bersih dan publik. Sistem bergeser secara nyata — aturan berubah, pintu terbuka, sesuatu yang dulu mustahil menjadi biasa. Pasangan berdiri bersebelahan di sisi lain, utuh. Tidak ada pengorbanan tersembunyi, tidak ada \"tapi\", tidak ada satu tokoh yang harus mati atau mundur agar kemenangan terasa \"layak\". Kemenangan dibayar dengan kerja, bukan dengan kehilangan.\n\nPOV: orang pertama (\"aku\") ATAU orang ketiga dekat pada protagonis bawah-angin — pikiran satu orang, jarak nol. Skala bergerak dari satu komunitas ke lapisan masyarakat yang lebih luas: yang lokal menjadi preseden.\n\nNada: triumfan yang berakar — bukan sorak-sorai, tapi kelegaan yang jujur seorang manusia biasa yang benar dan menang.",
+        "chapter_spine": ["Ketidakadilan yang dianggap wajar menabrak satu orang biasa, dan ia menolak menerimanya", "Suara tunggal menemukan suara kedua — kemitraan lahir dari keyakinan yang sama sebelum lahir dari perasaan", "Gerakan tumbuh dari ruang tamu menjadi sesuatu yang tidak bisa diabaikan lagi", "Sistem membalas: tekanan nyata, kehilangan sementara, gerakan hampir retak", "Seorang sekutu membuka kapasitas tersembunyi yang mengubah geometri pertarungan", "Kemenangan publik yang bersih — sistem bergeser, pasangan berdiri utuh di sisi lain"],
+    },
+}
+
+# ── TWIST_SLOTS (v2, authored+verified workflow) ────────────────────────
+TWIST_SLOTS = {
+    "none": {
+        "display_name": "None",
+        "description": "No twist is stacked on this outline. Run the base beat-map exactly as written — its own plants, turns, and payoffs carry the whole arc.",
+        "twist_fragment": "No twist is stacked on this outline. Run the base beat-map exactly as written — its own plants, turns, and payoffs carry the whole arc. Do not invent a hidden identity, secret illness, engineered setup, buried past, parallel relationship, unreliable frame, or time jump on top. The midpoint is whatever the beat-map already schedules there; the ending resolves on the base structure's own terms. Trust the preset. Let character interiority, small textured beats, and the specific relational pressure the beat-map already defines do the work. Any surprise in the piece should emerge from behavior and consequence inside the existing arc, not from a layered reveal added here.",
+        "plant_early_marker": "No twist to plant — run the beat-map's opening as written.",
+        "fire_at_midpoint_marker": "No twist fires — midpoint is the beat-map's own turn, played straight.",
+        "incompatible_with": [],
+    },
+    "third_party_engineered": {
+        "display_name": "Third-Party Engineered",
+        "description": "A hidden orchestrator engineered the couple's misunderstanding; midpoint exposes the puppetry, and reconciliation requires naming and refusing them.",
+        "twist_fragment": "Layer a hidden orchestrator across the base arc without altering its beats. Early on, when the central wound opens, keep a third party physically or digitally present in the periphery: forwarding a message, \"translating\" a comment, arriving with concerned advice, or being the last person one lead spoke to before the misunderstanding calcified. Let their small kindnesses read as loyalty on first pass. At the pivot, surface one concrete artifact — a timestamp, a duplicated screenshot, a witness who misremembers on purpose — that reveals the misunderstanding was engineered. The couple's earlier cruelty now reads as puppetry; their reconciliation must include naming, and refusing, the orchestrator.",
+        "plant_early_marker": "In an early scene where the couple first hurts each other, place a silent third figure at the edge of the frame (a colleague copied on an email, a \"helpful\" relative, a smiling rival) whose small action nudges the wound.",
+        "fire_at_midpoint_marker": "At the midpoint, expose the orchestrator through a stray receipt/message/witness — one earlier \"damning\" moment now reads as a staged setup, and the couple's fight retroactively becomes the third party's win.",
+        "incompatible_with": ["birth_secret_makjang"],
+    },
+    "one_is_leaving_ill": {
+        "display_name": "One Is Leaving / Ill",
+        "description": "A hidden-countdown twist where one lead is secretly leaving or ill; plants three concrete tells in the first third and fires at midpoint via a wordless physical artifact that retro-colors every prior warmth as farewell rehearsal.",
+        "twist_fragment": "Layer a hidden countdown beneath the base arc: one lead has already decided to leave, or has been given a diagnosis, before the story opens. Do not rewrite the beats — instead, thread three small tells across the first third: a hesitation at thresholds, an odd tenderness about ordinary objects, a refusal to commit to anything far ahead. The other lead notices but files it under \"moodiness.\" At the midpoint, an artifact surfaces the truth without dialogue. From that point, every earlier warmth reads as farewell rehearsal, and the remaining beats must carry the double weight of what they are and what they were secretly for.",
+        "plant_early_marker": "In an early scene, show ONE small off-beat gesture from the leaver — lingering a half-second too long at a doorway, photographing something ordinary, declining to make a plan more than two weeks out — witnessed but unremarked-on by the other lead.",
+        "fire_at_midpoint_marker": "At the midpoint, force the reveal through a physical artifact the other lead stumbles on (boarding pass, MRI printout, farewell letter draft, packed box) — no monologue explanation; let the object do the work so the reader mentally rewinds the earlier \"off\" moments and re-reads them as goodbye.",
+        "incompatible_with": ["secret_reveal", "terminal_melodrama", "amnesia_reset"],
+    },
+    "parallel_relationship": {
+        "display_name": "Parallel Relationship",
+        "description": "Parallel Relationship twist: one partner carries an unclosed prior bond the other doesn't know about; planted via three re-readable frictions in Act 1, fired at midpoint when the bond intrudes in person or evidence and retroactively colors the earlier warmth.",
+        "twist_fragment": "Layer over the base arc: give one of the two an unclosed parallel bond — an ex they never fully released, a still-living first love waiting somewhere, or a paper-only obligation-marriage abroad — that the other does not know exists. Do not alter the outlined beats; instead thread three quiet frictions through the first third (a phone kept face-down, a birthday remembered with suspicious precision, a hometown they will not name) that read as privacy the first time and as tether the second time. At the midpoint, let the parallel bond intrude in person or in evidence, so the earlier warmth is retroactively colored by what one of them was already holding.",
+        "plant_early_marker": "In the first third, plant three small ordinary-seeming frictions around one character — a phone screen flipped face-down, a birthday remembered too specifically, a hometown they refuse to name — each written to read as endearing privacy on first pass and as an unclosed prior bond on re-read.",
+        "fire_at_midpoint_marker": "At the midpoint, force a moment where the other party literally encounters the parallel bond — a phone call answered aloud, a stranger who calls them by a claimed name, a document with two signatures — so every earlier hesitation, unreturned call, or evasive \"family thing\" instantly rereads as this hidden tether rather than as ordinary busyness or shyness.",
+        "incompatible_with": ["birth_secret_makjang", "secret_reveal"],
+    },
+    "time_skip_reveal": {
+        "display_name": "Time Skip Reveal",
+        "description": "Layer a time-skip reveal over the base arc without replacing any beat. In the first third, plant one small tense-slippage the reader can skim: a \"would later\" aside, a photograph held in past-perfect, an object flagged as \"the last time,\" a season half-noticed. Keep the scenes themselves fully present and specific — the base arc still runs. At the midpoint beat, open a paragraph with a hard temporal cue (a wrong season, a new address, an aged detail on the POV character) and let the next sentence reveal these scenes are being remembered from months or years on. Do not restage what we already saw. Let the distance itself change what the earlier tenderness or damage meant.",
+        "twist_fragment": "Layer a time-skip reveal over the base arc without replacing any beat. In the first third, plant one small tense-slippage the reader can skim: a \"would later\" aside, a photograph held in past-perfect, an object flagged as \"the last time,\" a season half-noticed. Keep the scenes themselves fully present and specific — the base arc still runs. At the midpoint beat, open a paragraph with a hard temporal cue (a wrong season, a new address, an aged detail on the POV character) and let the next sentence reveal these scenes are being remembered from months or years on. Do not restage what we already saw. Let the distance itself change what the earlier tenderness or damage meant.",
+        "plant_early_marker": "In the first third, drop one small tense-slippage or memory-verb the reader will skim past — a \"she would later\" aside, a photograph described in an odd past-perfect, an object noted as \"the last time\" — so the reveal earns a re-read.",
+        "fire_at_midpoint_marker": "At the midpoint beat, open a paragraph with a hard temporal cue — a season that shouldn't be here yet, a new address, an aged detail on the POV character's body or possessions — and let the next line reveal the prior scenes were being remembered from months or years later; do not restage, let the reader feel the gap.",
+        "incompatible_with": ["breakup_first", "the_almost", "timeslip_fate"],
+    },
+    "unreliable_narrator": {
+        "display_name": "Unreliable Narrator",
+        "description": "PASS — authored fragment is additive overlay, plant is concrete/re-readable, fire recontextualizes at midpoint, incompatibilities cover known duplications, no trust-the-reader violations.",
+        "twist_fragment": "Overlay only — do not alter the base arc. Anchor the story inside one POV whose voice quietly shapes what the reader sees: from chapter one, have that narrator describe a specific recurring beat (a fight, a favor, a goodbye) with slightly self-flattering phrasing and one small omitted detail that a careful reader could later name. Around the midpoint, let an outside source — another character's account, a message thread, a re-surfaced memory — contradict the narrator on that exact point. The reveal is not a new plot event; it is the narrator conceding, on-page, what was softened. Prior scenes recontextualize themselves through the reader's memory of the loaded phrasing.",
+        "plant_early_marker": "In the first two chapters, let the POV narrator describe one recurring event/person using slightly loaded, self-justifying phrasing (a diminutive, an excuse, a passive verb where an active one belongs) and skip past one small factual detail the reader will later be able to point to.",
+        "fire_at_midpoint_marker": "At the midpoint, a third party, a document, or a forgotten memory contradicts the POV account on one concrete point — forcing the narrator to admit (to themselves, then on-page) what they left out, softened, or reframed; every prior scene that used the loaded phrasing now reads differently without needing to be re-narrated.",
+        "incompatible_with": ["dual_pov_parallel", "amnesia_reset", "birth_secret_makjang", "revenge_return"],
+    },
+}
+
+# ── AXIS_FRAGMENTS (romance recombination, v2) ──────────────────────────
+AXIS_FRAGMENTS = {
+    "arc": {
+        "linear": "Open on the lead in the setting the user gives, at the ordinary moment before everything shifts. Move forward in strict clock-time: each chapter is the next day, week, or season, no jumps back. The middle is a staircase of consequences where earlier choices bind later ones. Close on the lead standing in the same setting, changed, with the reader having watched every step that brought them there.",
+        "non_linear_flashback": "Open on the lead mid-crisis in the setting the user gives, with no explanation of how they arrived. The present-tense spine moves forward across days, but each chapter is punctured by one italicized memory of the person they love, delivered out of order. The middle assembles the past like scattered photographs. Close when the final memory lands and the reader finally understands what the opening image cost.",
+        "dual_timeline": "Alternate two clearly labeled timelines: THEN, when the lead first met the person they love in the setting the user gives, and NOW, years later, when something has gone wrong. Chapters trade off strictly. The middle lets each timeline answer questions the other raises, tightening as they converge on a single date. Close when both timelines arrive at the same room, the same hour, and the gap between them collapses.",
+        "dual_pov": "Open with the lead's chapter in the setting the user gives; the second chapter is the person they love, same day, different room, different voice. The book alternates strictly, each voice withholding what the other assumes. The middle is a slow correction of misreadings the reader can see and neither character can. Close on one final chapter where the two voices finally address the same moment and disagree about what it meant.",
+        "retrospective_first": "Open at the ending: the lead, older, in the setting the user gives, telling the reader plainly how it turned out with the person they love. Then step back to the beginning and walk forward, the retrospective voice occasionally interrupting to mark what the younger self did not yet know. The middle is suspense of cause, not outcome. Close by returning to the older lead, one sentence longer than the opening.",
+    },
+    "conflict": {
+        "internal_fear": "The obstacle lives inside the lead. Something in their past — a loss, a humiliation, a promise made to themselves — has taught them that wanting this person is dangerous. Every time the person they love steps closer, the lead flinches, deflects, invents reasons to leave the room. The person they love is willing; the lead is the wall. The setting the user gives keeps offering openings the lead refuses to walk through.",
+        "misunderstanding": "A single wrong reading of a moment metastasizes. The lead sees the person they love in a gesture, a message, a company they keep, and constructs a story about what it means — a story that is not true. Both keep acting on their private version of events, each convinced the other has already decided something. The setting the user gives keeps handing them evidence that fits the wrong story more neatly than the right one.",
+        "timing": "Neither of them is the problem; the calendar is. The lead is arriving at something — a departure, a commitment already made, a season of their life that has no room in it — exactly when the person they love appears. Feelings are not in question. What is in question is whether either of them can rearrange a life already in motion. The setting the user gives keeps ticking down around them.",
+        "rivalry": "The lead and the person they love want the same thing and only one can have it — a role, a place, a recognition inside the setting the user gives. Every encounter is scored. Tenderness keeps surfacing in the exact moments when one of them has just cost the other something. Neither can tell anymore whether they are drawn to each other because of the contest or in spite of it, and the contest will not pause for them to find out.",
+        "unfinished_history": "They already know each other. Something happened between them once — a parting, a betrayal, a promise nobody kept — and it was never closed, only walked away from. Now the setting the user gives has put them back in the same room, and every ordinary exchange carries the weight of the sentence neither of them finished. Before anything new can begin, the old thing has to be named out loud.",
+        "secret": "The lead is carrying something the person they love does not know — a fact about who the lead is, why they came to the setting the user gives, or what they have already done. Every warm moment is shadowed by the calculation of when, or whether, to tell. The longer the silence holds, the more the eventual telling will cost, and the lead can feel the ledger growing under every conversation.",
+        "ambition_clash": "Each of them is pointed at a life the other cannot follow into. The lead's work, calling, or chosen future pulls in one direction; the person they love is built for another. Neither is willing to be the one who shrinks. The setting the user gives keeps forcing small choices — whose evening, whose city, whose plan — that are really the big choice in disguise, and both of them know it.",
+        "social_cost": "Being together in the open would cost them something the world around them charges — family standing, a community's approval, a place inside the setting the user gives that neither can afford to lose. In private the feeling is uncomplicated. In public they perform distance. The pressure is not that they doubt each other; it is that everyone else will make them pay, and one of them will have to decide first whether the price is bearable.",
+        "timing_erosion": "Nothing dramatic is wrong. The lead and the person they love have been near each other long enough that the small frictions of the setting the user gives — the unspoken resentments, the postponed conversations, the way ordinary days sand down attention — have quietly worn the connection thin. The conflict is whether either of them still notices in time, and whether noticing is enough when the damage is made of a thousand ordinary evenings.",
+    },
+    "resolution": {
+        "grand_gesture_then_growth": "The lead makes one large, unmistakable move toward the person they love — a public arrival, a spent savings, a burnt bridge behind them. The gesture lands, but the story does not end there. The final beats show them a season later inside the setting the user gives, still doing the small unglamorous work the gesture only promised.",
+        "open_ended": "The lead and the person they love are left mid-motion inside the setting the user gives — a doorway half-crossed, a message unsent, a phone lit but unanswered. The story refuses to commit to together or apart. The final image is deliberately ambiguous, weighted toward one reading but never confirming it, leaving the reader to finish the sentence themselves.",
+        "quiet_convergent": "No speech, no gesture large enough to name. The lead and the person they love simply end up in the same small act inside the setting the user gives — folding the same laundry, walking the same route, sharing a cigarette on the same step. What was misaligned in the middle has quietly aligned, and neither of them remarks on it. The reader feels the resolution before the characters do.",
+        "un_healed": "The wound the story opened stays open. The lead and the person they love reach an honest accounting of what broke and why, but nothing repairs. The final scene inside the setting the user gives shows them changed but not mended — a routine resumed with a limp, a room re-entered with a smaller voice. The story insists some things do not close.",
+        "recontextualize": "Nothing changes in the outer situation between the lead and the person they love — the same setting the user gives, the same arrangement, the same daily shape. What changes is how the lead sees it. A single late detail reframes everything preceding, and the final beat is the same room read differently. The resolution lives entirely inside the lead's understanding.",
+        "earned": "The lead and the person they love arrive at each other only after paying visible costs — apologies made in full sentences, habits actually dropped, a third party told the truth. The final scene inside the setting the user gives is small and domestic, but the reader has watched every brick get laid. There is no shortcut, no last-minute grace; the ending feels bought.",
+        "reconcile_or_release": "The lead reaches a clean binary with the person they love: fully back in, or fully let go. Whichever it is, it is chosen out loud inside the setting the user gives, with the other person present. No hedging, no maybe-later. The final beats show the lead beginning to live inside that choice — the first morning after, unmistakably one thing or the other.",
+        "choose_and_lose": "The lead is forced to pick between the person they love and something else the story has made equally sacred — a place, a duty, a version of themselves. They choose, and the story honors the cost of what they did not choose. The final image inside the setting the user gives holds both the gain and the absence in the same frame, without softening either.",
+        "quiet": "The story ends on a low, ordinary beat inside the setting the user gives — a light switched off, a plate rinsed, a name said once at normal volume. The lead and the person they love are neither reunited nor parted with fanfare; the emotional work has already happened offstage, and this is only the exhale. The reader leaves on a held breath, not a chord.",
+    },
+    "pov": {
+        "first": "Tell the entire story from inside the lead's head, using \"I\" and \"me\" in every scene without exception. The reader only knows what the lead notices, misreads, or refuses to look at directly. Interiority runs hot: half-thoughts, self-corrections, small lies to themselves. The person they love and the setting the user gives arrive only through the lead's senses and slanted judgments, never neutrally.",
+        "dual_alternating": "Split the narration between two \"I\" voices, alternating strictly by scene: the lead, then the person they love, then the lead again. Each voice sees the same setting the user gives through incompatible assumptions, so a moment one narrates as tenderness the other narrates as warning. Withhold from each what the other knows. The reader triangulates the truth that neither speaker will say out loud.",
+        "retrospective_first": "The lead narrates in first person from years afterward, in past tense, knowing already how it ended. Let the older voice intrude: dry corrections of the younger self, foreshadowing dropped in as parentheticals, tenderness for a version of themselves that couldn't yet see the person they love clearly. The setting the user gives is remembered, not lived — softened, sharpened, or misfiled by hindsight.",
+        "close_third": "Third person throughout — \"she,\" \"he,\" \"they\" — but the camera never leaves the lead's shoulder. The reader hears the lead's thoughts unmarked, in free indirect style, so the prose itself takes on their vocabulary and blind spots. The person they love and the setting the user gives are rendered only as the lead perceives them. No head-hopping, no omniscient asides, no scene where the lead is absent.",
+        "second_person": "Address the lead as \"you\" throughout, present tense, as if narrating their life back to them a half-step ahead of their own awareness. \"You\" walk into the setting the user gives; \"you\" mistake the person they love for someone safer. The pronoun stays locked — never slip into I or she. The effect is complicit, slightly accusatory, the reader pinned inside a life they didn't quite consent to inhabit.",
+    },
+}
+
+# Per-value incompatibility notes captured from the axis authors — informational.
+_AXIS_INCOMPAT_NOTES = {
+    ("arc", "linear"): ["twist:time_skip", "twist:in_medias_res_open", "structure:framed_narrative", "opening:cold_open_mystery"],
+    ("arc", "non_linear_flashback"): ["tense:past_throughout", "opening:ordinary_day_open", "twist:strictly_chronological", "structure:single_stream"],
+    ("arc", "dual_timeline"): ["structure:single_stream", "twist:strictly_chronological", "pov:single_voice_locked", "opening:ordinary_day_open"],
+    ("arc", "dual_pov"): ["pov:single_first_person", "pov:single_third_limited", "pov:omniscient", "structure:single_stream"],
+    ("arc", "retrospective_first"): ["twist:ending_reveal", "twist:ambiguous_ending", "pov:third_limited_present", "opening:cold_open_mystery"],
+    ("resolution", "grand_gesture_then_growth"): ["arc:non_linear_flashback"],
 }
 
 
-# ── topic-aware compatibility (spec section 6) ──────────────────────────────────
-# Per-family hint sets — a plot-specific topic must not be forced into a clashing preset.
-# Each hint maps a topic signal -> the FITTING subset (within the family). No hint matched
-# -> the whole family is eligible (generic topic = wide open). Heuristic + free.
+# ── Topic hints per family ─────────────────────────────────────────────────
 _TOPIC_HINTS = {
     "romance": [
         (re.compile(r"(?i)\b(putus|perpisahan|pisah|mantan|patah\s*hati|berpisah|kandas|move\s*on)\b"),
@@ -253,6 +379,11 @@ _TOPIC_HINTS = {
          ["ambition_collision", "slow_fade", "second_chance"]),
         (re.compile(r"(?i)\b(nyaris|hampir|tak\s*sampai|tak\s*kesampaian|gagal\s*jadian)\b"),
          ["the_almost"]),
+        # V2 additions:
+        (re.compile(r"(?i)\b(comedic|comedy|romcom|rom-com|lucu|kocak|jenaka|absurd|farce)\b"),
+         ["light_comedic"]),
+        (re.compile(r"(?i)\b(tugas|dinas|panggilan|kewajiban|amanah|duty|conscript|orang\s*tua|adat)\b"),
+         ["we_vs_world_close_third"]),
     ],
     "kdrama": [
         (re.compile(r"(?i)\b(chaebol|conglomerate|hostile\s+takeover|succession|corporate|company\s+war|boardroom|merger|acquisition)\b"),
@@ -277,6 +408,11 @@ _TOPIC_HINTS = {
          ["timeslip_fate", "fantasy_bond"]),
         (re.compile(r"(?i)\b(family\s*saga|ensemble|three\s+generations|siblings|father\s+and\s+son|weekend\s*drama)\b"),
          ["ensemble_family_saga"]),
+        # V2 additions:
+        (re.compile(r"(?i)\b(healing|slice[\s-]*of[\s-]*life|bakery|bookshop|clinic|soup\s*kitchen|hearth|comfort)\b"),
+         ["healing_slice"]),
+        (re.compile(r"(?i)\b(underdog|grassroots|movement|activist|whistleblower|community|uprising|triumph)\b"),
+         ["uplifting_underdog"]),
     ],
 }
 
@@ -286,7 +422,6 @@ def _family_keys(family: str) -> list:
 
 
 def compatible_beatmaps(topic, family="romance"):
-    """Return the beat-map keys that fit `topic` within `family`. No signal -> all keys."""
     keys = _family_keys(family)
     t = (topic or "").lower()
     matched: list = []
@@ -298,7 +433,138 @@ def compatible_beatmaps(topic, family="romance"):
     return ordered or keys
 
 
-def _emit(key: str) -> dict:
+# ── Twist slot (v2) ────────────────────────────────────────────────────────
+_TWIST_WEIGHT = {
+    "none": 0.60,
+    "third_party_engineered": 0.08,
+    "one_is_leaving_ill": 0.08,
+    "parallel_relationship": 0.08,
+    "time_skip_reveal": 0.08,
+    "unreliable_narrator": 0.08,
+}
+_PRESET_HAS_SIGNATURE_TWIST = frozenset({
+    "secret_reveal",
+    "birth_secret_makjang", "revenge_return", "terminal_melodrama",
+    "amnesia_reset", "timeslip_fate", "fantasy_bond",
+})
+
+
+def select_twist(beatmap_id, *, recent_twist_ids=None, override=None, rng=None):
+    if beatmap_id in _PRESET_HAS_SIGNATURE_TWIST:
+        return None
+    R = rng or random
+    if override:
+        ov = str(override).strip().lower()
+        if ov == "none":
+            return None
+        if ov in TWIST_SLOTS:
+            slot = TWIST_SLOTS[ov]
+            if beatmap_id not in (slot.get("incompatible_with") or []):
+                return {**slot, "twist_id": ov}
+    recent = set(recent_twist_ids or [])
+    weights = dict(_TWIST_WEIGHT)
+    for r in recent:
+        if r in weights and r != "none":
+            weights[r] *= 0.25
+    for tid, slot in TWIST_SLOTS.items():
+        if beatmap_id in (slot.get("incompatible_with") or []):
+            weights[tid] = 0.0
+    total = sum(weights.values())
+    if total <= 0:
+        return None
+    r = R.random() * total
+    cum = 0.0
+    for k, w in weights.items():
+        cum += w
+        if r <= cum:
+            if k == "none":
+                return None
+            return {**TWIST_SLOTS[k], "twist_id": k}
+    return None
+
+
+# ── Recombination engine (romance) ─────────────────────────────────────────
+# Cross-axis incompatibilities (rejected combos). Curated + workflow-derived.
+_VALIDITY_INCOMPAT_ROMANCE = {
+    ("arc", "dual_pov", "pov", "close_third"): "dual-POV wants dual_alternating",
+    ("arc", "dual_pov", "pov", "first"): "dual-POV wants dual_alternating",
+    ("arc", "dual_pov", "pov", "retrospective_first"): "dual-POV wants dual_alternating",
+    ("arc", "dual_pov", "pov", "second_person"): "dual-POV × second-person is odd",
+    ("arc", "linear", "pov", "dual_alternating"): "dual_alternating implies dual_pov arc",
+    ("arc", "retrospective_first", "pov", "close_third"): "retro-first names its POV",
+    ("arc", "retrospective_first", "pov", "dual_alternating"): "retro-first names its POV",
+    ("arc", "retrospective_first", "pov", "second_person"): "retro-first names its POV",
+    ("arc", "non_linear_flashback", "conflict", "timing_erosion"): "erosion needs linear time",
+    ("arc", "dual_timeline", "conflict", "misunderstanding"): "dual-timeline wants history not miscomm",
+    ("resolution", "choose_and_lose", "conflict", "internal_fear"): "choose-and-lose specific to ambition",
+    ("resolution", "choose_and_lose", "conflict", "misunderstanding"): "choose-and-lose specific to ambition",
+    ("resolution", "choose_and_lose", "conflict", "timing"): "choose-and-lose specific to ambition",
+    ("resolution", "choose_and_lose", "conflict", "rivalry"): "choose-and-lose specific to ambition",
+    ("resolution", "choose_and_lose", "conflict", "social_cost"): "choose-and-lose specific to ambition",
+    ("resolution", "reconcile_or_release", "conflict", "internal_fear"): "specific to unfinished-history",
+    ("resolution", "reconcile_or_release", "conflict", "misunderstanding"): "specific to unfinished-history",
+    ("resolution", "reconcile_or_release", "conflict", "timing"): "specific to unfinished-history",
+    ("resolution", "reconcile_or_release", "conflict", "rivalry"): "specific to unfinished-history",
+    ("resolution", "recontextualize", "conflict", "internal_fear"): "recontextualize needs a secret",
+    ("resolution", "recontextualize", "conflict", "misunderstanding"): "recontextualize needs a secret",
+    ("resolution", "recontextualize", "conflict", "rivalry"): "recontextualize needs a secret",
+    ("resolution", "recontextualize", "conflict", "timing"): "recontextualize needs a secret",
+    ("resolution", "un_healed", "conflict", "rivalry"): "rivalry earns respect, not un-healed",
+    ("resolution", "grand_gesture_then_growth", "conflict", "timing_erosion"): "gesture doesn't fit erosion",
+    ("resolution", "grand_gesture_then_growth", "conflict", "timing"): "grand-gesture can't beat timing",
+    ("resolution", "grand_gesture_then_growth", "conflict", "unfinished_history"): "history needs release/reconcile",
+    ("resolution", "grand_gesture_then_growth", "conflict", "ambition_clash"): "ambition needs choose-and-lose",
+}
+
+
+def compose_beatmap_romance(axes, *, override_id=None, rng=None):
+    """Free composition — assemble a beat-map from axis fragments. None if invalid."""
+    for a in ("arc", "conflict", "resolution", "pov"):
+        if a not in axes:
+            return None
+        if axes[a] not in AXIS_FRAGMENTS.get(a, {}):
+            return None
+    for (a1, v1, a2, v2), _r in _VALIDITY_INCOMPAT_ROMANCE.items():
+        if axes.get(a1) == v1 and axes.get(a2) == v2:
+            return None
+        if axes.get(a2) == v1 and axes.get(a1) == v2:
+            return None
+    body = ["STRUKTUR CERITA (compose):"]
+    for axis in ("arc", "conflict", "resolution", "pov"):
+        body.append(AXIS_FRAGMENTS[axis][axes[axis]])
+    trust = ("TRUST THE READER — no real-world statistic citation, no inline term "
+             "glossary, no genre self-reference. Be the story, don't narrate it.")
+    key = override_id or ("compose_" + "_".join(axes[a] for a in ("arc", "conflict", "resolution", "pov")))
+    return {
+        "beatmap_id": key,
+        "family": "romance",
+        "display_name": f"Compose [{axes['arc']} · {axes['conflict']} · {axes['resolution']} · {axes['pov']}]",
+        "tone": "composed",
+        "axes": dict(axes),
+        "structural_prompt": "\n\n".join(body) + "\n\n" + trust,
+        "chapter_spine": _generic_6_spine(axes),
+    }
+
+
+def _generic_6_spine(axes):
+    return [
+        "Bab 1 — Establish: baseline given the ARC + POV",
+        "Bab 2 — Force the CONFLICT into the open; first pressure",
+        "Bab 3 — Escalate: pressures compound; POV interiority deepens",
+        "Bab 4 — Peak of the conflict; a decisive scene",
+        "Bab 5 — Turn per the RESOLUTION shape",
+        "Bab 6 — Land: the resolution's aftermath",
+    ]
+
+
+def valid_combo_count_romance():
+    """Rough valid-combo count (post-validity-prune) for romance recombination."""
+    n_arc, n_cf, n_res, n_pov = 5, 9, 9, 5
+    raw = n_arc * n_cf * n_res * n_pov
+    return int(raw * 0.7)   # ≈ 1417
+
+
+def _emit(key):
     bm = BEAT_MAPS[key]
     return {
         "beatmap_id": key,
@@ -311,29 +577,63 @@ def _emit(key: str) -> dict:
     }
 
 
-def select_beatmap(topic, style, *, tenant_id=None, override=None, recent_ids=None):
-    """Pick a beat-map for (topic, style). Pure — caller does Redis I/O and passes
-    `recent_ids` (the tenant's last-used ids) for anti-repeat.
+def _emit_with_twist(bm, twist=None):
+    """Wrap emitted beatmap with an optional twist overlay + telemetry field."""
+    out = dict(bm)
+    if twist:
+        out["twist_id"] = twist.get("twist_id")
+        out["structural_prompt"] = (
+            out["structural_prompt"].rstrip()
+            + "\n\nTWIST OVERLAY:\n"
+            + (twist.get("twist_fragment") or "").strip()
+        )
+    else:
+        out["twist_id"] = None
+    return out
 
-    - style not in a beat-map family -> None (outline stays default).
-    - override (a valid beatmap_id in the resolved family) wins.
-    - else: topic-compatible subset, minus recent_ids (reset if that empties it), random.
+
+def select_beatmap(topic, style, *, tenant_id=None, override=None, twist_override=None,
+                    mode="preset", recent_ids=None, recent_twist_ids=None):
+    """Extended selector.
+      mode='preset'  — pick from the 26 named presets (topic-aware + anti-repeat).
+      mode='compose' — free-compose from axis fragments (romance family only).
+      mode='off'     — return None.
+      twist_override — force a twist_id ('none' disables layering; unknown = ignored).
     """
+    if mode == "off":
+        return None
     family = beatmap_family_for_style(style)
     if not family:
         return None
-    if override:
-        ov = str(override).strip().lower()
-        if ov in BEAT_MAPS and BEAT_MAPS[ov]["family"] == family:
-            return _emit(ov)
-    pool = compatible_beatmaps(topic, family)
-    recent = set(recent_ids or [])
-    fresh = [k for k in pool if k not in recent] or pool
-    return _emit(random.choice(fresh))
+    bm = None
+    if mode == "compose" and family == "romance":
+        for _ in range(20):
+            axes = {
+                "arc": random.choice(list(AXIS_FRAGMENTS["arc"].keys())),
+                "conflict": random.choice(list(AXIS_FRAGMENTS["conflict"].keys())),
+                "resolution": random.choice(list(AXIS_FRAGMENTS["resolution"].keys())),
+                "pov": random.choice(list(AXIS_FRAGMENTS["pov"].keys())),
+            }
+            bm = compose_beatmap_romance(axes)
+            if bm:
+                break
+        if not bm:
+            return None
+    else:
+        if override:
+            ov = str(override).strip().lower()
+            if ov in BEAT_MAPS and BEAT_MAPS[ov]["family"] == family:
+                bm = _emit(ov)
+        if bm is None:
+            pool = compatible_beatmaps(topic, family)
+            recent = set(recent_ids or [])
+            fresh = [k for k in pool if k not in recent] or pool
+            bm = _emit(random.choice(fresh))
+    twist = select_twist(bm["beatmap_id"], recent_twist_ids=recent_twist_ids, override=twist_override)
+    return _emit_with_twist(bm, twist)
 
 
 def structural_block(bm):
-    """Render the STORY STRUCTURE block injected into the outline user-turn."""
     if not bm:
         return ""
     return "STRUKTUR CERITA (beat-map) — WAJIB dipatuhi:\n" + (bm.get("structural_prompt") or "").strip() + "\n\n"

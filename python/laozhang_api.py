@@ -8920,25 +8920,46 @@ async def _narasi_outline_impl(body: dict):
                                         select_beatmap, structural_block)
             if beatmap_family_for_style(style):
                 _bm_key = f"beatmap:recent:{_ou_tenant or 'anon'}"
+                _bm_key_twist = f"beatmap:recent_twist:{_ou_tenant or 'anon'}"
                 _bm_recent = []
+                _bm_recent_twists: list = []
                 try:
                     _bm_r = rc.client()
                     if _bm_r is not None:
                         _bm_recent = [x.decode() if isinstance(x, (bytes, bytearray)) else x
                                       for x in (await _bm_r.lrange(_bm_key, 0, 4) or [])]
+                        _bm_recent_twists = [x.decode() if isinstance(x, (bytes, bytearray)) else x
+                                             for x in (await _bm_r.lrange(_bm_key_twist, 0, 4) or [])]
                 except Exception:
                     _bm_recent = []
+                    _bm_recent_twists = []
+                # V2: FE-controllable beatmap_mode ('preset'|'compose'|'off') + twist_id override.
+                _bm_mode = (body.get("beatmap_mode") or "preset").strip().lower()
+                if _bm_mode not in ("preset", "compose", "off"):
+                    _bm_mode = "preset"
                 _beatmap_meta = select_beatmap(
                     topic, style, tenant_id=_ou_tenant,
-                    override=(body.get("beatmap_id") or None), recent_ids=_bm_recent)
+                    override=(body.get("beatmap_id") or None),
+                    twist_override=(body.get("twist_id") or None),
+                    mode=_bm_mode,
+                    recent_ids=_bm_recent,
+                    recent_twist_ids=_bm_recent_twists)
                 if _beatmap_meta:
                     _beatmap_block = structural_block(_beatmap_meta)
                     try:
                         _bm_r = rc.client()
                         if _bm_r is not None:
-                            await _bm_r.lpush(_bm_key, _beatmap_meta["beatmap_id"])
-                            await _bm_r.ltrim(_bm_key, 0, 9)
-                            await _bm_r.expire(_bm_key, 2592000)  # 30d
+                            # Only push preset ids into the beatmap anti-repeat list —
+                            # composed ids are one-shot and don't need rotation memory.
+                            if not str(_beatmap_meta.get("beatmap_id", "")).startswith("compose_"):
+                                await _bm_r.lpush(_bm_key, _beatmap_meta["beatmap_id"])
+                                await _bm_r.ltrim(_bm_key, 0, 9)
+                                await _bm_r.expire(_bm_key, 2592000)  # 30d
+                            _tid = _beatmap_meta.get("twist_id")
+                            if _tid:
+                                await _bm_r.lpush(_bm_key_twist, _tid)
+                                await _bm_r.ltrim(_bm_key_twist, 0, 9)
+                                await _bm_r.expire(_bm_key_twist, 2592000)
                     except Exception:
                         pass
     except Exception:
@@ -9113,11 +9134,13 @@ async def _narasi_outline_impl(body: dict):
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("save_outline/usage failed (non-fatal): %s", _e)
 
-    # Report-only telemetry (spec §8): record which beat-map shaped this outline.
+    # Report-only telemetry (spec §8): record which beat-map + twist shaped this outline.
     if _beatmap_meta:
         result["beatmap"] = {"beatmap_id": _beatmap_meta["beatmap_id"],
                              "axes": _beatmap_meta.get("axes"),
-                             "tone": _beatmap_meta.get("tone")}
+                             "tone": _beatmap_meta.get("tone"),
+                             "twist_id": _beatmap_meta.get("twist_id"),
+                             "family": _beatmap_meta.get("family")}
 
     return result
 
