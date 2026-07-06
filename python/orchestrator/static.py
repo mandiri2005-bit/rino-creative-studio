@@ -617,8 +617,13 @@ async def narrate_chapters(
         telemetry_sink=telemetry_sink,
         any_failures=(n_ok < total),
     )
+    # Print the EFFECTIVE polish model — _polish_reduce overrides manager_model
+    # with NARASI_POLISH_MODEL when set, so `m_model` (passed-in) is misleading
+    # (Rino 2026-07-06: log showed opus while env was sonnet). Mirror the same
+    # env resolution here so the timing line is honest about opus-vs-sonnet.
+    _eff_polish_model = (os.environ.get("NARASI_POLISH_MODEL") or "").strip() or m_model
     log.info("narrate_chapters: POLISH done in %.1fs (mode=%s, applied=%s, model=%s)",
-             time.monotonic() - _t_polish, polish, did_polish, m_model)
+             time.monotonic() - _t_polish, polish, did_polish, _eff_polish_model)
     # R-FG5 TERMINAL: the polish is the last LLM touch and can reintroduce brackets —
     # the deterministic gate must run AFTER it, so residue can never ship.
     polished_book = _gate(polished_book, lang=language)
@@ -746,6 +751,7 @@ async def _polish_reduce(
 
     # synthesize() expects a list of worker-result dicts; wrap the whole book as one.
     wrapped = [{"ok": True, "output": book, "model": manager_model}]
+    _t_synth = time.monotonic()
     res = await synthesize(
         instruction,
         wrapped,
@@ -755,6 +761,16 @@ async def _polish_reduce(
         telemetry_sink=telemetry_sink,
         task_id=f"polish:{mode}",
     )
+    # Honest polish telemetry (Rino 2026-07-06): the RESOLVED model (manager_model
+    # already carries the NARASI_POLISH_MODEL override) + which failover rung
+    # actually served it (provider = kie/laozhang/atlascloud/vertex) + wall-time.
+    # This is where opus-vs-sonnet and failover overhead become visible per call.
+    _tel = res.get("telemetry") or {}
+    log.info("_polish_reduce: role=%s model=%s served_by=%s ok=%s in %.1fs "
+             "(tok_in=%s tok_out=%s)",
+             role, manager_model, _tel.get("provider") or "?", res.get("ok"),
+             time.monotonic() - _t_synth,
+             _tel.get("tokens_in"), _tel.get("tokens_out"))
     if res.get("ok") and res.get("output"):
         # CC v3 anti-truncate guard (post): a truncated polish still returns ok=True. If the
         # "polished" book lost >25% of its words, it was cut by the output ceiling (or the

@@ -285,6 +285,11 @@ class CallTelemetry:
             "cost_usd": self.cost_usd, "latency_ms": self.latency_ms,
             "attempts": self.attempts, "finish_reason": self.finish_reason,
             "error": self.error, "task_id": self.task_id,
+            # provider = the failover rung that actually served (kie/laozhang/
+            # atlascloud/vertex). Was captured on the object but not serialized —
+            # now exposed so callers (e.g. _polish_reduce timing log) can print
+            # which rung served + surface failover overhead (Rino 2026-07-06).
+            "provider": self.provider,
         }
 
 
