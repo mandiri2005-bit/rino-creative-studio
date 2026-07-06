@@ -8933,14 +8933,26 @@ async def _narasi_outline_impl(body: dict):
                 except Exception:
                     _bm_recent = []
                     _bm_recent_twists = []
-                # V2: FE-controllable beatmap_mode ('preset'|'compose'|'off') + twist_id override.
-                _bm_mode = (body.get("beatmap_mode") or "preset").strip().lower()
+                # V2: selection precedence for each knob is BODY > ENV > default-random.
+                # BODY  = per-request FE param (unused today — FE has no picker).
+                # ENV   = tenant-wide default set in Railway (NARASI_BEATMAP_DEFAULT_*).
+                # RANDOM = topic-aware pool + anti-repeat (behavior when both empty).
+                # Empty strings from env are treated as unset ('' or 'None' → None).
+                def _clean(v):
+                    v = (v or "").strip()
+                    return v if v and v.lower() not in ("none",) else ""
+                _env_mode = _clean(os.environ.get("NARASI_BEATMAP_DEFAULT_MODE"))
+                _env_id = _clean(os.environ.get("NARASI_BEATMAP_DEFAULT_ID"))
+                _env_twist = (os.environ.get("NARASI_TWIST_DEFAULT_ID") or "").strip()  # keep 'none' → force-disable
+                _bm_mode = (body.get("beatmap_mode") or _env_mode or "preset").strip().lower()
                 if _bm_mode not in ("preset", "compose", "off"):
                     _bm_mode = "preset"
+                _bm_override = body.get("beatmap_id") or _env_id or None
+                _twist_override = body.get("twist_id") or _env_twist or None
                 _beatmap_meta = select_beatmap(
                     topic, style, tenant_id=_ou_tenant,
-                    override=(body.get("beatmap_id") or None),
-                    twist_override=(body.get("twist_id") or None),
+                    override=_bm_override,
+                    twist_override=_twist_override,
                     mode=_bm_mode,
                     recent_ids=_bm_recent,
                     recent_twist_ids=_bm_recent_twists)
