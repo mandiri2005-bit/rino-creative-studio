@@ -8879,6 +8879,45 @@ async def _narasi_outline_impl(body: dict):
     _ou_tenant = _ou_ctx.tenant_id or None
     _ou_user = (await _resolve_user_uuid(_ou_ctx.tenant_id, _ou_ctx.user_id)) if _ou_ctx.user_id else None
 
+    # ── Beat-map (STRUCTURE layer) — flag-gated (DALANG_BEATMAP_ENABLED), romance family
+    # only, fresh-outline path only. Selects a plot architecture and injects its
+    # structural_prompt into the outline user-turn so the same style yields a different
+    # arc each time (corpus sample-21/22/23: one romance skeleton re-skinned). Anti-repeat
+    # via Redis is best-effort; every failure degrades to no-beat-map (byte-identical).
+    _beatmap_meta = None
+    _beatmap_block = ""
+    try:
+        _bm_on = os.environ.get("DALANG_BEATMAP_ENABLED") == "1"
+        _bm_fresh = action != "brief" and not (revise_instruction and current_outline)
+        if _bm_on and _bm_fresh:
+            from pakem.beatmaps import (beatmap_family_for_style,
+                                        select_beatmap, structural_block)
+            if beatmap_family_for_style(style):
+                _bm_key = f"beatmap:recent:{_ou_tenant or 'anon'}"
+                _bm_recent = []
+                try:
+                    _bm_r = rc.client()
+                    if _bm_r is not None:
+                        _bm_recent = [x.decode() if isinstance(x, (bytes, bytearray)) else x
+                                      for x in (await _bm_r.lrange(_bm_key, 0, 4) or [])]
+                except Exception:
+                    _bm_recent = []
+                _beatmap_meta = select_beatmap(
+                    topic, style, tenant_id=_ou_tenant,
+                    override=(body.get("beatmap_id") or None), recent_ids=_bm_recent)
+                if _beatmap_meta:
+                    _beatmap_block = structural_block(_beatmap_meta)
+                    try:
+                        _bm_r = rc.client()
+                        if _bm_r is not None:
+                            await _bm_r.lpush(_bm_key, _beatmap_meta["beatmap_id"])
+                            await _bm_r.ltrim(_bm_key, 0, 9)
+                            await _bm_r.expire(_bm_key, 2592000)  # 30d
+                    except Exception:
+                        pass
+    except Exception:
+        _beatmap_meta, _beatmap_block = None, ""
+
     video_mode_outline = bool(body.get("video_mode", False))
     # R-H9 outline-driven (Diponegoro reviews: the temporal deep-time zoom is the ONE Big
     # History move every round has flinched from — nominate it up front so its absence is
@@ -8939,6 +8978,7 @@ async def _narasi_outline_impl(body: dict):
             f"OUTPUT LANGUAGE: {lang_label}. ALL chapter titles, descriptions, and outline_text "
             f"MUST be written in {lang_label}.\n"
             f"Language: {lang_label} | Total words: {word_min}-{word_max} | Chapters: exactly {chap_count}\n\n"
+            f"{_beatmap_block}"
             f"WORD WEIGHT RULES -- CRITICAL:\n"
             f"- Do NOT divide words equally across chapters\n"
             f"- Chapters with deeper/complex/climactic topics get MORE words\n"
@@ -9046,6 +9086,12 @@ async def _narasi_outline_impl(body: dict):
         await _log_narasi_usage(_octx.tenant_id, _outline_user, model, resp)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("save_outline/usage failed (non-fatal): %s", _e)
+
+    # Report-only telemetry (spec §8): record which beat-map shaped this outline.
+    if _beatmap_meta:
+        result["beatmap"] = {"beatmap_id": _beatmap_meta["beatmap_id"],
+                             "axes": _beatmap_meta.get("axes"),
+                             "tone": _beatmap_meta.get("tone")}
 
     return result
 
