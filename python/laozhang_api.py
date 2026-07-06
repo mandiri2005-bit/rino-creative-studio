@@ -1200,89 +1200,27 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     return _AdaptedResp(text, "stop", tin, tout)
 
 
-# ── Rung circuit breaker + last-good preference ─────────────────────────────
-# Rino 2026-07-06: KIE was consistently failing on polish narration + the chain
-# retried KIE from scratch on every request AND on every run_worker retry
-# attempt within a request, burning ~150s per KIE attempt before falling
-# through to LaoZhang. The user's question — "kalau LaoZhang udah sukses
-# kenapa masih retry ke KIE?" — is the right one. Answer: nothing remembered
-# which rung actually worked; every call re-walked the chain from the top.
+# ── Per-rung retry (stateless) ───────────────────────────────────────────────
+# Rino 2026-07-06 (final iteration): drop the circuit breaker + last-good
+# stickyness — the correct behavior is stateless per-rung retry with no cross-
+# request memory. Every fresh request walks the chain in canonical cheapest-
+# first order; each rung gets N attempts (default 2 = 1 initial + 1 retry) to
+# absorb transient errors before advancing to the next rung. If a rung is
+# genuinely down, both attempts fail and we failover; if the rung is flaky,
+# the retry has a chance to succeed and save the aggregator markup.
 #
-# Fix has two independent pieces working together:
+# Design constraints Rino stated verbatim:
+#   "→ KIE fail 150s     → retry 1x (jangan failover dulu)"
+#   "→ KIE fail 150s     → failover ke LaoZhang"
+#   "Attempt 2 (fresh state) = Attempt 1"
+#   "gak ada COLD!!"
 #
-# 1. LAST-GOOD REORDER — the moment a rung serves a successful call, that
-#    rung is stickied per-model as the known-good and moved to the FRONT of
-#    the chain for every subsequent call of the same model. So after ONE
-#    successful LaoZhang, every following polish + chapter call in the
-#    process goes to LaoZhang first. KIE is never re-tried until LaoZhang
-#    itself fails and we walk further down the chain.
-#
-# 2. CIRCUIT BREAKER — the moment a rung fails often enough (threshold
-#    defaults to 1: the very first failure parks it), it enters a 5-minute
-#    cooldown and is skipped by subsequent calls. After cooldown the rung is
-#    treated healthy again; the next call probes; failure re-arms cooldown.
-#
-# Together: first LaoZhang success + first KIE failure yields the state
-# {last_good[opus-4-6]=laozhang, kie_cooling=+5min}, and every following call
-# hits LaoZhang immediately with no KIE tax at all. Threshold is env-tunable
-# for the rare case where a flaky-but-not-dead rung deserves more slack.
-_RUNG_HEALTH: dict[str, dict] = {}
-# `model → last-known-good rung name`. Reset on module import (fresh state
-# after every service restart — that typically coincides with the upstream
-# recovery windows we care about).
-_RUNG_LAST_GOOD: dict[str, str] = {}
-_RUNG_FAILURE_THRESHOLD = int(os.environ.get("NARASI_RUNG_FAILURE_THRESHOLD") or 1)
-_RUNG_COOLDOWN_SECONDS = float(os.environ.get("NARASI_RUNG_COOLDOWN_SECONDS") or 300)
-
-
-def _rung_healthy(name: str) -> bool:
-    """True if the rung is not in cooldown from prior failures. After cooldown
-    expires the rung is treated healthy again — the next call is the probe; if
-    it fails, the counter accumulates and cooldown re-arms on threshold."""
-    state = _RUNG_HEALTH.get(name)
-    if not state:
-        return True
-    return state.get("cooling_until", 0.0) <= time.monotonic()
-
-
-def _rung_record_success(name: str, model: str = "") -> None:
-    """Clear failure state on a successful call and, when `model` is provided,
-    mark this rung as the known-good server for that model so the next call
-    reorders the chain to prefer it. Empty `model` skips the last-good mark."""
-    if name in _RUNG_HEALTH:
-        _RUNG_HEALTH[name] = {"failures": 0, "cooling_until": 0.0}
-    if model:
-        _RUNG_LAST_GOOD[model] = name
-
-
-def _rung_record_failure(name: str, model: str = "") -> None:
-    """Increment consecutive failure counter. On threshold, arm the cooldown so
-    the rung is skipped on subsequent requests for _RUNG_COOLDOWN_SECONDS. If
-    this rung was the last-known-good for `model`, clear that mark so the next
-    call falls back to chain-order preference instead of resticking a broken
-    rung as preferred."""
-    state = _RUNG_HEALTH.setdefault(name, {"failures": 0, "cooling_until": 0.0})
-    state["failures"] = int(state.get("failures", 0)) + 1
-    if state["failures"] >= _RUNG_FAILURE_THRESHOLD:
-        state["cooling_until"] = time.monotonic() + _RUNG_COOLDOWN_SECONDS
-        print(f"[narasi-failover] {name} cooldown {_RUNG_COOLDOWN_SECONDS:.0f}s "
-              f"after {state['failures']} consecutive failures")
-    if model and _RUNG_LAST_GOOD.get(model) == name:
-        _RUNG_LAST_GOOD.pop(model, None)
-
-
-def _reorder_chain(model: str, chain: list) -> list:
-    """Move the last-known-good rung for `model` to the front of the chain.
-    Returns the chain unchanged when there is no last-good record, when the
-    last-good rung is already at position 0, or when it isn't present in the
-    current chain (defensive against config drift)."""
-    preferred = _RUNG_LAST_GOOD.get(model)
-    if not preferred:
-        return chain
-    idx = next((i for i, c in enumerate(chain) if c[0] == preferred), -1)
-    if idx <= 0:
-        return chain
-    return [chain[idx]] + chain[:idx] + chain[idx + 1:]
+# Meaning: no memory of which rung worked last (Attempt 2 walks KIE first
+# again, same as Attempt 1); no cooldown skipping (KIE gets its 2 attempts
+# on every request). Trade-off accepted: 2× KIE tax per request when KIE is
+# dead, in exchange for zero risk of missing a transient-recovery on a
+# flaky-but-not-dead rung.
+_NARASI_RUNG_ATTEMPTS = max(1, int(os.environ.get("NARASI_RUNG_ATTEMPTS") or 2))
 
 
 class _AdaptedResp:
@@ -1367,12 +1305,7 @@ class _NarasiFailoverClient:
         return self
 
     def _create(self, **kw):
-        # Reorder the chain so the last-known-good rung for this model comes first.
-        # First call of the model uses the canonical cheapest-first order; every
-        # subsequent call after a success prefers the proven rung, so a broken
-        # cheaper rung is not re-tried on every request.
-        base_chain = _narasi_failover_chain(self._model)
-        chain = _reorder_chain(self._model, base_chain)
+        chain = _narasi_failover_chain(self._model)
         primary = next((c[0] for c in chain if c[3]), "")
         # Bound the whole cheapest-first walk to a budget < the caller's outer per-chapter
         # wait_for, giving each rung the REMAINING budget (not a fresh full timeout) so a hung
@@ -1380,68 +1313,68 @@ class _NarasiFailoverClient:
         deadline = time.monotonic() + _NARASI_FAILOVER_CHAIN_BUDGET
         errors: list[str] = []
         attempted = 0
-        # Circuit breaker gate — skip rungs currently in cooldown UNLESS all keyed
-        # rungs are cold, in which case try anyway (fail-safe: a request should have
-        # a chance even when our health-tracking is stale).
-        keyed = [c for c in chain if c[3]]
-        any_healthy = any(_rung_healthy(name) for name, _p, _e, _k, _m in keyed)
+        # For each rung: try it up to _NARASI_RUNG_ATTEMPTS times before advancing to
+        # the next rung. Stateless — no memory of past requests, no cooldown skipping,
+        # no last-good stickiness. Every fresh request walks the chain in canonical
+        # cheapest-first order (Rino 2026-07-06 explicit spec).
         for name, proto, endpoint, key, model_id in chain:
             if not key:
                 continue
-            if any_healthy and not _rung_healthy(name):
-                errors.append(f"{name}:skipped (cooldown)")
-                print(f"[narasi-failover] {name} skipped — in cooldown ({model_id})")
-                continue
-            remaining = deadline - time.monotonic()
-            if remaining <= 1.0:
-                errors.append(f"{name}:skipped (chain budget spent)")
-                break
             attempted += 1
-            rung_timeout = max(1.0, min(float(_NARASI_FAILOVER_TIMEOUT), remaining))
-            call_kw = dict(kw)
-            call_kw["model"] = model_id
-            try:
-                if proto == "anthropic":
-                    resp = _anthropic_messages_create(endpoint, key, model_id,
+            rung_last_err = ""
+            for rung_attempt in range(1, _NARASI_RUNG_ATTEMPTS + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 1.0:
+                    errors.append(f"{name}:skipped (chain budget spent)")
+                    rung_last_err = "budget_spent"
+                    break
+                rung_timeout = max(1.0, min(float(_NARASI_FAILOVER_TIMEOUT), remaining))
+                call_kw = dict(kw)
+                call_kw["model"] = model_id
+                try:
+                    if proto == "anthropic":
+                        resp = _anthropic_messages_create(endpoint, key, model_id,
+                                                          call_kw.get("messages") or [],
+                                                          call_kw.get("max_tokens") or 4000, rung_timeout,
+                                                          temperature=call_kw.get("temperature"))
+                    elif proto == "vertex_genai":
+                        resp = _vertex_gemini_create(model_id,
                                                       call_kw.get("messages") or [],
                                                       call_kw.get("max_tokens") or 4000, rung_timeout,
                                                       temperature=call_kw.get("temperature"))
-                elif proto == "vertex_genai":
-                    resp = _vertex_gemini_create(model_id,
-                                                  call_kw.get("messages") or [],
-                                                  call_kw.get("max_tokens") or 4000, rung_timeout,
-                                                  temperature=call_kw.get("temperature"))
-                else:
-                    cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
-                    resp = cli.chat.completions.create(**call_kw)
-                if _resp_content(resp) is None:
-                    # Empty 200 (choices=None / no content). A mislabeled or unavailable model id
-                    # (e.g. opus-4-6) returns an error BODY with HTTP 200 rather than raising, so
-                    # without this the chain would return the empty resp and never try the next
-                    # aggregator. Treat it as a rung failure and advance.
-                    _rung_record_failure(name, self._model)
-                    errors.append(f"{name}:empty({_resp_err_detail(resp)})")
-                    print(f"[narasi-failover] {name} returned empty ({model_id}) → next")
+                    else:
+                        cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
+                        resp = cli.chat.completions.create(**call_kw)
+                    if _resp_content(resp) is None:
+                        # Empty 200 (choices=None / no content). Treat as a rung failure —
+                        # retry within same rung until we've spent _NARASI_RUNG_ATTEMPTS,
+                        # THEN advance to next rung.
+                        rung_last_err = f"empty({_resp_err_detail(resp)})"
+                        print(f"[narasi-failover] {name} empty "
+                              f"(attempt {rung_attempt}/{_NARASI_RUNG_ATTEMPTS}, {model_id})")
+                        continue
+                    try:
+                        # stamp the serving aggregator so _log_narasi_usage records it in the
+                        # `provider` column (kie/laozhang/atlascloud) → margin/rung is verifiable.
+                        object.__setattr__(resp, "_narasi_served_by", name)
+                    except Exception:
+                        pass
+                    if name != primary or rung_attempt > 1:
+                        print(f"[narasi-failover] served by {name} "
+                              f"(attempt {rung_attempt}, {model_id})")
+                    return resp
+                except Exception as e:  # 5xx / quota / timeout / connection → retry same rung
+                    rung_last_err = repr(e)[:140]
+                    print(f"[narasi-failover] {name} failed "
+                          f"(attempt {rung_attempt}/{_NARASI_RUNG_ATTEMPTS}): {rung_last_err[:160]}")
                     continue
-                try:
-                    # stamp the serving aggregator so _log_narasi_usage records it in the
-                    # `provider` column (kie/laozhang/atlascloud) → margin/rung is verifiable.
-                    object.__setattr__(resp, "_narasi_served_by", name)
-                except Exception:
-                    pass
-                _rung_record_success(name, self._model)
-                if name != primary:
-                    print(f"[narasi-failover] served by {name} ({model_id})")
-                return resp
-            except Exception as e:  # 5xx / quota / timeout / connection → advance to next rung
-                _rung_record_failure(name, self._model)
-                errors.append(f"{name}:{repr(e)[:140]}")
-                print(f"[narasi-failover] {name} failed → next: {repr(e)[:160]}")
-                continue
+            # Rung exhausted its retry budget → collect its last error and advance
+            if rung_last_err:
+                errors.append(f"{name}:{rung_last_err}")
+                print(f"[narasi-failover] {name} exhausted after {_NARASI_RUNG_ATTEMPTS} "
+                      f"attempts → next rung")
         if attempted == 0:
-            # no keyed rung in the chain (or every keyed rung was cold and we entered
-            # the fail-safe branch that still tried them and they all skipped) → fall
-            # back to the standard single-provider client
+            # no keyed rung in the chain → fall back to the standard single-provider client
             return make_client(self._model).chat.completions.create(**kw)
         raise RuntimeError("narasi failover exhausted — all aggregators failed: " + " | ".join(errors))
 
