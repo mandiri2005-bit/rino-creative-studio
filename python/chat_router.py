@@ -457,8 +457,8 @@ async def _stream_google(provider_name: str, step: Step, system: str,
     from google import genai as _genai
     from google.genai import types as _gt
     if provider_name == "vertex":
-        from laozhang_api import _genai_client          # cached Vertex-OAuth client
-        client = _genai_client()
+        from laozhang_api import _genai_client, _vertex_location_for   # cached Vertex-OAuth client
+        client = _genai_client(_vertex_location_for(step.model))       # per-model loc (3.x→global)
         if client is None:
             raise FailoverError("vertex not configured")
     else:

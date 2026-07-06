@@ -149,19 +149,45 @@ def _is_gemini_image_model(m: str) -> bool:
     m = (m or "").lower()
     return m.startswith("gemini-") and "image" in m
 
-_genai_vertex_client = None
-def _genai_client():
-    """Cached google.genai client on Vertex (OAuth). None if Vertex not configured."""
-    global _genai_vertex_client
-    if _genai_vertex_client is not None:
-        return _genai_vertex_client
+# Newer Gemini 3.x models are served ONLY at the Vertex `global` endpoint, not regional
+# ones (proven 2026-07-06: gemini-3.5-flash → 404 in us-central1, 200 in global). GCP_LOCATION
+# is pinned to us-central1 (embeddings/image-gen/2.5-flash live there), so these 3.x models
+# 404'd and the narasi failover fell to LaoZhang. Route JUST these per-model to `global`;
+# everything else stays on GCP_LOCATION. Kill-switch: VERTEX_GLOBAL_ROUTING=0 → all GCP_LOCATION.
+_VERTEX_GLOBAL_MODELS = frozenset({
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
+})
+
+
+def _vertex_location_for(model: str) -> str:
+    """Vertex location that actually serves `model`: global-only 3.x models → 'global',
+    else GCP_LOCATION. Non-regressive — a model that also 404s at global just falls through
+    the narasi failover chain to LaoZhang exactly as before."""
+    if os.environ.get("VERTEX_GLOBAL_ROUTING", "1") == "1" and (model or "") in _VERTEX_GLOBAL_MODELS:
+        return "global"
+    return GCP_LOCATION
+
+
+_genai_vertex_clients: dict = {}   # per-location cache: location -> google.genai client
+def _genai_client(location: str = ""):
+    """Cached google.genai client on Vertex (OAuth). None if Vertex not configured.
+    `location` defaults to GCP_LOCATION (byte-identical for every existing caller); pass a
+    specific location (e.g. 'global') to reach a model served only there."""
+    loc = location or GCP_LOCATION
+    c = _genai_vertex_clients.get(loc)
+    if c is not None:
+        return c
     if not _ensure_vertex():
         return None
     from google import genai as _genai
-    _genai_vertex_client = _genai.Client(
-        vertexai=True, project=GCP_PROJECT_ID, location=GCP_LOCATION, credentials=_gcp_creds,
+    c = _genai.Client(
+        vertexai=True, project=GCP_PROJECT_ID, location=loc, credentials=_gcp_creds,
     )
-    return _genai_vertex_client
+    _genai_vertex_clients[loc] = c
+    return c
 
 def _vertex_embed(text: str, task: str = "RETRIEVAL_QUERY"):
     """Embed text via Vertex gemini-embedding-001 (3072d) using OAuth — no GEMINI key.
@@ -1182,7 +1208,7 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     failover machinery is protocol-agnostic. Raises RuntimeError on transport failure
     so the caller advances the chain to LaoZhang. Per-call timeout enforced via a
     daemon thread + join(timeout) — google.genai has no per-call timeout knob."""
-    client = _genai_client()
+    client = _genai_client(_vertex_location_for(model))
     if not client:
         raise RuntimeError("vertex_genai: _genai_client() not configured")
     from google.genai import types as _gt
@@ -2859,7 +2885,7 @@ async def stream_chat_google(req: GoogleChatRequest,
         print(f"[chat/google] session err: {e}", flush=True)
 
     async def generate():
-        client = _genai_client()                       # Vertex OAuth (None if unconfigured)
+        client = _genai_client(_vertex_location_for(req.model))   # per-model loc (3.x→global)
         if client is None:
             yield "data: [ERROR: Vertex OAuth not configured on server]\n\n"
             yield "data: [DONE]\n\n"
