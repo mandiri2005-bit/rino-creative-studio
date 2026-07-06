@@ -469,8 +469,10 @@ async def _run_narration_job(
     # CC v3 gates — terminal bracket/known-bad gate (R-FG4/5/6, ALL scenarios incl. C/D/E
     # whose result carries "output" not "book"), the harari register scorecard (R-H10,
     # report-only), and the "> **Gaya:** ..." metadata header. Never raises.
+    _t_gates = time.monotonic()  # timing: GATES phase (Rino 2026-07-06)
     await _apply_v3_gates(result, body, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
                           sink=sink, job_id=job_id)
+    log.info("narration job %s: GATES done in %.1fs", job_id, time.monotonic() - _t_gates)
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,

@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Any, Optional, Sequence
 
 from .core import (
@@ -555,6 +556,7 @@ async def narrate_chapters(
                 log.warning("chapter checkpoint failed (non-fatal): %s", _ce)
         return res
 
+    _t_map = time.monotonic()  # timing: chapter MAP phase (Rino 2026-07-06)
     tasks = [asyncio.ensure_future(_bounded(i, ch)) for i, ch in enumerate(chapters)]
 
     # Consume as_completed (so a slow chapter doesn't block logging of fast ones),
@@ -568,6 +570,8 @@ async def narrate_chapters(
         except Exception as exc:  # noqa: BLE001 - _write_chapter is never-raise, but belt+braces
             log.warning("narrate_chapters: a chapter task raised unexpectedly: %s", exc)
             raw.append({"ok": False, "output": None, "error": str(exc), "no": -1})
+    log.info("narrate_chapters: MAP done — %d chapters in %.1fs (max_workers=%s)",
+             len(tasks), time.monotonic() - _t_map, max_workers)
 
     raw.sort(key=lambda r: r.get("no", 0))
 
@@ -601,6 +605,7 @@ async def narrate_chapters(
     book = "\n\n".join(_chapter_md(c) for c in chapter_records)
 
     # 3) REDUCE — optional manager polish over the assembled book.
+    _t_polish = time.monotonic()  # timing: POLISH phase (Rino 2026-07-06)
     polished_book, did_polish = await _polish_reduce(
         book=book,
         topic=topic,
@@ -612,6 +617,8 @@ async def narrate_chapters(
         telemetry_sink=telemetry_sink,
         any_failures=(n_ok < total),
     )
+    log.info("narrate_chapters: POLISH done in %.1fs (mode=%s, applied=%s, model=%s)",
+             time.monotonic() - _t_polish, polish, did_polish, m_model)
     # R-FG5 TERMINAL: the polish is the last LLM touch and can reintroduce brackets —
     # the deterministic gate must run AFTER it, so residue can never ship.
     polished_book = _gate(polished_book, lang=language)
