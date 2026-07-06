@@ -1200,16 +1200,38 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     return _AdaptedResp(text, "stop", tin, tout)
 
 
-# ── Rung circuit breaker ─────────────────────────────────────────────────────
+# ── Rung circuit breaker + last-good preference ─────────────────────────────
 # Rino 2026-07-06: KIE was consistently failing on polish narration + the chain
-# retried KIE from scratch on every request, burning the 280s rung timeout on
-# every user click before falling through to LaoZhang. That's ~155s of wasted
-# wait per request on a broken aggregator. Circuit breaker skips a rung after
-# N consecutive failures and re-probes only after the cooldown expires. Per-
-# process state (dict), so a service restart resets — good enough because a
-# restart typically coincides with upstream recovery windows.
+# retried KIE from scratch on every request AND on every run_worker retry
+# attempt within a request, burning ~150s per KIE attempt before falling
+# through to LaoZhang. The user's question — "kalau LaoZhang udah sukses
+# kenapa masih retry ke KIE?" — is the right one. Answer: nothing remembered
+# which rung actually worked; every call re-walked the chain from the top.
+#
+# Fix has two independent pieces working together:
+#
+# 1. LAST-GOOD REORDER — the moment a rung serves a successful call, that
+#    rung is stickied per-model as the known-good and moved to the FRONT of
+#    the chain for every subsequent call of the same model. So after ONE
+#    successful LaoZhang, every following polish + chapter call in the
+#    process goes to LaoZhang first. KIE is never re-tried until LaoZhang
+#    itself fails and we walk further down the chain.
+#
+# 2. CIRCUIT BREAKER — the moment a rung fails often enough (threshold
+#    defaults to 1: the very first failure parks it), it enters a 5-minute
+#    cooldown and is skipped by subsequent calls. After cooldown the rung is
+#    treated healthy again; the next call probes; failure re-arms cooldown.
+#
+# Together: first LaoZhang success + first KIE failure yields the state
+# {last_good[opus-4-6]=laozhang, kie_cooling=+5min}, and every following call
+# hits LaoZhang immediately with no KIE tax at all. Threshold is env-tunable
+# for the rare case where a flaky-but-not-dead rung deserves more slack.
 _RUNG_HEALTH: dict[str, dict] = {}
-_RUNG_FAILURE_THRESHOLD = int(os.environ.get("NARASI_RUNG_FAILURE_THRESHOLD") or 3)
+# `model → last-known-good rung name`. Reset on module import (fresh state
+# after every service restart — that typically coincides with the upstream
+# recovery windows we care about).
+_RUNG_LAST_GOOD: dict[str, str] = {}
+_RUNG_FAILURE_THRESHOLD = int(os.environ.get("NARASI_RUNG_FAILURE_THRESHOLD") or 1)
 _RUNG_COOLDOWN_SECONDS = float(os.environ.get("NARASI_RUNG_COOLDOWN_SECONDS") or 300)
 
 
@@ -1223,22 +1245,44 @@ def _rung_healthy(name: str) -> bool:
     return state.get("cooling_until", 0.0) <= time.monotonic()
 
 
-def _rung_record_success(name: str) -> None:
-    """Clear failure state on a successful call so a good rung after recovery
-    doesn't stay in a half-open state longer than needed."""
+def _rung_record_success(name: str, model: str = "") -> None:
+    """Clear failure state on a successful call and, when `model` is provided,
+    mark this rung as the known-good server for that model so the next call
+    reorders the chain to prefer it. Empty `model` skips the last-good mark."""
     if name in _RUNG_HEALTH:
         _RUNG_HEALTH[name] = {"failures": 0, "cooling_until": 0.0}
+    if model:
+        _RUNG_LAST_GOOD[model] = name
 
 
-def _rung_record_failure(name: str) -> None:
+def _rung_record_failure(name: str, model: str = "") -> None:
     """Increment consecutive failure counter. On threshold, arm the cooldown so
-    the rung is skipped on subsequent requests for _RUNG_COOLDOWN_SECONDS."""
+    the rung is skipped on subsequent requests for _RUNG_COOLDOWN_SECONDS. If
+    this rung was the last-known-good for `model`, clear that mark so the next
+    call falls back to chain-order preference instead of resticking a broken
+    rung as preferred."""
     state = _RUNG_HEALTH.setdefault(name, {"failures": 0, "cooling_until": 0.0})
     state["failures"] = int(state.get("failures", 0)) + 1
     if state["failures"] >= _RUNG_FAILURE_THRESHOLD:
         state["cooling_until"] = time.monotonic() + _RUNG_COOLDOWN_SECONDS
         print(f"[narasi-failover] {name} cooldown {_RUNG_COOLDOWN_SECONDS:.0f}s "
               f"after {state['failures']} consecutive failures")
+    if model and _RUNG_LAST_GOOD.get(model) == name:
+        _RUNG_LAST_GOOD.pop(model, None)
+
+
+def _reorder_chain(model: str, chain: list) -> list:
+    """Move the last-known-good rung for `model` to the front of the chain.
+    Returns the chain unchanged when there is no last-good record, when the
+    last-good rung is already at position 0, or when it isn't present in the
+    current chain (defensive against config drift)."""
+    preferred = _RUNG_LAST_GOOD.get(model)
+    if not preferred:
+        return chain
+    idx = next((i for i, c in enumerate(chain) if c[0] == preferred), -1)
+    if idx <= 0:
+        return chain
+    return [chain[idx]] + chain[:idx] + chain[idx + 1:]
 
 
 class _AdaptedResp:
@@ -1323,7 +1367,12 @@ class _NarasiFailoverClient:
         return self
 
     def _create(self, **kw):
-        chain = _narasi_failover_chain(self._model)
+        # Reorder the chain so the last-known-good rung for this model comes first.
+        # First call of the model uses the canonical cheapest-first order; every
+        # subsequent call after a success prefers the proven rung, so a broken
+        # cheaper rung is not re-tried on every request.
+        base_chain = _narasi_failover_chain(self._model)
+        chain = _reorder_chain(self._model, base_chain)
         primary = next((c[0] for c in chain if c[3]), "")
         # Bound the whole cheapest-first walk to a budget < the caller's outer per-chapter
         # wait_for, giving each rung the REMAINING budget (not a fresh full timeout) so a hung
@@ -1370,7 +1419,7 @@ class _NarasiFailoverClient:
                     # (e.g. opus-4-6) returns an error BODY with HTTP 200 rather than raising, so
                     # without this the chain would return the empty resp and never try the next
                     # aggregator. Treat it as a rung failure and advance.
-                    _rung_record_failure(name)
+                    _rung_record_failure(name, self._model)
                     errors.append(f"{name}:empty({_resp_err_detail(resp)})")
                     print(f"[narasi-failover] {name} returned empty ({model_id}) → next")
                     continue
@@ -1380,12 +1429,12 @@ class _NarasiFailoverClient:
                     object.__setattr__(resp, "_narasi_served_by", name)
                 except Exception:
                     pass
-                _rung_record_success(name)
+                _rung_record_success(name, self._model)
                 if name != primary:
                     print(f"[narasi-failover] served by {name} ({model_id})")
                 return resp
             except Exception as e:  # 5xx / quota / timeout / connection → advance to next rung
-                _rung_record_failure(name)
+                _rung_record_failure(name, self._model)
                 errors.append(f"{name}:{repr(e)[:140]}")
                 print(f"[narasi-failover] {name} failed → next: {repr(e)[:160]}")
                 continue
