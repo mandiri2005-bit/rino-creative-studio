@@ -421,7 +421,19 @@ def _family_keys(family: str) -> list:
     return [k for k, v in BEAT_MAPS.items() if v["family"] == family]
 
 
+_MIN_POOL_SIZE = 4   # trap-topic diversification guard (adversarial audit finding)
+
+
 def compatible_beatmaps(topic, family="romance"):
+    """Return topic-compatible beat-map ids from the family. When the topic-hint pool is
+    narrower than _MIN_POOL_SIZE, top up with random family peers so single-hint topics
+    (e.g. 'balas dendam' → [revenge_return]) don't collapse to a deterministic pool.
+
+    Failure mode this fixes (audit lens-3): a single-hint topic whose sole match is a
+    signature-twist preset produces byte-identical structural output on every roll —
+    anti-repeat can't rescue because `fresh or pool` fallback restores the length-1 pool.
+    Top-up preserves targeting intent (hint matches come first) while guaranteeing
+    variety when the operator publishes many narasi on one narrow topic."""
     keys = _family_keys(family)
     t = (topic or "").lower()
     matched: list = []
@@ -430,7 +442,16 @@ def compatible_beatmaps(topic, family="romance"):
             matched.extend(k for k in ks if k in keys)
     seen = set()
     ordered = [k for k in matched if not (k in seen or seen.add(k))]
-    return ordered or keys
+    if not ordered:
+        return keys
+    if len(ordered) >= _MIN_POOL_SIZE:
+        return ordered
+    # top up with random family peers, not in the hint-matched set, to reach MIN_POOL_SIZE.
+    # Deterministic pick (sorted by key) so tests + telemetry stay stable across restarts;
+    # anti-repeat downstream still rotates freely.
+    peers = [k for k in sorted(keys) if k not in seen]
+    need = _MIN_POOL_SIZE - len(ordered)
+    return ordered + peers[:need]
 
 
 # ── Twist slot (v2) ────────────────────────────────────────────────────────

@@ -9064,7 +9064,29 @@ async def _narasi_outline_impl(body: dict):
         )
 
     max_tok = max(4000, chap_count * 600 + 2000)
-    resp, _um = await asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], max_tok)
+    # NARASI_OUTLINE_TIMEOUT bounds the outline LLM call server-side so a slow model doesn't
+    # silently exceed the edge-proxy read-timeout — leaving the provider (LaoZhang) billed
+    # for a response the client never sees. Chapter path already has this via
+    # DALANG_CHAPTER_LLM_TIMEOUT; parity for the outline path. Recommendation for the
+    # operator: also switch NARASI_OUTLINE_MODEL to a fast model (gemini-2.5-flash via
+    # Vertex-direct after cd0c9c0) so this timeout is a safety net, not a hot path.
+    _outline_timeout = float(os.environ.get("NARASI_OUTLINE_TIMEOUT") or 200)
+    try:
+        resp, _um = await asyncio.wait_for(
+            asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], max_tok),
+            timeout=_outline_timeout)
+    except asyncio.TimeoutError:
+        import logging as _lg
+        _lg.getLogger("narasi").warning(
+            "[narasi] outline LLM timed out after %.0fs (model=%s max_tok=%d chap_count=%d) "
+            "— provider likely billed for a response we discarded; consider a faster "
+            "NARASI_OUTLINE_MODEL (gemini-2.5-flash) or a longer NARASI_OUTLINE_TIMEOUT",
+            _outline_timeout, model, max_tok, chap_count)
+        raise HTTPException(504, (
+            f"Outline generation timed out after {int(_outline_timeout)}s "
+            f"(model={model}, ~{max_tok} tokens for {chap_count} chapters). "
+            "Try again — or ask the operator to switch NARASI_OUTLINE_MODEL to a faster model."
+        ))
     await _log_narasi_usage(_ou_tenant, _ou_user, _um, resp)
     raw = (_resp_content(resp) or "").strip()
     raw = _re.sub(r"^```(?:json)?\s*", "", raw, flags=_re.MULTILINE)
