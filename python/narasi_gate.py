@@ -1309,6 +1309,71 @@ def aphorism_density_scan(text: str, style: Optional[str] = None) -> dict[str, A
             "aphorism_rate_per_10_chapters": rate}
 
 
+# Phonetic-collision scan (corpus sample-25 lens-#4). Detects titled proper-noun pairs
+# that are DIFFERENT characters but PHONETICALLY confusable — in TTS output a listener
+# may hear them as the same entity drifting. Sample-25 surfaced "Pak Harto" (Fisika,
+# Bab 1) vs "Pak Hendra" (Matematika, Bab 3): different subjects, both teachers, but
+# Pak H+cluster reads as drift. Signal = same honorific title + same first letter after
+# title + length within 1. Narrow by design (high precision). Fiction only — nonfiction
+# may legitimately name similar historical figures (Louis XIII/XIV in one passage).
+_TITLE_HONORIFIC_RX = re.compile(
+    r"\b(Pak|Bu|Mas|Mbak|Kak|Om|Tante|Bapak|Ibu|Ustadz|Ustadzah|Kiai|"
+    r"Mr\.?|Mrs\.?|Ms\.?|Miss|Dr\.?|Sir|Lady|Prof\.?|"
+    r"Ajusshi|Ajumma|Oppa|Unni|Sunbae|Hoobae|Eomma|Appa|Halmoni|Harabeoji)"
+    r"\s+([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)"
+)
+
+
+def phonetic_collision_scan(text: str, style: Optional[str] = None) -> dict[str, Any]:
+    """Report-only (Track A, corpus sample-25 lens-#4): flag titled proper-noun pairs
+    that share honorific + first letter + similar length — VO listeners hear them as
+    the same character drifting. Fiction only. Narrow: catches Pak Harto ~ Pak Hendra
+    (the corpus case); does NOT touch nonfiction (may legitimately name Louis XIII/XIV)
+    and does NOT scan bare names (higher false-positive risk — start narrow, broaden if
+    corpus demands)."""
+    style_key = (style or "").strip().lower()
+    if style_key not in _FICTION_STYLES:
+        return {"applies": False, "phonetic_collision_hits": 0,
+                "phonetic_collision_pairs": []}
+    if not text:
+        return {"applies": True, "phonetic_collision_hits": 0,
+                "phonetic_collision_pairs": []}
+    by_title: dict = {}
+    for m in _TITLE_HONORIFIC_RX.finditer(text):
+        title = m.group(1).strip(".").lower()
+        name = m.group(2).strip()
+        # first-word only, so "Pak Harto Setya Wibowo" and "Pak Harto" collapse
+        name_key = name.split()[0]
+        by_title.setdefault(title, set()).add(name_key)
+    pairs: list = []
+    seen = set()
+    for title, names in by_title.items():
+        distinct = sorted(names)
+        if len(distinct) < 2:
+            continue
+        for i in range(len(distinct)):
+            a = distinct[i]
+            for j in range(i + 1, len(distinct)):
+                b = distinct[j]
+                key = (title, a, b)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if a[0].lower() != b[0].lower():
+                    continue
+                if abs(len(a) - len(b)) > 1:
+                    continue
+                pairs.append(f"{title.capitalize()} {a} / {title.capitalize()} {b}")
+                if len(pairs) >= 8:
+                    break
+            if len(pairs) >= 8:
+                break
+        if len(pairs) >= 8:
+            break
+    return {"applies": True, "phonetic_collision_hits": len(pairs),
+            "phonetic_collision_pairs": pairs}
+
+
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
 # Extend by adding new lang keys; each value is a list of anchored regex patterns.
 _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
@@ -1489,6 +1554,14 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
                     # Cap = ~1 per 2 chapters = 5 per 10; flag when materially over.
                     if _ap["aphorism_rate_per_10_chapters"] > 6.0:
                         stats["aphorism_flag"] = True
+                # Phonetic-collision (sample-25 lens-#4): titled proper-noun pairs that
+                # would drift in TTS output. Fiction-regime only, report-only.
+                _pc = phonetic_collision_scan(out, style=style)
+                if _pc.get("applies"):
+                    stats["phonetic_collision_hits"] = _pc["phonetic_collision_hits"]
+                    stats["phonetic_collision_pairs"] = _pc["phonetic_collision_pairs"]
+                    if _pc["phonetic_collision_hits"]:
+                        stats["phonetic_collision_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
