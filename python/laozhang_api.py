@@ -6935,6 +6935,20 @@ def _dalang_critic_enabled() -> bool:
     # sampled every K chapters for books longer than the min + a whole-book pass at the end.
     return _dalang_v2_enabled() and _flag_on("DALANG_CRITIC_ENABLED", "0")
 
+def _narasi_critique_enabled() -> bool:
+    # Whole-draft CONSISTENCY critic (#53, narasi-3 "Long and Winding Road" lens synthesis,
+    # 2026-07-06). INDEPENDENT of DALANG v2 / the per-chapter critic: a fresh-eyes pass over
+    # the FULL assembled book (no 12k truncation, capable model) hunting object-provenance /
+    # timeline / cross-chapter-causality contradictions — the class per-chapter critique is
+    # structurally blind to (each chapter is locally coherent). Report-only by default.
+    return _flag_on("NARASI_CRITIQUE_ENABLED", "0")
+
+def _narasi_critique_revise_enabled() -> bool:
+    # Sub-feature: when the consistency critic finds critical/high violations, run ONE bounded,
+    # length-preserving whole-book revise. OFF by default → the critique stays report-only so
+    # the critic's quality can be validated before it is trusted to edit the draft.
+    return _narasi_critique_enabled() and _flag_on("NARASI_CRITIQUE_REVISE", "0")
+
 def _dalang_dedup_enabled() -> bool:
     # Slice 5 sub-feature (requires v2): repetition guard — deterministic n-gram gate over
     # prior chapters (+ fail-open Qdrant semantic index); a near-duplicate gets ONE rewrite.
@@ -6970,6 +6984,14 @@ DALANG_CHEAP_MODEL         = os.getenv("DALANG_CHEAP_MODEL", "gemini-2.5-flash-l
 DALANG_CRITIC_MIN_CHAPTERS = int(os.getenv("DALANG_CRITIC_MIN_CHAPTERS", "5"))
 DALANG_CRITIC_EVERY_K      = int(os.getenv("DALANG_CRITIC_EVERY_K", "3"))
 DALANG_CRITIC_GATE         = float(os.getenv("DALANG_CRITIC_GATE", "8.5"))
+# #53 whole-draft consistency critic (see _narasi_critique_enabled). Reads the FULL book (no
+# 12k truncation) with a capable model + an object-provenance/timeline/causality checklist.
+# Empty NARASI_CRITIQUE_MODEL ⟹ reuse the chapter model; set it (e.g. claude-opus-4-6) for a
+# stronger critic. Runs only for books ≥ MIN chapters. Env-tunable.
+NARASI_CRITIQUE_MODEL        = os.getenv("NARASI_CRITIQUE_MODEL", "").strip()
+NARASI_CRITIQUE_MAX_CHARS    = int(os.getenv("NARASI_CRITIQUE_MAX_CHARS", "80000"))
+NARASI_CRITIQUE_MIN_CHAPTERS = int(os.getenv("NARASI_CRITIQUE_MIN_CHAPTERS", "3"))
+NARASI_CRITIQUE_GATE         = float(os.getenv("NARASI_CRITIQUE_GATE", "8.5"))
 # Slice 5: repetition-guard thresholds — 5-gram Jaccard (deterministic) + Qdrant cosine.
 DALANG_DEDUP_THRESHOLD     = float(os.getenv("DALANG_DEDUP_THRESHOLD", "0.18"))
 DALANG_DEDUP_SEM_THRESHOLD = float(os.getenv("DALANG_DEDUP_SEM_THRESHOLD", "0.86"))
@@ -7342,6 +7364,127 @@ async def _narasi_revise(client, model, resolved_model, safe_max, _msgs, text, c
     if len(new.split()) < 50:      # degenerate revise → keep original; logged for COGS, not billed
         return text, 0
     return new, _cr
+
+
+# ── #53 Whole-draft consistency critic (narasi-3 "Long and Winding Road" lens synthesis,
+#    2026-07-06). A fresh-eyes pass over the COMPLETE assembled book — not per-chapter, not
+#    truncated — hunting the contradiction class each chapter hides because it is locally
+#    coherent: an object/prop present where it could not be, a timeline/duration that doesn't
+#    add up, a cross-chapter causal/knowledge break, entity/label drift. This is the ONLY stage
+#    that can catch the narasi-3 notebook-provenance hole + the silent one-week→three-week drift;
+#    no deterministic scanner reaches it. Report-only unless NARASI_CRITIQUE_REVISE=1.
+_CONSISTENCY_CRITIC_SYS = (
+    "You are a strict CONTINUITY editor doing a fresh-eyes read of a COMPLETE multi-chapter "
+    "story you did NOT write. Judge ONLY whole-draft consistency — never prose taste. Read the "
+    "entire book, then hunt for contradictions each chapter hides because it reads fine on its "
+    "own. Check, in order:\n"
+    "1. OBJECT/PROP PROVENANCE — an item is present somewhere it could not be, or was "
+    "placed/hidden before it could exist there (a diary hidden under a house's floor when the "
+    "narrator bought the house only months ago; a letter predating the meeting it describes).\n"
+    "2. TIMELINE/DURATION — stated spans that don't add up (an agreed 'one week' that silently "
+    "becomes 'three weeks'; ages, dates, or seasons that conflict across chapters).\n"
+    "3. CROSS-CHAPTER CAUSALITY/KNOWLEDGE — a character knows, owns, or does something an earlier "
+    "chapter's setup forecloses (a stranger to a place who later has intimate history with it; "
+    "someone acting on information they were never given).\n"
+    "4. ENTITY/LABEL DRIFT — the same person or object named two ways ('the notebook' vs 'the "
+    "diary'), or two distinct entities left confusably alike.\n"
+    "5. SPATIAL/CONTINUITY — props that appear or vanish; geography that contradicts itself.\n"
+    "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
+    "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
+    "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
+    '{"score": <0-10>, "violations": [{"type": "provenance|timeline|causality|entity_drift|'
+    'spatial", "severity": "critical|high|medium|low", "evidence": "<short quote(s)>", '
+    '"fix": "<one-line directive>"}], "summary": "<1-2 sentences>"}'
+)
+
+
+def _narasi_normalize_critique(v) -> dict:
+    """Coerce a parsed critic response into the stable {score,violations,summary} shape."""
+    if not isinstance(v, dict):
+        v = {}
+    try:
+        _s = float(v.get("score")) if v.get("score") is not None else None
+        if _s is not None and (_s != _s or _s < 0 or _s > 10):   # NaN / out of range → drop
+            _s = None
+    except Exception:
+        _s = None
+    viol = v.get("violations")
+    viol = [x for x in viol if isinstance(x, dict)] if isinstance(viol, list) else []
+    return {"score": _s, "violations": viol[:20],
+            "summary": str(v.get("summary") or "")[:600]}
+
+
+async def _narasi_consistency_critique(full_text, style, language, *, model,
+                                       tenant_id, user_id, job_uuid):
+    """Fresh-eyes whole-draft consistency critic → (verdict, cr). verdict =
+    {score: float|None, violations: list[dict], summary: str}. Runs a capable model
+    (NARASI_CRITIQUE_MODEL, else the chapter model, else the cheap model) over the FULL book
+    (capped at NARASI_CRITIQUE_MAX_CHARS — NOT the 12k of the per-chapter critic). Logs usage
+    with charge=False so cr folds into the umbrella hold. Never raises → ({...}, 0)."""
+    crit_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
+    resolved   = MODELS.get(crit_model, crit_model)
+    safe_max   = min(2000, MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
+    _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
+          f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
+    try:
+        client = make_narasi_client(crit_model)
+        def _call(use_fmt):
+            kw = dict(model=resolved,
+                      messages=[{"role": "system", "content": _CONSISTENCY_CRITIC_SYS},
+                                {"role": "user", "content": _u}],
+                      temperature=0.1, max_tokens=safe_max, stream=False)
+            if use_fmt:
+                kw["response_format"] = {"type": "json_object"}
+            return client.chat.completions.create(**kw)
+        try:
+            resp = await asyncio.to_thread(lambda: _call(True))
+        except Exception:
+            resp = await asyncio.to_thread(lambda: _call(False))
+        cr  = (await _log_narasi_usage(tenant_id, user_id, crit_model, resp, job_id=job_uuid) or 0)
+        raw = (resp.choices[0].message.content or "").strip()
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("consistency critic failed (non-fatal): %s", _e)
+        return {"score": None, "violations": [], "summary": ""}, 0
+    return _narasi_normalize_critique(_narasi_parse_json(raw)), int(cr)
+
+
+async def _narasi_consistency_revise(full_text, critique, style, language, *, model,
+                                     tenant_id, user_id, job_uuid):
+    """ONE bounded whole-book revise addressing the consistency critic's violations —
+    minimal-edit, length-preserving. Accepts the rewrite ONLY if it keeps ≥90% of the word
+    count (a continuity fix must not gut the book); otherwise keeps the original. Returns
+    (new_text, cr) — original + 0 on any failure/degradation. Never raises."""
+    viol = critique.get("violations") or []
+    if not viol:
+        return full_text, 0
+    directives = "\n".join(
+        f"- [{x.get('severity', '?')}/{x.get('type', '?')}] {str(x.get('evidence', ''))[:200]} "
+        f"→ FIX: {str(x.get('fix', ''))[:200]}"
+        for x in viol[:12])
+    rev_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
+    resolved  = MODELS.get(rev_model, rev_model)
+    safe_max  = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 16000)
+    _sys = ("You are revising a COMPLETE multi-chapter story to fix whole-draft consistency "
+            "problems a continuity editor found. Make the SMALLEST changes that reconcile each "
+            "problem — reword only the sentences carrying the contradiction; keep every other "
+            "sentence, the chapter count and headings, the length, the style and language "
+            "IDENTICAL. Return the FULL corrected book (all chapters, same headings), nothing else.")
+    _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[CONSISTENCY PROBLEMS TO FIX]\n{directives}"
+          f"\n\n[FULL BOOK — return the corrected version, unchanged except for the fixes]\n{full_text}")
+    try:
+        resp = await asyncio.to_thread(lambda: make_narasi_client(rev_model).chat.completions.create(
+            model=resolved, messages=[{"role": "system", "content": _sys},
+                                      {"role": "user", "content": _u}],
+            temperature=0.2, max_tokens=safe_max, stream=False))
+    except Exception:
+        return full_text, 0
+    if not getattr(resp, "choices", None):
+        return full_text, 0
+    cr  = (await _log_narasi_usage(tenant_id, user_id, rev_model, resp, job_id=job_uuid) or 0)
+    new = (resp.choices[0].message.content or "").strip()
+    if len(new.split()) < int(len((full_text or "").split()) * 0.9):   # gutted → keep original
+        return full_text, 0
+    return new, int(cr)
 
 
 STYLE_RULES = {
@@ -9725,6 +9868,52 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
         if _dalang_crashsafe_enabled() and _bkc and _narasi_job_uuid:
             await db.checkpoint_narasi_meter(_narasi_tenant, _narasi_job_uuid, _meter_actual)
 
+    # ── #53 whole-draft consistency critic (narasi-3 lens synthesis, 2026-07-06): a fresh-eyes
+    # pass over the FULL book (no 12k truncation, capable model) for object-provenance / timeline
+    # / cross-chapter-causality contradictions the per-chapter critic is blind to. Runs BEFORE the
+    # settle so its cost folds into _meter_actual. Report-only unless NARASI_CRITIQUE_REVISE=1.
+    # Additive + flag-gated → OFF leaves _critique_payload=None and the delivered text unchanged.
+    #   COST: the critic is ONE LLM call over the whole book; the (opt-in) revise is a full-book
+    #   regen. Both fold into _meter_actual, which the settle CLAMPS to the up-front hold — an
+    #   overrun is platform-absorbed unless FIX_F22_SETTLE_OVERRUN=1 (hold headroom is 1.5× under
+    #   DALANG v2, 1.0× otherwise). Enable REVISE knowing the cost may be eaten until the hold
+    #   estimate accounts for it.
+    #   DIVERGENCE: a revise replaces the delivered COMBINED markdown only; the per-chapter
+    #   narasi_chapters rows keep the pre-revise text (rating / chapter-granular UIs read those).
+    #   Acceptable for v1 — the delivered book is the gated output; re-split into rows is a follow-on.
+    #   The whole stage is try-wrapped so a critic failure can NEVER strand the hold or the job. ──
+    _critique_payload = None
+    _consistency_revised = None
+    try:
+        if (_narasi_critique_enabled() and not cancelled and previous_chapters
+                and len(chapters) >= NARASI_CRITIQUE_MIN_CHAPTERS):
+            # Assemble WITH chapter headings (identical shape to _stitched_md) so a revise keeps
+            # the heading structure and can drop straight into the delivered markdown.
+            _full_book = "\n\n".join(
+                f"## {_chapter_label(language, pc['id'])}: {pc['title']}\n\n{pc.get('text', '')}"
+                for pc in previous_chapters
+            )
+            _cq, _cqc = await _narasi_consistency_critique(
+                _full_book, style, language, model=model,
+                tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid)
+            _meter_actual += _cqc
+            _critique_payload = _cq
+            _crit_bad = [v for v in (_cq.get("violations") or [])
+                         if str(v.get("severity", "")).lower() in ("critical", "high")]
+            if _narasi_critique_revise_enabled() and _crit_bad:
+                _rev, _revc = await _narasi_consistency_revise(
+                    _full_book, _cq, style, language, model=model,
+                    tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid)
+                _meter_actual += _revc
+                if _rev and _rev != _full_book:
+                    _consistency_revised = _rev
+                    _critique_payload = dict(_cq)
+                    _critique_payload["revised"] = True
+            if _dalang_crashsafe_enabled() and _cqc and _narasi_job_uuid:
+                await db.checkpoint_narasi_meter(_narasi_tenant, _narasi_job_uuid, _meter_actual)
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("consistency critic stage failed (non-fatal): %s", _e)
+
     # ── Step 4 metering: settle the hold to the ACTUAL credits consumed. A
     # cancelled / partial run commits only what was produced (refunding the rest);
     # a run that produced nothing refunds the whole hold. Never raises.
@@ -9748,7 +9937,9 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             await db.finish_narasi_job(_narasi_tenant, job_id, "error",
                                        error=str(errors[:3]))
         else:
-            _stitched_md = "\n\n".join(
+            # #53: a consistency-revise (opt-in) replaces the delivered combined markdown; the
+            # per-chapter rows are left as-is (the combined markdown is the gated/delivered text).
+            _stitched_md = _consistency_revised or "\n\n".join(
                 f"## {_chapter_label(language, pc['id'])}: {pc['title']}\n\n{pc['text']}"
                 for pc in previous_chapters
             )
@@ -9777,6 +9968,9 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     _result["chapter_scores"] = _chapter_scores
                 if _book_score is not None:
                     _result["book_score"] = _book_score
+            # #53: whole-draft consistency critic payload (score + violations [+ revised flag]).
+            if _critique_payload is not None:
+                _result["critique"] = _critique_payload
             await db.finish_narasi_job(_narasi_tenant, job_id, "done", result=_result)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)
