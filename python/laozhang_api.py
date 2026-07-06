@@ -403,11 +403,11 @@ MCP_TOOLS = [
 # Safe output-token ceiling per resolved model name
 MODEL_MAX_TOKENS: dict[str, int] = {
     # Best balance
-    "gemini-2.5-flash": 16384,
+    "gemini-2.5-flash": 60000,
     "deepseek-chat": 8192,
     "gpt-4o-mini": 16384,
     "qwen-max": 8192,
-    "gemini-2.5-flash-lite": 8192,
+    "gemini-2.5-flash-lite": 60000,
     # Power
     "gemini-2.5-pro": 65536,
     "claude-sonnet-4-6": 8192,
@@ -431,9 +431,9 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "gpt-5-pro": 32000,
     "deepseek-v3-250324": 8192,
     "deepseek-v4-pro": 65536,
-    "deepseek-r1": 65536,
+    "deepseek-r1": 64000,
     "grok-4-fast": 8192,
-    "gemini-3-flash-preview": 8192,
+    "gemini-3-flash-preview": 60000,
     # gemini-3.5-flash real output ceiling is 65,536 (Google docs) — the old 8192 was a
     # conservative under-set that made _polish_reduce SKIP any book > ~5,100 words (the
     # NARASI_POLISH_MODEL=gemini-3.5-flash path never polished long books). Set to 32,768:
@@ -441,7 +441,7 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     # yet stays safely BELOW the real 65,536 limit — run_worker requests min(worker.max_tokens
     # or ceiling, ceiling) and the polish Worker leaves max_tokens=None, so it would request
     # this whole value; 32k is definitely accepted, 65k risks a strict-validator rejection.
-    "gemini-3.5-flash": 32768,
+    "gemini-3.5-flash": 60000,
 }
 DEFAULT_MAX_TOKENS = 16384
 
