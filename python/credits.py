@@ -33,6 +33,7 @@ seeded from Postgres).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 import database as db
@@ -40,6 +41,20 @@ import redis_client as rc
 from credit_catalog import TIER_MONTHLY_CREDITS
 
 log = logging.getLogger("credits")
+
+# F2 guarded-debit opt-in. Default OFF preserves the additive credit_apply() hot
+# path exactly (no behavioural change for callers who don't opt in). When set to
+# "1", negative-delta durable moves (charge/commit) route through the atomic
+# self-flooring credit_debit_guarded() primitive shipped in migration 0033 so a
+# raced hold can never drive credit_balances.balance below zero (root cause of the
+# prod -547 incident). Redis cache mirroring, hold TTLs and idempotency keys are
+# UNCHANGED — this only replaces the durable UPDATE with a floored variant.
+_F2_DURABLE_FLOOR = os.getenv("FIX_F2_DURABLE_FLOOR", "0") == "1"
+
+# F22: when set, commit() books a supplemental durable debit for the (actual - held) diff
+# under a distinct op_id namespace instead of silently clamping (which under-charges when
+# the hold was estimated too low). Default OFF preserves the F4 clamp behaviour.
+_F22_SETTLE_OVERRUN = os.getenv("FIX_F22_SETTLE_OVERRUN") == "1"
 
 
 class InsufficientCredits(Exception):
@@ -134,6 +149,21 @@ async def _credit_apply(tenant_id: str, delta: int, reason: str, *,
         db._uid(tenant_id), db._uid(user_id) if user_id else None,
         int(delta), reason, op_id, metadata or {},   # pass the DICT — the asyncpg jsonb codec
         tenant=str(tenant_id))                        # encodes ONCE; json.dumps here = double-encode
+    return (bool(row["applied"]), int(row["balance"])) if row else (False, 0)
+
+
+async def _credit_debit_guarded(tenant_id: str, amount: int, reason: str, *,
+                                op_id: Optional[str] = None, user_id: Optional[str] = None,
+                                metadata: Optional[dict] = None) -> tuple[bool, int]:
+    """F2: atomic durable debit with a Postgres-side balance floor (migration 0033).
+    `amount` is POSITIVE credits to subtract. Returns (applied, balance) — applied=False
+    when the durable balance couldn't cover the debit (a raced hold that would have driven
+    it negative under _credit_apply). Idempotent on op_id via credit_ledger's unique index."""
+    row = await db._q_fetchrow(
+        "SELECT applied, balance FROM credit_debit_guarded($1,$2,$3,$4,$5,$6::jsonb)",
+        db._uid(tenant_id), db._uid(user_id) if user_id else None,
+        int(amount), reason, op_id, metadata or {},
+        tenant=str(tenant_id))
     return (bool(row["applied"]), int(row["balance"])) if row else (False, 0)
 
 
@@ -279,8 +309,19 @@ async def charge(tenant_id: str, amount: int, op_id: str, *,
             await _ensure_cached(tenant_id)
         except Exception as e:
             log.warning("charge pre-seed redis(%s): %s", op_id, e)
-    _applied, dbal = await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
-                                         user_id=user_id, metadata=metadata)
+    # F2 opt-in: route durable debit through Postgres-floored primitive so a raced hold
+    # cannot drive credit_balances.balance negative. Legacy additive path preserved when
+    # FIX_F2_DURABLE_FLOOR=0 (default).
+    if _F2_DURABLE_FLOOR:
+        _applied, dbal = await _credit_debit_guarded(tenant_id, amount, "charge",
+                                                     op_id=f"charge:{op_id}",
+                                                     user_id=user_id, metadata=metadata)
+        if not _applied and dbal < amount:
+            log.warning("charge(%s): guarded-debit REJECTED, durable=%d < needed=%d (overspend blocked)",
+                        op_id, dbal, amount)
+    else:
+        _applied, dbal = await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
+                                             user_id=user_id, metadata=metadata)
     # Decrement the live cache ONLY when the durable charge actually applied — so a deduped duplicate
     # (idempotent op_id, e.g. a recovery re-stitch render fee with op_id "charge:video-renderfee:<job>")
     # leaves the cache untouched instead of drifting it down. Mirrors grant()'s applied-gated incrby;
@@ -299,6 +340,19 @@ async def charge(tenant_id: str, amount: int, op_id: str, *,
     # of a spurious "insufficient credits". (get_balance also self-heals on read.)
     if cl is not None and newbal is not None and newbal < 0:
         log.warning("charge(%s): cache went to %d → reconcile to durable %d", op_id, newbal, dbal)
+        # F23: overspend-debt visibility. The clamp below hides the magnitude of drift
+        # (newbal → max(0, dbal)); when the debt is real (durable itself is <=0 or the
+        # cache was significantly below durable) ops need a loud, greppable signal.
+        # Default OFF so log volume/alerting is unchanged; flip FIX_F23_LOG_CLAMP=1 to opt IN.
+        if os.getenv("FIX_F23_LOG_CLAMP") == "1":
+            try:
+                _debt = int(dbal) - int(newbal)
+            except Exception:
+                _debt = None
+            log.critical(
+                "F23_CACHE_CLAMP tenant=%s op=%s newbal=%s dbal=%s debt=%s amount=%s",
+                tenant_id, op_id, newbal, dbal, _debt, amount,
+            )
         try:
             await cl.set(_bal_key(tenant_id), max(0, int(dbal)))
         except Exception as e:
@@ -322,10 +376,21 @@ async def commit(tenant_id: str, op_id: str, actual: int, *,
         # negative and over-debits the live cache (_LUA_COMMIT diff<0). Read the hold before the
         # Lua DELs it. If the hold is gone (expired / already settled), leave `actual` as-is: a
         # repeat commit is idempotent on charge:{op_id}, so the first (clamped) settle sticks.
+        _overrun = 0  # F22: (actual - held) shortfall to book durably after the clamp
         try:
             _held = await cl.get(_hold_key(tenant_id, op_id))
             if _held is not None:
-                actual = min(actual, max(0, int(_held)))
+                _held_int = max(0, int(_held))
+                if _F22_SETTLE_OVERRUN and actual > _held_int:
+                    # F22: capture the shortfall for a supplemental debit booked below on
+                    # a distinct op_id namespace — idempotent on retry. Also log so ops can
+                    # spot chronic under-estimation of holds.
+                    _overrun = actual - _held_int
+                    log.warning(
+                        "commit overrun(%s): actual=%d held=%d diff=%d — booking supplemental charge",
+                        op_id, actual, _held_int, _overrun,
+                    )
+                actual = min(actual, _held_int)
         except Exception as e:
             log.warning("commit hold-read(%s): %s", op_id, e)
         if actual == 0:
@@ -336,9 +401,38 @@ async def commit(tenant_id: str, op_id: str, actual: int, *,
         except Exception as e:
             log.warning("commit redis(%s): %s", op_id, e)
     # durable charge (idempotent via distinct op_id namespace)
-    _, _bal = await _credit_apply(tenant_id, -actual, "charge",
-                                  op_id=f"charge:{op_id}", user_id=user_id,
-                                  metadata=metadata)
+    # F2 opt-in: same floored primitive as charge(). commit() has already CLAMPED `actual`
+    # to the amount held above, so a healthy path never triggers rejection — this is a
+    # durable safety net for expired-hold/cache-drift/admin-edit pathologies.
+    if _F2_DURABLE_FLOOR:
+        _applied, _bal = await _credit_debit_guarded(tenant_id, actual, "charge",
+                                                     op_id=f"charge:{op_id}", user_id=user_id,
+                                                     metadata=metadata)
+        if not _applied and _bal < actual:
+            log.warning("commit(%s): guarded-debit REJECTED, durable=%d < actual=%d (overspend blocked)",
+                        op_id, _bal, actual)
+    else:
+        _, _bal = await _credit_apply(tenant_id, -actual, "charge",
+                                      op_id=f"charge:{op_id}", user_id=user_id,
+                                      metadata=metadata)
+    # F22: book the (actual - held) shortfall as a separate durable debit under a
+    # distinct op_id namespace so retries stay idempotent. Redis was already clamped
+    # to the hold; the overrun deliberately does NOT touch the live cache here — the
+    # next _ensure_cached / seed will re-align cache to durable. Gated by
+    # FIX_F22_SETTLE_OVERRUN=1; when OFF (_overrun==0) this is a no-op.
+    if cl is not None and _overrun > 0:
+        try:
+            _ov_meta = dict(metadata) if metadata else {}
+            _ov_meta["overrun_of"] = op_id
+            await _credit_apply(tenant_id, -_overrun, "charge_overrun",
+                                op_id=f"charge_overrun:{op_id}", user_id=user_id,
+                                metadata=_ov_meta)
+            try:
+                await cl.decrby(_bal_key(tenant_id), _overrun)
+            except Exception as e:
+                log.warning("commit overrun redis(%s): %s", op_id, e)
+        except Exception as e:
+            log.warning("commit overrun durable(%s): %s", op_id, e)
     return await get_balance(tenant_id)
 
 

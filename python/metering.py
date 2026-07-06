@@ -62,6 +62,26 @@ def insufficient_credits(needed: int, balance: int) -> HTTPException:
     })
 
 
+# F4: strict-pricing gate. When FIX_F4_STRICT_PRICING=1, an unknown (op,model)
+# whose catalog price is 0 must NOT be served for free — raise 402 so an off-catalog
+# chat model cannot silently bypass credit hold. Default OFF preserves current behaviour.
+FIX_F4_STRICT_PRICING = os.getenv("FIX_F4_STRICT_PRICING", "0").lower() in ("1", "true", "yes")
+# Only close the LLM-cost paths — image/video/tts have legitimate flat-rate/pre-priced
+# routes where est==0 upstream is expected (batch, precomputed image credits, etc).
+_F4_STRICT_OPS = {"chat", "narasi", "embedding"}
+
+
+def unpriced_model(operation: str, model: str) -> HTTPException:
+    """402 for F4: off-catalog model on a metered tier — no fail-open."""
+    return HTTPException(status_code=402, detail={
+        "error": "unpriced_model",
+        "operation": operation,
+        "model": model,
+        "message": "model has no catalog price on your tier",
+        "topup_url": TOPUP_URL,
+    })
+
+
 _TIER_LABEL = {"free": "Free", "starter": "Starter", "pro": "Pro", "enterprise": "Studio"}
 
 def tier_locked(model: str, need_tier: str, have_tier: str) -> HTTPException:
@@ -209,6 +229,12 @@ async def begin_charge(*, tenant_id: str, user_id: Optional[str], operation: str
     await _free_prep(tenant_id)          # free: top up daily claim + global kill-switch
     est = _cat.credit_cost(operation, model, estimate_units)
     if est <= 0:
+        # F4: unknown (op,model) → _calc_cost returns 0 → fail-open.
+        # When strict-pricing is ON, refuse unpriced LLM-cost ops.
+        if FIX_F4_STRICT_PRICING and (operation or "").lower() in _F4_STRICT_OPS:
+            log.warning("F4 strict-pricing: refusing unpriced %s/%s for tenant %s",
+                        operation, model, tenant_id)
+            raise unpriced_model(operation, model)
         return Charge(tenant_id=tenant_id, user_id=user_id, op_id=op_id,
                       operation=operation, model=model, held=0)
     try:

@@ -162,6 +162,10 @@ SPK_CAPTION_WORDS = int(os.getenv("SPK_CAPTION_WORDS", "5"))
 
 
 def _broll_on(input: dict) -> bool:
+    # F16 server-side kill switch: b-roll path stays fully OFF unless the operator opts in via env.
+    # Client-provided input.broll.on is IGNORED unless SPK_BROLL_ENABLED=1 on the server.
+    if os.getenv("SPK_BROLL_ENABLED", "0") != "1":
+        return False
     return bool((input.get("broll") or {}).get("on"))
 
 

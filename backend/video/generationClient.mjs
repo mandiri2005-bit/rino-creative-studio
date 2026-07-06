@@ -220,11 +220,34 @@ export function httpGenerationClient(opts = {}) {
       if (/gemini/i.test(model) && /tts/i.test(model) && process.env.GEMINI_API_KEY) {
         try {
           await writeFile(out, await geminiTts(scene.text, scene.voice, model));
-          await fetchT(`${PYTHON_API}${ttsAudioPath}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...authHeaders(scene) },
-            body: JSON.stringify({ text: scene.text, model, meter_only: true, scene_index: scene.sceneIndex }),
-          }).catch(() => {});  // best-effort metering; never fail the scene on it
+          // F32: gate durable metering behind FIX_F32_TTS_META_AWAIT — when ON we AWAIT
+          // the meter_only call, log-critical on non-2xx / network fail, and THROW so the
+          // outer try falls through to the OpenAI path (which meters end-to-end). Default
+          // OFF keeps legacy fire-and-forget behavior.
+          if (process.env.FIX_F32_TTS_META_AWAIT === "1") {
+            let _meterRes;
+            try {
+              _meterRes = await fetchT(`${PYTHON_API}${ttsAudioPath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", ...authHeaders(scene) },
+                body: JSON.stringify({ text: scene.text, model, meter_only: true, scene_index: scene.sceneIndex }),
+              });
+            } catch (_me) {
+              console.error(`[audio ${scene.jobId}/${scene.sceneIndex}] CRITICAL gemini-tts meter fetch failed: ${_me && _me.message}`);
+              throw new Error(`gemini-tts meter unreachable: ${_me && _me.message}`);
+            }
+            if (!_meterRes || !_meterRes.ok) {
+              const _body = _meterRes ? (await _meterRes.text().catch(() => "")).slice(0, 200) : "";
+              console.error(`[audio ${scene.jobId}/${scene.sceneIndex}] CRITICAL gemini-tts meter ${_meterRes && _meterRes.status}: ${_body}`);
+              throw new Error(`gemini-tts meter ${_meterRes && _meterRes.status}`);
+            }
+          } else {
+            await fetchT(`${PYTHON_API}${ttsAudioPath}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...authHeaders(scene) },
+              body: JSON.stringify({ text: scene.text, model, meter_only: true, scene_index: scene.sceneIndex }),
+            }).catch(() => {});  // best-effort metering; never fail the scene on it
+          }
           return { path: out };
         } catch { /* fall through to the OpenAI-compatible path */ }
       }

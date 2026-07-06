@@ -253,10 +253,27 @@ class _UsageSink:
             pass
 
     async def _log_one(self, t: CallTelemetry) -> None:
+        # F8 (FIX_F8_NARASI_REFUND_ON_FAILOVER, default OFF): when the failover chain
+        # served a rung whose model id isn't in the orchestrator's pricing table,
+        # estimate_cost returns 0.0 and the per-call usage_logs row silently logs
+        # cost_usd=0 for delivered tokens — margin analytics under-report COGS.
+        # Floor the LOGGED cost at a conservative blended rate ($1/M in, $5/M out) so
+        # the row reflects real work. Settlement is unaffected (already floored by A4).
+        _cost_usd = float(t.cost_usd or 0.0)
+        try:
+            if str(os.environ.get("FIX_F8_NARASI_REFUND_ON_FAILOVER", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                if getattr(t, "ok", False) and _cost_usd <= 0.0 and int(t.tokens_out or 0) > 0:
+                    _cost_usd = (int(t.tokens_in or 0) * 1.0 + int(t.tokens_out or 0) * 5.0) / 1_000_000.0
+                    log.warning("usage sink: pricing-table miss for model=%s provider=%s — "
+                                "flooring cost_usd=%.6f (tin=%d tout=%d)", t.model,
+                                (getattr(t, "provider", "") or "laozhang"),
+                                _cost_usd, int(t.tokens_in or 0), int(t.tokens_out or 0))
+        except Exception:  # noqa: BLE001 - logging floor must never break generation
+            _cost_usd = float(t.cost_usd or 0.0)
         try:
             await db.log_usage(
                 self.tenant_id, self.user_id, t.model, "narasi",
-                int(t.tokens_in or 0), int(t.tokens_out or 0), float(t.cost_usd or 0.0),
+                int(t.tokens_in or 0), int(t.tokens_out or 0), _cost_usd,
                 # Actual serving aggregator when the narasi failover client handled the
                 # call (kie/laozhang/atlascloud, stamped through CallTelemetry.provider);
                 # "laozhang" only as the plain-client default. NOT NULL column.

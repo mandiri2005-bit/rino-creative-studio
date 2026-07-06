@@ -38,6 +38,20 @@ import { query } from "./db.js";
 // missing var on the Indonesia deployment can never accidentally arm subscriptions.
 export function subscriptionMode() { return process.env.BILLING_MODE === "subscription"; }
 
+// F37 fix (gated): when FIX_F37_NOPERIOD_STABLE=1, the fallback op_id for a
+// missing periodKey becomes a deterministic hash of the subscription id instead
+// of the per-delivery webhookId — so Dodo retrying the same event with a new
+// delivery id can't re-run RESET. Default OFF preserves existing per-delivery
+// behavior (which protects against two genuine periods both arriving without
+// billing dates collapsing to a single grant).
+function _noperiodOpSuffix(subId, webhookId) {
+  if (process.env.FIX_F37_NOPERIOD_STABLE === "1") {
+    const h = crypto.createHash("sha256").update(`${subId}:noperiod`).digest("hex").slice(0, 16);
+    return `noperiod:${h}`;
+  }
+  return "noperiod:" + webhookId;
+}
+
 // Fail-loud guard: when BILLING_MODE=subscription (global product), the config that
 // actually LOADED must carry the global markers. If not, the loader silently fell
 // back to the Indonesia config (config/pricing.json) → $0.01 economics + empty
@@ -339,7 +353,13 @@ async function _setTenantPlan(tenantId, plan) {
     // assertGlobalConfigLoaded). Any OTHER error (deadlock, pool exhaustion) is transient
     // → re-throw so the webhook 500s and Dodo retries the (idempotent) event.
     if (e.code === "23514") {
-      console.error(`[dodo_sub] tenants.plan CHECK rejected plan='${plan}' t=${tenantId} — NON-RETRYABLE, tier left stale; add '${plan}' to tenants_plan_check.`);
+      // F39 CRITICAL: non-retryable CHECK violation leaves the tenant on a stale plan tier.
+      // Emit a structured, greppable line so ops can alert on it and ship a migration
+      // adding the unknown plan_key to tenants_plan_check. Swallow is intentional but LOUD.
+      console.error(
+        `[dodo_sub][CRITICAL] tenants_plan_check violation plan_key='${plan}' tenant_id='${tenantId}' code=23514 constraint=tenants_plan_check action=SWALLOW impact=tier_stale remediation=add_plan_key_migration`,
+        { event: "dodo_sub.plan_check_violation", severity: "critical", plan_key: plan, tenant_id: tenantId, pg_code: "23514", constraint: "tenants_plan_check", detail: e?.detail || null, message: e?.message || null }
+      );
       return;
     }
     throw e;
@@ -405,7 +425,7 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
       // Per-delivery fallback op_id (not a constant :noperiod) so two genuine periods that
       // both arrive without billing dates DON'T collapse to one grant (under-credit); a
       // true replay of THIS event reuses the same webhookId and stays idempotent.
-      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || ("noperiod:" + webhookId)}`, "monthly_grant");
+      if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || _noperiodOpSuffix(subId, webhookId)}`, "monthly_grant");
       return { handled: true, type, action: "active", plan, reset };
     }
     case "subscription.renewed": {
@@ -417,7 +437,7 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
       let reset = null;
       if (plan && !periodKey) console.error(`[dodo_sub] renewed sub=${subId} MISSING billing dates → crediting under :noperiod:${webhookId}, investigate`);
       if (unknownProduct) console.error(`[dodo_sub] renewed sub=${subId} UNKNOWN product_id=${data?.product_id} → NOT crediting (map the product in DODO_PRODUCT_*); keeping current credits`);
-      else if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || ("noperiod:" + webhookId)}`, "monthly_grant");
+      else if (plan) reset = await doReset(plan, `dodo_sub:${subId}:${periodKey || _noperiodOpSuffix(subId, webhookId)}`, "monthly_grant");
       return { handled: true, type, action: "renewed", plan, reset, unknownProduct: unknownProduct || undefined };
     }
     case "subscription.plan_changed": {
@@ -432,6 +452,18 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
       // within-period accumulation is WIPED at the next renewal/expiry. Toggle-farming is
       // therefore bounded to a single period AND costs a full payment per toggle.
       const plan = eventPlan || metaPlan;
+      // F3 (gated): capture OLD plan_key BEFORE _upsertSub overwrites it, so we can
+      // compute a prorated delta when FIX_F3_PLAN_CHANGE_DELTA=1. Dodo only bills the
+      // prorated difference on plan change so granting the FULL new-plan allowance
+      // on top of leftover is a farming vector.
+      const _f3DeltaOn = process.env.FIX_F3_PLAN_CHANGE_DELTA === "1";
+      let _f3OldPlan = null;
+      if (_f3DeltaOn) {
+        try {
+          const _op = await query(`SELECT plan_key FROM dodo_subscriptions WHERE dodo_subscription_id=$1 LIMIT 1`, [subId], tenantId);
+          _f3OldPlan = _op.rows[0]?.plan_key || null;
+        } catch (e) { console.error(`[dodo_sub] F3 old-plan lookup failed sub=${subId}: ${e?.message || e}`); }
+      }
       await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
                          status: status || "active", periodStart, periodEnd, cancelAtEnd });
       await _setTenantPlan(tenantId, plan);
@@ -442,12 +474,24 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
         console.error(`[dodo_sub] plan_changed sub=${subId} UNKNOWN product_id=${data?.product_id} → NOT applying credits (map the product in DODO_PRODUCT_* first)`);
       } else if (plan) {
         const sb = await query(`SELECT GREATEST(COALESCE(sub_balance,0),0) AS sub FROM credit_balances WHERE tenant_id=$1`, [tenantId], tenantId);
-        const target = Number(sb.rows[0]?.sub || 0) + subPlanCredits(plan);   // ADD: keep leftover + new plan allowance
+        const _subBal = Number(sb.rows[0]?.sub || 0);
+        let target;
+        let _f3Delta = null;
+        if (_f3DeltaOn) {
+          // Prorated-only grant: on upgrade grant (new - old) if positive; on downgrade grant 0.
+          // Never claw existing sub_balance. If old plan is unknown, grant 0 (safe default).
+          const _newAllow = subPlanCredits(plan);
+          const _oldAllow = _f3OldPlan ? subPlanCredits(_f3OldPlan) : 0;
+          _f3Delta = Math.max(0, _newAllow - _oldAllow);
+          target = _subBal + _f3Delta;
+        } else {
+          target = _subBal + subPlanCredits(plan);   // ADD: keep leftover + new plan allowance
+        }
         reset = await reset_entitlement({
           userId, tenantId, targetCredits: target,
-          opId: `dodo_sub:${subId}:planchg:${periodKey || ("nb:" + webhookId)}:${plan}`,
+          opId: `dodo_sub:${subId}:planchg${_f3DeltaOn ? ":f3delta" : ""}:${periodKey || ("nb:" + webhookId)}:${plan}`,
           reason: "monthly_grant",
-          meta: { provider: "dodo_sub", subscription_id: subId, plan_key: plan, webhook_id: webhookId, event: type, kind: "plan_change", target },
+          meta: { provider: "dodo_sub", subscription_id: subId, plan_key: plan, webhook_id: webhookId, event: type, kind: "plan_change", target, ...(_f3DeltaOn ? { f3_delta_mode: true, f3_old_plan: _f3OldPlan, f3_delta: _f3Delta } : {}) },
         });
       }
       return { handled: true, type, action: "plan_changed", plan, reset };
@@ -600,7 +644,23 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
       console.warn(`[dodo_sub] reconcile failed sub=${row.dodo_subscription_id}: ${e.message}`);
     }
   }
-  return { checked, downgraded, errored, scanned: r.rows.length };
+  // F27: purge abandoned-checkout 'pending' rows older than 24h. Only touches rows still
+  // in 'pending' status untouched for >24h — an active/on_hold webhook always bumps
+  // updated_at, so live subs are never at risk. Gated FIX_F27_PENDING_TTL=1 (default OFF).
+  let purgedPending = 0;
+  if (process.env.FIX_F27_PENDING_TTL === "1") {
+    try {
+      const p = await query(
+        `DELETE FROM dodo_subscriptions
+           WHERE status='pending'
+             AND updated_at < now() - interval '24 hours'`,
+      );
+      purgedPending = p.rowCount || 0;
+    } catch (e) {
+      console.warn(`[dodo_sub] pending TTL purge failed: ${e.message}`);
+    }
+  }
+  return { checked, downgraded, errored, scanned: r.rows.length, purgedPending };
 }
 
 // ── TASK 4 (top-up branch): handle a ONE-TIME payment.succeeded with kind=topup ─

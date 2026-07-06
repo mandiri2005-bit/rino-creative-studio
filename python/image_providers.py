@@ -588,10 +588,29 @@ async def dispatch(feature: str, model_id: str, params: dict, op_id: str) -> dic
     # IP-PIN itself (_resolve_pinned vets every resolved IP + connects to the literal) PLUS a per-request
     # follow_redirects=False on that one pinned stream — so a user ref can't 30x-escape the vetted IP.
     async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+        _strict_prices = os.getenv("FIX_F5_STRICT_IMAGE_PRICES", "").strip() in ("1", "true", "TRUE", "yes")
         for idx, step in enumerate(chain):
             prov = step["provider"]; slug = _slug_for(step, feature)
             if not slug:
                 continue
+            # F5 strict-price guard (opt-in via FIX_F5_STRICT_IMAGE_PRICES=1): refuse to dispatch
+            # a provider whose COGS we don't know (catalog price=null AND step has no cogs_usd) —
+            # otherwise the actually-served provider gets booked at $0 or a wrong model-level
+            # guess, silently destroying margin. Default OFF preserves current behavior.
+            if _strict_prices:
+                _step_cost = step.get("cogs_usd")
+                _cat_cost = None
+                if _step_cost is None:
+                    try:
+                        import pricing as _pricing
+                        _cat_cost = _pricing.cost_for_provider(model_id, prov, feature)
+                    except Exception:
+                        _cat_cost = None
+                if (_step_cost is None or _step_cost == 0) and (_cat_cost is None or _cat_cost == 0):
+                    _msg = f"strict-price skip: {prov} has no cataloged COGS for model={model_id} feature={feature}"
+                    log.warning("img dispatch %s", _msg)
+                    errors.append(_msg)
+                    continue
             try:
                 ref, data, mime = await _try(client, prov, feature, slug, params, op_id)
                 # COGS of the provider that ACTUALLY served — booked at its REAL per-provider price:

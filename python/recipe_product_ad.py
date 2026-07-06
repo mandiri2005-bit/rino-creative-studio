@@ -888,6 +888,20 @@ async def run_product_ad_job(input: dict, op_id: str, set_progress) -> dict:
                     log.warning("assemble %s variant %d failed: %s", aspect, v, e)
                     continue
                 key = await _persist_variant(tenant_id, user_id, op_id, v, aspect, mp4, input, _api)
+                # F15 FIX_F15_VARIANT_REFUND: when _persist_variant swallowed a persist error
+                # and returned None, the user can't access this variant but committed_total
+                # was still going to charge for it. Skip the un-persisted variant AND back
+                # out its share so the umbrella commit is lowered accordingly (commit<hold
+                # → metering auto-refunds the slack in ONE row). Default OFF preserves behavior.
+                if os.environ.get("FIX_F15_VARIANT_REFUND") == "1" and key is None:
+                    try:
+                        _per_variant_cost = int(committed_total) // max(1, int(n_variants) * max(1, len(aspects)))
+                    except Exception:
+                        _per_variant_cost = 0
+                    committed_total = max(0, int(committed_total) - int(_per_variant_cost))
+                    log.warning("variant v%d %s persist failed → dropping from response and "
+                                "refunding ~%d credits (FIX_F15_VARIANT_REFUND)", v, aspect, _per_variant_cost)
+                    continue
                 variants_out.append({
                     "aspect": aspect, "key": key, "seconds": seconds,
                     "credits": 0,   # per-clip credits already committed at the umbrella level
@@ -924,8 +938,19 @@ def _commit_clip(res: dict, beat: dict, tenant_id, user_id, op_id, byok, _api, r
     model, feat = resolved
     secs = int(beat.get("seconds") or RECIPE_HERO_MAX_SECONDS)
     audio_on = _audio_on_for(model) if model else False
+    # F14: charge at the ACTUAL winning provider's per-sec cost (dispatch result carries
+    # `cost_usd` = real upstream per-sec price). Registry-cheapest ignored failovers to
+    # pricier sources. Flag-gated so default is byte-identical until opt-in.
+    cogs_override = None
+    if os.environ.get("FIX_F14_ACTUAL_COST_COMMIT") == "1":
+        try:
+            _c = (res or {}).get("cost_usd")
+            if _c is not None and float(_c) > 0:
+                cogs_override = float(_c)
+        except (TypeError, ValueError):
+            cogs_override = None
     return int(_vp.credits_for(feat, model, seconds=secs, resolution=RECIPE_CLIP_RES,
-                               audio_on=audio_on) or 0)
+                               audio_on=audio_on, cogs_override=cogs_override) or 0)
 
 
 def _commit_liptool(res: dict, beat: dict, tenant_id, user_id, op_id, byok, _api) -> int:

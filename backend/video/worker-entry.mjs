@@ -73,7 +73,12 @@ console.log(`[video-worker] up — audio/visual/check/stitch workers running (ge
 let _draining = false;
 async function shutdown(sig) {
   if (_draining) return; _draining = true;
-  const maxMs = Number(process.env.WB_DRAIN_TIMEOUT_MS) || 120000;
+  // F35: clip poll budget is 240s (generationClient.mjs); default drain 120s < poll budget →
+  // SIGTERM kills mid-poll clip jobs and BullMQ re-queues them, causing duplicate Veo dispatch
+  // on redeploy. Opt-in FIX_F35_DRAIN_300S=1 raises the default to 300s (> 240s poll budget).
+  // Explicit WB_DRAIN_TIMEOUT_MS still wins for operators.
+  const _f35Default = process.env.FIX_F35_DRAIN_300S === "1" ? 300000 : 120000;
+  const maxMs = Number(process.env.WB_DRAIN_TIMEOUT_MS) || _f35Default;
   console.log(`[video-worker] ${sig} → draining active jobs before exit (max ${maxMs}ms)…`);
   const t = setTimeout(() => { console.warn(`[video-worker] drain exceeded ${maxMs}ms → exiting; unfinished jobs re-queue`); process.exit(0); }, maxMs);
   try {

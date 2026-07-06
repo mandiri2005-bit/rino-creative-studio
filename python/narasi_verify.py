@@ -240,7 +240,13 @@ async def _verdict_llm(claim: str, snippets: list, klass: str, *,
                     max_tokens=300, stream=False)), timeout=90)
             if tenant_id:
                 try:
-                    await _log_narasi_usage(tenant_id, None, model, resp)
+                    # F13: per-verify Opus metering. verify_report() runs up to
+                    # FACTGATE_SEARCH_CAP=80 claims × up to 2 attempts each — real Opus
+                    # spend that must actually debit credits, not just log tokens.
+                    # Gated by FIX_F13_FACTGATE_METER=1 (default OFF); opt-in flip once
+                    # pricing has been re-validated with the verify pass on.
+                    _f13_meter = os.getenv("FIX_F13_FACTGATE_METER", "0").strip().lower() in ("1", "true", "yes", "on")
+                    await _log_narasi_usage(tenant_id, None, model, resp, charge=_f13_meter)
                 except Exception:  # noqa: BLE001
                     pass
             d = _narasi_parse_json((resp.choices[0].message.content or "")) or {}

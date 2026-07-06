@@ -4840,6 +4840,45 @@ async def _video_job_body(*, tenant_id, uid, job_id: str, op: str, prep: dict):
     cost_usd = res.get("cost_usd")
     abs_cost = (float(cost_usd) * int(prep["seconds"])) if cost_usd is not None else None
 
+    # ── F31 fix (opt-in via FIX_F31_COMMIT_BEFORE_PERSIST=1) ─────────────────────────
+    # DEFAULT ORDER (persist → commit) can strand an unbilled MP4 in the user's Vault if
+    # the process crashes between _persist_asset and commit_credits. FIXED ORDER (commit
+    # → persist): a commit failure refunds and returns BEFORE anything hits R2 or assets,
+    # so a crash between commit and persist charges the user but they simply don't get
+    # the Vault row (support-refund path). Trades "delivered unbilled" for "billed
+    # undelivered" — only the latter is refundable.
+    if os.getenv("FIX_F31_COMMIT_BEFORE_PERSIST", "0").strip() in ("1", "true", "True", "yes"):
+        try:
+            committed = await metering.commit_credits(
+                tenant_id, uid, "video", prep["model"], prep["cr"], prep["op_id"],
+                byok=False, cost_usd=abs_cost, provider=provider, video_job=job_id, write_log=True)
+        except BaseException as _ce:
+            await metering.refund_credits(tenant_id, prep["op_id"])
+            if job is not None and job.get("status") == "running":
+                job.update(status="failed", error=_short_err(_ce), updated=time.time())
+            _VID_LOG.info("[video_job] %s commit failed: %s", job_id, _short_err(_ce))
+            return
+        # NOW persist to R2/assets — only after the charge is durable.
+        result_key = None
+        try:
+            ext = "webm" if mime == "video/webm" else "mp4"
+            await _persist_asset(
+                tenant_id, asset_type="video", filename=f"{job_id}.{ext}", data=data,
+                content_type=mime, source_job_type=(provider or "video_tools"),
+                user_id=uid, source_prompt=(prep["params"].get("prompt") or None),
+                metadata={"model": prep["model"], "op": op, "feature": prep["feature"],
+                          "provider": provider, "duration": prep["seconds"], "job_id": job_id},
+                project_id=prep.get("project_id"))
+            result_key = res.get("ref")
+        except Exception as _pe:
+            _VID_LOG.warning("[video_job] %s persist failed (non-fatal, post-commit): %s", job_id, _pe)
+            result_key = res.get("ref")
+        if job is not None:
+            job.update(status="success", result_key=result_key, result_mime=mime,
+                       credits=committed, duration=prep["seconds"], updated=time.time())
+        return
+
+    # ── DEFAULT (flag off): unchanged persist-then-commit ordering ────────────────
     # persist the MP4 to R2 + assets (moat). source_job_type = the winning provider (mirrors veo/sora).
     result_key = None
     try:
@@ -5946,7 +5985,18 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
                                      byok=_byok, job_id=_jid,
                                      video_job=x_video_job, op_id=x_op_id, write_log=True)
             except Exception as _e:
-                print(f"[veo/submit] usage/task capture failed (non-fatal): {_e}")
+                # F30: fail-open guard. Metering failed but LaoZhang has already accepted
+                # the video job — user would otherwise receive the mp4 for free. Log a
+                # specific grep-tag AND raise a Sentry alert so ops sees it.
+                print(f"[veo/submit] METERING_FAILED_DELIVERED_FREE tenant={user.tenant_id} "
+                      f"task={task_id} model={req.model} secs={_secs} err={_e}", flush=True)
+                try:
+                    if _HAS_SENTRY and _sentry is not None:
+                        _sentry.capture_message("METERING_FAILED_DELIVERED_FREE veo/submit", level="error")
+                except Exception:
+                    pass
+                if os.getenv("FIX_F30_METER_FAIL_CLOSED") == "1":
+                    raise HTTPException(status_code=500, detail="metering unavailable — try again")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         _body = (e.response.text or "")[:600]
@@ -5957,6 +6007,42 @@ async def veo_submit(req: VeoSubmitRequest, x_veo_api_key: Optional[str] = Heade
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── F29 (env-flag gated): refund a veo/sora submit-time debit when the upstream
+#    provider transitions the task to a terminal FAILED state. Idempotent via a
+#    stable op_id keyed on (kind, task_id) so repeated polling never double-refunds.
+#    Default OFF — opt in with FIX_F29_VEO_FAIL_REFUND=1. Never raises.
+_F29_FAIL_STATES = {"failed", "error", "errored", "cancelled", "canceled", "expired"}
+
+
+async def _f29_maybe_refund_failed_video(task_id: str, kind: str, raw_status: str) -> None:
+    if os.getenv("FIX_F29_VEO_FAIL_REFUND", "").lower() not in ("1", "true", "yes", "on"):
+        return
+    st = (raw_status or "").strip().lower()
+    if st not in _F29_FAIL_STATES:
+        return
+    try:
+        tid = await db.job_tenant_by_task(task_id)
+        if not tid:
+            return
+        jid = await db.media_job_id_by_task(tid, task_id)
+        if not jid:
+            return
+        spent = await db._q_fetchval(
+            "SELECT COALESCE(SUM(credits),0) FROM usage_logs "
+            "WHERE tenant_id=$1 AND job_id=$2",
+            db._uid(tid), db._uid(jid), tenant=str(tid))
+        spent = int(spent or 0)
+        if spent <= 0:
+            return
+        await credits_lib.grant(tid, spent, reason="refund",
+                                op_id=f"{kind}-fail-refund:{task_id}",
+                                metadata={"kind": f"{kind}_failed", "task_id": str(task_id),
+                                          "upstream_status": st})
+        print(f"[{kind}/status] F29 refunded {spent} credits for failed task_id={task_id}")
+    except Exception as _e:
+        print(f"[{kind}/status] F29 refund check failed (non-fatal): {_e}")
+
+
 @app.get("/veo/status/{task_id}")
 async def veo_status(task_id: str, x_veo_api_key: Optional[str] = Header(default=None)):
     """Poll Veo task status."""
@@ -5965,9 +6051,11 @@ async def veo_status(task_id: str, x_veo_api_key: Optional[str] = Header(default
         res = await asyncio.to_thread(_requests.get, f"{VEO_API_URL}/{task_id}", headers=headers, timeout=60)
         res.raise_for_status()
         data = res.json()
+        _st = data.get("status", "unknown")
+        await _f29_maybe_refund_failed_video(task_id, "veo", str(_st))
         return {
             "task_id": task_id,
-            "status": data.get("status", "unknown"),
+            "status": _st,
             "progress": data.get("progress", 0),
             "raw": data,
         }
@@ -6213,7 +6301,17 @@ async def sora_submit(req: SoraSubmitRequest, x_sora_api_key: Optional[str] = He
                                      byok=_byok, job_id=_jid,
                                      video_job=x_video_job, op_id=x_op_id, write_log=True)
             except Exception as _e:
-                print(f"[sora/submit] usage/task capture failed (non-fatal): {_e}")
+                # F30: fail-open guard. Metering failed but LaoZhang has already accepted
+                # the video job — user would otherwise receive the mp4 for free.
+                print(f"[sora/submit] METERING_FAILED_DELIVERED_FREE tenant={user.tenant_id} "
+                      f"task={task_id} model={req.model} secs={_secs} err={_e}", flush=True)
+                try:
+                    if _HAS_SENTRY and _sentry is not None:
+                        _sentry.capture_message("METERING_FAILED_DELIVERED_FREE sora/submit", level="error")
+                except Exception:
+                    pass
+                if os.getenv("FIX_F30_METER_FAIL_CLOSED") == "1":
+                    raise HTTPException(status_code=500, detail="metering unavailable — try again")
         return {"task_id": task_id, "status": data.get("status", "queued"), "raw": data}
     except _requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -6229,9 +6327,11 @@ async def sora_status(task_id: str, x_sora_api_key: Optional[str] = Header(defau
         res = await asyncio.to_thread(_requests.get, f"{SORA_API_URL}/{task_id}", headers=headers, timeout=60)
         res.raise_for_status()
         data = res.json()
+        _st = data.get("status", "unknown")
+        await _f29_maybe_refund_failed_video(task_id, "sora", str(_st))
         return {
             "task_id": task_id,
-            "status": data.get("status", "unknown"),
+            "status": _st,
             "progress": data.get("progress", 0),
             "raw": data,
         }
@@ -11504,10 +11604,30 @@ async def video_tts_scene(req: VideoTtsSceneReq,
             else:
                 raise HTTPException(502, f"tts failed: {str(e1)[:200]}")
     audio_b64 = base64.b64encode(content).decode()
+    # F17: partial-synthesis proportional charge. Some providers return a truncated audio
+    # blob when synth stalls mid-stream. Legacy code always debits FULL input char count,
+    # so a 5%-produced clip billed 100%. When FIX_F17_TTS_PARTIAL_REFUND=1, inspect WAV
+    # duration and pro-rate chars if audio is <50% of the char-count floor. Default OFF.
+    _billable_chars = len(synth)
+    if os.environ.get("FIX_F17_TTS_PARTIAL_REFUND", "") in ("1", "true", "yes"):
+        try:
+            import io as _io_f17, wave as _wave_f17
+            with _wave_f17.open(_io_f17.BytesIO(content), "rb") as _wf:
+                _frames = _wf.getnframes()
+                _rate = _wf.getframerate() or 24000
+                _out_sec = float(_frames) / float(_rate) if _rate > 0 else 0.0
+            _expected_sec = max(1.0, len(synth) / 15.0)
+            if _out_sec > 0.0 and _out_sec < 0.5 * _expected_sec:
+                _ratio = max(0.05, min(1.0, _out_sec / _expected_sec))
+                _billable_chars = max(1, int(round(len(synth) * _ratio)))
+                print(f"[video/tts/scene] F17 partial-synth pro-rate: out={_out_sec:.2f}s exp={_expected_sec:.2f}s chars {len(synth)}->{_billable_chars}")
+        except Exception as _f17e:
+            print(f"[video/tts/scene] F17 partial-refund check skipped: {_f17e}")
+            _billable_chars = len(synth)
     if user:
         try:
             await metering.debit(user.tenant_id, _uid, "tts", req.model,
-                                 {"chars": len(synth)}, byok=_byok, video_job=x_video_job, op_id=_tts_op, write_log=True)
+                                 {"chars": _billable_chars}, byok=_byok, video_job=x_video_job, op_id=_tts_op, write_log=True)
         except Exception as _e:
             print(f"[video/tts/scene] metering debit failed (non-fatal): {_e}")
     return {"audio_b64": audio_b64}
@@ -12428,9 +12548,22 @@ async def video_credits_refund(req: VideoRefundReq,
     tagged with this video_job for the tenant and grants it back — idempotent per
     job (op_id=video-refund:<job>). Internal-auth only; the orchestrator calls it on
     terminal failure. No-op when nothing was charged or the refund already ran."""
+    # F1 hardening (audit 2026-07-06): docstring says "Internal-auth only" but the
+    # endpoint accepted any authenticated tenant — a tenant could POST their own
+    # job_id and force a refund of a successfully delivered video. Enforce the two
+    # invariants the docstring already promises: (a) caller is the internal video-
+    # worker (X-Internal-Secret → is_internal), and (b) job's in-process status is
+    # NOT 'success' (delivered). Kill-switch: FIX_F1_VIDEO_REFUND_GATE=0.
+    if os.getenv("FIX_F1_VIDEO_REFUND_GATE", "1") == "1":
+        if not user or not getattr(user, "is_internal", False):
+            raise HTTPException(403, "internal only")
     job_id = (req.job_id or "").strip()
     if not job_id:
         raise HTTPException(400, "job_id required")
+    if os.getenv("FIX_F1_VIDEO_REFUND_GATE", "1") == "1":
+        _vj = _VID_JOBS.get(job_id)
+        if _vj and _vj.get("status") == "success":
+            raise HTTPException(409, "refund refused: job already delivered")
     # charges are negative deltas tagged with video_job; -SUM = what to give back. TOLERANT of both
     # encodings: new rows store metadata as a jsonb OBJECT (metadata->>'video_job'); historical rows
     # were double-encoded as a jsonb STRING (the old credits.py double-dump bug) → reach the tag via

@@ -302,6 +302,42 @@ def step_usd(step: Step, tok_in: int, tok_out: int) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# F11 FIX_F11_CHAT_TIER_LOCK — env-gated soft tier check. Ops-configured allowlists:
+#   CHAT_MODELS_FREE_TIER="model1,model2,..."   (empty → no restriction on that tier)
+#   CHAT_MODELS_STARTER_TIER, CHAT_MODELS_PRO_TIER, CHAT_MODELS_ENTERPRISE_TIER
+# Default OFF; enable per-launch by setting FIX_F11_CHAT_TIER_LOCK=1.
+# ──────────────────────────────────────────────────────────────────────────────
+def _tier_allowlist(tier: str):
+    key = f"CHAT_MODELS_{(tier or 'free').upper()}_TIER"
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return None
+    return {m.strip() for m in raw.split(",") if m.strip()}
+
+
+async def _tier_gate_denied(tenant_id: Optional[str], model_id: str) -> Optional[str]:
+    """Return denial reason if tenant's plan can't use model_id; None otherwise. Fails
+    open on any lookup error (never block chat because of the gate itself)."""
+    if os.getenv("FIX_F11_CHAT_TIER_LOCK", "").strip() not in ("1", "true", "TRUE", "yes"):
+        return None
+    if not tenant_id:
+        return None
+    try:
+        import credits as _credits
+        tier = (await _credits.tier_of(tenant_id)) or "free"
+    except Exception as e:
+        log.warning("tier_gate: tier lookup failed (%s) — failing open", e)
+        return None
+    allow = _tier_allowlist(tier)
+    if allow is None:
+        return None
+    if model_id in allow:
+        return None
+    return (f"Model '{model_id}' is not available on the '{tier}' plan. "
+            "Upgrade your plan or pick a model included in your tier.")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Error classification (Decision #3): which failures fail over vs surface.
 # ──────────────────────────────────────────────────────────────────────────────
 class FailoverError(Exception):
@@ -492,6 +528,12 @@ async def dispatch_chat(*, tenant_id: Optional[str], user_id: Optional[str],
         yield f"[ERROR: unknown model {model_id}]"
         yield "[DONE]"
         return
+    # F11 FIX_F11_CHAT_TIER_LOCK: env-gated soft tier check (default OFF).
+    _deny = await _tier_gate_denied(tenant_id, model_id)
+    if _deny:
+        yield f"[ERROR: 402 {_deny}]"
+        yield "[DONE]"
+        return
     chain = usable_chain(m)
     if not chain:
         yield "[ERROR: no provider configured for this model]"
@@ -535,6 +577,26 @@ async def dispatch_chat(*, tenant_id: Optional[str], user_id: Optional[str],
                     usage = {"tok_in": ev["tok_in"], "tok_out": ev["tok_out"]}
             # SUCCESS: commit the hold at THIS provider's real cost (#5).
             usd = step_usd(step, usage["tok_in"], usage["tok_out"])
+            # F12: conservative COGS floor (opt-in). When provider omits usage OR the
+            # Step has no per-1M rates (off-catalog/manual Step), step_usd → 0 hides real
+            # spend and breaks margin math. Under FIX_F12_COGS_CONSERVATIVE=1 substitute
+            # a defensive estimate: token count × latest _est_cost bucket, floored by
+            # credits held × CREDIT_USD_VALUE. Default OFF preserves current behavior.
+            if os.getenv("FIX_F12_COGS_CONSERVATIVE", "").lower() in ("1", "true", "yes") and (usd or 0) <= 0:
+                try:
+                    _ci, _co = _est_cost(step.model or model_id)
+                    _ti = usage["tok_in"] or (prompt_chars // 4)
+                    _to = usage["tok_out"] or mt
+                    _usd_tok = round((_ti * _ci + _to * _co) / 1_000_000, 8)
+                    _usd_floor = 0.0
+                    try:
+                        import credit_catalog as _cat_f12
+                        _usd_floor = float(getattr(charge, "held", 0) or 0) * float(_cat_f12.CREDIT_USD_VALUE)
+                    except Exception:
+                        pass
+                    usd = max(_usd_tok, _usd_floor)
+                except Exception as _f12_e:
+                    log.warning("F12 conservative COGS estimate failed: %s", _f12_e)
             await charge.settle({"tokens_in": usage["tok_in"], "tokens_out": usage["tok_out"]},
                                 tok_in=usage["tok_in"], tok_out=usage["tok_out"],
                                 provider=step.provider, usd=usd)

@@ -2222,6 +2222,22 @@ app.post("/api/veo/submit", async (req,res)=>{
     // usage row with the CORRECT provider (google) — was mislabeled laozhang.
     // cost 0 for now (no Google Veo price wired) → 0 credits charged.
     try { await logUsage(tenantId, userId, b.model||"veo", "video", 0, 0, 0, null, "google", null); } catch(_){}
+    // F25: Google Veo submit currently bills at cost_usd=0 → 0 credits (free ride).
+    // When FIX_F25_GOOGLE_FLOOR=1, apply a floor charge (default 20 credits, override
+    // via GOOGLE_VEO_FLOOR_CREDITS) via credit_apply so submission actually meters.
+    // Idempotent op_id keyed to the returned Google Veo job id; default OFF preserves
+    // current behavior for users on 0 balance until the flag is flipped.
+    if (process.env.FIX_F25_GOOGLE_FLOOR === "1") {
+      try {
+        const floorCredits = Math.max(1, parseInt(process.env.GOOGLE_VEO_FLOOR_CREDITS || "20", 10) || 20);
+        const veoJobId = (out && (out.id || out.job_id || out.name)) || `${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
+        const opId = `veo:google:submit:${veoJobId}`;
+        await query(
+          `SELECT credit_apply($1,$2,$3,'charge',$4,'{"source":"veo_google_floor"}'::jsonb)`,
+          [tenantId, userId, -floorCredits, opId],
+          tenantId);
+      } catch (e) { console.error("[veo google floor charge]", e && e.message || e); }
+    }
     res.json(out);
   } catch(e){
     const noKey = e.code==="no_google_key";
@@ -2270,6 +2286,20 @@ async function veoServeGoogle(req,res,asDownload){
     res.end(bytes);
   };
   const job = getGoogleVeoJob(taskId);
+  // F36 SECURITY: tenant-ownership check — the submit handler stores tenantId on the
+  // job registry. Refuse to serve the mp4 to a different tenant. Falls through when
+  // the job registry has no entry (post-restart) — safe because gveo_* ids are UUIDs
+  // (unguessable) and the SDK fetch will 404 for anyone but the actual owner's Google key.
+  if (job && job.tenantId){
+    try{
+      const callerTenant = resolveTenantId(req);
+      if (callerTenant && String(callerTenant) !== String(job.tenantId)){
+        return res.status(403).json({ error: "forbidden: not the owner of this veo task" });
+      }
+    }catch(_){
+      return res.status(403).json({ error: "forbidden" });
+    }
+  }
   if (job && job.r2Key && storage.isConfigured()){
     try{ return sendBytes(await storage.downloadBytes(job.r2Key)); }catch(_){ /* fall through to re-fetch */ }
   }

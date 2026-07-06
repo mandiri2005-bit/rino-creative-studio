@@ -211,15 +211,45 @@ export async function getBillingStatus(tenantId) {
 
 // ── Public: handle a verified Stripe event, idempotently ──────────────────────
 // Returns {handled, duplicate}. Crediting + subscription mirror happen here.
+//
+// F24 (FIX_F24_STRIPE_IDEM_TXN): when opted-in, defer the processed_stripe_events
+// INSERT until AFTER the handler body succeeds so a mid-handle crash does NOT
+// poison the idempotency row and drop credits on Stripe's retry. Safe because
+// every downstream write is already idempotent (credit_apply op_id + ON CONFLICT).
+const _F24_FLAG = process.env.FIX_F24_STRIPE_IDEM_TXN === "1";
+async function _stripeIdemPreCheck(eventId) {
+  const r = await query(
+    `SELECT 1 FROM processed_stripe_events WHERE stripe_event_id=$1`,
+    [eventId]);
+  return r.rows.length > 0;
+}
+async function _stripeIdemMark(eventId, eventType) {
+  const ins = await query(
+    `INSERT INTO processed_stripe_events (stripe_event_id, event_type)
+       VALUES ($1,$2) ON CONFLICT (stripe_event_id) DO NOTHING
+     RETURNING stripe_event_id`,
+    [eventId, eventType]);
+  return ins.rows.length > 0;
+}
 export async function handleStripeEvent(event) {
-  // Idempotency gate: first writer wins; double-delivery is a no-op.
+  if (_F24_FLAG) {
+    if (await _stripeIdemPreCheck(event.id)) return { handled: false, duplicate: true };
+    const result = await _handleStripeEventBody(event);
+    // Mark processed only AFTER the handler completes successfully.
+    await _stripeIdemMark(event.id, event.type);
+    return result;
+  }
+  // Legacy path (default) — unchanged behavior.
   const ins = await query(
     `INSERT INTO processed_stripe_events (stripe_event_id, event_type)
        VALUES ($1,$2) ON CONFLICT (stripe_event_id) DO NOTHING
      RETURNING stripe_event_id`,
     [event.id, event.type]);
   if (!ins.rows.length) return { handled: false, duplicate: true };
+  return _handleStripeEventBody(event);
+}
 
+async function _handleStripeEventBody(event) {
   if (event.type === "checkout.session.completed") {
     const s = event.data.object;
     const tenantId = s.metadata?.tenant_id || s.client_reference_id;

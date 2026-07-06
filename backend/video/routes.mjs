@@ -261,6 +261,11 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
     const jobId = req.params.jobId;
     const meta = await store.getMeta(jobId);
     if (!meta) return res.status(404).json({ error: "job not found" });
+    // F34 SECURITY: tenant-ownership guard — a caller may only cancel their OWN jobs.
+    // Without this, any authenticated tenant can cancel (and trigger a refund on) any
+    // jobId they guess. 404 (not 403) so we don't leak whether the jobId exists.
+    const _callerTenant = resolveTenantId ? await resolveTenantId(req) : null;
+    if (!_callerTenant || meta.tenantId !== _callerTenant) return res.status(404).json({ error: "job not found" });
     if (!["done", "failed", "canceled"].includes(meta.status)) {
       await store.setStatus(jobId, "canceled", { error: "canceled by user" });
     }
@@ -280,6 +285,11 @@ export function mountVideoRoutes(app, { requireAuth, resolveTenantId, resolveUse
     res.set("Cache-Control", "no-store");   // status poll must never be cached (would freeze the UI on a stale "stitching")
     const meta = await store.getMeta(req.params.jobId);
     if (!meta) return res.status(404).json({ error: "job not found" });
+    // F34 SECURITY: tenant-ownership guard — the status poll returns scene state AND a
+    // signed mp4Url; without this any authenticated tenant can download another tenant's
+    // finished video by enumerating jobIds. 404 (not 403) so we don't leak existence.
+    const _callerTenant = resolveTenantId ? await resolveTenantId(req) : null;
+    if (!_callerTenant || meta.tenantId !== _callerTenant) return res.status(404).json({ error: "job not found" });
     const scenesRaw = await store.getScenes(req.params.jobId, meta.sceneCount || 0);
     // STRIP planJson from the POLL response: it's the worker's render data (hero raster b64 +
     // maskShapes, up to ~2.5MB/scene for a recraft mask), and the UI only needs status/text. Returning
