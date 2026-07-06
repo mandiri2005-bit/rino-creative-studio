@@ -1012,6 +1012,17 @@ _GLOSSARY_TERM_RX = re.compile(
     r"fase|hubungan|kondisi|bentuk|pola|tahap|rentang|fenomena|keadaan|periode)"
     r"\b[\w\s,]{6,})"
 )
+# English inline gloss (sample-24 kdrama): 'nunchi — that distinctly Korean radar',
+# 'gapjil — the abuse of hierarchical power', 'kibun — the emotional weather'. The tell is
+# a term + em-dash + a definitional lead-noun, OR '— that <distinctly/untranslatable>'.
+_GLOSSARY_TERM_EN_RX = re.compile(
+    r"\b([A-Za-z][a-z]{2,})\s*[—–]\s*(?:"
+    r"(?:that|the|a|an)\s+(?:\w+\s+){0,3}?(?:radar|weather|registry|abuse|practice|custom|"
+    r"tradition|concept|art|skill|sense|shorthand|climate|hierarchy|ritual|etiquette|"
+    r"notion|term|word)\b"
+    r"|that\s+(?:distinctly|uniquely|untranslatable|so-called|peculiarly|characteristically)\b"
+    r")"
+)
 
 
 def glossary_definition_scan(text: str) -> dict[str, Any]:
@@ -1022,7 +1033,7 @@ def glossary_definition_scan(text: str) -> dict[str, Any]:
     if not text:
         return {"glossary_hits": 0, "glossary_samples": []}
     samples: list[str] = []
-    for rx in (_GLOSSARY_ACRONYM_RX, _GLOSSARY_TERM_RX):
+    for rx in (_GLOSSARY_ACRONYM_RX, _GLOSSARY_TERM_RX, _GLOSSARY_TERM_EN_RX):
         for m in rx.finditer(text):
             frag = m.group(0).strip()
             if frag not in samples:
@@ -1128,6 +1139,20 @@ _FICTION_STAT_RX = re.compile(
     r"ratus|seratus)\b\s+){1,5}persen\b"
     r"|\b(?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan)\s+dari\s+"
     r"(?:sepuluh|lima|empat|tiga|dua|\d+)\b"
+    # English (sample-24 kdrama_serial): the same stat/data intrusions break fiction
+    r"|\b\d{1,3}(?:\.\d+)?\s*(?:percent|per\s*cent|%)\b"
+    r"|\baccording\s+to\s+(?:\w+\s+){0,3}?(?:a\s+|the\s+)?(?:survey|study|studies|research|"
+    r"data|report|statistics|census|poll)\b"
+    r"|\b(?:survey|study|studies|research|statistics|data|report|census|poll)\s+"
+    r"(?:\w+\s+){0,3}?(?:shows?|found|finds?|reports?|suggests?|indicates?|reveals?|"
+    r"estimates?|records?)\b"
+    r"|\bthe\s+statistic\s+is\s+real\b|\bthe\s+math\s+is\s+not\s+subtle\b"
+    r"|\bthe\s+numbers?\s+(?:don'?t\s+lie|speak\s+for|are\s+clear)\b"
+    r"|\bthe\s+average\s+(?:\w+\s+){0,3}?(?:spends?|is|takes?|lasts?|earns?|works?)\b"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|\d+)\s+(?:in|out\s+of)\s+"
+    r"(?:ten|five|four|three|two|\d+)\b"
+    r"|\b(?:hundred|thousand|million|billion)\s+(?:\w+\s+){0,2}?(?:visitors|people|users|"
+    r"viewers|adults|teens|teenagers|couples|residents|citizens|respondents)\b"
     r")")
 
 
@@ -1149,6 +1174,41 @@ def fiction_stat_citation_scan(text: str, style: Optional[str] = None) -> dict[s
             break
     return {"applies": True, "fiction_stat_hits": len(samples),
             "fiction_stat_samples": samples}
+
+
+# Genre self-reference (sample-24 + Flower of Evil): the narrator steps OUTSIDE the story —
+# calls it 'the drama', addresses the audience ('you already know how this works'), or slips
+# a meta-cinematic aside ('the camera lingers'). Cousin of the stat-coda. Report-only.
+_GENRE_SELF_REF_RX = re.compile(
+    r"(?i)(?:"
+    r"\bthe\s+drama\s+(?:shoots?|cuts?|frames?|lingers?|shows?|opens?|gives?|likes?|would)\b"
+    r"|\bthis\s+(?:drama|episode)\b"
+    r"|\byou\s+already\s+know\s+(?:how|what|the|this)\b"
+    r"|\bwe\s+(?:all\s+)?know\s+how\s+this\s+(?:works|goes|ends)\b"
+    r"|\bevery\s+(?:good\s+)?(?:drama|romance|story)\s+(?:knows|has|needs|does)\b"
+    r"|\bthe\s+(?:camera|screen|scene|frame)\s+(?:shoots?|cuts?|lingers?|holds?|pans?|frames?)\b"
+    r"|\bcue\s+the\s+\w+"
+    # Indonesian
+    r"|\bkamu\s+(?:udah|sudah)\s+tau\s+(?:gimana|bagaimana|kok|caranya)\b"
+    r"|\b(?:kayak|seperti)\s+(?:di\s+)?(?:sinetron|drama\s+korea|drakor)\b"
+    r")"
+)
+
+
+def genre_self_reference_scan(text: str) -> dict[str, Any]:
+    """Report-only (Track A): narrator stepping outside the fiction — calling the story
+    'the drama', addressing the audience, or a meta-cinematic aside. sample-24 + Flower of
+    Evil both broke on this. Cheap regex; wired for fiction regimes in gate_text."""
+    if not text:
+        return {"genre_self_ref_hits": 0, "genre_self_ref_samples": []}
+    samples: list[str] = []
+    for m in _GENRE_SELF_REF_RX.finditer(text):
+        frag = re.sub(r"\s+", " ", m.group(0).strip())[:60]
+        if frag not in samples:
+            samples.append(frag)
+        if len(samples) >= 8:
+            break
+    return {"genre_self_ref_hits": len(samples), "genre_self_ref_samples": samples}
 
 
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
@@ -1315,6 +1375,12 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
                 stats["fiction_stat_samples"] = _fs["fiction_stat_samples"]
                 if _fs["fiction_stat_hits"]:
                     stats["fiction_stat_flag"] = True
+                # Genre self-reference — same fiction-regime scope as the stat scan.
+                _gsr = genre_self_reference_scan(out)
+                stats["genre_self_ref_hits"] = _gsr["genre_self_ref_hits"]
+                stats["genre_self_ref_samples"] = _gsr["genre_self_ref_samples"]
+                if _gsr["genre_self_ref_hits"]:
+                    stats["genre_self_ref_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.

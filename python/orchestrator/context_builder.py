@@ -333,6 +333,24 @@ class SharedContext:
                 if _reg_lines:
                     parts.append("REGISTER CHECKLIST (structured pakem constraints):\n"
                                  + "\n".join(_reg_lines))
+                # Trust-the-reader (corpus sample-24 + Flower of Evil): fiction kept
+                # "explaining itself" — real-world stat citations, inline term glossaries,
+                # genre self-reference ("the drama"/"you already know"). Preventive,
+                # language-agnostic ban for FICTION regimes only (the gate scanners are the
+                # detective backstop; this is the root-cause prevention at generation).
+                if str((_entry or {}).get("factual_regime") or "").strip().lower() == "fiction":
+                    parts.append(
+                        "TRUST THE READER (fiction — never break the story to explain it):\n"
+                        "- Do NOT cite real-world statistics or data (no \"X% of ...\", \"the "
+                        "average ... is N\", \"draws N visitors\", \"the statistic is real\", "
+                        "\"the math is not subtle\"). Fiction earns belief through scene, not data.\n"
+                        "- Do NOT define or gloss terms inline (no \"X — that ... radar ...\", no "
+                        "\"Y, the small ...\"). Weave any cultural or technical term into action; "
+                        "never define it, and never define the same term twice.\n"
+                        "- Do NOT reference the story as a production or address the audience "
+                        "(no \"the drama ...\", \"this story\", \"you already know how this "
+                        "works\"). Be the story; never narrate that it is one."
+                    )
         except Exception:  # noqa: BLE001
             pass
         if self.canonical_facts and self.canonical_facts.strip():
