@@ -1629,6 +1629,11 @@ _PEWAYANGAN_DALANG_SPEC = {
         "pewayangan", "pewayangan_dalang", "pewayangan-dalang", "wayang",
         "shadow play", "dalang narration", "punakawan tradition",
         "wayang kulit", "wayang purwa",
+        # Aliases folded in from the superseded P2 pewayangan_ki_dalang seed
+        # (registry_p23.py, removed 2026-07-06). Any narasi job carrying the
+        # old key still resolves to this P1 spec — no DEFAULT_STYLE fallback.
+        "pewayangan_ki_dalang", "pewayangan ki dalang", "ki dalang",
+        "janturan", "wayang narration", "shadow puppet",
     ],
     "is_fiction": True,
     "category": "E",

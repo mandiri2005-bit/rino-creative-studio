@@ -1879,72 +1879,13 @@ DILARANG: Ironi atau sinisme terhadap takhta -- kritik babad hanya menyelinap le
     },
 },
 
-"pewayangan_ki_dalang": {
-    "display_name": "Pewayangan — Shadow-Play Master Narration",
-    "aliases": [
-        "pewayangan", "pewayangan ki dalang", "pewayangan_ki_dalang",
-        "ki dalang", "dalang", "wayang", "wayang kulit", "janturan",
-        "wayang narration", "shadow play", "shadow puppet",
-    ],
-    "is_fiction": True,
-    "medium_origin": "ear",
-    "tier": "P2",
-    "tts_risk": False,
-    "output_support": "both",
-    "factual_regime": "fictional",
-    "category": "E",
-    "rag": {
-        "query_instruction": (
-            "Retrieve a wayang-style narration passage with a formal "
-            "scene-setting overture, characters introduced by strings of "
-            "titles, and a comic-relief interlude among servants:"
-        ),
-        "framing": (
-            "Study how the dalang shifts register by slot: majestic "
-            "scene-painting in the overture, short sung-verse interludes at "
-            "scene changes, and earthy servant comedy in the gara-gara. "
-            "Notice how noble titles are chanted like refrains."
-        ),
-        "min_quality": 3,
-        "top_k": 3,
-    },
-    "style_rules_core": """STYLE: Pewayangan -- Ki Dalang
-= Suara dalang di balik kelir: janturan megah, selingan bernuansa suluk, slot gara-gara jenaka, tokoh diperkenalkan dengan untaian gelar.
-
-STRUKTUR:
-1. JANTURAN PEMBUKA -- Buka dengan lukisan negeri dalam prosa ritmis yang megah: kebesaran kerajaan, raja di dampar kencana, hulubalang berbaris. Kalimat panjang berayun, penuh sanjungan tempat; konflik belum boleh masuk.
-2. JEJER GELAR -- Perkenalkan tiap tokoh penting dengan untaian gelar dan julukan SEBELUM ia bicara ("Sang senapati agung, benteng gerbang timur, yang tak tergoyahkan hatinya..."). Ulangi gelar pendeknya tiap kali tokoh kembali.
-3. LAKON BERGERAK -- Gerakkan konflik sebagai persoalan dharma: tugas berat dari raja, ancaman negeri seberang, pilihan ksatria antara kewajiban dan isi hatinya.
-4. SELINGAN SULUK -- Di tiap pergantian adegan atau perubahan suasana, sisipkan 2-4 larik pendek bernuansa tembang (bukan prosa) yang melukiskan suasana batin: malam turun, hati yang bimbang, angin di pucuk beringin.
-5. GARA-GARA -- Menjelang klimaks, patahkan ketegangan dengan slot jenaka para abdi: bahasa turun ke pasar, banyolan menyentil keseharian penonton (boleh anakronistis), lalu satu petuah polos sebelum kembali ke lakon.
-6. TANCEB KAYON -- Tuntaskan lakon dengan keseimbangan pulih dan satu wejangan dharma singkat dari tokoh tua, lalu tutup kelir dalam satu-dua kalimat penutup dalang.
-
-SUARA: Dalang yang hadir: orang ketiga, kala kini saat melukiskan adegan di kelir ("Tersebutlah sang prabu duduk di dampar kencana..."), sesekali menyapa penonton yang budiman. Register patuh pada slot: agung di janturan, tembang di suluk, pasar di gara-gara.
-
-GERAKAN KHAS:
-- Tandai pergantian beat dengan bunyi pergelaran: ketukan cempala, gemuruh kendang, gong yang menutup adegan.
-- Kontraskan dua bahasa: halus-berbunga untuk raja dan para satria, lugas-jenaka untuk para abdi.
-- Biarkan kelir ikut bermain: kayon bergetar, bayangan memanjang, api blencong meredup saat mara bahaya mendekat.
-
-DILARANG: Lawakan bocor ke luar slot gara-gara -- di luar slot itu register tetap agung.
-DILARANG: Menyalin tokoh, negeri, atau lakon kanon wayang -- ciptakan lakon BARU dengan pola pergelaran yang sama.
-""",
-    "style_rules_editor": "",
-    "register_spec": {
-        "required_moves": [
-            "janturan_opening",
-            "gelar_introductions",
-            "suluk_interlude",
-            "gara_gara_comic_slot",
-        ],
-        "banned_tells": [
-            "pandawa lima",
-            "gatotkaca",
-            "semar gareng petruk bagong",
-            "ngastina",
-        ],
-    },
-},
+# pewayangan_ki_dalang (P2 seed) SUPERSEDED 2026-07-06 by _PEWAYANGAN_DALANG_SPEC
+# in pakem/registry_p1.py (P1 tier, richer register_spec, gated on DALANG_INFRA_FIXES=1).
+# The P2 seed carried the same display_name "Pewayangan — Shadow-Play Master Narration"
+# and identical aliases, so the FE picker showed two identical entries side-by-side
+# under Nusantara. The seed's aliases (pewayangan_ki_dalang, ki dalang, janturan) are
+# now folded into the P1 spec so any narasi job carrying the old style key still
+# resolves to the P1 spec (no fallback-to-DEFAULT for legacy jobs).
 
     # === F ===
 

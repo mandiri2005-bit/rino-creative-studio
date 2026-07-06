@@ -958,7 +958,10 @@ _SAMPLE_PROMPTS: dict[str, str] = {
     "horor_viral_indonesia": "cth. KKN di desa yang tak ada di peta\natau: Penunggu lantai 4 kosan lama",
     "legenda_asal_usul": "cth. Asal-usul nama Banyuwangi\natau: Legenda Gunung Tangkuban Perahu",
     "babad_hikayat": "cth. Babad runtuhnya Majapahit\natau: Hikayat pelayaran ke negeri atas angin",
-    "pewayangan_ki_dalang": "cth. Lakon Gatotkaca gugur di Kurusetra\natau: Semar mbangun kahyangan",
+    # sample_prompt key renamed 2026-07-06 — was pewayangan_ki_dalang (P2 seed),
+    # merged into P1 pewayangan_dalang. build_json.setdefault picks up the sample
+    # for the surviving spec now.
+    "pewayangan_dalang": "cth. Lakon Gatotkaca gugur di Kurusetra\natau: Semar mbangun kahyangan",
     # F — teaching / oratory
     "first_principles": "e.g. Money, rebuilt from barter up\nor: Flight, explained from a falling leaf",
     "stoic_daily": "e.g. On things not in our control\nor: The obstacle is the way — a morning meditation",
