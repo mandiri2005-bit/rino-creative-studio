@@ -932,6 +932,91 @@ def entity_consistency_scan(text: str) -> dict[str, Any]:
     }
 
 
+# ── Track A (Rino 2026-07-06, corpus sample-21/22) — two report-only scanners for the
+# pipeline DEFAULTS that survived prompt-injection + substring bans across every rewrite:
+# (1) glossary/kamus tic, (2) POV grammatical-persona drift. PATTERN-based, so they
+# generalize across domains (SMA/kuliah/kerja) where a literal banned_tell list could not.
+
+# Glossary gloss: an ACRONYM or short Title-case term IMMEDIATELY followed by an
+# in-line definition via em-dash / en-dash / comma. Catches the FORM, not a term list:
+#   "MPLS — Masa Pengenalan Lingkungan Sekolah"
+#   "Ospek, orientasi studi dan pengenalan kampus"
+#   "SKS — Satuan Kredit Semester"
+#   "Kecerdasan emosional — kemampuan buat mengenali..."
+# Heuristic: an ALL-CAPS acronym (2-6 letters) OR a 1-2 word Capitalised term, then a
+# dash/comma, then >=3 lowercase-started words (the definition body). Latin-script.
+_GLOSSARY_ACRONYM_RX = re.compile(
+    r"\b([A-Z]{2,6})\b\s*[—–-]\s*([A-Z][a-z]+(?:\s+\w+){2,})"
+)
+_GLOSSARY_TERM_RX = re.compile(
+    r"\b([A-Z][a-z]+(?:\s+[a-z]+)?)\s*[—–,]\s*((?:kemampuan|kegiatan|singkatan|istilah|"
+    r"orientasi|jalur|ujian|ruang|proses|masa|zona|sistem|satuan)\b[\w\s,]{6,})"
+)
+
+
+def glossary_definition_scan(text: str) -> dict[str, Any]:
+    """Report-only: detect inline dictionary/kamus glosses of common terms — the tic
+    that survived every rewrite because banned_tells are literal substrings and each
+    new domain (SMA vs kuliah) uses different acronyms. Returns count + up-to-8 samples.
+    Native readers do not need MPLS/Ospek/SKS/UTS defined; the gloss breaks the register."""
+    if not text:
+        return {"glossary_hits": 0, "glossary_samples": []}
+    samples: list[str] = []
+    for rx in (_GLOSSARY_ACRONYM_RX, _GLOSSARY_TERM_RX):
+        for m in rx.finditer(text):
+            frag = m.group(0).strip()
+            if frag not in samples:
+                samples.append(frag)
+    return {"glossary_hits": len(samples), "glossary_samples": samples[:8]}
+
+
+# POV persona markers — first-person singular subject pronouns vs a third-person
+# proper-name subject at sentence start. We count per chapter and flag a book that
+# MIXES personas across chapters (the Bab-2-reverts-to-3rd-person failure mode).
+_POV_FIRST_RX = re.compile(r"(?<![\wÀ-ÿ])(aku|gue|gua|saya|ku)(?![\wÀ-ÿ])", re.IGNORECASE)
+# 3rd-person: a Capitalised name as the subject at the START of a sentence, followed by
+# a lowercase verb (heuristic for "Arya mendengar", "Raka duduk"). Excludes dialogue.
+_POV_THIRD_RX = re.compile(r"(?m)^\s*([A-Z][a-z]{2,})\s+([a-z]{3,})")
+
+
+def pov_persona_drift_scan(text: str) -> dict[str, Any]:
+    """Report-only (Track A): the fiction analogue of entity_consistency — lock ONE
+    grammatical persona and scan for drift. Per chapter, tally first-person markers
+    (aku/gue/saya/ku) vs third-person 'Name+verb' sentence openers, label the chapter's
+    dominant persona, and flag when chapters DISAGREE (e.g. Bab 2 in 3rd-person while the
+    rest is 1st-person — the SMA-2/Kuliah failure mode). Heuristic; Latin-script."""
+    if not text:
+        return {"chapters": 0, "personas": [], "drift": False, "dominant": None}
+    parts = _CHAPTER_SPLIT_RX.split(text)
+    chapters = parts[1:] if len(parts) > 1 else parts
+    personas: list[str] = []
+    for ch in chapters:
+        if not ch or not ch.strip():
+            continue
+        first = len(_POV_FIRST_RX.findall(ch))
+        third = len(_POV_THIRD_RX.findall(ch))
+        if first == 0 and third == 0:
+            personas.append("none")
+        elif first >= max(1, third * 2):
+            personas.append("first")
+        elif third >= max(1, first * 2):
+            personas.append("third")
+        else:
+            personas.append("mixed")
+    voted = [p for p in personas if p in ("first", "third")]
+    dominant = max(set(voted), key=voted.count) if voted else None
+    # drift = the book uses BOTH first and third as a chapter's dominant persona,
+    # OR any single chapter is internally 'mixed'.
+    distinct = set(voted)
+    drift = ("first" in distinct and "third" in distinct) or ("mixed" in personas)
+    return {
+        "chapters": len(personas),
+        "personas": personas,
+        "dominant": dominant,
+        "drift": bool(drift),
+    }
+
+
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
 # Extend by adding new lang keys; each value is a list of anchored regex patterns.
 _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
@@ -1069,6 +1154,17 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             # internal-continuity check. External verification (nonfiction) defers.
             _ec = entity_consistency_scan(out)
             stats["entity_consistency"] = _ec
+            # Track A (report-only) — glossary/kamus gloss detector (pattern-based,
+            # domain-general) + POV grammatical-persona drift. Both surfaced by the
+            # 3-romance corpus (sample-21/22) as pipeline defaults that survived the
+            # prompt-injection banned_tells.
+            _gl = glossary_definition_scan(out)
+            stats["glossary_hits"] = _gl["glossary_hits"]
+            stats["glossary_samples"] = _gl["glossary_samples"]
+            _pv = pov_persona_drift_scan(out)
+            stats["pov_persona"] = _pv
+            if _pv.get("drift"):
+                stats["pov_drift_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
