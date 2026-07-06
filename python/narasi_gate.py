@@ -210,6 +210,57 @@ _GENERIC_PREFIX_RX = re.compile(
     r"(?i)^(?:jumlah|berapa|angka|nilai|tanggal|number\s+of|how\s+many|amount\s+of|"
     r"the\s+number|the\s+exact|exact\s+(?:number|date|figure))\b")
 
+# ── R-FG6b (sample-23): descriptive-slot placeholders ──────────────────────────
+# A [VERIFY: <inner>] whose inner is an UNFILLED INSTRUCTION ("judul lagu yang relevan
+# untuk konteks remaja Indonesia") rather than a value-in-words ("dua hari perjalanan")
+# must NOT be hedge-wrapped — the ID pipeline shipped "Kamu denger sekitar judul lagu
+# yang relevan…" (a raw slot marker) because Exit 1b treated the instruction as a value.
+# Signal: NO number-word/digit AND a meta-instruction marker ("yang relevan/sesuai/…",
+# "untuk konteks"). Such a sentence is unsalvageable (its object was never written) →
+# drop the whole sentence. NARROW by design (only the clearest instruction markers) so a
+# real name-slot ("[VERIFY: nama lengkap Sultan Ageng]") is NOT swept up.
+_NUMBER_WORD_RX = re.compile(
+    r"(?i)\b(?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh|"
+    r"puluh|ratus|ribu|juta|miliar|milyar|triliun|belas|lusin|kodi|"
+    r"persen|perseratus|setengah|separuh|seperempat|paruh|"
+    r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"dozen|hundred|thousand|million|billion|percent|half|quarter)\b")
+_DESC_SLOT_INNER_RX = re.compile(
+    r"(?i)(?:\byang\s+(?:relevan|sesuai|tepat|cocok|mengena|pas|dibutuhkan|diperlukan|"
+    r"bersangkutan|dimaksud|mewakili|menggambarkan|mencerminkan)\b"
+    r"|\b(?:untuk|dalam|sesuai(?:\s+dengan)?)\s+konteks\b)")
+
+
+def _is_descriptive_slot(inner: str) -> bool:
+    """True when a [VERIFY] inner is an unfilled instruction (no number-word/digit + a
+    meta-instruction marker), not a value-in-words. Conservative: name/value slots pass."""
+    if not inner:
+        return False
+    if any(c.isdigit() for c in inner) or _NUMBER_WORD_RX.search(inner):
+        return False
+    return bool(_DESC_SLOT_INNER_RX.search(inner))
+
+
+def _strip_descriptive_slot_sentences(text: str) -> tuple[str, int]:
+    """Remove whole sentences containing a [VERIFY: <descriptive slot>] (R-FG6b). The
+    sentence is unsalvageable without the unwritten slot content. Paragraph-aware; a
+    paragraph with no sentence terminator is treated as one unit."""
+    if "[" not in text:
+        return text, 0
+    cut = 0
+    out_paras: list[str] = []
+    for para in text.split("\n"):
+        sents = re.split(r"(?<=[.!?…])\s+", para)
+        kept: list[str] = []
+        for s in sents:
+            if any(_is_descriptive_slot((m.group("inner") or "").strip())
+                   for m in _VERIFY_RX.finditer(s)):
+                cut += 1
+                continue
+            kept.append(s)
+        out_paras.append(" ".join(kept))
+    return "\n".join(out_paras), cut
+
 
 def _hedge_pack(lang: str) -> tuple[str, str, bool]:
     """(hedge_value_template, hedge_prose_word, measured) from the language pack.
@@ -234,6 +285,12 @@ def resolve_flags(text: str, lang: str = "en") -> tuple[str, dict[str, int]]:
              "exact_known_good": 0, "idempotent_skip": 0}
     if not text:
         return text, stats
+    # R-FG6b: drop unsalvageable descriptive-slot sentences before hedging (gated so
+    # flag-OFF stays byte-identical). Prevents "sekitar judul lagu yang relevan…".
+    if _INFRA_FIXES_ON():
+        text, _slot_cut = _strip_descriptive_slot_sentences(text)
+        if _slot_cut:
+            stats["descriptive_slot_sentence_cut"] = _slot_cut
     hv_tpl, hp_word, measured = _hedge_pack(lang)
 
     # Hedge IDEMPOTENCY guard (Diponegoro-2 review): the PROSE before the bracket often
@@ -950,7 +1007,10 @@ _GLOSSARY_ACRONYM_RX = re.compile(
 )
 _GLOSSARY_TERM_RX = re.compile(
     r"\b([A-Z][a-z]+(?:\s+[a-z]+)?)\s*[—–,]\s*((?:kemampuan|kegiatan|singkatan|istilah|"
-    r"orientasi|jalur|ujian|ruang|proses|masa|zona|sistem|satuan)\b[\w\s,]{6,})"
+    r"orientasi|jalur|ujian|ruang|proses|masa|zona|sistem|satuan|"
+    # sample-23: 'Remaja — fase perkembangan…', 'Pacaran — hubungan romantis…' slipped
+    r"fase|hubungan|kondisi|bentuk|pola|tahap|rentang|fenomena|keadaan|periode)"
+    r"\b[\w\s,]{6,})"
 )
 
 
@@ -1015,6 +1075,80 @@ def pov_persona_drift_scan(text: str) -> dict[str, Any]:
         "dominant": dominant,
         "drift": bool(drift),
     }
+
+
+# ── R-FG6b / Track A (sample-23): placeholder-leak + fiction stat-citation scans ──
+# placeholder_leak_scan: residual "sekitar/kira-kira/kurang lebih + <non-number phrase>"
+# in the FINAL text — a raw slot marker that R-FG6b's sentence-strip did not catch (e.g.
+# a direct-generation hedge, not a [VERIFY] bracket). Report-only telemetry: tells us
+# whether the root fix was sufficient or a direct-gen path also leaks.
+_PLACEHOLDER_LEAK_RX = re.compile(
+    r"(?i)\b(?:sekitar|kira-kira|kurang\s+lebih|kurleb)\s+"
+    r"((?:yang\s+(?:relevan|sesuai|tepat|cocok)|(?:untuk|dalam)\s+konteks|"
+    r"(?:judul|nama|contoh|daftar|jenis|kutipan|lirik|survei|studi|penelitian)\s+\w+)"
+    r"[\w\s]{0,40})")
+
+
+def placeholder_leak_scan(text: str) -> dict[str, Any]:
+    """Report-only: detect a hedged descriptive-slot residue ("sekitar judul lagu yang
+    relevan…", "sekitar survei psikologi…") that reached the final text. Not a value
+    (no number follows the hedge) — an unfilled instruction the model never resolved."""
+    if not text:
+        return {"placeholder_leak_hits": 0, "placeholder_leak_samples": []}
+    samples: list[str] = []
+    for m in _PLACEHOLDER_LEAK_RX.finditer(text):
+        frag = re.sub(r"\s+", " ", m.group(0).strip())[:80]
+        if frag not in samples:
+            samples.append(frag)
+        if len(samples) >= 8:
+            break
+    return {"placeholder_leak_hits": len(samples), "placeholder_leak_samples": samples}
+
+
+# fiction_stat_citation_scan: in a FICTION style, ANY statistic-citation pattern is a
+# REGISTER violation (essay-voice leaking into story), NOT a fact to verify. Report-only;
+# no verification/retrieval. The nonfiction fact-scan is unchanged and stays nonfiction-
+# only — fiction is not fact-checked; its stat-CITATIONS are flagged for removal.
+_FICTION_STYLES: frozenset = frozenset([
+    "remaja_coming_of_age", "coming_of_age",
+    "romance_contemporary", "romance",
+    "kdrama_serial", "kdrama",
+    "ironic_moral_fable", "moraliste",
+    "storytelling", "bedtime_story", "pov_first_person_immersive",
+])
+_FICTION_STAT_RX = re.compile(
+    r"(?i)(?:"
+    r"\bmenurut\s+(?:\w+\s+){0,3}?(?:survei|penelitian|studi|riset|data|laporan|"
+    r"jurnal|kajian|statistik)\b"
+    r"|\b(?:survei|penelitian|studi|riset|statistik|data)\s+(?:\w+\s+){0,4}?"
+    r"(?:menunjukkan|mencatat|menyebut(?:kan)?|membuktikan|memperkirakan|mengungkap)\b"
+    r"|\b[Dd]ata\s+[A-Z][A-Za-z]{1,12}\b"
+    r"|\b\d{1,3}\s*(?:persen|%)"
+    r"|(?:\b(?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh|puluh|"
+    r"ratus|seratus)\b\s+){1,5}persen\b"
+    r"|\b(?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan)\s+dari\s+"
+    r"(?:sepuluh|lima|empat|tiga|dua|\d+)\b"
+    r")")
+
+
+def fiction_stat_citation_scan(text: str, style: Optional[str] = None) -> dict[str, Any]:
+    """Report-only (Track A): in a fiction-regime style, flag statistic-citations
+    ('menurut survei…', 'Data KPAI…', '72 persen', 'tujuh dari sepuluh remaja') as a
+    register violation. applies=False for non-fiction styles (scan skipped)."""
+    style_key = (style or "").strip().lower()
+    if style_key not in _FICTION_STYLES:
+        return {"applies": False, "fiction_stat_hits": 0, "fiction_stat_samples": []}
+    if not text:
+        return {"applies": True, "fiction_stat_hits": 0, "fiction_stat_samples": []}
+    samples: list[str] = []
+    for m in _FICTION_STAT_RX.finditer(text):
+        frag = re.sub(r"\s+", " ", m.group(0).strip())[:60]
+        if frag not in samples:
+            samples.append(frag)
+        if len(samples) >= 8:
+            break
+    return {"applies": True, "fiction_stat_hits": len(samples),
+            "fiction_stat_samples": samples}
 
 
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
@@ -1165,6 +1299,22 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["pov_persona"] = _pv
             if _pv.get("drift"):
                 stats["pov_drift_flag"] = True
+            # A.2 (sample-23): residual descriptive-slot hedge leak (report-only) — a
+            # safety net that measures whether the R-FG6b sentence-strip caught the
+            # placeholder, or a direct-generation path also leaks "sekitar <slot>".
+            _pl = placeholder_leak_scan(out)
+            stats["placeholder_leak_hits"] = _pl["placeholder_leak_hits"]
+            stats["placeholder_leak_samples"] = _pl["placeholder_leak_samples"]
+            if _pl["placeholder_leak_hits"]:
+                stats["placeholder_leak_flag"] = True
+            # C′ (sample-23): fiction stat-citation = REGISTER violation (report-only,
+            # NOT a fact-check). Fiction styles only; nonfiction fact-scan is untouched.
+            _fs = fiction_stat_citation_scan(out, style=style)
+            if _fs.get("applies"):
+                stats["fiction_stat_hits"] = _fs["fiction_stat_hits"]
+                stats["fiction_stat_samples"] = _fs["fiction_stat_samples"]
+                if _fs["fiction_stat_hits"]:
+                    stats["fiction_stat_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
