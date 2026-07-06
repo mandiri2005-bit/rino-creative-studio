@@ -424,6 +424,55 @@ def _family_keys(family: str) -> list:
 _MIN_POOL_SIZE = 4   # trap-topic diversification guard (adversarial audit finding)
 
 
+# ── Ending-shape taxonomy (v2 addition) ─────────────────────────────────────
+# Classification by resolution axis. HAPPY = earned union / grand-gesture-then-growth /
+# quiet-convergent / partnership-both-senses / love-past-memory / family-reconvenes /
+# rupture-then-reconcile / quiet-healing / unambiguous-win. SAD = un-healed / choose-and-
+# lose (bittersweet-tragic) / terminal / system-costs-couple. MIXED = open-ended /
+# recontextualize / reconcile-or-release / earned-costly / justice-with-cost / first-lead-
+# honor-second / sacrifice-or-reunion / alter-fate-or-accept / win-company-lose-something.
+# 12 + 5 + 9 = 26 presets total (accounted for).
+_ENDING_HAPPY = frozenset({
+    "linear_confession", "dual_pov_parallel", "rival_to_love", "group_to_pair", "light_comedic",
+    "chaebol_contract", "birth_secret_makjang", "workplace_slow_burn", "amnesia_reset",
+    "ensemble_family_saga", "healing_slice", "uplifting_underdog",
+})
+_ENDING_SAD = frozenset({
+    "slow_fade", "the_almost", "ambition_collision",
+    "terminal_melodrama", "class_war_romance",
+})
+_ENDING_MIXED = frozenset({
+    "breakup_first", "secret_reveal", "second_chance", "we_vs_world_close_third",
+    "revenge_return", "second_lead_triangle", "fantasy_bond", "timeslip_fate", "corporate_thriller",
+})
+
+
+def _apply_ending_filter(pool, family):
+    """Narrow a beat-map pool by NARASI_BEATMAP_ENDING_FILTER (happy|sad|mixed|any).
+    If the topic-hint pool has no ending-matched preset, drop the topic hint — return the
+    full family filtered by ending shape. If still empty, fall through to the original
+    pool (defensive; shouldn't happen with the shipped taxonomy). Applies to preset mode
+    only; compose ignores the filter (compose has its own variety story). Read at call
+    time so Railway updates pick up without a service restart."""
+    f = (os.environ.get("NARASI_BEATMAP_ENDING_FILTER") or "").strip().lower()
+    if not f or f == "any":
+        return pool
+    if f == "happy":
+        allowed = _ENDING_HAPPY
+    elif f == "sad":
+        allowed = _ENDING_SAD
+    elif f == "mixed":
+        allowed = _ENDING_MIXED
+    else:
+        return pool
+    filtered = [k for k in pool if k in allowed]
+    if filtered:
+        return filtered
+    # topic hint didn't overlap the requested ending shape — user's channel-level ending
+    # preference wins; drop the topic hint, return the full family filtered by ending.
+    return [k for k in _family_keys(family) if k in allowed] or pool
+
+
 def compatible_beatmaps(topic, family="romance"):
     """Return topic-compatible beat-map ids from the family. When the topic-hint pool is
     narrower than _MIN_POOL_SIZE, top up with random family peers so single-hint topics
@@ -671,6 +720,11 @@ def select_beatmap(topic, style, *, tenant_id=None, override=None, twist_overrid
                 bm = _emit(ov)
         if bm is None:
             pool = compatible_beatmaps(topic, family)
+            # v2: NARASI_BEATMAP_ENDING_FILTER narrows the pool to happy/sad/mixed. When
+            # override is set the user's explicit choice already won above, so filter is
+            # skipped here — an explicit body/env beatmap_id trumps a channel-level ending
+            # preference.
+            pool = _apply_ending_filter(pool, family)
             recent = set(recent_ids or [])
             fresh = [k for k in pool if k not in recent] or pool
             bm = _emit(random.choice(fresh))
