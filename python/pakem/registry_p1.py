@@ -2285,6 +2285,20 @@ FORBIDDEN:
 - Explicit lesson-delivery at chapter close ('dari situ aku belajar bahwa
   hidup itu…'). Remaja teaches through the moment, not a moral tag.
 - Third-person omniscient with adult reflection.
+- GLOSSARY/KAMUS — defining common Indonesian-teen terms in a textbook voice
+  ('MPLS — Masa Pengenalan Lingkungan Sekolah…', 'ekskul — singkatan dari
+  ekstrakurikuler…', 'friendzone — istilah yang dipakai…', 'SNMPTN — jalur
+  undangan…'). The native audience already knows these; a parenthetical/em-dash
+  gloss breaks the intimate register and reads like a tour for foreigners. Use
+  the term bare. (If the audience is a learner/foreigner, that is a DIFFERENT
+  product and the WHOLE register shifts — never patch definitions into remaja.)
+- POV DRIFT — mixing grammatical personas across the book: 'gue' in one bab,
+  '3rd-person Raka' in another, 'aku' in a third (or switching mid-paragraph).
+  LOCK ONE persona at Bab 1 — 'gue' (most alive for the teen voice) OR 'aku' OR
+  consistent close-3rd — and hold it to the last line. Persona drift reads as an
+  unfinished draft-merge.
+- APHORISM SATURATION — closing every scene with a maxim. Keep the 1-2 strongest
+  per book; let most scenes close on an IMAGE, not a wejangan (~1 maxim per 2 bab).
 """,
     "style_rules_editor": "",
     "register_spec": {
@@ -2294,6 +2308,9 @@ FORBIDDEN:
             "music_anchor_scene_per_book",
             "obsessive_re_reading_beat_per_chapter",
             "first_person_teen_voice_constitutive",
+            # Sample-21 (romansa-SMA V1+V2, 4 review lenses, 2026-07-06): lock ONE
+            # grammatical persona for the whole book — do not drift gue→aku→3rd-person-Raka.
+            "single_pov_persona_lock",
         ],
         "banned_tells": [
             "zaman sekarang tuh anak muda",
@@ -2313,6 +2330,18 @@ FORBIDDEN:
             "guys so today was totally exhausting",
             "jayus", "ciyus miapah", "kece badai",
             "dari situ aku belajar bahwa hidup",
+            # GLOSSARY/KAMUS tic (sample-21, cross-lens + cross-version — survived a
+            # full rewrite). Native readers do NOT need common Indonesian-teen terms
+            # defined. These substrings catch the "istilah — definisi" gloss pattern
+            # for MPLS / ekskul / friendzone / SNMPTN / grup-kelas / OSIS.
+            "masa pengenalan lingkungan sekolah",
+            "singkatan dari ekstrakurikuler",
+            "kegiatan di luar jam pelajaran resmi",
+            "istilah yang dipakai anak-anak seangkatan",
+            "zona pertemanan yang tidak berkembang",
+            "jalur undangan masuk perguruan tinggi negeri",
+            "ruang obrolan digital",
+            "tiga hari orientasi wajib",
         ],
         "counters": {
             "code_switch_min_per_chapter": 2,
@@ -2327,6 +2356,10 @@ FORBIDDEN:
             "generational_anachronism_slang_max": 0,
             "narrator_opening_ratio_max": 1.0,
             "explicit_lesson_delivery_max": 0,
+            # sample-21 additions:
+            "glossary_definition_max": 0,          # zero parenthetical/em-dash glosses of native-known terms
+            "pov_persona_lock": True,              # one persona (gue OR aku OR 3rd-person) held whole book
+            "aphorism_density_max_per_2_chapters": 1,  # ~1 maxim per 2 bab, not per scene
         },
     },
 }
