@@ -1099,6 +1099,14 @@ _NARASI_GEMINI_FAILOVER_MODELS = {
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 }
+# Sonnet narasi models eligible for the LaoZhang failover chain (Rino 2026-07-06).
+# MANAGER_MODEL defaults to claude-sonnet-4-6 (all polish/merge/synthesize). These
+# get a single-rung LaoZhang chain with per-rung retry so they are no longer the
+# no-retry plain-make_client path the audit flagged.
+_NARASI_SONNET_FAILOVER_MODELS = {
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-6-thinking",
+}
 _NARASI_FAILOVER_TIMEOUT = int(os.environ.get("NARASI_FAILOVER_TIMEOUT") or 280)
 # Whole cheapest-first walk is bounded to this budget, kept < the caller's outer per-chapter
 # wait_for (DALANG_CHAPTER_LLM_TIMEOUT default 900s), so a hung EARLY rung can neither starve
@@ -1122,10 +1130,26 @@ def _narasi_failover_chain(model: str = "") -> list[tuple[str, str, str, str, st
     honours BYOK (_req_key)."""
     if model in _NARASI_GEMINI_FAILOVER_MODELS:
         return _narasi_gemini_failover_chain(model)
+    if model in _NARASI_SONNET_FAILOVER_MODELS:
+        return _narasi_sonnet_failover_chain(model)
     return [
         ("kie",        "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""),        "claude-opus-4-6"),
         ("laozhang",   "openai",    BASE_URL,                                _req_key.get() or API_KEY,                 "claude-opus-4-6"),
         ("atlascloud", "openai",    "https://api.atlascloud.ai/api/v1",      os.environ.get("ATLASCLOUD_API_KEY", ""),  "claude-opus-4-8"),
+    ]
+
+
+def _narasi_sonnet_failover_chain(model: str) -> list[tuple[str, str, str, str, str]]:
+    """Sonnet failover → LaoZhang (Rino 2026-07-06: "Non-failover (sonnet) →
+    failover laozhang"). MANAGER_MODEL defaults to claude-sonnet-4-6, used for
+    every polish/merge/synthesize. Before this, sonnet went through the plain
+    make_client with no failover-client retry — a single transient blip failed
+    the polish. Now sonnet is served by LaoZhang with per-rung retry
+    (NARASI_RUNG_ATTEMPTS), same resilience path as opus. Single rung: KIE serves
+    opus (not sonnet), so there is no cheaper primary to fail over FROM — LaoZhang
+    is both primary and failover target. Model id passes through verbatim."""
+    return [
+        ("laozhang", "openai", BASE_URL, _req_key.get() or API_KEY, model),
     ]
 
 
@@ -1413,7 +1437,9 @@ def make_narasi_client(model: str = ""):
     # honours the per-request key, so BYOK always goes straight through it.
     if not _narasi_failover_on() or _byok_active():
         return make_client(model)
-    if model in _NARASI_FAILOVER_MODELS or model in _NARASI_GEMINI_FAILOVER_MODELS:
+    if (model in _NARASI_FAILOVER_MODELS
+            or model in _NARASI_GEMINI_FAILOVER_MODELS
+            or model in _NARASI_SONNET_FAILOVER_MODELS):
         return _NarasiFailoverClient(model)
     return make_client(model)
 

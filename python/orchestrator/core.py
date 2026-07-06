@@ -336,9 +336,25 @@ _TRANSIENT_MARKERS = (
     "connection error", "service unavailable", "internal server error",
 )
 
+# The narasi failover client (_NarasiFailoverClient._create) already walks the
+# WHOLE aggregator chain and retries each rung NARASI_RUNG_ATTEMPTS times. When it
+# raises "narasi failover exhausted — all aggregators failed: …" it has genuinely
+# tried everything. Its message carries the underlying rung errors (which include
+# "timeout" from a dead KIE), so a naive _is_transient() would classify it as
+# retryable and run_worker would re-walk the ENTIRE chain — re-hitting the dead
+# rung and MULTIPLYING the KIE tax (Rino's "4× KIE for one polish" bug). This
+# marker makes exhaustion TERMINAL: run_worker never re-walks a failover that
+# already exhausted. Retry count for the failover path is therefore bounded to
+# NARASI_RUNG_ATTEMPTS, no matter what NARASI_WORKER_MAX_RETRIES is set to. On
+# exhaustion the job fails cleanly → the hold settles at zero output → refund
+# (see narration_api hold/settle/refund).
+_FAILOVER_EXHAUSTED_MARKER = "narasi failover exhausted"
+
 
 def _is_transient(exc: BaseException) -> bool:
     msg = f"{type(exc).__name__}: {exc}".lower()
+    if _FAILOVER_EXHAUSTED_MARKER in msg:
+        return False  # failover already tried every rung — do NOT re-walk
     return any(m in msg for m in _TRANSIENT_MARKERS)
 
 
