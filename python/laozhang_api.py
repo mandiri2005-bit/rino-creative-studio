@@ -1197,6 +1197,33 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     usage = getattr(resp, "usage_metadata", None)
     tin = int(getattr(usage, "prompt_token_count", 0) or 0) if usage else 0
     tout = int(getattr(usage, "candidates_token_count", 0) or 0) if usage else 0
+    # Diagnostic (Rino 2026-07-06): when Vertex returns empty text, log the
+    # actual reason — finish_reason, safety block, candidate count — so we know
+    # WHY empty. Without this, the failover log only says "vertex empty" and we
+    # can't tell location mismatch vs safety block vs model unavailable.
+    if text is None:
+        try:
+            candidates = getattr(resp, "candidates", None) or []
+            n_cand = len(candidates)
+            finish = ""
+            safety_block = ""
+            if n_cand:
+                c0 = candidates[0]
+                finish = str(getattr(c0, "finish_reason", "") or "")
+                # google.genai FinishReason enum: STOP / SAFETY / RECITATION /
+                # MAX_TOKENS / LANGUAGE / OTHER / etc.
+                ratings = getattr(c0, "safety_ratings", None) or []
+                blocked = [str(getattr(r, "category", "")) for r in ratings
+                           if getattr(r, "blocked", False)]
+                if blocked:
+                    safety_block = ",".join(blocked)
+            pf = getattr(resp, "prompt_feedback", None)
+            pf_block = str(getattr(pf, "block_reason", "") or "") if pf else ""
+            print(f"[vertex-diag] model={model} candidates={n_cand} "
+                  f"finish={finish!r} safety_block={safety_block!r} "
+                  f"prompt_block={pf_block!r} tin={tin} tout={tout}")
+        except Exception as _diag_e:  # noqa: BLE001
+            print(f"[vertex-diag] model={model} empty (diag extract failed: {_diag_e})")
     return _AdaptedResp(text, "stop", tin, tout)
 
 
