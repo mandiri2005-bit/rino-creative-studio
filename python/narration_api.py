@@ -540,6 +540,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             # justify the rewrite; discrete violations (scene_dup/anchor_voice/epithet,
             # no numeric budget) always qualify.
             _diet_tol = float(os.environ.get("NARASI_DIET_TOLERANCE", "1.3"))
+            # Hard cap on diet rounds (Rino 2026-07-06). NARASI_DIET_MAX_LOOPS=0 turns
+            # the editorial-refinement diet loop OFF entirely — the slowest post-chapter
+            # phase (each round = one full-book Opus rewrite). Default 2 = prior behavior.
+            _diet_max_loops = max(0, int(os.environ.get("NARASI_DIET_MAX_LOOPS", "2")))
 
             def _diet_worthy(r: dict) -> list:
                 worthy = []
@@ -552,7 +556,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 return worthy
 
             loops = 0
-            while has_budgets and _diet_worthy(rep) and loops < 2:
+            while has_budgets and _diet_worthy(rep) and loops < _diet_max_loops:
                 loops += 1
                 if job_id:
                     await _safe_progress(job_id, "Editorial refinement …")
