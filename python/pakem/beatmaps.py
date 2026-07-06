@@ -463,6 +463,30 @@ _TWIST_WEIGHT = {
     "time_skip_reveal": 0.08,
     "unreliable_narrator": 0.08,
 }
+_TWIST_NON_NONE_KEYS = ("third_party_engineered", "one_is_leaving_ill",
+                        "parallel_relationship", "time_skip_reveal",
+                        "unreliable_narrator")
+
+
+def _twist_weights_current() -> dict:
+    """Return _TWIST_WEIGHT with NARASI_TWIST_WEIGHT_NONE env override applied.
+    Env value clamped to [0.0, 1.0]; invalid / unset → default 0.60. Remaining
+    weight (1 − none_share) is split evenly across the 5 non-'none' twist slots.
+    Read at call time so Railway env updates pick up without a service restart."""
+    raw = (os.environ.get("NARASI_TWIST_WEIGHT_NONE") or "").strip()
+    if not raw:
+        return dict(_TWIST_WEIGHT)
+    try:
+        none_share = float(raw)
+    except (ValueError, TypeError):
+        return dict(_TWIST_WEIGHT)
+    if not (0.0 <= none_share <= 1.0):
+        return dict(_TWIST_WEIGHT)
+    other = (1.0 - none_share) / len(_TWIST_NON_NONE_KEYS)
+    w = {"none": none_share}
+    for k in _TWIST_NON_NONE_KEYS:
+        w[k] = other
+    return w
 _PRESET_HAS_SIGNATURE_TWIST = frozenset({
     "secret_reveal",
     "birth_secret_makjang", "revenge_return", "terminal_melodrama",
@@ -483,7 +507,7 @@ def select_twist(beatmap_id, *, recent_twist_ids=None, override=None, rng=None):
             if beatmap_id not in (slot.get("incompatible_with") or []):
                 return {**slot, "twist_id": ov}
     recent = set(recent_twist_ids or [])
-    weights = dict(_TWIST_WEIGHT)
+    weights = _twist_weights_current()
     for r in recent:
         if r in weights and r != "none":
             weights[r] *= 0.25
