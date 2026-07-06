@@ -434,7 +434,14 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "deepseek-r1": 65536,
     "grok-4-fast": 8192,
     "gemini-3-flash-preview": 8192,
-    "gemini-3.5-flash": 8192,
+    # gemini-3.5-flash real output ceiling is 65,536 (Google docs) — the old 8192 was a
+    # conservative under-set that made _polish_reduce SKIP any book > ~5,100 words (the
+    # NARASI_POLISH_MODEL=gemini-3.5-flash path never polished long books). Set to 32,768:
+    # covers every book up to the NARASI_POLISH_MAX_WORDS=15,000 cap (~23.5k tokens < 31.1k)
+    # yet stays safely BELOW the real 65,536 limit — run_worker requests min(worker.max_tokens
+    # or ceiling, ceiling) and the polish Worker leaves max_tokens=None, so it would request
+    # this whole value; 32k is definitely accepted, 65k risks a strict-validator rejection.
+    "gemini-3.5-flash": 32768,
 }
 DEFAULT_MAX_TOKENS = 16384
 
