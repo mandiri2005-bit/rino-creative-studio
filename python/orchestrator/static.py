@@ -570,8 +570,8 @@ async def narrate_chapters(
         except Exception as exc:  # noqa: BLE001 - _write_chapter is never-raise, but belt+braces
             log.warning("narrate_chapters: a chapter task raised unexpectedly: %s", exc)
             raw.append({"ok": False, "output": None, "error": str(exc), "no": -1})
-    log.info("narrate_chapters: MAP done — %d chapters in %.1fs (max_workers=%s)",
-             len(tasks), time.monotonic() - _t_map, max_workers)
+    log.info("narrate_chapters: MAP done — %d chapters in %.1fs (max_parallel=%s)",
+             len(tasks), time.monotonic() - _t_map, max_parallel)
 
     raw.sort(key=lambda r: r.get("no", 0))
 
