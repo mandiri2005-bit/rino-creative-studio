@@ -2230,7 +2230,8 @@ app.post("/api/veo/submit", async (req,res)=>{
     if (process.env.FIX_F25_GOOGLE_FLOOR === "1") {
       try {
         const floorCredits = Math.max(1, parseInt(process.env.GOOGLE_VEO_FLOOR_CREDITS || "20", 10) || 20);
-        const veoJobId = (out && (out.id || out.job_id || out.name)) || `${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
+        // googleVeoSubmit returns { task_id, status, model } — use task_id (was: id/job_id/name → all null → random op_id kills idempotency).
+        const veoJobId = (out && (out.task_id || out.id || out.job_id || out.name)) || `${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
         const opId = `veo:google:submit:${veoJobId}`;
         await query(
           `SELECT credit_apply($1,$2,$3,'charge',$4,'{"source":"veo_google_floor"}'::jsonb)`,

@@ -317,8 +317,12 @@ async def charge(tenant_id: str, amount: int, op_id: str, *,
                                                      op_id=f"charge:{op_id}",
                                                      user_id=user_id, metadata=metadata)
         if not _applied and dbal < amount:
-            log.warning("charge(%s): guarded-debit REJECTED, durable=%d < needed=%d (overspend blocked)",
-                        op_id, dbal, amount)
+            # F2 revised (post-reaudit CRITICAL): a rejected guarded-debit must signal
+            # the caller — a silent log lets the caller ship the deliverable free.
+            # Raise InsufficientCredits so the outer handler either 402s or refunds.
+            log.critical("charge(%s): guarded-debit REJECTED, durable=%d < needed=%d (overspend blocked)",
+                         op_id, dbal, amount)
+            raise InsufficientCredits(needed=int(amount), balance=int(dbal))
     else:
         _applied, dbal = await _credit_apply(tenant_id, -amount, "charge", op_id=f"charge:{op_id}",
                                              user_id=user_id, metadata=metadata)

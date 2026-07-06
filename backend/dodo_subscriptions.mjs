@@ -647,6 +647,14 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
   // F27: purge abandoned-checkout 'pending' rows older than 24h. Only touches rows still
   // in 'pending' status untouched for >24h — an active/on_hold webhook always bumps
   // updated_at, so live subs are never at risk. Gated FIX_F27_PENDING_TTL=1 (default OFF).
+  //
+  // ⚠ NOTE (post-reaudit): dodo_subscriptions is FORCE ROW LEVEL SECURITY per
+  // migration 0041, so this DELETE runs under an empty tenant context (no
+  // set_config for app.current_tenant_id) and RLS blocks EVERY row → the flag
+  // ships as a no-op until a companion SECURITY DEFINER migration
+  // `dodo_subscriptions_purge_pending(interval)` lands (mirror of
+  // `dodo_subscriptions_due_for_reconcile`). Kept guarded + logging so ops can
+  // see it fire as a rowCount=0 signal before/after the migration.
   let purgedPending = 0;
   if (process.env.FIX_F27_PENDING_TTL === "1") {
     try {
@@ -656,6 +664,9 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
              AND updated_at < now() - interval '24 hours'`,
       );
       purgedPending = p.rowCount || 0;
+      if (purgedPending === 0) {
+        console.warn("[dodo_sub] F27 pending TTL purge: 0 rows — likely RLS-blocked; ship SECURITY DEFINER migration");
+      }
     } catch (e) {
       console.warn(`[dodo_sub] pending TTL purge failed: ${e.message}`);
     }

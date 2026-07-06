@@ -12548,15 +12548,17 @@ async def video_credits_refund(req: VideoRefundReq,
     tagged with this video_job for the tenant and grants it back — idempotent per
     job (op_id=video-refund:<job>). Internal-auth only; the orchestrator calls it on
     terminal failure. No-op when nothing was charged or the refund already ran."""
-    # F1 hardening (audit 2026-07-06): docstring says "Internal-auth only" but the
-    # endpoint accepted any authenticated tenant — a tenant could POST their own
-    # job_id and force a refund of a successfully delivered video. Enforce the two
-    # invariants the docstring already promises: (a) caller is the internal video-
-    # worker (X-Internal-Secret → is_internal), and (b) job's in-process status is
-    # NOT 'success' (delivered). Kill-switch: FIX_F1_VIDEO_REFUND_GATE=0.
-    if os.getenv("FIX_F1_VIDEO_REFUND_GATE", "1") == "1":
-        if not user or not getattr(user, "is_internal", False):
-            raise HTTPException(403, "internal only")
+    # F1 hardening (audit 2026-07-06, revised post-reaudit): docstring said
+    # "Internal-auth only" but Node routes.mjs actually forwards the user's own JWT
+    # on the user-cancel path (backend/video/routes.mjs cancel handler), so a
+    # strict is_internal check breaks legit user-cancels (silently, because Node
+    # swallows the 403). Revised gate: reject when the job status is 'success'
+    # regardless of who calls (blocks deliver-then-refund), but otherwise allow
+    # either an internal caller OR the tenant that owns the job (Node's user JWT
+    # path). Cross-replica _VID_JOBS may be empty on the receiving pod — in that
+    # case the ledger-tagged charges are the source of truth: the refund SELECT
+    # below is already scoped by user.tenant_id, so a tenant can never refund
+    # another tenant's video regardless. Kill-switch: FIX_F1_VIDEO_REFUND_GATE=0.
     job_id = (req.job_id or "").strip()
     if not job_id:
         raise HTTPException(400, "job_id required")
@@ -12564,6 +12566,12 @@ async def video_credits_refund(req: VideoRefundReq,
         _vj = _VID_JOBS.get(job_id)
         if _vj and _vj.get("status") == "success":
             raise HTTPException(409, "refund refused: job already delivered")
+        # Not-internal caller may refund only its OWN job (in-process registry).
+        # If the job is not in this pod's registry (cross-replica) fall through:
+        # the ledger SELECT below is tenant-scoped so it cannot leak.
+        if not getattr(user, "is_internal", False):
+            if _vj and _vj.get("tenant_id") and str(_vj.get("tenant_id")) != str(user.tenant_id):
+                raise HTTPException(403, "not the owner of this job")
     # charges are negative deltas tagged with video_job; -SUM = what to give back. TOLERANT of both
     # encodings: new rows store metadata as a jsonb OBJECT (metadata->>'video_job'); historical rows
     # were double-encoded as a jsonb STRING (the old credits.py double-dump bug) → reach the tag via
