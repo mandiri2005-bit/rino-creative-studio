@@ -1227,47 +1227,18 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     return _AdaptedResp(text, "stop", tin, tout)
 
 
-# ── Per-rung retry + last-good reorder (no cooldown) ─────────────────────────
-# Rino 2026-07-06 (final): per-rung retry gets K attempts before the chain
-# advances. On success, that rung is stickied per-model in _RUNG_LAST_GOOD and
-# moved to the FRONT of the chain for every subsequent call. No cooldown, no
-# skip — the reorder alone is what prevents "LaoZhang succeeded but next
-# request still tries KIE first". Cheaper rung is not permanently avoided:
-# whenever the current-preferred rung fails and the chain walks further, the
-# newly-successful rung becomes the last-good and reorders again. When KIE
-# recovers, the very next chain-walk (after LaoZhang fails once) probes it,
-# and success re-sticks it as the preferred rung.
+# ── Per-rung retry (stateless) ───────────────────────────────────────────────
+# Rino 2026-07-06 (final, stateless): retry lives in EXACTLY ONE place —
+# NARASI_RUNG_ATTEMPTS. Each rung gets K attempts before the chain advances to
+# the next rung. NO cross-request state: no cooldown, no last-good reorder.
+# Every fresh request walks the chain in canonical cheapest-first order (KIE →
+# LaoZhang → AtlasCloud), so "Attempt 2 = Attempt 1" exactly as Rino specified.
 #
-# Design from Rino spec verbatim:
-#   "→ KIE fail 150s     → retry 1x (jangan failover dulu)"
-#   "→ KIE fail 150s     → failover ke LaoZhang"
-#   "→ LaoZhang success  → LAST_GOOD = laozhang"
-#   "gak ada COLD!!"
-#
-# Interpretation: "gak ada COLD" = no cooldown-based skip of a rung.
-# LAST_GOOD reorder IS wanted (explicit in the spec). Every fresh call uses
-# the reordered chain, so a proven-working rung is tried first — saves the
-# 2× KIE tax per request that stateless retry was costing.
+# The redundant OUTER retry that was doubling the KIE walk lived in
+# orchestrator.run_worker (max_retries defaulted to 2). That is now 0 by
+# default (env NARASI_WORKER_MAX_RETRIES), so run_worker no longer re-walks the
+# whole failover chain — the "4× KIE for one polish" is gone.
 _NARASI_RUNG_ATTEMPTS = max(1, int(os.environ.get("NARASI_RUNG_ATTEMPTS") or 2))
-
-# `model → last-known-good rung name`. Reset on module import (fresh state
-# after every service restart — that typically coincides with the upstream
-# recovery windows we care about).
-_RUNG_LAST_GOOD: dict[str, str] = {}
-
-
-def _reorder_chain(model: str, chain: list) -> list:
-    """Move the last-known-good rung for `model` to the front of the chain.
-    Returns the chain unchanged when there is no last-good record, when the
-    last-good rung is already at position 0, or when the last-good rung isn't
-    present in the current chain (defensive against config drift)."""
-    preferred = _RUNG_LAST_GOOD.get(model)
-    if not preferred:
-        return chain
-    idx = next((i for i, c in enumerate(chain) if c[0] == preferred), -1)
-    if idx <= 0:
-        return chain
-    return [chain[idx]] + chain[:idx] + chain[idx + 1:]
 
 
 class _AdaptedResp:
@@ -1352,12 +1323,9 @@ class _NarasiFailoverClient:
         return self
 
     def _create(self, **kw):
-        # Reorder the chain so the last-known-good rung for this model comes first.
-        # First call of the model uses the canonical cheapest-first order; every
-        # subsequent call after a success prefers the proven rung, so a broken
-        # cheaper rung is not re-tried on every request.
-        base_chain = _narasi_failover_chain(self._model)
-        chain = _reorder_chain(self._model, base_chain)
+        # Canonical cheapest-first chain, walked fresh EVERY call — no reorder,
+        # no memory (Rino 2026-07-06: "Attempt 2 (fresh state) = Attempt 1").
+        chain = _narasi_failover_chain(self._model)
         primary = next((c[0] for c in chain if c[3]), "")
         # Bound the whole cheapest-first walk to a budget < the caller's outer per-chapter
         # wait_for, giving each rung the REMAINING budget (not a fresh full timeout) so a hung
@@ -1365,12 +1333,9 @@ class _NarasiFailoverClient:
         deadline = time.monotonic() + _NARASI_FAILOVER_CHAIN_BUDGET
         errors: list[str] = []
         attempted = 0
-        # For each rung: try it up to _NARASI_RUNG_ATTEMPTS times before advancing to
-        # the next rung. Success stickies the rung as last-good for this model (used
-        # by _reorder_chain above on the NEXT call). No cooldown, no skip — the
-        # reorder alone is what prevents "LaoZhang succeeded but next request still
-        # tries KIE first" (Rino 2026-07-06 explicit spec: LAST_GOOD reorder yes,
-        # cooldown no).
+        # For each rung: try it up to _NARASI_RUNG_ATTEMPTS times before advancing
+        # to the next rung. Stateless — no cooldown, no last-good stickiness. The
+        # ONLY retry knob is NARASI_RUNG_ATTEMPTS.
         for name, proto, endpoint, key, model_id in chain:
             if not key:
                 continue
@@ -1413,11 +1378,6 @@ class _NarasiFailoverClient:
                         object.__setattr__(resp, "_narasi_served_by", name)
                     except Exception:
                         pass
-                    # Sticky last-good: next call for this model reorders the chain
-                    # so THIS rung is at position 0. Recovery of a currently-broken
-                    # rung is automatic — LaoZhang eventually fails, chain walks
-                    # further, KIE probes; on success KIE re-sticks as last-good.
-                    _RUNG_LAST_GOOD[self._model] = name
                     if name != primary or rung_attempt > 1:
                         print(f"[narasi-failover] served by {name} "
                               f"(attempt {rung_attempt}, {model_id})")
@@ -1427,10 +1387,7 @@ class _NarasiFailoverClient:
                     print(f"[narasi-failover] {name} failed "
                           f"(attempt {rung_attempt}/{_NARASI_RUNG_ATTEMPTS}): {rung_last_err[:160]}")
                     continue
-            # Rung exhausted its retry budget → drop the last-good mark if it
-            # pointed here (this rung isn't good anymore) and advance to next rung.
-            if _RUNG_LAST_GOOD.get(self._model) == name:
-                _RUNG_LAST_GOOD.pop(self._model, None)
+            # Rung exhausted its retry budget → collect its last error and advance.
             if rung_last_err:
                 errors.append(f"{name}:{rung_last_err}")
                 print(f"[narasi-failover] {name} exhausted after {_NARASI_RUNG_ATTEMPTS} "

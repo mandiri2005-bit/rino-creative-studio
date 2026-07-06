@@ -394,7 +394,7 @@ async def run_worker(
     timeout: float = 120.0,
     *,
     task_id: str = "",
-    max_retries: int = 2,
+    max_retries: int = int(os.environ.get("NARASI_WORKER_MAX_RETRIES") or 0),
     base_backoff: float = 0.75,
 ) -> dict[str, Any]:
     """Run a single worker call. NEVER raises.
@@ -404,9 +404,18 @@ async def run_worker(
     On any failure/timeout returns a marker:
         {"ok": False, "output": None, "error": <str>, "model": ..., "telemetry": {...}}
 
-    Transient errors (rate limit / timeout / 5xx) are retried with exponential
-    backoff up to `max_retries`. The whole call (per attempt) is bounded by
-    `timeout` seconds via asyncio.wait_for.
+    Retry is bounded by `max_retries` (default 0, env NARASI_WORKER_MAX_RETRIES).
+    Rino 2026-07-06: default was 2, which STACKED with the failover client's own
+    per-rung retry (_NARASI_RUNG_ATTEMPTS inside make_narasi_client → _create).
+    Every worker/polish call already flows through the aggregator-failover client
+    (KIE → LaoZhang → AtlasCloud, each rung retried NARASI_RUNG_ATTEMPTS times),
+    so run_worker's OUTER retry re-walked the WHOLE chain — re-hitting a
+    known-dead KIE on every outer attempt. That double-layer is what produced
+    "4× KIE fail" for one polish. Retry now lives in EXACTLY ONE place:
+    NARASI_RUNG_ATTEMPTS in the failover client. Set NARASI_WORKER_MAX_RETRIES>0
+    only if you want the old outer re-walk back.
+    The whole call (per attempt) is bounded by `timeout` seconds via
+    asyncio.wait_for.
     """
     model = worker.resolved_model()
     ceiling = max_tokens_for(model)
