@@ -714,7 +714,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     try:
         from laozhang_api import (_narasi_critique_enabled, _narasi_critique_revise_enabled,
                                   _narasi_consistency_critique, _narasi_consistency_revise,
-                                  NARASI_CRITIQUE_MIN_CHAPTERS)
+                                  NARASI_CRITIQUE_MIN_CHAPTERS, NARASI_CRITIQUE_MODEL)
         # Chapter count for the MIN_CHAPTERS guard. Count the GENERATED chapters
         # (result["chapters"]); fall back to the request outline (body["chapters"], empty under
         # orch_mode=auto); then — the robust backstop — count chapter headings in the delivered
@@ -730,9 +730,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         _crit_on = _narasi_critique_enabled()
         if _crit_on and _cbk and _nch >= NARASI_CRITIQUE_MIN_CHAPTERS:
             _cmodel = (body.get("model") or "")
+            # Instrument exact per-call wall-clock so NARASI_CRITIQUE_TIMEOUT / _REVISE_TIMEOUT can
+            # be calibrated from real opus latency (there is no other start-marker in the logs).
+            _t_crit0 = time.monotonic()
             _cq, _cqc = await _narasi_consistency_critique(
                 _cbk, style, language, model=_cmodel,
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+            _t_crit = time.monotonic() - _t_crit0
+            _t_rev = 0.0
             # Fold the critic's cost into the sink so _settle actually bills it (the call
             # meters charge=False and RETURNS the credit — the classic path does the same
             # via `_meter_actual += _cqc`). Without this the platform eats the cost and
@@ -743,9 +748,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             _cbad = [v for v in (_cq.get("violations") or [])
                      if str(v.get("severity", "")).lower() in ("critical", "high")]
             if _narasi_critique_revise_enabled() and _cbad:
+                _t_rev0 = time.monotonic()
                 _crev, _crevc = await _narasi_consistency_revise(
                     _cbk, _cq, style, language, model=_cmodel,
                     tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                _t_rev = time.monotonic() - _t_rev0
                 if sink is not None and _crevc:
                     sink.credits += int(_crevc)
                 if _crev and _crev != _cbk:
@@ -753,9 +760,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _cpay = dict(_cq)
                     _cpay["revised"] = True
             result["critique"] = _cpay
-            log.info("narration job %s: consistency critic RAN — score=%s, %d violation(s)%s",
+            log.info("narration job %s: consistency critic RAN — score=%s, %d violation(s)%s "
+                     "[critic=%.1fs revise=%.1fs model=%s]",
                      job_id, _cq.get("score"), len(_cq.get("violations") or []),
-                     " -> REVISED" if _cpay.get("revised") else " (report-only)")
+                     " -> REVISED" if _cpay.get("revised") else " (report-only)",
+                     _t_crit, _t_rev, (NARASI_CRITIQUE_MODEL or _cmodel or "cheap"))
         else:
             log.info("narration job %s: consistency critic SKIPPED "
                      "(enabled=%s, chapters=%s, min=%s, book_chars=%s)",
