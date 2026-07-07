@@ -715,41 +715,51 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         from laozhang_api import (_narasi_critique_enabled, _narasi_critique_revise_enabled,
                                   _narasi_consistency_critique, _narasi_consistency_revise,
                                   NARASI_CRITIQUE_MIN_CHAPTERS)
-        # MIN_CHAPTERS guard so tiny/1-chapter jobs don't pay for a whole-book critic call.
-        # Count the GENERATED chapters (result["chapters"], like every sibling gate in this
-        # function) — NOT the request outline body["chapters"], which is EMPTY under
-        # orch_mode=auto (the orchestrator builds its own outline). The old body-count was 0
-        # for auto jobs, so the critic was silently skipped for every auto book/video job
-        # even with NARASI_CRITIQUE_ENABLED=1. Fall back to the outline where it carries one.
-        _nch = len(result.get("chapters") or []) or len(body.get("chapters") or [])
-        if _narasi_critique_enabled() and _nch >= NARASI_CRITIQUE_MIN_CHAPTERS:
-            _ckey = "book" if result.get("book") else "output"
-            _cbk = result.get(_ckey) or ""
-            if _cbk:
-                _cmodel = (body.get("model") or "")
-                _cq, _cqc = await _narasi_consistency_critique(
-                    _cbk, style, language, model=_cmodel,
+        # Chapter count for the MIN_CHAPTERS guard. Count the GENERATED chapters
+        # (result["chapters"]); fall back to the request outline (body["chapters"], empty under
+        # orch_mode=auto); then — the robust backstop — count chapter headings in the delivered
+        # book, so the critic can NEVER silently skip a real multi-chapter book just because a
+        # chapter LIST didn't survive to here. Observability: this block had NO success/skip log,
+        # so "no critique line" could not distinguish ran-silently from skipped — now it always
+        # logs exactly which happened and why.
+        _ckey = "book" if result.get("book") else "output"
+        _cbk = result.get(_ckey) or ""
+        _nch = (len(result.get("chapters") or [])
+                or len(body.get("chapters") or [])
+                or _cbk.count("\n## "))
+        _crit_on = _narasi_critique_enabled()
+        if _crit_on and _cbk and _nch >= NARASI_CRITIQUE_MIN_CHAPTERS:
+            _cmodel = (body.get("model") or "")
+            _cq, _cqc = await _narasi_consistency_critique(
+                _cbk, style, language, model=_cmodel,
+                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+            # Fold the critic's cost into the sink so _settle actually bills it (the call
+            # meters charge=False and RETURNS the credit — the classic path does the same
+            # via `_meter_actual += _cqc`). Without this the platform eats the cost and
+            # usage_logs won't reconcile against the settled amount.
+            if sink is not None and _cqc:
+                sink.credits += int(_cqc)
+            _cpay = _cq
+            _cbad = [v for v in (_cq.get("violations") or [])
+                     if str(v.get("severity", "")).lower() in ("critical", "high")]
+            if _narasi_critique_revise_enabled() and _cbad:
+                _crev, _crevc = await _narasi_consistency_revise(
+                    _cbk, _cq, style, language, model=_cmodel,
                     tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
-                # Fold the critic's cost into the sink so _settle actually bills it (the call
-                # meters charge=False and RETURNS the credit — the classic path does the same
-                # via `_meter_actual += _cqc`). Without this the platform eats the cost and
-                # usage_logs won't reconcile against the settled amount.
-                if sink is not None and _cqc:
-                    sink.credits += int(_cqc)
-                _cpay = _cq
-                _cbad = [v for v in (_cq.get("violations") or [])
-                         if str(v.get("severity", "")).lower() in ("critical", "high")]
-                if _narasi_critique_revise_enabled() and _cbad:
-                    _crev, _crevc = await _narasi_consistency_revise(
-                        _cbk, _cq, style, language, model=_cmodel,
-                        tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
-                    if sink is not None and _crevc:
-                        sink.credits += int(_crevc)
-                    if _crev and _crev != _cbk:
-                        result[_ckey] = _crev
-                        _cpay = dict(_cq)
-                        _cpay["revised"] = True
-                result["critique"] = _cpay
+                if sink is not None and _crevc:
+                    sink.credits += int(_crevc)
+                if _crev and _crev != _cbk:
+                    result[_ckey] = _crev
+                    _cpay = dict(_cq)
+                    _cpay["revised"] = True
+            result["critique"] = _cpay
+            log.info("narration job %s: consistency critic RAN — score=%s, %d violation(s)%s",
+                     job_id, _cq.get("score"), len(_cq.get("violations") or []),
+                     " -> REVISED" if _cpay.get("revised") else " (report-only)")
+        else:
+            log.info("narration job %s: consistency critic SKIPPED "
+                     "(enabled=%s, chapters=%s, min=%s, book_chars=%s)",
+                     job_id, _crit_on, _nch, NARASI_CRITIQUE_MIN_CHAPTERS, len(_cbk))
     except Exception as e:  # noqa: BLE001
         log.warning("consistency critic (video path) failed (non-fatal): %s", e)
 
