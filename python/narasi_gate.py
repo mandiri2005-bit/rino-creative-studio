@@ -1591,6 +1591,71 @@ def instruction_residue_scan(text: str) -> dict[str, Any]:
     return {"instruction_residue_hits": len(samples), "instruction_residue_samples": samples}
 
 
+# ── Number-format consistency (narasi "The Version He Loved", 2026-07-07). Report-only. A
+#    single piece rendered the SAME 42-billion figure three ways — "forty-two billion won"
+#    (spelled), "8-12 billion" (digits), "₩42 billion" (symbol). Scoped to LARGE-MAGNITUDE
+#    currency (billion/million/trillion) so ordinary small numbers ("three works", "nine
+#    hours") never trip it; flags only when ≥2 render styles co-occur. ──
+_NUM_WORD = (r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|"
+             r"fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|"
+             r"fifty|sixty|seventy|eighty|ninety|hundred)")
+_NUM_MAG = r"(?:billion|million|trillion)"
+_NUM_STYLE_RX = {
+    "spelled": re.compile(r"\b" + _NUM_WORD + r"(?:[-\s]" + _NUM_WORD + r")*\s+" + _NUM_MAG + r"\b", re.I),
+    "digits":  re.compile(r"(?<![\w$₩€£¥])\d[\d,.]*(?:\s*[-–—]\s*\d[\d,.]*)?\s+" + _NUM_MAG + r"\b", re.I),
+    "symbol":  re.compile(r"[₩$€£¥]\s?\d[\d,.]*\s*" + _NUM_MAG + r"?\b"),
+}
+
+
+def number_format_scan(text: str) -> dict[str, Any]:
+    """Report-only: flag when a piece mixes ≥2 large-magnitude/currency render styles
+    (spelled / digits / currency-symbol) for the same class of figure."""
+    if not text:
+        return {"number_format_styles": 0, "number_format_samples": []}
+    found: dict[str, str] = {}
+    for label, rx in _NUM_STYLE_RX.items():
+        m = rx.search(text)
+        if m:
+            found[label] = re.sub(r"\s+", " ", m.group(0).strip())[:40]
+    if len(found) < 2:
+        return {"number_format_styles": 0, "number_format_samples": []}
+    return {"number_format_styles": len(found),
+            "number_format_samples": [f"{k}: {v}" for k, v in found.items()]}
+
+
+# ── Korean-ceramics fact-check (narasi "The Version He Loved" lens, 2026-07-07). Report-only,
+#    high-precision domain list for the K-drama / Korean-art lane. "celadon moon jar" is a
+#    category error the expert protagonist would never make — a moon jar (달항아리) is white
+#    porcelain (baekja); celadon (청자) is Goryeo green-glazed ware. Only clear cross-ware
+#    contradictions fire; a correct piece is untouched. ──
+_CERAMICS_ERRORS = [
+    (re.compile(r"celadon\s+moon\s+jar", re.I),
+     "moon jar (달항아리) is white porcelain (baekja), not celadon (Goryeo green ware)"),
+    (re.compile(r"(?:goryeo|gory[oŏ])\s+moon\s+jar", re.I),
+     "moon jars are Joseon-era white porcelain, not Goryeo"),
+    (re.compile(r"blue[-\s]and[-\s]white\s+celadon", re.I),
+     "blue-and-white is porcelain (cheonghwa baekja), not celadon"),
+    (re.compile(r"celadon\s+(?:baekja|white\s+porcelain)", re.I),
+     "celadon and white porcelain (baekja) are different wares"),
+    (re.compile(r"white[-\s]porcelain\s+celadon", re.I),
+     "white porcelain and celadon are different wares"),
+]
+
+
+def ceramics_factcheck_scan(text: str) -> dict[str, Any]:
+    """Report-only: flag clear Korean-ceramics category errors (celadon vs white porcelain
+    vs blue-and-white; Goryeo vs Joseon moon jar)."""
+    if not text:
+        return {"ceramics_error_hits": 0, "ceramics_error_samples": []}
+    hits: list[str] = []
+    for rx, why in _CERAMICS_ERRORS:
+        m = rx.search(text)
+        if m:
+            frag = re.sub(r"\s+", " ", m.group(0).strip())
+            hits.append(f"“{frag}” — {why}")
+    return {"ceramics_error_hits": len(hits), "ceramics_error_samples": hits[:5]}
+
+
 # R-FG11 narrator-opening formulas: canned rhetorical openers per language.
 # Extend by adding new lang keys; each value is a list of anchored regex patterns.
 _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
@@ -1805,6 +1870,17 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["instruction_residue_samples"] = _ir["instruction_residue_samples"]
             if _ir["instruction_residue_hits"]:
                 stats["instruction_residue_flag"] = True
+            # Number-format consistency + Korean-ceramics fact-check (TVHL lens).
+            _nf = number_format_scan(out)
+            stats["number_format_styles"] = _nf["number_format_styles"]
+            stats["number_format_samples"] = _nf["number_format_samples"]
+            if _nf["number_format_styles"]:
+                stats["number_format_flag"] = True
+            _cx = ceramics_factcheck_scan(out)
+            stats["ceramics_error_hits"] = _cx["ceramics_error_hits"]
+            stats["ceramics_error_samples"] = _cx["ceramics_error_samples"]
+            if _cx["ceramics_error_hits"]:
+                stats["ceramics_error_flag"] = True
         survivors = terminal_scan(out)
         if survivors:
             # Never ship a directive bracket: deterministic last-resort strip.
