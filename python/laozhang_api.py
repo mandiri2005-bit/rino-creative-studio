@@ -6996,7 +6996,12 @@ DALANG_CRITIC_GATE         = float(os.getenv("DALANG_CRITIC_GATE", "8.5"))
 # Empty NARASI_CRITIQUE_MODEL ⟹ reuse the chapter model; set it (e.g. claude-opus-4-6) for a
 # stronger critic. Runs only for books ≥ MIN chapters. Env-tunable.
 NARASI_CRITIQUE_MODEL        = os.getenv("NARASI_CRITIQUE_MODEL", "").strip()
-NARASI_CRITIQUE_MAX_CHARS    = int(os.getenv("NARASI_CRITIQUE_MAX_CHARS", "80000"))
+# Whole-book critic input cap. Raised 80k→300k: the critic's bottleneck is INPUT (context
+# window), not output — its verdict JSON is tiny. A full 40k-word book (~240k chars ≈ 53k
+# input tokens) fits a large-context critic model (gemini 1M, claude 200k+) in ONE call, so
+# no windowing is needed — the critic sees the entire book for true cross-chapter consistency.
+# (If NARASI_CRITIQUE_MODEL is a small-context model it will error → the critic fails safe.)
+NARASI_CRITIQUE_MAX_CHARS    = int(os.getenv("NARASI_CRITIQUE_MAX_CHARS", "300000"))
 NARASI_CRITIQUE_MIN_CHAPTERS = int(os.getenv("NARASI_CRITIQUE_MIN_CHAPTERS", "3"))
 NARASI_CRITIQUE_GATE         = float(os.getenv("NARASI_CRITIQUE_GATE", "8.5"))
 # Slice 5: repetition-guard thresholds — 5-gram Jaccard (deterministic) + Qdrant cosine.

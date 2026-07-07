@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Any, Optional, Sequence
 
@@ -663,155 +664,162 @@ async def narrate_chapters(
 # Shared by narrate_chapters() and the router. A standalone helper so the router
 # can apply the same semantics to any strategy's output.
 # ===========================================================================
+def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool = False):
+    """Build (instruction, synthesize-role) for a polish pass. is_chunk swaps 'book'→'section'
+    so a chunk pass does not think it is the whole book."""
+    unit = "section of a multi-chapter narrative" if is_chunk else "multi-chapter narrative"
+    ret = "edited section" if is_chunk else "edited book"
+    if mode == "heavy":
+        instruction = (
+            f"You are the editor-in-chief doing a HEAVY final edit of a {unit} about \"{topic}\". "
+            "Reconcile any contradictions, remove cross-chapter repetition and re-introductions, "
+            "tighten flabby passages, and hold ONE consistent voice and tense throughout. PRESERVE "
+            "every concrete fact, name, date, number and quote exactly. Keep every chapter-heading "
+            "line (each begins with `## `) exactly as given — do not remove, rename, renumber, "
+            "translate or move them, and never write a new heading of your own. Make the narration "
+            f"read as ONE seamless, continuous flow. Return ONLY the {ret} in {language}, no notes.")
+        return instruction, "synthesize"
+    instruction = (
+        f"You are the editor-in-chief doing a LIGHT final pass of a {unit} about \"{topic}\". "
+        "ONLY smooth the seams between chapters, remove obvious cross-chapter repetition, and keep "
+        "the register consistent. Do NOT rewrite content, do NOT change any fact, name, date or "
+        "number, do NOT shorten the text. Keep every chapter-heading line (each begins with `## `) "
+        "exactly as given — do not remove, rename, renumber, translate or move them, and never "
+        f"write a new heading of your own. Return ONLY the lightly-edited {ret} in {language}.")
+    return instruction, "polish"
+
+
+_POLISH_CHAPTER_SPLIT_RX = re.compile(r"(?m)(?=^## )")
+
+
+def _split_into_chunks(book: str, chunk_words: int):
+    """Split the assembled book into chapter-aligned chunks each <= chunk_words words. Splits
+    ONLY at '## ' chapter headings (never mid-chapter); a single chapter larger than chunk_words
+    becomes its own oversized chunk. Returns [book] when there is nothing to split."""
+    parts = [p for p in _POLISH_CHAPTER_SPLIT_RX.split(book) if p.strip()]
+    if len(parts) <= 1:
+        return [book]
+    chunks, cur, cur_w = [], [], 0
+    for p in parts:
+        w = len(p.split())
+        if cur and cur_w + w > chunk_words:
+            chunks.append("\n\n".join(c.strip() for c in cur))
+            cur, cur_w = [], 0
+        cur.append(p)
+        cur_w += w
+    if cur:
+        chunks.append("\n\n".join(c.strip() for c in cur))
+    return chunks
+
+
+async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink, task_id):
+    """Polish ONE blob (whole book or a chunk) via synthesize. Returns (out, ok). Post-
+    truncation guard (>=75% words) keeps the original on a cut/degraded pass. Never raises."""
+    wrapped = [{"ok": True, "output": text, "model": model}]
+    _t = time.monotonic()
+    res = await synthesize(instruction, wrapped, role=role, model=model, timeout=timeout,
+                           telemetry_sink=telemetry_sink, task_id=task_id)
+    _tel = res.get("telemetry") or {}
+    log.info("_polish_reduce: %s role=%s model=%s served_by=%s ok=%s in %.1fs (tok_in=%s tok_out=%s)",
+             task_id, role, model, _tel.get("provider") or "?", res.get("ok"),
+             time.monotonic() - _t, _tel.get("tokens_in"), _tel.get("tokens_out"))
+    if res.get("ok") and res.get("output"):
+        out = str(res["output"])
+        if len(out.split()) < int(len(text.split()) * 0.75):
+            log.warning("_polish_reduce: %s output %d words < 75%% of %d — discarding (truncation guard)",
+                        task_id, len(out.split()), len(text.split()))
+            return text, False
+        return out, True
+    log.warning("_polish_reduce: %s failed (%s) — keeping unpolished", task_id, res.get("error"))
+    return text, False
+
+
 async def _polish_reduce(
     *,
     book: str,
     topic: str,
-    style: Optional[str],
+    style,
     language: str,
     polish: str,
     manager_model: str,
     timeout: float,
-    telemetry_sink: Optional[Any],
+    telemetry_sink,
     any_failures: bool = False,
-) -> tuple[str, bool]:
-    """Apply the 3-mode polish reducer to an assembled book.
-
-    Modes:
-      * "none"  — return the book unchanged (no manager spend).
-      * "light" — DEFAULT. One cheap-but-careful pass: smooth seams between
-        chapters, kill cross-chapter repetition, lock the register — WITHOUT
-        rewriting content or touching facts. Uses synthesize(role="polish").
-      * "heavy" — a stronger editorial pass (synthesize role="merge" semantics:
-        reconcile contradictions, remove duplication, tighten throughout) while
-        still preserving every concrete fact/name/date/number.
-
-    If any chapter failed, we SKIP polishing (placeholders would confuse the
-    editor and waste spend) and return the book with its visible [CHAPTER … FAILED]
-    markers intact. Never raises.
-    """
+):
+    """3-mode polish reducer (none/light/heavy). When the assembled book exceeds the polish
+    model's single-call OUTPUT ceiling, CHUNK it — split by chapter into <=NARASI_POLISH_CHUNK_WORDS
+    groups, polish each, rejoin — instead of skipping, so a long book (up to NARASI_POLISH_MAX_WORDS,
+    default the 40k generation cap) still gets a full pass. Cross-chunk boundaries are always
+    chapter breaks. Each chunk has its own >=75%-word truncation guard. Never raises."""
     mode = (polish or "light").strip().lower()
     if mode == "none" or not book.strip():
         return book, False
     if any_failures:
         log.info("_polish_reduce: skipping polish — book has failed-chapter placeholders")
         return book, False
-
-    # NARASI_POLISH_MODEL (env, python svc): run the polish/merge pass on a cheaper
-    # editor-tier model than the worker (polish is editing, not writing — it doesn't
-    # need the full worker model). Unset = today's behavior (manager_model = worker).
-    # Restores the cost lever the removed Model-Manager picker used to provide,
-    # server-side per the server-driven-model direction (Rino 2026-07-04).
     _env_polish = (os.environ.get("NARASI_POLISH_MODEL") or "").strip()
     if _env_polish:
         manager_model = _env_polish
 
-    # CC v3 anti-truncate guard (pre): the polish returns the WHOLE book in one call, so a
-    # book beyond the manager's output ceiling (~32k tokens ≈ 22k words) would come back
-    # silently truncated and REPLACE the full text. Skip polish for big books instead.
-    _pmax = int(os.environ.get("NARASI_POLISH_MAX_WORDS", "15000"))
+    # Hard upper bound (chunking handles everything below it). Default = the 40k generation cap.
+    _pmax = int(os.environ.get("NARASI_POLISH_MAX_WORDS", "40000"))
     _book_words = len(book.split())
     if _book_words > _pmax:
-        log.info("_polish_reduce: skipping polish — book %d words > NARASI_POLISH_MAX_WORDS %d "
-                 "(output-ceiling truncation risk)", _book_words, _pmax)
+        log.info("_polish_reduce: skipping polish — book %d words > NARASI_POLISH_MAX_WORDS %d",
+                 _book_words, _pmax)
         return book, False
-    # DYNAMIC ceiling guard: the static cap above assumes a 32k-token editor, but the
-    # ACTUAL polish model may be far smaller — sonnet's 8192-token ceiling ≈ 5,650 words,
-    # so a ~5,200-word book comes back at exactly 8192 tokens (truncated) and the post-
-    # guard discards it: ~3 minutes of guaranteed-wasted work on every long book
-    # (itaatga7 + 758k9iqa both hit this). Skip polish when the book can't round-trip
-    # through the polish model's real output ceiling.
+
+    instruction, role = _polish_instruction(mode, topic, language)
+
+    # Does the WHOLE book round-trip through the polish model's output ceiling in one call?
     try:
         from .core import max_tokens_for as _mt4
-        _need = int(_book_words * 1.45 * 1.08)     # tokens to reproduce the book + slack
-        _ceil = int(_mt4(manager_model or "") or 0)
-        if _ceil and _need > int(_ceil * 0.95):
-            # B (2026-07-07): skipping polish on every long book leaves it with ZERO whole-book
-            # pass (bed-of-orchid part-2: 8511 tok > gemini-3.5-flash 8192 → no polish at all).
-            # Promote to a bigger-ceiling editor if one is configured AND actually fits, instead
-            # of skipping. NARASI_POLISH_BIG_MODEL (env) is the opt-in lever; unset ⟹ today's
-            # skip behavior (byte-identical).
-            _big = (os.environ.get("NARASI_POLISH_BIG_MODEL") or "").strip()
-            _big_ceil = int(_mt4(_big) or 0) if _big else 0
-            if _big and _big_ceil and _need <= int(_big_ceil * 0.95):
-                log.info("_polish_reduce: book needs ~%d tokens > %s ceiling %d — promoting to "
-                         "%s (ceiling %d) instead of skipping", _need, manager_model, _ceil, _big, _big_ceil)
-                manager_model = _big
-            else:
-                log.info("_polish_reduce: skipping polish — book needs ~%d tokens but %s ceiling "
-                         "is %d (guaranteed truncation)", _need, manager_model, _ceil)
-                return book, False
     except Exception:  # noqa: BLE001
-        pass
+        def _mt4(_m):
+            return 0
+    _ceil = int(_mt4(manager_model or "") or 0)
+    _need = int(_book_words * 1.45 * 1.08)   # tokens to reproduce the book + slack
+    if (not _ceil) or _need <= int(_ceil * 0.95):
+        return await _polish_one(book, instruction=instruction, role=role, model=manager_model,
+                                 timeout=timeout, telemetry_sink=telemetry_sink, task_id=f"polish:{mode}")
 
-    if mode == "heavy":
-        instruction = (
-            "You are the editor-in-chief doing a HEAVY final edit of a multi-chapter "
-            f"narrative about \"{topic}\". Reconcile any contradictions, remove "
-            "cross-chapter repetition and re-introductions, tighten flabby passages, "
-            "and hold ONE consistent voice and tense for the whole book. PRESERVE "
-            "every concrete fact, name, date, number and quote exactly. Keep every "
-            "chapter-heading line (each begins with `## `) exactly as given — do not "
-            "remove, rename, renumber, translate or move them, and never write a new "
-            "heading of your own. Between and within those sections, make the "
-            "narration read as ONE seamless, continuous flow: smooth every transition "
-            "so nothing reads as an abrupt break. Return ONLY the "
-            f"edited book in {language}, no notes or preamble."
-        )
-        # A16: NOT "merge" — synthesize() short-circuits role=="merge" with a single input
-        # and returns the book verbatim, so heavy polish silently no-ops while reporting
-        # polished=True. "synthesize" runs the actual editor pass on the one whole-book part.
-        role = "synthesize"
-    else:  # "light" (default) and any unknown value
-        instruction = (
-            "You are the editor-in-chief doing a LIGHT final pass of a multi-chapter "
-            f"narrative about \"{topic}\". ONLY smooth the seams between chapters, "
-            "remove obvious cross-chapter repetition, and keep the register "
-            "consistent. Do NOT rewrite content, do NOT change any fact, name, date "
-            "or number, do NOT shorten the book. Keep every chapter-heading line "
-            "(each begins with `## `) exactly as given — do not remove, rename, "
-            "renumber, translate or move them, and never write a new heading of your "
-            "own. Make the narration flow as ONE seamless, uninterrupted piece — smooth "
-            "the transitions between sections so nothing reads as an abrupt break. "
-            f"Return ONLY the lightly-edited book in {language}."
-        )
-        role = "polish"
+    # Too big for one call → CHUNK by chapter (default on; NARASI_POLISH_CHUNK=0 disables).
+    if str(os.environ.get("NARASI_POLISH_CHUNK", "1")).strip().lower() not in ("0", "false", "no", "off"):
+        _fit_words = int((_ceil * 0.95) / (1.45 * 1.08)) if _ceil else 18000   # words that fit one call
+        # Cap the chunk to what ACTUALLY fits the ceiling — no floor. A floor would force
+        # chunks bigger than a small-ceiling model can emit → every chunk truncates + is
+        # discarded (guaranteed-wasted spend). Better: smaller chunks that each round-trip.
+        chunk_words = min(int(os.environ.get("NARASI_POLISH_CHUNK_WORDS", "18000")), _fit_words)
+        chunks = _split_into_chunks(book, chunk_words)
+        if len(chunks) > 1:
+            c_instr, c_role = _polish_instruction(mode, topic, language, is_chunk=True)
+            polished, any_ok = [], False
+            for i, ch in enumerate(chunks):
+                _o, _ok = await _polish_one(ch, instruction=c_instr, role=c_role, model=manager_model,
+                                            timeout=timeout, telemetry_sink=telemetry_sink,
+                                            task_id=f"polish:{mode}:chunk{i + 1}/{len(chunks)}")
+                polished.append(_o)
+                any_ok = any_ok or _ok
+            rejoined = "\n\n".join(polished)
+            # Align with the per-chunk 75% guard: heavy mode legitimately compresses, so a
+            # rejoin in [75%,85%) is real editing, not truncation — an 85% floor would nuke a
+            # valid heavy polish that every chunk already accepted.
+            if len(rejoined.split()) < int(_book_words * 0.75):   # lost too much → keep original
+                log.warning("_polish_reduce: chunked polish lost >25%% words — discarding, keeping original")
+                return book, False
+            log.info("_polish_reduce: chunked polish done — %d chunks (<=%d words each), applied=%s",
+                     len(chunks), chunk_words, any_ok)
+            return rejoined, any_ok
 
-    # synthesize() expects a list of worker-result dicts; wrap the whole book as one.
-    wrapped = [{"ok": True, "output": book, "model": manager_model}]
-    _t_synth = time.monotonic()
-    res = await synthesize(
-        instruction,
-        wrapped,
-        role=role,
-        model=manager_model,
-        timeout=timeout,
-        telemetry_sink=telemetry_sink,
-        task_id=f"polish:{mode}",
-    )
-    # Honest polish telemetry (Rino 2026-07-06): the RESOLVED model (manager_model
-    # already carries the NARASI_POLISH_MODEL override) + which failover rung
-    # actually served it (provider = kie/laozhang/atlascloud/vertex) + wall-time.
-    # This is where opus-vs-sonnet and failover overhead become visible per call.
-    _tel = res.get("telemetry") or {}
-    log.info("_polish_reduce: role=%s model=%s served_by=%s ok=%s in %.1fs "
-             "(tok_in=%s tok_out=%s)",
-             role, manager_model, _tel.get("provider") or "?", res.get("ok"),
-             time.monotonic() - _t_synth,
-             _tel.get("tokens_in"), _tel.get("tokens_out"))
-    if res.get("ok") and res.get("output"):
-        # CC v3 anti-truncate guard (post): a truncated polish still returns ok=True. If the
-        # "polished" book lost >25% of its words, it was cut by the output ceiling (or the
-        # editor over-deleted) — discard it and keep the full original.
-        _out = str(res["output"])
-        if len(_out.split()) < int(_book_words * 0.75):
-            log.warning("_polish_reduce: polished output %d words < 75%% of book %d — "
-                        "discarding polish (truncation guard)", len(_out.split()), _book_words)
-            return book, False
-        return _out, True
-    # Polish failed — return the unpolished book rather than nothing.
-    log.warning("_polish_reduce: polish pass failed (%s) — returning unpolished book",
-                res.get("error"))
+    # Chunking disabled or unsplittable (one giant chapter) → promote-or-skip fallback.
+    _big = (os.environ.get("NARASI_POLISH_BIG_MODEL") or "").strip()
+    _big_ceil = int(_mt4(_big) or 0) if _big else 0
+    if _big and _big_ceil and _need <= int(_big_ceil * 0.95):
+        log.info("_polish_reduce: promoting to %s (ceiling %d) instead of skipping", _big, _big_ceil)
+        return await _polish_one(book, instruction=instruction, role=role, model=_big,
+                                 timeout=timeout, telemetry_sink=telemetry_sink, task_id=f"polish:{mode}")
+    log.info("_polish_reduce: skipping polish — book needs ~%d tokens but %s ceiling is %d "
+             "(no chunking, no big-model)", _need, manager_model, _ceil)
     return book, False
 
 
