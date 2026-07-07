@@ -715,9 +715,13 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         from laozhang_api import (_narasi_critique_enabled, _narasi_critique_revise_enabled,
                                   _narasi_consistency_critique, _narasi_consistency_revise,
                                   NARASI_CRITIQUE_MIN_CHAPTERS)
-        # Mirror the classic caller's MIN_CHAPTERS guard so tiny/1-chapter jobs don't pay for
-        # a whole-book critic call (body["chapters"] is the outline chapter list).
-        _nch = len(body.get("chapters") or [])
+        # MIN_CHAPTERS guard so tiny/1-chapter jobs don't pay for a whole-book critic call.
+        # Count the GENERATED chapters (result["chapters"], like every sibling gate in this
+        # function) — NOT the request outline body["chapters"], which is EMPTY under
+        # orch_mode=auto (the orchestrator builds its own outline). The old body-count was 0
+        # for auto jobs, so the critic was silently skipped for every auto book/video job
+        # even with NARASI_CRITIQUE_ENABLED=1. Fall back to the outline where it carries one.
+        _nch = len(result.get("chapters") or []) or len(body.get("chapters") or [])
         if _narasi_critique_enabled() and _nch >= NARASI_CRITIQUE_MIN_CHAPTERS:
             _ckey = "book" if result.get("book") else "output"
             _cbk = result.get(_ckey) or ""
