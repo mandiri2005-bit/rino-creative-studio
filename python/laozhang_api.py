@@ -7008,11 +7008,18 @@ NARASI_CRITIQUE_GATE         = float(os.getenv("NARASI_CRITIQUE_GATE", "8.5"))
 # critic model hangs the ENTIRE job in GATES forever (the bible already has run_worker's 120s
 # guard; these did NOT) — confirmed 2026-07-07: a stalled critic left a job stuck after MAP+POLISH
 # finished. On timeout the critic fails safe (empty verdict → gate skips) and revise keeps the
-# original — a slow model degrades to "no gate", never to "stuck". Bounds TOTAL time incl. the
-# json_object→plain retry, and is also passed as the per-request httpx timeout so the leaked
-# to_thread thread dies too rather than running to the client's default ceiling.
-NARASI_CRITIQUE_TIMEOUT      = float(os.getenv("NARASI_CRITIQUE_TIMEOUT", "90"))
-NARASI_REVISE_TIMEOUT        = float(os.getenv("NARASI_REVISE_TIMEOUT", "180"))
+# original — a slow model degrades to "no gate", never to "stuck". The SAME value is used for the
+# outer asyncio.wait_for AND the per-request httpx timeout= (homogenized — no asymmetric 2×+10
+# ceiling): a healthy opus-4.6 critic is ~45-60s / revise ~90-120s, so 120s / 240s = ~2× headroom
+# yet still finite. A fast-failed json→plain retry fits inside the single ceiling; a genuinely hung
+# first attempt simply bails at the ceiling (degraded → skip) instead of paying for a 2nd hang.
+NARASI_CRITIQUE_TIMEOUT      = float(os.getenv("NARASI_CRITIQUE_TIMEOUT", "120"))
+NARASI_REVISE_TIMEOUT        = float(os.getenv("NARASI_REVISE_TIMEOUT", "240"))
+# Cheap-model side-calls (fact-extract, rolling-summary, register-gate, regime-mismatch scan) run
+# on book[:12000] with tiny output — a healthy call is a few seconds. The shared _narasi_cheap_call
+# primitive was UNGUARDED (bare to_thread); a degraded cheap model could hang every gate that uses
+# it up to the SDK default (~600s). Same wait_for + per-request timeout= pattern; 60s is generous.
+NARASI_CHEAP_TIMEOUT         = float(os.getenv("NARASI_CHEAP_TIMEOUT", "60"))
 # Slice 5: repetition-guard thresholds — 5-gram Jaccard (deterministic) + Qdrant cosine.
 DALANG_DEDUP_THRESHOLD     = float(os.getenv("DALANG_DEDUP_THRESHOLD", "0.18"))
 DALANG_DEDUP_SEM_THRESHOLD = float(os.getenv("DALANG_DEDUP_SEM_THRESHOLD", "0.86"))
@@ -7210,14 +7217,18 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
             kw = dict(model=resolved,
                       messages=[{"role": "system", "content": system},
                                 {"role": "user", "content": user}],
-                      temperature=temperature, max_tokens=safe_max, stream=False)
+                      temperature=temperature, max_tokens=safe_max, stream=False,
+                      timeout=NARASI_CHEAP_TIMEOUT)
             if use_fmt:
                 kw["response_format"] = {"type": "json_object"}
             return client.chat.completions.create(**kw)
-        try:
-            resp = await asyncio.to_thread(lambda: _call(json_mode))
-        except Exception:
-            resp = await asyncio.to_thread(lambda: _call(False))   # relay rejected json_object
+        async def _run():
+            try:
+                return await asyncio.to_thread(lambda: _call(json_mode))
+            except Exception:
+                return await asyncio.to_thread(lambda: _call(False))   # relay rejected json_object
+        # Guard: a degraded cheap model must not hang every gate that shares this primitive.
+        resp = await asyncio.wait_for(_run(), timeout=NARASI_CHEAP_TIMEOUT)
         cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
         return (resp.choices[0].message.content or "").strip(), int(cr)
     except Exception as _e:
@@ -7250,10 +7261,11 @@ async def _narasi_continuation(client, model, resolved_model, safe_max, _msgs, t
                  f"memperdalam adegan/argumen yang sedang berjalan. Bahasa & gaya identik.")},
         ]
         try:
-            resp = await asyncio.to_thread(lambda: client.chat.completions.create(
-                model=resolved_model, messages=cont_msgs, max_tokens=safe_max, stream=False))
+            resp = await asyncio.wait_for(asyncio.to_thread(lambda: client.chat.completions.create(
+                model=resolved_model, messages=cont_msgs, max_tokens=safe_max, stream=False,
+                timeout=DALANG_CHAPTER_LLM_TIMEOUT)), timeout=DALANG_CHAPTER_LLM_TIMEOUT)
         except Exception:
-            break
+            break   # incl. TimeoutError: a hung continuation stops the loop, keeps the text so far
         if not getattr(resp, "choices", None):
             break
         choice   = resp.choices[0]
@@ -7374,10 +7386,11 @@ async def _narasi_revise(client, model, resolved_model, safe_max, _msgs, text, c
              f"Tulis ulang bab LENGKAP (bukan catatan).")},
     ]
     try:
-        resp = await asyncio.to_thread(lambda: client.chat.completions.create(
-            model=resolved_model, messages=rev_msgs, max_tokens=safe_max, stream=False))
+        resp = await asyncio.wait_for(asyncio.to_thread(lambda: client.chat.completions.create(
+            model=resolved_model, messages=rev_msgs, max_tokens=safe_max, stream=False,
+            timeout=DALANG_CHAPTER_LLM_TIMEOUT)), timeout=DALANG_CHAPTER_LLM_TIMEOUT)
     except Exception:
-        return text, 0
+        return text, 0   # incl. TimeoutError: a hung revise keeps the original chapter
     if not getattr(resp, "choices", None):   # empty choices (content-filter/moderation) → keep original
         return text, 0
     _cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
@@ -7468,7 +7481,7 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
             except Exception:
                 return await asyncio.to_thread(lambda: _call(False))
         # Bound TOTAL time (both attempts) so a hung model can't stall the job in GATES forever.
-        resp = await asyncio.wait_for(_run(), timeout=NARASI_CRITIQUE_TIMEOUT * 2 + 10)
+        resp = await asyncio.wait_for(_run(), timeout=NARASI_CRITIQUE_TIMEOUT)
         cr  = (await _log_narasi_usage(tenant_id, user_id, crit_model, resp, job_id=job_uuid) or 0)
         raw = (resp.choices[0].message.content or "").strip()
     except Exception as _e:
@@ -7507,7 +7520,7 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                                           {"role": "user", "content": _u}],
                 temperature=0.2, max_tokens=safe_max, stream=False,
                 timeout=NARASI_REVISE_TIMEOUT)),
-            timeout=NARASI_REVISE_TIMEOUT + 10)
+            timeout=NARASI_REVISE_TIMEOUT)
     except Exception:
         return full_text, 0
     if not getattr(resp, "choices", None):
@@ -9189,7 +9202,16 @@ async def _narasi_outline_impl(body: dict):
             + vo_brief_note + "\n\n"
             f"Write the brief in {lang_label}. Return ONLY the brief text, no headings, no markdown."
         )
-        resp, _um = await asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], 1000)
+        # Same NARASI_OUTLINE_TIMEOUT guard the outline call below uses — a hung brief model must
+        # not stall the HTTP request (and leave the provider billed for a discarded response).
+        try:
+            resp, _um = await asyncio.wait_for(
+                asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], 1000),
+                timeout=float(os.environ.get("NARASI_OUTLINE_TIMEOUT") or 200))
+        except asyncio.TimeoutError:
+            import logging as _lg
+            _lg.getLogger("narasi").warning("[narasi] brief LLM timed out (model=%s)", model)
+            return {"ok": False, "error": "brief generation timed out — coba lagi"}
         await _log_narasi_usage(_ou_tenant, _ou_user, _um, resp, charge=True)
         return {"ok": True, "brief": (_resp_content(resp) or "").strip()}
 
