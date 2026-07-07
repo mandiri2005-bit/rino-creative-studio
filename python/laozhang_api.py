@@ -7486,8 +7486,6 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
     (capped at NARASI_CRITIQUE_MAX_CHARS — NOT the 12k of the per-chapter critic). Logs usage
     with charge=False so cr folds into the umbrella hold. Never raises → ({...}, 0)."""
     crit_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
-    resolved   = MODELS.get(crit_model, crit_model)
-    safe_max   = min(2000, MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
     # Fiction-gate the F10 dropped-hook check (#7): nonfiction gets checks 1-6 only, so a factual
     # piece can never be flagged for an open real-world question and REVISE can never fabricate an
     # answer. _is_fiction_style fails SOFT → False (no #7); on import failure default True (fiction,
@@ -7500,30 +7498,50 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
     _sys = _consistency_critic_sys(_is_fic)
     _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
           f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
-    try:
-        client = make_narasi_client(crit_model)
-        def _call(use_fmt):
-            kw = dict(model=resolved,
-                      messages=[{"role": "system", "content": _sys},
-                                {"role": "user", "content": _u}],
-                      temperature=0.1, max_tokens=safe_max, stream=False,
-                      timeout=NARASI_CRITIQUE_TIMEOUT)
-            if use_fmt:
-                kw["response_format"] = {"type": "json_object"}
-            return client.chat.completions.create(**kw)
-        async def _run():
-            try:
-                return await asyncio.to_thread(lambda: _call(True))
-            except Exception:
-                return await asyncio.to_thread(lambda: _call(False))
-        # Bound TOTAL time (both attempts) so a hung model can't stall the job in GATES forever.
-        resp = await asyncio.wait_for(_run(), timeout=NARASI_CRITIQUE_TIMEOUT)
-        cr  = (await _log_narasi_usage(tenant_id, user_id, crit_model, resp, job_id=job_uuid) or 0)
-        raw = (resp.choices[0].message.content or "").strip()
-    except Exception as _e:
-        import logging as _lg; _lg.getLogger("narasi").warning("consistency critic failed (non-fatal): %s", _e)
-        return {"score": None, "violations": [], "summary": ""}, 0
-    return _narasi_normalize_critique(_narasi_parse_json(raw)), int(cr)
+    # MODEL FAILOVER: the critic (default opus-4-6) is the slowest stage and can hang a degraded
+    # provider window — on primary timeout, fail over to the fast failover WORKER model so we still
+    # get a verdict instead of a silent skip. opus stays the default; flash only runs when opus is
+    # down (a verdict from a fast model beats no gate). Each attempt is bounded by
+    # NARASI_CRITIQUE_TIMEOUT (incl. its json→plain retry); the provider chain (KIE→LaoZhang→…)
+    # still runs inside each attempt via make_narasi_client. Set NARASI_CRITIQUE_FALLBACK_MODEL="" to disable.
+    _fallback = (os.getenv("NARASI_CRITIQUE_FALLBACK_MODEL", os.getenv("WORKER_MODEL", "gemini-2.5-flash")) or "").strip()
+    _chain = [crit_model] + ([_fallback] if (_fallback and _fallback != crit_model) else [])
+    for _i, _cm in enumerate(_chain):
+        resolved = MODELS.get(_cm, _cm)
+        safe_max = min(2000, MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
+        try:
+            client = make_narasi_client(_cm)
+            def _call(use_fmt, _res=resolved, _sm=safe_max, _cl=client):
+                kw = dict(model=_res,
+                          messages=[{"role": "system", "content": _sys},
+                                    {"role": "user", "content": _u}],
+                          temperature=0.1, max_tokens=_sm, stream=False,
+                          timeout=NARASI_CRITIQUE_TIMEOUT)
+                if use_fmt:
+                    kw["response_format"] = {"type": "json_object"}
+                return _cl.chat.completions.create(**kw)
+            async def _run(_c=_call):
+                try:
+                    return await asyncio.to_thread(lambda: _c(True))
+                except Exception:
+                    return await asyncio.to_thread(lambda: _c(False))
+            # Bound each model's TOTAL time (both attempts) so a hung model can't stall GATES.
+            resp = await asyncio.wait_for(_run(), timeout=NARASI_CRITIQUE_TIMEOUT)
+            cr  = (await _log_narasi_usage(tenant_id, user_id, _cm, resp, job_id=job_uuid) or 0)
+            raw = (resp.choices[0].message.content or "").strip()
+            if _i > 0:
+                import logging as _lg
+                _lg.getLogger("narasi").info("consistency critic: primary timed out — verdict via fallback %s", _cm)
+            return _narasi_normalize_critique(_narasi_parse_json(raw)), int(cr)
+        except Exception as _e:
+            import logging as _lg
+            if _i + 1 < len(_chain):
+                _lg.getLogger("narasi").warning(
+                    "consistency critic model %s failed (%s) — failing over to %s", _cm, _e, _chain[_i + 1])
+                continue
+            _lg.getLogger("narasi").warning("consistency critic failed (non-fatal): %s", _e)
+            return {"score": None, "violations": [], "summary": ""}, 0
+    return {"score": None, "violations": [], "summary": ""}, 0
 
 
 async def _narasi_consistency_revise(full_text, critique, style, language, *, model,

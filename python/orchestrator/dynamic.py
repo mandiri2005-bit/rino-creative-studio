@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Optional
 
@@ -38,6 +39,7 @@ from .core import (
     Worker,
     run_worker,
     MANAGER_MODEL,
+    WORKER_MODEL,
     MAX_WORKERS,
 )
 
@@ -538,7 +540,7 @@ async def build_story_bible(
     style: Optional[str] = None,
     language: str = "id",
     manager_model: Optional[str] = None,
-    timeout: float = 120.0,
+    timeout: Optional[float] = None,
     telemetry_sink: Optional[Any] = None,
 ) -> str:
     """ONE manager call → a canonical fact-sheet pinning the piece's load-bearing specifics
@@ -548,24 +550,40 @@ async def build_story_bible(
     is_fiction toggles the regime: FICTION decides/invents the specifics; NONFICTION pins only
     what the premise gives and marks unknowns [VERIFY] (never fabricates — fabrication-safety).
 
+    MODEL FAILOVER (not just a longer timeout): the bible is load-bearing — no bible ⟹ cross-chapter
+    drift (the "The Names They Left" 7.0: the manager model timed out at 120s on a degraded provider
+    window, so it generated with NO bible). A healthy bible measured ~90s on the manager model, only
+    ~30s under the wall. Rather than one longer attempt (which just stalls longer on a hung provider),
+    keep the per-attempt timeout at NARASI_BIBLE_TIMEOUT (120s) and FAIL OVER to the fast failover
+    WORKER model (NARASI_BIBLE_FALLBACK_MODEL, default WORKER_MODEL = gemini-2.5-flash) that is far
+    likelier to finish inside the window. A bible from a fast model >> no bible. Note this is MODEL
+    failover; the aggregator/provider failover (KIE→LaoZhang→AtlasCloud, same model) already runs
+    INSIDE each attempt via make_narasi_client. Set NARASI_BIBLE_FALLBACK_MODEL="" to disable the fallback.
+
     Robust like outline_from_topic: NEVER raises. Returns "" on any failure, so the caller
     simply proceeds without a bible (prior behavior).
     """
     if not (topic and outline):
         return ""
-    m_model = manager_model or MANAGER_MODEL
+    _to = float(timeout if timeout is not None else os.environ.get("NARASI_BIBLE_TIMEOUT", "120"))
     system = _STORY_BIBLE_SYSTEM_FICTION if is_fiction else _STORY_BIBLE_SYSTEM_NONFICTION
-    worker = Worker(
-        name="planner:bible", role="manager", model=m_model,
-        system=system, temperature=0.3, telemetry_sink=telemetry_sink,
-    )
-    res = await run_worker(
-        worker, _story_bible_prompt(topic, outline, language, is_fiction),
-        timeout=timeout, task_id="planner:bible",
-    )
-    if res.get("ok") and str(res.get("output") or "").strip():
-        return str(res["output"]).strip()
-    log.info("build_story_bible: manager returned no usable bible — proceeding without one")
+    prompt = _story_bible_prompt(topic, outline, language, is_fiction)
+    _primary  = manager_model or MANAGER_MODEL
+    _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", WORKER_MODEL) or "").strip()
+    _chain = [_primary] + ([_fallback] if (_fallback and _fallback != _primary) else [])
+    for _i, _mdl in enumerate(_chain):
+        worker = Worker(
+            name="planner:bible", role="manager", model=_mdl,
+            system=system, temperature=0.3, telemetry_sink=telemetry_sink,
+        )
+        res = await run_worker(worker, prompt, timeout=_to, task_id="planner:bible")
+        if res.get("ok") and str(res.get("output") or "").strip():
+            if _i > 0:
+                log.info("build_story_bible: primary timed out — bible via fallback model %s", _mdl)
+            return str(res["output"]).strip()
+        log.info("build_story_bible: model %s returned no usable bible (attempt %d/%d)%s",
+                 _mdl, _i + 1, len(_chain),
+                 " — failing over" if _i + 1 < len(_chain) else " — proceeding without one")
     return ""
 
 
