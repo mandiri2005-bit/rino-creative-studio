@@ -338,12 +338,15 @@ class SharedContext:
                 if _reg_lines:
                     parts.append("REGISTER CHECKLIST (structured pakem constraints):\n"
                                  + "\n".join(_reg_lines))
-                # Trust-the-reader (corpus sample-24 + Flower of Evil): fiction kept
-                # "explaining itself" — real-world stat citations, inline term glossaries,
-                # genre self-reference ("the drama"/"you already know"). Preventive,
-                # language-agnostic ban for FICTION regimes only (the gate scanners are the
-                # detective backstop; this is the root-cause prevention at generation).
-                if str((_entry or {}).get("factual_regime") or "").strip().lower() == "fiction":
+                # The fiction directives below (TRUST THE READER + DRAMATIC ACCOUNTABILITY +
+                # STRUCTURE & PAYOFF + ORIGINALITY) apply to ALL fiction styles — Rino: "berlaku
+                # untuk semua style fiksi". Match the FULL fiction predicate (same as
+                # static._is_fiction_style), NOT just factual_regime=="fiction": the P1 realistic
+                # styles (kdrama_serial/romance/coming_of_age) carry regime "fiction", but the
+                # invent-freely styles (fantasy/horror/dongeng/mythic/gothic/…) carry is_fiction=True
+                # and/or regime "fictional" — a bare =="fiction" check silently skipped all of them.
+                _regime = str((_entry or {}).get("factual_regime") or "").strip().lower()
+                if (_entry or {}).get("is_fiction") is True or _regime in ("fiction", "fictional"):
                     parts.append(
                         "TRUST THE READER (fiction — never break the story to explain it):\n"
                         "- Do NOT cite real-world statistics or data (no \"X% of ...\", \"the "
@@ -410,9 +413,12 @@ class SharedContext:
                         "- AVOID the over-used default engine: a protagonist holding a false/flattering "
                         "version of the past that a BURIED DOCUMENT / suppressed record / hidden ledger / "
                         "forged file exposes as a hidden family-or-institutional crime, ending in a quiet "
-                        "reckoning. If the story is drifting into that shape, pick a DIFFERENT engine — a "
-                        "goal actively pursued, a threat survived, a bond tested with no buried lie to "
-                        "excavate, a transformation, a choice with no document to find.\n"
+                        "reckoning. If the story is DRIFTING into that shape by default, pick a "
+                        "different engine — a goal actively pursued, a threat survived, a bond tested "
+                        "with no buried lie to excavate, a transformation, a choice that turns on what "
+                        "a character wants rather than on a record they unearth. But if the premise "
+                        "ITSELF centers on a document or record, keep it — vary only the STRUCTURE "
+                        "around it; never discard the premise's own subject.\n"
                         "- Build the engine from THIS premise's specific, concrete hook — the thing that "
                         "makes it unlike any other story — not from a familiar template."
                     )
