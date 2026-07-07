@@ -434,6 +434,35 @@ class SharedContext:
                         "- Build the engine from THIS premise's specific, concrete hook — the thing that "
                         "makes it unlike any other story — not from a familiar template."
                     )
+                    # PROSE VARIATION — the 9.0->9.3 lever (2026-07-07). The single most-recurring
+                    # corpus cap is DEVICE repetition: the same figurative construction ("like…",
+                    # "as though…", "not X but Y", "something closer to…") leaned on paragraph after
+                    # paragraph. This targets the REPETITION, never the imagery — atmosphere (scored
+                    # 9.4) is the book's strength, so it commands KEEPING sensory density and forbids
+                    # plainness. Modeled on the harari register-preserving guard (laozhang_api.py).
+                    # Gated behind its OWN flag (NARASI_PROSE_VARIATION, default OFF) so it changes
+                    # NOTHING on deploy — the pieces at 9.0 stay byte-identical until Rino flips it ON
+                    # to A/B + re-score; OFF is an instant revert that does NOT disturb the other
+                    # fiction directives (F10 / originality / structure) the way unsetting
+                    # DALANG_INFRA_FIXES would.
+                    if os.environ.get("NARASI_PROSE_VARIATION", "0").strip().lower() in ("1", "true", "yes", "on"):
+                        parts.append(
+                            "PROSE VARIATION (vary the figure; let a strong image stand alone — atmosphere "
+                            "is this book's strength, so KEEP the sensory density and do NOT write plainer):\n"
+                            "- Do NOT stack analogies: let ONE land, then stop — never two or three similes "
+                            "for the same beat.\n"
+                            "- ROTATE the construction: no single figure (a simile, 'as though…', 'not X but "
+                            "Y', 'something closer to…') more than about once per two paragraphs — render the "
+                            "next felt moment a DIFFERENT way: a bare concrete detail, an action, a line of "
+                            "dialogue, a flat interior thought.\n"
+                            "- EARN the flourish: after a heightened, figurative line, let the next sentence "
+                            "be plain and unadorned.\n"
+                            "- VARY sentence openings and length across a paragraph — do not start three "
+                            "sentences the same way.\n"
+                            "This is about VARIETY and restraint, NOT plainness: keep the specific, sensory, "
+                            "atmospheric writing that makes this book — just stop repeating the SAME device "
+                            "to deliver it."
+                        )
         except Exception:  # noqa: BLE001
             pass
         if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
