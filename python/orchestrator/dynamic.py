@@ -348,7 +348,12 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
         "never left dangling. Make the STRUCTURE original: build it from THIS topic's specific "
         "hook, NOT as a re-skin of a famous novel/film with the details swapped, and NOT as the "
         "over-used \"a buried document/record exposes a hidden past crime\" shape — if it drifts "
-        f"there, choose a different engine. Titles and summaries in {language}.\n\n"
+        "there, choose a different engine. And IF the premise poses a DISTINCTIVE hook — a "
+        "recurring image, an anomaly, a specific mystery the opening raises and frames as a "
+        "question to answer — make sure a specific late chapter DELIVERS its answer on the page, "
+        "rather than letting a generic sub-plot (a fraud, a buried record) resolve while the hook "
+        "hangs. A premise with no such posed puzzle owes no answer-chapter — do not invent one. "
+        f"Titles and summaries in {language}.\n\n"
         "Return ONLY a JSON array, no prose, no code fences, in EXACTLY this shape:\n"
         '[{"title": "chapter title", "summary": "1-2 sentences on what it covers", '
         f'"words": {words_per_chapter}}}]'
@@ -462,10 +467,21 @@ _STORY_BIBLE_SYSTEM_FICTION = (
     "7. OPEN THREADS TO RESOLVE — list every EXTERNAL stake the premise raises (a deadline, a "
     "debt, a foreclosure, a lawsuit, a threat, a missing person, a corporate/legal reckoning). "
     "Each one MUST be paid off — resolved on the page by the final chapters, never dropped or "
-    "left off-screen. Note, per thread, roughly which late chapter delivers its outcome.\n\n"
+    "left off-screen. Note, per thread, roughly which late chapter delivers its outcome.\n"
+    "8. SIGNATURE HOOK & ITS PAYOFF — name the ONE distinctive device, mystery, image, or "
+    "phenomenon that makes THIS premise original: the specific thing the opening chapters pose "
+    "with weight and promise the reader an answer to (an anomaly, a recurring motif, a question "
+    "the premise ITSELF raises — NOT a generic sub-plot). This is DIFFERENT from the external "
+    "stakes in #7. Commit (a) what the hook is, (b) its diegetic ANSWER delivered ON THE PAGE, and "
+    "(c) which late chapter delivers it. The hook is LOAD-BEARING: the story's more familiar "
+    "machinery (a fraud, a buried document, a family secret, a legal reckoning) must SERVE this "
+    "hook, never REPLACE it — a signature mystery set up with portent then abandoned while a stock "
+    "sub-plot resolves is the single worst failure. If the premise genuinely has no distinctive "
+    "device, pin instead the central DRAMATIC QUESTION the opening raises and the chapter that "
+    "answers it.\n\n"
     "Rules: DECIDE concrete values even where the outline is vague — that is the entire point, "
     "pin them. Do NOT write prose, plot beats, or chapter content. Keep it tight — a numbered "
-    "fact-sheet under those seven headings, one fact per line, no preamble."
+    "fact-sheet under the headings above, one fact per line, no preamble."
 )
 
 # NONFICTION / HYBRID variant — factual content: PIN only, NEVER fabricate. This is the
@@ -503,7 +519,7 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
     ol = "\n".join(ol_lines) if ol_lines else "(no outline)"
     label = "STORY BIBLE" if is_fiction else "CONTINUITY SHEET"
     heads = ("CHARACTERS, CENTRAL SUBJECT, SETTING, TIMELINE & QUANTITIES, POV & NARRATION, "
-             "KEY FACTS, OPEN THREADS"
+             "KEY FACTS, OPEN THREADS, SIGNATURE HOOK & PAYOFF"
              if is_fiction else
              "SUBJECT/PEOPLE, CENTRAL SUBJECT, SETTING, TIMELINE, POV & NARRATION, KEY CLAIMS")
     return (

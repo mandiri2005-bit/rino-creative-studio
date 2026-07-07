@@ -7407,33 +7407,59 @@ async def _narasi_revise(client, model, resolved_model, safe_max, _msgs, text, c
 #    add up, a cross-chapter causal/knowledge break, entity/label drift. This is the ONLY stage
 #    that can catch the narasi-3 notebook-provenance hole + the silent one-week→three-week drift;
 #    no deterministic scanner reaches it. Report-only unless NARASI_CRITIQUE_REVISE=1.
-_CONSISTENCY_CRITIC_SYS = (
-    "You are a strict CONTINUITY editor doing a fresh-eyes read of a COMPLETE multi-chapter "
-    "story you did NOT write. Judge ONLY whole-draft consistency — never prose taste. Read the "
-    "entire book, then hunt for contradictions each chapter hides because it reads fine on its "
-    "own. Check, in order:\n"
-    "1. OBJECT/PROP PROVENANCE — an item is present somewhere it could not be, or was "
-    "placed/hidden before it could exist there (a diary hidden under a house's floor when the "
-    "narrator bought the house only months ago; a letter predating the meeting it describes).\n"
-    "2. TIMELINE/DURATION — stated spans that don't add up (an agreed 'one week' that silently "
-    "becomes 'three weeks'; ages, dates, or seasons that conflict across chapters).\n"
-    "3. CROSS-CHAPTER CAUSALITY/KNOWLEDGE — a character knows, owns, or does something an earlier "
-    "chapter's setup forecloses (a stranger to a place who later has intimate history with it; "
-    "someone acting on information they were never given).\n"
-    "4. ENTITY/LABEL DRIFT — the same person or object named two ways ('the notebook' vs 'the "
-    "diary'), or two distinct entities left confusably alike.\n"
-    "5. SPATIAL/CONTINUITY — props that appear or vanish; geography that contradicts itself.\n"
-    "6. POV/PERSON/TENSE — the narrative person (first 'I' / second 'you' / third 'he/she') "
-    "and tense stay consistent across the WHOLE book. Flag a chapter that switches (a "
-    "second-person book with one first-person chapter; a present-tense book with a past-tense "
-    "chapter) — cite the chapter and the switched pronoun/tense.\n"
-    "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
-    "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
-    "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
-    '{"score": <0-10>, "violations": [{"type": "provenance|timeline|causality|entity_drift|'
-    'spatial|pov", "severity": "critical|high|medium|low", "evidence": "<short quote(s)>", '
-    '"fix": "<one-line directive>"}], "summary": "<1-2 sentences>"}'
-)
+def _consistency_critic_sys(is_fiction: bool = True) -> str:
+    """Whole-book critic system prompt. Checks 1-6 (pure consistency) apply to ALL narasi.
+    Check 7 (DROPPED PREMISE HOOK / F10) is FICTION-ONLY and emitted here only when is_fiction:
+    a nonfiction/factual piece may legitimately leave a real question open (an unsolved case, an
+    ongoing debate), so flagging it — and, under NARASI_CRITIQUE_REVISE=1, letting the revise
+    FABRICATE an answer — would break the never-fabricate guarantee of the nonfiction path. For
+    nonfiction the check and the dropped_hook enum token are dropped entirely; check 7 also carries
+    an in-prompt nonfiction backstop for the fail-open case (is_fiction defaulting True)."""
+    _extra = (" and one structural fault — an unpaid premise setup —" if is_fiction else "")
+    _check7 = (
+        "7. DROPPED PREMISE HOOK / UNPAID SETUP (fiction only) — the distinctive mystery, anomaly, "
+        "or recurring device the OPENING chapters pose prominently and frame as a specific question "
+        "to be solved (e.g. several unrelated strangers whispering the SAME specific name; an "
+        "unexplained recurring phenomenon the text calls a pattern), which the book then NEVER "
+        "answers on the page — it resolves a more generic sub-plot (a fraud, a buried document, a "
+        "legal reckoning) instead and leaves the premise's signature promise hanging. This is a "
+        "dropped PROMISE, not a contradiction. Flag ONLY when the text ITSELF sets up a concrete, "
+        "specific anomaly AND treats it as an important question to answer, then abandons it; a "
+        "deliberately open/ambiguous ending, or a motif that is plainly thematic rather than a "
+        "posed puzzle, is NOT a violation — do not manufacture one. NEVER apply this to a "
+        "nonfiction/factual piece: a real-world question the subject itself leaves open is not a "
+        "flaw, and you must NEVER invent an answer to a factual gap.\n"
+        if is_fiction else "")
+    _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
+             if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
+    return (
+        "You are a strict CONTINUITY editor doing a fresh-eyes read of a COMPLETE multi-chapter "
+        "story you did NOT write. Judge whole-draft CONSISTENCY" + _extra + " but NEVER prose "
+        "taste. Read the entire book, then hunt for contradictions each chapter hides because it "
+        "reads fine on its own. Check, in order:\n"
+        "1. OBJECT/PROP PROVENANCE — an item is present somewhere it could not be, or was "
+        "placed/hidden before it could exist there (a diary hidden under a house's floor when the "
+        "narrator bought the house only months ago; a letter predating the meeting it describes).\n"
+        "2. TIMELINE/DURATION — stated spans that don't add up (an agreed 'one week' that silently "
+        "becomes 'three weeks'; ages, dates, or seasons that conflict across chapters).\n"
+        "3. CROSS-CHAPTER CAUSALITY/KNOWLEDGE — a character knows, owns, or does something an earlier "
+        "chapter's setup forecloses (a stranger to a place who later has intimate history with it; "
+        "someone acting on information they were never given).\n"
+        "4. ENTITY/LABEL DRIFT — the same person or object named two ways ('the notebook' vs 'the "
+        "diary'), or two distinct entities left confusably alike.\n"
+        "5. SPATIAL/CONTINUITY — props that appear or vanish; geography that contradicts itself.\n"
+        "6. POV/PERSON/TENSE — the narrative person (first 'I' / second 'you' / third 'he/she') "
+        "and tense stay consistent across the WHOLE book. Flag a chapter that switches (a "
+        "second-person book with one first-person chapter; a present-tense book with a past-tense "
+        "chapter) — cite the chapter and the switched pronoun/tense.\n"
+        + _check7 +
+        "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
+        "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
+        "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
+        '{"score": <0-10>, "violations": [{"type": "' + _enum + '", "severity": '
+        '"critical|high|medium|low", "evidence": "<short quote(s)>", '
+        '"fix": "<one-line directive>"}], "summary": "<1-2 sentences>"}'
+    )
 
 
 def _narasi_normalize_critique(v) -> dict:
@@ -7462,13 +7488,23 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
     crit_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
     resolved   = MODELS.get(crit_model, crit_model)
     safe_max   = min(2000, MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
+    # Fiction-gate the F10 dropped-hook check (#7): nonfiction gets checks 1-6 only, so a factual
+    # piece can never be flagged for an open real-world question and REVISE can never fabricate an
+    # answer. _is_fiction_style fails SOFT → False (no #7); on import failure default True (fiction,
+    # the common case) — the in-prompt nonfiction backstop in check 7 covers that fail-open path.
+    try:
+        from orchestrator.static import _is_fiction_style as _isf
+        _is_fic = bool(_isf(style))
+    except Exception:
+        _is_fic = True
+    _sys = _consistency_critic_sys(_is_fic)
     _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
           f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
     try:
         client = make_narasi_client(crit_model)
         def _call(use_fmt):
             kw = dict(model=resolved,
-                      messages=[{"role": "system", "content": _CONSISTENCY_CRITIC_SYS},
+                      messages=[{"role": "system", "content": _sys},
                                 {"role": "user", "content": _u}],
                       temperature=0.1, max_tokens=safe_max, stream=False,
                       timeout=NARASI_CRITIQUE_TIMEOUT)
