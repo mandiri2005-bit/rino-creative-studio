@@ -356,6 +356,28 @@ class SharedContext:
                         "(no \"the drama ...\", \"this story\", \"you already know how this "
                         "works\"). Be the story; never narrate that it is one."
                     )
+                    # DRAMATIC ACCOUNTABILITY — the depth lever (2026-07-07). Across the corpus
+                    # the recurring reason melodrama caps at 8.x (not 9) is STRUCTURAL, not prose:
+                    # the most-wronged party is left off-page at the climax, the antagonist never
+                    # appears, and a huge betrayal resolves in a soft romantic beat. This directive
+                    # (book-level, conditional, climax-scoped) pushes the earned reckoning.
+                    parts.append(
+                        "DRAMATIC ACCOUNTABILITY (melodrama — earn the payoff; applies at the "
+                        "climax / final third, not early chapters):\n"
+                        "- The character most WRONGED by the central deception or betrayal must be "
+                        "PRESENT on the page and RESPOND near the climax — never resolved off-page, "
+                        "in a message, or with \"I'll tell her later\". If someone was abandoned, "
+                        "deceived, or betrayed, the reader must SEE them reckon with the truth.\n"
+                        "- The person who CAUSED the harm (the one who lied, sabotaged, or arranged "
+                        "it) must APPEAR in at least one live scene — confronted directly, not "
+                        "merely blamed at a distance or kept off-page.\n"
+                        "- A LARGE betrayal (a faked death, a stolen identity, a years-long lie, a "
+                        "hidden diagnosis, buried fraud) must NOT be resolved by a soft romantic "
+                        "beat alone. Consequence and accountability come first; any reconciliation "
+                        "must be EARNED, not simply granted.\n"
+                        "(If your chapter is NOT the climax, honour these only when the story "
+                        "reaches them — do not force a reckoning into an early chapter.)"
+                    )
         except Exception:  # noqa: BLE001
             pass
         if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
