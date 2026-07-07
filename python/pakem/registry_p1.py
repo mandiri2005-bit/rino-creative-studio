@@ -2400,12 +2400,19 @@ FORBIDDEN:
 }
 
 
-if _PHASE2_ON():
-    P1_STYLES["babad_hikayat"] = _BABAD_HIKAYAT_SPEC
-    P1_STYLES["pewayangan_dalang"] = _PEWAYANGAN_DALANG_SPEC
-    P1_STYLES["kdrama_serial"] = _KDRAMA_SERIAL_SPEC
-    P1_STYLES["romance_contemporary"] = _ROMANCE_CONTEMPORARY_SPEC
-    P1_STYLES["remaja_coming_of_age"] = _REMAJA_COMING_OF_AGE_SPEC
+# These 5 Phase-2 styles are ALWAYS registered — a style key must resolve to ITS OWN
+# entry, never fuzzy-fall to an unrelated one. Gating registration behind DALANG_INFRA_FIXES
+# was a real bug: with the flag OFF, resolve_style("kdrama_serial") did NOT fall to a clean
+# CATEGORY_DEFAULT — the substring matcher mis-resolved it to "true_crime_host" (and
+# romance_contemporary/coming_of_age → "creative_nonfiction"), so those pieces silently got
+# TRUE-CRIME / NONFICTION pakem rules, register_spec, and factual_regime. The flag now gates
+# only BEHAVIOR (Track-A scanners, register-checklist injection in brief_block), never whether
+# a style exists. _PHASE2_ON() is retained for any behavior gates that still reference it.
+P1_STYLES["babad_hikayat"] = _BABAD_HIKAYAT_SPEC
+P1_STYLES["pewayangan_dalang"] = _PEWAYANGAN_DALANG_SPEC
+P1_STYLES["kdrama_serial"] = _KDRAMA_SERIAL_SPEC
+P1_STYLES["romance_contemporary"] = _ROMANCE_CONTEMPORARY_SPEC
+P1_STYLES["remaja_coming_of_age"] = _REMAJA_COMING_OF_AGE_SPEC
 
 
 __all__ = ["P1_STYLES"]
