@@ -341,7 +341,11 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
         f"Design a {n}-chapter outline{style_clause}. The chapters must progress "
         "logically (a hook that opens, development in the middle, a resonant close) "
         "and must NOT overlap — each chapter owns a distinct part of the story so "
-        f"parallel writers won't repeat each other. Titles and summaries in {language}.\n\n"
+        "parallel writers won't repeat each other. Order the chapters in CHRONOLOGICAL "
+        "sequence — no chapter set earlier in time than the one before it (no rewinding to "
+        "an earlier event as a whole chapter). And make sure every EXTERNAL stake the story "
+        "opens — a deadline, a debt, a threat, a search — is RESOLVED by the final chapters, "
+        f"never left dangling. Titles and summaries in {language}.\n\n"
         "Return ONLY a JSON array, no prose, no code fences, in EXACTLY this shape:\n"
         '[{"title": "chapter title", "summary": "1-2 sentences on what it covers", '
         f'"words": {words_per_chapter}}}]'
@@ -438,7 +442,10 @@ _STORY_BIBLE_SYSTEM_FICTION = (
     "one name, one spelling.\n"
     "4. TIMELINE & QUANTITIES — the season, total elapsed span, dated offsets (\"3 years since "
     "X\"), and any COUNTS (how many colonies/chapters/people). Keep them arithmetically "
-    "consistent and MONOTONIC — a duration cannot shrink as the story moves forward.\n"
+    "consistent and MONOTONIC — a duration cannot shrink as the story moves forward. Also lay "
+    "out a FORWARD CHAPTER TIMELINE: place each chapter, in outline order, at its point in time "
+    "(Ch1 earliest → last chapter latest) so no chapter is set earlier than the one before it — "
+    "the story must not step backward between consecutive chapters.\n"
     "5. POV & NARRATION — who narrates and whose head we are in (per chapter if it rotates), "
     "first vs third person, and tense. Fix this so no chapter silently switches viewpoint.\n"
     "6. KEY FACTS / REVEAL — the plot facts that must not drift (who did what to whom, the "
@@ -448,10 +455,14 @@ _STORY_BIBLE_SYSTEM_FICTION = (
     "date, and birth year the chapters plant CONSISTENT with that solution — the reader assembles "
     "the answer, so a middle-act clue that the ending contradicts (e.g. investigating a biological "
     "lineage the finale reveals never existed) breaks the whole book. Clues derive FROM the "
-    "committed answer; they are never improvised against it.\n\n"
+    "committed answer; they are never improvised against it.\n"
+    "7. OPEN THREADS TO RESOLVE — list every EXTERNAL stake the premise raises (a deadline, a "
+    "debt, a foreclosure, a lawsuit, a threat, a missing person, a corporate/legal reckoning). "
+    "Each one MUST be paid off — resolved on the page by the final chapters, never dropped or "
+    "left off-screen. Note, per thread, roughly which late chapter delivers its outcome.\n\n"
     "Rules: DECIDE concrete values even where the outline is vague — that is the entire point, "
     "pin them. Do NOT write prose, plot beats, or chapter content. Keep it tight — a numbered "
-    "fact-sheet under those six headings, one fact per line, no preamble."
+    "fact-sheet under those seven headings, one fact per line, no preamble."
 )
 
 # NONFICTION / HYBRID variant — factual content: PIN only, NEVER fabricate. This is the
@@ -488,13 +499,14 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
         ol_lines.append(f"- Ch{cid}: {title}" + (f" — {summ}" if summ else ""))
     ol = "\n".join(ol_lines) if ol_lines else "(no outline)"
     label = "STORY BIBLE" if is_fiction else "CONTINUITY SHEET"
-    heads = ("CHARACTERS, CENTRAL SUBJECT, SETTING, TIMELINE & QUANTITIES, POV & NARRATION, KEY FACTS"
+    heads = ("CHARACTERS, CENTRAL SUBJECT, SETTING, TIMELINE & QUANTITIES, POV & NARRATION, "
+             "KEY FACTS, OPEN THREADS"
              if is_fiction else
              "SUBJECT/PEOPLE, CENTRAL SUBJECT, SETTING, TIMELINE, POV & NARRATION, KEY CLAIMS")
     return (
         f"TOPIC / PREMISE:\n{topic}\n\n"
         f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
-        f"Write the {label} in {language}. Output ONLY the numbered sheet under the six headings "
+        f"Write the {label} in {language}. Output ONLY the numbered sheet under the headings "
         f"({heads}). One item per line. No preamble, no prose, no chapter text."
     )
 

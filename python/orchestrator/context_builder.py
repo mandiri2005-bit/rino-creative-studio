@@ -378,6 +378,25 @@ class SharedContext:
                         "(If your chapter is NOT the climax, honour these only when the story "
                         "reaches them — do not force a reckoning into an early chapter.)"
                     )
+                    # STRUCTURE & PAYOFF — the 8.5->9 lever (2026-07-07). Coherent pieces still
+                    # cap below 9 on two structural faults: (a) a chapter set EARLIER in time than
+                    # the one before it, read as a chronology error (Beekeeper-v3 Ch6 = June placed
+                    # after Ch5 = July); (b) an external stake — a foreclosure deadline, a debt — set
+                    # up urgently then left unresolved off-page. Both are book-level; every worker
+                    # sees this so the chapter it owns moves forward and finishes what it starts.
+                    parts.append(
+                        "STRUCTURE & PAYOFF (a book must move forward and finish what it starts):\n"
+                        "- CHRONOLOGY: the chapters run in time order. Your chapter must NOT be set "
+                        "earlier than the chapters before it — never rewind to an event that predates "
+                        "an earlier chapter (that reads as a timeline error). A brief remembered beat "
+                        "inside forward motion is fine; a whole chapter that steps back in time is not.\n"
+                        "- PAY OFF EVERY THREAD: any external stake the story opens — a deadline, a "
+                        "debt, a foreclosure, a lawsuit, a threat, a missing person — must be RESOLVED "
+                        "on the page by the final chapters. Show the outcome; never let a named "
+                        "deadline pass off-screen or leave the reader guessing how it ended.\n"
+                        "- If you write the ENDING: land the external plot AND the emotional turn. Do "
+                        "not resolve only the feeling and quietly drop the plot the book set running."
+                    )
         except Exception:  # noqa: BLE001
             pass
         if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
