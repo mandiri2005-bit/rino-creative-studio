@@ -7004,6 +7004,15 @@ NARASI_CRITIQUE_MODEL        = os.getenv("NARASI_CRITIQUE_MODEL", "").strip()
 NARASI_CRITIQUE_MAX_CHARS    = int(os.getenv("NARASI_CRITIQUE_MAX_CHARS", "300000"))
 NARASI_CRITIQUE_MIN_CHAPTERS = int(os.getenv("NARASI_CRITIQUE_MIN_CHAPTERS", "3"))
 NARASI_CRITIQUE_GATE         = float(os.getenv("NARASI_CRITIQUE_GATE", "8.5"))
+# Hard wall-clock ceiling for the whole-book critic / revise LLM calls. Without this a DEGRADED
+# critic model hangs the ENTIRE job in GATES forever (the bible already has run_worker's 120s
+# guard; these did NOT) — confirmed 2026-07-07: a stalled critic left a job stuck after MAP+POLISH
+# finished. On timeout the critic fails safe (empty verdict → gate skips) and revise keeps the
+# original — a slow model degrades to "no gate", never to "stuck". Bounds TOTAL time incl. the
+# json_object→plain retry, and is also passed as the per-request httpx timeout so the leaked
+# to_thread thread dies too rather than running to the client's default ceiling.
+NARASI_CRITIQUE_TIMEOUT      = float(os.getenv("NARASI_CRITIQUE_TIMEOUT", "90"))
+NARASI_REVISE_TIMEOUT        = float(os.getenv("NARASI_REVISE_TIMEOUT", "180"))
 # Slice 5: repetition-guard thresholds — 5-gram Jaccard (deterministic) + Qdrant cosine.
 DALANG_DEDUP_THRESHOLD     = float(os.getenv("DALANG_DEDUP_THRESHOLD", "0.18"))
 DALANG_DEDUP_SEM_THRESHOLD = float(os.getenv("DALANG_DEDUP_SEM_THRESHOLD", "0.86"))
@@ -7448,14 +7457,18 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
             kw = dict(model=resolved,
                       messages=[{"role": "system", "content": _CONSISTENCY_CRITIC_SYS},
                                 {"role": "user", "content": _u}],
-                      temperature=0.1, max_tokens=safe_max, stream=False)
+                      temperature=0.1, max_tokens=safe_max, stream=False,
+                      timeout=NARASI_CRITIQUE_TIMEOUT)
             if use_fmt:
                 kw["response_format"] = {"type": "json_object"}
             return client.chat.completions.create(**kw)
-        try:
-            resp = await asyncio.to_thread(lambda: _call(True))
-        except Exception:
-            resp = await asyncio.to_thread(lambda: _call(False))
+        async def _run():
+            try:
+                return await asyncio.to_thread(lambda: _call(True))
+            except Exception:
+                return await asyncio.to_thread(lambda: _call(False))
+        # Bound TOTAL time (both attempts) so a hung model can't stall the job in GATES forever.
+        resp = await asyncio.wait_for(_run(), timeout=NARASI_CRITIQUE_TIMEOUT * 2 + 10)
         cr  = (await _log_narasi_usage(tenant_id, user_id, crit_model, resp, job_id=job_uuid) or 0)
         raw = (resp.choices[0].message.content or "").strip()
     except Exception as _e:
@@ -7488,10 +7501,13 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
     _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[CONSISTENCY PROBLEMS TO FIX]\n{directives}"
           f"\n\n[FULL BOOK — return the corrected version, unchanged except for the fixes]\n{full_text}")
     try:
-        resp = await asyncio.to_thread(lambda: make_narasi_client(rev_model).chat.completions.create(
-            model=resolved, messages=[{"role": "system", "content": _sys},
-                                      {"role": "user", "content": _u}],
-            temperature=0.2, max_tokens=safe_max, stream=False))
+        resp = await asyncio.wait_for(asyncio.to_thread(
+            lambda: make_narasi_client(rev_model).chat.completions.create(
+                model=resolved, messages=[{"role": "system", "content": _sys},
+                                          {"role": "user", "content": _u}],
+                temperature=0.2, max_tokens=safe_max, stream=False,
+                timeout=NARASI_REVISE_TIMEOUT)),
+            timeout=NARASI_REVISE_TIMEOUT + 10)
     except Exception:
         return full_text, 0
     if not getattr(resp, "choices", None):
