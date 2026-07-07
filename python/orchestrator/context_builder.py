@@ -440,12 +440,12 @@ class SharedContext:
                     # paragraph. This targets the REPETITION, never the imagery — atmosphere (scored
                     # 9.4) is the book's strength, so it commands KEEPING sensory density and forbids
                     # plainness. Modeled on the harari register-preserving guard (laozhang_api.py).
-                    # Gated behind its OWN flag (NARASI_PROSE_VARIATION, default OFF) so it changes
-                    # NOTHING on deploy — the pieces at 9.0 stay byte-identical until Rino flips it ON
-                    # to A/B + re-score; OFF is an instant revert that does NOT disturb the other
-                    # fiction directives (F10 / originality / structure) the way unsetting
-                    # DALANG_INFRA_FIXES would.
-                    if os.environ.get("NARASI_PROSE_VARIATION", "0").strip().lower() in ("1", "true", "yes", "on"):
+                    # Gated behind the shared NARASI_CRAFT_LEVERS flag (default OFF — same flag as the
+                    # SECONDARY WANT bible lever, so ONE flip turns both #1+#2 ON together). Changes
+                    # NOTHING on deploy — pieces at 9.0 stay byte-identical until the flag is flipped to
+                    # A/B + re-score; OFF is an instant revert that does NOT disturb the other fiction
+                    # directives (F10 / originality / structure) the way unsetting DALANG_INFRA_FIXES would.
+                    if os.environ.get("NARASI_CRAFT_LEVERS", "0").strip().lower() in ("1", "true", "yes", "on"):
                         parts.append(
                             "PROSE VARIATION (vary the figure; let a strong image stand alone — atmosphere "
                             "is this book's strength, so KEEP the sensory density and do NOT write plainer):\n"

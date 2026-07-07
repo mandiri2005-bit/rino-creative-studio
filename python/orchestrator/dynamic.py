@@ -569,10 +569,11 @@ async def build_story_bible(
     system = _STORY_BIBLE_SYSTEM_FICTION if is_fiction else _STORY_BIBLE_SYSTEM_NONFICTION
     # SECONDARY WANT (9.0->9.x craft lever) — pin ONE want/friction per recurring NAMED secondary so
     # they read as people, not plot-functions. FICTION-only (never invent wants for real people) and
-    # flag-gated NARASI_SECONDARY_WANT (default OFF): no-op on deploy, and a no-op on two-hander
-    # premises (no recurring secondaries to deepen). Lives in the fact-sheet, which already bans prose
-    # /subplots, so the want stays a compact pinned attribute — worst case = mild noise or ignored.
-    if is_fiction and os.environ.get("NARASI_SECONDARY_WANT", "0").strip().lower() in ("1", "true", "yes", "on"):
+    # flag-gated NARASI_CRAFT_LEVERS (default OFF — SAME flag as PROSE VARIATION, so one flip turns
+    # both #1+#2 ON): no-op on deploy, and a no-op on two-hander premises (no recurring secondaries to
+    # deepen). Lives in the fact-sheet, which already bans prose/subplots, so the want stays a compact
+    # pinned attribute — worst case = mild noise or ignored.
+    if is_fiction and os.environ.get("NARASI_CRAFT_LEVERS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
             "\n\nADDENDUM to heading 1 (CHARACTERS) — SECONDARY DEPTH: for each NAMED secondary who "
             "RECURS (not a one-scene walk-on) — the friend, the parent, the colleague, the rival — pin "
