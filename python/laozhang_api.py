@@ -11519,6 +11519,42 @@ async def _req_canceled(request) -> bool:
         return False
 
 
+# ── VI from-topic narration via the DALANG engine (Rino 2026-07-07) ─────────────────
+# When VI_NARRATION_VIA_DALANG=1, the "From a topic" (Mode A) narration for Video AND
+# Whiteboard is written by the Dalang orchestrator (pakem style-aware) instead of the
+# legacy build_generation_prompt single call. ONLY the narration SOURCE changes — the
+# result feeds the SAME segmenter → scenes → video-worker render (untouched). Uses
+# scenario E (single call, no fan-out / no bible-critic overhead) sized to target_words,
+# so latency stays in the same class as the legacy call. Default OFF ⟹ legacy path,
+# zero behavior change. Avatar is a separate route and is not affected.
+def _vi_narration_via_dalang() -> bool:
+    return os.environ.get("VI_NARRATION_VIA_DALANG", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _dalang_narration_for_video(topic: str, style: str, language: str, target_words: int) -> str:
+    """One styled narration from the Dalang engine (scenario E). Returns plain narration
+    text to feed the existing segmenter, or "" on any failure so the caller falls back to
+    the legacy generator. No telemetry_sink is passed ⟹ no separate debit (the narration
+    cost is absorbed into the video price at /assemble, exactly like the legacy path)."""
+    if not topic:
+        return ""
+    try:
+        from orchestrator.router import generate_narration
+        req = {
+            "single": True,                    # force scenario E — one call, no orchestrator
+            "topic": topic,
+            "brief": topic,                    # _run_single reads brief/goal/prompt/topic
+            "style": style or "",              # pakem style; FE natural-strings resolve via aliases
+            "language": language or "id",
+            "word_target": int(target_words or 0) or None,
+        }
+        res = await generate_narration(req)
+        return str((res or {}).get("output") or "").strip()
+    except Exception as _e:  # noqa: BLE001
+        print(f"[video/segment] Dalang narration failed → legacy fallback: {_e}")
+        return ""
+
+
 @app.post("/video/segment")
 async def video_segment(req: VideoSegmentReq,
                         request: Request,
@@ -11547,9 +11583,12 @@ async def video_segment(req: VideoSegmentReq,
         # of all flag-unaware entries so the fix takes effect without waiting out the old TTL.
         _vw_on = os.environ.get("VI_VISUAL_WORKER_ENABLED") == "1"
         _vw_model = (os.environ.get("VI_VISUAL_WORKER_MODEL") or "claude-sonnet-4-6") if _vw_on else ""
+        # Fold the Dalang-narration flag into the key too: flipping VI_NARRATION_VIA_DALANG must
+        # re-key so a cached legacy narration isn't served after the switch (and vice-versa).
         _sig = json.dumps([req.text, req.topic, req.minutes, mode, req.style, req.clip_model,
                            req.tier, req.gen_model, req.language, req.visual_mode, req.clip_ratio,
-                           req.visual_style, req.nusantara_corpus, _vw_on, _vw_model, req.whiteboard],
+                           req.visual_style, req.nusantara_corpus, _vw_on, _vw_model, req.whiteboard,
+                           _vi_narration_via_dalang()],
                           sort_keys=True)
         _tenant = str(getattr(user, "tenant_id", "anon")) if user else "anon"
         _seg_key = f"vseg:v3:{_tenant}:{hashlib.sha256(_sig.encode()).hexdigest()[:24]}"
@@ -11582,21 +11621,28 @@ async def video_segment(req: VideoSegmentReq,
         if req.minutes is None or req.minutes <= 0:
             raise HTTPException(400, "minutes is required for mode A")
         params = _vseg.calculate_video_params(req.minutes, req.tier, req.visual_mode or "hybrid", req.clip_model, getattr(req, "language", None) or "id")
-        prompt = _vseg.build_generation_prompt(topic, params.target_words, req.style, req.language)
         _byok = _byok_active()
         if user:
             await metering.gate(user.tenant_id, "chat", req.gen_model,
-                                {"tokens_in": len(prompt) // 4, "tokens_out": params.target_words * 2}, byok=_byok)
-        try:
-            # 30s stall guard + fast fallback to claude-sonnet-4-6 (see _chat_with_stall_fallback).
-            # A single upstream hang on the chosen model used to block the whole render with no
-            # feedback ("idle 7 min"); now it fails fast and the narration still gets produced.
-            # _used_model may differ from req.gen_model → bill THAT below.
-            resp, _used_model = await _chat_with_stall_fallback(
-                req.gen_model, [{"role": "user", "content": prompt}], temperature=0.8)
-            narration = (resp.choices[0].message.content or "").strip()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"narration generation failed: {e}")
+                                {"tokens_in": len(topic) // 4 + 200, "tokens_out": params.target_words * 2}, byok=_byok)
+        narration = ""
+        if _vi_narration_via_dalang():
+            # Flag ON: style-aware narration from the Dalang engine (covers Video AND WB
+            # from-topic — both hit this route). Falls through to legacy on empty/failure.
+            narration = await _dalang_narration_for_video(topic, req.style, req.language, params.target_words)
+        if not narration:
+            # Legacy path — flag OFF (default) OR Dalang returned empty (graceful fallback).
+            prompt = _vseg.build_generation_prompt(topic, params.target_words, req.style, req.language)
+            try:
+                # 30s stall guard + fast fallback to claude-sonnet-4-6 (see _chat_with_stall_fallback).
+                # A single upstream hang on the chosen model used to block the whole render with no
+                # feedback ("idle 7 min"); now it fails fast and the narration still gets produced.
+                # _used_model may differ from req.gen_model → bill THAT below.
+                resp, _used_model = await _chat_with_stall_fallback(
+                    req.gen_model, [{"role": "user", "content": prompt}], temperature=0.8)
+                narration = (resp.choices[0].message.content or "").strip()
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"narration generation failed: {e}")
         if not narration:
             raise HTTPException(502, "narration generation returned empty")
         if await _req_canceled(request):   # user pressed Batalkan during "Menulis narasi" → don't charge
