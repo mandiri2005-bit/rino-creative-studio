@@ -399,9 +399,136 @@ async def outline_from_topic(
     }
 
 
+# ===========================================================================
+# STORY BIBLE — pin the load-bearing facts BEFORE the parallel chapter MAP.
+# Root cause of the batch's cross-chapter contradictions (the star that is a red
+# giant in ch1 and a supernova remnant in ch6; the genealogy that flips clan
+# between ch2 and ch3; the workshop that changes cities): N chapter-writers run in
+# PARALLEL and none sees the others' drafts, while the outline entries are only a
+# title + a 1-2 sentence summary — so each writer INVENTS the specifics (the
+# object's identity, the names, the places, the dates) independently. This one
+# manager call decides those specifics ONCE and rides them into every worker via
+# ctx.canonical_facts (the cached SYSTEM prefix), so all chapters inherit the same
+# world. Prevention that complements the post-hoc #53 consistency critic.
+# ===========================================================================
+# FICTION variant — the writers INVENT the world, so the bible DECIDES the specifics once.
+_STORY_BIBLE_SYSTEM_FICTION = (
+    "You are the STORY BIBLE editor for a multi-chapter FICTION narrative. N writers will each "
+    "draft ONE chapter of this story IN PARALLEL, and none of them can see the others' drafts. "
+    "Produce the single canonical fact-sheet they must ALL obey so their chapters do not "
+    "contradict each other. DECIDE and FIX the load-bearing specifics now, once, so every writer "
+    "inherits the same world.\n\n"
+    "Pin ONLY facts that must stay constant across the whole book:\n"
+    "1. CHARACTERS — each named person: EXACT name spelling, age, role, one-line identity, key "
+    "relationships. Fix name+age so no writer renames, re-spells, or re-ages them. (The single "
+    "most common failure is the cast mutating between chapters — one grandfather becoming three "
+    "different names; one child becoming four. Prevent it: one person, one name, everywhere.)\n"
+    "2. CENTRAL SUBJECT — the ONE object / place / phenomenon the whole story turns on. Fix its "
+    "identity and EVERY measurable attribute (type, size, age, distance, material, provenance, "
+    "COUNT) so it is unmistakably the SAME thing in chapter 1 and the last chapter. If the "
+    "premise implies science/domain facts, make them internally correct and mutually consistent.\n"
+    "3. SETTING — every named location, pinned once (country, city, building, floor). One place, "
+    "one name, one spelling.\n"
+    "4. TIMELINE & QUANTITIES — the season, total elapsed span, dated offsets (\"3 years since "
+    "X\"), and any COUNTS (how many colonies/chapters/people). Keep them arithmetically "
+    "consistent and MONOTONIC — a duration cannot shrink as the story moves forward.\n"
+    "5. POV & NARRATION — who narrates and whose head we are in (per chapter if it rotates), "
+    "first vs third person, and tense. Fix this so no chapter silently switches viewpoint.\n"
+    "6. KEY FACTS / REVEAL — the plot facts that must not drift (who did what to whom, the "
+    "secret, the diagnosis, the twist). Choose a SINGLE version of each reveal and state it once.\n\n"
+    "Rules: DECIDE concrete values even where the outline is vague — that is the entire point, "
+    "pin them. Do NOT write prose, plot beats, or chapter content. Keep it tight — a numbered "
+    "fact-sheet under those six headings, one fact per line, no preamble."
+)
+
+# NONFICTION / HYBRID variant — factual content: PIN only, NEVER fabricate. This is the
+# fabrication-safety guarantee (review finding): a real place/person/date must not have an
+# invented provenance canonized into the shared prefix.
+_STORY_BIBLE_SYSTEM_NONFICTION = (
+    "You are the CONTINUITY SHEET editor for a multi-chapter NONFICTION / factual piece. N "
+    "writers will each draft ONE chapter IN PARALLEL, none seeing the others'. Produce the single "
+    "continuity sheet they must ALL obey so the chapters stay consistent about WHO and WHAT the "
+    "piece is about.\n\n"
+    "CRITICAL — this is factual content. You may ONLY pin facts the premise/topic states or "
+    "clearly implies. Do NOT invent names, dates, numbers, statistics, quotes, or events that "
+    "are not given. Where a specific is needed but not established, write \"[VERIFY: ...]\" so an "
+    "editor fills it — NEVER fabricate it, and NEVER invent a history or provenance for a real "
+    "place or person.\n\n"
+    "Pin, from the premise only:\n"
+    "1. SUBJECT / PEOPLE — the real subject(s) and figures named, with exact names/spellings and "
+    "roles; keep them consistent (no renaming, no invented middle names).\n"
+    "2. CENTRAL SUBJECT — the one thing the piece is about; its GIVEN attributes only.\n"
+    "3. SETTING — named real places, spelled consistently; do not invent their backstory.\n"
+    "4. TIMELINE — the ordering/era the premise establishes; unknown dates → [VERIFY].\n"
+    "5. POV & NARRATION — the narrating stance and tense to hold throughout.\n"
+    "6. KEY CLAIMS — the through-line the premise sets; anything not given → [VERIFY], not invented.\n\n"
+    "Rules: consistency, not invention. Do NOT write prose. Numbered sheet, one item per line, no preamble."
+)
+
+
+def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_fiction: bool) -> str:
+    ol_lines = []
+    for i, c in enumerate(outline or []):
+        cid = c.get("id", i + 1) if isinstance(c, dict) else i + 1
+        title = str((c.get("title", "") if isinstance(c, dict) else "") or "").strip()
+        summ = str((c.get("summary", c.get("description", "")) if isinstance(c, dict) else "") or "").strip()
+        ol_lines.append(f"- Ch{cid}: {title}" + (f" — {summ}" if summ else ""))
+    ol = "\n".join(ol_lines) if ol_lines else "(no outline)"
+    label = "STORY BIBLE" if is_fiction else "CONTINUITY SHEET"
+    heads = ("CHARACTERS, CENTRAL SUBJECT, SETTING, TIMELINE & QUANTITIES, POV & NARRATION, KEY FACTS"
+             if is_fiction else
+             "SUBJECT/PEOPLE, CENTRAL SUBJECT, SETTING, TIMELINE, POV & NARRATION, KEY CLAIMS")
+    return (
+        f"TOPIC / PREMISE:\n{topic}\n\n"
+        f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
+        f"Write the {label} in {language}. Output ONLY the numbered sheet under the six headings "
+        f"({heads}). One item per line. No preamble, no prose, no chapter text."
+    )
+
+
+async def build_story_bible(
+    topic: str,
+    outline: list[dict],
+    *,
+    is_fiction: bool = True,
+    style: Optional[str] = None,
+    language: str = "id",
+    manager_model: Optional[str] = None,
+    timeout: float = 120.0,
+    telemetry_sink: Optional[Any] = None,
+) -> str:
+    """ONE manager call → a canonical fact-sheet pinning the piece's load-bearing specifics
+    (names, the central subject's fixed identity, locations, timeline, POV, key reveal) so
+    parallel chapter-writers cannot contradict each other.
+
+    is_fiction toggles the regime: FICTION decides/invents the specifics; NONFICTION pins only
+    what the premise gives and marks unknowns [VERIFY] (never fabricates — fabrication-safety).
+
+    Robust like outline_from_topic: NEVER raises. Returns "" on any failure, so the caller
+    simply proceeds without a bible (prior behavior).
+    """
+    if not (topic and outline):
+        return ""
+    m_model = manager_model or MANAGER_MODEL
+    system = _STORY_BIBLE_SYSTEM_FICTION if is_fiction else _STORY_BIBLE_SYSTEM_NONFICTION
+    worker = Worker(
+        name="planner:bible", role="manager", model=m_model,
+        system=system, temperature=0.3, telemetry_sink=telemetry_sink,
+    )
+    res = await run_worker(
+        worker, _story_bible_prompt(topic, outline, language, is_fiction),
+        timeout=timeout, task_id="planner:bible",
+    )
+    if res.get("ok") and str(res.get("output") or "").strip():
+        return str(res["output"]).strip()
+    log.info("build_story_bible: manager returned no usable bible — proceeding without one")
+    return ""
+
+
 __all__ = [
     "plan_subtasks",
     "outline_from_topic",
+    "build_story_bible",
     "_parse_json_loose",
     "_static_subtask_plan",
     "_static_outline",

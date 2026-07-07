@@ -204,6 +204,11 @@ class SharedContext:
     style_guide: str = DEFAULT_STYLE_GUIDE
     # Human-readable facts block ready to drop into the prompt (deduped, numbered).
     canonical_facts: str = ""
+    # True when canonical_facts holds a fiction STORY BIBLE (invented specifics the
+    # writers must obey) rather than RAG-retrieved external facts. Flips the framing
+    # in brief_block(): a bible says "obey these, invent new detail freely"; RAG facts
+    # say "these are the ONLY facts you may state, else write [VERIFY]".
+    facts_are_bible: bool = False
     # Retrieved RAG passages (the raw dicts) + the pre-formatted context_text, so
     # the assembler can take either. Retrieved ONCE; reused for every chapter.
     passages: list[dict] = field(default_factory=list)
@@ -353,7 +358,18 @@ class SharedContext:
                     )
         except Exception:  # noqa: BLE001
             pass
-        if self.canonical_facts and self.canonical_facts.strip():
+        if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
+            # Fiction STORY BIBLE: the specifics are INVENTED but now FIXED. Writers must
+            # obey them exactly (no renaming, no re-measuring, no relocating) yet stay free
+            # to invent NEW concrete detail — the opposite of the [VERIFY] nonfiction stance.
+            parts.append(
+                "STORY BIBLE (canonical facts FIXED for the entire book — every chapter MUST "
+                "obey these exactly: do not rename a character, re-measure or re-identify the "
+                "central subject, move a location, or shift the timeline. You may invent NEW "
+                "concrete detail, but it must never contradict anything listed here):\n"
+                + self.canonical_facts.strip()
+            )
+        elif self.canonical_facts and self.canonical_facts.strip():
             parts.append(
                 "CANONICAL FACTS (the ONLY names/dates/numbers/quotes you may state as "
                 "fact — anything else, write \"[VERIFY: ...]\"):\n"

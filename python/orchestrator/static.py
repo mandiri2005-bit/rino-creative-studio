@@ -444,6 +444,27 @@ async def _write_chapter(
     return res
 
 
+def _is_fiction_style(style: Optional[str]) -> bool:
+    """True ONLY for FICTION styles — the sole regime that should receive an INVENTED story
+    bible. Nonfiction/history (natgeo, journalistic, true_crime, babad, sejarah) ground on
+    RETRIEVED facts and must NEVER have facts fabricated, so they are excluded. Checks both
+    the is_fiction flag and a fictional factual_regime ('fiction'/'fictional'). Note: the P1
+    fiction specs (kdrama_serial/romance_contemporary/coming_of_age) only resolve to their
+    real entry when DALANG_INFRA_FIXES=1 merges them; without that flag they fuzzy-fall to a
+    nonfiction entry and this returns False — so the bible stays OFF, which is fail-safe.
+    Soft: any import/lookup failure ⟹ False."""
+    if not style:
+        return False
+    try:
+        from pakem import resolve_style as _rs  # type: ignore
+        entry = _rs(style) or {}
+        if entry.get("is_fiction") is True:
+            return True
+        return str(entry.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def narrate_chapters(
     topic: str,
     chapters: Sequence[dict],
@@ -500,6 +521,36 @@ async def narrate_chapters(
     ctx = shared_context or await build_shared_context(
         topic, chapters, tenant_id, style=style,
     )
+
+    # 1.5) STORY BIBLE — for EVERY multi-chapter book (Rino: "semua style WAJIB pake brief"),
+    #   default ON (NARASI_STORY_BIBLE=0 disables). Before the parallel MAP, pin the piece's
+    #   load-bearing specifics — names+ages, the central subject's fixed identity + counts, named
+    #   locations, timeline, POV, the key reveal — in ONE manager call, and ride them into every
+    #   worker via ctx.canonical_facts (cached prefix). Root-cause PREVENTION for the cross-chapter
+    #   drift (the Beekeeper name-collapse Hartono→Suranto→Wiro; the star that is 3 objects) that
+    #   the #53 critic otherwise only catches after generation. REGIME-AWARE: fiction DECIDES the
+    #   invented specifics (facts_are_bible=True ⟹ "obey/invent-freely" framing); nonfiction/
+    #   history PINS only what the premise gives and marks unknowns [VERIFY] — NEVER fabricates
+    #   (facts_are_bible stays False ⟹ the [VERIFY] framing). Runs only when the facts slot is
+    #   still EMPTY (RAG facts win). Never raises; on failure ctx is unchanged. Metered through
+    #   the same telemetry_sink as the outline/chapters, so _settle bills it.
+    if (str(os.environ.get("NARASI_STORY_BIBLE", "1")).strip().lower() not in ("0", "false", "no", "off")
+            and total >= 2 and not (ctx.canonical_facts or "").strip()):
+        _fic = _is_fiction_style(style)
+        try:
+            from .dynamic import build_story_bible
+            _bible = await build_story_bible(
+                topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                style=style, language=language,
+                manager_model=m_model, telemetry_sink=telemetry_sink,
+            )
+            if _bible:
+                ctx.canonical_facts = _bible
+                ctx.facts_are_bible = _fic  # True ⟹ invent framing; False ⟹ [VERIFY] framing
+                log.info("narrate_chapters: %s pinned (%d chars, style=%s, fiction=%s)",
+                         "story bible" if _fic else "continuity sheet", len(_bible), style, _fic)
+        except Exception as _be:  # noqa: BLE001
+            log.warning("narrate_chapters: story bible generation failed (non-fatal): %s", _be)
 
     # 2) MAP — bounded parallel fan-out. Semaphore caps concurrency at max_parallel
     #    so a 40-chapter book doesn't open 40 sockets at once.
