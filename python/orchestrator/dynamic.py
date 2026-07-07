@@ -345,7 +345,10 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
         "sequence — no chapter set earlier in time than the one before it (no rewinding to "
         "an earlier event as a whole chapter). And make sure every EXTERNAL stake the story "
         "opens — a deadline, a debt, a threat, a search — is RESOLVED by the final chapters, "
-        f"never left dangling. Titles and summaries in {language}.\n\n"
+        "never left dangling. Make the STRUCTURE original: build it from THIS topic's specific "
+        "hook, NOT as a re-skin of a famous novel/film with the details swapped, and NOT as the "
+        "over-used \"a buried document/record exposes a hidden past crime\" shape — if it drifts "
+        f"there, choose a different engine. Titles and summaries in {language}.\n\n"
         "Return ONLY a JSON array, no prose, no code fences, in EXACTLY this shape:\n"
         '[{"title": "chapter title", "summary": "1-2 sentences on what it covers", '
         f'"words": {words_per_chapter}}}]'

@@ -397,6 +397,25 @@ class SharedContext:
                         "- If you write the ENDING: land the external plot AND the emotional turn. Do "
                         "not resolve only the feeling and quietly drop the plot the book set running."
                     )
+                    # ORIGINALITY — the ceiling lever (2026-07-07). The corpus caps at ~8 mainly by
+                    # being DERIVATIVE: it re-skins a famous work, or defaults to ONE over-used engine.
+                    # A piece that escapes the default engine (a premise-specific structure) reaches 9.
+                    # This pushes the writer OFF the clone toward an original engine built from the hook.
+                    parts.append(
+                        "ORIGINALITY (write an ORIGINAL story — never a re-skin):\n"
+                        "- Do NOT reproduce the plot skeleton of a famous novel/film/drama with the "
+                        "serial numbers filed off (a known story moved to a new setting or profession). "
+                        "If the premise resembles a well-known work, deliberately DIVERGE — a different "
+                        "structure, a genuinely new turn.\n"
+                        "- AVOID the over-used default engine: a protagonist holding a false/flattering "
+                        "version of the past that a BURIED DOCUMENT / suppressed record / hidden ledger / "
+                        "forged file exposes as a hidden family-or-institutional crime, ending in a quiet "
+                        "reckoning. If the story is drifting into that shape, pick a DIFFERENT engine — a "
+                        "goal actively pursued, a threat survived, a bond tested with no buried lie to "
+                        "excavate, a transformation, a choice with no document to find.\n"
+                        "- Build the engine from THIS premise's specific, concrete hook — the thing that "
+                        "makes it unlike any other story — not from a familiar template."
+                    )
         except Exception:  # noqa: BLE001
             pass
         if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
