@@ -1513,35 +1513,65 @@ def chapter_heading_repair(text: str, lang: str = "en") -> tuple[str, int]:
 
 
 # ── '-ite' merge-corruption detector (narasi-3 'ofite'←'of white'; bed-of-orchid part-2
-#    'mostlyite'←'mostly laterite'). REPORT-only by necessity: the dropped letters are
-#    UNRECOVERABLE, so the token cannot be deterministically repaired — but it CAN be caught
-#    precisely. Signal: a token ending in 'ite' whose prefix (minus 'ite') is a common
-#    function/adverb word AND the whole token is not a real -ite word. This replaces the old
-#    lexicon-backed merge_token_scan, which FP'd on inflections/technical words (began,
-#    intergeneric) AND missed 'mostlyite'. Zero FP on real -ite words (granite, definite,
-#    appetite, opposite, polite, ignite, unite) because their prefixes are not function words. ──
+#    'mostlyite'←'mostly laterite'; kintsugi 'powderedite'←'powdered [material]'). REPORT-only
+#    by necessity: the dropped letters are UNRECOVERABLE, so the token can't be deterministically
+#    repaired — but it CAN be caught precisely. Signal: a token ending in 'ite' that is NOT a
+#    real English -ite word (checked against a bundled 3k-word -ite dictionary). This subsumes
+#    the earlier prefix-restricted heuristic, which caught 'ofite'/'mostlyite' (function/adverb
+#    prefixes) but MISSED 'powderedite' (content-word prefix 'powdered' — not enumerable). The
+#    dictionary excludes every real -ite word (granite/opposite/favorite/graphite/website/
+#    expedite/laterite/hematite …) so those never flag. Proper nouns are skipped (case check)
+#    to avoid FP on names/places. The frozenset _MERGE_ITE_PREFIXES remains as the graceful
+#    fallback if the bundled gz can't be loaded at import (path/deploy safety). ──
 _MERGE_ITE_PREFIXES = frozenset((
     "of", "to", "in", "on", "at", "as", "is", "it", "or", "an", "be", "no", "so", "we",
     "he", "up", "by", "and", "the", "all", "my", "mostly", "only", "really", "simply",
     "nearly", "partly", "just", "almost", "fully", "barely", "hardly", "truly", "merely",
     "purely", "largely", "mainly", "half", "quite"))
-_ITE_TOKEN_RX = re.compile(r"\b([a-z]{2,})ite\b")
+_ITE_TOKEN_RX = re.compile(r"\b([a-z]{2,})ite\b", re.I)
+
+
+def _load_ite_words() -> set[str] | None:
+    """Bundled real-'-ite'-word dictionary (words ending in 'ite', len>=5). None ⟹ load
+    failed ⟹ merge_fusion_scan degrades to the prefix-restricted heuristic. Fail-safe: any
+    exception (missing file, bad gzip) returns None rather than raising at import."""
+    try:
+        import gzip
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ite_words.txt.gz")
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            words = {ln.strip() for ln in fh if ln.strip()}
+        return words or None
+    except Exception:
+        return None
+
+
+_ITE_REAL_WORDS = _load_ite_words()
 
 
 def merge_fusion_scan(text: str) -> dict[str, Any]:
     """Report-only: catch the '-ite' letter-loss fusion class precisely (can't auto-repair —
-    the dropped letters are gone). Flags 'ofite'/'mostlyite'; ignores real -ite words."""
+    the dropped letters are gone). Flags 'ofite'/'mostlyite'/'powderedite'; ignores every real
+    -ite word via the bundled dictionary. Falls back to the function-word prefix set if the
+    dictionary is unavailable."""
     if not text:
         return {"merge_fusion_hits": 0, "merge_fusion_samples": []}
     samples: list[str] = []
     seen: set[str] = set()
-    for m in _ITE_TOKEN_RX.finditer(text.lower()):
-        pre = m.group(1)
+    for m in _ITE_TOKEN_RX.finditer(text):
+        raw = m.group(0)
+        if raw[:1].isupper():          # skip proper nouns (names/places) → no FP
+            continue
+        pre = m.group(1).lower()
         tok = pre + "ite"
-        if tok in seen or pre not in _MERGE_ITE_PREFIXES:
+        if tok in seen:
+            continue
+        if _ITE_REAL_WORDS is not None:
+            if len(tok) < 5 or tok in _ITE_REAL_WORDS:   # real -ite word ⟹ clean
+                continue
+        elif pre not in _MERGE_ITE_PREFIXES:             # fallback: prefix heuristic
             continue
         seen.add(tok)
-        samples.append(f"{tok} (letter-loss fusion of '{pre} …'?)")
+        samples.append(f"{tok} (letter-loss fusion — not a real '-ite' word)")
         if len(samples) >= 8:
             break
     return {"merge_fusion_hits": len(samples), "merge_fusion_samples": samples}
