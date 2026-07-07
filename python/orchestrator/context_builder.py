@@ -463,6 +463,28 @@ class SharedContext:
                             "atmospheric writing that makes this book — just stop repeating the SAME device "
                             "to deliver it."
                         )
+                    # DRAMATIZE THE REVEAL (9.0->9.x craft lever) — the reveal chapter often reads as a
+                    # narrated "confession essay" instead of a live scene. HIGHER regression risk than the
+                    # others: over-scening a quiet chamber piece can tip it into melodrama and LOWER a
+                    # literary reveal that currently works — so it carries an escape hatch, preserves
+                    # interiority, and is scoped to the single PIVOT beat. Flag-gated NARASI_DRAMATIZE_REVEAL
+                    # (default OFF): test LAST, corpus-check against a chamber piece before trusting broadly.
+                    if os.environ.get("NARASI_DRAMATIZE_REVEAL", "0").strip().lower() in ("1", "true", "yes", "on"):
+                        parts.append(
+                            "DRAMATIZE THE REVEAL (a turn earns its weight in SCENE, not in summary):\n"
+                            "- IF your chapter carries the central REVEAL or biggest shift, deliver at least "
+                            "the PIVOT as a LIVE SCENE — people in a place, in real time, the reveal breaking "
+                            "THROUGH action — not compressed into narrated, after-the-fact explanation (a "
+                            "confession essay, not a chapter).\n"
+                            "- Rule of thumb: the SINGLE most important beat is shown as it happens, not "
+                            "reported. If earlier events must be conveyed, dramatize the ONE that matters most "
+                            "as a concrete remembered scene.\n"
+                            "- Reflection is WELCOME: after the turn lands, the narrator may sit with it. What "
+                            "to avoid is REPLACING the dramatized turn with explanation — not the presence of "
+                            "interiority.\n"
+                            "(If your chapter carries no such reveal, ignore this — do not manufacture a "
+                            "dramatic confrontation the story does not have.)"
+                        )
         except Exception:  # noqa: BLE001
             pass
         if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():

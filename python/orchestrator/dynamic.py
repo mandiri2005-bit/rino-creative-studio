@@ -567,6 +567,21 @@ async def build_story_bible(
         return ""
     _to = float(timeout if timeout is not None else os.environ.get("NARASI_BIBLE_TIMEOUT", "120"))
     system = _STORY_BIBLE_SYSTEM_FICTION if is_fiction else _STORY_BIBLE_SYSTEM_NONFICTION
+    # SECONDARY WANT (9.0->9.x craft lever) — pin ONE want/friction per recurring NAMED secondary so
+    # they read as people, not plot-functions. FICTION-only (never invent wants for real people) and
+    # flag-gated NARASI_SECONDARY_WANT (default OFF): no-op on deploy, and a no-op on two-hander
+    # premises (no recurring secondaries to deepen). Lives in the fact-sheet, which already bans prose
+    # /subplots, so the want stays a compact pinned attribute — worst case = mild noise or ignored.
+    if is_fiction and os.environ.get("NARASI_SECONDARY_WANT", "0").strip().lower() in ("1", "true", "yes", "on"):
+        system = system + (
+            "\n\nADDENDUM to heading 1 (CHARACTERS) — SECONDARY DEPTH: for each NAMED secondary who "
+            "RECURS (not a one-scene walk-on) — the friend, the parent, the colleague, the rival — pin "
+            "ONE concrete WANT or moral friction of their OWN: something they are after, resist, fear, "
+            "or are quietly wrong about, INDEPENDENT of serving the protagonist's plot. A secondary who "
+            "exists only to hand the protagonist information reads as a function, not a person. One want "
+            "per secondary, ONE line, drawn from who they already are — do NOT invent new characters, "
+            "add subplots, or give a walk-on a backstory; this only DEEPENS secondaries the outline "
+            "already requires. If the premise is a two-hander with no recurring secondary, add nothing.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     _primary  = manager_model or MANAGER_MODEL
     _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", WORKER_MODEL) or "").strip()
