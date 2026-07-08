@@ -1172,10 +1172,16 @@ def _narasi_failover_chain(model: str = "") -> list[tuple[str, str, str, str, st
         return _narasi_gemini_failover_chain(model)
     if model in _NARASI_SONNET_FAILOVER_MODELS:
         return _narasi_sonnet_failover_chain(model)
+    # Per-rung served model id is env-tunable so the opus chain can be pointed at a different opus build
+    # per provider WITHOUT a code change (e.g. NARASI_LAOZHANG_MODEL=claude-opus-4-7). Defaults preserve
+    # today's routing EXACTLY (KIE/LaoZhang=opus-4-6, AtlasCloud=opus-4-8) — a no-op unless a flag is set.
+    _kie_model   = (os.environ.get("NARASI_KIE_MODEL", "claude-opus-4-6") or "claude-opus-4-6").strip()
+    _lz_model    = (os.environ.get("NARASI_LAOZHANG_MODEL", "claude-opus-4-6") or "claude-opus-4-6").strip()
+    _atlas_model = (os.environ.get("NARASI_ATLASCLOUD_MODEL", "claude-opus-4-8") or "claude-opus-4-8").strip()
     return [
-        ("kie",        "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""),        "claude-opus-4-6"),
-        ("laozhang",   "openai",    BASE_URL,                                _req_key.get() or API_KEY,                 "claude-opus-4-6"),
-        ("atlascloud", "openai",    "https://api.atlascloud.ai/api/v1",      os.environ.get("ATLASCLOUD_API_KEY", ""),  "claude-opus-4-8"),
+        ("kie",        "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""),        _kie_model),
+        ("laozhang",   "openai",    BASE_URL,                                _req_key.get() or API_KEY,                 _lz_model),
+        ("atlascloud", "openai",    "https://api.atlascloud.ai/api/v1",      os.environ.get("ATLASCLOUD_API_KEY", ""),  _atlas_model),
     ]
 
 
@@ -9421,6 +9427,43 @@ def _retrofit_legacy_chapter_labels(md: str, language: str) -> str:
     return _LEGACY_BAB_RE.sub(_repl, md)
 
 
+# ── F5 title-leak guard ──────────────────────────────────────────────────────
+# A chapter TITLE must read as an in-world phrase, never a story-structure/craft beat-label. The
+# generator occasionally leaks one into the title ("Chapter 4: The Midpoint Ledger" — lens-flagged).
+# _strip_beat_label removes an UNAMBIGUOUS structural label from a title, but ONLY when what remains is
+# still a valid title — a legit title is never damaged, and a degenerate result (empty / article-only)
+# keeps the original untouched. Prevention lives in the outline prompt; this is the net before persist.
+_BEAT_LABELS = (
+    "inciting incident", "rising action", "falling action", "dark night of the soul",
+    "call to adventure", "ordinary world", "all is lost", "point of no return",
+    "midpoint", "mid-point", "denouement", "pinch point", "turning point",
+    "act one", "act two", "act three", "act four",
+    "act i", "act ii", "act iii", "act iv",
+)
+_BEAT_LABEL_RX = re.compile(r"(?i)\b(?:" + "|".join(re.escape(b) for b in _BEAT_LABELS) + r")\b")
+
+
+def _strip_beat_label(title: str) -> str:
+    """Strip a leaked structural beat-label from a chapter title; keep the original if the result would
+    be degenerate. Conservative by design — never damages a legitimate in-world title."""
+    t = str(title or "")
+    if not t or not _BEAT_LABEL_RX.search(t):
+        return title
+    out = _BEAT_LABEL_RX.sub("", t)
+    out = re.sub(r"\s{2,}", " ", out)                                   # collapse doubled spaces
+    out = re.sub(r"\s+([:;,.—–-])", r"\1", out)               # 'The : X' → 'The: X'
+    out = re.sub(r"([:;,.—–])\s*(?=[:;,.—–])", "", out)  # drop doubled separators
+    out = out.strip(" \t:;,.—–-")
+    # drop a leading article left dangling before a preposition ('The of Trust' → 'of Trust'), then re-cap
+    out = re.sub(r"(?i)^(?:the|a|an)\s+(?=(?:of|in|on|at|to|for|and|or|with|from|by)\b)", "", out)
+    out = (out[:1].upper() + out[1:]) if out else out
+    if len(out) < 3 or not re.search(r"[^\W\d_]", out):                 # empty / no real word → keep original
+        return title
+    if out.strip().lower() in ("the", "a", "an", "of", "the of", "and", "or"):
+        return title
+    return out
+
+
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
     # Outline + brief are structural planning served as a SYNCHRONOUS blocking request — a slow model
@@ -9605,7 +9648,10 @@ async def _narasi_outline_impl(body: dict):
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array of exactly {chap_count} objects, each with:\n"
             f"    \"id\": chapter number as string\n"
-            f"    \"title\": chapter title in {lang_label}\n"
+            f"    \"title\": chapter title in {lang_label} — an EVOCATIVE IN-WORLD phrase drawn from the "
+            f"chapter's content; NEVER a story-structure or craft beat-label (do NOT use 'Midpoint', "
+            f"'Climax', 'Inciting Incident', 'Rising Action', 'Falling Action', 'Reversal', 'Turning Point', "
+            f"'Act One/Two/Three', 'Setup', 'Payoff', 'Denouement', 'Resolution', 'Crisis')\n"
             f"    \"description\": 1-2 sentence summary, written in {lang_label}\n"
             f"    \"words\": integer word count weighted by topical depth\n"
             f"  \"outline_text\": the full outline as clean markdown\n"
@@ -9939,7 +9985,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             await credits_lib.touch_hold(_narasi_tenant, _meter_op)
 
         chap_id = chapter.get("id", "?")
-        chap_title = chapter.get("title", "")
+        chap_title = _strip_beat_label(chapter.get("title", ""))  # F5: drop leaked beat-labels from title
         chap_desc = chapter.get("description", "")
         word_target = int(chapter.get("words") or 400)
         word_min = int(word_target * 0.9)

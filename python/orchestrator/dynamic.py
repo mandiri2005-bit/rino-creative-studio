@@ -621,10 +621,16 @@ async def build_story_bible(
             "\n\nBOTH V2 addenda are SECONDARY to headings 1-8: never let satisfying them shorten or "
             "weaken the #8 SIGNATURE HOOK payoff commitment.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
-    _primary  = manager_model or MANAGER_MODEL
-    # Fallback when the opus bible fails on EVERY provider: use a STRONG model (sonnet by default), NOT the
-    # weak WORKER_MODEL (gemini-2.5-flash) — a weak bible is the root of "video jelek". Env-overridable.
-    _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", "claude-sonnet-4-6") or "").strip()
+    # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
+    # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a
+    # full NARASI_BIBLE_TIMEOUT waste (~300s) that ALSO double-bills the abandoned LaoZhang opus (a 502 to us
+    # while LaoZhang finishes + bills it server-side). Sonnet is fast (~89s), reliable, and strong enough for
+    # a fact-sheet. Default the bible to sonnet; NARASI_BIBLE_MODEL overrides (set claude-opus-4-6 to force
+    # opus and accept the latency/cost). Chapters keep their own worker_model (opus) — they run warm + fine.
+    _primary  = (os.environ.get("NARASI_BIBLE_MODEL", "claude-sonnet-4-6") or "").strip() or (manager_model or MANAGER_MODEL)
+    # Last-resort net if the bible model itself fails on every provider (rare for sonnet): a fast, KIE-free
+    # Vertex model so the job still completes. Env-overridable.
+    _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", "gemini-2.5-flash") or "").strip()
     _chain = [_primary] + ([_fallback] if (_fallback and _fallback != _primary) else [])
     # Right-size the bible: it is a numbered fact-sheet (~2-4k tokens), NOT a book. Leaving max_tokens unset
     # made it inherit the opus 128k ceiling → a heavy, slow non-streaming KIE request that outran its timeout

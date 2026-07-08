@@ -662,6 +662,11 @@ async def narrate_chapters(
         _chap_fmt = "Chapter {n}"
     def _chapter_md(c: dict[str, Any]) -> str:
         title = (c.get("title") or "").strip()
+        try:  # F5: strip a leaked structural beat-label from the chapter title (cycle-free at call time)
+            from laozhang_api import _strip_beat_label as _sbl
+            title = _sbl(title)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             label = _chap_fmt.format(n=int(c.get("no", 0)) + 1)
         except Exception:  # noqa: BLE001
