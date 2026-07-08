@@ -973,6 +973,15 @@ except Exception:
 
 _request_id_ctx: ContextVar[str] = ContextVar("_request_id_ctx", default="")
 
+# Per-call overrides for the narasi failover PER-RUNG timeout + rung-attempts (both default None →
+# use the global _NARASI_FAILOVER_TIMEOUT / _NARASI_RUNG_ATTEMPTS). The bible sets a SHORT rung timeout
+# and attempts=1 so a slow KIE rung fails over to the SAME opus model on LaoZhang/AtlasCloud WITHIN the
+# bible's own wait_for window — otherwise a hung KIE (global 280s × 2 attempts) eats the whole window
+# and the bible drops to a WEAK fallback MODEL instead of opus-on-another-provider. Read in _create;
+# propagate through run_worker's asyncio.to_thread (which copies the context).
+_narasi_rung_timeout_ctx: ContextVar = ContextVar("_narasi_rung_timeout", default=None)
+_narasi_rung_attempts_ctx: ContextVar = ContextVar("_narasi_rung_attempts", default=None)
+
 _SENSITIVE_HEADERS = {"authorization", "cookie", "x-laozhang-api-key",
                       "x-image-api-key", "x-veo-api-key", "x-sora-api-key",
                       "x-internal-secret", "x-admin-secret"}
@@ -1412,13 +1421,17 @@ class _NarasiFailoverClient:
                 continue
             attempted += 1
             rung_last_err = ""
-            for rung_attempt in range(1, _NARASI_RUNG_ATTEMPTS + 1):
+            _ra_ov = _narasi_rung_attempts_ctx.get()
+            _n_rung_att = max(1, int(_ra_ov)) if _ra_ov is not None else _NARASI_RUNG_ATTEMPTS
+            for rung_attempt in range(1, _n_rung_att + 1):
                 remaining = deadline - time.monotonic()
                 if remaining <= 1.0:
                     errors.append(f"{name}:skipped (chain budget spent)")
                     rung_last_err = "budget_spent"
                     break
-                rung_timeout = max(1.0, min(float(_NARASI_FAILOVER_TIMEOUT), remaining))
+                _rt_ov = _narasi_rung_timeout_ctx.get()
+                _rt_base = float(_rt_ov) if _rt_ov is not None else float(_NARASI_FAILOVER_TIMEOUT)
+                rung_timeout = max(1.0, min(_rt_base, remaining))
                 call_kw = dict(kw)
                 call_kw["model"] = model_id
                 try:

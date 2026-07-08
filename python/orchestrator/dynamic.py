@@ -583,24 +583,93 @@ async def build_story_bible(
             "per secondary, ONE line, drawn from who they already are — do NOT invent new characters, "
             "add subplots, or give a walk-on a backstory; this only DEEPENS secondaries the outline "
             "already requires. If the premise is a two-hander with no recurring secondary, add nothing.")
+    # ANTAGONIST LOGIC + REVEAL ETHICS (two depth levers — TWO independent lens reviews of the same 9.0
+    # piece both named these as the gap between 9 and 9.5: a flat-motive antagonist, and a climax that
+    # re-victimizes the wronged). FICTION-only, flag-gated NARASI_CRAFT_LEVERS_V2 (default OFF, SEPARATE
+    # from NARASI_CRAFT_LEVERS so each bundle A/B-tests on its own). Both are BIBLE-level pins (once,
+    # upfront — no per-chapter bloat), soft/conditional ("add nothing" when the premise doesn't call for
+    # them), and phrased anti-backfire: motive is SHOWN not monologued; the reveal rule is a constraint,
+    # not a softening. Worst case = a compact ignored pin.
+    if is_fiction and os.environ.get("NARASI_CRAFT_LEVERS_V2", "0").strip().lower() in ("1", "true", "yes", "on"):
+        system = system + (
+            "\n\nADDENDUM to heading 1 (CHARACTERS) — ANTAGONIST LOGIC: IF the premise's central "
+            "opposition is a specific PERSON acting from personal will, pin the ONE internally coherent "
+            "reason they act — which may be a genuine moral logic (it feels, to THEM, like correction, "
+            "duty, or fairness) OR a simple appetite they do not bother to dress up (greed, power, "
+            "self-preservation, cruelty). What matters is that it is COHERENT and specific to THIS "
+            "person, NOT that it be sympathetic; avoid only motiveless cartoon malice. Do NOT default "
+            "every antagonist to 'believes they are the good guy' — vary the register (self-deception, "
+            "cold appetite, wounded grievance, ideology, indifference) and pick the one TRUE to this "
+            "premise, even if unflattering. Pin it as what the antagonist WANTS and DOES, phrased so a "
+            "chapter-writer dramatizes it through action — never as a creed the character would recite. "
+            "One line, drawn from who they already are in the outline; do NOT invent new wounds, "
+            "backstory, or scenes. If the opposition is a person merely ENFORCING a system / policy / "
+            "institution, or the conflict is systemic, internal, or a two-hander, add nothing — and do "
+            "NOT manufacture a personal wound for a conflict the premise intends as impersonal."
+            "\n\nADDENDUM to headings 6-7 (SOLUTION / OPEN THREADS) — REVEAL WITHOUT RE-HARM: apply ONLY "
+            "when the premise clearly turns on the antagonist WEAPONIZING an INNOCENT third party's "
+            "PRIVATE secret. In that case the protagonist's climactic reveal must NOT re-enact that harm "
+            "— do not have the hero publicly expose those same private secrets, re-victimizing the "
+            "wronged in the name of justice; let each wronged party choose what of their own truth to "
+            "make public. EXCEPTION: when the premise's own justice IS public exposure of the "
+            "ANTAGONIST'S OWN wrongdoing (a corruption exposé, a whistleblower arc, holding a wrongdoer "
+            "publicly accountable), that reckoning proceeds IN FULL — this rule shields only innocent "
+            "third parties' private secrets, NEVER the antagonist's culpable conduct. It is a constraint "
+            "on the SOLUTION's mechanics only; do NOT let it surface as a character speech, lesson, or "
+            "moral statement in the chapters. If in ANY doubt, or if the reckoning targets the "
+            "antagonist's own conduct, add nothing."
+            "\n\nBOTH V2 addenda are SECONDARY to headings 1-8: never let satisfying them shorten or "
+            "weaken the #8 SIGNATURE HOOK payoff commitment.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     _primary  = manager_model or MANAGER_MODEL
     _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", WORKER_MODEL) or "").strip()
     _chain = [_primary] + ([_fallback] if (_fallback and _fallback != _primary) else [])
-    for _i, _mdl in enumerate(_chain):
-        worker = Worker(
-            name="planner:bible", role="manager", model=_mdl,
-            system=system, temperature=0.3, telemetry_sink=telemetry_sink,
-        )
-        res = await run_worker(worker, prompt, timeout=_to, task_id="planner:bible")
-        if res.get("ok") and str(res.get("output") or "").strip():
-            if _i > 0:
-                log.info("build_story_bible: primary timed out — bible via fallback model %s", _mdl)
-            return str(res["output"]).strip()
-        log.info("build_story_bible: model %s returned no usable bible (attempt %d/%d)%s",
-                 _mdl, _i + 1, len(_chain),
-                 " — failing over" if _i + 1 < len(_chain) else " — proceeding without one")
-    return ""
+    # Keep the OPUS bible on OPUS across PROVIDERS: a slow KIE rung must fail over to LaoZhang/AtlasCloud
+    # (the same opus model) WITHIN this _to window. With the global 280s per-rung × 2 attempts, KIE alone
+    # eats the whole window and the bible drops to the weak fallback MODEL (gemini-flash). Cap the bible's
+    # per-rung failover timeout SHORT and rung-attempts to 1 so KIE→LaoZhang(→AtlasCloud), all opus, fit
+    # inside _to. Env-tunable; contextvars are read in make_narasi_client._create and propagate through
+    # run_worker's asyncio.to_thread (which copies the context).
+    _rtc = _rac = None
+    _rt_tok = _ra_tok = None
+    try:
+        from laozhang_api import (  # lazy import — laozhang_api is already loaded; avoids a load-time cycle
+            _narasi_rung_timeout_ctx as _rtc, _narasi_rung_attempts_ctx as _rac)
+        # Parse BOTH env values before setting EITHER ctxvar: a bad value (e.g. non-int attempts) must not
+        # leave the timeout ctxvar set-but-unreset and leak the bible's short rung timeout into later
+        # chapter/critic/revise calls of the same job. Clamp the timeout to >= 1.0 so a 0/negative can
+        # never be read as "unset" downstream (the falsy-zero trap that would silently revert to global).
+        _bib_rt = max(1.0, float(os.environ.get("NARASI_BIBLE_RUNG_TIMEOUT", "90")))
+        _bib_ra = max(1, int(os.environ.get("NARASI_BIBLE_RUNG_ATTEMPTS", "1")))
+        _rt_tok = _rtc.set(_bib_rt)
+        _ra_tok = _rac.set(_bib_ra)
+    except Exception:
+        # Import or parse failed → fall back to GLOBAL failover timing. Do NOT null _rtc/_rac here: leaving
+        # the handles bound lets `finally` reset any token we DID obtain (token presence is the real guard).
+        pass
+    try:
+        for _i, _mdl in enumerate(_chain):
+            worker = Worker(
+                name="planner:bible", role="manager", model=_mdl,
+                system=system, temperature=0.3, telemetry_sink=telemetry_sink,
+            )
+            res = await run_worker(worker, prompt, timeout=_to, task_id="planner:bible")
+            if res.get("ok") and str(res.get("output") or "").strip():
+                if _i > 0:
+                    log.info("build_story_bible: primary timed out — bible via fallback model %s", _mdl)
+                return str(res["output"]).strip()
+            log.info("build_story_bible: model %s returned no usable bible (attempt %d/%d)%s",
+                     _mdl, _i + 1, len(_chain),
+                     " — failing over" if _i + 1 < len(_chain) else " — proceeding without one")
+        return ""
+    finally:
+        try:
+            if _rtc is not None and _rt_tok is not None:
+                _rtc.reset(_rt_tok)
+            if _rac is not None and _ra_tok is not None:
+                _rac.reset(_ra_tok)
+        except Exception:
+            pass
 
 
 __all__ = [
