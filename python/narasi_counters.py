@@ -1748,6 +1748,58 @@ def _chapters(text: str) -> list[str]:
     return parts[1:] if len(parts) > 1 else [text or ""]
 
 
+# Content-word stopset for the opening-motif scan (en+id common words length>=4 that
+# carry no motif signal). Length<4 words are already dropped by the crude content filter.
+_OPENING_STOP = {
+    "that", "this", "were", "been", "have", "with", "then", "when", "what", "from",
+    "they", "them", "their", "would", "could", "into", "over", "onto", "upon", "than",
+    "also", "only", "just", "even", "such", "each", "very", "more", "most", "some",
+    "here", "there", "will", "shall", "must", "does", "done", "same", "about", "after",
+    "before", "again", "still",
+    "yang", "dari", "untuk", "dengan", "tidak", "adalah", "akan", "sudah", "pada", "juga",
+    "karena", "atau", "masih", "sedang", "dalam", "telah", "bahwa", "yaitu", "namun",
+}
+_OPENING_WORD_RX = re.compile(r"[A-Za-zÀ-ÿ]+")
+
+
+def _opening_motif_scan(chapters: list[str]) -> dict:
+    """Report-only: flag an atmospheric OPENING MOTIF reused across >=3 chapters (e.g.
+    'rain/basement/radiator' opening most chapters). Generalizes the ID-only weather-opener
+    regex to any content word, language-agnostic. Uses status 'FLAG' (NEVER 'OVER') so it
+    can NEVER enter over_budget / trigger the diet loop. Never raises."""
+    out = {"status": "PASS", "count": 0, "motifs": {}, "sentences": []}
+    try:
+        if len(chapters) < 3:
+            return out
+        by_word: dict[str, set] = {}
+        word_sents: dict[str, list] = {}
+        for ci, ch in enumerate(chapters):
+            sents = _sentences(ch)
+            if not sents:
+                continue
+            # opening = first sentence; strip heading glue (take the last line of the blob)
+            opening = sents[0].strip().split("\n")[-1].strip()
+            toks = [w.lower() for w in _OPENING_WORD_RX.findall(opening)]
+            content = [w for w in toks if len(w) >= 4 and w not in _OPENING_STOP][:8]
+            for w in set(content):
+                by_word.setdefault(w, set()).add(ci)
+                word_sents.setdefault(w, []).append(opening[:200])
+        motifs = {w: len(chs) for w, chs in by_word.items() if len(chs) >= 3}
+        if motifs:
+            out["status"] = "FLAG"
+            out["count"] = len(motifs)
+            out["motifs"] = motifs
+            seen_s: list[str] = []
+            for w in motifs:
+                for s in word_sents.get(w, [])[:2]:
+                    if s not in seen_s:
+                        seen_s.append(s)
+            out["sentences"] = seen_s[:10]
+        return out
+    except Exception:  # noqa: BLE001 — a broken scan must never break generation
+        return {"status": "PASS", "count": 0, "motifs": {}, "sentences": []}
+
+
 def _names_from(m: re.Match) -> Optional[str]:
     gd = m.groupdict()
     return gd.get("name1") or gd.get("name2") or gd.get("name3")
@@ -2067,6 +2119,13 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             "status": "OVER" if len(dup_hits) >= _dup_floor else "PASS",
             "count": len(dup_hits), "floor": _dup_floor, "sentences": dup_hits[:10],
         }
+
+        # Opening-motif (report-only): same atmospheric opening word across >=3 chapters,
+        # generalizing the ID-only weather-opener above to any language/content word.
+        # status='FLAG' (never 'OVER') so it is EXCLUDED from over_budget and can NEVER
+        # drive the diet loop — a repetitive-opening pattern is a generation-prompt fix,
+        # not something the surgical sentence-editor can repair.
+        report["counters"]["opening_motif"] = _opening_motif_scan(chapters)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the

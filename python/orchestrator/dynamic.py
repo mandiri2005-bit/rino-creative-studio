@@ -620,6 +620,23 @@ async def build_story_bible(
             "antagonist's own conduct, add nothing."
             "\n\nBOTH V2 addenda are SECONDARY to headings 1-8: never let satisfying them shorten or "
             "weaken the #8 SIGNATURE HOOK payoff commitment.")
+    # MID-ARC BEAT (setup/payoff completeness lever — recurring across the corpus: a planted
+    # thread present thematically but resolved in the FINALE with no dramatized MIDDLE, e.g. a
+    # falsified-ledger sub-plot that jumps from Ch2 plant to Ch8 payoff with a hollow center).
+    # FICTION-only, flag-gated NARASI_MIDARC_BEATS (default OFF, SEPARATE flag so it A/B-tests on
+    # its own — a "dramatize every thread" push can fight deliberate restraint, so it ships inert).
+    # Extends heading 7: per thread, also name ONE mid-arc chapter that dramatizes it on-screen.
+    if is_fiction and os.environ.get("NARASI_MIDARC_BEATS", "0").strip().lower() in ("1", "true", "yes", "on"):
+        system = system + (
+            "\n\nADDENDUM to heading 7 (OPEN THREADS TO RESOLVE) — MID-ARC BEAT: for each open "
+            "thread, in addition to the late chapter that delivers its OUTCOME, also name ONE "
+            "MID-ARC chapter where the thread is DRAMATIZED ON-SCREEN through character action or a "
+            "concrete scene (not merely referenced, recapped, or alluded to), so its final-chapter "
+            "payoff is EARNED rather than reported. One chapter per thread, ONE line; this only pins "
+            "WHERE an already-required thread earns its middle — do NOT invent new threads, scenes, "
+            "or subplots, and do NOT force a beat onto a thread the premise intends to keep quiet or "
+            "off-screen. SECONDARY to heading 8: never let a mid-arc beat crowd out the SIGNATURE "
+            "HOOK payoff.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
     # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a

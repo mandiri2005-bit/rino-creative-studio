@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextvars
 import os
 import re
+import unicodedata
 from typing import Any, Optional
 
 # alt_history (regime-precedence spec §3): canon-contradiction enforcement OFF for the
@@ -554,6 +555,107 @@ def foreign_token_scan(text: str, lang: str = "en") -> tuple[str, list[str]]:
         out = re.sub(r"[ \t]{2,}", " ", out)
         out = re.sub(r" +([,.;:!?])", r"\1", out)
     return out, hits
+
+
+# ── language-consistency (report-only) ─────────────────────────────────────────
+# Catch a run of text in a language OTHER than the job language — draft-residue leak,
+# e.g. an Indonesian sentence ("Kenapa aku merasa lega?") inside an all-English
+# manuscript. foreign_token_scan only substitutes a tiny per-language hedge-word
+# blocklist (and is a no-op for EN); it does NOT see a whole leaked sentence. This is a
+# REPORT-ONLY detector (writes report flags, never rewrites/blocks) and is honestly
+# UNMEASURED for languages without a seeded function-word set.
+_LANG_FUNCTION_WORDS: dict[str, set] = {
+    "en": {"the", "and", "of", "to", "a", "in", "that", "it", "was", "for", "with", "as",
+           "his", "her", "she", "he", "they", "you", "why", "did", "is", "are", "not",
+           "but", "on", "at", "this", "from", "had", "have", "were", "would"},
+    "id": {"yang", "dan", "di", "ke", "dari", "itu", "ini", "dengan", "untuk", "tidak",
+           "aku", "kamu", "dia", "saya", "kenapa", "mengapa", "merasa", "adalah", "akan",
+           "sudah", "pada", "juga", "karena", "atau", "saja", "sedang", "masih", "lega"},
+    "es": {"el", "la", "de", "que", "y", "los", "las", "un", "una", "por", "con", "para",
+           "no", "se", "su", "al", "del", "como", "pero", "más", "porque", "cuando"},
+    "fr": {"le", "la", "les", "de", "des", "un", "une", "et", "que", "qui", "dans", "pour",
+           "pas", "ne", "je", "il", "elle", "est", "son", "sa", "avec", "mais", "parce"},
+    "de": {"der", "die", "das", "und", "den", "dem", "ein", "eine", "zu", "mit", "nicht",
+           "ich", "sie", "er", "ist", "war", "für", "auf", "aber", "weil", "auch"},
+    "pt": {"o", "a", "os", "as", "de", "que", "e", "um", "uma", "por", "para", "não", "se",
+           "com", "mais", "porque", "como", "mas", "seu", "sua", "quando"},
+}
+# Latin-script job languages (for the non-Latin-script leak pass).
+_LATIN_JOB_LANGS = {"en", "id", "es", "fr", "de", "pt", "nl", "jv", "su", "min", "ms",
+                    "it", "pl", "cs", "hr", "sr", "sl", "mk", "lt", "lv", "et", "hu", "ro",
+                    "tl", "vi"}
+_LC_WORD_RX = re.compile(r"[A-Za-zÀ-ÿ]+")
+
+
+def _nonlatin_run(s: str) -> int:
+    """Longest run of consecutive non-Latin, non-common LETTER characters (Cyrillic,
+    CJK, Arabic, Hangul, Devanagari, Thai …). Digits/punct/spaces break the run."""
+    best = run = 0
+    for ch in s:
+        if not ch.isalpha():
+            run = 0
+            continue
+        try:
+            name = unicodedata.name(ch)
+        except ValueError:
+            run = 0
+            continue
+        # LATIN letters are fine for a Latin-script target; anything else is a leak.
+        if name.startswith("LATIN"):
+            run = 0
+        else:
+            run += 1
+            best = max(best, run)
+    return best
+
+
+def language_consistency_scan(text: str, lang: str = "en") -> dict:
+    """Report-only: flag sentences reading as a DIFFERENT language than the job `lang`.
+    (a) function-word pass: a sentence with >=3 tokens in some OTHER seeded language's
+        function-word set and 0 in the job language's; (b) script pass: for a Latin-script
+        job, a run of >=4 consecutive non-Latin letters. Never raises; applies=False when
+        neither pass can measure (no seeded set for `lang` and no script leak)."""
+    res: dict[str, Any] = {"applies": False, "hits": 0, "samples": [], "other_langs": {}}
+    if not text:
+        return res
+    try:
+        base = (lang or "en").split("-")[0].lower()
+        job_fw = _LANG_FUNCTION_WORDS.get(base)
+        is_latin_job = base in _LATIN_JOB_LANGS
+        # applies when we can run at least one pass
+        res["applies"] = (job_fw is not None) or is_latin_job
+        if not res["applies"]:
+            return res
+        hits: list[str] = []
+        others: dict[str, int] = {}
+        for s in _SENT_SPLIT_RX.split(text):
+            s = s.strip()
+            if not s or len(s) < 8:
+                continue
+            flagged = False
+            # (a) function-word leak
+            if job_fw is not None:
+                toks = {w.lower() for w in _LC_WORD_RX.findall(s)}
+                if len(toks) >= 3 and not (toks & job_fw):
+                    for other, fw in _LANG_FUNCTION_WORDS.items():
+                        if other == base:
+                            continue
+                        if len(toks & fw) >= 3:
+                            others[other] = others.get(other, 0) + 1
+                            flagged = True
+                            break
+            # (b) non-Latin-script leak into a Latin-script target
+            if not flagged and is_latin_job and _nonlatin_run(s) >= 4:
+                others["non_latin"] = others.get("non_latin", 0) + 1
+                flagged = True
+            if flagged and s not in hits:
+                hits.append(s[:200])
+        res["hits"] = len(hits)
+        res["samples"] = hits[:10]
+        res["other_langs"] = others
+        return res
+    except Exception:  # noqa: BLE001 — a broken scan must never break generation
+        return {"applies": False, "hits": 0, "samples": [], "other_langs": {}}
 
 
 # Diponegoro-2: manuscript-structure references leaking into prose ("reputasi taktisnya
@@ -1869,7 +1971,13 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
                     stats["aphorism_samples"] = _ap["aphorism_samples"]
                     stats["aphorism_rate_per_10_chapters"] = _ap["aphorism_rate_per_10_chapters"]
                     # Cap = ~1 per 2 chapters = 5 per 10; flag when materially over.
-                    if _ap["aphorism_rate_per_10_chapters"] > 6.0:
+                    # VIDEO output is read aloud (VO must breathe), so it warrants a
+                    # TIGHTER cap than book/text — two convergent lens reviews flagged
+                    # aphorism density as high FOR VIDEO specifically. `mode` is already
+                    # plumbed here (gate_text arg); report-only, no text change.
+                    _ap_cap = 4.0 if str(mode).strip().lower() == "video" else 6.0
+                    stats["aphorism_cap_per_10_chapters"] = _ap_cap
+                    if _ap["aphorism_rate_per_10_chapters"] > _ap_cap:
                         stats["aphorism_flag"] = True
                 # Phonetic-collision (sample-25 lens-#4): titled proper-noun pairs that
                 # would drift in TTS output. Fiction-regime only, report-only.
@@ -1888,6 +1996,16 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["duplicate_sentence_samples"] = _ds["duplicate_sentence_samples"]
             if _ds["duplicate_sentence_hits"]:
                 stats["duplicate_sentence_flag"] = True
+            # Language-consistency (report-only, style-agnostic): a sentence in a language
+            # OTHER than `lang` (draft-residue leak, e.g. an Indonesian line in an English
+            # book). Never rewrites/blocks — surfaces a flag a dashboard/editor can act on.
+            _lc = language_consistency_scan(out, lang=lang)
+            if _lc.get("applies"):
+                stats["language_leak_hits"] = _lc["hits"]
+                stats["language_leak_samples"] = _lc["samples"]
+                stats["language_leak_langs"] = _lc["other_langs"]
+                if _lc["hits"]:
+                    stats["language_leak_flag"] = True
             _mt = merge_fusion_scan(out)
             stats["merge_fusion_hits"] = _mt["merge_fusion_hits"]
             stats["merge_fusion_samples"] = _mt["merge_fusion_samples"]

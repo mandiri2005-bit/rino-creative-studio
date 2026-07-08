@@ -433,7 +433,7 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "deepseek-v4-pro": 64000,
     "deepseek-r1": 64000,
     "grok-4-fast": 8192,
-    "gemini-3-flash-preview": 60000,
+    "gemini-3-flash-preview": 8192,   # actual LaoZhang output ceiling (~8k tokens)
     # gemini-3.5-flash real output ceiling is 65,536 (Google docs) — the old 8192 was a
     # conservative under-set that made _polish_reduce SKIP any book > ~5,100 words (the
     # NARASI_POLISH_MODEL=gemini-3.5-flash path never polished long books). Set to 32,768:

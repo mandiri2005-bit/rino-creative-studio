@@ -55,6 +55,7 @@ from .core import (
     WORKER_MODEL,
     MANAGER_MODEL,
     MAX_WORKERS,
+    max_tokens_for,
 )
 from .context_builder import build_shared_context, SharedContext
 
@@ -828,12 +829,7 @@ async def _polish_reduce(
     instruction, role = _polish_instruction(mode, topic, language)
 
     # Does the WHOLE book round-trip through the polish model's output ceiling in one call?
-    try:
-        from .core import max_tokens_for as _mt4
-    except Exception:  # noqa: BLE001
-        def _mt4(_m):
-            return 0
-    _ceil = int(_mt4(manager_model or "") or 0)
+    _ceil = int(max_tokens_for(manager_model or "") or 0)
     _need = int(_book_words * 1.45 * 1.08)   # tokens to reproduce the book + slack
     if (not _ceil) or _need <= int(_ceil * 0.95):
         return await _polish_one(book, instruction=instruction, role=role, model=manager_model,
@@ -869,7 +865,7 @@ async def _polish_reduce(
 
     # Chunking disabled or unsplittable (one giant chapter) → promote-or-skip fallback.
     _big = (os.environ.get("NARASI_POLISH_BIG_MODEL") or "").strip()
-    _big_ceil = int(_mt4(_big) or 0) if _big else 0
+    _big_ceil = int(max_tokens_for(_big) or 0) if _big else 0
     if _big and _big_ceil and _need <= int(_big_ceil * 0.95):
         log.info("_polish_reduce: promoting to %s (ceiling %d) instead of skipping", _big, _big_ceil)
         return await _polish_one(book, instruction=instruction, role=role, model=_big,
