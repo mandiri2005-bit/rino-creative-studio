@@ -1800,6 +1800,168 @@ def _opening_motif_scan(chapters: list[str]) -> dict:
         return {"status": "PASS", "count": 0, "motifs": {}, "sentences": []}
 
 
+# ── structural-refrain scanners (report-only, FLAG-never-OVER) ──────────────────
+# Three refrains that recur every chapter and read as the engine "asserting" rather
+# than moving (lens synthesis over river + Banda): (1) thesis over-restatement, (2)
+# epistemic-hedge boilerplate (nonfiction), (3) closing-tableau sameness. All gated by
+# ONE flag NARASI_REFRAIN_SCAN (default OFF → none run → byte-identical). status is only
+# ever FLAG/PASS/OFF, NEVER 'OVER', so they can never enter over_budget / drive the diet
+# loop. Each never raises.
+def _refrain_scan_on() -> bool:
+    return os.environ.get("NARASI_REFRAIN_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _cos_sim(a, b) -> float:
+    """Cosine of two embedding vectors; 0.0 on any degeneracy. Never raises."""
+    try:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a)); nb = math.sqrt(sum(y * y for y in b))
+        return (dot / (na * nb)) if (na and nb) else 0.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+_TITLECASE_RX = re.compile(r"^[A-ZÀ-Þ][a-zà-ÿ]+$")
+_NUMERALISH_RX = re.compile(r"\b\d{3,}\b|\d%|\b\d{4}\b")
+
+
+def _is_thesis_candidate(s: str) -> bool:
+    """An abstract declarative CLAIM — not dialogue, a question, a heading, or a
+    numeral/proper-noun-dominated fact sentence (the main false-positive defense)."""
+    s = (s or "").strip()
+    if not s:
+        return False
+    wc = len(s.split())
+    if wc < 9 or wc > 45:
+        return False
+    if s[-1] in ("?", "!") or s[0] in ("#", ">", "-", "*", "|", '"', "“", "‘", "'"):
+        return False
+    toks = s.split()
+    tc = sum(1 for w in toks if _TITLECASE_RX.match(w))
+    if toks and tc / len(toks) > 0.40:   # proper-noun-dominated → likely a fact sentence
+        return False
+    if _NUMERALISH_RX.search(s):          # year/percent/big number → factual, not thesis
+        return False
+    return True
+
+
+def _thesis_cluster_scan(chapters: list[str], *, embed_fn, cap: int) -> dict:
+    """Report-only, THESIS-AGNOSTIC (no supplied thesis string): the manuscript RESTATES one
+    controlling idea across many chapters (near-paraphrase). Cluster abstract declarative
+    candidates by embedding cosine; FLAG when the largest cluster spanning >=N chapters exceeds
+    `cap`. Near-VERBATIM clusters are downgraded (intentional chorus, not over-restatement).
+    status 'FLAG'/'PASS'/'OFF' (never 'OVER'). Never raises. embed_fn None → 'OFF'."""
+    out = {"status": "OFF", "count": 0, "cap": cap, "chapters": 0, "sentences": []}
+    try:
+        if embed_fn is None or len(chapters) < 3:
+            return out
+        _sim = float(os.environ.get("NARASI_THESIS_CLUSTER_SIM", "0.82"))
+        _min_ch = int(os.environ.get("NARASI_THESIS_CLUSTER_MIN_CHAPTERS", "3"))
+        _min_cand = int(os.environ.get("NARASI_THESIS_CLUSTER_MIN_CANDIDATES", "12"))
+        _maxc = int(os.environ.get("NARASI_THESIS_CLUSTER_MAX_CANDIDATES", "160"))
+        cands = []
+        for ci, ch in enumerate(chapters):
+            for s in _sentences(ch):
+                s2 = s.strip().split("\n")[-1].strip()   # drop heading glue on 1st sentence
+                if _is_thesis_candidate(s2):
+                    cands.append((ci, s2))
+        out["status"] = "PASS"
+        if len(cands) < _min_cand:
+            return out                                    # insufficient data
+        cands = cands[:_maxc]
+        vecs = [embed_fn(s) or None for _ci, s in cands]
+        clusters = []                                     # [{members:[i...], chs:set()}]
+        for i, (ci, _s) in enumerate(cands):
+            if not vecs[i]:
+                continue
+            placed = False
+            for cl in clusters:
+                if _cos_sim(vecs[i], vecs[cl["members"][0]]) >= _sim:
+                    cl["members"].append(i); cl["chs"].add(ci); placed = True; break
+            if not placed:
+                clusters.append({"members": [i], "chs": {ci}})
+        if not clusters:
+            return out
+        big = max(clusters, key=lambda c: len(c["members"]))
+        span, size = len(big["chs"]), len(big["members"])
+        if span < _min_ch or size <= cap:
+            return out
+        try:                                              # refrain downgrade (verbatim chorus)
+            from dalang_dedup import ngram_jaccard as _nj
+            reps = [cands[m][1] for m in big["members"][:6]]
+            pairs = [(reps[a], reps[b]) for a in range(len(reps)) for b in range(a + 1, len(reps))]
+            if pairs and (sum(_nj(x, y) for x, y in pairs) / len(pairs)) >= 0.60:
+                return out
+        except Exception:  # noqa: BLE001
+            pass
+        out.update(status="FLAG", count=size, chapters=span,
+                   sentences=[cands[m][1][:200] for m in big["members"][:8]])
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "cap": cap, "chapters": 0, "sentences": []}
+
+
+_HEDGE_CUES = (
+    "sebagian sejarawan", "sebagian ahli", "sebagian peneliti", "sebagian lain",
+    "sejarawan berbeda pendapat", "para sejarawan berbeda", "bukti dokumenter",
+    "bukti yang tersisa", "bukti arkeologis", "belum cukup untuk", "tidak menyelesaikan",
+    "belum bisa menuntaskan", "belum sepenuhnya didamaikan", "masih diperdebatkan",
+    "angka pastinya", "yang bisa dipastikan", "yang dapat dipastikan", "perdebatan ini belum",
+    "some historians", "other historians", "the evidence does not", "still debated",
+)
+
+
+def _hedge_density_scan(chapters: list[str]) -> dict:
+    """Report-only: epistemic-hedge BOILERPLATE — the same 'some historians X / others Y /
+    the evidence doesn't settle it / what is certain is simpler' move repeated across chapters.
+    Each instance is good (anti-fabrication); saturation is tonal drag. Counts chapters carrying
+    a hedge cue; FLAG when in > threshold chapters. status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "count": 0, "n_chapters": len(chapters), "threshold": 0, "samples": []}
+    try:
+        if len(chapters) < 3:
+            return out
+        hits = [ci for ci, ch in enumerate(chapters)
+                if any(cue in (ch or "").lower() for cue in _HEDGE_CUES)]
+        thr = int(os.environ.get("NARASI_HEDGE_MAX_CHAPTERS", "0")) or max(4, math.ceil(len(chapters) * 0.6))
+        out["count"] = len(hits); out["threshold"] = thr
+        if len(hits) > thr:
+            out["status"] = "FLAG"; out["samples"] = [str(ci + 1) for ci in hits]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "n_chapters": len(chapters), "threshold": 0, "samples": []}
+
+
+def _closing_tableau_scan(chapters: list[str]) -> dict:
+    """Report-only: chapters ENDING on the same sensory tableau (dusk+rain+scent+bird). Mirror
+    of _opening_motif_scan on the LAST sentence of each chapter. status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "count": 0, "motifs": {}, "sentences": []}
+    try:
+        if len(chapters) < 3:
+            return out
+        by_word: dict[str, set] = {}; word_sents: dict[str, list] = {}
+        for ci, ch in enumerate(chapters):
+            ss = _sentences(ch)
+            if not ss:
+                continue
+            closing = ss[-1].strip()
+            toks = [w.lower() for w in _OPENING_WORD_RX.findall(closing)]
+            content = [w for w in toks if len(w) >= 4 and w not in _OPENING_STOP][:8]
+            for w in set(content):
+                by_word.setdefault(w, set()).add(ci)
+                word_sents.setdefault(w, []).append(closing[:200])
+        motifs = {w: len(chs) for w, chs in by_word.items() if len(chs) >= 3}
+        if motifs:
+            seen: list[str] = []
+            for w in motifs:
+                for s in word_sents.get(w, [])[:2]:
+                    if s not in seen:
+                        seen.append(s)
+            out.update(status="FLAG", count=len(motifs), motifs=motifs, sentences=seen[:10])
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "motifs": {}, "sentences": []}
+
+
 def _names_from(m: re.Match) -> Optional[str]:
     gd = m.groupdict()
     return gd.get("name1") or gd.get("name2") or gd.get("name3")
@@ -2126,6 +2288,20 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         # drive the diet loop — a repetitive-opening pattern is a generation-prompt fix,
         # not something the surgical sentence-editor can repair.
         report["counters"]["opening_motif"] = _opening_motif_scan(chapters)
+
+        # Structural-refrain scanners (report-only, FLAG-never-OVER → excluded from over_budget
+        # at :2228; a repeated idea/hedge/closing is a generation-prompt concern, not a surgical
+        # sentence-edit one). ONE flag gates all three (lens#3: "one density gate catches all
+        # three refrains"). Default OFF → block skipped → byte-identical to today.
+        if _refrain_scan_on():
+            try:
+                _tcap = int(budgets.get("thesis_cluster_max",
+                                        int(os.environ.get("NARASI_THESIS_CLUSTER_MAX", "6"))))
+            except Exception:  # noqa: BLE001
+                _tcap = 6
+            report["counters"]["thesis_cluster"] = _thesis_cluster_scan(chapters, embed_fn=embed_fn, cap=_tcap)
+            report["counters"]["hedge_density"] = _hedge_density_scan(chapters)
+            report["counters"]["closing_tableau"] = _closing_tableau_scan(chapters)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the
