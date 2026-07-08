@@ -1044,6 +1044,10 @@ def _result_payload(result: dict) -> dict:
         "register_gate": result.get("register_gate"),
         "counter_report": result.get("counter_report"),
         "fact_report": result.get("fact_report"),
+        # Consistency-critic verdict (bounded: score + <=20 violations + <=600-char
+        # summary, per _narasi_normalize_critique). Absent when the critic didn't run.
+        # Persisted so a low score can be classified post-hoc (violations were log-only).
+        "critique": result.get("critique"),
         # ID-path fixes: §1 manifest + §5 entity report + §7 rendering stats
         "gates_manifest": result.get("gates_manifest"),
         "entity_report": result.get("entity_report"),
