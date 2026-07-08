@@ -637,6 +637,30 @@ async def build_story_bible(
             "or subplots, and do NOT force a beat onto a thread the premise intends to keep quiet or "
             "off-screen. SECONDARY to heading 8: never let a mid-arc beat crowd out the SIGNATURE "
             "HOOK payoff.")
+    # CANON REGISTRY (Phase 2a) — emit a MACHINE-CHECKABLE twin of the prose fact-sheet so a later
+    # per-chapter diff (Phase 2b) can catch canon-forks (one load-bearing fact rendered two ways,
+    # e.g. the river pusaran victim/age fork). FICTION-only, flag-gated NARASI_CANON_REGISTRY (default
+    # OFF → not emitted → bible byte-identical). Same env-gated addendum pattern as the levers above.
+    if is_fiction and os.environ.get("NARASI_CANON_REGISTRY", "0").strip().lower() in ("1", "true", "yes", "on"):
+        system = system + (
+            "\n\nADDENDUM to heading 6 (KEY FACTS / REVEAL) — CANON REGISTRY: AFTER the prose "
+            "fact-sheet, output a fenced ```json code block labelled canon_registry serializing ONLY "
+            "the LOAD-BEARING facts as machine-checkable rows. Shape: {\"events\":[{\"id\":\"<slug>\","
+            "\"summary\":\"<short>\",\"when\":{\"actor_age\":<int|null>,\"anchor\":\"<slug>\"},"
+            "\"participants\":{\"<role>\":\"<entity_id>\"},\"key_action\":\"<slug>\",\"moral_load\":"
+            "\"<one line: why the plot turns on this>\",\"false_versions\":[{\"claim\":\"<what a "
+            "character wrongly believes or tells>\",\"corrected_in_chapter\":<n>}],\"chapters\":[<n>]}],"
+            "\"entities\":[{\"id\":\"<slug>\",\"name\":\"<str>\",\"kinship\":{\"<rel>\":\"<entity_id>\"},"
+            "\"knowledge\":[{\"fact_id\":\"<slug>\",\"knows\":\"<what>\",\"since_chapter\":<n>}]}],"
+            "\"timeline\":[{\"id\":\"<slug>\",\"order\":<int>}],\"kinship\":[{\"a\":\"<id>\",\"b\":"
+            "\"<id>\",\"relation\":\"<str>\"}]}. RULES: pin ONLY facts a chapter's plot turns on — an "
+            "event enters ONLY if it carries a moral_load; hard caps <=8 events, <=15 entities, <=12 "
+            "timeline anchors, so you TRIAGE, not dump. Use canonical TOKENS/ints (victim=entity_id, "
+            "age=int), NEVER prose descriptors (so 'dusk' vs 'evening' cannot fork). If the story "
+            "legitimately has a character believe or tell a FALSE version that a later chapter "
+            "corrects, record it under that event's false_versions with corrected_in_chapter, so a "
+            "pre-correction rendering is treated as LEGAL, not a fork. This JSON is machine-only; it "
+            "does NOT replace the prose fact-sheet above.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
     # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a

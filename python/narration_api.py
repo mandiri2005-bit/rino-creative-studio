@@ -850,6 +850,90 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("register gate failed (non-fatal): %s", e)
 
+    # ── (2.75) CANON DIFF (Phase 2b) — diff each load-bearing fact against the canon_registry the
+    # bible emitted (Phase 2a, NARASI_CANON_REGISTRY). Catches canon-FORKS the canon-BLIND critic
+    # misses (one pinned fact rendered two ways: river pusaran victim/age, Notebook sea/fire). Bounded
+    # to ONE cheap-call per event (<=8), report-only, gated NARASI_CANON_DIFF (default OFF → skipped →
+    # no cost, byte-identical). Enforce is a SEPARATE opt-in (NARASI_CANON_DIFF_REVISE, default OFF).
+    # Never raises. Cost folds into the umbrella hold via sink.credits, like the register-gate.
+    try:
+        if str(os.environ.get("NARASI_CANON_DIFF", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            import json as _cjson, re as _cre
+            _cf = str(result.get("canonical_facts") or "")   # str-guard: a non-str value can't TypeError _cre.search
+            _reg = None
+            if _cf:
+                _m = _cre.search(r"```(?:json)?\s*(\{.*?\})\s*```", _cf, _cre.S)
+                if not _m:
+                    _m = _cre.search(r"canon_registry\"?\s*[:=]\s*(\{.*\})", _cf, _cre.S)
+                if _m:
+                    try:
+                        _reg = _cjson.loads(_m.group(1))
+                    except Exception:  # noqa: BLE001
+                        _reg = None
+            _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None
+            if isinstance(_events, list) and _events:
+                from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
+                _cbook = result.get("book") or result.get("output") or ""
+                _forks = []
+                for _ev in _events[:8]:
+                    if not isinstance(_ev, dict) or not _cbook:
+                        continue
+                    _canon = {k: _ev.get(k) for k in ("when", "participants", "key_action", "summary") if _ev.get(k)}
+                    _fv = _ev.get("false_versions") or []
+                    _csys = (
+                        "You are a canon auditor with a fact sheet you must trust over your own reading. "
+                        "CANONICAL values for one event: " + _cjson.dumps(_canon, ensure_ascii=False) + ". "
+                        "Sanctioned FALSE versions (LEGAL only in chapters BEFORE their corrected_in_chapter): "
+                        + _cjson.dumps(_fv, ensure_ascii=False) + ". Scan the book and report EVERY chapter that "
+                        "renders this event with a value DIFFERENT from the canonical one and NOT a sanctioned "
+                        "false version before its correction — even if it reads like an intended reveal. Return "
+                        "ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<field>\",\"found\":\"<value>\","
+                        "\"expected\":\"<canonical value>\"}]}. Empty list if the book is consistent with canon.")
+                    try:
+                        _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:12000],
+                                                             tenant_id=tenant_id, user_id=user_id,
+                                                             job_uuid=job_uuid, json_mode=True)
+                        if sink is not None and _cc:
+                            sink.credits += int(_cc)
+                        _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                        for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                            if isinstance(_f, dict) and _f.get("found"):
+                                _forks.append({"event": _ev.get("id") or _ev.get("summary"),
+                                               "chapter": _f.get("chapter"), "field": _f.get("field"),
+                                               "found": str(_f.get("found"))[:160],
+                                               "expected": str(_f.get("expected"))[:160]})
+                    except Exception as _e:  # noqa: BLE001
+                        log.warning("canon-diff event scan failed (non-fatal): %s", _e)
+                result["canon_diff"] = {"events_checked": len(_events[:8]), "forks": _forks[:20]}
+                if _forks:
+                    log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only)", len(_forks), job_id)
+                    # enforce (opt-in, default OFF): feed the forks to ONE bounded whole-book revise,
+                    # reusing the #53 revise infra + its >=90%-word guard. Never blocks; keeps original.
+                    if str(os.environ.get("NARASI_CANON_DIFF_REVISE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                        try:
+                            from laozhang_api import _narasi_consistency_revise
+                            _cv = [{"type": "canon_fork", "severity": "high",
+                                    "evidence": "Bab %s renders %s as '%s'; canon = '%s'" % (
+                                        _fk.get("chapter"), _fk.get("field"), _fk.get("found"), _fk.get("expected")),
+                                    "fix": "align this chapter's rendering to the canonical value"}
+                                   for _fk in _forks]
+                            _ckey = "book" if result.get("book") else "output"
+                            _cbk2 = result.get(_ckey) or ""
+                            if _cv and _cbk2:
+                                _cnew, _cc2 = await _narasi_consistency_revise(
+                                    _cbk2, {"violations": _cv}, style, language,
+                                    model=(body.get("model") or ""),
+                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                                if sink is not None and _cc2:
+                                    sink.credits += int(_cc2)
+                                if _cnew and _cnew != _cbk2:
+                                    result[_ckey] = _cnew
+                                    result["canon_diff"]["revised"] = True
+                        except Exception as _e:  # noqa: BLE001
+                            log.warning("canon-diff enforce revise failed (non-fatal): %s", _e)
+    except Exception as e:  # noqa: BLE001
+        log.warning("canon-diff gate failed (non-fatal): %s", e)
+
     # ── (2.7) R-FG9/R-FG10 fact scan — scan-and-report on the FINAL text (post-gates,
     # pre-header). Report-only by spec ("scan first, block second"); regime = style
     # default, job-overridable via body.factual_regime (refactor §4).
@@ -1049,6 +1133,8 @@ def _result_payload(result: dict) -> dict:
         # summary, per _narasi_normalize_critique). Absent when the critic didn't run.
         # Persisted so a low score can be classified post-hoc (violations were log-only).
         "critique": result.get("critique"),
+        # Canon-diff verdict (Phase 2b, bounded: <=20 forks). Absent unless NARASI_CANON_DIFF ran.
+        "canon_diff": result.get("canon_diff"),
         # ID-path fixes: §1 manifest + §5 entity report + §7 rendering stats
         "gates_manifest": result.get("gates_manifest"),
         "entity_report": result.get("entity_report"),
