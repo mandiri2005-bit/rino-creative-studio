@@ -414,7 +414,7 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "claude-sonnet-4-6-thinking": 64000,
     "gpt-4o": 16384,
     "grok-4-latest": 32000,
-    "claude-opus-4-6": 64000,
+    "claude-opus-4-6": 128000,   # 128K output ceiling (Rino 2026-07-08) — whole-book revise can emit a full corrected book in one output
     "claude-opus-4-7": 64000,
     "claude-opus-4-7-thinking": 64000,
     # Ultra-cheap
@@ -1336,14 +1336,21 @@ def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout
                          if m.get("role") == "system" and m.get("content"))
     conv = [{"role": m["role"], "content": m.get("content", "")}
             for m in messages if m.get("role") in ("user", "assistant")]
-    body = {"model": model_id, "max_tokens": int(max_tokens), "stream": False, "messages": conv}
+    # thinkingFlag: KIE (and Anthropic-native aggregators) leave thinking to a server default when the
+    # flag is omitted (docs.kie.ai/market/claude/claude-opus-4-6 lists thinkingFlag but not a default);
+    # for the deterministic critic/revise we do NOT want extended thinking — it burns the max_tokens
+    # budget and adds latency. Send it EXPLICITLY OFF by default. NARASI_ANTHROPIC_THINKING=1 flips it
+    # back without a code change.
+    _think = os.getenv("NARASI_ANTHROPIC_THINKING", "0").strip().lower() in ("1", "true", "yes", "on")
+    body = {"model": model_id, "max_tokens": int(max_tokens), "stream": False,
+            "thinkingFlag": _think, "messages": conv}
     if system:
         body["system"] = system
-    if temperature is not None:
-        try:
-            body["temperature"] = float(temperature)
-        except (TypeError, ValueError):
-            pass
+    # temperature is intentionally NOT forwarded to the Anthropic-native (KIE) body: it is not in the
+    # claude-opus-4-6 spec (docs.kie.ai/market/claude/claude-opus-4-6) and is DEPRECATED on Opus 4.6/4.7
+    # — a non-default value returns 400 "temperature is deprecated for this model", which would kill this
+    # rung for the critic/revise. The OpenAI-compat rungs (LaoZhang/AtlasCloud) still honor temperature
+    # via their own client path. (The `temperature` param is kept only for call-site compatibility.)
     conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=float(timeout),
                                        context=ssl.create_default_context())
     try:
@@ -7544,22 +7551,232 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
     return {"score": None, "violations": [], "summary": ""}, 0
 
 
+def _envint(key, default):
+    """int env read that NEVER raises — a mistyped value ('', 'abc', '4.5') must not crash a code
+    path (here: a raise would drop the chunked revise into the broken whole-book fallback)."""
+    try:
+        return max(1, int(str(os.getenv(key, str(default))).strip()))
+    except Exception:
+        return default
+
+
+def _revise_min_severities():
+    """Which violation severities the #53 revise acts on. The critic has no strict severity rubric and
+    routinely rates name/label drift MEDIUM — the single most common LOCATABLE class — so the default
+    includes medium. NARASI_REVISE_MIN_SEVERITY=high restricts to critical+high."""
+    _order = ["critical", "high", "medium", "low"]
+    _m = os.getenv("NARASI_REVISE_MIN_SEVERITY", "medium").strip().lower()
+    _i = _order.index(_m) if _m in _order else 2
+    return set(_order[:_i + 1])
+
+
+async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
+                                 tenant_id, user_id, job_uuid):
+    """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
+    violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
+    ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
+    so it NEVER lands (violations ship unfixed). This scales to the 40k-word max and completes.
+    Fail-safe: any chapter that errors / times out / would be gutted keeps its ORIGINAL text (worst
+    case == no change). Structural violations whose evidence can't be located (e.g. dropped_hook)
+    are simply not applied — they stay report-only. Returns (new_text, total_cr).
+
+    Chapter TARGETING is BEST-EFFORT by design: the critic's evidence is ambiguous about which chapter
+    actually errs (a two-name drift quotes both the wrong and the correct name; the discriminating token
+    can be either the rare or the common one), so a fix may occasionally revise fewer/other chapters or
+    be skipped when the erroring chapter falls outside the _max_ch budget — a QUALITY limitation, not a
+    corruption one.
+
+    The accept-gate rejects ALL gross corruption (a wholesale content swap, a renumbered/reworded/re-
+    cased heading, an echoed/duplicated neighbour chapter via \\n / \\r\\n / bare \\r, a gutted chapter,
+    a non-exact split/join). The ONE accepted residual: a near-minimal edit that also flips ONE
+    UNFLAGGED fact (a 1-word change) passes the difflib fidelity ratio — indistinguishable from a legit
+    1-word fix, so no ratio threshold separates them. This is an inherent limitation of ANY LLM revise
+    and is identical to (no worse than) the DEFAULT whole-book path, which has no body guard at all;
+    accepted by Rino 2026-07-08 rather than crippling the feature with a span-constraint that would
+    false-reject legit continuity fixes."""
+    import re as _re
+    resolved = MODELS.get(rev_model, rev_model)
+
+    def _spans(ev):
+        # Pull the quoted book-text out of a violation's evidence (straight + curly quotes); the
+        # inner text is searched as a plain substring so the quote style doesn't matter.
+        ev = str(ev or "")
+        # Non-greedy so adjacent quotes don't merge (e.g. "Bo" vs "Bob" must yield Bo/Bob, not "vs").
+        sp = _re.findall(r'["“”‘’\']([^"“”‘’\']{1,120}?)["“”‘’\']', ev)
+        # Keep only spans with a real word char; drop pure connectors captured BETWEEN two quotes.
+        sp = [s.strip() for s in sp if s.strip() and _re.search(r'\w', s)
+              and not _re.fullmatch(r'(?i)(vs|and|then|or|but|to|the|a|an)', s.strip())]
+        return sp   # NO prose fallback → un-quotable structural violations stay UNMAPPED (report-only)
+
+    _vspans = [(v, _spans(v.get("evidence"))) for v in viol]
+    # Split into [preamble?, chapter, chapter, …] on the UNION of BOTH heading styles in ONE pass
+    # (lookahead, no chars consumed → ''.join(parts) reconstructs the original EXACTLY). ONE shared
+    # opener pattern drives BOTH the split AND the per-chapter heading count (below) so they can NEVER
+    # diverge: a split anchored at column-0 (^) while the counter allowed indentation (^[ \t]*) let an
+    # INDENTED heading NOT be a split boundary yet still be counted → two chapters merged into one part
+    # with the 2nd (indented) heading unprotected → silently renumberable. Same pattern everywhere = each
+    # chapter (## OR Bab N OR Chapter N, indented or not) its own part, protected independently.
+    _HEAD_OPENER = r'(?:##[ \t]|(?:Chapter|Bab|BAB|Chapitre|Cap[íi]tulo)[ \t]+\d+)'
+    parts = _re.split(r'(?m)(?=^[ \t]*' + _HEAD_OPENER + r')', full_text or "")
+    if len(parts) <= 1:
+        parts = [full_text or ""]
+    _max_ch = _envint("NARASI_REVISE_MAX_CHAPTERS", 4)
+    _sev = _revise_min_severities()
+    # A violation with a MISSING / blank / unrecognized severity must NOT be silently dropped — the
+    # critic occasionally omits the field on a real, locatable violation. Default unknown → "medium"
+    # (its dominant label, and in the default gate) so the fix still runs under default settings.
+    def _sevof(v):
+        _s = str(v.get("severity", "") or "").strip().lower()
+        return _s if _s in ("critical", "high", "medium", "low") else "medium"
+    _vspans = [(v, sps) for (v, sps) in _vspans if _sevof(v) in _sev]
+
+    def _occ(s, txt):
+        # Locate a span in a chapter. WORD-BOUNDARY match for ASCII-alphanumeric-bounded spans so a short
+        # Latin name ("Bo") is not found inside longer words / sentence openers ("Both", "Bonnie"); CJK /
+        # Japanese / Thai are scriptio-continua (no \b between Han/kana chars, so \b小明\b matches nowhere)
+        # and punctuation-edged spans fall back to plain substring, else their fixes could never locate.
+        if (s[:1].isascii() and s[:1].isalnum() and s[-1:].isascii() and s[-1:].isalnum()):
+            return bool(_re.search(r'\b' + _re.escape(s) + r'\b', txt))
+        return s in txt
+    # NO count-based "common word" span filter. It could not distinguish a violation's DISCRIMINATING
+    # recurring locator (a protagonist name in many chapters — the true locator for a name-swap /
+    # continuity fix) from a stopword, so it dropped the real locator while a low-count detail span
+    # mis-routed the revise to the WRONG (correct) chapters. Fanout is bounded instead by the per-book /
+    # per-attempt _max_ch caps below (each chapter revised at most once, at most _max_ch total → keeping
+    # every span cannot blow up cost); keeping all spans only ensures the erroring chapter stays REACHABLE.
+    _vspans = [(v, [s for s in sps if s]) for (v, sps) in _vspans]
+    _vspans = [(v, sps) for (v, sps) in _vspans if sps]
+    total_cr = 0
+    changed = False
+    _n_revised = 0
+    _n_attempts = 0
+    out = []
+    for _p in parts:
+        _vs = [v for (v, sps) in _vspans if _p.strip() and any(s and _occ(s, _p) for s in sps)]
+        if not _vs or not _p.strip():
+            out.append(_p)
+            continue
+        # Cap SUCCESSFUL revises at _max_ch; give ATTEMPTS 2x headroom so a burst of early-chapter
+        # timeouts/errors doesn't consume the budget and starve later chapters whose fix would land.
+        if _n_revised >= _max_ch or _n_attempts >= 2 * _max_ch:
+            out.append(_p)
+            continue
+        _directives = "\n".join(
+            f"- [{v.get('severity', '?')}/{v.get('type', '?')}] {str(v.get('evidence', ''))[:200]} "
+            f"→ FIX: {str(v.get('fix', ''))[:200]}" for v in _vs[:8])
+        _trail = _p[len(_p.rstrip()):]           # preserve inter-chapter whitespace on re-join
+        _body = _p.rstrip()
+        _sys = ("You are fixing consistency problems in ONE chapter of a multi-chapter story. Make "
+                "the SMALLEST changes that reconcile each problem — reword only the sentences carrying "
+                "the contradiction; keep every other sentence, the chapter heading, the length, the "
+                "style and language IDENTICAL. Return the corrected chapter (same heading) and nothing else.")
+        _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
+              f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
+        _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
+                   max(1500, int(len(_body.split()) * 2) + 600))
+        _n_attempts += 1                         # count every LLM call (incl. timeouts) → bounds cost
+        try:
+            _resp = await asyncio.wait_for(asyncio.to_thread(
+                lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model).chat.completions.create(
+                    model=resolved, messages=[{"role": "system", "content": _s},
+                                              {"role": "user", "content": _b}],
+                    temperature=0.2, max_tokens=_c, stream=False, timeout=NARASI_REVISE_TIMEOUT)),
+                timeout=NARASI_REVISE_TIMEOUT)
+        except Exception:
+            out.append(_p)                       # incl. TimeoutError → keep original chapter
+            continue
+        if not getattr(_resp, "choices", None):
+            out.append(_p)
+            continue
+        _new = (_resp_content(_resp) or "").strip()   # null-safe extractor (no AttributeError escape)
+        _cr = (await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid) or 0)
+        total_cr += int(_cr)
+        if not _new:
+            out.append(_p)
+            continue
+        _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
+        if _nl.startswith("```"):
+            _nl = _re.sub(r'^```[a-zA-Z]*\n?', '', _nl)
+            _nl = _re.sub(r'\n?```\s*$', '', _nl)
+            _new = _nl.strip()
+        # Normalize line endings: Python's (?m)^ anchors after \n but NOT after a bare \r, and
+        # str.split("\n") won't break on \r either — so a heading the model joins with a lone carriage
+        # return would be INVISIBLE to _head_ct and the first-line check, slipping an echoed neighbour
+        # chapter past the echo budget. Fold \r\n and \r to \n before every downstream check + ship.
+        _new = _new.replace("\r\n", "\n").replace("\r", "\n")
+        _ow, _nw = len(_body.split()), len(_new.split())
+        _no_wrapper = not _re.match(
+            r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated)|of course)\b', _new)
+        # HEADING-LINE SEQUENCE must be byte-identical — the ONE robust heading invariant for ALL book
+        # styles (ends the strict-vs-loose count whack-a-mole). A "heading line" = a chapter opener
+        # (## / Chapter N / Bab N / Chapitre N / Capítulo N) at line start after only NON-WORD prefix junk
+        # (whitespace, "> " blockquote, "- "/"* " bullet, a non-breaking space) — which EXCLUDES a mid-line
+        # prose back-reference like "…dia teringat pada Bab 1…" (word-prefixed → not a heading). Requiring
+        # the SEQUENCE of such lines to match pins every real heading regardless of style/prefix and
+        # catches ALL heading corruption at once: an echoed/duplicated neighbour heading (extra element),
+        # a renumber/reword/re-case (changed element), or a dropped heading (missing element), while
+        # leaving prose — including a sentence that merely mentions "Bab N" — free to be reworded. (narasi
+        # emits every heading as "## <label>"; a bare imported style whose keyword is outside
+        # ##|Chapter|Bab|Chapitre|Cap[íi]tulo is the only residual, and narasi never produces it.)
+        _HEADLINE_RX = r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$'
+        _heads_ok = _re.findall(_HEADLINE_RX, _body) == _re.findall(_HEADLINE_RX, _new)
+        # BODY-FIDELITY: the "smallest changes / keep every other sentence IDENTICAL" rule is only a
+        # system-prompt instruction — without an enforced check the word-window admits a WHOLESALE content
+        # swap (same-heading, in-window, 100%-different body). Require the rewrite to stay close to the
+        # original at the WORD level (difflib ratio) so only a near-minimal edit is accepted.
+        import difflib as _difflib
+        _fid = _difflib.SequenceMatcher(None, _body.split(), _new.split()).ratio()
+        try:
+            _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+        except Exception:
+            _min_fid = 0.55
+        # Accept ONLY a clean single-chapter rewrite: word count in [90%,140%] (rejects gutted AND grossly
+        # inflated), every chapter heading line byte-identical (no renumber/reword/re-case/echo/drop), no
+        # wrapper preamble, and the body close to the original (no wholesale rewrite/swap). Else keep.
+        if (int(_ow * 0.9) <= _nw <= int(_ow * 1.4)
+                and _heads_ok and _no_wrapper and _fid >= _min_fid):
+            out.append(_new + _trail)
+            changed = True
+            _n_revised += 1
+        else:
+            out.append(_p)
+    if not changed:
+        return full_text, total_cr
+    return "".join(out), total_cr
+
+
 async def _narasi_consistency_revise(full_text, critique, style, language, *, model,
                                      tenant_id, user_id, job_uuid):
-    """ONE bounded whole-book revise addressing the consistency critic's violations —
-    minimal-edit, length-preserving. Accepts the rewrite ONLY if it keeps ≥90% of the word
-    count (a continuity fix must not gut the book); otherwise keeps the original. Returns
-    (new_text, cr) — original + 0 on any failure/degradation. Never raises."""
+    """Whole-book consistency revise (DISPATCHER). NARASI_REVISE_CHUNKED=1 → per-chapter CHUNKED path
+    (bounded output per chapter → robust to a per-request output cap); default (0) → the whole-book
+    path below (now a 128K output ceiling). Both minimal-edit + length-preserving; the whole-book path
+    accepts the rewrite ONLY if it keeps ≥90% of the word count. Returns (new_text, cr) — original + 0
+    on any failure/degradation. Never raises."""
     viol = critique.get("violations") or []
     if not viol:
         return full_text, 0
+    rev_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
+    # CHUNKED revise (env-gated, DEFAULT OFF now the whole-book path has a 128K ceiling). Set
+    # NARASI_REVISE_CHUNKED=1 to revise ONLY the chapters with a located violation — bounded output
+    # per chapter, robust to a provider that caps output below the book size. Any internal error
+    # raises → we fall through to the whole-book path below (never-raises contract preserved).
+    if os.getenv("NARASI_REVISE_CHUNKED", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            return await _narasi_revise_chunked(
+                full_text, viol, style, language, rev_model,
+                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+        except Exception as _ce:
+            import logging as _lg
+            _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
     directives = "\n".join(
         f"- [{x.get('severity', '?')}/{x.get('type', '?')}] {str(x.get('evidence', ''))[:200]} "
         f"→ FIX: {str(x.get('fix', ''))[:200]}"
         for x in viol[:12])
-    rev_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
     resolved  = MODELS.get(rev_model, rev_model)
-    safe_max  = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 16000)
+    # 128K ceiling (was 16000): the whole-book revise must emit the ENTIRE corrected book in one output,
+    # so the old 16k cap truncated any book > ~12k words → the ≥90% guard rejected it → revise never
+    # landed. opus-4-6 supports 128K output, so the full book now fits (Rino 2026-07-08).
+    safe_max  = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 128000)
     _sys = ("You are revising a COMPLETE multi-chapter story to fix whole-draft consistency "
             "problems a continuity editor found. Make the SMALLEST changes that reconcile each "
             "problem — reword only the sentences carrying the contradiction; keep every other "
@@ -7580,8 +7797,8 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
     if not getattr(resp, "choices", None):
         return full_text, 0
     cr  = (await _log_narasi_usage(tenant_id, user_id, rev_model, resp, job_id=job_uuid) or 0)
-    new = (resp.choices[0].message.content or "").strip()
-    if len(new.split()) < int(len((full_text or "").split()) * 0.9):   # gutted → keep original
+    new = (_resp_content(resp) or "").strip()          # null-safe (error-as-200 → no AttributeError)
+    if not new or len(new.split()) < int(len((full_text or "").split()) * 0.9):  # empty/gutted → keep original
         return full_text, 0
     return new, int(cr)
 
@@ -11102,7 +11319,11 @@ async def oneshot_fix_submit(body: dict,
         try:
             await rc.set_progress(job_id, "AI membaca seluruh manuskrip...")
             resolved = MODELS.get(model, model)
-            ceiling  = MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS)
+            # Cap at a fixed whole-manuscript budget (64k tokens ≈ 48k words, covers the 40k-word max)
+            # DECOUPLED from the model ceiling: the revise-driven opus-4-6 bump (64k→128k) must NOT
+            # silently double this endpoint's request — oneshot-fix has no graceful fallback, so a relay
+            # that rejects >64k output would hard-fail a previously-working job.
+            ceiling  = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 64000)
             client   = OpenAI(api_key=api_key, base_url=BASE_URL, timeout=600.0)
             is_vo_mode = "VO Script Editor" in system or "ANCHOR" in system
             if is_vo_mode:
