@@ -713,6 +713,12 @@ async def narrate_chapters(
         "model": w_model,
         "manager_model": m_model,
         "strategy": "narrate_chapters",
+        # In-memory transit only (NOT persisted into the bounded _result_payload): the pinned
+        # story bible, so the downstream consistency critic can diff each chapter against the
+        # committed canon when NARASI_CANON_CONFORMANCE is on. as_dict() exposes only the char
+        # count, so the raw text otherwise dies here.
+        "canonical_facts": ctx.canonical_facts,
+        "facts_are_bible": ctx.facts_are_bible,
     }
 
 

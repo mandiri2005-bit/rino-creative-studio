@@ -7502,7 +7502,7 @@ async def _narasi_revise(client, model, resolved_model, safe_max, _msgs, text, c
 #    add up, a cross-chapter causal/knowledge break, entity/label drift. This is the ONLY stage
 #    that can catch the narasi-3 notebook-provenance hole + the silent one-week→three-week drift;
 #    no deterministic scanner reaches it. Report-only unless NARASI_CRITIQUE_REVISE=1.
-def _consistency_critic_sys(is_fiction: bool = True) -> str:
+def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) -> str:
     """Whole-book critic system prompt. Checks 1-6 (pure consistency) apply to ALL narasi.
     Check 7 (DROPPED PREMISE HOOK / F10) is FICTION-ONLY and emitted here only when is_fiction:
     a nonfiction/factual piece may legitimately leave a real question open (an unsolved case, an
@@ -7527,11 +7527,34 @@ def _consistency_critic_sys(is_fiction: bool = True) -> str:
         if is_fiction else "")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
+    # CANON CONFORMANCE (check 0) — only when a CANONICAL FACT SHEET (story bible) is supplied in
+    # the user turn AND NARASI_CANON_CONFORMANCE is on (fiction only). Dissolves the lie-vs-canon
+    # blind spot: a fresh-eyes critic with no ground truth cannot tell "author lost track" from
+    # "character lied, later corrected", and the anti-FP tilt below sends every ambiguous case to
+    # "intended" — so a role/age/victim swap on one pinned event slips through (river pusaran fork).
+    # With the sheet as arbiter, a divergence from committed canon is a violation regardless of
+    # thematic cover. INERT when canon_aware=False (byte-identical to the pre-canon prompt).
+    _check0 = (
+        "0. CANON CONFORMANCE (HIGHEST PRIORITY) — a [CANONICAL FACT SHEET] is provided ABOVE the "
+        "book: the single agreed truth for each load-bearing past event, character age, kinship/blood "
+        "fact, who-did-what-to-whom, and who-knew-what-when. Flag as type 'canon_fork' ANY chapter "
+        "that renders a pinned fact with a DIFFERENT value (different victim, age, actor, role, or "
+        "arrival), EVEN IF it could read as an intended reveal or an unreliable-narrator lie. If the "
+        "story legitimately has a character believe or tell a FALSE version that a LATER chapter "
+        "corrects, the FACT SHEET states the TRUE version — a rendering that contradicts the sheet "
+        "WITHOUT being that sanctioned later correction is a violation. ALSO flag 'canon_fork' when "
+        "two chapters narrate the SAME past event with incompatible specifics. When in doubt whether "
+        "a divergence is an authorial lie or an error, FLAG IT — the FACT SHEET, not your charity, is "
+        "the arbiter.\n"
+        if canon_aware else "")
+    if canon_aware:
+        _enum = "canon_fork|" + _enum
     return (
         "You are a strict CONTINUITY editor doing a fresh-eyes read of a COMPLETE multi-chapter "
         "story you did NOT write. Judge whole-draft CONSISTENCY" + _extra + " but NEVER prose "
         "taste. Read the entire book, then hunt for contradictions each chapter hides because it "
         "reads fine on its own. Check, in order:\n"
+        + _check0 +
         "1. OBJECT/PROP PROVENANCE — an item is present somewhere it could not be, or was "
         "placed/hidden before it could exist there (a diary hidden under a house's floor when the "
         "narrator bought the house only months ago; a letter predating the meeting it describes).\n"
@@ -7574,7 +7597,8 @@ def _narasi_normalize_critique(v) -> dict:
 
 
 async def _narasi_consistency_critique(full_text, style, language, *, model,
-                                       tenant_id, user_id, job_uuid):
+                                       tenant_id, user_id, job_uuid,
+                                       canonical_facts: str = ""):
     """Fresh-eyes whole-draft consistency critic → (verdict, cr). verdict =
     {score: float|None, violations: list[dict], summary: str}. Runs a capable model
     (NARASI_CRITIQUE_MODEL, else the chapter model, else the cheap model) over the FULL book
@@ -7590,9 +7614,21 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
         _is_fic = bool(_isf(style))
     except Exception:
         _is_fic = True
-    _sys = _consistency_critic_sys(_is_fic)
-    _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
-          f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
+    # CANON CONFORMANCE (Phase 1, flag NARASI_CANON_CONFORMANCE, default OFF): when on + fiction +
+    # a bible was supplied, feed the pinned fact sheet as the arbiter and add critic check #0. When
+    # OFF (or no bible, or nonfiction) this is byte-identical to the pre-canon critic — pure no-op.
+    _canon_on = os.getenv("NARASI_CANON_CONFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
+    _use_canon = bool(_canon_on and _is_fic and (canonical_facts or "").strip())
+    _sys = _consistency_critic_sys(_is_fic, canon_aware=_use_canon)
+    if _use_canon:
+        _cf = (canonical_facts or "").strip()[:8000]
+        _u = ("[CANONICAL FACT SHEET — the single agreed truth every chapter must obey]\n"
+              + _cf + "\n\n"
+              + f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
+              + f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
+    else:
+        _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
+              f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
     # MODEL FAILOVER: the critic (default opus-4-6) is the slowest stage and can hang a degraded
     # provider window — on primary timeout, fail over to the fast failover WORKER model so we still
     # get a verdict instead of a silent skip. opus stays the default; flash only runs when opus is

@@ -735,7 +735,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             _t_crit0 = time.monotonic()
             _cq, _cqc = await _narasi_consistency_critique(
                 _cbk, style, language, model=_cmodel,
-                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                canonical_facts=(result.get("canonical_facts") or ""))
             _t_crit = time.monotonic() - _t_crit0
             _t_rev = 0.0
             # Fold the critic's cost into the sink so _settle actually bills it (the call
