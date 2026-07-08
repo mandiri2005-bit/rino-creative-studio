@@ -622,54 +622,39 @@ async def build_story_bible(
             "weaken the #8 SIGNATURE HOOK payoff commitment.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     _primary  = manager_model or MANAGER_MODEL
-    _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", WORKER_MODEL) or "").strip()
+    # Fallback when the opus bible fails on EVERY provider: use a STRONG model (sonnet by default), NOT the
+    # weak WORKER_MODEL (gemini-2.5-flash) — a weak bible is the root of "video jelek". Env-overridable.
+    _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", "claude-sonnet-4-6") or "").strip()
     _chain = [_primary] + ([_fallback] if (_fallback and _fallback != _primary) else [])
-    # Keep the OPUS bible on OPUS across PROVIDERS: a slow KIE rung must fail over to LaoZhang/AtlasCloud
-    # (the same opus model) WITHIN this _to window. With the global 280s per-rung × 2 attempts, KIE alone
-    # eats the whole window and the bible drops to the weak fallback MODEL (gemini-flash). Cap the bible's
-    # per-rung failover timeout SHORT and rung-attempts to 1 so KIE→LaoZhang(→AtlasCloud), all opus, fit
-    # inside _to. Env-tunable; contextvars are read in make_narasi_client._create and propagate through
-    # run_worker's asyncio.to_thread (which copies the context).
-    _rtc = _rac = None
-    _rt_tok = _ra_tok = None
-    try:
-        from laozhang_api import (  # lazy import — laozhang_api is already loaded; avoids a load-time cycle
-            _narasi_rung_timeout_ctx as _rtc, _narasi_rung_attempts_ctx as _rac)
-        # Parse BOTH env values before setting EITHER ctxvar: a bad value (e.g. non-int attempts) must not
-        # leave the timeout ctxvar set-but-unreset and leak the bible's short rung timeout into later
-        # chapter/critic/revise calls of the same job. Clamp the timeout to >= 1.0 so a 0/negative can
-        # never be read as "unset" downstream (the falsy-zero trap that would silently revert to global).
-        _bib_rt = max(1.0, float(os.environ.get("NARASI_BIBLE_RUNG_TIMEOUT", "90")))
-        _bib_ra = max(1, int(os.environ.get("NARASI_BIBLE_RUNG_ATTEMPTS", "1")))
-        _rt_tok = _rtc.set(_bib_rt)
-        _ra_tok = _rac.set(_bib_ra)
-    except Exception:
-        # Import or parse failed → fall back to GLOBAL failover timing. Do NOT null _rtc/_rac here: leaving
-        # the handles bound lets `finally` reset any token we DID obtain (token presence is the real guard).
-        pass
-    try:
-        for _i, _mdl in enumerate(_chain):
-            worker = Worker(
-                name="planner:bible", role="manager", model=_mdl,
-                system=system, temperature=0.3, telemetry_sink=telemetry_sink,
-            )
-            res = await run_worker(worker, prompt, timeout=_to, task_id="planner:bible")
-            if res.get("ok") and str(res.get("output") or "").strip():
-                if _i > 0:
-                    log.info("build_story_bible: primary timed out — bible via fallback model %s", _mdl)
-                return str(res["output"]).strip()
+    # Right-size the bible: it is a numbered fact-sheet (~2-4k tokens), NOT a book. Leaving max_tokens unset
+    # made it inherit the opus 128k ceiling → a heavy, slow non-streaming KIE request that outran its timeout
+    # and hung the read. Cap it (env-tunable). The bible uses the SAME global per-rung failover timing as
+    # chapters (which are reliable) — no bible-specific short-rung override — plus the wall-clock deadline
+    # now enforced in _anthropic_messages_create, so a slow rung aborts to the fallback instead of hanging.
+    _bib_max = max(1000, int(os.environ.get("NARASI_BIBLE_MAX_TOKENS", "12000")))
+    _TRUNC_FINISH = ("length", "max_tokens", "max_output_tokens", "model_length")
+    for _i, _mdl in enumerate(_chain):
+        worker = Worker(
+            name="planner:bible", role="manager", model=_mdl,
+            system=system, temperature=0.3, max_tokens=_bib_max, telemetry_sink=telemetry_sink,
+        )
+        res = await run_worker(worker, prompt, timeout=_to, task_id="planner:bible")
+        _fin = str(((res.get("telemetry") or {}).get("finish_reason")) or "").lower()
+        _truncated = _fin in _TRUNC_FINISH
+        if res.get("ok") and str(res.get("output") or "").strip() and not _truncated:
+            if _i > 0:
+                log.info("build_story_bible: primary failed — bible via fallback model %s", _mdl)
+            return str(res["output"]).strip()
+        if _truncated:
+            # A bible cut off at the token cap is INCOMPLETE — every parallel chapter would inherit a
+            # partial fact-sheet. Reject it and fail over (or proceed with none) rather than poison the book.
+            log.warning("build_story_bible: model %s bible TRUNCATED at cap=%d (finish=%s) — failing over",
+                        _mdl, _bib_max, _fin)
+        else:
             log.info("build_story_bible: model %s returned no usable bible (attempt %d/%d)%s",
                      _mdl, _i + 1, len(_chain),
                      " — failing over" if _i + 1 < len(_chain) else " — proceeding without one")
-        return ""
-    finally:
-        try:
-            if _rtc is not None and _rt_tok is not None:
-                _rtc.reset(_rt_tok)
-            if _rac is not None and _ra_tok is not None:
-                _rac.reset(_ra_tok)
-        except Exception:
-            pass
+    return ""
 
 
 __all__ = [

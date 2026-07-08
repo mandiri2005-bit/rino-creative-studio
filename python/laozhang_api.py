@@ -973,15 +973,6 @@ except Exception:
 
 _request_id_ctx: ContextVar[str] = ContextVar("_request_id_ctx", default="")
 
-# Per-call overrides for the narasi failover PER-RUNG timeout + rung-attempts (both default None →
-# use the global _NARASI_FAILOVER_TIMEOUT / _NARASI_RUNG_ATTEMPTS). The bible sets a SHORT rung timeout
-# and attempts=1 so a slow KIE rung fails over to the SAME opus model on LaoZhang/AtlasCloud WITHIN the
-# bible's own wait_for window — otherwise a hung KIE (global 280s × 2 attempts) eats the whole window
-# and the bible drops to a WEAK fallback MODEL instead of opus-on-another-provider. Read in _create;
-# propagate through run_worker's asyncio.to_thread (which copies the context).
-_narasi_rung_timeout_ctx: ContextVar = ContextVar("_narasi_rung_timeout", default=None)
-_narasi_rung_attempts_ctx: ContextVar = ContextVar("_narasi_rung_attempts", default=None)
-
 _SENSITIVE_HEADERS = {"authorization", "cookie", "x-laozhang-api-key",
                       "x-image-api-key", "x-veo-api-key", "x-sora-api-key",
                       "x-internal-secret", "x-admin-secret"}
@@ -1337,8 +1328,20 @@ class _AdaptedResp:
 def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout, temperature=None):
     """POST to an Anthropic-native Messages endpoint (e.g. KIE https://api.kie.ai/claude/v1/messages)
     and adapt the reply to the OpenAI shape. Splits any `system` role out to the top-level system
-    param (Anthropic requirement). Raises on transport failure so the caller advances the chain."""
-    import http.client, ssl
+    param (Anthropic requirement). Raises on transport failure / timeout so the caller advances the chain.
+
+    WALL-CLOCK DEADLINE (always on): the blocking request+read runs on a daemon thread joined with
+    `timeout`. http.client's own `timeout` is a PER-RECV socket timeout, NOT a total-read deadline — a
+    slow/dripping upstream keeps the socket warm and getresponse().read() blocks far past `timeout`,
+    hanging the worker thread (asyncio.wait_for cannot cancel a running to_thread). join(timeout)
+    guarantees this rung aborts on time so the failover chain advances instead of stalling the whole job.
+
+    STREAMING (NARASI_ANTHROPIC_STREAM=1, default OFF): for LONG generations (whole-book revise) a
+    non-streaming read holds one blocking read for the entire generation; streaming makes the socket
+    deliver tokens continuously so it never idles into the hang regime. SSE `data:` deltas are
+    accumulated. Default OFF until the aggregator's SSE shape is verified against a live call; if a
+    streamed response yields no text the rung raises and the chain falls over (safe degradation)."""
+    import http.client, ssl, threading
     from urllib.parse import urlparse
     u = urlparse(url)
     system = "\n\n".join(m.get("content", "") for m in messages
@@ -1346,34 +1349,104 @@ def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout
     conv = [{"role": m["role"], "content": m.get("content", "")}
             for m in messages if m.get("role") in ("user", "assistant")]
     # thinkingFlag: KIE (and Anthropic-native aggregators) leave thinking to a server default when the
-    # flag is omitted (docs.kie.ai/market/claude/claude-opus-4-6 lists thinkingFlag but not a default);
-    # for the deterministic critic/revise we do NOT want extended thinking — it burns the max_tokens
-    # budget and adds latency. Send it EXPLICITLY OFF by default. NARASI_ANTHROPIC_THINKING=1 flips it
-    # back without a code change.
+    # flag is omitted; for the deterministic critic/revise we do NOT want extended thinking — it burns the
+    # max_tokens budget and adds latency. Send it EXPLICITLY OFF by default (NARASI_ANTHROPIC_THINKING=1
+    # flips it). temperature is intentionally NOT forwarded (deprecated on Opus 4.6/4.7 → 400).
     _think = os.getenv("NARASI_ANTHROPIC_THINKING", "0").strip().lower() in ("1", "true", "yes", "on")
-    body = {"model": model_id, "max_tokens": int(max_tokens), "stream": False,
+    _stream = os.getenv("NARASI_ANTHROPIC_STREAM", "0").strip().lower() in ("1", "true", "yes", "on")
+    body = {"model": model_id, "max_tokens": int(max_tokens), "stream": bool(_stream),
             "thinkingFlag": _think, "messages": conv}
     if system:
         body["system"] = system
-    # temperature is intentionally NOT forwarded to the Anthropic-native (KIE) body: it is not in the
-    # claude-opus-4-6 spec (docs.kie.ai/market/claude/claude-opus-4-6) and is DEPRECATED on Opus 4.6/4.7
-    # — a non-default value returns 400 "temperature is deprecated for this model", which would kill this
-    # rung for the critic/revise. The OpenAI-compat rungs (LaoZhang/AtlasCloud) still honor temperature
-    # via their own client path. (The `temperature` param is kept only for call-site compatibility.)
-    conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=float(timeout),
-                                       context=ssl.create_default_context())
-    try:
-        conn.request("POST", u.path or "/v1/messages", json.dumps(body),
-                     {"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-        raw = conn.getresponse().read().decode("utf-8", "replace")
-    finally:
-        conn.close()
-    d = json.loads(raw)
-    blocks = d.get("content")
-    text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict)) if isinstance(blocks, list) else ""
-    usage = d.get("usage") or {}
-    return _AdaptedResp(text or None, d.get("stop_reason") or "stop",
-                        int(usage.get("input_tokens", 0) or 0), int(usage.get("output_tokens", 0) or 0))
+
+    _out: dict = {}
+
+    def _run():
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=float(timeout),
+                                           context=ssl.create_default_context())
+        try:
+            conn.request("POST", u.path or "/v1/messages", json.dumps(body),
+                         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+            resp = conn.getresponse()
+            if _stream:
+                if not (200 <= int(getattr(resp, "status", 0) or 0) < 300):
+                    raise RuntimeError("kie anthropic stream HTTP %s" % getattr(resp, "status", "?"))
+                parts, tin, tout, stop = [], 0, 0, ""
+                saw_stop = False
+                err_ev = None
+                buf = b""
+                while True:
+                    chunk = resp.read(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        line = line.strip()
+                        if not line.startswith(b"data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if not payload or payload == b"[DONE]":
+                            continue
+                        try:
+                            ev = json.loads(payload.decode("utf-8", "replace"))
+                        except Exception:
+                            continue
+                        et = ev.get("type")
+                        if et == "content_block_delta":
+                            dl = ev.get("delta") or {}
+                            if dl.get("type") in ("text_delta", None) and dl.get("text"):
+                                parts.append(dl["text"])
+                        elif et == "message_start":
+                            mu = ((ev.get("message") or {}).get("usage")) or {}
+                            tin = int(mu.get("input_tokens", 0) or 0) or tin
+                        elif et == "message_delta":
+                            mu = ev.get("usage") or {}
+                            tout = int(mu.get("output_tokens", 0) or 0) or tout
+                            _sr = (ev.get("delta") or {}).get("stop_reason")
+                            if _sr:
+                                stop = _sr
+                                saw_stop = True
+                        elif et == "message_stop":
+                            saw_stop = True
+                        elif et == "error":
+                            err_ev = ((ev.get("error") or {}).get("message")) or "stream error"
+                # Accept ONLY a cleanly-terminated stream. A mid-stream `error` event, or an EOF/socket-close
+                # before a message_stop / stop_reason (truncated or dropped generation), must FAIL OVER — a
+                # partial bible/chapter accepted as "complete" would be stored and billed silently.
+                if err_ev is not None:
+                    raise RuntimeError("kie anthropic stream error: %s" % err_ev)
+                if not saw_stop:
+                    raise RuntimeError("kie anthropic stream ended without message_stop/stop_reason (truncated)")
+                _out.update(text="".join(parts) or None, stop=stop or "stop", tin=tin, tout=tout)
+            else:
+                d = json.loads(resp.read().decode("utf-8", "replace"))
+                blocks = d.get("content")
+                txt = ("".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+                       if isinstance(blocks, list) else "")
+                usage = d.get("usage") or {}
+                _out.update(text=txt or None, stop=d.get("stop_reason") or "stop",
+                            tin=int(usage.get("input_tokens", 0) or 0),
+                            tout=int(usage.get("output_tokens", 0) or 0))
+        except Exception as e:  # noqa: BLE001 — surfaced to the caller via _out["err"] below
+            _out["err"] = e
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(float(timeout))
+    if t.is_alive():
+        raise RuntimeError("kie anthropic read exceeded %.1fs wall-clock deadline" % float(timeout))
+    if _out.get("err") is not None:
+        raise _out["err"]
+    if not _out.get("text"):
+        raise RuntimeError("kie anthropic returned no text (stream=%s)" % _stream)
+    return _AdaptedResp(_out["text"], _out.get("stop") or "stop",
+                        int(_out.get("tin", 0) or 0), int(_out.get("tout", 0) or 0))
 
 
 class _NarasiFailoverClient:
@@ -1421,17 +1494,13 @@ class _NarasiFailoverClient:
                 continue
             attempted += 1
             rung_last_err = ""
-            _ra_ov = _narasi_rung_attempts_ctx.get()
-            _n_rung_att = max(1, int(_ra_ov)) if _ra_ov is not None else _NARASI_RUNG_ATTEMPTS
-            for rung_attempt in range(1, _n_rung_att + 1):
+            for rung_attempt in range(1, _NARASI_RUNG_ATTEMPTS + 1):
                 remaining = deadline - time.monotonic()
                 if remaining <= 1.0:
                     errors.append(f"{name}:skipped (chain budget spent)")
                     rung_last_err = "budget_spent"
                     break
-                _rt_ov = _narasi_rung_timeout_ctx.get()
-                _rt_base = float(_rt_ov) if _rt_ov is not None else float(_NARASI_FAILOVER_TIMEOUT)
-                rung_timeout = max(1.0, min(_rt_base, remaining))
+                rung_timeout = max(1.0, min(float(_NARASI_FAILOVER_TIMEOUT), remaining))
                 call_kw = dict(kw)
                 call_kw["model"] = model_id
                 try:
