@@ -1962,6 +1962,102 @@ def _closing_tableau_scan(chapters: list[str]) -> dict:
         return {"status": "PASS", "count": 0, "motifs": {}, "sentences": []}
 
 
+# ── nonfiction prose-integrity scanners (report-only, lens#2 "hedge-as-shield" batch) ──
+# Three more report-only scanners under the SAME NARASI_REFRAIN_SCAN flag, targeting the
+# nonfiction failure modes lens#2 surfaced on the Notebook/Banda pieces. status FLAG/PASS only
+# (never OVER → excluded from over_budget). Each never raises.
+_DEFERRED_HOOK_CUES = (
+    "later chapter", "later chapters", "the next chapter", "a story for another day",
+    "better placed to tell", "will weigh", "chapters will", "for another day",
+    "i will have to", "as we will see", "a story a later", "the next chapter is better",
+    "bab berikutnya", "bab selanjutnya", "nanti akan", "akan kita lihat", "kelak akan",
+)
+
+
+def _deferred_hook_scan(chapters: list[str]) -> dict:
+    """Report-only: DEFERRED-EVIDENCE hooks ('later chapters will… / a story for another day')
+    that smuggle drama via a promise — some never paid. Surfaces the promise sentences; FLAG when
+    density exceeds threshold. status FLAG/PASS. Never raises. (Payment-tracking is deferred; this
+    surfaces the promises for review.)"""
+    out = {"status": "PASS", "count": 0, "threshold": 0, "samples": []}
+    try:
+        hits = []
+        for ci, ch in enumerate(chapters):
+            for s in _sentences(ch):
+                low = s.lower()
+                if any(cue in low for cue in _DEFERRED_HOOK_CUES):
+                    hits.append((ci + 1, s.strip()[:200]))
+        thr = int(os.environ.get("NARASI_DEFERRED_HOOK_MAX", "3"))
+        out["count"] = len(hits); out["threshold"] = thr
+        if len(hits) > thr:
+            out["status"] = "FLAG"
+            out["samples"] = ["[Bab %d] %s" % (c, s) for c, s in hits[:10]]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "threshold": 0, "samples": []}
+
+
+_EXPERT_NOUN_RX = re.compile(
+    r"(?i)\b(?:specialists?|scholars?|experts?|researchers?|conservators?|historians?|"
+    r"philologists?|scientists?|academics?|linguists?|para ahli|ahli|ilmuwan|peneliti|sejarawan)\b")
+_EXPERT_VERB_RX = re.compile(
+    r"(?i)\b(?:describe[sd]?|suggests?|argues?|says?|notes?|believe[sd]?|contends?|maintains?|"
+    r"reports?|claims?|estimates?|observe[sd]?|holds?|insists?|describes it|"
+    r"menggambarkan|berpendapat|menyatakan|mencatat|memperkirakan)\b")
+_TITLE_TOKEN_RX = re.compile(r"^[A-ZÀ-Þ][a-zà-ÿ]{2,}")
+
+
+def _unattributed_expert_scan(text: str) -> dict:
+    """Report-only: nameless expert consensus — an expert-noun + a claim-verb in the same sentence
+    with NO named authority (subtler than a fake citation — nothing to check). Two spare paths:
+    (a) no expert-noun at all ('John Bastin described' → _EXPERT_NOUN_RX never matches, sentence
+    skipped); (b) an expert-noun co-occurring WITH a name ('the historian John Bastin described')
+    → a non-initial Title-case token marks it attributed. Only bare 'specialists/scholars describe…'
+    with no name flags. Known FP (report-only, Phase-3 calibration): a sentence-INITIAL named
+    authority ('Bastin, a specialist, describes it') is missed, since pos-0 is always capitalised.
+    status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "count": 0, "samples": []}
+    try:
+        hits = []
+        for s in _sentences(text or ""):
+            s = s.split("\n")[-1].strip()          # drop heading-glue on a chapter's 1st sentence
+            if not (_EXPERT_NOUN_RX.search(s) and _EXPERT_VERB_RX.search(s)):
+                continue
+            toks = s.split()
+            named = any(_TITLE_TOKEN_RX.match(t) for t in toks[1:])   # a name-like token (not sentence-initial)
+            if not named:
+                hits.append(s[:200])
+        out["count"] = len(hits)
+        if hits:
+            out["status"] = "FLAG"; out["samples"] = hits[:10]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "samples": []}
+
+
+_GLOSS_RX = re.compile(r"\b([A-Za-zÀ-ÿ][\wÀ-ÿ'’-]{3,})\s+(?:—|–|--)\s+")
+
+
+def _reglossing_scan(text: str) -> dict:
+    """Report-only: the SAME head-term re-glossed multiple times (e.g. 'dluwang — traditional
+    Javanese bark paper' 5×) — signature of chapters generated without a 'term already defined'
+    state. FLAG a head-term that opens an em-dash gloss >=2×. status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "count": 0, "terms": {}}
+    try:
+        counts: dict[str, int] = {}
+        for m in _GLOSS_RX.finditer(text or ""):
+            term = m.group(1).lower()
+            if len(term) >= 4 and term not in _OPENING_STOP:
+                counts[term] = counts.get(term, 0) + 1
+        reglossed = {t: n for t, n in counts.items() if n >= 2}
+        if reglossed:
+            out["status"] = "FLAG"; out["count"] = len(reglossed)
+            out["terms"] = dict(sorted(reglossed.items(), key=lambda kv: -kv[1])[:10])
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "terms": {}}
+
+
 def _names_from(m: re.Match) -> Optional[str]:
     gd = m.groupdict()
     return gd.get("name1") or gd.get("name2") or gd.get("name3")
@@ -2302,6 +2398,10 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             report["counters"]["thesis_cluster"] = _thesis_cluster_scan(chapters, embed_fn=embed_fn, cap=_tcap)
             report["counters"]["hedge_density"] = _hedge_density_scan(chapters)
             report["counters"]["closing_tableau"] = _closing_tableau_scan(chapters)
+            # nonfiction prose-integrity (lens#2 hedge-as-shield batch), same flag, report-only
+            report["counters"]["deferred_hook"] = _deferred_hook_scan(chapters)
+            report["counters"]["unattributed_expert"] = _unattributed_expert_scan(text)
+            report["counters"]["reglossing"] = _reglossing_scan(text)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the
