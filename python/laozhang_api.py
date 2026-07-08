@@ -9440,7 +9440,7 @@ _BEAT_LABELS = (
     "act one", "act two", "act three", "act four",
     "act i", "act ii", "act iii", "act iv",
 )
-_BEAT_LABEL_RX = re.compile(r"(?i)\b(?:" + "|".join(re.escape(b) for b in _BEAT_LABELS) + r")\b")
+_BEAT_LABEL_RX = _re.compile(r"(?i)\b(?:" + "|".join(_re.escape(b) for b in _BEAT_LABELS) + r")\b")
 
 
 def _strip_beat_label(title: str) -> str:
@@ -9450,14 +9450,14 @@ def _strip_beat_label(title: str) -> str:
     if not t or not _BEAT_LABEL_RX.search(t):
         return title
     out = _BEAT_LABEL_RX.sub("", t)
-    out = re.sub(r"\s{2,}", " ", out)                                   # collapse doubled spaces
-    out = re.sub(r"\s+([:;,.—–-])", r"\1", out)               # 'The : X' → 'The: X'
-    out = re.sub(r"([:;,.—–])\s*(?=[:;,.—–])", "", out)  # drop doubled separators
+    out = _re.sub(r"\s{2,}", " ", out)                                   # collapse doubled spaces
+    out = _re.sub(r"\s+([:;,.—–-])", r"\1", out)               # 'The : X' → 'The: X'
+    out = _re.sub(r"([:;,.—–])\s*(?=[:;,.—–])", "", out)  # drop doubled separators
     out = out.strip(" \t:;,.—–-")
     # drop a leading article left dangling before a preposition ('The of Trust' → 'of Trust'), then re-cap
-    out = re.sub(r"(?i)^(?:the|a|an)\s+(?=(?:of|in|on|at|to|for|and|or|with|from|by)\b)", "", out)
+    out = _re.sub(r"(?i)^(?:the|a|an)\s+(?=(?:of|in|on|at|to|for|and|or|with|from|by)\b)", "", out)
     out = (out[:1].upper() + out[1:]) if out else out
-    if len(out) < 3 or not re.search(r"[^\W\d_]", out):                 # empty / no real word → keep original
+    if len(out) < 3 or not _re.search(r"[^\W\d_]", out):                 # empty / no real word → keep original
         return title
     if out.strip().lower() in ("the", "a", "an", "of", "the of", "and", "or"):
         return title
