@@ -2309,6 +2309,152 @@ def _denial_fingerprint_scan(text: str) -> dict:
         return {"status": "PASS", "count": 0, "samples": []}
 
 
+# ── BATCH A.2 (report-only, same NARASI_REFRAIN_SCAN gate): four cheap greppable gates from the Giza
+# lens#2 forensic — each status FLAG/PASS (never OVER → excluded from over_budget). Never raise. A
+# residual FP is a harmless report entry (Phase-3 calibration), never an edit. `_chapters()` returns
+# one chunk for 'Chapter N:'/'Bab N:' manuscripts, so these split chapters locally where needed.
+def _a2_chapters(text: str) -> list:
+    parts = re.split(r"(?im)^\s*(?:chapter|bab)\s+\d+\s*[:.]", text or "")
+    return [p for p in parts if p.strip()]
+
+
+# #1 ANOMALY-IN-A-HEDGED-DOC — the fabricated-precision detector: a BIG (>=1M) numeric value that is
+# NEVER source-attributed anywhere in the doc (Giza '31 million tons'), while other big values ARE
+# sourced (2.3M/6M via 'scholars'/'estimates vary'). Value-level dedup so a value sourced once doesn't
+# flag its rhetorical re-mentions. Once hedge-discipline is internalised, the remaining fabrications
+# are OUTLIERS against the doc's own sourcing baseline — this flags the outlier, not "add more hedge".
+_A2_NW = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+          "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "twenty": 20, "thirty": 30, "forty": 40,
+          "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90, "hundred": 100}
+_A2_BIGNUM_RX = re.compile(
+    r"(?i)\b((?:\d[\d.,]*|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|"
+    r"forty|fifty|sixty|seventy|eighty|ninety|hundred))[\s-]+(million|billion)\b|\b(\d{7,})\b")
+_A2_SOURCE_RX = re.compile(
+    r"(?i)\b(stud(?:y|ies)|research(?:ers)?|scholars?|scientists?|physicists?|experts?|egyptolog\w+|"
+    r"university|univ\.|according to|commonly cited|widely cited|estimates?\s+(?:vary|place|put|suggest|reach)|"
+    r"scholars still argue|reconstructions?|surveys?|excavat\w+|papyr\w+|census|records?|"
+    r"reports?|data|measured|documented|sources?)\b")
+
+
+def _a2_leadnum(s):
+    s = (s or "").strip().lower().rstrip("-")
+    if re.match(r"^\d", s):
+        try:
+            return float(re.sub(r"[^\d.]", "", s.replace(",", "")))
+        except Exception:  # noqa: BLE001
+            return None
+    return _A2_NW.get(s)
+
+
+def _bignum_unsourced_scan(chapters: list) -> dict:
+    """Report-only: a BIG (>=1M) numeric value NEVER source-attributed anywhere (fabricated-precision
+    outlier). status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "unsourced_big_claims": [], "distinct_big_values": 0}
+    try:
+        full = "\n\n".join(chapters)
+        vals = {}
+        for m in _A2_BIGNUM_RX.finditer(full):
+            if m.group(2):
+                lead = _a2_leadnum(m.group(1))
+                if lead is None:
+                    continue
+                val = lead * (1e9 if m.group(2).lower() == "billion" else 1e6)
+            else:
+                val = _a2_leadnum(m.group(3))
+                if val is None or val < 1e6:
+                    continue
+            lo, hi = max(0, m.start() - 150), min(len(full), m.end() + 150)
+            sourced = bool(_A2_SOURCE_RX.search(full[lo:hi]))
+            snip = full[max(0, m.start() - 30):m.end() + 20].strip().replace("\n", " ")[:90]
+            rec = vals.setdefault(round(val / 1e5), {"sourced": False, "snip": snip})
+            rec["sourced"] = rec["sourced"] or sourced
+            if not sourced:
+                rec["snip"] = snip
+        out["distinct_big_values"] = len(vals)
+        unsourced = [r["snip"] for r in vals.values() if not r["sourced"]]
+        if unsourced and len(vals) >= 2:
+            out["status"] = "FLAG"; out["unsourced_big_claims"] = unsourced[:8]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "unsourced_big_claims": [], "distinct_big_values": 0}
+
+
+# #2 BRIEF/OUTLINE-LEAK — brief/outline meta-language leaking into prose ('The premise our engineers
+# work from', 'the chapter I was promised' [Notebook]). Greppable.
+# High-precision: the "our X" noun form REQUIRES a brief-verb ('work from/put/estimate') so common
+# prose ('our team walked in') can't trip it; plus the Giza premise-frame + Notebook's promised-chapter
+# + explicit brief/outline references + outline-y chapter framing.
+_A2_BRIEF_LEAK_RX = re.compile(
+    r"(?i)("
+    r"the premise (?:our|we|i|the)[\w ,]{0,24}?works? from"
+    r"|our (?:engineers|researchers|analysts|writers) (?:work|works|put|puts|estimate|estimates|assume|assumes|suggest|suggests)\b"
+    r"|the chapter i was promised"
+    r"|the (?:brief|outline) (?:says|calls|specifi\w*|our|we)\b"
+    r"|as (?:the|per) (?:brief|outline)\b"
+    r"|in this chapter,? (?:we|i) will\b"
+    r"|this chapter will (?:cover|explore|examine|show|discuss)\b"
+    r")")
+
+
+def _brief_leak_scan(text: str) -> dict:
+    """Report-only: brief/outline meta-language leaking into prose. status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "count": 0, "samples": []}
+    try:
+        hits = [text[max(0, m.start() - 8):m.end() + 40].strip().replace("\n", " ")[:70]
+                for m in _A2_BRIEF_LEAK_RX.finditer(text or "")]
+        if hits:
+            out["status"] = "FLAG"; out["count"] = len(hits); out["samples"] = hits[:8]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "samples": []}
+
+
+# #3 OUTPUT-MODE-SLIP — a VIDEO script that slips into READING-address: a strong video-CTA idiom
+# ('keep you watching') co-occurring with an audience reading-address ('you, reading this'). Watch-side
+# is video-CTA only (NOT diegetic 'on screen') to avoid fiction-cinema FPs.
+_A2_WATCH_RX = re.compile(r"(?i)\b(keep you watching|keep watching|watch(?:ing)? (?:till|until) the end|in this video|by the end of this video|smash that (?:like|subscribe))\b")
+_A2_READ_RX = re.compile(r"(?i)\b(you(?:'re| are) reading|as you read|keep reading|read on|reading this|dear reader|turn the page)\b")
+
+
+def _mode_slip_scan(text: str) -> dict:
+    """Report-only: video-CTA address co-occurring with reading-address (video script forgot it's
+    video). status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "watch": [], "read": []}
+    try:
+        w = [m.group(0) for m in _A2_WATCH_RX.finditer(text or "")]
+        r = [m.group(0) for m in _A2_READ_RX.finditer(text or "")]
+        if w and r:
+            out["status"] = "FLAG"; out["watch"] = w[:5]; out["read"] = r[:5]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "watch": [], "read": []}
+
+
+# #4 CLOSER-THINNING — last chapter far shorter than the median chapter (Giza Ch8 529 vs ~1330):
+# deliberate outro OR an Assembler token-budget allocation bug. Threshold env-tunable.
+def _closer_thinning_scan(text: str) -> dict:
+    """Report-only: last chapter < NARASI_CLOSER_MIN_RATIO (default 0.50) of the median chapter.
+    status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "last_words": 0, "median_words": 0, "ratio": None}
+    try:
+        wcs = [len(c.split()) for c in _a2_chapters(text)]
+        if len(wcs) < 4:
+            return out
+        last = wcs[-1]
+        body = sorted(wcs[:-1]); med = body[len(body) // 2]
+        ratio = (last / med) if med else 1.0
+        out.update(last_words=last, median_words=med, ratio=round(ratio, 2))
+        try:
+            thr = float(os.environ.get("NARASI_CLOSER_MIN_RATIO", "0.50"))
+        except Exception:  # noqa: BLE001
+            thr = 0.50
+        if ratio < thr:
+            out["status"] = "FLAG"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "last_words": 0, "median_words": 0, "ratio": None}
+
+
 def _names_from(m: re.Match) -> Optional[str]:
     gd = m.groupdict()
     return gd.get("name1") or gd.get("name2") or gd.get("name3")
@@ -2657,6 +2803,11 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             # same flag, report-only FLAG-never-OVER → excluded from over_budget, can't drive the diet loop.
             report["counters"]["derived_number"] = _derived_number_scan(chapters)
             report["counters"]["denial_fingerprint"] = _denial_fingerprint_scan(text)
+            # Batch A.2 (Giza lens#2), same flag, report-only FLAG-never-OVER → excluded from over_budget.
+            report["counters"]["bignum_unsourced"] = _bignum_unsourced_scan(chapters)
+            report["counters"]["brief_leak"] = _brief_leak_scan(text)
+            report["counters"]["mode_slip"] = _mode_slip_scan(text)
+            report["counters"]["closer_thinning"] = _closer_thinning_scan(text)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the
