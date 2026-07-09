@@ -2058,6 +2058,257 @@ def _reglossing_scan(text: str) -> dict:
         return {"status": "PASS", "count": 0, "terms": {}}
 
 
+# ── DERIVED-NUMBER scan (report-only, Batch A): machine-checkable arithmetic/word-count errors the
+# LLM makes and no craft lens catches (lens#3 on Kaset + Last Row) — (a) a currency "leftover" that
+# equals the SUM of the outflows near it (2,95jt = 1,8 + 1,15, labeled "yang tersisa"); (b) an
+# "N kata/words" claim that miscounts the quote it refers to ("enam kata" over a 5-word chat).
+# Deterministic, status FLAG/PASS (NEVER 'OVER' → excluded from over_budget, cannot drive the diet
+# loop / bill a rewrite). Never raises. Report-only ⟹ a residual false positive is a harmless report
+# entry, never an edit (Phase-3 calibration). Bounded ID/EN spelled-number parse below is scoped to
+# currency + small-int count phrases only.
+_DN_UNIT = {
+    "nol": 0, "kosong": 0, "se": 1, "satu": 1, "dua": 2, "tiga": 3, "empat": 4, "lima": 5,
+    "enam": 6, "tujuh": 7, "delapan": 8, "sembilan": 9, "sepuluh": 10, "sebelas": 11,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+_DN_SCALE = ("juta", "ribu", "miliar", "milyar")
+
+
+def _dn_parse_spelled(tokens) -> Optional[float]:
+    """Multiplicative parse of an ID spelled number with koma-decimal ('dua koma sembilan lima
+    juta' → 2.95e6; 'satu juta seratus lima puluh ribu' → 1.15e6). float|None. Never raises."""
+    try:
+        total = 0.0; cur = 0.0; last = None; frac = ""; in_frac = False; saw = False
+        toks = list(tokens); i = 0
+        while i < len(toks):
+            t = toks[i]; i += 1
+            if t == "koma":
+                in_frac = True; saw = True; continue
+            if in_frac:
+                v = _DN_UNIT.get(t)
+                if v is not None and v <= 9:
+                    frac += str(int(v)); saw = True; continue
+                in_frac = False; i -= 1; continue     # non-digit ends the fraction, reprocess token
+            if t == "seratus":
+                cur += 100.0; last = None; saw = True; continue
+            if t == "seribu":
+                total += (cur or 1) * 1000.0; cur = 0.0; last = None; saw = True; continue
+            v = _DN_UNIT.get(t)
+            if v is not None:
+                cur += v; last = v; saw = True; continue
+            if t == "belas":
+                if last is not None:
+                    cur = cur - last + (10 + last); last = None
+                saw = True; continue
+            if t == "puluh":
+                if last is not None:
+                    cur = cur - last + last * 10; last = None
+                saw = True; continue
+            if t == "ratus":
+                if last is not None:
+                    cur = cur - last + last * 100; last = None
+                saw = True; continue
+            if t in ("ribu", "juta", "miliar", "milyar"):
+                scale = {"ribu": 1e3, "juta": 1e6, "miliar": 1e9, "milyar": 1e9}[t]
+                base = cur if cur else 1.0
+                if frac:
+                    base += float("0." + frac); frac = ""; in_frac = False
+                total += base * scale; cur = 0.0; last = None; saw = True; continue
+            break
+        if not saw:
+            return None
+        val = total + cur
+        if frac:
+            val += float("0." + frac)
+        return val
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dn_num_digits(s: str) -> Optional[float]:
+    """'6.200.000' / '1,8' / 'Rp1.150.000' / '2,95' → float (ID: '.'=thousands, ','=decimal)."""
+    try:
+        s = re.sub(r"[^\d.,]", "", (s or "").strip())
+        if not s:
+            return None
+        if "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", s):
+            s = s.replace(".", "")
+        return float(s)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_DN_ALLNUM = "|".join(sorted(
+    list(_DN_UNIT.keys()) + ["koma", "belas", "puluh", "ratus", "ribu", "juta", "miliar",
+                             "milyar", "seratus", "seribu"], key=len, reverse=True))
+_DN_SPELLED_RX = re.compile(r"(?i)\b(?:%s)(?:[\s-]+(?:%s))*\b" % (_DN_ALLNUM, _DN_ALLNUM))
+_DN_DIGIT_CUR_RX = re.compile(r"(?i)\bRp\s?\d[\d.,]*|\b\d[\d.,]*\s*(?:juta|ribu|miliar|milyar)\b")
+_DN_SMALLINT = "|".join(sorted([w for w, v in _DN_UNIT.items() if v <= 12] + ["belas", "puluh"],
+                               key=len, reverse=True))
+_DN_WORDCOUNT_RX = re.compile(
+    r"(?i)\b(\d{1,3}|(?:%s)(?:[\s-]+(?:%s)){0,2})[\s-]+(?:kata|words?)\b" % (_DN_SMALLINT, _DN_SMALLINT))
+_DN_QUOTE_RX = re.compile(r"[\"“”«»]([^\"“”«»]{1,120})[\"“”«»]|['‘’]([^'‘’\n]{2,120})['‘’]")
+_DN_REMAINDER_RX = re.compile(
+    r"(?i)(?:yang\s+)?(?:tersisa|sisa|leftover|left\s*over|remaining|remainder|what'?s\s+left)")
+
+
+def _dn_wordcount(q: str) -> int:
+    return len(re.findall(r"[^\s]+", (q or "").strip()))
+
+
+def _dn_is_yearish(v: float) -> bool:
+    """A whole number in [1900,2100] is almost always a YEAR ('dua ribu dua puluh tiga' = 2023),
+    not a currency amount — exclude so years can't pollute the arithmetic pool."""
+    return float(v).is_integer() and 1900 <= v <= 2100
+
+
+def _dn_currency_amounts(text: str) -> list:
+    """(value, pos) for currency magnitudes ONLY (spelled with a scale word, or Rp/juta digits) —
+    excludes bare counts ('delapan bulan') and year-like integers ('dua ribu dua puluh tiga')."""
+    out = []
+    for m in _DN_SPELLED_RX.finditer(text):
+        run = m.group(0)
+        if not any(s in run.lower() for s in _DN_SCALE):
+            continue
+        v = _dn_parse_spelled(re.split(r"[\s-]+", run.lower()))
+        if v is not None and v > 0 and not _dn_is_yearish(v):
+            out.append((round(v, 2), m.start()))
+    for m in _DN_DIGIT_CUR_RX.finditer(text):
+        v = _dn_num_digits(m.group(0))
+        if v is not None and v < 1000 and re.search(r"(?i)juta", m.group(0)):
+            v *= 1e6
+        elif v is not None and v < 1000 and re.search(r"(?i)ribu", m.group(0)):
+            v *= 1e3
+        if v is not None and v > 0 and not _dn_is_yearish(v):
+            out.append((round(v, 2), m.start()))
+    return out
+
+
+def _dn_subset_sum(target: float, amounts: list, tol: float = 1.0, min_size: int = 2):
+    """A subset (size>=min_size) of `amounts` (bounded to 12) summing to `target` within tol."""
+    amts = amounts[:12]; n = len(amts)
+    for mask in range(1, 1 << n):
+        if bin(mask).count("1") < min_size:
+            continue
+        s = sum(amts[i] for i in range(n) if mask & (1 << i))
+        if abs(s - target) <= tol:
+            return [amts[i] for i in range(n) if mask & (1 << i)]
+    return None
+
+
+def _dn_has_consistent_income(rem: float, others: list) -> bool:
+    """Is there a plausible income I (> rem) among `others` with I − sum(subset of the rest) == rem?
+    If so, an income−outflows==remainder reading EXISTS ⟹ the sub-sum match is a coincidence, not the
+    'leftover mislabeled as outflows' error → do NOT flag (kills FPs from unrelated clustered amounts)."""
+    for I in sorted(set(others), reverse=True):
+        if I <= rem:
+            continue
+        rest = list(others); rest.remove(I)
+        if abs(I - rem) <= 1.0 or _dn_subset_sum(I - rem, rest, min_size=1):
+            return True
+    return False
+
+
+def _derived_number_scan(chapters: list) -> dict:
+    """Report-only derived-number errors. status FLAG/PASS (never OVER). Never raises."""
+    out = {"status": "PASS", "wordcount_mismatches": [], "currency_flags": []}
+    try:
+        # (a) word-count claim vs its referent quote. Guards: claimed>=2 (drops the 'tak satu kata
+        # pun' idiom); pair to the LONGEST 2..15-word quote in a ±260-char window (the substantive
+        # referent, not an incidental 1-word quote).
+        for ci, ch in enumerate(chapters):
+            for m in _DN_WORDCOUNT_RX.finditer(ch):
+                raw = m.group(1).strip()
+                claimed = (float(raw) if raw.isdigit()
+                           else _dn_parse_spelled(re.split(r"[\s-]+", raw.lower())))
+                if claimed is None or int(claimed) < 2:
+                    continue
+                lo, hi = max(0, m.start() - 260), min(len(ch), m.end() + 260)
+                inrange = []
+                for qm in _DN_QUOTE_RX.finditer(ch[lo:hi]):
+                    q = (qm.group(1) or qm.group(2) or "").strip()
+                    n = _dn_wordcount(q)
+                    if 2 <= n <= 15:
+                        inrange.append((n, q))
+                if len(inrange) != 1:      # 0 or >1 candidate quotes ⟹ pairing is ambiguous, skip (precision > recall)
+                    continue
+                n, q = inrange[0]
+                if abs(n - int(claimed)) >= 1:
+                    out["wordcount_mismatches"].append(
+                        "[Bab %d] claim=%d kata vs quote=%d words: \"%s\""
+                        % (ci + 1, int(claimed), n, q[:60]))
+        # (b) currency leftover == subset-sum of nearby outflows. WINDOW-based (not per-chapter):
+        # `_chapters()` returns one chunk for 'Bab N:'-style manuscripts, so pooling the whole book
+        # would cross-pair unrelated amounts and let the [:10] subset cap drop the real outflows.
+        # Scope each remainder cue to a local ±window so only nearby amounts are considered.
+        # Consistency guard: skip when a plausible income (largest windowed amount) MINUS the rest
+        # equals the remainder — correct arithmetic that merely coincides with a sub-sum.
+        full = "\n\n".join(chapters)
+        seen_rem = set()
+        for cue in list(_DN_REMAINDER_RX.finditer(full))[:40]:   # bound work on degenerate inputs
+            lo, hi = max(0, cue.start() - 700), min(len(full), cue.start() + 300)
+            win = full[lo:hi]
+            amts = _dn_currency_amounts(win)
+            if len(amts) < 3:
+                continue
+            cue_local = cue.start() - lo
+            # the cue must not be a NON-numeric remainder ('sisa: belum ada / nol / habis' = zero)
+            after = win[cue.end() - lo: cue.end() - lo + 24].lower()
+            if re.search(r"\b(?:belum ada|belum|nol|kosong|habis|tidak ada|nihil|minus|remah)\b", after):
+                continue
+            rem = min(amts, key=lambda a: abs(a[1] - cue_local))
+            if abs(rem[1] - cue_local) > 60:   # remainder amount must be tightly apposed to the cue
+                continue
+            if rem[0] in seen_rem:
+                continue
+            others = [v for (v, p) in amts if p != rem[1]]
+            if len(others) < 2:
+                continue
+            combo = _dn_subset_sum(rem[0], others)
+            if not combo:
+                continue
+            if _dn_has_consistent_income(rem[0], others):
+                continue   # a plausible income−outflows==remainder reading exists → not the error
+            seen_rem.add(rem[0])
+            out["currency_flags"].append(
+                "'%s' amount %s == sum%s of nearby outflows (leftover mislabeled as sum-of-outflows; income−outflows≠this)"
+                % (win[max(0, cue_local - 24):cue_local + 12].strip().replace("\n", " "), rem[0], tuple(combo)))
+            if len(out["currency_flags"]) >= 5:
+                break
+        if out["wordcount_mismatches"] or out["currency_flags"]:
+            out["status"] = "FLAG"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "wordcount_mismatches": [], "currency_flags": []}
+
+
+_DENIAL_RX = re.compile(
+    r"(?i)\b(?:denial mode|in denial|state of denial|denial was still|"
+    r"mode penyangkalan(?:\s+masih(?:\s+aktif)?)?|dalam penyangkalan|penyangkalan masih aktif)\b")
+
+
+def _denial_fingerprint_scan(text: str) -> dict:
+    """Report-only lane-fingerprint: the 'denial mode' concept-slot the pipeline reaches for in
+    coming-of-age introspection beats (EN in River, ID 'mode penyangkalan masih aktif' in Kaset).
+    status FLAG/PASS. Never raises. Lane-calibration signal, not a quality gate."""
+    out = {"status": "PASS", "count": 0, "samples": []}
+    try:
+        hits = _DENIAL_RX.findall(text or "")
+        if hits:
+            seen = []
+            for h in hits:
+                h = h.strip().lower()
+                if h not in seen:
+                    seen.append(h)
+            out["status"] = "FLAG"; out["count"] = len(hits); out["samples"] = seen[:8]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "samples": []}
+
+
 def _names_from(m: re.Match) -> Optional[str]:
     gd = m.groupdict()
     return gd.get("name1") or gd.get("name2") or gd.get("name3")
@@ -2402,6 +2653,10 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             report["counters"]["deferred_hook"] = _deferred_hook_scan(chapters)
             report["counters"]["unattributed_expert"] = _unattributed_expert_scan(text)
             report["counters"]["reglossing"] = _reglossing_scan(text)
+            # Batch A (derived-number arithmetic/word-count + coming-of-age denial fingerprint),
+            # same flag, report-only FLAG-never-OVER → excluded from over_budget, can't drive the diet loop.
+            report["counters"]["derived_number"] = _derived_number_scan(chapters)
+            report["counters"]["denial_fingerprint"] = _denial_fingerprint_scan(text)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the
