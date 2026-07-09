@@ -746,20 +746,28 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             if sink is not None and _cqc:
                 sink.credits += int(_cqc)
             _cpay = _cq
-            # CNF-REVISE SAFETY: a canon_fork on a NONFICTION piece stays REPORT-ONLY — never drives a
-            # revise. The [VERIFY] prompt clause reduces but cannot guarantee the LLM critic won't
-            # misfire a canon_fork against an unpinned [VERIFY] slot, and the revise has no fine-grained
-            # fabrication guard (it could invent a date or splice "[VERIFY]" into prose, both under the
-            # 90%-word floor). So for fiction=False we DETECT+persist canon forks but never auto-rewrite
-            # them; fiction is unchanged (canon_fork still revisable, the existing live behavior).
+            # CANON_FORK-REVISE SAFETY: a canon_fork stays REPORT-ONLY by DEFAULT (never drives a revise),
+            # for BOTH fiction and nonfiction. The critic diffs chapters against the pinned fact sheet but
+            # CANNOT tell a real fork (river pusaran victim/age swap = error) from a DESIGNED REVEAL that
+            # overturns the sheet's surface facts (kdrama 'fallen angel': the bible pinned the cover-up's
+            # 2011/142/18m as canon, the whole mystery reveals the buried 2009/>142/26m truth — the critic
+            # flagged the CLIMAX as 9 canon_forks and the revise FIRED; only the >=90%-word guard saved the
+            # plot from being "corrected" back into incoherence). Until the tier-2 bible marks the surface
+            # lie as `false_versions`, auto-revising a canon_fork can GUT a reveal — a catastrophic, plot-
+            # destroying failure — while the fork is still DETECTED+persisted either way. So report-only.
+            # Checks 1-6 (timeline/causality/entity_drift/spatial/pov) have no reveal-ambiguity and stay
+            # revisable. NARASI_CANON_FORK_REVISE=1 restores fiction canon_fork revise (CNF always report-
+            # only — its [VERIFY]/fabrication hazard is separate). OFF (default) ⟹ all canon_fork report-only.
             try:
                 from orchestrator.static import _is_fiction_style as _isf_rev
                 _isfic_rev = bool(_isf_rev(style))
             except Exception:  # noqa: BLE001
                 _isfic_rev = True
+            _fork_revise = os.environ.get("NARASI_CANON_FORK_REVISE", "0").strip().lower() in ("1", "true", "yes", "on")
             _cbad = [v for v in (_cq.get("violations") or [])
                      if str(v.get("severity", "")).lower() in ("critical", "high")
-                     and not (not _isfic_rev and str(v.get("type", "")).lower() == "canon_fork")]
+                     and not (str(v.get("type", "")).lower() == "canon_fork"
+                              and (not _fork_revise or not _isfic_rev))]
             if _narasi_critique_revise_enabled() and _cbad:
                 _t_rev0 = time.monotonic()
                 _crev, _crevc = await _narasi_consistency_revise(
