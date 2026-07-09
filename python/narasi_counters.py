@@ -2392,16 +2392,23 @@ _A2_BRIEF_LEAK_RX = re.compile(
     r"|the (?:brief|outline) (?:says|calls|specifi\w*|our|we)\b"
     r"|as (?:the|per) (?:brief|outline)\b"
     r"|in this chapter,? (?:we|i) will\b"
-    r"|this chapter will (?:cover|explore|examine|show|discuss)\b"
+    r"|th(?:is|e) chapter (?:will|would) (?:cover|explore|examine|show|discuss|read|open|close)\b"
+    r"|(?:the )?epigraph would read\b"       # 'The epigraph would read:' — slot narrated, not rendered (fallen-angel)
     r")")
+# A2.3: a narratorial DRAFT-ANNOTATION in square brackets — a full capital-initial sentence inside
+# [...] ending in a period ('[He would call it protection, later... That was the trouble.]'). Distinct
+# from short markers ([VERIFY], [sic], [2011]) which never match (need >=24 chars + a terminal period).
+_A2_BRACKET_ASIDE_RX = re.compile(r"\[[A-Z][^\[\]]{24,}\.\]")
 
 
 def _brief_leak_scan(text: str) -> dict:
-    """Report-only: brief/outline meta-language leaking into prose. status FLAG/PASS. Never raises."""
+    """Report-only: brief/outline meta-language + narratorial draft-annotations leaking into prose
+    (the 'outline-negotiation voice' — Notebook/Giza/fallen-angel). status FLAG/PASS. Never raises."""
     out = {"status": "PASS", "count": 0, "samples": []}
     try:
         hits = [text[max(0, m.start() - 8):m.end() + 40].strip().replace("\n", " ")[:70]
                 for m in _A2_BRIEF_LEAK_RX.finditer(text or "")]
+        hits += [m.group(0).replace("\n", " ")[:70] for m in _A2_BRACKET_ASIDE_RX.finditer(text or "")]
         if hits:
             out["status"] = "FLAG"; out["count"] = len(hits); out["samples"] = hits[:8]
         return out
@@ -2453,6 +2460,39 @@ def _closer_thinning_scan(text: str) -> dict:
         return out
     except Exception:  # noqa: BLE001
         return {"status": "PASS", "last_words": 0, "median_words": 0, "ratio": None}
+
+
+# #A3 HOME-LANGUAGE BLEED — the pipeline's OWN home tongue (Indonesian) leaking a single conspicuous
+# word into a NON-ID manuscript, esp. a character's interiority (fallen-angel: "Kenapa — no. The thought
+# came in her own tongue" in a KOREAN character's mind — should be "Wae"). The existing
+# narasi_gate.language_consistency_scan catches only a WHOLE sentence in the wrong language (needs 0
+# target-lang function-words); a single ID word buried in an otherwise-correct EN sentence slips it. This
+# is a distinct, high-visibility bug (both target-lang AND ID viewers catch it). High-precision ID word
+# set (near-zero-FP in EN/other-Latin); SKIPPED for ID-family manuscripts where these are native.
+# Unambiguous ID words only — dropped 'aku'/'dong'/'kok' (collide with names: 'Dong-hui', 'Aku', etc.,
+# and \bdong\b matches the 'Dong' in a Korean/Chinese name). Report-only, so recall < precision here.
+_A3_HOME_WORDS = ("kenapa", "mengapa", "kamu", "saya", "banget", "nggak", "sih",
+                  "sudah", "belum", "adalah", "dengan", "tidak", "kalau", "kalo", "gimana", "sekarang")
+_A3_HOME_RX = re.compile(r"(?i)\b(" + "|".join(sorted(_A3_HOME_WORDS, key=len, reverse=True)) + r")\b")
+_A3_ID_FAMILY = ("id", "jv", "su", "ms", "min", "ban", "bug", "mad", "ace", "bjn")
+
+
+def _home_lang_bleed_scan(text: str, lang: str) -> dict:
+    """Report-only: a high-signal Indonesian home-word in a NON-ID manuscript (home-language bleed).
+    status FLAG/PASS. Never raises. Skipped for ID-family targets (words are native there)."""
+    out = {"status": "PASS", "count": 0, "samples": []}
+    try:
+        base = (lang or "en").split("-")[0].lower()
+        if base in _A3_ID_FAMILY:
+            return out
+        hits = []
+        for m in _A3_HOME_RX.finditer(text or ""):
+            hits.append(text[max(0, m.start() - 18):m.end() + 26].strip().replace("\n", " ")[:60])
+        if hits:
+            out["status"] = "FLAG"; out["count"] = len(hits); out["samples"] = hits[:8]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "samples": []}
 
 
 def _names_from(m: re.Match) -> Optional[str]:
@@ -2808,6 +2848,8 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             report["counters"]["brief_leak"] = _brief_leak_scan(text)
             report["counters"]["mode_slip"] = _mode_slip_scan(text)
             report["counters"]["closer_thinning"] = _closer_thinning_scan(text)
+            # Batch A.3 (fallen-angel lens#3): home-language bleed (ID word in a non-ID manuscript).
+            report["counters"]["home_lang_bleed"] = _home_lang_bleed_scan(text, lang)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the
