@@ -746,8 +746,20 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             if sink is not None and _cqc:
                 sink.credits += int(_cqc)
             _cpay = _cq
+            # CNF-REVISE SAFETY: a canon_fork on a NONFICTION piece stays REPORT-ONLY — never drives a
+            # revise. The [VERIFY] prompt clause reduces but cannot guarantee the LLM critic won't
+            # misfire a canon_fork against an unpinned [VERIFY] slot, and the revise has no fine-grained
+            # fabrication guard (it could invent a date or splice "[VERIFY]" into prose, both under the
+            # 90%-word floor). So for fiction=False we DETECT+persist canon forks but never auto-rewrite
+            # them; fiction is unchanged (canon_fork still revisable, the existing live behavior).
+            try:
+                from orchestrator.static import _is_fiction_style as _isf_rev
+                _isfic_rev = bool(_isf_rev(style))
+            except Exception:  # noqa: BLE001
+                _isfic_rev = True
             _cbad = [v for v in (_cq.get("violations") or [])
-                     if str(v.get("severity", "")).lower() in ("critical", "high")]
+                     if str(v.get("severity", "")).lower() in ("critical", "high")
+                     and not (not _isfic_rev and str(v.get("type", "")).lower() == "canon_fork")]
             if _narasi_critique_revise_enabled() and _cbad:
                 _t_rev0 = time.monotonic()
                 _crev, _crevc = await _narasi_consistency_revise(
@@ -1047,7 +1059,19 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         # prefix — no-op is safe.
         book = _retrofit_legacy_chapter_labels(book, language)
         result[key] = book
-        if book and not book.lstrip().startswith(_hdr_prefixes):
+        # HEADER-RESTAMP (flag NARASI_HEADER_RESTAMP, default OFF): the header is normally WRITE-ONCE
+        # (the `not ...startswith(_hdr_prefixes)` guard), so on a resume/re-gate — or if a later gate
+        # trims the body after the stamp — the "N words" count goes stale (claim > actual). When ON,
+        # strip an existing header and ALWAYS recompute+restamp on the final body so claim == actual.
+        # The strip is anchored to the first "\n\n---\n\n" within 600 chars AND only when the header
+        # prefix matches at lstrip-start, so it can never clip real body. OFF ⟹ original behavior.
+        _restamp = os.environ.get("NARASI_HEADER_RESTAMP", "0").strip().lower() in ("1", "true", "yes", "on")
+        if _restamp and book and book.lstrip().startswith(_hdr_prefixes):
+            _sep_i = book.find("\n\n---\n\n")
+            if 0 <= _sep_i < 600:
+                book = book[_sep_i + len("\n\n---\n\n"):]
+                result[key] = book
+        if book and (_restamp or not book.lstrip().startswith(_hdr_prefixes)):
             try:
                 lang_label = _resolve_narasi_lang(language)
             except Exception:  # noqa: BLE001

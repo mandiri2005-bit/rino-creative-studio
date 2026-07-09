@@ -7534,6 +7534,14 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
     # "intended" — so a role/age/victim swap on one pinned event slips through (river pusaran fork).
     # With the sheet as arbiter, a divergence from committed canon is a violation regardless of
     # thematic cover. INERT when canon_aware=False (byte-identical to the pre-canon prompt).
+    # NONFICTION-only clause: a nonfiction continuity sheet writes "[VERIFY]" / unknown for unpinned
+    # facts — those commit NO value, so a chapter's concrete specific there is NOT a fork (and REVISE
+    # must not push the chapter toward the placeholder). Inert for fiction bibles (no [VERIFY]).
+    _verify_clause = (
+        "A fact-sheet entry marked \"[VERIFY]\" (or an explicitly unknown/unspecified value) is NOT a "
+        "pinned fact — it commits NO value, so a chapter stating a concrete specific there is NOT a "
+        "canon_fork; only diverging from an actually PINNED value is. "
+        if (canon_aware and not is_fiction) else "")
     _check0 = (
         "0. CANON CONFORMANCE (HIGHEST PRIORITY) — a [CANONICAL FACT SHEET] is provided ABOVE the "
         "book: the single agreed truth for each load-bearing past event, character age, kinship/blood "
@@ -7543,9 +7551,10 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         "story legitimately has a character believe or tell a FALSE version that a LATER chapter "
         "corrects, the FACT SHEET states the TRUE version — a rendering that contradicts the sheet "
         "WITHOUT being that sanctioned later correction is a violation. ALSO flag 'canon_fork' when "
-        "two chapters narrate the SAME past event with incompatible specifics. When in doubt whether "
-        "a divergence is an authorial lie or an error, FLAG IT — the FACT SHEET, not your charity, is "
-        "the arbiter.\n"
+        "two chapters narrate the SAME past event with incompatible specifics. "
+        + _verify_clause +
+        "When in doubt whether a divergence is an authorial lie or an error, FLAG IT — the FACT SHEET, "
+        "not your charity, is the arbiter.\n"
         if canon_aware else "")
     if canon_aware:
         _enum = "canon_fork|" + _enum
@@ -7614,11 +7623,16 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
         _is_fic = bool(_isf(style))
     except Exception:
         _is_fic = True
-    # CANON CONFORMANCE (Phase 1, flag NARASI_CANON_CONFORMANCE, default OFF): when on + fiction +
-    # a bible was supplied, feed the pinned fact sheet as the arbiter and add critic check #0. When
-    # OFF (or no bible, or nonfiction) this is byte-identical to the pre-canon critic — pure no-op.
+    # CANON CONFORMANCE (Phase 1, flag NARASI_CANON_CONFORMANCE, default OFF): when on + a fact sheet
+    # was supplied, feed the pinned sheet as the arbiter and add critic check #0. FICTION uses the
+    # master flag alone (live). NONFICTION/CNF (fiction=False) — whose continuity sheet exists to
+    # prevent exactly this drift, but was previously gated out — is opt-in behind the sub-flag
+    # NARASI_CANON_CONFORMANCE_CNF (default OFF), so the fiction path stays byte-identical and CNF-canon
+    # is independently A/B-able. Check #7 (dropped-hook, fabrication-risky) keeps its OWN fiction gate
+    # via the separate is_fiction arg below — unaffected.
     _canon_on = os.getenv("NARASI_CANON_CONFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
-    _use_canon = bool(_canon_on and _is_fic and (canonical_facts or "").strip())
+    _canon_cnf = os.getenv("NARASI_CANON_CONFORMANCE_CNF", "0").strip().lower() in ("1", "true", "yes", "on")
+    _use_canon = bool(_canon_on and (canonical_facts or "").strip() and (_is_fic or _canon_cnf))
     _sys = _consistency_critic_sys(_is_fic, canon_aware=_use_canon)
     if _use_canon:
         _cf = (canonical_facts or "").strip()[:8000]

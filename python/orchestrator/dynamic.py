@@ -326,6 +326,18 @@ def _normalize_outline(parsed: Any, topic: str, n: int, words_per_chapter: int) 
             "summary": summary,
             "word_target": wt,
         })
+    # CLOSER-FLOOR (flag NARASI_CLOSER_FLOOR, default OFF): models routinely taper the CLOSING
+    # chapter's word_target well below the requested per-chapter scalar; _normalize_outline honors it
+    # (line ~320) → the word-gate floor (0.9×target, static.py) shrinks with it → a ~1/3-length closer
+    # ships (Giza Ch8 529 vs ~1330 median; 4-script systemic). When ON, floor ONLY the LAST chapter's
+    # target to the requested scalar so the gate lifts an under-written closer, leaving intentionally
+    # short openers/mid-chapters untouched. OFF ⟹ byte-identical.
+    if out and os.environ.get("NARASI_CLOSER_FLOOR", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            out[-1]["word_target"] = max(int(out[-1].get("word_target") or words_per_chapter),
+                                         int(words_per_chapter))
+        except Exception:  # noqa: BLE001
+            pass
     return out
 
 
