@@ -2495,6 +2495,44 @@ def _home_lang_bleed_scan(text: str, lang: str) -> dict:
         return {"status": "PASS", "count": 0, "samples": []}
 
 
+# #HG HOMOGENIZATION-TIC INVENTORY — a cross-roll audit (fallen-angel ↔ Lumi, same lane) found the
+# generator reaching for the SAME lane-default tics across rolls: opening timestamps ending :14, the
+# 11th floor, cold-coffee-as-opening-beat, tteokbokki-as-comfort-food, the '[X] do not [Y]' villain-
+# composure aphorism. A single-manuscript scanner can't SEE cross-roll sameness, but it can INVENTORY
+# these markers per roll so the pattern is queryable in the DB (and so NARASI_ANTI_HOMOGENIZATION's
+# effect is measurable). Report-only telemetry; FLAG only when a roll reaches for >=2 lane-defaults.
+_HG_TS14_RX = re.compile(r"\b\d{1,2}:14\b")
+_HG_11FLOOR_RX = re.compile(r"(?i)\beleven(?:th)?[- ]floor\b|\b11th[- ]floor\b")
+_HG_XDONOTY_RX = re.compile(r"(?i)\b\w+ do not \w+[.\n]")   # 'Boards do not gasp.' / 'men like him do not.'
+_HG_COFFEE_RX = re.compile(r"(?i)coffee[^.]{0,25}\bcold\b|\bcold\b[^.]{0,12}coffee")
+
+
+def _homogenization_tic_scan(text: str) -> dict:
+    """Report-only cross-roll tic INVENTORY (timestamp-:14, 11th-floor, cold-coffee, tteokbokki,
+    'X do not Y'). status FLAG when >=2 lane-defaults present. Never raises."""
+    out = {"status": "PASS", "tics": {}}
+    try:
+        t = text or ""
+        tics = {
+            "timestamp_14": len(_HG_TS14_RX.findall(t)),
+            "eleventh_floor": len(_HG_11FLOOR_RX.findall(t)),
+            "cold_coffee": len(_HG_COFFEE_RX.findall(t)),
+            "tteokbokki": len(re.findall(r"(?i)\btteokbokki\b", t)),
+            "x_do_not_y": len(_HG_XDONOTY_RX.findall(t)),
+        }
+        out["tics"] = {k: v for k, v in tics.items() if v}
+        # The individual tics (11th-floor / cold-coffee / a single :14 / tteokbokki) are COMMON in
+        # normal prose (any office thriller, any Korean-set story) — so this is an INVENTORY, and
+        # cross-roll sameness is detected by QUERYING these counts across jobs, NOT by a per-manuscript
+        # verdict. FLAG only on the one unambiguous within-manuscript anomaly: the ':14' favorite-number
+        # tic reused >=3x, which has no legitimate narrative reason and is the pipeline's own fingerprint.
+        if tics["timestamp_14"] >= 3:
+            out["status"] = "FLAG"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "tics": {}}
+
+
 def _names_from(m: re.Match) -> Optional[str]:
     gd = m.groupdict()
     return gd.get("name1") or gd.get("name2") or gd.get("name3")
@@ -2850,6 +2888,8 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             report["counters"]["closer_thinning"] = _closer_thinning_scan(text)
             # Batch A.3 (fallen-angel lens#3): home-language bleed (ID word in a non-ID manuscript).
             report["counters"]["home_lang_bleed"] = _home_lang_bleed_scan(text, lang)
+            # Homogenization tic-inventory (cross-roll telemetry; report-only FLAG-never-OVER).
+            report["counters"]["homogenization_tics"] = _homogenization_tic_scan(text)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the

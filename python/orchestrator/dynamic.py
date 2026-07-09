@@ -673,6 +673,26 @@ async def build_story_bible(
             "corrects, record it under that event's false_versions with corrected_in_chapter, so a "
             "pre-correction rendering is treated as LEGAL, not a fork. This JSON is machine-only; it "
             "does NOT replace the prose fact-sheet above.")
+    # ANTI-HOMOGENIZATION (flag NARASI_ANTI_HOMOGENIZATION, default OFF): a cross-roll audit (fallen-angel
+    # ↔ Lumi, same kdrama lane) exposed a lane-default TIC-LEXICON + a repeated CLIMAX SKELETON colonizing
+    # the bible/outline (not the prose): opening timestamps ending :14, the 11th floor, cold-coffee-as-
+    # opening-beat, tteokbokki-as-intimacy-food, the 'X do not Y' aphorism at a villain's defeat, the
+    # number-11 motif, and the 'protagonist destroys the asset mid-vote' resolution. Steer AWAY at the
+    # bible so the perturbation lands before the prose. FICTION-only. OFF ⟹ bible byte-identical.
+    if is_fiction and os.environ.get("NARASI_ANTI_HOMOGENIZATION", "0").strip().lower() in ("1", "true", "yes", "on"):
+        system = system + (
+            "\n\nADDENDUM (ALL headings) — ANTI-SAMENESS: this lane has overused a set of DEFAULT tics; "
+            "you MUST avoid them and pick fresh, specific choices particular to THIS premise. BANNED "
+            "lane-defaults: (1) an opening timestamp ending in ':14' (6:14/7:14/2:14) — use any other "
+            "minute; (2) setting the office/key scene on the ELEVENTH floor — pick a different floor; "
+            "(3) 'cold coffee' as the opening character beat; (4) tteokbokki as the intimacy/comfort food "
+            "— vary the dish; (5) the '[X] do not [Y]' aphorism at a villain's defeat ('Boards do not "
+            "gasp' / 'men like him do not'); (6) leaning on the number-11 / eleven-minute motif. AND "
+            "diversify the CLIMAX RESOLUTION: do NOT default to 'the protagonist destroys or renders the "
+            "asset worthless in the middle of a shareholder/board vote' — choose a DIFFERENT resolution "
+            "shape (win-by-exposure, win-by-outmaneuver, lose-but-intact, refuse-the-game, a cost paid "
+            "elsewhere). The world's specifics — place, hour, object, food, floor, and how the climax "
+            "resolves — must be chosen for this story, not inherited from the lane's habit.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
     # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a
