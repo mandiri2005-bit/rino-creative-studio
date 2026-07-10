@@ -714,10 +714,11 @@ async def build_story_bible(
             "use more than TWO of them in their lane-default form; PIN in the fact sheet this story's "
             "chosen intimacy gesture and opening mode so every chapter follows the same fresh choice. "
             "(C) LANGUAGE LOCK — emit this as the fact sheet's FINAL line, verbatim rule: 'LANGUAGE "
-            "LOCK: every character's dialogue and interior thought is rendered in the manuscript's "
-            "language or the character's own in-world language — NEVER in the language of this "
-            "production brief. A character's \"own language\" means THEIR language (a Korean character "
-            "thinks Wae, never Kenapa).'")
+            "LOCK: every character's dialogue and interior thought is rendered fully in the "
+            "manuscript's language, or fully in the character's own in-world language — NEVER in the "
+            "language of this production brief, and NEVER as a hybrid. If a single foreign-language "
+            "interjection is used for flavor, it must stand ALONE as an interjection (followed by its "
+            "own sentence), never spliced into the syntax of another language's sentence.'")
     # LANE LEDGER (flag NARASI_LANE_LEDGER, default OFF): the cross-roll USED-NAMES/NUMBERS ledger.
     # Static in-prompt ban-lists proved WHACK-A-MOLE (V2 banned the Lumi/Archivist repertory
     # Hae-rin/Ok — the next roll drew from the fallen-angel repertory instead: Gyeom/Chae-rin/
@@ -749,7 +750,9 @@ async def build_story_bible(
                     "clock minutes: " + _fmt("timestamp_minutes") + " — pick other minutes. Already-used "
                     "small numbers for counts/specs: " + _fmt("small_numbers") + " — pick other values. "
                     "Already-used comfort/intimacy foods: " + _fmt("foods") + " — choose a different "
-                    "dish. Already-used building floors: " + _fmt("floors") + ". Invent fresh, "
+                    "dish. Already-used building floors: " + _fmt("floors") + ". BANNED verbatim "
+                    "phrases (never reproduce these lines): " + _fmt("verbatim_phrases") + ". Overused "
+                    "BEATS (execute differently or SKIP): " + _fmt("recycled_beats") + ". Invent fresh, "
                     "premise-specific choices for every one of these slots.")
         except Exception:  # noqa: BLE001 — ledger is an enhancement; its absence must never block a bible
             pass

@@ -1,22 +1,30 @@
 {
-  "_comment": "PER-LANE USED-NAMES/NUMBERS LEDGER — the cross-roll twin of the shared-usage ledger. Static ban-lists proved whack-a-mole (the generator slid from Hae-rin/Ok to the OTHER roll's repertory: Gyeom/Chae-rin/Hyeon-jae/Baek), so this file is the single growing source of a lane's already-used onomastics + numbers, injected as a NEGATIVE constraint at bible-time (flag NARASI_LANE_LEDGER, orchestrator/dynamic.py). CURATION: append after each reviewed roll — the raw data persists per-job in counter_report.homogenization_tics + the cast greps; keys are pakem style keys. Editable JSON on purpose (curated corpus policy: curation-heavy data lives in JSON, not code).",
-  "_seeded_from": "4-roll kdrama audit 2026-07-09/10 (fallen-angel, Lumi, Archivist, Keyframe), grep-verified",
+  "_comment": "PER-LANE USED-NAMES/NUMBERS LEDGER — the cross-roll twin of the shared-usage ledger. Static ban-lists proved whack-a-mole (the generator slid from Hae-rin/Ok to the OTHER roll's repertory: Gyeom/Chae-rin/Hyeon-jae/Baek; then, with those flagged, to Nam/Im/Ha and from 41 to 47), so this file is the single growing source of a lane's already-used onomastics + numbers + verbatim phrases + recycled beats, injected as a NEGATIVE constraint at bible-time (flag NARASI_LANE_LEDGER, orchestrator/dynamic.py). CURATION: append after each reviewed roll — the raw data persists per-job in counter_report.homogenization_tics + the cast greps; keys are pakem style keys. Editable JSON on purpose (curated corpus policy: curation-heavy data lives in JSON, not code).",
+  "_seeded_from": "5-roll kdrama audit 2026-07-09/10 (fallen-angel, Lumi, Archivist, Keyframe, Royal Blueprint), grep-verified",
   "kdrama_serial": {
     "given_names": [
       "Ji-wan", "Seo-hyun", "Hae-rin", "Ha-rin", "Chae-rim", "Chae-rin", "Jae-heon", "Hye-ran",
       "Beom-gyu", "Tae-sun", "Da-som", "Chun-ho", "Gyeom", "Do-gyeom", "Seol-ah", "Hyeon-tae",
       "Hyeon-jae", "Seung-ho", "Eun-woo", "Young-jae", "Kang-seok", "Do-hui", "Bok-nyeo",
-      "Tae-jun", "Ora", "Doo-cheol"
+      "Tae-jun", "Ora", "Doo-cheol", "Jeong-woo", "Jin-ah", "Chan-ho", "Doo-shik", "Cheol-yong",
+      "Deok-su"
     ],
     "name_stems": [
       "any *a(e)-ri[n/m] shape (Chae-rin/Chae-rim/Hae-rin/Ha-rin — used 4/4 rolls)",
       "-gyeom (Ryu Gyeom / Han Do-gyeom)",
       "Hyeon-jae / Hyeon-tae (both used, one letter apart)"
     ],
-    "overused_surnames": ["Han", "Ok", "Baek"],
+    "overused_surnames": ["Han", "Ok", "Baek", "Nam", "Im", "Ha"],
     "timestamp_minutes": [":14 (used 7x across rolls)", ":47", "11:40 (2 rolls)"],
-    "small_numbers": [41, 11, 22, 26],
-    "foods": ["tteokbokki", "ramyeon", "gimbap"],
-    "floors": [6, 11, 22, 31, 34]
+    "small_numbers": [41, 47, 11, 22, 26],
+    "foods": ["tteokbokki", "ramyeon", "gimbap", "roasted chestnuts (gun-bam)"],
+    "floors": [6, 11, 22, 31, 34],
+    "verbatim_phrases": [
+      "…and kept the smallest for himself (caregiver-denies-own-portion closing line — verbatim in 2 rolls)"
+    ],
+    "recycled_beats": [
+      "equinox/solstice shadow-alignment reveal as the climax (already used cross-lane)",
+      "a precision-object straightened as an intimacy gesture (cup alignment / ink-stone squaring — 2 rolls)"
+    ]
   }
 }
