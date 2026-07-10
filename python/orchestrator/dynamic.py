@@ -693,6 +693,31 @@ async def build_story_bible(
             "shape (win-by-exposure, win-by-outmaneuver, lose-but-intact, refuse-the-game, a cost paid "
             "elsewhere). The world's specifics — place, hour, object, food, floor, and how the climax "
             "resolves — must be chosen for this story, not inherited from the lane's habit.")
+    # ANTI-HOMOGENIZATION V2 (flag NARASI_ANTI_HOMOG_V2, default OFF — separate so it A/B's on its own):
+    # the Archivist round-3 cross-roll audit showed the v1 LEXICON bans work but the deepest tics are
+    # BEAT-SLOTS portable across vocabulary (food-portioning-as-love survived tteokbokki→tin-cups→
+    # persimmon-thirds; the repertory cast Hae-rin/Ha-rin + Ok; the favorite number 41), and the
+    # "Kenapa" home-language bleed recurred with a reproducible trigger (introspective-question beat
+    # fills "her own language" with the BRIEF's language — Rino's synopses are Indonesian). Since the
+    # fact sheet rides into EVERY chapter worker as the pinned prefix, rules EMITTED IN the sheet reach
+    # the prose. OFF ⟹ bible byte-identical.
+    if is_fiction and os.environ.get("NARASI_ANTI_HOMOG_V2", "0").strip().lower() in ("1", "true", "yes", "on"):
+        system = system + (
+            "\n\nADDENDUM (ALL headings) — BEAT-SLOT & CAST VARIATION: (A) BANNED repertory: do not "
+            "name characters 'Hae-rin', 'Ha-rin', 'Ok Jae-heon', 'Ok Hye-ran' or near-variants (this "
+            "lane has reused that cast); invent fresh names. Do not use 41/forty-one as a count or "
+            "spec (sacks, leaves, gigabytes, pages — a lane fingerprint); pick other values. (B) The "
+            "lane's recurring BEAT-SLOTS are habits, not requirements — (i) food-portioning-as-love "
+            "(splitting/giving the larger share), (ii) an honorific/rank-term dropped or repurposed as "
+            "intimacy, (iii) the italicized interior question, (iv) the aphoristic two-sentence cold "
+            "open. For EACH: either execute it in a fresh, premise-specific way or SKIP it, and never "
+            "use more than TWO of them in their lane-default form; PIN in the fact sheet this story's "
+            "chosen intimacy gesture and opening mode so every chapter follows the same fresh choice. "
+            "(C) LANGUAGE LOCK — emit this as the fact sheet's FINAL line, verbatim rule: 'LANGUAGE "
+            "LOCK: every character's dialogue and interior thought is rendered in the manuscript's "
+            "language or the character's own in-world language — NEVER in the language of this "
+            "production brief. A character's \"own language\" means THEIR language (a Korean character "
+            "thinks Wae, never Kenapa).'")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
     # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a

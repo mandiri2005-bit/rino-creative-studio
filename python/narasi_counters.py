@@ -2314,7 +2314,10 @@ def _denial_fingerprint_scan(text: str) -> dict:
 # residual FP is a harmless report entry (Phase-3 calibration), never an edit. `_chapters()` returns
 # one chunk for 'Chapter N:'/'Bab N:' manuscripts, so these split chapters locally where needed.
 def _a2_chapters(text: str) -> list:
-    parts = re.split(r"(?im)^\s*(?:chapter|bab)\s+\d+\s*[:.]", text or "")
+    # `#{0,4}` — the LIVE pipeline text carries markdown headings ("## Chapter 1:"); without it this
+    # split matched only bare .txt exports, so _closer_thinning_scan silently returned zeros in prod
+    # (found via the Archivist DB dogfood: last_words=0/ratio=null while the raw file measured fine).
+    parts = re.split(r"(?im)^\s*#{0,4}\s*(?:chapter|bab)\s+\d+\s*[:.]", text or "")
     return [p for p in parts if p.strip()]
 
 
@@ -2471,7 +2474,7 @@ def _closer_thinning_scan(text: str) -> dict:
 # set (near-zero-FP in EN/other-Latin); SKIPPED for ID-family manuscripts where these are native.
 # Unambiguous ID words only — dropped 'aku'/'dong'/'kok' (collide with names: 'Dong-hui', 'Aku', etc.,
 # and \bdong\b matches the 'Dong' in a Korean/Chinese name). Report-only, so recall < precision here.
-_A3_HOME_WORDS = ("kenapa", "mengapa", "kamu", "saya", "banget", "nggak", "sih",
+_A3_HOME_WORDS = ("kenapa", "mengapa", "kamu", "saya", "banget", "nggak", "sih", "aduh",
                   "sudah", "belum", "adalah", "dengan", "tidak", "kalau", "kalo", "gimana", "sekarang")
 _A3_HOME_RX = re.compile(r"(?i)\b(" + "|".join(sorted(_A3_HOME_WORDS, key=len, reverse=True)) + r")\b")
 _A3_ID_FAMILY = ("id", "jv", "su", "ms", "min", "ban", "bug", "mad", "ace", "bjn")
@@ -2519,6 +2522,12 @@ def _homogenization_tic_scan(text: str) -> dict:
             "cold_coffee": len(_HG_COFFEE_RX.findall(t)),
             "tteokbokki": len(re.findall(r"(?i)\btteokbokki\b", t)),
             "x_do_not_y": len(_HG_XDONOTY_RX.findall(t)),
+            # Archivist round-3 additions (INVENTORY-ONLY, never affect FLAG): the lane's repertory
+            # cast (Hae-rin[Lumi] ≈ Ha-rin[Archivist] loyal record-keeper; Ok Jae-heon/Hye-ran) and the
+            # favorite number 41 (Lumi 41GB → 41 sacks + 41 leaves ×7).
+            "cast_harin": len(re.findall(r"(?i)\bHae?-rin\b", t)),
+            "cast_ok": len(re.findall(r"(?i)\bOk (?:Jae-heon|Hye-ran)\b", t)),
+            "forty_one": len(re.findall(r"(?i)\bforty-one\b|\b41\b", t)),
         }
         out["tics"] = {k: v for k, v in tics.items() if v}
         # The individual tics (11th-floor / cold-coffee / a single :14 / tteokbokki) are COMMON in
