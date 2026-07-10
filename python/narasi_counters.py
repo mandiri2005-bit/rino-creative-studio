@@ -2402,6 +2402,11 @@ _A2_BRIEF_LEAK_RX = re.compile(
 # [...] ending in a period ('[He would call it protection, later... That was the trouble.]'). Distinct
 # from short markers ([VERIFY], [sic], [2011]) which never match (need >=24 chars + a terminal period).
 _A2_BRACKET_ASIDE_RX = re.compile(r"\[[A-Z][^\[\]]{24,}\.\]")
+# A2.4: SHORT stage-direction/outline markers ('[BEAT]' surfaced mid-pipeline on the Keyframe roll,
+# adjacent to the Kenapa leak; stripped by downstream bracket-handling before delivery, but the
+# scanner runs earlier and documents the outline-voice habit). Explicit whitelist of production
+# tokens only — [VERIFY]/[sic]/[2011] stay excluded by construction.
+_A2_STAGE_MARK_RX = re.compile(r"\[(?:BEAT|PAUSE|CUT TO|CUT|SFX|VO|MUSIC|SILENCE|TRANSITION|MONTAGE)\]")
 
 
 def _brief_leak_scan(text: str) -> dict:
@@ -2412,6 +2417,8 @@ def _brief_leak_scan(text: str) -> dict:
         hits = [text[max(0, m.start() - 8):m.end() + 40].strip().replace("\n", " ")[:70]
                 for m in _A2_BRIEF_LEAK_RX.finditer(text or "")]
         hits += [m.group(0).replace("\n", " ")[:70] for m in _A2_BRACKET_ASIDE_RX.finditer(text or "")]
+        hits += [text[max(0, m.start() - 12):m.end() + 24].strip().replace("\n", " ")[:70]
+                 for m in _A2_STAGE_MARK_RX.finditer(text or "")]
         if hits:
             out["status"] = "FLAG"; out["count"] = len(hits); out["samples"] = hits[:8]
         return out

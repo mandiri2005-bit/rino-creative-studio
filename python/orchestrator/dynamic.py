@@ -718,6 +718,41 @@ async def build_story_bible(
             "language or the character's own in-world language — NEVER in the language of this "
             "production brief. A character's \"own language\" means THEIR language (a Korean character "
             "thinks Wae, never Kenapa).'")
+    # LANE LEDGER (flag NARASI_LANE_LEDGER, default OFF): the cross-roll USED-NAMES/NUMBERS ledger.
+    # Static in-prompt ban-lists proved WHACK-A-MOLE (V2 banned the Lumi/Archivist repertory
+    # Hae-rin/Ok — the next roll drew from the fallen-angel repertory instead: Gyeom/Chae-rin/
+    # Hyeon-jae/Baek; the [C/H]a(e)-ri[n/m] female-name shape hit 4/4 rolls, :14 hit ×7). The fix is a
+    # single GROWING per-lane ledger (pakem/lane_ledger.json — curated JSON per the corpus policy;
+    # raw data persists per-job in counter_report.homogenization_tics) injected as a NEGATIVE
+    # constraint at bible-time. Fail-open everywhere: missing file / unknown style / bad JSON ⟹ no
+    # paragraph, bible unchanged. OFF ⟹ byte-identical.
+    if is_fiction and os.environ.get("NARASI_LANE_LEDGER", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            import json as _lj
+            _lpath = os.path.join(os.path.dirname(__file__), "..", "pakem", "lane_ledger.json")
+            with open(_lpath, encoding="utf-8") as _lf:
+                _ledger = _lj.load(_lf) or {}
+            _lane = _ledger.get((style or "").strip()) or {}
+            # isinstance guard: a style of '_comment'/'_seeded_from' (metadata STRING keys, and style is
+            # user-supplied) would make _lane a truthy str and AttributeError inside _fmt — caught by the
+            # outer except either way, but cheaper to never enter.
+            if isinstance(_lane, dict) and _lane:
+                def _fmt(key):
+                    v = _lane.get(key) or []
+                    return ", ".join(str(x) for x in v[:40])
+                system = system + (
+                    "\n\nADDENDUM (ALL headings) — LANE LEDGER, NEGATIVE CONSTRAINTS: previous stories "
+                    "in this exact lane have ALREADY USED the following; a binge viewer will notice the "
+                    "repetition, so do NOT reuse or near-vary any of them. Already-used GIVEN NAMES: "
+                    + _fmt("given_names") + ". Banned NAME SHAPES: " + _fmt("name_stems") + ". Overused "
+                    "SURNAMES (vary away from these): " + _fmt("overused_surnames") + ". Already-used "
+                    "clock minutes: " + _fmt("timestamp_minutes") + " — pick other minutes. Already-used "
+                    "small numbers for counts/specs: " + _fmt("small_numbers") + " — pick other values. "
+                    "Already-used comfort/intimacy foods: " + _fmt("foods") + " — choose a different "
+                    "dish. Already-used building floors: " + _fmt("floors") + ". Invent fresh, "
+                    "premise-specific choices for every one of these slots.")
+        except Exception:  # noqa: BLE001 — ledger is an enhancement; its absence must never block a bible
+            pass
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
     # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a
