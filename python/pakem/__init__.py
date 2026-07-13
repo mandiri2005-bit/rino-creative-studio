@@ -34,6 +34,8 @@ from .assets import (
     GENERATION_PREAMBLE,
     LANGUAGE_DIRECTIVE,
     VIDEO_MODIFIER,
+    VIDEO_RULE5_CAPPED,
+    VIDEO_RULE5_LEGACY,
 )
 from .registry import DEFAULT_STYLE, STYLES
 from .resolvers import (
@@ -140,6 +142,12 @@ def build_style_block(style, video_mode: bool = False) -> str:
     origin = entry.get("medium_origin", "page")
     if video_mode:
         rules = rules.rstrip() + "\n" + VIDEO_MODIFIER
+        # Anchor hard budget (NARASI_ANCHOR_BUDGET, default OFF): swap legacy RULE 5
+        # (3–5 [ANCHOR]/chapter) for the capped variant (≤1/chapter, epigraph position,
+        # most chapters none). Round-2 craft: the request site was training the lane
+        # into gnomic mode (7→11→20 floating aphorisms across 3 kdrama prod rolls).
+        if str(_os.environ.get("NARASI_ANCHOR_BUDGET", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            rules = rules.replace(VIDEO_RULE5_LEGACY, VIDEO_RULE5_CAPPED)
         if origin == "page":
             rules = rules.rstrip() + "\n" + R_VO          # page→ear: aggressive adaptation
     else:

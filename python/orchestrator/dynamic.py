@@ -541,7 +541,8 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
     # (...)" — an unlisted heading risks being suppressed. OFF ⟹ prompt byte-identical.
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         heads += (", CAUSALITY POLICY, CALENDAR SPINE, SIGNATURE-PROP CUSTODY, NAMING CONVENTIONS, "
-                  "FINALE CAST RULE")
+                  "ENTITY INTRODUCTIONS & FINALE CAST, PROPERTY & LEVERAGE, GEOGRAPHY POLICY, "
+                  "AFTERMATH COMMIT")
     return (
         f"TOPIC / PREMISE:\n{topic}\n\n"
         f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
@@ -665,9 +666,16 @@ async def build_story_bible(
     # pins (once, upfront — no per-chapter machinery), additive headings 9-13 in the style of 1-8,
     # each with an explicit "write 'none'" escape so they no-op on premises lacking the feature.
     # OFF ⟹ bible byte-identical. Pair with the heads extension in _story_bible_prompt (same flag).
+    # ROUND 2 (same flag, additive — jobs eky9gcge/cpn9kjg7/ibtgb7zg, 3 prod rolls of one premise):
+    # five MORE bible-level classes — flashback date drift (Aug 13 vs 14, 3/3 rolls), property
+    # lease/parcel/eviction/deed instrument forks, mid-book entities used-as-known (Roh Gwang-su),
+    # real-geo errors (Mokpo '90km northeast' of Haenam; actually ~35km NNW), and aftermath/casualty
+    # numbers never committed. Round 2 extends heading 10 (FLASHBACK ANCHOR), broadens 13 (role tag
+    # at FIRST mention for ANY plot-force entity, not just finale), and adds 14 PROPERTY & LEVERAGE,
+    # 15 GEOGRAPHY POLICY, 16 AFTERMATH COMMIT. Headings 9-16 = eight sections total.
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
-            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these five sections:\n"
+            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these eight sections:\n"
             "9. CAUSALITY POLICY — if the premise has a central SYMBOLIC or seemingly supernatural "
             "causation (e.g. 'the rain returns when the truth is told'), COMMIT its metaphysics NOW "
             "as exactly ONE of: LITERAL-MAGICAL (the world really works this way), AMBIGUOUS-BY-DESIGN "
@@ -687,7 +695,11 @@ async def build_story_bible(
             "stated DURATION ('nine months without rain', 'three years since X') must be RE-DERIVED "
             "from this spine at each chapter's own anchor — a writer may NEVER copy a duration "
             "verbatim from an earlier chapter, because a frozen duration contradicts a moving "
-            "calendar.\n"
+            "calendar. FLASHBACK ANCHOR: pin every BACKSTORY event any chapter revisits (the "
+            "flood night, the accident, the signing) to ONE absolute date-and-time line "
+            "('FLOOD NIGHT = 13 Aug, 20:30'); every retrospective reference — dates, weekdays, "
+            "hours, 'X years ago' spans — must DERIVE from that pinned line, and no flashback "
+            "may restate the anchor with a different date or hour.\n"
             "11. SIGNATURE-PROP CUSTODY — for each SIGNATURE OBJECT the story's imagery leans on "
             "(the umbrella, the letter, the ring — at most 3), pin a CUSTODY CHAIN: one line per "
             "custody CHANGE (who hands it to whom, in which chapter, via what ON-PAGE handover) "
@@ -700,10 +712,38 @@ async def build_story_bible(
             "children take the father's surname — so no two family members share a surname except "
             "where that rule or a pinned canon fact creates it. Give each family a one-line surname "
             "map ('husband Kang, wife Yoon (maiden), children Kang') so writers cannot improvise.\n"
-            "13. FINALE CAST RULE — the final chapters may NOT name any character who lacks an "
-            "earlier ON-PAGE introduction. List the characters permitted to appear or be named in "
-            "the last two chapters (drawn from heading 1); if the finale needs someone new, add "
-            "them to an earlier chapter's cast NOW. Finale walk-ons stay nameless.\n"
+            "13. ENTITY INTRODUCTIONS & FINALE CAST — ANY named character OR company that exerts "
+            "plot force anywhere in the book (acts, decides, threatens, buys, signs) gets a "
+            "one-phrase ROLE TAG at its FIRST on-page mention ('Roh Gwang-su, Han-gang's "
+            "land-acquisition director'); for each mid-book entrant, pin WHICH chapter introduces "
+            "them. Walk-ons exerting no plot force stay NAMELESS. The final chapters may NOT name "
+            "any character who lacks an earlier ON-PAGE introduction: list the characters "
+            "permitted to appear or be named in the last two chapters (drawn from heading 1); if "
+            "the finale needs someone new, add them to an earlier chapter's cast NOW.\n"
+            "14. PROPERTY & LEVERAGE — for EACH property or asset the plot puts pressure on (the "
+            "building, the land, the shop — at most 3), pin ONE line: the holder's status as "
+            "exactly one word, OWNER or TENANT, and the ONE legal instrument used against it (an "
+            "eviction notice, a compulsory-purchase order, a foreclosure on the deed, a "
+            "terminated lease). Every chapter uses THAT status and THAT instrument: an OWNER "
+            "cannot be evicted under a lease, a TENANT cannot have a deed seized — never mix "
+            "instruments that contradict the pinned status. If the status legitimately CHANGES "
+            "ON-PAGE (a sale, a signed transfer, a foreclosure), pin the ONE chapter where it "
+            "changes; before that chapter every writer uses the original status. If no property "
+            "is leveraged, write 'none'.\n"
+            "15. GEOGRAPHY POLICY — commit NOW to exactly ONE of: REAL-TOWN (the setting is a "
+            "real place; pin the few place-to-place facts chapters may use — distances, bearings, "
+            "travel times, neighboring towns — and every pinned fact must be REAL-WORLD CORRECT; "
+            "if you are not CERTAIN of a real fact, omit it, and writers may not invent any "
+            "others) or FICTIONAL-TOWN (an invented town, freely mapped — optionally 'in the "
+            "manner of' a real region, but never named as a real town). DEFAULT to "
+            "FICTIONAL-TOWN unless the premise itself NAMES a real town. NEVER a real town "
+            "with invented geography.\n"
+            "16. AFTERMATH COMMIT — pin the consequence beats the ending must land: what happens "
+            "to the antagonist, the company, and the case or investigation AFTER the climax (one "
+            "line each), plus the KEY PUBLIC NUMBERS the in-world record would state (casualty "
+            "count, sentence, settlement) as EXACT values that every chapter touching the "
+            "aftermath must reuse verbatim. If the premise ends before any aftermath exists, "
+            "write 'none'.\n"
             "These sections are SECONDARY to headings 1-8: never let them shorten or weaken the #8 "
             "SIGNATURE HOOK payoff commitment.")
     # CANON REGISTRY (Phase 2a) — emit a MACHINE-CHECKABLE twin of the prose fact-sheet so a later
@@ -807,7 +847,10 @@ async def build_story_bible(
                     "clock minutes: " + _fmt("timestamp_minutes") + " — pick other minutes. Already-used "
                     "small numbers for counts/specs: " + _fmt("small_numbers") + " — pick other values. "
                     "Already-used comfort/intimacy foods: " + _fmt("foods") + " — choose a different "
-                    "dish. Already-used building floors: " + _fmt("floors") + ". BANNED verbatim "
+                    "dish. Already-used building floors: " + _fmt("floors")
+                    + ((". Already-used DISTRICTS/PLACES (pick different neighborhoods): " + _fmt("places"))
+                       if _lane.get("places") else "")
+                    + ". BANNED verbatim "
                     "phrases (never reproduce these lines): " + _fmt("verbatim_phrases") + ". Overused "
                     "BEATS (execute differently or SKIP): " + _fmt("recycled_beats") + ". Invent fresh, "
                     "premise-specific choices for every one of these slots.")
@@ -832,12 +875,32 @@ async def build_story_bible(
     # now enforced in _anthropic_messages_create, so a slow rung aborts to the fallback instead of hanging.
     _bib_max = max(1000, int(os.environ.get("NARASI_BIBLE_MAX_TOKENS", "12000")))
     _TRUNC_FINISH = ("length", "max_tokens", "max_output_tokens", "model_length")
+    # NARASI_BIBLE_SKIP_KIE=1 → bible attempts start the opus failover chain at rung 2 (LaoZhang).
+    # The bible is the job's FIRST heavy call and cold-KIE non-streaming reads hang it; the chain's
+    # rung timing (280s × NARASI_RUNG_ATTEMPTS=2 = 560s for KIE alone) is chapter-calibrated (900s
+    # window) and exceeds the WHOLE bible window (NARASI_BIBLE_TIMEOUT), so a hung KIE rung eats the
+    # full bible timeout before rung 2 is ever tried. Guarded import: laozhang_api may be
+    # unimportable in standalone orchestrator use — then this is a silent no-op (that fallback path
+    # has no KIE rung to skip anyway). Default OFF = byte-identical behavior.
+    _skip_var = None
+    if os.environ.get("NARASI_BIBLE_SKIP_KIE", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from laozhang_api import _narasi_skip_kie as _skip_var  # type: ignore
+        except Exception:  # noqa: BLE001
+            _skip_var = None
     for _i, _mdl in enumerate(_chain):
         worker = Worker(
             name="planner:bible", role="manager", model=_mdl,
             system=system, temperature=0.3, max_tokens=_bib_max, telemetry_sink=telemetry_sink,
         )
-        res = await run_worker(worker, prompt, timeout=_to, task_id="planner:bible")
+        _skip_tok = _skip_var.set(True) if _skip_var is not None else None
+        try:
+            res = await run_worker(worker, prompt, timeout=_to, task_id="planner:bible")
+        finally:
+            # Reset is REQUIRED: chapter tasks created later copy this context — a leaked
+            # True would strip KIE from every chapter of the job.
+            if _skip_tok is not None:
+                _skip_var.reset(_skip_tok)
         _fin = str(((res.get("telemetry") or {}).get("finish_reason")) or "").lower()
         _truncated = _fin in _TRUNC_FINISH
         if res.get("ok") and str(res.get("output") or "").strip() and not _truncated:

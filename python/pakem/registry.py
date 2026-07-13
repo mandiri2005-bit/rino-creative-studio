@@ -882,6 +882,22 @@ for _key, _entry in STYLES.items():
     _ss.setdefault("positive_exemplars", [])
 
 
+# ── kdrama_serial anchor/aphorism hard budget (round-2 craft; prod rolls
+# eky9gcge/cpn9kjg7/ibtgb7zg: floating gnomic lines 7→11→20). Data-only —
+# read by narasi_counters `anchors` (anchors_max, [ANCHOR]-tagged) and the
+# flag-gated `aphorisms` counter (aphorisms_max, untagged gnomic-shape lines).
+# ABSOLUTE per-manuscript caps, deliberately NOT length-scaled (scarcity is
+# the anchor's power — same rationale as anchors_max in narasi_counters).
+# GATED on NARASI_ANCHOR_BUDGET (import-time, like the warmth move): the live
+# `anchors` counter is OVER-capable, so an unflagged 3→8 would LOOSEN a live
+# gate at deploy while the compensating capped RULE 5 stays behind the flag —
+# the two must move together (review finding, 3 lenses).
+if ("kdrama_serial" in STYLES
+        and os.environ.get("NARASI_ANCHOR_BUDGET", "0").strip().lower() in ("1", "true", "yes", "on")):
+    STYLES["kdrama_serial"]["style_spec"]["counters"]["anchors_max"] = 8
+    STYLES["kdrama_serial"]["style_spec"]["counters"]["aphorisms_max"] = 8
+
+
 # ── sample prompts (picker UX): two register-matched topic exemplars per style, shown
 # as the Title/Theme placeholder when the style is selected. Nusantara styles sample in
 # Bahasa. Served via styles_catalog() → /narration/styles → FE placeholder. Programmatic

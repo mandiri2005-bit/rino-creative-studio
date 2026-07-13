@@ -1818,6 +1818,14 @@ def _regloss_budget_on() -> bool:
     return os.environ.get("NARASI_REGLOSS_BUDGET", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _anchor_budget_on() -> bool:
+    """NARASI_ANCHOR_BUDGET=1 arms the anchor/aphorism hard budget: capped RULE 5
+    wording (pakem), capped outline vo_note, and the budgeted floating-aphorism
+    counter below (cap: style_spec.counters.aphorisms_max, env NARASI_APHORISMS_MAX
+    fallback). Default OFF => scan output byte-identical."""
+    return os.environ.get("NARASI_ANCHOR_BUDGET", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _cos_sim(a, b) -> float:
     """Cosine of two embedding vectors; 0.0 on any degeneracy. Never raises."""
     try:
@@ -2584,6 +2592,155 @@ def _homogenization_tic_scan(text: str) -> dict:
         return {"status": "PASS", "tics": {}}
 
 
+# ── lane-ledger deterministic validator (NARASI_LEDGER_VALIDATOR, default OFF) ─────────
+# Round-2 evidence (jobs eky9gcge/cpn9kjg7/ibtgb7zg): PROMPT bans failed 3/3 rolls —
+# 'eleven' leaked every roll INCLUDING at bible level (eleven-month drought ⟹ poisons
+# every chapter), and cold coffee / barley tea / fluorescent hum / steady-hands-as-data
+# recurred 3/3. Only deterministic validation holds. This turns the SAME
+# pakem/lane_ledger.json that dynamic.py injects as a negative PROMPT constraint into a
+# post-hoc regex INVENTORY over BOTH the pinned bible and the final manuscript, plus a
+# static banned-tics table for the telemetry-confirmed repeats. Report-only:
+# status FLAG/PASS/OFF, NEVER 'OVER' → excluded from over_budget, can never
+# drive the diet loop. name_stems/recycled_beats are prose descriptions for the prompt
+# injection, NOT regexable — skipped here by design. Never raises.
+_LEDGER_EN_ONES = ("zero one two three four five six seven eight nine ten eleven twelve "
+                   "thirteen fourteen fifteen sixteen seventeen eighteen nineteen").split()
+_LEDGER_EN_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+                   "eighty", "ninety")
+_LEDGER_DUR_WORDS = r"(?:months?|years?|weeks?|days?|hours?|minutes?|bulan|tahun|minggu|hari|jam|menit)"
+# (term, pattern, min_count) — min_count>1: a single use is normal furniture, the repeat is the tic.
+_LEDGER_STATIC_TICS: tuple = (
+    ("eleven (spelled/duration)",
+     r"(?i)\beleven\b|\b11[\s-]" + _LEDGER_DUR_WORDS, 1),
+    ("cold coffee", _HG_COFFEE_RX.pattern, 1),
+    ("fluorescent hum",
+     r"(?i)\bfluorescents?\b[^.\n]{0,40}\bhum\w*\b|\bhum\w*\b[^.\n]{0,40}\bfluorescents?\b", 1),
+    ("barley tea", r"(?i)\bbarley\s+tea\b", 2),
+    ("steady hands as data",
+     r"(?i)\bsteady\s+hands?\b[^.\n]{0,80}\b(?:data|numbers?|metrics?|charts?|spreadsheets?)\b"
+     r"|\b(?:data|numbers?|metrics?|charts?|spreadsheets?)\b[^.\n]{0,80}\bsteady\s+hands?\b", 1),
+)
+
+
+def _ledger_validator_on() -> bool:
+    return os.environ.get("NARASI_LEDGER_VALIDATOR", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _ledger_en_num(n: int) -> str:
+    if 0 <= n < 20:
+        return _LEDGER_EN_ONES[n]
+    if 20 <= n < 100:
+        t, o = divmod(n, 10)
+        return _LEDGER_EN_TENS[t] + ("-" + _LEDGER_EN_ONES[o] if o else "")
+    return ""
+
+
+def _ledger_term(x: Any) -> str:
+    """Normalize a ledger entry: drop the curation parenthetical + leading ellipsis."""
+    return re.sub(r"\s*\([^)]*\)\s*$", "", str(x)).strip().lstrip("…").strip()
+
+
+def _ledger_lane_patterns(style_key: Optional[str]) -> list:
+    """(term, compiled_rx, min_count) triples from pakem/lane_ledger.json for this lane.
+    Fail-open: missing file / unknown lane / malformed entry ⟹ entries skipped."""
+    pats: list = []
+    try:
+        import json as _j
+        _p = os.path.join(os.path.dirname(__file__), "pakem", "lane_ledger.json")
+        with open(_p, encoding="utf-8") as f:
+            lane = (_j.load(f) or {}).get((style_key or "").strip()) or {}
+        if not isinstance(lane, dict):
+            return pats
+        for nm in lane.get("given_names") or []:
+            t = _ledger_term(nm)
+            if t:
+                pats.append(("name:" + t, re.compile(r"\b" + re.escape(t) + r"\b"), 1))
+        for sn in lane.get("overused_surnames") or []:
+            t = _ledger_term(sn)
+            if t:   # surname must precede a Capitalized given name — kills 'Ok,'/'Ha!' prose hits
+                pats.append(("surname:" + t, re.compile(r"\b" + re.escape(t) + r"\s+[A-Z]"), 1))
+        for ts in lane.get("timestamp_minutes") or []:
+            m = re.search(r"(\d{1,2})?:(\d{2})", str(ts))
+            if m:
+                hh = re.escape(m.group(1)) if m.group(1) else r"\d{1,2}"
+                pats.append(("timestamp:" + m.group(0),
+                             re.compile(r"\b" + hh + ":" + re.escape(m.group(2)) + r"\b"), 1))
+        for n in lane.get("small_numbers") or []:
+            if isinstance(n, int):
+                # scoped (?i:...) — a GLOBAL (?i) mid-alternation is a re.error on py3.11+
+                alts = [r"\b" + str(n) + r"\b"]
+                w = _ledger_en_num(n)
+                if w:
+                    alts.append(r"(?i:\b" + w + r"\b)")
+                pats.append(("number:" + str(n), re.compile("|".join(alts)), 1))
+            else:
+                t = _ledger_term(n)
+                if t:
+                    pats.append(("number:" + t, re.compile(r"(?i)\b" + re.escape(t) + r"\b"), 1))
+        for fd in lane.get("foods") or []:
+            t = _ledger_term(fd)
+            if t:
+                pats.append(("food:" + t, re.compile(r"(?i)\b" + re.escape(t) + r"\b"), 1))
+        for fl in lane.get("floors") or []:
+            if isinstance(fl, int):
+                w = _ledger_en_num(fl)
+                pats.append(("floor:" + str(fl), re.compile(
+                    r"(?i)\b(?:" + str(fl) + r"(?:st|nd|rd|th)?" + (("|" + w + r"(?:th)?") if w else "") +
+                    r")[\s-]floor\b|\blantai\s+" + str(fl) + r"\b"), 1))
+        for vp in lane.get("verbatim_phrases") or []:
+            t = _ledger_term(vp)
+            if len(t) >= 12:   # too-short phrases would false-positive everywhere
+                pats.append(("phrase:" + t[:40],
+                             re.compile(r"(?i)" + re.escape(t).replace(r"\ ", r"\s+")), 1))
+        for pl in lane.get("places") or []:
+            t = _ledger_term(pl)
+            if t:
+                pats.append(("place:" + t, re.compile(r"\b" + re.escape(t) + r"\b"), 1))
+    except Exception:  # noqa: BLE001 — ledger is an enhancement; never block the scan
+        return pats
+    return pats
+
+
+def ledger_hits_scan(manuscript: str, *, bible: str = "", style_key: Optional[str] = None) -> dict:
+    """Deterministic lane-ledger + static-tics scan over the bible AND the manuscript.
+    status FLAG/PASS/OFF (never OVER). Per-hit {term, where, count, snippet}. Never raises."""
+    out: dict = {"status": "OFF", "hits": [], "bible_hits": 0}
+    if not _ledger_validator_on():
+        return out
+    try:
+        _lane_pats = _ledger_lane_patterns(style_key)
+        # Static tics are kdrama-telemetry-derived: append them ONLY for lanes that
+        # exist in the ledger (review finding — 'eleventh century' on a harari book
+        # is legit prose, not a tic). Unknown lane ⟹ scan is a no-op.
+        pats = _lane_pats + ([
+            (t, re.compile(p) if isinstance(p, str) else p, mc)
+            for t, p, mc in _LEDGER_STATIC_TICS] if _lane_pats else [])
+        for where, txt in (("bible", bible or ""), ("manuscript", manuscript or "")):
+            if not txt:
+                continue
+            _seen_spans: set = set()   # exact-span dedupe: 'eleven' matched by 3 patterns = 1 hit
+            for term, rx, min_n in pats:
+                ms = []
+                for m in rx.finditer(txt):
+                    ms.append(m)
+                    if len(ms) >= 25:   # bound work + payload
+                        break
+                if len(ms) < max(1, int(min_n)):
+                    continue
+                for m in ms[:3]:   # ≤3 snippets per term per text
+                    if (m.start(), m.end()) in _seen_spans:
+                        continue
+                    _seen_spans.add((m.start(), m.end()))
+                    out["hits"].append({
+                        "term": term, "where": where, "count": len(ms),
+                        "snippet": re.sub(r"\s+", " ", txt[max(0, m.start() - 45):m.end() + 45])[:140]})
+        out["bible_hits"] = sum(1 for h in out["hits"] if h["where"] == "bible")
+        out["status"] = "FLAG" if out["hits"] else "PASS"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "hits": [], "bible_hits": 0}
+
+
 def _names_from(m: re.Match) -> Optional[str]:
     gd = m.groupdict()
     return gd.get("name1") or gd.get("name2") or gd.get("name3")
@@ -2591,7 +2748,7 @@ def _names_from(m: re.Match) -> Optional[str]:
 
 def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] = None,
                     thesis: Optional[str] = None, word_target: Optional[int] = None,
-                    embed_fn: Any = None) -> dict:
+                    embed_fn: Any = None, bible: Optional[str] = None) -> dict:
     """Full deterministic scan. Returns a report dict; every counter carries
     status ∈ {PASS, OVER, OFF, UNMEASURED} + the evidence (sentences/indices) the
     surgical rewrite needs. Never raises."""
@@ -2819,6 +2976,49 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             "sentences": anchor_lines[:12],
         }
 
+        # ── floating-aphorism budget (NARASI_ANCHOR_BUDGET, default OFF) ──
+        # kdrama rolls eky9gcge/cpn9kjg7/ibtgb7zg: UNTAGGED gnomic standalone lines
+        # doubled per roll (7→11→20) while `anchors` only sees [ANCHOR] tokens.
+        # Deterministic gnomic net: standalone single-sentence paragraph, ≤18 words,
+        # no dialogue quotes, no digits, no mid-sentence proper noun. Cap read RAW
+        # (regloss_max pattern) — ABSOLUTE, not length-scaled; scarcity is the point.
+        # DATA-SCOPED (review finding, lane-safety HIGH): armed ONLY for styles whose
+        # style_spec.counters defines aphorisms_max (kdrama today) — no global env
+        # fallback, so harari-class nonfiction thesis lines are never counted. The
+        # env NARASI_APHORISMS_MAX only overrides the VALUE where the data key exists.
+        if _anchor_budget_on() and "aphorisms_max" in budgets:
+            _aph_cap = 8
+            try:
+                _aph_cap = int(os.environ.get("NARASI_APHORISMS_MAX", "") or budgets["aphorisms_max"])
+            except Exception:  # noqa: BLE001
+                _aph_cap = 8
+            _aph_lines: list[str] = []
+            for para in (text or "").split("\n\n"):
+                p = para.strip()
+                # >=4 words: one-line scene-transition beats ('Morning came.') are
+                # pacing, not gnomics (review finding).
+                if not p or "\n" in p or not (4 <= len(p.split()) <= 18):
+                    continue
+                if p.startswith(("#", ">", "- ", "* ", "|")):
+                    continue
+                if not re.search(r"[.!?…]\s*$", p):
+                    continue
+                if re.search(r"[\"“”‘’']", p) or re.search(r"\d", p):
+                    continue
+                # a capitalized word mid-sentence = named/scene line, not a gnomic
+                if re.search(r"(?<=[a-zà-ÿ] )[A-ZÀ-Þ]", p):
+                    continue
+                if re.search(r"(?i)\[\s*anchor", p) or p[:200] in _aph_lines:
+                    continue
+                _aph_lines.append(p[:200])
+            _aph_total = len(_aph_lines) + len(anchor_lines)
+            report["counters"]["aphorisms"] = {
+                "status": "OVER" if _aph_total > _aph_cap else "PASS",
+                "count": _aph_total, "budget": _aph_cap,
+                "tagged": len(anchor_lines),
+                "sentences": _aph_lines[:12],
+            }
+
         # ── scene-dedup (ID-path §6.1): cross-chapter near-verbatim sensory beats.
         # Two deterministic nets: (a) 6-word shingles (true near-verbatim), (b) 4-word
         # shingles where EVERY word is ≥4 chars — catches the stamped template phrase
@@ -2942,6 +3142,17 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             report["counters"]["home_lang_bleed"] = _home_lang_bleed_scan(text, lang)
             # Homogenization tic-inventory (cross-roll telemetry; report-only FLAG-never-OVER).
             report["counters"]["homogenization_tics"] = _homogenization_tic_scan(text)
+
+        # ── lane-ledger validator (NARASI_LEDGER_VALIDATOR, default OFF) — report-only.
+        # FLAG-never-OVER → excluded from over_budget below, can never drive the diet
+        # loop. OWN flag (independent of NARASI_REFRAIN_SCAN) so the ledger gate is
+        # enableable alone. Scans the manuscript AND the pinned bible (bible kwarg —
+        # a bible-level hit poisons every chapter: the eleven-month-drought class)
+        # against pakem/lane_ledger.json for style_entry['key'] plus the static
+        # cross-roll tics table. OFF ⟹ key absent ⟹ report byte-identical.
+        if _ledger_validator_on():
+            report["counters"]["ledger_hits"] = ledger_hits_scan(
+                text, bible=bible or "", style_key=(style_entry or {}).get("key"))
 
         # ── reglossing budget promotion (NARASI_REGLOSS_BUDGET, default OFF) ──
         # FLAG→BUDGETED: cap read RAW from style_spec.counters.regloss_max (env
@@ -3131,6 +3342,18 @@ def surgical_prompt(report: dict, *, language: str = "English") -> str:
             "narration — they read as invented testimony. Rewrite each to the narrator's POV, "
             "or attribute it explicitly to a documented source, or mark it in-text as an "
             "imagined voice. Lines:\n- " + "\n- ".join(av.get("sentences", [])[:6]))
+    if c.get("aphorisms", {}).get("status") == "OVER":
+        aph = c["aphorisms"]
+        _tagged = int(aph.get("tagged") or 0)
+        parts.append(
+            f"FLOATING APHORISMS: {aph['count']} standalone aphoristic/gnomic lines "
+            f"(tagged + untagged) exceed the budget of {aph['budget']}. The budget counts "
+            f"[ANCHOR]-tagged lines FIRST ({_tagged} already tagged); of the UNTAGGED lines "
+            f"listed below keep at most {max(0, int(aph['budget']) - _tagged)}, each as a "
+            "chapter-FINAL line; DELETE the rest entirely — do not paraphrase them into "
+            "narration and do not fold them into an adjacent paragraph. A cut aphorism "
+            "leaves no residue. Lines:\n- "
+            + "\n- ".join(aph.get("sentences", [])[:12]))
     if c.get("reglossing", {}).get("status") == "OVER":
         rg = c["reglossing"]
         _terms = "; ".join(f"{t} ×{n}" for t, n in (rg.get("terms") or {}).items())

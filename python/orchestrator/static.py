@@ -550,6 +550,23 @@ async def narrate_chapters(
                 ctx.facts_are_bible = _fic  # True ⟹ invent framing; False ⟹ [VERIFY] framing
                 log.info("narrate_chapters: %s pinned (%d chars, style=%s, fiction=%s)",
                          "story bible" if _fic else "continuity sheet", len(_bible), style, _fic)
+                # LEDGER VALIDATOR at BIBLE time (NARASI_LEDGER_VALIDATOR, default OFF):
+                # a ledger hit committed in the bible poisons every chapter (roll-3
+                # 'eleven-month drought'), so scan the bible the moment it is pinned —
+                # earliest, cheapest signal (pure regex, zero LLM). Report-only WARN;
+                # never blocks or edits the bible; never raises. Fiction-only: the
+                # lane ledger is a fiction-lane artifact.
+                try:
+                    if _fic and str(os.environ.get("NARASI_LEDGER_VALIDATOR", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                        import narasi_counters as _lnc
+                        from pakem import resolve_style_key as _lrsk
+                        _lrep = _lnc.ledger_hits_scan("", bible=_bible, style_key=_lrsk(style))
+                        if _lrep.get("bible_hits"):
+                            log.warning("ledger validator: %d BIBLE-level ledger hit(s) at pin time: %s",
+                                        _lrep["bible_hits"],
+                                        sorted({str(h.get("term")) for h in _lrep.get("hits") or []})[:10])
+                except Exception as _lve:  # noqa: BLE001
+                    log.warning("bible ledger scan failed (non-fatal): %s", _lve)
         except Exception as _be:  # noqa: BLE001
             log.warning("narrate_chapters: story bible generation failed (non-fatal): %s", _be)
 

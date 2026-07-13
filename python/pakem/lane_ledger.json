@@ -12,19 +12,25 @@
     "name_stems": [
       "any *a(e)-ri[n/m] shape (Chae-rin/Chae-rim/Hae-rin/Ha-rin — used 4/4 rolls)",
       "-gyeom (Ryu Gyeom / Han Do-gyeom)",
-      "Hyeon-jae / Hyeon-tae (both used, one letter apart)"
+      "Hyeon-jae / Hyeon-tae (both used, one letter apart)",
+      "Tae- shared by an org AND a person (Taegang Construction vs Tae-* given names — collided 3/3 rolls 2026-07-12; never reuse one syllable stem for both)"
     ],
     "overused_surnames": ["Han", "Ok", "Baek", "Nam", "Im", "Ha"],
     "timestamp_minutes": [":14 (used 7x across rolls)", ":47", "11:40 (2 rolls)"],
-    "small_numbers": [41, 47, 11, 22, 26],
-    "foods": ["tteokbokki", "ramyeon", "gimbap", "roasted chestnuts (gun-bam)"],
+    "small_numbers": [41, 47, 11, 22, 26,
+      "eleven (spelled — leaked 3/3 rolls 2026-07-12 incl. BIBLE-level 'eleven-month drought'; numeric 11 already listed)"],
+    "foods": ["tteokbokki", "ramyeon", "gimbap", "roasted chestnuts (gun-bam)",
+      "barley tea (3/3 rolls 2026-07-12)"],
     "floors": [6, 11, 22, 31, 34],
+    "places": ["Mapo (2/3 rolls 2026-07-12)"],
     "verbatim_phrases": [
       "…and kept the smallest for himself (caregiver-denies-own-portion closing line — verbatim in 2 rolls)"
     ],
     "recycled_beats": [
       "equinox/solstice shadow-alignment reveal as the climax (already used cross-lane)",
-      "a precision-object straightened as an intimacy gesture (cup alignment / ink-stone squaring — 2 rolls)"
+      "a precision-object straightened as an intimacy gesture (cup alignment / ink-stone squaring — 2 rolls)",
+      "fluorescent hum as office/ward ambience (3/3 rolls 2026-07-12)",
+      "steady hands read as data/competence signal (3/3 rolls 2026-07-12)"
     ]
   }
 }

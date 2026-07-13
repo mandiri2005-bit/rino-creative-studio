@@ -1154,6 +1154,13 @@ _NARASI_FAILOVER_TIMEOUT = int(os.environ.get("NARASI_FAILOVER_TIMEOUT") or 280)
 # worker on a blocking call). 3 rungs × 280s = 840s < 900s.
 _NARASI_FAILOVER_CHAIN_BUDGET = float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET") or 840)
 
+# Per-call KIE-rung skip (used by NARASI_BIBLE_SKIP_KIE): the bible is the FIRST heavy call of a
+# job and cold-KIE non-streaming reads hang it (~106s when working, full-timeout hang otherwise;
+# see orchestrator/dynamic.py build_story_bible). ContextVar so ONLY the call that sets it starts
+# the opus chain at LaoZhang; chapter calls (warm, reliable on KIE) are untouched. Propagates
+# through asyncio.to_thread (which copies the current context). Default False = today's behavior.
+_narasi_skip_kie: ContextVar[bool] = ContextVar("_narasi_skip_kie", default=False)
+
 
 def _narasi_failover_on() -> bool:
     return str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
@@ -1214,7 +1221,7 @@ def _narasi_gemini_failover_chain(model: str) -> list[tuple[str, str, str, str, 
 
 
 def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
-                          timeout: float, temperature=None):
+                          timeout: float, temperature=None, response_json: bool = False):
     """Call Vertex Gemini via google.genai OAuth. Translates the OpenAI messages
     format to Vertex `contents` (system role hoisted to system_instruction, remaining
     roles concatenated) and wraps the reply in _AdaptedResp so the rest of the
@@ -1238,14 +1245,30 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
             cfg_kwargs["temperature"] = float(temperature)
         except (TypeError, ValueError):
             pass
+    if response_json and os.getenv("NARASI_GENAI_JSON_MIME", "0").strip().lower() in ("1", "true", "yes", "on"):
+        # json_mode was silently dropped on this rung (response_format is an OpenAI-ism).
+        cfg_kwargs["response_mime_type"] = "application/json"
+        # 2.5-family thinks by default and thought tokens bill against max_output_tokens —
+        # a cheap-call budget (800) is consumed entirely by thinking on a 12k-char counting
+        # task -> finish=MAX_TOKENS with zero text parts -> resp.text None -> '' (register
+        # gate 6/6 empty in prod). JSON side-calls don't need thinking; force it off.
+        # Scoped: 2.5 ids only (gemini-3.x rejects thinking_budget=0) and small budgets only.
+        if "-2.5-" in (model or "") and int(max_tokens) <= 4000:
+            try:
+                cfg_kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=0)
+            except Exception:
+                pass
     try:
         cfg = _gt.GenerateContentConfig(**cfg_kwargs)
     except TypeError:
-        # Older google.genai builds may not accept system_instruction on the config;
-        # inline it into the contents instead so the call still lands.
+        # Older google.genai builds may not accept system_instruction (or the optional
+        # response_mime_type / thinking_config keys) on the config; strip the optional
+        # keys and inline system so the call still lands.
         if "system_instruction" in cfg_kwargs:
             sys_inline = cfg_kwargs.pop("system_instruction")
             contents = f"{sys_inline}\n\n{contents}" if contents else sys_inline
+        cfg_kwargs.pop("response_mime_type", None)
+        cfg_kwargs.pop("thinking_config", None)
         cfg = _gt.GenerateContentConfig(**cfg_kwargs)
     import threading as _threading
     result: dict = {"resp": None, "err": None}
@@ -1485,6 +1508,11 @@ class _NarasiFailoverClient:
         # Canonical cheapest-first chain, walked fresh EVERY call — no reorder,
         # no memory (Rino 2026-07-06: "Attempt 2 (fresh state) = Attempt 1").
         chain = _narasi_failover_chain(self._model)
+        if _narasi_skip_kie.get():
+            # Bible cold-KIE skip: start at rung 2. No-op for sonnet/gemini chains (no 'kie' rung);
+            # if the filtered chain has no keyed rung, the existing attempted==0 branch below
+            # already falls back to make_client.
+            chain = [c for c in chain if c[0] != "kie"]
         primary = next((c[0] for c in chain if c[3]), "")
         # Bound the whole cheapest-first walk to a budget < the caller's outer per-chapter
         # wait_for, giving each rung the REMAINING budget (not a fresh full timeout) so a hung
@@ -1519,7 +1547,8 @@ class _NarasiFailoverClient:
                         resp = _vertex_gemini_create(model_id,
                                                       call_kw.get("messages") or [],
                                                       call_kw.get("max_tokens") or 4000, rung_timeout,
-                                                      temperature=call_kw.get("temperature"))
+                                                      temperature=call_kw.get("temperature"),
+                                                      response_json=bool(call_kw.get("response_format")))
                     else:
                         cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
                         resp = cli.chat.completions.create(**call_kw)
@@ -7325,6 +7354,27 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
         # Guard: a degraded cheap model must not hang every gate that shares this primitive.
         resp = await asyncio.wait_for(_run(), timeout=NARASI_CHEAP_TIMEOUT)
         cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
+        if _resp_content(resp) is None:
+            # Empty 200 / no choices: today this surfaced only as a generic 'cheap call failed:
+            # NoneType not subscriptable' (or nothing at all for blank content). Log WHO served
+            # and WHY empty — 3 prod rolls flew blind on this exact failure (register gate 6/6).
+            import logging as _lg
+            _lg.getLogger("narasi").warning(
+                "cheap call EMPTY content (model=%s served_by=%s json_mode=%s max_tokens=%s detail=%s)",
+                model, getattr(resp, "_narasi_served_by", "direct"), json_mode, safe_max,
+                _resp_err_detail(resp))
+            if json_mode and os.getenv("NARASI_CHEAP_EMPTY_RETRY_PLAIN", "0").strip().lower() in ("1", "true", "yes", "on"):
+                # Flag ON: one bounded retry WITHOUT response_format (the exception-only
+                # fallback in _run never covers the empty-200 case). _narasi_parse_json
+                # already fence-strips, so plain-text JSON parses fine downstream.
+                resp = await asyncio.wait_for(asyncio.to_thread(lambda: _call(False)),
+                                              timeout=NARASI_CHEAP_TIMEOUT)
+                cr += (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
+                if _resp_content(resp) is None:
+                    _lg.getLogger("narasi").warning(
+                        "cheap call EMPTY again on plain retry (model=%s detail=%s)",
+                        model, _resp_err_detail(resp))
+                    return "", 0
         return (resp.choices[0].message.content or "").strip(), int(cr)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("cheap call failed (non-fatal): %s", _e)
@@ -9680,12 +9730,16 @@ async def _narasi_outline_impl(body: dict):
         if ("harari" in (style or "").lower() or "big history" in (style or "").lower())
         else "")
 
+    _anchor_budget_outline = str(os.environ.get("NARASI_ANCHOR_BUDGET", "0")).strip().lower() in ("1", "true", "yes", "on")
     vo_note = (
         "\n\nVO GENERATION MODE — ACTIVE: This outline will be used to generate DOCUMENTARY NARRATION. "
         "For each chapter description, specify:\n"
         "  (a) the recommended OPENING TYPE (A/B/C/D/E/F/G from the style guide) — vary across chapters\n"
-        "  (b) one suggested ANCHOR line concept (short, paradoxical, standalone quotable)\n"
-        "  (c) which technical terms or proper nouns will need micro-gloss on first mention\n"
+        + ("  (b) an ANCHOR line concept for AT MOST 2-3 pivotal chapters ONLY (short, paradoxical, "
+           "standalone quotable) — every other chapter gets NONE; never manufacture one per chapter\n"
+           if _anchor_budget_outline else
+           "  (b) one suggested ANCHOR line concept (short, paradoxical, standalone quotable)\n")
+        + "  (c) which technical terms or proper nouns will need micro-gloss on first mention\n"
         "Include these VO notes in the description field, separated by a pipe | character.\n"
     ) if video_mode_outline else ""
 

@@ -551,7 +551,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             except Exception:  # noqa: BLE001
                 embed = None
             rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
-                                      word_target=wt or None, embed_fn=embed)
+                                      word_target=wt or None, embed_fn=embed,
+                                      bible=str(result.get("canonical_facts") or ""))
 
             # Tolerance band: one diet round = ONE full-book Opus stream (~5-6 min on a
             # 5k-word book — itaatga7's whole "why is it stuck" phase). Not worth it for
@@ -621,7 +622,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         book = out
                         result[key] = book
                         rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
-                                                  word_target=wt or None, embed_fn=embed)
+                                                  word_target=wt or None, embed_fn=embed,
+                                                  bible=str(result.get("canonical_facts") or ""))
                     else:
                         if _dtrunc:
                             log.warning("counter diet loop: rewrite truncated (finish=%s) — kept original", _dfin)
@@ -636,6 +638,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 "counters": {k: {kk: vv for kk, vv in v.items() if kk != "sentences"}
                              for k, v in rep.get("counters", {}).items()},
             }
+            # Ledger validator (report-only): a BIBLE-level ledger hit poisons every
+            # chapter (the eleven-month-drought class) — surface as WARN, never a gate.
+            _lhits = (rep.get("counters") or {}).get("ledger_hits") or {}
+            if _lhits.get("bible_hits"):
+                log.warning("ledger validator: %d bible-level ledger hit(s) (poison every chapter): %s",
+                            _lhits["bible_hits"],
+                            sorted({str(h.get("term")) for h in _lhits.get("hits") or []
+                                    if h.get("where") == "bible"})[:10])
             if rep.get("over_budget"):
                 log.warning("counters still over budget after %d diet loop(s): %s",
                             loops, rep["over_budget"])
@@ -889,6 +899,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                                                 tenant_id=tenant_id, user_id=user_id,
                                                                 job_uuid=job_uuid, json_mode=True)
                             d = _narasi_parse_json(raw) if isinstance(raw, str) else (raw or {})
+                            if not (isinstance(d, dict) and d):
+                                # 3 prod rolls: 6/6 empty with zero forensic trail. Log the raw
+                                # head so empty-upstream vs non-JSON-prose is decidable from logs.
+                                log.warning("register-gate cheap scan attempt %d unparsable — raw head: %r",
+                                            _rg_attempt, (raw or "")[:200])
                             if isinstance(d, dict) and (d or not _rg_failopen):
                                 counts = {m: int(d.get(m) or 0) for m in moves}
                             if counts or not _rg_failopen:
@@ -1026,6 +1041,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                     result["canon_diff"]["revised"] = True
                         except Exception as _e:  # noqa: BLE001
                             log.warning("canon-diff enforce revise failed (non-fatal): %s", _e)
+                else:
+                    log.info("canon-diff: 0 fork(s) across %d event(s) for job %s (clean run)",
+                             len(_events[:8]), job_id)
+            else:
+                _reason = ("canonical_facts absent" if not _cf else
+                           "registry parse failed" if _reg is None else
+                           "registry has no events")
+                result["canon_diff"] = {"events_checked": 0, "forks": [], "skipped": _reason}
+                log.info("canon-diff: skipped for job %s — %s", job_id, _reason)
     except Exception as e:  # noqa: BLE001
         log.warning("canon-diff gate failed (non-fatal): %s", e)
 

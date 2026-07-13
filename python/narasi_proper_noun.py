@@ -444,7 +444,52 @@ def _treaty_key(tok: str) -> str:
 # over_budget or drive the diet loop). Detection only — never edits text. Never raises.
 _PHANTOM_NAME_RX = re.compile(
     r"\b([A-Z][a-zA-Z]+(?:[-'’][A-Za-z]+)?"
-    r"(?:\s+[A-Z][a-zA-Z]+(?:[-'’][A-Za-z]+)?)+)")
+    r"(?:[ ][A-Z][a-zA-Z]+(?:[-'’][A-Za-z]+)?)+)")
+# FP round-2 (rolls 2-3: 6/6 then 4/4 false positives). (b) geo/direction/institution
+# component stoplist — a candidate containing ANY of these is a place/org, not a person.
+_PHANTOM_GEOORG = frozenset({
+    "Sea", "Ocean", "Bay", "Gulf", "Strait", "River", "Lake", "Island", "Peninsula",
+    "East", "West", "North", "South", "Northeast", "Northwest", "Southeast",
+    "Southwest", "Upper", "Lower", "Central",
+    "Tribunal", "Court", "Ministry", "Administration", "Agency", "Bureau", "Office",
+    "Department", "Commission", "Council", "Authority", "Assembly", "Prosecutors",
+    "Construction", "Consortium", "Group", "Holdings", "Corporation", "Company",
+    "Industries", "Engineering", "Development", "Partners", "Bank", "Filings",
+    "District", "Province", "Station", "Hospital", "University", "Institute",
+    "Tower", "Plaza", "Harbor", "Port", "City", "County",
+})
+# (c) trailing possessive ("Taegang Construction's") stripped per-component.
+_POSSESSIVE_RX = re.compile(r"[’']s$")
+# (a) chapter-heading lines: '## …' / 'Chapter N:' / 'Bab N' prefixes, or a short line
+# that is ENTIRELY title-case (connector words allowed) with no sentence-final punct.
+_PH_HEADING_PREFIX_RX = re.compile(
+    r"^\s*(?:#{1,6}\s|(?:Chapter|CHAPTER|Bab|BAB|Episode|EPISODE|Part|PART)\b"
+    r"\s*[\dIVXLC]*\s*[:.—-]?)")
+_PH_TITLECASE_WORD_RX = re.compile(r"^[A-Z][a-zA-Z'’-]*[,:;]?$")
+_PH_TITLE_CONNECTORS = frozenset({"a", "an", "and", "at", "by", "for", "in", "of",
+                                  "on", "or", "the", "to", "with",
+                                  "dan", "di", "ke", "dari", "yang", "para", "sang"})
+
+
+def _is_heading_line(line: str) -> bool:
+    """True when `line` is a chapter-title line (phantom candidates on it are scaffold,
+    not prose): explicit heading prefix, or a short all-title-case line."""
+    s = line.strip()
+    if not s or len(s) > 90:
+        return False
+    if _PH_HEADING_PREFIX_RX.match(s):
+        return True
+    # metadata/header shapes ('Style: K-Drama Serial — ... | Output: video') are
+    # scaffold too (review finding): key-value prefix or a pipe-separated line.
+    if " | " in s or re.match(r"^\s*\w[\w -]{0,20}:\s", s):
+        return True
+    if s[-1] in ".!?…\"”’":
+        return False
+    words = s.split()
+    if not (2 <= len(words) <= 12):
+        return False
+    return all(_PH_TITLECASE_WORD_RX.match(w)
+               or w.lower().strip(",:;—-") in _PH_TITLE_CONNECTORS for w in words)
 
 
 def phantom_name_scan(text: str, *, bible: str = "", tail_frac: float = 0.25,
@@ -460,6 +505,14 @@ def phantom_name_scan(text: str, *, bible: str = "", tail_frac: float = 0.25,
             return out
         n = len(text)
         cut = int(n * (1.0 - tail_frac))
+        # FP (a) round-2: heading-line spans — a candidate on a chapter-title line is
+        # scaffold ('When the Clouds Remembered' -> 'Clouds Remembered'), not prose.
+        _hspans: list[tuple[int, int]] = []
+        _lpos = 0
+        for _ln in text.split("\n"):
+            if _is_heading_line(_ln):
+                _hspans.append((_lpos, _lpos + len(_ln)))
+            _lpos += len(_ln) + 1
         # 1 — candidate full names (earliest index of the FULL form). The greedy regex
         # swallows a leading capitalized sentence-opener ('Lalu Shim Ro-ha', 'Ketika
         # Yu Na') — STRIP stoplisted edge tokens instead of rejecting the whole
@@ -467,14 +520,20 @@ def phantom_name_scan(text: str, *, bible: str = "", tail_frac: float = 0.25,
         # hunts (review finding, reproduced).
         first_full: dict[str, int] = {}
         for m in _PHANTOM_NAME_RX.finditer(text):
+            if any(a <= m.start() < b or a < m.end() <= b for a, b in _hspans):
+                continue              # FP (a): candidate sits on a chapter-heading line
             tok = m.group(1)
-            parts = tok.split()
+            parts = [_POSSESSIVE_RX.sub("", p) for p in tok.split()]
+            if any(len(p) >= 2 and p.isupper() for p in parts):
+                continue              # FP (c): ALL-CAPS run ('CIVIL FILINGS')
             while parts and parts[0] in _STOP:
                 parts = parts[1:]
             while parts and parts[-1] in _STOP:
                 parts = parts[:-1]
             if len(parts) < 2:
                 continue
+            if any(p in _PHANTOM_GEOORG for p in parts):
+                continue              # FP (b): geo/org component ('East China Sea')
             tok2 = " ".join(parts)
             _off = tok.find(tok2)
             first_full.setdefault(tok2, m.start() + (_off if _off >= 0 else 0))

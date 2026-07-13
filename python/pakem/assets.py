@@ -157,6 +157,26 @@ After a data-dense paragraph: mandatory 1–2 sentence atmospheric reset before 
 - Dropping register to conversational when breaking long sentences
 """
 
+# ── RULE 5 hard-budget variant (NARASI_ANCHOR_BUDGET, round-2 craft) ──
+# Legacy RULE 5 requests 3–5 [ANCHOR]/chapter (~30–60/book) while narasi_counters
+# budgets anchors_max≈3–8 per MANUSCRIPT — the request site itself trains the lane
+# into gnomic mode (kdrama rolls eky9gcge/cpn9kjg7/ibtgb7zg: 7→11→20 floating
+# aphorisms). Swap applied in build_style_block; legacy string must stay
+# byte-identical to the RULE 5 block inside VIDEO_MODIFIER (it is the needle).
+VIDEO_RULE5_LEGACY = """── RULE 5: ANCHOR LINES ──
+Every chapter must have 3–5 ANCHOR lines.
+Criteria: under 12 words, standalone quotable, paradox or reversal structure, emotionally irreversible.
+Mark each with [ANCHOR].
+Anchor lines are VERBATIM — do not edit them during revision. Build everything else around them."""
+
+VIDEO_RULE5_CAPPED = """── RULE 5: ANCHOR LINES — HARD BUDGET ──
+AT MOST ONE [ANCHOR] line per chapter, and ONLY as the chapter's FINAL line (epigraph position).
+Most chapters should have NONE — a manufactured anchor is worse than no anchor.
+Criteria: under 12 words, standalone quotable, paradox or reversal structure.
+Mark it with [ANCHOR]. NEVER place an anchor mid-paragraph; it stands alone on its own line.
+Do NOT compensate with unmarked aphoristic one-liners — the [ANCHOR] budget IS the book's total aphorism budget.
+(RULE 2 governs in-paragraph sentence texture; this budget governs STANDALONE aphoristic lines — they do not conflict.)"""
+
 
 __all__ = [
     "FACTUAL_INTEGRITY",
@@ -164,4 +184,6 @@ __all__ = [
     "LANGUAGE_DIRECTIVE",
     "GENERATION_PREAMBLE",
     "VIDEO_MODIFIER",
+    "VIDEO_RULE5_LEGACY",
+    "VIDEO_RULE5_CAPPED",
 ]
