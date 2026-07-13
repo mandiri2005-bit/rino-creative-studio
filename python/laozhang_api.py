@@ -7936,14 +7936,18 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             out.append(_p)
             continue
         _directives = "\n".join(
-            f"- [{v.get('severity', '?')}/{v.get('type', '?')}] {str(v.get('evidence', ''))[:200]} "
-            f"→ FIX: {str(v.get('fix', ''))[:200]}" for v in _vs[:8])
+            f"- [{v.get('severity', '?')}/{v.get('type', '?')}] {str(v.get('evidence', ''))[:420]} "
+            f"→ FIX: {str(v.get('fix', ''))[:420]}" for v in _vs[:8])
         _trail = _p[len(_p.rstrip()):]           # preserve inter-chapter whitespace on re-join
         _body = _p.rstrip()
         _sys = ("You are fixing consistency problems in ONE chapter of a multi-chapter story. Make "
                 "the SMALLEST changes that reconcile each problem — reword only the sentences carrying "
                 "the contradiction; keep every other sentence, the chapter heading, the length, the "
-                "style and language IDENTICAL. Return the corrected chapter (same heading) and nothing else.")
+                "style and language IDENTICAL. Return the corrected chapter (same heading) and nothing else. "
+                "If a listed problem does not occur in THIS chapter's text, ignore it silently. If NO "
+                "problem applies, return the chapter EXACTLY as given. Your output must BEGIN with the "
+                "chapter's heading line and END with the chapter's last prose line — NEVER include "
+                "notes, analysis, reasoning, or any commentary about the problems.")
         _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
               f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
         _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
@@ -7980,7 +7984,19 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         _new = _new.replace("\r\n", "\n").replace("\r", "\n")
         _ow, _nw = len(_body.split()), len(_new.split())
         _no_wrapper = not _re.match(
-            r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated)|of course)\b', _new)
+            r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated|need)|of course|'
+            r'looking at|no change|since none|re-reading|given that|the chapter)\b', _new)
+        # r4.1 META-LEAK guards (roll-7 jsvfbm07 shipped TWO analysis blocks into the book,
+        # L51-63 + L243-253 — "Note: Chapter 1 required no changes…", "I need to analyze…"
+        # — which also SPOILED the critic's findings to the reader). The wrapper check was
+        # start-anchored only, so (a) trailing commentary after the chapter's last line and
+        # (b) preambles not in the old alternation both passed every guard. Two new checks:
+        # the rewrite must START with the part's own first heading line (computed below,
+        # after _HEADLINE_RX), and its TAIL must not contain analysis-shaped lines.
+        # Rejection keeps the original — safe direction.
+        _tail_meta = bool(_re.search(
+            r'(?im)^\s*(note:|looking at|no change|since none of|the chapter is returned|'
+            r'i need to analy|given that none|however, re-reading)', _new[-1200:]))
         # HEADING-LINE SEQUENCE must be byte-identical — the ONE robust heading invariant for ALL book
         # styles (ends the strict-vs-loose count whack-a-mole). A "heading line" = a chapter opener
         # (## / Chapter N / Bab N / Chapitre N / Capítulo N) at line start after only NON-WORD prefix junk
@@ -7993,7 +8009,13 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # emits every heading as "## <label>"; a bare imported style whose keyword is outside
         # ##|Chapter|Bab|Chapitre|Cap[íi]tulo is the only residual, and narasi never produces it.)
         _HEADLINE_RX = r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$'
-        _heads_ok = _re.findall(_HEADLINE_RX, _body) == _re.findall(_HEADLINE_RX, _new)
+        _bhl = _re.findall(_HEADLINE_RX, _body)
+        _heads_ok = _bhl == _re.findall(_HEADLINE_RX, _new)
+        # r4.1: a part that begins with its chapter heading must come BACK beginning with
+        # that same heading — roll-7's "I need to analyze the problems…" preamble kept the
+        # heading sequence intact (preamble lines aren't headings) and sailed through.
+        _starts_ok = (not _bhl or not _body.lstrip().startswith(_bhl[0].strip())
+                      or _new.lstrip().startswith(_bhl[0].strip()))
         # BODY-FIDELITY: the "smallest changes / keep every other sentence IDENTICAL" rule is only a
         # system-prompt instruction — without an enforced check the word-window admits a WHOLESALE content
         # swap (same-heading, in-window, 100%-different body). Require the rewrite to stay close to the
@@ -8008,7 +8030,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # inflated), every chapter heading line byte-identical (no renumber/reword/re-case/echo/drop), no
         # wrapper preamble, and the body close to the original (no wholesale rewrite/swap). Else keep.
         if (int(_ow * 0.9) <= _nw <= int(_ow * 1.4)
-                and _heads_ok and _no_wrapper and _fid >= _min_fid):
+                and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
+                and _fid >= _min_fid):
             out.append(_new + _trail)
             changed = True
             _n_revised += 1
@@ -8018,8 +8041,9 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             import logging as _lg
             _lg.getLogger("narasi").warning(
                 "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
-                "heads_ok=%s, wrapper_free=%s, fidelity=%.2f (min %.2f)",
-                _ow, _nw, int(_ow * 0.9), int(_ow * 1.4), _heads_ok, _no_wrapper, _fid, _min_fid)
+                "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, fidelity=%.2f (min %.2f)",
+                _ow, _nw, int(_ow * 0.9), int(_ow * 1.4), _heads_ok, _no_wrapper,
+                _starts_ok, _tail_meta, _fid, _min_fid)
             out.append(_p)
     import logging as _lg
     _lg.getLogger("narasi").log(
@@ -8065,8 +8089,8 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             import logging as _lg
             _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
     directives = "\n".join(
-        f"- [{x.get('severity', '?')}/{x.get('type', '?')}] {str(x.get('evidence', ''))[:200]} "
-        f"→ FIX: {str(x.get('fix', ''))[:200]}"
+        f"- [{x.get('severity', '?')}/{x.get('type', '?')}] {str(x.get('evidence', ''))[:420]} "
+        f"→ FIX: {str(x.get('fix', ''))[:420]}"
         for x in viol[:12])
     resolved  = MODELS.get(rev_model, rev_model)
     # 128K ceiling (was 16000): the whole-book revise must emit the ENTIRE corrected book in one output,
@@ -8094,6 +8118,18 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
         return full_text, 0
     cr  = (await _log_narasi_usage(tenant_id, user_id, rev_model, resp, job_id=job_uuid) or 0)
     new = (_resp_content(resp) or "").strip()          # null-safe (error-as-200 → no AttributeError)
+    # r4.1: the whole-book path had NO wrapper/meta guard — the same scaffold-leak class
+    # roll-7's chunked path shipped ("Note: … required no changes", "I need to analyze…")
+    # could ride a whole-book rewrite too. Reject on either end; original stands.
+    import re as _wre
+    if (_wre.match(r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated|need)|'
+                   r'of course|looking at|no change|since none|given that|the corrected)', new)
+            or _wre.search(r'(?im)^\s*(note:|looking at|no change needed|since none of|'
+                           r'i need to analy|the chapter is returned)', new[-1200:])):
+        import logging as _lgw
+        _lgw.getLogger("narasi").warning(
+            "whole-book revise DISCARDED: wrapper/meta-shaped content detected — original kept")
+        return full_text, 0
     _ow, _nw = len((full_text or "").split()), len(new.split())
     if not new or _nw < int(_ow * 0.9):  # empty/gutted → keep original
         import logging as _lg

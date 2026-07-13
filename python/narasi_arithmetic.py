@@ -355,8 +355,20 @@ def _en_num(tok: str) -> int | None:
     return None
 
 
-def _dates_en(text: str) -> list[tuple[int, tuple[int, int, int]]]:
+_DATE_MY_RX = re.compile(
+    r"(?i)\b(?P<month>january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+(?P<year>1[5-9]\d{2}|20\d{2})\b")
+_DATE_Y_RX = re.compile(r"\b(?:in|of|since|until|by)\s+(1[5-9]\d{2}|20\d{2})\b")
+
+
+def _dates_en(text: str, *, slop_out: dict | None = None) -> list[tuple[int, tuple[int, int, int]]]:
+    """Anchor dates, three precision tiers (roll-7 FP class: 'three years before the
+    flood' had only 'March 2002' / 'in 2007' as its true anchors — invisible to the
+    full-date regex, so the check compared against unrelated dates and flagged
+    correct prose). slop_out[pos] = ± tolerance the anchor's imprecision adds:
+    full date 0d, month-year ±16d, bare year ±185d."""
     out: list[tuple[int, tuple[int, int, int]]] = []
+    spans: list[tuple[int, int]] = []
     for m in _DATE_RX_EN.finditer(text):
         day = m.group("day") or m.group("day2")
         mon = m.group("month") or m.group("month2")
@@ -364,6 +376,38 @@ def _dates_en(text: str) -> list[tuple[int, tuple[int, int, int]]]:
         t = _parse_date(day, mon, yr, "en")
         if t:
             out.append((m.start(), t))
+            spans.append((m.start(), m.end()))
+            if slop_out is not None:
+                slop_out[m.start()] = 0.0
+    for m in _DATE_MY_RX.finditer(text):
+        if any(a <= m.start() < b for a, b in spans):
+            continue   # inside a full date already captured
+        t = _parse_date("15", m.group("month"), m.group("year"), "en")
+        if t:
+            out.append((m.start(), t))
+            spans.append((m.start(), m.end()))
+            if slop_out is not None:
+                # day=15 midpoint + BASE tolerance only: a linear ±16d bonus let a
+                # stray month-grade caption confirm a wrong span by 0.4 days
+                # (roll-5 'June 2009' photo vs the three-months claim). Month
+                # precision is already inside the 15-18% base tol for month+ spans.
+                slop_out[m.start()] = 0.0
+    _anchored_years = {t[0] for _, t in out}
+    for m in _DATE_Y_RX.finditer(text):
+        if any(a <= m.start(1) - 3 < b for a, b in spans):
+            continue
+        try:
+            _yy = int(m.group(1))
+        except (ValueError, TypeError):
+            continue
+        # a bare year that ALREADY has a full/month-grade date is redundant — and
+        # poisonous: its ±185d slop shadows the precise anchor and can 'confirm'
+        # a wrong span against it (ate the roll-5 true positive via 'in 2009').
+        if _yy in _anchored_years:
+            continue
+        out.append((m.start(1), (_yy, 7, 1)))
+        if slop_out is not None:
+            slop_out[m.start(1)] = 185.0
     return out
 
 
@@ -377,7 +421,8 @@ def scan_interval_vs_dates_en(text: str) -> list[dict]:
     findings: list[dict] = []
     if not text:
         return findings
-    dates = _dates_en(text)
+    _slop: dict[int, float] = {}
+    dates = _dates_en(text, slop_out=_slop)
     if len(dates) < 2:
         return findings
     _unit_days = {"day": 1.0, "week": 7.0, "month": 30.44, "year": 365.25}
@@ -393,7 +438,7 @@ def scan_interval_vs_dates_en(text: str) -> list[dict]:
         stated = n * _unit_days.get(unit, 0)
         if stated < 14:      # scene-jump idioms ("three days later") — not worth flagging
             continue
-        near = [(p, t) for p, t in dates if abs(p - m.start()) < 800]
+        near = [(p, t) for p, t in dates if abs(p - m.start()) < 1200]
         cands = list(near)
         # Round-4 FP fix (roll 6: "seven months later" → the father's undated death
         # flagged against unrelated dates): GLOBAL candidate expansion is only sound
@@ -404,7 +449,11 @@ def scan_interval_vs_dates_en(text: str) -> list[dict]:
         _event_ref = (m.group("rel").lower() in ("after", "since", "before")
                       and re.match(r"\s+(?:the|that)\s+[a-z]",
                                    text[m.end():m.end() + 30] or "") is not None)
-        if len(dates) <= 6 and _event_ref:
+        # r4.1 (roll-7 'three weeks after the flood' FP): event-ref expansion is only
+        # sound when the span's OTHER endpoint is dated nearby — the event anchor may
+        # live anywhere, but a span whose second endpoint is undated is unverifiable
+        # no matter how many global dates exist. Require ≥1 near date to expand.
+        if len(dates) <= 8 and _event_ref and near:
             for p, t in dates:
                 if (p, t) not in cands:
                     cands.append((p, t))
@@ -418,8 +467,14 @@ def scan_interval_vs_dates_en(text: str) -> list[dict]:
                 actual = abs(_days_between(ta, tb))
                 if actual == 0:
                     continue
+                # two bare-YEAR anchors give ±370d combined slop — they can 'confirm'
+                # almost any span (ate the roll-5 true positive). Uninformative; skip.
+                if _slop.get(pa, 0.0) >= 185 and _slop.get(pb, 0.0) >= 185:
+                    continue
                 pairs.append((pa, pb, actual))
-                if abs(actual - stated) <= tol:
+                # imprecise anchors (month-year ±16d, bare year ±185d) widen the pair's
+                # tolerance — approximation must only ever SUPPRESS flags, never add them
+                if abs(actual - stated) <= tol + _slop.get(pa, 0.0) + _slop.get(pb, 0.0):
                     ok = True
                     break
             if ok:

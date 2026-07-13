@@ -880,8 +880,35 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                               and (not _fork_revise or not _isfic_rev))]
             if _narasi_critique_revise_enabled() and _cbad:
                 _t_rev0 = time.monotonic()
+                # r4.1 — REVEAL-PROTECTION SECOND DOOR (roll-6 captured KIE payload): the
+                # _cbad filter above only stops canon_fork from TRIGGERING the revise; the
+                # revise itself received the FULL list, so once ANY other high finding
+                # fired, canon_forks rode into the directives and got "fixed" — exactly
+                # the designed-reveal-gutting the canon_fork policy note forbids. Filter
+                # the revise INPUT under the same policy. Also drop findings the critic
+                # RETRACTED mid-audit ("FIX: RETRACTED — arithmetic checks out"), seen
+                # verbatim in the same payload — noise that can provoke needless edits.
+                import re
+                _cq_rev = dict(_cq)
+                _cq_rev["violations"] = [
+                    v for v in (_cq.get("violations") or [])
+                    if not (str(v.get("type", "")).lower() == "canon_fork"
+                            and (not _fork_revise or not _isfic_rev))
+                    and not any(t in str(v.get("fix", "")).lower()[:60]
+                                for t in ("retracted", "no change needed", "no fix needed"))
+                    # roll-7 routing hole: a fix that needs a NEW SCENE ("dramatize the
+                    # delivery... could fit at the opening of Ch5 or Ch6") bounces off
+                    # EVERY chapter-fixer symmetrically ("not my chapter") and can never
+                    # land in a minimal-edit revise — it is a generation-side lesson,
+                    # not a line edit. Keep it in the report, keep it out of the revise.
+                    and not re.search(r"(?i)\b(dramatiz|insert (a|the|one)? ?scene|add (a|the) scene|"
+                                      r"new scene|could fit at the opening)",
+                                      str(v.get("fix", "")))]
+                if len(_cq_rev["violations"]) != len(_cq.get("violations") or []):
+                    log.info("revise input filtered: %d → %d violation(s) (canon_fork report-only / retracted dropped)",
+                             len(_cq.get("violations") or []), len(_cq_rev["violations"]))
                 _crev, _crevc = await _narasi_consistency_revise(
-                    _cbk, _cq, style, language, model=_cmodel,
+                    _cbk, _cq_rev, style, language, model=_cmodel,
                     tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
                 _t_rev = time.monotonic() - _t_rev0
                 if sink is not None and _crevc:
