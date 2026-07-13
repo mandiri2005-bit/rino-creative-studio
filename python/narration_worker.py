@@ -64,13 +64,57 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
     except Exception as e:  # noqa: BLE001
         log.warning("terminal-check failed (continuing): %s", e)
 
-    await _run_narration_job(
-        body=data.get("body") or {}, job_id=job_id, job_uuid=data.get("job_uuid"),
-        tenant_id=tenant_id, user_id=data.get("user_id"),
-        total=int(data.get("total") or 1), meter_op=data.get("meter_op"),
-        model=str(data.get("model") or "claude-opus-4-6"),
-    )
-    return {"ok": True}
+    # ROUND-9 EXEC LOCK (roll-12 postmortem): the terminal-check above cannot stop a
+    # stalled-REDELIVERY of a job whose first run is STILL ALIVE — job 50ritcxi ran
+    # TWICE, overlapping (pickups 16:14:28 and 16:27:46, both attempt 0; the "26-minute
+    # job" was really 15 minutes run twice, double-billed). A short-TTL redis lock with
+    # a heartbeat: live run ⟹ lock held ⟹ duplicate suppressed; crashed run ⟹ heartbeat
+    # stops ⟹ TTL expires ⟹ the stalled retry proceeds (crash recovery unchanged).
+    # attempt>0 (real bull retry after a FAILURE) steals the lock. Fail-open on redis
+    # errors — never blocks a legit run.
+    _hb_task = None
+    _lock_key = f"narasi:exec:{job_id}"
+    try:
+        import redis_client as _rc
+        _r = _rc.client()
+        if _r is not None:
+            _attempt = int(getattr(job, "attemptsMade", 0) or 0)
+            _got = await _r.set(_lock_key, "1", nx=True, ex=120)
+            if not _got and _attempt == 0:
+                log.error("job %s DUPLICATE stalled-delivery suppressed — first run still holds the "
+                          "exec lock (no work, no billing)", job_id)
+                return {"skipped": "duplicate-delivery"}
+            if not _got:
+                await _r.set(_lock_key, "1", ex=120)   # attempt>0: real retry steals the lock
+            async def _hb():
+                while True:
+                    await asyncio.sleep(45)
+                    try:
+                        await _r.set(_lock_key, "1", ex=120)
+                    except Exception:  # noqa: BLE001
+                        return
+            _hb_task = asyncio.create_task(_hb())
+    except Exception as e:  # noqa: BLE001
+        log.warning("exec-lock unavailable (continuing unguarded): %s", e)
+
+    try:
+        await _run_narration_job(
+            body=data.get("body") or {}, job_id=job_id, job_uuid=data.get("job_uuid"),
+            tenant_id=tenant_id, user_id=data.get("user_id"),
+            total=int(data.get("total") or 1), meter_op=data.get("meter_op"),
+            model=str(data.get("model") or "claude-opus-4-6"),
+        )
+        return {"ok": True}
+    finally:
+        if _hb_task is not None:
+            _hb_task.cancel()
+        try:
+            import redis_client as _rc2
+            _r2 = _rc2.client()
+            if _r2 is not None:
+                await _r2.delete(_lock_key)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def main() -> None:
@@ -119,7 +163,11 @@ async def main() -> None:
         {"connection": REDIS_URL, "concurrency": CONCURRENCY,
          # stalled jobs (worker died mid-run) are re-enqueued once; with S2 resume ON
          # the retry SKIPS checkpointed chapters instead of rewriting them.
-         "maxStalledCount": 1, "stalledInterval": 60_000},
+         # ROUND-9: lockDuration was the library default (30s) — one starved renewal
+         # marks a LIVE 15-minute job stalled and re-delivers it (roll-12 double run).
+         # 180s of lock + the exec-lock guard in _process = belt and braces.
+         "maxStalledCount": 1, "stalledInterval": 60_000,
+         "lockDuration": int(os.environ.get("NARASI_BULL_LOCK_MS", "180000"))},
     )
 
     def _drain(signame: str):

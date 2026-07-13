@@ -723,9 +723,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 embed = getattr(_dd, "embed", None)
             except Exception:  # noqa: BLE001
                 embed = None
-            rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
-                                      word_target=wt or None, embed_fn=embed,
-                                      bible=str(result.get("canonical_facts") or ""))
+            # ROUND-9: the 20k-word regex sweep runs OFF the event loop — a starved loop
+            # misses bull lock renewals and the job gets stalled-redelivered mid-run.
+            rep = await asyncio.to_thread(
+                _nc.scan_manuscript, book, lang=language, style_entry=entry,
+                word_target=wt or None, embed_fn=embed,
+                bible=str(result.get("canonical_facts") or ""))
 
             # Tolerance band: one diet round = ONE full-book Opus stream (~5-6 min on a
             # 5k-word book — itaatga7's whole "why is it stuck" phase). Not worth it for
@@ -794,9 +797,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     if out and not _dtrunc and len(out.split()) >= int(len(book.split()) * 0.7):
                         book = out
                         result[key] = book
-                        rep = _nc.scan_manuscript(book, lang=language, style_entry=entry,
-                                                  word_target=wt or None, embed_fn=embed,
-                                                  bible=str(result.get("canonical_facts") or ""))
+                        rep = await asyncio.to_thread(
+                            _nc.scan_manuscript, book, lang=language, style_entry=entry,
+                            word_target=wt or None, embed_fn=embed,
+                            bible=str(result.get("canonical_facts") or ""))
                     else:
                         if _dtrunc:
                             log.warning("counter diet loop: rewrite truncated (finish=%s) — kept original", _dfin)
@@ -973,193 +977,202 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("title integrity check failed (non-fatal): %s", e)
 
-    # ── (0.85) DOMAIN PLAUSIBILITY (NARASI_DOMAIN_PLAUSIBILITY, default OFF, round-6):
-    # the SBF 4-lens review surfaced a defect family no deterministic scan can reach —
-    # legal procedure (US-style class action + discovery in a Korean court, a charge
-    # that doesn't fit the act, a 4-month filing-to-dissolution timeline), medicine
-    # (one temporal-bone fragment destroying BOTH cochlear nerves), engineering
-    # (7-story "unreinforced" slab). One bounded cheap extract-and-check call lists
-    # implausible domain claims; report-only WARN (selection/verification lane — no
-    # prompt rules were added for this). Fiction-only. Never raises.
-    try:
-        if str(os.environ.get("NARASI_DOMAIN_PLAUSIBILITY", "0")).strip().lower() in ("1", "true", "yes", "on"):
-            _dp_fic = False
-            try:
-                from pakem import resolve_style as _dp_rs
-                _dpe = _dp_rs(str(body.get("style") or "")) or {}
-                _dp_fic = bool(_dpe.get("is_fiction")) or str(
-                    _dpe.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
-            except Exception:  # noqa: BLE001
+    async def _r9_gate_domain():
+        # ── (0.85) DOMAIN PLAUSIBILITY (NARASI_DOMAIN_PLAUSIBILITY, default OFF, round-6):
+        # the SBF 4-lens review surfaced a defect family no deterministic scan can reach —
+        # legal procedure (US-style class action + discovery in a Korean court, a charge
+        # that doesn't fit the act, a 4-month filing-to-dissolution timeline), medicine
+        # (one temporal-bone fragment destroying BOTH cochlear nerves), engineering
+        # (7-story "unreinforced" slab). One bounded cheap extract-and-check call lists
+        # implausible domain claims; report-only WARN (selection/verification lane — no
+        # prompt rules were added for this). Fiction-only. Never raises.
+        try:
+            if str(os.environ.get("NARASI_DOMAIN_PLAUSIBILITY", "0")).strip().lower() in ("1", "true", "yes", "on"):
                 _dp_fic = False
-            _dpkey = "book" if result.get("book") else "output"
-            _dpbk = result.get(_dpkey) or ""
-            if _dp_fic and _dpbk:
-                from laozhang_api import _narasi_cheap_call as _dpcall, _narasi_parse_json as _dpparse
-                _dpsys = (
-                    "You are a domain-plausibility checker for fiction. Scan the manuscript for "
-                    "claims about LAW/legal procedure, MEDICINE/anatomy, or ENGINEERING/physics "
-                    "that a professional in that field would call clearly wrong or impossible — "
-                    "the kind that breaks reader trust (a metal hammer kept in a prison cell; a "
-                    "charge name that does not match the act; one lateral impact destroying both "
-                    "cochlear nerves; an unreinforced 7-story concrete slab). IGNORE stylistic "
-                    "choices, genre conventions, and anything merely unlikely. Return ONLY JSON: "
-                    "{\"claims\":[{\"quote\":\"<short exact quote>\",\"domain\":\"law|medicine|engineering\","
-                    "\"why\":\"<one line>\",\"severity\":\"high|low\"}]} — max 8, hard errors only.")
-                _dpraw, _dpcc = await _dpcall(_dpsys, _dpbk[:60000], tenant_id=tenant_id,
-                                              user_id=user_id, job_uuid=job_uuid, json_mode=True)
-                if sink is not None and _dpcc:
-                    sink.credits += int(_dpcc)
-                _dpd = _dpparse(_dpraw) if isinstance(_dpraw, str) else (_dpraw or {})
-                _dpcl = (_dpd or {}).get("claims") if isinstance(_dpd, dict) else None
-                if isinstance(_dpcl, list) and _dpcl:
-                    result["domain_plausibility_report"] = {"claims": _dpcl[:8]}
-                    log.warning("domain plausibility: %d implausible claim(s): %s",
-                                len(_dpcl[:8]),
-                                [f"{c.get('domain')}: {str(c.get('quote') or '')[:60]}"
-                                 for c in _dpcl[:4] if isinstance(c, dict)])
-                else:
-                    log.info("domain plausibility: no hard errors flagged")
-    except Exception as e:  # noqa: BLE001
-        log.warning("domain plausibility check failed (non-fatal): %s", e)
+                try:
+                    from pakem import resolve_style as _dp_rs
+                    _dpe = _dp_rs(str(body.get("style") or "")) or {}
+                    _dp_fic = bool(_dpe.get("is_fiction")) or str(
+                        _dpe.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+                except Exception:  # noqa: BLE001
+                    _dp_fic = False
+                _dpkey = "book" if result.get("book") else "output"
+                _dpbk = result.get(_dpkey) or ""
+                if _dp_fic and _dpbk:
+                    from laozhang_api import _narasi_cheap_call as _dpcall, _narasi_parse_json as _dpparse
+                    _dpsys = (
+                        "You are a domain-plausibility checker for fiction. Scan the manuscript for "
+                        "claims about LAW/legal procedure, MEDICINE/anatomy, or ENGINEERING/physics "
+                        "that a professional in that field would call clearly wrong or impossible — "
+                        "the kind that breaks reader trust (a metal hammer kept in a prison cell; a "
+                        "charge name that does not match the act; one lateral impact destroying both "
+                        "cochlear nerves; an unreinforced 7-story concrete slab). IGNORE stylistic "
+                        "choices, genre conventions, and anything merely unlikely. Return ONLY JSON: "
+                        "{\"claims\":[{\"quote\":\"<short exact quote>\",\"domain\":\"law|medicine|engineering\","
+                        "\"why\":\"<one line>\",\"severity\":\"high|low\"}]} — max 8, hard errors only.")
+                    _dpraw, _dpcc = await _dpcall(_dpsys, _dpbk[:60000], tenant_id=tenant_id,
+                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                    if sink is not None and _dpcc:
+                        sink.credits += int(_dpcc)
+                    _dpd = _dpparse(_dpraw) if isinstance(_dpraw, str) else (_dpraw or {})
+                    _dpcl = (_dpd or {}).get("claims") if isinstance(_dpd, dict) else None
+                    if isinstance(_dpcl, list) and _dpcl:
+                        result["domain_plausibility_report"] = {"claims": _dpcl[:8]}
+                        log.warning("domain plausibility: %d implausible claim(s): %s",
+                                    len(_dpcl[:8]),
+                                    [f"{c.get('domain')}: {str(c.get('quote') or '')[:60]}"
+                                     for c in _dpcl[:4] if isinstance(c, dict)])
+                    else:
+                        log.info("domain plausibility: no hard errors flagged")
+        except Exception as e:  # noqa: BLE001
+            log.warning("domain plausibility check failed (non-fatal): %s", e)
 
-    # ── (0.87) NUMERIC LEDGER (NARASI_NUMERIC_LEDGER, default OFF, round-7 — lens-4
-    # P1.1, the single gate that would have caught the most findings across 11 QA'd
-    # files): one bounded cheap call extracts every plot-load-bearing number WITH its
-    # referent; a deterministic post-check flags referents carrying >=2 distinct
-    # values. Deliberate official-vs-true contrasts (COUNTERPOINT NUMBERS, heading
-    # 17) are marked intentional by the extractor and skipped. Report-only unless
-    # NARASI_NUMERIC_LEDGER_ENFORCE. Fiction-only. Never raises.
-    try:
-        if _r7_env_on("NARASI_NUMERIC_LEDGER"):
-            _nl_fic = False
-            try:
-                from pakem import resolve_style as _nl_rs
-                _nle = _nl_rs(str(body.get("style") or "")) or {}
-                _nl_fic = bool(_nle.get("is_fiction")) or str(
-                    _nle.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
-            except Exception:  # noqa: BLE001
+    async def _r9_gate_numeric():
+        # ── (0.87) NUMERIC LEDGER (NARASI_NUMERIC_LEDGER, default OFF, round-7 — lens-4
+        # P1.1, the single gate that would have caught the most findings across 11 QA'd
+        # files): one bounded cheap call extracts every plot-load-bearing number WITH its
+        # referent; a deterministic post-check flags referents carrying >=2 distinct
+        # values. Deliberate official-vs-true contrasts (COUNTERPOINT NUMBERS, heading
+        # 17) are marked intentional by the extractor and skipped. Report-only unless
+        # NARASI_NUMERIC_LEDGER_ENFORCE. Fiction-only. Never raises.
+        try:
+            if _r7_env_on("NARASI_NUMERIC_LEDGER"):
                 _nl_fic = False
-            _nlkey = "book" if result.get("book") else "output"
-            _nlbk = result.get(_nlkey) or ""
-            if _nl_fic and _nlbk:
-                from laozhang_api import _narasi_cheap_call as _nlcall, _narasi_parse_json as _nlparse
-                _nlsys = (
-                    "You are a numeric-continuity extractor for a multi-chapter story. List every "
-                    "PLOT-LOAD-BEARING number with its referent: death/injury tolls, ages and age "
-                    "gaps, money amounts, durations, day-counts, list positions, measurements, "
-                    "classification levels. For each referent collect EVERY distinct value the text "
-                    "states, with the chapter number. Where the story DELIBERATELY contrasts an "
-                    "official/covered-up value with a true value (cover-up plots), set "
-                    "intentional_contrast=true for that referent. Return ONLY JSON: "
-                    "{\"referents\":[{\"name\":\"<referent>\",\"intentional_contrast\":false,"
-                    "\"values\":[{\"value\":\"<as written>\",\"chapter\":<n>}]}]} — max 20 referents, "
-                    "only numbers the plot depends on.")
-                _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:60000], tenant_id=tenant_id,
-                                              user_id=user_id, job_uuid=job_uuid, json_mode=True)
-                if sink is not None and _nlcc:
-                    sink.credits += int(_nlcc)
-                _nld = _nlparse(_nlraw) if isinstance(_nlraw, str) else (_nlraw or {})
-                _nlrefs = (_nld or {}).get("referents") if isinstance(_nld, dict) else None
-                if not _nlrefs:
-                    # ROUND-8: two rolls running returned "0 referent(s)" SILENTLY on
-                    # number-saturated books while a 17-vs-16 toll error sat in the text —
-                    # same truncation family as the registry fallback. Salvage individually
-                    # balanced referent objects, then WARN with the head if still empty.
-                    _nls = str(_nlraw or "")
-                    _nsal = []
-                    import re as _nre
-                    import json as _njson
-                    for _nbm in _nre.finditer(r"\{", _nls):
-                        _nst = _nbm.start()
-                        if not _nre.search(r"\"name\"", _nls[_nst:_nst + 120]):
-                            continue
-                        _nd2, _nin, _nesc = 0, False, False
-                        for _ni in range(_nst, min(len(_nls), _nst + 4000)):
-                            _nc = _nls[_ni]
-                            if _nin:
-                                if _nesc:
-                                    _nesc = False
-                                elif _nc == "\\":
-                                    _nesc = True
+                try:
+                    from pakem import resolve_style as _nl_rs
+                    _nle = _nl_rs(str(body.get("style") or "")) or {}
+                    _nl_fic = bool(_nle.get("is_fiction")) or str(
+                        _nle.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+                except Exception:  # noqa: BLE001
+                    _nl_fic = False
+                _nlkey = "book" if result.get("book") else "output"
+                _nlbk = result.get(_nlkey) or ""
+                if _nl_fic and _nlbk:
+                    from laozhang_api import _narasi_cheap_call as _nlcall, _narasi_parse_json as _nlparse
+                    _nlsys = (
+                        "You are a numeric-continuity extractor for a multi-chapter story. List every "
+                        "PLOT-LOAD-BEARING number with its referent: death/injury tolls, ages and age "
+                        "gaps, money amounts, durations, day-counts, list positions, measurements, "
+                        "classification levels. For each referent collect EVERY distinct value the text "
+                        "states, with the chapter number. Where the story DELIBERATELY contrasts an "
+                        "official/covered-up value with a true value (cover-up plots), set "
+                        "intentional_contrast=true for that referent. Return ONLY JSON: "
+                        "{\"referents\":[{\"name\":\"<referent>\",\"intentional_contrast\":false,"
+                        "\"values\":[{\"value\":\"<as written>\",\"chapter\":<n>}]}]} — max 20 referents, "
+                        "only numbers the plot depends on.")
+                    _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:60000], tenant_id=tenant_id,
+                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                    if sink is not None and _nlcc:
+                        sink.credits += int(_nlcc)
+                    _nld = _nlparse(_nlraw) if isinstance(_nlraw, str) else (_nlraw or {})
+                    _nlrefs = (_nld or {}).get("referents") if isinstance(_nld, dict) else None
+                    if not _nlrefs:
+                        # ROUND-8: two rolls running returned "0 referent(s)" SILENTLY on
+                        # number-saturated books while a 17-vs-16 toll error sat in the text —
+                        # same truncation family as the registry fallback. Salvage individually
+                        # balanced referent objects, then WARN with the head if still empty.
+                        _nls = str(_nlraw or "")
+                        _nsal = []
+                        import re as _nre
+                        import json as _njson
+                        for _nbm in _nre.finditer(r"\{", _nls):
+                            _nst = _nbm.start()
+                            if not _nre.search(r"\"name\"", _nls[_nst:_nst + 120]):
+                                continue
+                            _nd2, _nin, _nesc = 0, False, False
+                            for _ni in range(_nst, min(len(_nls), _nst + 4000)):
+                                _nc = _nls[_ni]
+                                if _nin:
+                                    if _nesc:
+                                        _nesc = False
+                                    elif _nc == "\\":
+                                        _nesc = True
+                                    elif _nc == '"':
+                                        _nin = False
                                 elif _nc == '"':
-                                    _nin = False
-                            elif _nc == '"':
-                                _nin = True
-                            elif _nc == "{":
-                                _nd2 += 1
-                            elif _nc == "}":
-                                _nd2 -= 1
-                                if _nd2 == 0:
-                                    try:
-                                        _nobj = _njson.loads(_nre.sub(r",\s*([}\]])", r"\1", _nls[_nst:_ni + 1]))
-                                        if isinstance(_nobj, dict) and _nobj.get("name") and _nobj.get("values"):
-                                            _nsal.append(_nobj)
-                                    except Exception:  # noqa: BLE001
-                                        pass
-                                    break
-                        if len(_nsal) >= 20:
-                            break
-                    if _nsal:
-                        _nlrefs = _nsal
-                        log.info("numeric ledger: SALVAGED %d referent(s) from truncated response", len(_nsal))
-                    elif len(_nlbk) > 20000:
-                        log.warning("numeric ledger returned no referents on a %d-char book — raw head: %s",
-                                    len(_nlbk), str(_nlraw)[:200].replace("\n", " "))
-                _nldr = _numeric_drifts(_nlrefs if isinstance(_nlrefs, list) else [])
-                result["numeric_ledger_report"] = {
-                    "referents": len(_nlrefs or []), "drifts": _nldr}
-                if _nldr:
-                    log.warning("numeric ledger: %d referent(s) with conflicting values: %s",
-                                len(_nldr), [f"{d['referent']}={d['values']}" for d in _nldr[:4]])
-                else:
-                    log.info("numeric ledger: %d referent(s), no unintentional drift",
-                             len(_nlrefs or []))
-    except Exception as e:  # noqa: BLE001
-        log.warning("numeric ledger check failed (non-fatal): %s", e)
+                                    _nin = True
+                                elif _nc == "{":
+                                    _nd2 += 1
+                                elif _nc == "}":
+                                    _nd2 -= 1
+                                    if _nd2 == 0:
+                                        try:
+                                            _nobj = _njson.loads(_nre.sub(r",\s*([}\]])", r"\1", _nls[_nst:_ni + 1]))
+                                            if isinstance(_nobj, dict) and _nobj.get("name") and _nobj.get("values"):
+                                                _nsal.append(_nobj)
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                                        break
+                            if len(_nsal) >= 20:
+                                break
+                        if _nsal:
+                            _nlrefs = _nsal
+                            log.info("numeric ledger: SALVAGED %d referent(s) from truncated response", len(_nsal))
+                        elif len(_nlbk) > 20000:
+                            log.warning("numeric ledger returned no referents on a %d-char book — raw head: %s",
+                                        len(_nlbk), str(_nlraw)[:200].replace("\n", " "))
+                    _nldr = _numeric_drifts(_nlrefs if isinstance(_nlrefs, list) else [])
+                    result["numeric_ledger_report"] = {
+                        "referents": len(_nlrefs or []), "drifts": _nldr}
+                    if _nldr:
+                        log.warning("numeric ledger: %d referent(s) with conflicting values: %s",
+                                    len(_nldr), [f"{d['referent']}={d['values']}" for d in _nldr[:4]])
+                    else:
+                        log.info("numeric ledger: %d referent(s), no unintentional drift",
+                                 len(_nlrefs or []))
+        except Exception as e:  # noqa: BLE001
+            log.warning("numeric ledger check failed (non-fatal): %s", e)
 
-    # ── (0.88) ENTITY ATTRIBUTES (NARASI_ENTITY_ATTR_CHECK, default OFF, round-8):
-    # roll-12 shipped Prosecutor Kim as "She" in Ch8 and "a man whose nameplate read
-    # only KIM" in Ch9 — the R4 attribute-fork class (ages 7/9/26, Dr. Chae vs
-    # Director Yun) in its gender form. One bounded cheap extract-and-check call;
-    # report-only. Fiction-only. Never raises.
-    try:
-        if _r7_env_on("NARASI_ENTITY_ATTR_CHECK"):
-            _ea_fic = False
-            try:
-                from pakem import resolve_style as _ea_rs
-                _eae = _ea_rs(str(body.get("style") or "")) or {}
-                _ea_fic = bool(_eae.get("is_fiction")) or str(
-                    _eae.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
-            except Exception:  # noqa: BLE001
+    async def _r9_gate_entity():
+        # ── (0.88) ENTITY ATTRIBUTES (NARASI_ENTITY_ATTR_CHECK, default OFF, round-8):
+        # roll-12 shipped Prosecutor Kim as "She" in Ch8 and "a man whose nameplate read
+        # only KIM" in Ch9 — the R4 attribute-fork class (ages 7/9/26, Dr. Chae vs
+        # Director Yun) in its gender form. One bounded cheap extract-and-check call;
+        # report-only. Fiction-only. Never raises.
+        try:
+            if _r7_env_on("NARASI_ENTITY_ATTR_CHECK"):
                 _ea_fic = False
-            _eakey = "book" if result.get("book") else "output"
-            _eabk = result.get(_eakey) or ""
-            if _ea_fic and _eabk:
-                from laozhang_api import _narasi_cheap_call as _eacall, _narasi_parse_json as _eaparse
-                _easys = (
-                    "You are an entity-attribute continuity checker for a multi-chapter story. For "
-                    "every NAMED character, track three attributes across chapters: gender pronouns "
-                    "used for them, professional title/rank, and stated age. Report ONLY characters "
-                    "where an attribute CONTRADICTS between chapters without in-story explanation "
-                    "(a promotion explains a title change; a disguise explains a pronoun change). "
-                    "Return ONLY JSON: {\"drifts\":[{\"name\":\"<char>\",\"kind\":\"gender|title|age\","
-                    "\"evidence\":\"<the two contradicting usages, chapter-tagged>\"}]} — max 6, real "
-                    "contradictions only.")
-                _earaw, _eacc = await _eacall(_easys, _eabk[:60000], tenant_id=tenant_id,
-                                              user_id=user_id, job_uuid=job_uuid, json_mode=True)
-                if sink is not None and _eacc:
-                    sink.credits += int(_eacc)
-                _ead = _eaparse(_earaw) if isinstance(_earaw, str) else (_earaw or {})
-                _eadr = (_ead or {}).get("drifts") if isinstance(_ead, dict) else None
-                if isinstance(_eadr, list) and _eadr:
-                    result["entity_attr_report"] = {"drifts": _eadr[:6]}
-                    log.warning("entity attributes: %d drift(s): %s",
-                                len(_eadr[:6]),
-                                [f"{d.get('name')}/{d.get('kind')}" for d in _eadr[:4] if isinstance(d, dict)])
-                else:
-                    log.info("entity attributes: no drift")
-    except Exception as e:  # noqa: BLE001
-        log.warning("entity attribute check failed (non-fatal): %s", e)
+                try:
+                    from pakem import resolve_style as _ea_rs
+                    _eae = _ea_rs(str(body.get("style") or "")) or {}
+                    _ea_fic = bool(_eae.get("is_fiction")) or str(
+                        _eae.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+                except Exception:  # noqa: BLE001
+                    _ea_fic = False
+                _eakey = "book" if result.get("book") else "output"
+                _eabk = result.get(_eakey) or ""
+                if _ea_fic and _eabk:
+                    from laozhang_api import _narasi_cheap_call as _eacall, _narasi_parse_json as _eaparse
+                    _easys = (
+                        "You are an entity-attribute continuity checker for a multi-chapter story. For "
+                        "every NAMED character, track three attributes across chapters: gender pronouns "
+                        "used for them, professional title/rank, and stated age. Report ONLY characters "
+                        "where an attribute CONTRADICTS between chapters without in-story explanation "
+                        "(a promotion explains a title change; a disguise explains a pronoun change). "
+                        "Return ONLY JSON: {\"drifts\":[{\"name\":\"<char>\",\"kind\":\"gender|title|age\","
+                        "\"evidence\":\"<the two contradicting usages, chapter-tagged>\"}]} — max 6, real "
+                        "contradictions only.")
+                    _earaw, _eacc = await _eacall(_easys, _eabk[:60000], tenant_id=tenant_id,
+                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                    if sink is not None and _eacc:
+                        sink.credits += int(_eacc)
+                    _ead = _eaparse(_earaw) if isinstance(_earaw, str) else (_earaw or {})
+                    _eadr = (_ead or {}).get("drifts") if isinstance(_ead, dict) else None
+                    if isinstance(_eadr, list) and _eadr:
+                        result["entity_attr_report"] = {"drifts": _eadr[:6]}
+                        log.warning("entity attributes: %d drift(s): %s",
+                                    len(_eadr[:6]),
+                                    [f"{d.get('name')}/{d.get('kind')}" for d in _eadr[:4] if isinstance(d, dict)])
+                    else:
+                        log.info("entity attributes: no drift")
+        except Exception as e:  # noqa: BLE001
+            log.warning("entity attribute check failed (non-fatal): %s", e)
+
+    # ROUND-9 (speed): the three cheap-call gates are independent — run them
+    # CONCURRENTLY instead of serially (sum→max: ~60-110s → ~50s when all on).
+    # Each keeps its own flag check and its own never-raise try inside.
+    await asyncio.gather(_r9_gate_domain(), _r9_gate_numeric(), _r9_gate_entity())
+
 
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
     # Phase 3 (2026-07-05): pass `style` through so gate_text's per-style R-FG counters
