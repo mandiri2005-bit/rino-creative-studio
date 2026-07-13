@@ -573,24 +573,37 @@ async def narrate_chapters(
                             # only on the hit path. Failure ⟹ original bible stands.
                             if str(os.environ.get("NARASI_LEDGER_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
                                 try:
-                                    _terms = sorted({str(h.get("term", "")).split(":", 1)[-1]
-                                                     for h in _lrep.get("hits") or []
-                                                     if h.get("where") == "bible"})[:12]
-                                    _bible2 = await build_story_bible(
-                                        topic, list(ctx.chapters or chapters), is_fiction=_fic,
-                                        style=style, language=language,
-                                        manager_model=m_model, telemetry_sink=telemetry_sink,
-                                        extra_negative=", ".join(_terms))
-                                    _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
-                                             if _bible2 else {})
-                                    if _bible2 and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
-                                        ctx.canonical_facts = _bible2
-                                        log.info("ledger-enforce: bible re-rolled — hits %d → %d, re-roll pinned",
-                                                 _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
+                                    _terms_all = sorted({str(h.get("term", "")).split(":", 1)[-1]
+                                                         for h in _lrep.get("hits") or []
+                                                         if h.get("where") == "bible"})
+                                    # PREMISE EXEMPTION (round-4, roll-6 lesson): a term the USER's
+                                    # premise itself supplies (surname Han from 'Han Seo-jin') is not
+                                    # a lane tic — the bible MUST use it, so it can never re-roll away.
+                                    # Roll 6 paid a 160s re-roll chasing hits that included exactly
+                                    # this class. Word-boundary match against the topic text.
+                                    import re as _pre
+                                    _terms = [t for t in _terms_all
+                                              if t and not _pre.search(
+                                                  r"(?i)\b" + _pre.escape(t) + r"\b", topic or "")][:12]
+                                    if not _terms:
+                                        log.info("ledger-enforce: all %d bible hit(s) premise-supplied (%s) — re-roll skipped",
+                                                 len(_terms_all), ", ".join(_terms_all[:6]))
                                     else:
-                                        log.info("ledger-enforce: re-roll not better (hits %d → %s) — original kept",
-                                                 _lrep.get("bible_hits"),
-                                                 (_rep2.get("bible_hits") if _bible2 else "no bible"))
+                                        _bible2 = await build_story_bible(
+                                            topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                                            style=style, language=language,
+                                            manager_model=m_model, telemetry_sink=telemetry_sink,
+                                            extra_negative=", ".join(_terms))
+                                        _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
+                                                 if _bible2 else {})
+                                        if _bible2 and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
+                                            ctx.canonical_facts = _bible2
+                                            log.info("ledger-enforce: bible re-rolled — hits %d → %d, re-roll pinned",
+                                                     _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
+                                        else:
+                                            log.info("ledger-enforce: re-roll not better (hits %d → %s) — original kept",
+                                                     _lrep.get("bible_hits"),
+                                                     (_rep2.get("bible_hits") if _bible2 else "no bible"))
                                 except Exception as _lee:  # noqa: BLE001
                                     log.warning("ledger-enforce re-roll failed (non-fatal): %s", _lee)
                 except Exception as _lve:  # noqa: BLE001

@@ -542,12 +542,23 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         heads += (", CAUSALITY POLICY, CALENDAR SPINE, SIGNATURE-PROP CUSTODY, NAMING CONVENTIONS, "
                   "ENTITY INTRODUCTIONS & FINALE CAST, PROPERTY & LEVERAGE, GEOGRAPHY POLICY, "
-                  "AFTERMATH COMMIT, COUNTERPOINT NUMBERS")
+                  "AFTERMATH COMMIT, COUNTERPOINT NUMBERS, EVIDENCE CHAIN & CUSTODY, CONTIGUOUS SCENES")
+    # CANON REGISTRY suppression fix (round-4): the SYSTEM addendum asks for a fenced
+    # canon_registry JSON block, but THIS prompt says "Output ONLY the numbered sheet …
+    # One item per line. No preamble, no prose" — the JSON block is neither a numbered
+    # heading nor one-item-per-line, so the model obeyed the stricter instruction and
+    # dropped it (rolls 5-6: canon-diff skipped, roll 6 head-dump: "no registry-shaped
+    # block found"). Mirror the block here as an explicit exception, same flag.
+    _reg_tail = ""
+    if is_fiction and os.environ.get("NARASI_CANON_REGISTRY", "0").strip().lower() in ("1", "true", "yes", "on"):
+        _reg_tail = (" EXCEPTION: after the last numbered heading, ALSO output the fenced "
+                     "```json canon_registry block specified above — it is part of the "
+                     "required output, not prose.")
     return (
         f"TOPIC / PREMISE:\n{topic}\n\n"
         f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
         f"Write the {label} in {language}. Output ONLY the numbered sheet under the headings "
-        f"({heads}). One item per line. No preamble, no prose, no chapter text."
+        f"({heads}). One item per line. No preamble, no prose, no chapter text." + _reg_tail
     )
 
 
@@ -676,10 +687,12 @@ async def build_story_bible(
     # 15 GEOGRAPHY POLICY, 16 AFTERMATH COMMIT. ROUND 3 adds 17 COUNTERPOINT NUMBERS (the
     # deliberate two-gauge divergence 112/287 vs 291 that the critic misread as a canon fork —
     # roll-5 score-4.0 anomaly); canon-diff and critic check #0 consume it as a sanction list.
-    # Headings 9-17 = nine sections total.
+    # ROUND 4 adds 18 EVIDENCE CHAIN & CUSTODY (roll-6 lens#2: casualty log + bank transfer
+    # appeared with zero discovery process) and 19 CONTIGUOUS SCENES (roll-6 S1: the Room-204
+    # climax staged twice with contradictory seats/transport). Headings 9-19 = eleven sections.
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
-            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these nine sections:\n"
+            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these eleven sections:\n"
             "9. CAUSALITY POLICY — if the premise has a central SYMBOLIC or seemingly supernatural "
             "causation (e.g. 'the rain returns when the truth is told'), COMMIT its metaphysics NOW "
             "as exactly ONE of: LITERAL-MAGICAL (the world really works this way), AMBIGUOUS-BY-DESIGN "
@@ -732,7 +745,11 @@ async def build_story_bible(
             "cannot be evicted under a lease, a TENANT cannot have a deed seized — never mix "
             "instruments that contradict the pinned status. If the status legitimately CHANGES "
             "ON-PAGE (a sale, a signed transfer, a foreclosure), pin the ONE chapter where it "
-            "changes; before that chapter every writer uses the original status. If no property "
+            "changes; before that chapter every writer uses the original status. If ownership is "
+            "SHARED or inherited (an estate partition, a disputed house), ALSO pin each "
+            "claimant's LEGAL BASIS in a few words ('widow — registered marriage', 'brother — "
+            "intestate heir', 'fiancée — NO standing unless a will/marriage is pinned') — no "
+            "character may assert a share on the page without a pinned basis. If no property "
             "is leveraged, write 'none'.\n"
             "15. GEOGRAPHY POLICY — commit NOW to exactly ONE of: REAL-TOWN (the setting is a "
             "real place; pin the few place-to-place facts chapters may use — distances, bearings, "
@@ -756,6 +773,24 @@ async def build_story_bible(
             "SANCTIONED DIVERGENCES: continuity tools treat the two values as ONE designed fact, "
             "never a contradiction — and writers must never average, reconcile, or 'correct' one "
             "toward the other. If the premise has no counterpoint pair, write 'none'.\n"
+            "18. EVIDENCE CHAIN & CUSTODY — for EVERY evidence item that accuses or convicts "
+            "anyone (an altered report, a bank transfer, a suppressed casualty list, a phone "
+            "log), pin ONE line: WHO finds it, WHERE it survived the intervening years and WHY it "
+            "survived (a carbon copy believed destroyed; a registrar who quietly kept it), who "
+            "can AUTHENTICATE it, and the chapter where its DISCOVERY happens ON-PAGE. No "
+            "convicting document may simply exist at the moment it is needed: if the climax uses "
+            "it, an earlier chapter must dramatize the finding. For any falsified COUNT, also pin "
+            "the concealment mechanism (how 14 dead became an official 3: which categories — "
+            "missing at sea, unrelated landslide, departed migrant workers — absorbed the "
+            "difference). For any named culprit, pin the ONE document or act that ties THEM "
+            "specifically to the crime. If no such evidence exists, write 'none'.\n"
+            "19. CONTIGUOUS SCENES — if consecutive chapters share ONE continuous scene, session, "
+            "or gathering (a hearing spanning two chapters), pin it: 'Ch6→Ch7 = ONE continuous "
+            "session, Room 204, same day'. The LATER chapter RESUMES mid-scene: it may NOT "
+            "re-introduce the room, re-seat the cast, restate arrivals, transport, or dates, or "
+            "refer to the earlier half as a separate past event. Pin each attendee's seat/position "
+            "and travel mode ONCE, here, and every chapter touching the scene reuses them "
+            "verbatim. If no scene spans chapters, write 'none'.\n"
             "These sections are SECONDARY to headings 1-8: never let them shorten or weaken the #8 "
             "SIGNATURE HOOK payoff commitment.")
     # CANON REGISTRY (Phase 2a) — emit a MACHINE-CHECKABLE twin of the prose fact-sheet so a later

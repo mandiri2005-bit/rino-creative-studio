@@ -459,6 +459,8 @@ _PHANTOM_GEOORG = frozenset({
     "Tower", "Plaza", "Harbor", "Port", "City", "County",
     # round-3 (roll-5 review): org-unit components the round-2 list missed
     "Division", "Command", "Headquarters", "Directorate", "Branch",
+    # round-4 (roll-6 FP 'Town Hall'): civic-building components
+    "Hall", "Town",
 })
 # Month names as candidate COMPONENTS ('From May', 'By August the town…') are date
 # fragments, never persons (roll-5 'From May' FP — the phantom scan's only wrong flag).

@@ -827,10 +827,16 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 try:
                     _mech: list[dict] = []
                     _mctrs = (result.get("counter_report") or {}).get("counters") or {}
+                    # premise exemption (round-4): never ask the revise to scrub a term the
+                    # user's own premise supplies (surname Han in 'Han Seo-jin').
+                    import re as _mre
+                    _mtopic = str(body.get("topic") or body.get("goal") or body.get("brief") or "")
                     for h in ((_mctrs.get("ledger_hits") or {}).get("hits") or [])[:8]:
                         if h.get("where") != "manuscript":
                             continue   # bible-level hits are handled at bible time (re-roll)
                         _mterm = str(h.get("term") or "").split(":", 1)[-1]
+                        if _mterm and _mre.search(r"(?i)\b" + _mre.escape(_mterm) + r"\b", _mtopic):
+                            continue   # premise-supplied — not a lane tic
                         _mech.append({
                             "type": "ledger_hit", "severity": "high",
                             "evidence": str(h.get("snippet") or _mterm)[:200],
@@ -1072,6 +1078,37 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             break
                     if _reg is not None:
                         break
+            # ── FALLBACK EXTRACTION (NARASI_CANON_REGISTRY_EXTRACT, default OFF, round-4):
+            # rolls 5-6 proved the bible model can suppress/garble the registry block even
+            # when asked (roll-6 head-dump: "no registry-shaped block found") — and the
+            # price was the 4th-vs-11th-name fork sailing through uncaught. When the prose
+            # bible exists but no registry parsed, ONE bounded cheap call re-derives it
+            # FROM the prose sheet (json_mode ⟹ rides the GENAI_JSON_MIME fix). Failure ⟹
+            # canon-diff skips exactly as before.
+            if (_reg is None and _cf
+                    and str(os.environ.get("NARASI_CANON_REGISTRY_EXTRACT", "0")).strip().lower() in ("1", "true", "yes", "on")):
+                try:
+                    from laozhang_api import _narasi_cheap_call as _xcall, _narasi_parse_json as _xparse
+                    _xsys = (
+                        "Extract the CANON REGISTRY from this story fact-sheet. Return ONLY JSON: "
+                        "{\"events\":[{\"id\":\"<slug>\",\"summary\":\"<short>\",\"when\":{\"anchor\":\"<slug>\"},"
+                        "\"participants\":{\"<role>\":\"<name>\"},\"key_action\":\"<slug>\","
+                        "\"false_versions\":[{\"claim\":\"<the official/cover version>\",\"corrected_in_chapter\":<n>}],"
+                        "\"chapters\":[<n>]}]} — ONLY load-bearing plot events (max 8). Where the sheet keeps an "
+                        "official value AND a true value for one fact, the TRUE value is canonical and the official "
+                        "one goes into false_versions. Include every named QUANTITY, list POSITION, and role-holder "
+                        "the plot turns on. No prose.")
+                    _xraw, _xcc = await _xcall(_xsys, _cf[:12000], tenant_id=tenant_id,
+                                               user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                    if sink is not None and _xcc:
+                        sink.credits += int(_xcc)
+                    _xd = _xparse(_xraw) if isinstance(_xraw, str) else (_xraw or {})
+                    if isinstance(_xd, dict) and isinstance(_xd.get("events"), list) and _xd["events"]:
+                        _reg = _xd
+                        log.info("canon-registry: fallback extraction recovered %d event(s) from prose bible",
+                                 len(_xd["events"]))
+                except Exception as _xe:  # noqa: BLE001
+                    log.warning("canon-registry fallback extraction failed (non-fatal): %s", _xe)
             _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None
             if isinstance(_events, list) and _events:
                 from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy

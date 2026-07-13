@@ -76,7 +76,8 @@ _BEAT_FAMILIES: tuple[tuple[str, str], ...] = (
     ("cold coffee as devotion-to-work", r"(?i)(?:cold|forgotten)\s+coffee"),
     ("letter-to-the-wind aphorism frame", r"(?i)letter\s+with(?:out)?\s+(?:an?\s+|no\s+)?address[^.\n]{0,60}wind"),
     ("umbrella mending/keeping vigil", r"(?i)umbrella[^.\n]{0,40}(?:mend|spoke|rib|shop)|(?:mend|spoke|rib)[^.\n]{0,30}umbrella"),
-    ("private rain-gauge log as counter-archive", r"(?i)rain\s+gauge[^.\n]{0,60}(?:log|notebook|record|column)"),
+    ("private instrument record as counter-archive (rain gauge / barograph roll)",
+     r"(?i)(?:rain\s+gauge|(?:micro)?barograph)[^.\n]{0,60}(?:log|notebook|record|column|roll|trace)"),
     ("carbon-copy / triplicate form as evidence", r"(?i)carbon\s+(?:copy|triplicate)|triplicate"),
     ("barley tea served as care gesture", r"(?i)barley\s+tea"),
     ("dead parent's handwriting recognized", r"(?i)(?:father|mother)'s\s+hand(?:writing)?\b[^.\n]{0,60}(?:recogni|knew|steady|careful)"),
@@ -246,6 +247,10 @@ def _ch1_window(text: str, words: int = 250) -> str:
 
 # ── cross-roll aggregation ──────────────────────────────────────────────────
 def aggregate(files: list[str], raw_texts: list[str], min_rolls: int) -> dict:
+    # chapter titles live OUTSIDE prose (stripped by _prose) but are their own
+    # cross-roll convergence surface (roll 6: 'A False Map of the Sky' ~ roll 3's
+    # 'The False Map of the Sky'; 'The Weight of X' frame 4/6 rolls).
+    titles_per = [re.findall(r"(?im)^chapter\s*\d+\s*:\s*(.+)$", t) for t in raw_texts]
     texts = [_prose(t) for t in raw_texts]     # header/title lines poison every class
     per = [extract_one(t) for t in texts]
     n = len(texts)
@@ -396,6 +401,28 @@ def aggregate(files: list[str], raw_texts: list[str], min_rolls: int) -> dict:
                         if lab not in opener[s]:
                             opener[s].append(lab)
     agg["ch1_opener_echoes"] = dict(sorted(opener.items(), key=lambda kv: -len(kv[1]))[:8])
+
+    # chapter-title echoes: shared content tokens + near-dup titles across rolls
+    ttok: dict[str, list[str]] = defaultdict(list)
+    for i, ts in enumerate(titles_per):
+        for t in ts:
+            for w in _content_tokens(t):
+                if len(w) >= 4 and labels[i] not in ttok[w]:
+                    ttok[w].append(labels[i])
+    agg["title_token_echoes"] = {w: rs for w, rs in sorted(ttok.items(), key=lambda kv: -len(kv[1]))
+                                 if len(rs) >= max(min_rolls, 3)}
+    tdups = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            for a in titles_per[i]:
+                ta = _content_tokens(a)
+                if not ta:
+                    continue
+                for b in titles_per[j]:
+                    tb = _content_tokens(b)
+                    if tb and a != b and len(ta & tb) >= 2 and len(ta & tb) / len(ta | tb) >= 0.6:
+                        tdups.append({"rolls": [labels[i], labels[j]], "a": a, "b": b})
+    agg["title_near_dups"] = tdups[:8]
     return agg
 
 
@@ -456,6 +483,10 @@ def emit_fragment(agg: dict, lane: str, existing: Optional[dict], date: str,
         beats.setdefault(key, fr["rolls"])
     for s, r in list(agg["ch1_opener_echoes"].items())[:3]:
         beats.setdefault(f"Ch1 opener echo: “{s}”", r)
+    for td in agg.get("title_near_dups") or []:
+        beats.setdefault(f"chapter-title near-dup: '{min(td['a'], td['b'], key=len)}'", td["rolls"])
+    for w, r in list((agg.get("title_token_echoes") or {}).items())[:4]:
+        beats.setdefault(f"chapter-title token echo: '{w}'", r)
     frag["recycled_beats"] = new_terms("recycled_beats", beats, lambda v, r: f"{v} {ann(r)}")
     return {lane: {k: v for k, v in frag.items() if v}}
 

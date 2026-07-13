@@ -143,6 +143,41 @@ def build_style_block(style, video_mode: bool = False) -> str:
     if (_regime in ("fiction", "fictional")
             and str(_os.environ.get("NARASI_DRAMA_MANDATES", "0")).strip().lower() in ("1", "true", "yes", "on")):
         rules = rules.rstrip() + "\n\n" + DRAMA_MANDATES
+    # LANE NEGATIVE — CHAPTER LEVEL (NARASI_LANE_LEDGER_CHAPTER, default OFF, round-4).
+    # Roll-6 terminal proof of Law 1: the lane ledger reached only the BIBLE prompt, so
+    # chapter writers freely re-improvised banned specifics (seven 'eleven's, clocks 6:14
+    # and 11:40 verbatim from the ban list, ramyeon two rolls running) — the banned motif
+    # even bent a plot fact (Ru-an 4th → 11th on the same list). One COMPACT negative
+    # line (clocks + numbers + foods — the per-chapter improvisable classes) in every
+    # chapter prompt closes the loop. Names/places stay bible-level: the bible pins those
+    # and chapters inherit them. Fail-open: missing file/lane ⟹ rules unchanged.
+    if (_regime in ("fiction", "fictional")
+            and str(_os.environ.get("NARASI_LANE_LEDGER_CHAPTER", "0")).strip().lower() in ("1", "true", "yes", "on")):
+        try:
+            import json as _lj
+            import re as _lre
+            _lkey = entry.get("key") or ""
+            _lpath = _os.path.join(_os.path.dirname(__file__), "lane_ledger.json")
+            with open(_lpath, encoding="utf-8") as _lf:
+                _lane = (_lj.load(_lf) or {}).get(_lkey) or {}
+            if isinstance(_lane, dict) and _lane:
+                def _lt(x):
+                    return _lre.sub(r"\s*\([^)]*\)\s*$", "", str(x)).strip().lstrip("…").strip()
+                _nums = [str(x) if isinstance(x, int) else _lt(x)
+                         for x in (_lane.get("small_numbers") or [])][:10]
+                _ts = [_lt(x) for x in (_lane.get("timestamp_minutes") or [])][:6]
+                _fds = [_lt(x) for x in (_lane.get("foods") or [])][:8]
+                if _nums or _ts or _fds:
+                    rules = rules.rstrip() + (
+                        "\n\nLANE NEGATIVE CONSTRAINTS (compact): previous stories in this exact "
+                        "lane overused the following. NEVER use them for any number, time, or dish "
+                        "YOU invent in this chapter (values the premise or the fact sheet itself "
+                        "pins are exempt — obey the sheet)."
+                        + ((" Clock minutes to avoid: " + ", ".join(_ts) + ".") if _ts else "")
+                        + ((" Numbers to avoid, digits or spelled: " + ", ".join(_nums) + ".") if _nums else "")
+                        + ((" Comfort foods to avoid: " + ", ".join(_fds) + ".") if _fds else ""))
+        except Exception:  # noqa: BLE001 — ledger is an enhancement, never blocks a chapter
+            pass
     # Dual-path selector (dual-path doc §1): compare the style's NATIVE medium with the
     # job's output target. Native match → light normalization only (VIDEO_MODIFIER on the
     # video path, nothing extra on book). Mismatch → the aggressive transform block.

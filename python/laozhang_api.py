@@ -7622,9 +7622,21 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
                 "13. OFF-PAGE KEYSTONE (report as type 'causality', severity high) — the story's "
                 "PIVOTAL decision, confession, or evidence-handover is delivered only as completed "
                 "summary (pluperfect: 'had been submitted that dawn') while smaller moments get "
-                "full scenes; the decision's on-page beat is missing. ALSO flag (type "
-                "'dropped_hook') an explicit narrative PROMISE of consequence ('it would not stay "
-                "buried long') that no later chapter pays on-page.\n")
+                "full scenes; the decision's on-page beat is missing. The same applies to pivotal "
+                "EVIDENCE: a case-breaking document (a suppressed list, a bank record, an access "
+                "code) whose ACQUISITION is narrated only as a completed fact ('the code she had "
+                "obtained six days ago') with no discovery scene. ALSO flag (type 'dropped_hook') "
+                "an explicit narrative PROMISE of consequence ('it would not stay buried long') "
+                "that no later chapter pays on-page, and a THREAT/STAKE opened in the final "
+                "chapter ('if the catchment fills by tonight, the harbor floods') that the story "
+                "ends without answering.\n"
+                "14. DOUBLE-DELIVERED SCENE (report as type 'spatial', severity high) — the same "
+                "event, session, or gathering is dramatized TWICE (typically across adjacent "
+                "chapters) with re-staged introductions or contradictory particulars: different "
+                "seats, transport, arrival order, or dates; or the later chapter refers to the "
+                "earlier rendering as a SEPARATE past event ('the briefing two days ago'). ALSO "
+                "flag (type 'entity_drift') one ROLE held by two names ('her supervisor Dr. X' in "
+                "one chapter, 'her supervisor Director Y' in another) unless a handover is shown.\n")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
     # CANON CONFORMANCE (check 0) — only when a CANONICAL FACT SHEET (story bible) is supplied in
@@ -7860,9 +7872,26 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     # with the 2nd (indented) heading unprotected → silently renumberable. Same pattern everywhere = each
     # chapter (## OR Bab N OR Chapter N, indented or not) its own part, protected independently.
     _HEAD_OPENER = r'(?:##[ \t]|(?:Chapter|Bab|BAB|Chapitre|Cap[íi]tulo)[ \t]+\d+)'
-    parts = _re.split(r'(?m)(?=^[ \t]*' + _HEAD_OPENER + r')', full_text or "")
+    # Round-4 (roll-6 238s no-op): the split prefix was [ \t]* while _HEADLINE_RX below
+    # accepts ANY non-word prefix — the exact split-vs-count divergence this comment
+    # warns about, one line lower. A polished heading like '**Chapter 1:' or '> ## Bab 2'
+    # counted as a heading but did NOT split, so the whole 10,495-word book became ONE
+    # part, opus returned a 1,282-word digest, and the guard threw it away. Unify.
+    parts = _re.split(r'(?m)(?=^[^\w\n]*' + _HEAD_OPENER + r')', full_text or "")
     if len(parts) <= 1:
+        # Bail-out net: the book plainly has ≥2 chapter-ish lines yet did not split —
+        # chunking is the wrong tool for this heading shape. Raise: the dispatcher's
+        # except falls back to the WHOLE-BOOK revise (128K ceiling) instead of burning
+        # a bounded call on a book-sized "chapter" the acceptance guard must reject.
+        _probe = len(_re.findall(
+            r'(?im)^\W{0,6}(?:chapter|bab|episode|chapitre|cap[íi]tulo)\b.*$|^\W{0,6}##[ \t]',
+            full_text or ""))
+        if _probe >= 2:
+            raise RuntimeError(
+                f"chunk split found 1 part but {_probe} heading-like lines — whole-book fallback")
         parts = [full_text or ""]
+    import logging as _lgs
+    _lgs.getLogger("narasi").info("chunked revise: split into %d part(s)", len(parts))
     _max_ch = _envint("NARASI_REVISE_MAX_CHAPTERS", 4)
     _sev = _revise_min_severities()
     # A violation with a MISSING / blank / unrecognized severity must NOT be silently dropped — the

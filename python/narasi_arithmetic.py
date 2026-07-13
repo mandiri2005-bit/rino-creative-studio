@@ -395,7 +395,16 @@ def scan_interval_vs_dates_en(text: str) -> list[dict]:
             continue
         near = [(p, t) for p, t in dates if abs(p - m.start()) < 800]
         cands = list(near)
-        if len(dates) <= 6:
+        # Round-4 FP fix (roll 6: "seven months later" → the father's undated death
+        # flagged against unrelated dates): GLOBAL candidate expansion is only sound
+        # when the span NAMES its anchor event ("after THE FLOOD" — dated elsewhere in
+        # the book). A bare "later" whose reference is the surrounding narration must
+        # verify against NEAR dates only; with <2 near dates it is unverifiable →
+        # skip, never guess (miss-safe beats a wrong-anchor flag feeding the revise).
+        _event_ref = (m.group("rel").lower() in ("after", "since", "before")
+                      and re.match(r"\s+(?:the|that)\s+[a-z]",
+                                   text[m.end():m.end() + 30] or "") is not None)
+        if len(dates) <= 6 and _event_ref:
             for p, t in dates:
                 if (p, t) not in cands:
                     cands.append((p, t))
@@ -425,6 +434,125 @@ def scan_interval_vs_dates_en(text: str) -> list[dict]:
                 "note": f"stated span ≈{round(stated)}d matches no date pair (tol ±{round(tol)}d)",
             })
     return findings[:8]
+
+
+# ── day-counter vs calendar (round-4; convergent 3/3 lenses on roll 6) ─────
+# "15 June = drought day 188" then "July third = day two hundred and four":
+# Δcalendar = 18 but Δcounter = 16 — a running day-ledger that disagrees with its
+# own dates. Deterministic: pair each day-counter with the nearest month-day date
+# in the same breath (±400 chars), then check every pair of pairs. ±1 slop for
+# inclusive-vs-exclusive counting conventions; ≥2 flags.
+_MONTH_DOY = {"january": 0, "february": 31, "march": 59, "april": 90, "may": 120,
+              "june": 151, "july": 181, "august": 212, "september": 243,
+              "october": 273, "november": 304, "december": 334}
+_ORD_WORDS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+              "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
+              "twelfth": 12, "thirteenth": 13, "fourteenth": 14, "fifteenth": 15,
+              "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19,
+              "twentieth": 20, "thirtieth": 30, "twenty": 20, "thirty": 30}
+
+
+def _en_num_ext(tok: str) -> int | None:
+    """Spelled numbers incl. hundreds/ordinals: 'two hundred and four' → 204,
+    'two-hundred-and-sixteenth' → 216, 'third' → 3, '204' → 204."""
+    t = re.sub(r"[\s-]+", " ", str(tok or "").lower()).strip()
+    if not t:
+        return None
+    if t.replace("st", "").replace("nd", "").replace("rd", "").replace("th", "").isdigit():
+        return int(re.sub(r"(st|nd|rd|th)$", "", t))
+    m = re.match(r"(?:(one|two|three|four|five|six|seven|eight|nine|a)\s+)?hundred(?:\s+and)?\s*(.*)$", t)
+    if m:
+        base = (_en_num(m.group(1)) or 1) * 100 if m.group(1) not in (None, "a") else 100
+        rest = (m.group(2) or "").strip()
+        if not rest:
+            return base
+        r = _en_num(rest)
+        if r is None:
+            # ordinal tail: 'sixteenth' / 'twenty first' / 'four'
+            parts = rest.split()
+            r = 0
+            for p in parts:
+                v = _ORD_WORDS.get(p) or _en_num(p)
+                if v is None:
+                    return None
+                r += v
+        return base + r if r < 100 else None
+    # 'two hundred...' handled above; plain ordinals and cardinals:
+    if t in _ORD_WORDS:
+        return _ORD_WORDS[t]
+    parts = t.split()
+    if len(parts) == 2 and parts[0] in _ORD_WORDS and parts[1] in _ORD_WORDS:
+        a, b = _ORD_WORDS[parts[0]], _ORD_WORDS[parts[1]]
+        if a in (20, 30) and b < 10:
+            return a + b
+    return _en_num(t)
+
+
+_NUMEXPR = r"(?:[a-z0-9]+(?:[\s-]+(?:and[\s-]+)?[a-z0-9]+){0,4})"
+_DAYCOUNT_RXES = (
+    # "drought day 188" / "day two hundred and four"
+    re.compile(r"(?i)\bday\s+(?P<n>\d{1,3}|" + _NUMEXPR + r")\b"),
+    # "two hundred and thirty-nine days without" / "247 days of silence"
+    re.compile(r"(?i)\b(?P<n>\d{1,3}|" + _NUMEXPR + r")\s+(?:consecutive\s+)?days\s+(?:without|of\s+silence|of\s+drought)\b"),
+    # "two-hundred-and-sixteenth consecutive day"
+    re.compile(r"(?i)\b(?P<n>[a-z0-9]+(?:-[a-z0-9]+){0,4}(?:th|st|nd|rd))\s+(?:consecutive\s+)?day\b"),
+)
+_MD_DATE_RX = re.compile(
+    r"(?i)\b(?P<mon>january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)\s+(?P<d>\d{1,2}(?:st|nd|rd|th)?|" + "|".join(_ORD_WORDS) + r")\b"
+    r"|\b(?P<d2>\d{1,2})\s+(?P<mon2>january|february|march|april|may|june|july|august|"
+    r"september|october|november|december)\b")
+
+
+def scan_day_counters(text: str) -> list[dict]:
+    """Running day-ledger vs calendar dates. Never raises; [] on clean text."""
+    findings: list[dict] = []
+    if not text:
+        return findings
+    try:
+        md: list[tuple[int, int]] = []   # (pos, day-of-year)
+        for m in _MD_DATE_RX.finditer(text):
+            mon = (m.group("mon") or m.group("mon2") or "").lower()
+            dtok = m.group("d") or m.group("d2") or ""
+            d = _en_num_ext(dtok)
+            if mon in _MONTH_DOY and d and 1 <= d <= 31:
+                md.append((m.start(), _MONTH_DOY[mon] + d))
+        if not md:
+            return findings
+        pairs: list[tuple[int, int, int, str]] = []   # (pos, doy, count, phrase)
+        seen_spans: set[tuple[int, int]] = set()
+        for rx in _DAYCOUNT_RXES:
+            for m in rx.finditer(text):
+                if any(a <= m.start() < b for a, b in seen_spans):
+                    continue
+                n = _en_num_ext(m.group("n"))
+                if n is None or not (10 <= n <= 400):   # short counts = everyday prose
+                    continue
+                near = [(abs(p - m.start()), p, doy) for p, doy in md if abs(p - m.start()) < 400]
+                if not near:
+                    continue
+                near.sort()
+                _, p, doy = near[0]
+                seen_spans.add((m.start(), m.end()))
+                pairs.append((m.start(), doy, n, m.group(0)))
+        for i in range(len(pairs)):
+            for j in range(i + 1, len(pairs)):
+                (pa, da, na, fa), (pb, db, nb, fb) = pairs[i], pairs[j]
+                dcal, dn = db - da, nb - na
+                if dcal < 0:
+                    dcal, dn, fa, fb = -dcal, -dn, fb, fa
+                if dcal == 0 and dn == 0:
+                    continue
+                if abs(dcal - dn) >= 2:
+                    findings.append({
+                        "kind": "day_counter",
+                        "phrases": [fa, fb],
+                        "note": f"calendar moved {dcal}d but the day-counter moved {dn} "
+                                f"('{fa}' vs '{fb}') — recount from the dated anchor",
+                    })
+        return findings[:4]
+    except Exception:  # noqa: BLE001 — linter never blocks the scan
+        return findings
 
 
 def scan_span_alternation(text: str) -> list[dict]:
@@ -476,14 +604,17 @@ def scan_arithmetic(text: str, *, lang: str = "fr",
         age = scan_age_across_scenes(text, lang=lang, known_dob=known_dob)
         interval = scan_interval_vs_dates(text, lang=lang, seed_dates=seed_dates)
         spans: list[dict] = []
+        days: list[dict] = []
         if (lang or "").split("-")[0].lower() == "en":
             interval = interval + scan_interval_vs_dates_en(text)
             spans = scan_span_alternation(text)
-        findings = age + interval + spans
+            days = scan_day_counters(text)
+        findings = age + interval + spans + days
         return {
             "status": "FAIL" if findings else "PASS",
             "findings": findings,
-            "counts": {"age": len(age), "interval": len(interval), "span": len(spans)},
+            "counts": {"age": len(age), "interval": len(interval),
+                       "span": len(spans), "day": len(days)},
         }
     except Exception as exc:  # noqa: BLE001
         return {"status": "PASS", "findings": [], "counts": {}, "_error": str(exc)}

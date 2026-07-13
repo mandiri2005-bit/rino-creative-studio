@@ -1,6 +1,6 @@
 {
   "_comment": "PER-LANE USED-NAMES/NUMBERS LEDGER — the cross-roll twin of the shared-usage ledger. Static ban-lists proved whack-a-mole (the generator slid from Hae-rin/Ok to the OTHER roll's repertory: Gyeom/Chae-rin/Hyeon-jae/Baek; then, with those flagged, to Nam/Im/Ha and from 41 to 47), so this file is the single growing source of a lane's already-used onomastics + numbers + verbatim phrases + recycled beats, injected as a NEGATIVE constraint at bible-time (flag NARASI_LANE_LEDGER, orchestrator/dynamic.py). CURATION: append after each reviewed roll — the raw data persists per-job in counter_report.homogenization_tics + the cast greps; keys are pakem style keys. Editable JSON on purpose (curated corpus policy: curation-heavy data lives in JSON, not code).",
-  "_seeded_from": "5-roll kdrama audit 2026-07-09/10 (fallen-angel, Lumi, Archivist, Keyframe, Royal Blueprint), grep-verified + auto-extracted rain-lane 5-roll sweep 2026-07-13 (tools/ledger_extract.py; prompted premise names Seo-jin/Do-yun/Kang deliberately excluded)",
+  "_seeded_from": "5-roll kdrama audit 2026-07-09/10 (fallen-angel, Lumi, Archivist, Keyframe, Royal Blueprint), grep-verified + auto-extracted rain-lane 5-roll sweep 2026-07-13 (tools/ledger_extract.py; prompted premise names Seo-jin/Do-yun/Kang deliberately excluded) + 6-roll re-sweep 2026-07-13 (adds R6 Mujin lane: Roh 2/6, Haean-ro/Taegang 2/6, barograph family 4/6, title frames)",
   "kdrama_serial": {
     "given_names": [
       "Cheong-u (2/5 rolls 2026-07-13 rain-5roll)",
@@ -55,7 +55,12 @@
       "Sun-ja",
       "Tae-oh",
       "Yeo-ul",
-      "Yong-sik"
+      "Yong-sik",
+      "Byeong-chan",
+      "Cha-un",
+      "Nan-gyeol",
+      "Ru-an",
+      "Ik-ro"
     ],
     "name_stems": [
       "any *a(e)-ri[n/m] shape (Chae-rin/Chae-rim/Hae-rin/Ha-rin — used 4/4 rolls)",
@@ -64,7 +69,9 @@
       "Tae- shared by an org AND a person (Taegang Construction vs Tae-* given names — collided 3/3 rolls 2026-07-12; never reuse one syllable stem for both)",
       "-sik shared by Myeong-sik/Yong-sik (2026-07-13 rain-5roll)",
       "Gwang- shared by Gwang-il/Gwang-su (2026-07-13 rain-5roll)",
-      "Myeong- shared by Myeong-guk/Myeong-sik (2026-07-13 rain-5roll)"
+      "Myeong- shared by Myeong-guk/Myeong-sik (2026-07-13 rain-5roll)",
+      "Byeong- shared by Byeong-chan/Byeong-ok (2026-07-13 rain-6roll)",
+      "Cha- shared by Cha-un/Cha-young (2026-07-13 rain-6roll)"
     ],
     "overused_surnames": [
       "Han",
@@ -74,7 +81,8 @@
       "Im",
       "Ha",
       "Oh (3/5 rolls 2026-07-13 rain-5roll)",
-      "Bae (2/5 rolls 2026-07-13 rain-5roll)"
+      "Bae (2/5 rolls 2026-07-13 rain-5roll)",
+      "Roh (2/6 2026-07-13 rain-6roll: Gwang-su R3, Byeong-chan R6)"
     ],
     "timestamp_minutes": [
       ":14 (used 7x across rolls)",
@@ -90,7 +98,8 @@
       "eleven (spelled — leaked 3/3 rolls 2026-07-12 incl. BIBLE-level 'eleven-month drought'; numeric 11 already listed)",
       31,
       40,
-      80
+      80,
+      90
     ],
     "foods": [
       "tteokbokki",
@@ -116,7 +125,13 @@
       "Pohang (2/5 2026-07-13 rain-5roll)",
       "Daejeon (2/5 2026-07-13 rain-5roll)",
       "Mokpo (2/5 2026-07-13 rain-5roll)",
-      "Haenam (2/5 2026-07-13 rain-5roll)"
+      "Haenam (2/5 2026-07-13 rain-5roll)",
+      "Haean-ro (2/6 2026-07-13 rain-6roll)",
+      "Taegang (org, 2/6 2026-07-13 rain-6roll)",
+      "Mujin (2026-07-13 rain-6roll: R6 — ALSO Kim Seung-ok's canonical fog town; intertext must be a deliberate choice, never a default)",
+      "Mujin-cheon (2026-07-13 rain-6roll)",
+      "Gaetmal-gil (2026-07-13 rain-6roll)",
+      "Siminmaru-ro (2026-07-13 rain-6roll)"
     ],
     "verbatim_phrases": [
       "…and kept the smallest for himself (caregiver-denies-own-portion closing line — verbatim in 2 rolls)",
@@ -128,7 +143,13 @@
       "answered on the fourth ring (2/5 2026-07-13 rain-5roll)",
       "hung umbrellas dozens of them black (2/5 2026-07-13 rain-5roll)",
       "her hands were steady she noticed (2/5 2026-07-13 rain-5roll)",
-      "station was a single-story prefab (2/5 2026-07-13 rain-5roll)"
+      "station was a single-story prefab (2/5 2026-07-13 rain-5roll)",
+      "recognition the expression of someone who (2/6 2026-07-13 rain-6roll)",
+      "pressed her palms flat against the desk (2/6 2026-07-13 rain-6roll)",
+      "against her hip like a second heartbeat (2/6 2026-07-13 rain-6roll)",
+      "closed her eyes when she opened them (2/6 2026-07-13 rain-6roll)",
+      "looked at her with an expression she had (2/6 2026-07-13 rain-6roll)",
+      "eight million won (bribe amount, 2/6 rolls 2026-07-13 rain-6roll)"
     ],
     "recycled_beats": [
       "equinox/solstice shadow-alignment reveal as the climax (already used cross-lane)",
@@ -140,7 +161,11 @@
       "carbon-copy / triplicate form as the hidden evidence (2/5 2026-07-13 rain-5roll)",
       "dead parent's handwriting recognized as reveal (2/5 2026-07-13 rain-5roll)",
       "Ch1 opener: station as single-story prefab building (2/5 2026-07-13 rain-5roll)",
-      "Ch1 opener: protagonist steps off the bus into the dry town (2/5 2026-07-13 rain-5roll)"
+      "Ch1 opener: protagonist steps off the bus into the dry town (2/5 2026-07-13 rain-5roll)",
+      "private instrument record as counter-archive — rain gauge/barograph roll (4/6 2026-07-13 rain-6roll)",
+      "kettle-clicks-off + steam-vanishes beat (2/6 2026-07-13 rain-6roll)",
+      "chapter-title near-dup: 'A False Map of the Sky' (2/6 2026-07-13 rain-6roll: R3,R6)",
+      "chapter-title token echoes: 'weight' 5/6, 'gathering' 4/6, 'false' 4/6 (2026-07-13 rain-6roll) — title frames, vary them"
     ]
   }
 }
