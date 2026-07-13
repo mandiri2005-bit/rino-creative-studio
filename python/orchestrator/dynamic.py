@@ -536,6 +536,12 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
              "KEY FACTS, OPEN THREADS, SIGNATURE HOOK & PAYOFF"
              if is_fiction else
              "SUBJECT/PEOPLE, CENTRAL SUBJECT, SETTING, TIMELINE, POV & NARRATION, KEY CLAIMS")
+    # CONTINUITY PINS (NARASI_CONTINUITY_PINS, default OFF): the SYSTEM addendum adds headings 9-13;
+    # mirror them here because this prompt says "Output ONLY the numbered sheet under the headings
+    # (...)" — an unlisted heading risks being suppressed. OFF ⟹ prompt byte-identical.
+    if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
+        heads += (", CAUSALITY POLICY, CALENDAR SPINE, SIGNATURE-PROP CUSTODY, NAMING CONVENTIONS, "
+                  "FINALE CAST RULE")
     return (
         f"TOPIC / PREMISE:\n{topic}\n\n"
         f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
@@ -649,6 +655,57 @@ async def build_story_bible(
             "or subplots, and do NOT force a beat onto a thread the premise intends to keep quiet or "
             "off-screen. SECONDARY to heading 8: never let a mid-arc beat crowd out the SIGNATURE "
             "HOOK payoff.")
+    # CONTINUITY PINS (flag NARASI_CONTINUITY_PINS, default OFF): five defect classes from the kdrama
+    # job (eky9gcge) that headings 1-8 and the canon_registry do NOT pin: (a) the central symbolic
+    # causation drifted between literal-magical and coincidence readings; (b) chapter months/durations
+    # FROZE ("nine months without rain" verbatim in late chapters) — heading 4 pins ORDER, not an
+    # absolute calendar; (c) a signature prop (umbrella class) teleported between holders; (d) Korean
+    # naming errors (a married woman taking her husband's surname; family members swapping surnames);
+    # (e) the finale named characters with no earlier on-page introduction. All five are BIBLE-level
+    # pins (once, upfront — no per-chapter machinery), additive headings 9-13 in the style of 1-8,
+    # each with an explicit "write 'none'" escape so they no-op on premises lacking the feature.
+    # OFF ⟹ bible byte-identical. Pair with the heads extension in _story_bible_prompt (same flag).
+    if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
+        system = system + (
+            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these five sections:\n"
+            "9. CAUSALITY POLICY — if the premise has a central SYMBOLIC or seemingly supernatural "
+            "causation (e.g. 'the rain returns when the truth is told'), COMMIT its metaphysics NOW "
+            "as exactly ONE of: LITERAL-MAGICAL (the world really works this way), AMBIGUOUS-BY-DESIGN "
+            "(the text must never confirm or deny — pin the mundane coincidence that preserves both "
+            "readings), or BELIEVED-NOT-REAL (characters read meaning into it; the narration knows "
+            "better). Every chapter renders cause and effect under the SAME policy. Also pin WHICH "
+            "character voices the story's thesis about this causation ON THE PAGE, and in which "
+            "chapter — the thesis belongs to ONE voice, never improvised per chapter. If the "
+            "symbolic causation is itself the #8 SIGNATURE HOOK, the pinned policy (including its "
+            "mundane-coincidence rendering, for AMBIGUOUS-BY-DESIGN) IS the hook's committed payoff "
+            "— do not pin a second, conflicting answer. If the premise has no symbolic causation, "
+            "write 'none'.\n"
+            "10. CALENDAR SPINE (extends heading 4) — give EVERY chapter an ABSOLUTE calendar anchor, "
+            "one line per chapter ('Ch3 = late March, early spring'; for books over 12 chapters, "
+            "anchor only the chapters where the month or season CHANGES), months advancing MONOTONICALLY "
+            "(never repeating or stepping back unless a flashback is explicitly pinned as one). Any "
+            "stated DURATION ('nine months without rain', 'three years since X') must be RE-DERIVED "
+            "from this spine at each chapter's own anchor — a writer may NEVER copy a duration "
+            "verbatim from an earlier chapter, because a frozen duration contradicts a moving "
+            "calendar.\n"
+            "11. SIGNATURE-PROP CUSTODY — for each SIGNATURE OBJECT the story's imagery leans on "
+            "(the umbrella, the letter, the ring — at most 3), pin a CUSTODY CHAIN: one line per "
+            "custody CHANGE (who hands it to whom, in which chapter, via what ON-PAGE handover) "
+            "plus the final holder. An object may not appear in a character's hands without a "
+            "pinned handover putting it there. If the premise has no signature object, write "
+            "'none'.\n"
+            "12. NAMING CONVENTIONS — pin the setting culture's naming rules and APPLY them to "
+            "heading 1's cast: in Korean settings, married women KEEP their maiden surname (a wife "
+            "sharing her husband's surname is an ERROR unless the premise explicitly pins it) and "
+            "children take the father's surname — so no two family members share a surname except "
+            "where that rule or a pinned canon fact creates it. Give each family a one-line surname "
+            "map ('husband Kang, wife Yoon (maiden), children Kang') so writers cannot improvise.\n"
+            "13. FINALE CAST RULE — the final chapters may NOT name any character who lacks an "
+            "earlier ON-PAGE introduction. List the characters permitted to appear or be named in "
+            "the last two chapters (drawn from heading 1); if the finale needs someone new, add "
+            "them to an earlier chapter's cast NOW. Finale walk-ons stay nameless.\n"
+            "These sections are SECONDARY to headings 1-8: never let them shorten or weaken the #8 "
+            "SIGNATURE HOOK payoff commitment.")
     # CANON REGISTRY (Phase 2a) — emit a MACHINE-CHECKABLE twin of the prose fact-sheet so a later
     # per-chapter diff (Phase 2b) can catch canon-forks (one load-bearing fact rendered two ways,
     # e.g. the river pusaran victim/age fork). FICTION-only, flag-gated NARASI_CANON_REGISTRY (default

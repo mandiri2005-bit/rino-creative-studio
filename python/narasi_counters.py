@@ -1811,6 +1811,13 @@ def _refrain_scan_on() -> bool:
     return os.environ.get("NARASI_REFRAIN_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _regloss_budget_on() -> bool:
+    """NARASI_REGLOSS_BUDGET=1 promotes the reglossing scan from FLAG-only to a BUDGETED
+    counter (cap: style_spec.counters.regloss_max, env NARASI_REGLOSS_MAX fallback).
+    Default OFF => FLAG-only behavior byte-identical."""
+    return os.environ.get("NARASI_REGLOSS_BUDGET", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _cos_sim(a, b) -> float:
     """Cosine of two embedding vectors; 0.0 on any degeneracy. Never raises."""
     try:
@@ -2038,21 +2045,49 @@ def _unattributed_expert_scan(text: str) -> dict:
 _GLOSS_RX = re.compile(r"\b([A-Za-zÀ-ÿ][\wÀ-ÿ'’-]{3,})\s+(?:—|–|--)\s+")
 
 
-def _reglossing_scan(text: str) -> dict:
-    """Report-only: the SAME head-term re-glossed multiple times (e.g. 'dluwang — traditional
+def _reglossing_scan(text: str, *, repeat_cap: Optional[int] = None) -> dict:
+    """Report-only by default: the SAME head-term re-glossed multiple times (e.g. 'dluwang — traditional
     Javanese bark paper' 5×) — signature of chapters generated without a 'term already defined'
-    state. FLAG a head-term that opens an em-dash gloss >=2×. status FLAG/PASS. Never raises."""
+    state. FLAG a head-term that opens an em-dash gloss >=2×. status FLAG/PASS. Never raises.
+    NARASI_REGLOSS_BUDGET promotion: repeat_cap is a RAW per-term budget — deliberately NOT
+    _scaled, a term needs defining once per BOOK regardless of length (same insight as the
+    thesis read-cap-raw). repeats = glossings - 1; any term with repeats > repeat_cap =>
+    status OVER, count = the WORST term's repeats (so narration_api._diet_worthy's tolerance
+    band compares repeats against the cap, not the distinct-term tally), budget = repeat_cap,
+    terms = only the over-cap terms. repeat_cap=None => historical output byte-identical."""
     out = {"status": "PASS", "count": 0, "terms": {}}
     try:
         counts: dict[str, int] = {}
         for m in _GLOSS_RX.finditer(text or ""):
             term = m.group(1).lower()
             if len(term) >= 4 and term not in _OPENING_STOP:
+                # Paired-dash PARENTHETICAL ASIDE ('kerajaan — seperti semua institusi —
+                # runtuh') is NOT a gloss: a second dash closing the insert before the
+                # sentence ends marks an aside (harari's signature move), while a
+                # definition gloss runs to sentence end un-closed. Counting asides made
+                # nonfiction registers trip the budget (review finding, reproduced).
+                # Skip BOTH dashes of a pair: the opener (a closing dash follows in-sentence)
+                # and the closer (an opening dash precedes it in the same sentence).
+                _tail = (text or "")[m.end():m.end() + 90]
+                _close = re.search(r"\s(?:—|–|--)\s", _tail)
+                _stop_p = re.search(r"[.!?\n]", _tail)
+                if _close and (not _stop_p or _close.start() < _stop_p.start()):
+                    continue
+                _head_seg = re.split(r"[.!?\n]", (text or "")[max(0, m.start() - 160):m.start()])[-1]
+                if re.search(r"\s(?:—|–|--)\s", _head_seg):
+                    continue
                 counts[term] = counts.get(term, 0) + 1
         reglossed = {t: n for t, n in counts.items() if n >= 2}
         if reglossed:
             out["status"] = "FLAG"; out["count"] = len(reglossed)
             out["terms"] = dict(sorted(reglossed.items(), key=lambda kv: -kv[1])[:10])
+        if repeat_cap is not None:
+            out["budget"] = int(repeat_cap)
+            over = {t: n for t, n in reglossed.items() if (n - 1) > int(repeat_cap)}
+            if over:
+                out["status"] = "OVER"
+                out["count"] = max(n - 1 for n in over.values())
+                out["terms"] = dict(sorted(over.items(), key=lambda kv: -kv[1])[:10])
         return out
     except Exception:  # noqa: BLE001
         return {"status": "PASS", "count": 0, "terms": {}}
@@ -2892,7 +2927,8 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             # nonfiction prose-integrity (lens#2 hedge-as-shield batch), same flag, report-only
             report["counters"]["deferred_hook"] = _deferred_hook_scan(chapters)
             report["counters"]["unattributed_expert"] = _unattributed_expert_scan(text)
-            report["counters"]["reglossing"] = _reglossing_scan(text)
+            if not _regloss_budget_on():
+                report["counters"]["reglossing"] = _reglossing_scan(text)
             # Batch A (derived-number arithmetic/word-count + coming-of-age denial fingerprint),
             # same flag, report-only FLAG-never-OVER → excluded from over_budget, can't drive the diet loop.
             report["counters"]["derived_number"] = _derived_number_scan(chapters)
@@ -2906,6 +2942,27 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             report["counters"]["home_lang_bleed"] = _home_lang_bleed_scan(text, lang)
             # Homogenization tic-inventory (cross-roll telemetry; report-only FLAG-never-OVER).
             report["counters"]["homogenization_tics"] = _homogenization_tic_scan(text)
+
+        # ── reglossing budget promotion (NARASI_REGLOSS_BUDGET, default OFF) ──
+        # FLAG→BUDGETED: cap read RAW from style_spec.counters.regloss_max (env
+        # NARASI_REGLOSS_MAX fallback, default 2 repeats => a term may open an em-dash
+        # gloss at most THREE times per book). Deliberately NOT _scaled — a gloss does
+        # not earn headroom with book length (thesis read-cap-raw insight). Runs
+        # regardless of NARASI_REFRAIN_SCAN so the budget doesn't depend on a second
+        # flag. OVER enters over_budget, but a rewrite only happens when
+        # NARASI_DIET_MAX_LOOPS>0 (prod currently 0 => report-only in practice).
+        # Style cap is read FIRST in its own try so a malformed env value can never
+        # clobber an explicit per-style regloss_max (review finding).
+        if _regloss_budget_on():
+            _rg_cap = 2
+            try:
+                if "regloss_max" in budgets:
+                    _rg_cap = int(budgets["regloss_max"])
+                else:
+                    _rg_cap = int(os.environ.get("NARASI_REGLOSS_MAX", "2"))
+            except Exception:  # noqa: BLE001
+                _rg_cap = 2
+            report["counters"]["reglossing"] = _reglossing_scan(text, repeat_cap=_rg_cap)
 
         # ── anchor-voice (§6.3): a first-person [ANCHOR] inside third-person narration
         # reads as invented testimony ("Hutan adalah benteng kami…"). Skipped when the
@@ -3074,6 +3131,14 @@ def surgical_prompt(report: dict, *, language: str = "English") -> str:
             "narration — they read as invented testimony. Rewrite each to the narrator's POV, "
             "or attribute it explicitly to a documented source, or mark it in-text as an "
             "imagined voice. Lines:\n- " + "\n- ".join(av.get("sentences", [])[:6]))
+    if c.get("reglossing", {}).get("status") == "OVER":
+        rg = c["reglossing"]
+        _terms = "; ".join(f"{t} ×{n}" for t, n in (rg.get("terms") or {}).items())
+        parts.append(
+            f"RE-GLOSSED TERMS: these head-terms are re-defined with an em-dash gloss more than "
+            f"{int(rg.get('budget', 1)) + 1} times across the book ({_terms}). Keep ONLY the FIRST "
+            "em-dash gloss of each term; at every later occurrence use the bare term and delete "
+            "just the ' — definition' segment, keeping the rest of the sentence intact.")
     if c.get("same_scholar", {}).get("status") == "OVER":
         ss = c["same_scholar"]
         _who = "; ".join(f"{o['scholar']} ×{o['count']}" for o in ss.get("over", [])[:3])

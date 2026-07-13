@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-__all__ = ["detect_entities", "verify_pass", "ENTITY_TABLE"]
+__all__ = ["detect_entities", "verify_pass", "phantom_name_scan", "ENTITY_TABLE"]
 
 # ── Unified entity table. Kind ∈ {person, institution, place, treaty}. Seeded from
 # what shipped in narasi_entities.SCHOLAR_TABLE/WRONG_DOMAIN; new entries land here,
@@ -424,3 +424,108 @@ def _treaty_key(tok: str) -> str:
     ('Traktat Sumatra 1871' → 'traktat', 'Perjanjian Giyanti' → 'perjanjian')."""
     parts = tok.lower().split()
     return parts[0] if parts else tok.lower()
+
+
+# ── PHANTOM-NAME scan (report-only) — story-bible bleed class (kdrama eky9gcge:
+# "Shim Ro-ha" appeared ONCE, in the finale, with presupposition phrasing). A PERSON
+# full name whose FIRST mention falls in the final `tail_frac` of the text with
+# <= `max_mentions` total mentions is flagged. Mentions are counted per name COMPONENT
+# (full form + bare given-name/surname, hyphen/apostrophe-aware for Korean names), so a
+# character properly introduced earlier under a short or variant form is EXCLUDED (its
+# earliest component mention is early — and the caller runs this on POST-verify_pass
+# text, so table-driven variant unification has already collapsed listed aliases).
+# Components shared by >=2 distinct full names (family surnames: "Shim" in "Shim Ro-ha"
+# + "Shim Min-jun") are ignored when a distinctive component exists, so a frequent
+# family name cannot mask a phantom sibling. `bible` (canonical_facts / story bible) is
+# ANNOTATION-ONLY: in_bible=True distinguishes bible-cast bleed from pure hallucination
+# — bible presence does NOT exclude, because the defect IS a bible name leaking into
+# the manuscript without an on-page introduction. status 'FLAG'/'PASS' only (NEVER
+# 'OVER' — same contract as narasi_counters._opening_motif_scan: can never enter
+# over_budget or drive the diet loop). Detection only — never edits text. Never raises.
+_PHANTOM_NAME_RX = re.compile(
+    r"\b([A-Z][a-zA-Z]+(?:[-'’][A-Za-z]+)?"
+    r"(?:\s+[A-Z][a-zA-Z]+(?:[-'’][A-Za-z]+)?)+)")
+
+
+def phantom_name_scan(text: str, *, bible: str = "", tail_frac: float = 0.25,
+                      max_mentions: int = 2) -> dict:
+    """Report-only phantom-name detection. Returns
+    {"status": "PASS"|"FLAG", "count": int, "tail_frac": float, "max_mentions": int,
+     "names": [{name, first_index, first_frac, mentions, in_bible, sentence}]}."""
+    out: dict[str, Any] = {"status": "PASS", "count": 0,
+                           "tail_frac": tail_frac, "max_mentions": max_mentions,
+                           "names": []}
+    try:
+        if not text or len(text) < 400:
+            return out
+        n = len(text)
+        cut = int(n * (1.0 - tail_frac))
+        # 1 — candidate full names (earliest index of the FULL form). The greedy regex
+        # swallows a leading capitalized sentence-opener ('Lalu Shim Ro-ha', 'Ketika
+        # Yu Na') — STRIP stoplisted edge tokens instead of rejecting the whole
+        # candidate, or ordinary Indonesian prose hides exactly the phantom class this
+        # hunts (review finding, reproduced).
+        first_full: dict[str, int] = {}
+        for m in _PHANTOM_NAME_RX.finditer(text):
+            tok = m.group(1)
+            parts = tok.split()
+            while parts and parts[0] in _STOP:
+                parts = parts[1:]
+            while parts and parts[-1] in _STOP:
+                parts = parts[:-1]
+            if len(parts) < 2:
+                continue
+            tok2 = " ".join(parts)
+            _off = tok.find(tok2)
+            first_full.setdefault(tok2, m.start() + (_off if _off >= 0 else 0))
+            # A remaining non-stop opener can still prefix ('Akhirnya Shim Ro-ha'
+            # where 'Akhirnya' recurs early): also register the trailing bigram as
+            # its own candidate so the real name gets probed independently.
+            if len(parts) >= 3:
+                _bg = " ".join(parts[-2:])
+                _bo = tok.find(_bg)
+                first_full.setdefault(_bg, m.start() + (_bo if _bo >= 0 else 0))
+        if not first_full:
+            return out
+        # 2 — component ownership map (a component in >=2 distinct full names is a
+        # shared family name, not a distinctive handle)
+        owners: dict[str, set] = {}
+        for tok in first_full:
+            for p in tok.split():
+                if len(p) >= 3 and p not in _STOP:
+                    owners.setdefault(p, set()).add(tok)
+        hits: list[dict] = []
+        for tok, fidx in first_full.items():
+            if fidx < cut:
+                continue                  # full form already appears before the tail
+            comps = [p for p in tok.split() if len(p) >= 3 and p not in _STOP]
+            if not comps:
+                # Short-token names ('Yu Na', 'Bo Ra'): fall back to a 2-char floor
+                # rather than skipping — two-syllable Korean given names romanized as
+                # separate short tokens are a realistic phantom class here.
+                comps = [p for p in tok.split() if len(p) >= 2 and p not in _STOP]
+            distinctive = [p for p in comps if len(owners.get(p) or ()) == 1]
+            probe = distinctive or comps or [tok]
+            mentions = 0
+            first_idx = fidx
+            for p in probe:
+                ms = [mm.start() for mm in re.finditer(r"\b" + re.escape(p) + r"\b", text)]
+                if ms:
+                    mentions = max(mentions, len(ms))
+                    first_idx = min(first_idx, ms[0])
+            if first_idx < cut or mentions > max_mentions:
+                continue                  # introduced earlier, or genuinely recurring
+            in_bible = bool(bible) and any(
+                re.search(r"\b" + re.escape(p) + r"\b", bible) for p in [tok] + probe)
+            hits.append({"name": tok, "first_index": first_idx,
+                         "first_frac": round(first_idx / n, 3), "mentions": mentions,
+                         "in_bible": in_bible,
+                         "sentence": _snip(text, fidx, fidx + len(tok))})
+        if hits:
+            out["status"] = "FLAG"
+            out["count"] = len(hits)
+            out["names"] = sorted(hits, key=lambda h: h["first_index"])[:8]
+        return out
+    except Exception:  # noqa: BLE001 — a broken scan must never break generation
+        return {"status": "PASS", "count": 0, "tail_frac": tail_frac,
+                "max_mentions": max_mentions, "names": []}

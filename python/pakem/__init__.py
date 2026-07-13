@@ -26,6 +26,8 @@ Usage:
 """
 from __future__ import annotations
 
+import os as _os
+
 from .assets import (
     CRAFT_RULES,
     FACTUAL_INTEGRITY,
@@ -125,6 +127,12 @@ def build_style_block(style, video_mode: bool = False) -> str:
     rules = entry.get("style_rules_core", "")
     rules = rules.rstrip() + "\n" + CLAIM_DISCIPLINE
     _regime = entry.get("factual_regime", "strict")
+    # P1 fiction styles (kdrama_serial/romance_contemporary/remaja_coming_of_age) declare
+    # 'fiction'; _REGIME_BLOCKS keys on 'fictional', so they silently fell back to the
+    # STRICT factual-rendering block at generation. Normalizing changes generation
+    # prompts, so it is flag-gated: NARASI_REGIME_BLOCK_NORMALIZE=1 to enable.
+    if _regime == "fiction" and str(_os.environ.get("NARASI_REGIME_BLOCK_NORMALIZE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        _regime = "fictional"
     rules = rules.rstrip() + "\n" + _REGIME_BLOCKS.get(_regime, _REGIME_BLOCKS["strict"])
     # Dual-path selector (dual-path doc §1): compare the style's NATIVE medium with the
     # job's output target. Native match → light normalization only (VIDEO_MODIFIER on the

@@ -146,6 +146,12 @@ def fact_scan(text: str, *, factual_regime: str = "strict", lang: str = "en") ->
     lang: enables the language pack's spelled-quantity detector — ID prose SPELLS its
     numbers ("dua ratus prajurit", "tiga puluh ribu kilometer persegi"), so a digits-only
     sweep is blind on the ID path (the Diponegoro run's invented statistics all passed)."""
+    # 'fiction' (registry-P1 spelling: kdrama_serial/romance_contemporary/remaja_coming_of_age)
+    # ≡ 'fictional' — the skip gate below tests == "fictional", so the raw value ran the
+    # full external-claim scan on fiction manuscripts. Defense-in-depth; primary
+    # normalization lives in narration_api._effective_regime.
+    if str(factual_regime or "").strip().lower() == "fiction":
+        factual_regime = "fictional"
     rep: dict[str, Any] = {"regime": factual_regime, "classes": {}, "mode": "scan-and-report",
                            "note": "pattern-swept, not guaranteed (R-FG10 §5); verification "
                                    "protocols pending search infra"}
@@ -240,6 +246,8 @@ def fact_scan(text: str, *, factual_regime: str = "strict", lang: str = "en") ->
 
         if factual_regime == "fictional":
             rep["skipped"] = "external-claim classes skipped (fictional regime; FG2b continuity applies elsewhere)"
+            if "quantitative_unverified" in rep["classes"]:
+                rep["classes"]["quantitative_unverified"]["scope"] = "canon"
             return rep
 
         # ── R-FG10 wave 1 ──

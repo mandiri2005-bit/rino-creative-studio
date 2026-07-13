@@ -2415,4 +2415,21 @@ P1_STYLES["romance_contemporary"] = _ROMANCE_CONTEMPORARY_SPEC
 P1_STYLES["remaja_coming_of_age"] = _REMAJA_COMING_OF_AGE_SPEC
 
 
+# CLUSTER-2 (job eky9gcge): warmth-bonding move. Corpus defect — a betrayal /
+# confrontation reveal landed with ZERO prior on-page warmth between the leads, so the
+# reveal had no bond to break. The move NAME is its description: it is consumed verbatim
+# by the R-H10 auditor prompt ('Moves: ' + ', '.join(moves), narration_api.py) and by the
+# DALANG_INFRA_FIXES register checklist ('- <move>' lines, orchestrator/context_builder.py).
+# The name carries the COUNTABLE core only (no 'before_betrayal' ordering predicate —
+# an integer counter can't evaluate ordering; placement is steered by the checklist and
+# audited by the critic). IMPORT-TIME read: toggling requires a process restart (Railway
+# env changes redeploy, which suffices). OPT-IN via NARASI_KDRAMA_WARMTH_MOVE (default
+# OFF): an extra required move TIGHTENS the register gate — flag-gated per house rules.
+if _os_phase2.environ.get("NARASI_KDRAMA_WARMTH_MOVE", "0").strip().lower() in ("1", "true", "yes", "on"):
+    _KDRAMA_SERIAL_SPEC["register_spec"]["required_moves"].append(
+        "warmth_bonding_beat_between_leads_min_per_book")
+    _KDRAMA_SERIAL_SPEC["register_spec"]["counters"][
+        "warmth_bonding_beat_between_leads_min_per_book"] = 1
+
+
 __all__ = ["P1_STYLES"]

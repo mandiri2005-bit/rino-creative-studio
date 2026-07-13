@@ -7525,6 +7525,44 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         "nonfiction/factual piece: a real-world question the subject itself leaves open is not a "
         "flaw, and you must NEVER invent an answer to a factual gap.\n"
         if is_fiction else "")
+    # EXTENDED CHECKS 8-12 — flag NARASI_CRITIQUE_EXTENDED_CHECKS, default OFF (prompt byte-identical
+    # when off). FICTION-ONLY (like check 7): checks 8/10/11 are fiction-vocabulary, and on
+    # nonfiction check 11 could push FACTUAL corrections (a quoted denial source is not a
+    # negation inversion) — review finding. Defect classes surfaced by kdrama job eky9gcge
+    # that checks 1-6 name only obliquely or not at all. Each check reuses an EXISTING type
+    # token (8→provenance, 9→timeline, 10→causality, 11→causality, 12→timeline) so the JSON
+    # enum and all downstream consumers (normalize, canon_fork exclusion, chunked-revise
+    # span mapping) are unchanged.
+    _ext = ""
+    if is_fiction and os.getenv("NARASI_CRITIQUE_EXTENDED_CHECKS", "0").strip().lower() in ("1", "true", "yes", "on"):
+        _ext = (
+            "8. OBJECT CUSTODY CHAIN (report as type 'provenance') — a signature prop (a ring, a "
+            "letter, a keepsake the plot leans on) must have ONE coherent possession chain across the "
+            "whole book. Flag a chapter that asserts a return, hand-over, or recovery of the prop that "
+            "an EARLIER chapter's events foreclose (the transfer was refused, the object was locked "
+            "away, destroyed, or never left its first holder). A chapter contradicting an earlier "
+            "chapter's explicit blocking of the transfer is CRITICAL.\n"
+            "9. CALENDAR MONOTONICITY (report as type 'timeline') — explicit month/season/holiday "
+            "mentions must move FORWARD with story time. Flag chapters whose stated calendar runs "
+            "backwards without a marked flashback (March in an early chapter, January in a later "
+            "chapter narrated as afterwards).\n"
+            "10. UNSHOWN-EVENT REFERENCE (report as type 'causality') — prose that references a MAJOR "
+            "event as already known or repeated ('again', 'after everything that happened', 'like "
+            "last time') when NO chapter ever showed or told that event on the page. The book must "
+            "not lean on events that exist only in off-page planning material.\n"
+            "11. NEGATION INVERSION (report as type 'causality') — a sentence that flatly DENIES a "
+            "central fact the book itself established (e.g. 'the fire never reached the house' in "
+            "a book whose plot turns on that night's fire). A character IN DENIAL saying it in "
+            "dialogue is characterization, not a violation — flag only narration. Denial of an "
+            "established central fact is CRITICAL.\n"
+            "12. FROZEN DURATION (report as type 'timeline') — a stated elapsed duration must ADVANCE "
+            "as story time passes: 'three days since X' cannot still be 'three days' several chapters "
+            "later after weeks of story time have visibly passed.\n"
+            "Checks 8-12 refine checks 1-5: report each distinct defect ONCE, under the most "
+            "specific applicable check.\n")
+        if canon_aware:
+            _ext += ("If a check-8 or check-11 finding contradicts a fact PINNED in the CANONICAL "
+                     "FACT SHEET, report it as canon_fork (check 0), not provenance/causality.\n")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
     # CANON CONFORMANCE (check 0) — only when a CANONICAL FACT SHEET (story bible) is supplied in
@@ -7579,7 +7617,7 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         "and tense stay consistent across the WHOLE book. Flag a chapter that switches (a "
         "second-person book with one first-person chapter; a present-tense book with a past-tense "
         "chapter) — cite the chapter and the switched pronoun/tense.\n"
-        + _check7 +
+        + _check7 + _ext +
         "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
         "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
         "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
@@ -7898,7 +7936,16 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
     # NARASI_REVISE_CHUNKED=1 to revise ONLY the chapters with a located violation — bounded output
     # per chapter, robust to a provider that caps output below the book size. Any internal error
     # raises → we fall through to the whole-book path below (never-raises contract preserved).
-    if os.getenv("NARASI_REVISE_CHUNKED", "0").strip().lower() in ("1", "true", "yes", "on"):
+    # AUTO-CHUNK threshold (default 0 = OFF => byte-identical routing): a whole-book re-emit of a
+    # 10k+ word book either comes back abridged (>=90% guard discards it) or takes longer than
+    # NARASI_REVISE_TIMEOUT — verified no-op on job eky9gcge (10,155 words, revise 29.2s, discarded).
+    # Set NARASI_REVISE_CHUNKED_AUTO_WORDS=8000 to route only big books to the chunked path.
+    try:
+        _auto_w = int(str(os.getenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")).strip() or "0")
+    except Exception:
+        _auto_w = 0
+    if (os.getenv("NARASI_REVISE_CHUNKED", "0").strip().lower() in ("1", "true", "yes", "on")
+            or (_auto_w > 0 and len((full_text or "").split()) >= _auto_w)):
         try:
             return await _narasi_revise_chunked(
                 full_text, viol, style, language, rev_model,
@@ -7936,7 +7983,17 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
         return full_text, 0
     cr  = (await _log_narasi_usage(tenant_id, user_id, rev_model, resp, job_id=job_uuid) or 0)
     new = (_resp_content(resp) or "").strip()          # null-safe (error-as-200 → no AttributeError)
-    if not new or len(new.split()) < int(len((full_text or "").split()) * 0.9):  # empty/gutted → keep original
+    _ow, _nw = len((full_text or "").split()), len(new.split())
+    if not new or _nw < int(_ow * 0.9):  # empty/gutted → keep original
+        import logging as _lg
+        try:
+            _fr = getattr(resp.choices[0], "finish_reason", None)
+        except Exception:
+            _fr = None
+        _lg.getLogger("narasi").warning(
+            "whole-book revise DISCARDED by >=90%% guard: %d -> %d words (floor %d), "
+            "finish_reason=%s, max_tokens=%d, model=%s, cr=%d",
+            _ow, _nw, int(_ow * 0.9), _fr, safe_max, resolved, int(cr))
         return full_text, 0
     return new, int(cr)
 

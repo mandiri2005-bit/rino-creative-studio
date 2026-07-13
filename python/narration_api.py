@@ -686,6 +686,54 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("proper_noun_verify pass failed (non-fatal): %s", e)
 
+    # ── (0.75) PHANTOM-NAME scan (report-only) — story-bible bleed: a PERSON whose FIRST
+    # mention falls in the final 25% of the book with <=2 total mentions (kdrama eky9gcge
+    # "Shim Ro-ha" class: bible cast member surfaces once, in the finale, with
+    # presupposition phrasing). Runs AFTER the 0.7 proper_noun pass so table-driven variant
+    # unification has already collapsed aliases, and reads the story bible from
+    # result["canonical_facts"] for in_bible annotation. status FLAG/PASS only — never
+    # over_budget, never edits text (same FLAG-never-OVER contract as opening_motif).
+    # Gated NARASI_PHANTOM_NAME_SCAN (default OFF → skipped → byte-identical). FICTION-only:
+    # the defect class is story-bible cast bleed; nonfiction legitimately names a closing
+    # authority once near the end (fail-soft: unresolvable style → skip). Never raises.
+    try:
+        if str(os.environ.get("NARASI_PHANTOM_NAME_SCAN", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            _ph_fic = False
+            try:
+                from pakem import resolve_style as _ph_rs
+                _phe = _ph_rs(str(body.get("style") or "")) or {}
+                _ph_fic = bool(_phe.get("is_fiction")) or str(
+                    _phe.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+            except Exception:  # noqa: BLE001
+                _ph_fic = False
+            import narasi_proper_noun as _ppn
+            _phkey = "book" if result.get("book") else "output"
+            _phbk = result.get(_phkey) or ""
+            if _ph_fic and _phbk and hasattr(_ppn, "phantom_name_scan"):
+                # Tunables parsed separately so a malformed value disables only the
+                # override (with a named warning), never the whole scan silently.
+                try:
+                    _ph_tf = float(os.environ.get("NARASI_PHANTOM_TAIL_FRAC", "0.25"))
+                except Exception:  # noqa: BLE001
+                    log.warning("NARASI_PHANTOM_TAIL_FRAC malformed — using 0.25")
+                    _ph_tf = 0.25
+                _ph_tf = min(max(_ph_tf, 0.05), 1.0)
+                try:
+                    _ph_mm = int(os.environ.get("NARASI_PHANTOM_MAX_MENTIONS", "2"))
+                except Exception:  # noqa: BLE001
+                    log.warning("NARASI_PHANTOM_MAX_MENTIONS malformed — using 2")
+                    _ph_mm = 2
+                _phrep = _ppn.phantom_name_scan(
+                    _phbk, bible=str(result.get("canonical_facts") or ""),
+                    tail_frac=_ph_tf, max_mentions=_ph_mm)
+                result["phantom_name_report"] = _phrep
+                if _phrep.get("status") == "FLAG":
+                    log.warning("phantom-name scan: %d late-first-mention name(s) flagged (report-only): %s",
+                                _phrep.get("count", 0),
+                                [h.get("name") for h in _phrep.get("names") or []])
+    except Exception as e:  # noqa: BLE001
+        log.warning("phantom-name scan failed (non-fatal): %s", e)
+
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
     # Phase 3 (2026-07-05): pass `style` through so gate_text's per-style R-FG counters
     # (M threshold table, J source-note density, LL factual-ending, HH human-anchor,
@@ -812,6 +860,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 low = book.lower()
                 banned = [t for t in (spec.get("banned_tells") or []) if t and t.lower() in low]
                 moves = list(spec.get("required_moves") or [])
+                # CLUSTER-2 fail-open knob (default OFF): empty/unparsable LLM move-counts
+                # => one bounded retry, then verdict 'inconclusive' instead of 'off_register'.
+                # Prod eky9gcge logged off_register with moves={} banned=[] — zero evidence.
+                _rg_failopen = str(os.environ.get("NARASI_REGISTER_GATE_FAILOPEN", "0")).strip().lower() in ("1", "true", "yes", "on")
                 counts: dict = {}
                 if moves and book:
                     try:
@@ -820,21 +872,44 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 "each REQUIRED MOVE genuinely occurs in the text (a real, executed instance — not a "
                                 "faint echo). Moves: " + ", ".join(moves) + ". "
                                 "Return ONLY JSON mapping each move name to an integer count.")
-                        raw, _cr = await _narasi_cheap_call(_sys, (book or "")[:12000],
-                                                            tenant_id=tenant_id, user_id=user_id,
-                                                            job_uuid=job_uuid, json_mode=True)
-                        d = _narasi_parse_json(raw) if isinstance(raw, str) else (raw or {})
-                        if isinstance(d, dict):
-                            counts = {m: int(d.get(m) or 0) for m in moves}
+                        # _narasi_cheap_call never raises — a degraded relay returns ('', 0),
+                        # which parses to nothing. Flag ON: retry ONCE before giving up; treat a
+                        # bare '{}' as unparsable too. Flag OFF: single attempt, prior behavior.
+                        # Sampling (flag ON only): head-only [:12000] blinds the auditor to
+                        # per-book moves that land mid/late (warmth beat in Ch 3-4, finale
+                        # beats) — same 12k budget, sampled head+middle+tail instead.
+                        _rg_text = (book or "")[:12000]
+                        if _rg_failopen and len(book or "") > 12000:
+                            _rg_n = len(book)
+                            _rg_text = (book[:6000] + "\n[...]\n"
+                                        + book[_rg_n // 2 - 1500:_rg_n // 2 + 1500]
+                                        + "\n[...]\n" + book[-3000:])
+                        for _rg_attempt in (0, 1):
+                            raw, _cr = await _narasi_cheap_call(_sys, _rg_text,
+                                                                tenant_id=tenant_id, user_id=user_id,
+                                                                job_uuid=job_uuid, json_mode=True)
+                            d = _narasi_parse_json(raw) if isinstance(raw, str) else (raw or {})
+                            if isinstance(d, dict) and (d or not _rg_failopen):
+                                counts = {m: int(d.get(m) or 0) for m in moves}
+                            if counts or not _rg_failopen:
+                                break
+                            if _rg_attempt == 0:
+                                log.info("register-gate LLM scan returned empty/unparsable move-counts — retrying once")
                     except Exception as e:  # noqa: BLE001
                         log.warning("register-gate LLM scan failed (non-fatal): %s", e)
                 on_register = (not banned) and all(counts.get(m, 0) >= 1 for m in moves) if counts or not moves else False
                 verdict = "on_register" if on_register else "off_register"
+                if _rg_failopen and moves and not counts and not banned:
+                    # Empty counts are ABSENT evidence, not evidence of absence. With no
+                    # deterministic banned-tell hit either, off_register would rest on
+                    # nothing — record 'inconclusive' and skip the flag (fail-open).
+                    verdict = "inconclusive"
+                    log.info("register-gate scan inconclusive for %s (empty LLM move-counts after retry) — skipping off_register flag", style_key)
                 result["register_gate"] = {
                     "style": style_key, "moves": counts,
                     "banned_tells": banned, "verdict": verdict,
                 }
-                if verdict != "on_register":
+                if verdict == "off_register":
                     log.warning("register-gate: manuscript flagged off_register for %s (moves=%s banned=%s)",
                                 style_key, counts, banned)
                     # D (2026-07-07): ACT on off_register instead of only reporting. OPT-IN via
@@ -1171,6 +1246,8 @@ def _result_payload(result: dict) -> dict:
         "gates_manifest": result.get("gates_manifest"),
         "entity_report": result.get("entity_report"),
         "number_rendering": result.get("number_rendering"),
+        # phantom-name scan (0.75) — bounded: <=8 names, one short snippet each
+        "phantom_name_report": result.get("phantom_name_report"),
     }
 
 
@@ -1309,13 +1386,23 @@ async def _refund(meter_op: Optional[str], tenant_id: str, job_id: str) -> None:
 
 def _effective_regime(body: dict) -> str:
     """Precedence chain floor input (regime-precedence spec §1): job override else style
-    default. The living-guard and person-floor sit ABOVE this."""
+    default. The living-guard and person-floor sit ABOVE this.
+    Normalizes the registry-P1 spelling 'fiction' (kdrama_serial / romance_contemporary /
+    remaja_coming_of_age) to canonical 'fictional' (registry.py schema-v2 domain:
+    strict | hybrid | fictional) ON THE STYLE-DEFAULT BRANCH ONLY: every downstream
+    comparison tests == "fictional", so the raw 'fiction' value ran the FULL nonfiction
+    fact scan on fiction manuscripts (job eky9gcge) and skipped the mismatch detector +
+    biopic person-floor. An EXPLICIT body override of 'fiction' keeps its legacy
+    semantics (unknown value → fall through to the style default) so this bug fix
+    cannot widen which job overrides are honored. mythic_history / mythic_narrative
+    pass through unchanged."""
     r = str(body.get("factual_regime") or "").strip().lower()
     if r in ("strict", "hybrid", "fictional"):
         return r
     try:
         from pakem import resolve_style
-        return (resolve_style(str(body.get("style") or "")) or {}).get("factual_regime", "strict")
+        s = str((resolve_style(str(body.get("style") or "")) or {}).get("factual_regime", "strict"))
+        return "fictional" if s.strip().lower() == "fiction" else s
     except Exception:  # noqa: BLE001
         return "strict"
 
