@@ -167,7 +167,9 @@ def build_style_block(style, video_mode: bool = False) -> str:
                          for x in (_lane.get("small_numbers") or [])][:10]
                 _ts = [_lt(x) for x in (_lane.get("timestamp_minutes") or [])][:6]
                 _fds = [_lt(x) for x in (_lane.get("foods") or [])][:8]
-                if _nums or _ts or _fds:
+                _phr = [_lt(x) for x in (_lane.get("verbatim_phrases") or [])
+                        if len(_lt(x)) >= 12][:8]
+                if _nums or _ts or _fds or _phr:
                     rules = rules.rstrip() + (
                         "\n\nLANE NEGATIVE CONSTRAINTS (compact): previous stories in this exact "
                         "lane overused the following. NEVER use them for any number, time, or dish "
@@ -175,7 +177,9 @@ def build_style_block(style, video_mode: bool = False) -> str:
                         "pins are exempt — obey the sheet)."
                         + ((" Clock minutes to avoid: " + ", ".join(_ts) + ".") if _ts else "")
                         + ((" Numbers to avoid, digits or spelled: " + ", ".join(_nums) + ".") if _nums else "")
-                        + ((" Comfort foods to avoid: " + ", ".join(_fds) + ".") if _fds else ""))
+                        + ((" Comfort foods to avoid: " + ", ".join(_fds) + ".") if _fds else "")
+                        + ((" NEVER reproduce or near-vary these sentences/frames: \"" +
+                            "\"; \"".join(_phr) + "\".") if _phr else ""))
         except Exception:  # noqa: BLE001 — ledger is an enhancement, never blocks a chapter
             pass
     # Dual-path selector (dual-path doc §1): compare the style's NATIVE medium with the

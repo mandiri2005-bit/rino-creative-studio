@@ -443,8 +443,8 @@ def _treaty_key(tok: str) -> str:
 # 'OVER' — same contract as narasi_counters._opening_motif_scan: can never enter
 # over_budget or drive the diet loop). Detection only — never edits text. Never raises.
 _PHANTOM_NAME_RX = re.compile(
-    r"\b([A-Z][a-zA-Z]+(?:[-'’][A-Za-z]+)?"
-    r"(?:[ ][A-Z][a-zA-Z]+(?:[-'’][A-Za-z]+)?)+)")
+    r"\b([A-Z][a-zA-ZÀ-ÿ]+(?:[-'’][A-Za-zÀ-ÿ]+)?"
+    r"(?:[ ][A-Z][a-zA-ZÀ-ÿ]+(?:[-'’][A-Za-zÀ-ÿ]+)?)+)")
 # FP round-2 (rolls 2-3: 6/6 then 4/4 false positives). (b) geo/direction/institution
 # component stoplist — a candidate containing ANY of these is a place/org, not a person.
 _PHANTOM_GEOORG = frozenset({
@@ -461,6 +461,10 @@ _PHANTOM_GEOORG = frozenset({
     "Division", "Command", "Headquarters", "Directorate", "Branch",
     # round-4 (roll-6 FP 'Town Hall'): civic-building components
     "Hall", "Town",
+    # round-5.2 (roll-9 FPs): document-title components ('Formal Correction')
+    "Correction", "Formal", "Amendment", "Notice",
+    # climate-pattern terms (post-ñ-fix, 'El Niño' now survives whole — still not a person)
+    "El", "Niño", "Niña", "Nino", "Nina", "Oscillation",
 })
 # Month names as candidate COMPONENTS ('From May', 'By August the town…') are date
 # fragments, never persons (roll-5 'From May' FP — the phantom scan's only wrong flag).

@@ -431,6 +431,11 @@ def scan_interval_vs_dates_en(text: str) -> list[dict]:
         # confirm or refute them (a correct "five years ago" would flag). Skip.
         if m.group("rel").lower() in ("ago", "earlier"):
             continue
+        # r5.2: a span whose reference is a PRONOUN clause ("seven weeks before SHE
+        # understood") anchors to an undated personal event — same class, same skip.
+        if re.match(r"\s+(?:she|he|they|i|we|it|anyone|someone|her|his)\b",
+                    text[m.end():m.end() + 16] or "", re.I):
+            continue
         n = _en_num(m.group("n_word"))
         if n is None or n <= 0:
             continue
@@ -515,6 +520,21 @@ def _en_num_ext(tok: str) -> int | None:
         return None
     if t.replace("st", "").replace("nd", "").replace("rd", "").replace("th", "").isdigit():
         return int(re.sub(r"(st|nd|rd|th)$", "", t))
+    # thousands (r5.2 — roll-9's signature counters were 1,7xx-1,8xx spelled AND digit;
+    # the ≤400 cap + missing thousands parse made the scanner blind to the roll's
+    # biggest defect class): "one thousand, eight hundred and twenty-six" and "1,826".
+    t = t.replace(",", "")
+    if t.isdigit():
+        return int(t)   # comma-grouped digits ("1,826") arrive here post-strip
+    mth = re.match(r"(?:(one|two|three|four|five|six|seven|eight|nine)\s+)?thousand"
+                   r"(?:\s+and)?\s*(.*)$", t)
+    if mth:
+        base = (_en_num(mth.group(1)) or 1) * 1000
+        rest = (mth.group(2) or "").strip()
+        if not rest:
+            return base
+        r = _en_num_ext(rest)
+        return base + r if (r is not None and r < 1000) else None
     m = re.match(r"(?:(one|two|three|four|five|six|seven|eight|nine|a)\s+)?hundred(?:\s+and)?\s*(.*)$", t)
     if m:
         base = (_en_num(m.group(1)) or 1) * 100 if m.group(1) not in (None, "a") else 100
@@ -581,7 +601,7 @@ def scan_day_counters(text: str) -> list[dict]:
                 if any(a <= m.start() < b for a, b in seen_spans):
                     continue
                 n = _en_num_ext(m.group("n"))
-                if n is None or not (10 <= n <= 400):   # short counts = everyday prose
+                if n is None or not (10 <= n <= 3000):   # short counts = everyday prose
                     continue
                 near = [(abs(p - m.start()), p, doy) for p, doy in md if abs(p - m.start()) < 400]
                 if not near:
@@ -590,6 +610,41 @@ def scan_day_counters(text: str) -> list[dict]:
                 _, p, doy = near[0]
                 seen_spans.add((m.start(), m.end()))
                 pairs.append((m.start(), doy, n, m.group(0)))
+        # r5.2 COUNTER-REVERT (roll-9: 1,826 → 1,843 → 1,853 → 1,827/1,826 again — Ch8
+        # reused the ARRIVAL number after ~50 story-days): any value that reappears
+        # AFTER a larger value has been recorded is a frozen/reverted ledger. This
+        # works on UNPAIRED counters too (no nearby date needed) — collect all.
+        _revert_rxes = (
+            re.compile(r"(?i)\b(\d{1,2},\d{3}|\d{3,4})\s+days\b"),
+            re.compile(r"(?i)\b((?:one|two|three|four|five|six|seven|eight|nine)\s+thousand"
+                       r"[a-z ,-]{0,50}?)\s+days\b"),
+            re.compile(r"(?i)\b((?:one|two|three|four|five|six|seven|eight|nine)?\s*hundred"
+                       r"[a-z ,-]{0,40}?)\s+days\b"),
+        )
+        _allc: list[tuple[int, int]] = []
+        _spans_seen2: set = set()
+        for rx in _revert_rxes:
+            for m2 in rx.finditer(text):
+                if any(a <= m2.start() < b for a, b in _spans_seen2):
+                    continue
+                nv = _en_num_ext(m2.group(1))
+                if nv is not None and 100 <= nv <= 3000:
+                    _spans_seen2.add((m2.start(), m2.end()))
+                    _allc.append((m2.start(), nv))
+        _peak = -1
+        _vals_seen: set = set()
+        _reported: set = set()
+        for _pos, _nv in sorted(_allc):
+            if _nv < _peak - 1 and _nv in _vals_seen and (_nv, _peak) not in _reported:
+                _reported.add((_nv, _peak))
+                findings.append({
+                    "kind": "day_counter",
+                    "phrases": [str(_nv), str(_peak)],
+                    "note": f"day-counter REVERTED: {_nv} reappears after the count already "
+                            f"reached {_peak} — a frozen/copied duration, recount from the epoch",
+                })
+            _vals_seen.add(_nv)
+            _peak = max(_peak, _nv)
         for i in range(len(pairs)):
             for j in range(i + 1, len(pairs)):
                 (pa, da, na, fa), (pb, db, nb, fb) = pairs[i], pairs[j]

@@ -1142,15 +1142,24 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "official value AND a true value for one fact, the TRUE value is canonical and the official "
                         "one goes into false_versions. Include every named QUANTITY, list POSITION, and role-holder "
                         "the plot turns on. No prose.")
-                    _xraw, _xcc = await _xcall(_xsys, _cf[:12000], tenant_id=tenant_id,
+                    _xraw, _xcc = await _xcall(_xsys, _cf[:20000], tenant_id=tenant_id,
                                                user_id=user_id, job_uuid=job_uuid, json_mode=True)
                     if sink is not None and _xcc:
                         sink.credits += int(_xcc)
                     _xd = _xparse(_xraw) if isinstance(_xraw, str) else (_xraw or {})
+                    # r5.2: unwrap {"canon_registry": {...}} shape here too
+                    if isinstance(_xd, dict) and "events" not in _xd and isinstance(_xd.get("canon_registry"), dict):
+                        _xd = _xd["canon_registry"]
                     if isinstance(_xd, dict) and isinstance(_xd.get("events"), list) and _xd["events"]:
                         _reg = _xd
                         log.info("canon-registry: fallback extraction recovered %d event(s) from prose bible",
                                  len(_xd["events"]))
+                    else:
+                        # r5.2 (roll-9): this path failed SILENTLY for an entire roll while the
+                        # flag was live — the cheap call returned something without events and
+                        # nothing was logged. Name the failure so the next roll self-diagnoses.
+                        log.warning("canon-registry fallback returned no events — raw head: %s",
+                                    str(_xraw)[:220].replace("\n", " "))
                 except Exception as _xe:  # noqa: BLE001
                     log.warning("canon-registry fallback extraction failed (non-fatal): %s", _xe)
             _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None

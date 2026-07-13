@@ -2758,12 +2758,32 @@ def ledger_fuzzy_names(text: str, *, style_key: Optional[str] = None) -> dict:
                     break   # exact — the exact scan owns it
                 # same-initial requirement: suffix-driven pairs (Yeon-ok≈Byeong-ok,
                 # Jae-sung≈Tae-sun) are coincidence, not dodging; a dodge keeps the head.
-                if c[:1].lower() != b[:1].lower():
+                # r5.2: Korean romanization variants share a SOUND, not a letter — 노 is
+                # Noh/Roh/No, 이 is Lee/Yi/Rhee, 류 is Ryu/Yoo/Yu — so equivalence
+                # CLASSES stand in for raw initials (roll-9: Noh Gi-jun ≈ banned Roh).
+                _iq = {"n": "nrl", "r": "nrl", "l": "nrl", "y": "yr", "i": "iy"}
+                _ci, _bi = c[:1].lower(), b[:1].lower()
+                if _ci != _bi and _bi not in _iq.get(_ci, _ci):
                     continue
                 if _levenshtein_le2(c, b) and (c, b) not in seen:
                     seen.add((c, b))
                     out["hits"].append({"name": c, "near": b})
                     break
+        # r5.2 PLACE-STEM net: an invented town orbiting a banned one by suffix swap
+        # (roll-9: banned Yeongdeok → REAL neighboring Yeonghae) — shared prefix ≥5
+        # chars with a banned place = WARN. Report-only; curation arbitrates.
+        try:
+            banned_places = [_ledger_term(x).split()[0] for x in (lane.get("places") or []) if _ledger_term(x)]
+            place_cands = sorted({m.group(1) for m in re.finditer(
+                r"\b([A-Z][a-zà-ÿ]{4,}(?:-(?:ro|gil|dong|gu|si|gun|do|myeon|eup|ri))?)\b", text or "")})
+            for c in place_cands[:60]:
+                for b in banned_places:
+                    if len(b) >= 5 and c.lower() != b.lower() and c[:5].lower() == b[:5].lower()                             and (c, b) not in seen:
+                        seen.add((c, b))
+                        out["hits"].append({"name": c, "near": b, "class": "place-stem"})
+                        break
+        except Exception:  # noqa: BLE001
+            pass
         out["status"] = "FLAG" if out["hits"] else "PASS"
         return out
     except Exception:  # noqa: BLE001

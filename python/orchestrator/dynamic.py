@@ -384,6 +384,21 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
             "present (an incoming storm, a flood risk), the lead ACTS on it on-page (a warning "
             "issued, an evacuation started) — the protagonist may not ignore the same class of "
             "danger the backstory punished someone for ignoring.\n\n")
+        # r5.2 TITLE BANS: chapter titles are born HERE, before the bible, so the lane
+        # ledger's title findings never reached them ('The Weight of Clear Skies'
+        # VERBATIM across two rolls; 'weight' in titles 7/9). Data-driven, fail-open.
+        try:
+            import json as _tj
+            _tpath = os.path.join(os.path.dirname(__file__), "..", "pakem", "lane_ledger.json")
+            with open(_tpath, encoding="utf-8") as _tf:
+                _tlane = (_tj.load(_tf) or {}).get((style or "").strip()) or {}
+            _ttok = [str(x) for x in (_tlane.get("banned_title_tokens") or [])][:14]
+            if _ttok:
+                _mand += ("CHAPTER TITLES: previous books in this lane overused these title "
+                          "words/frames — do NOT use any of them in any chapter title: "
+                          + ", ".join(_ttok) + ". Invent fresh title shapes.\n\n")
+        except Exception:  # noqa: BLE001 — titles enhancement never blocks the outline
+            pass
     return (
         f"TOPIC:\n{topic}\n\n"
         f"Design a {n}-chapter outline{style_clause}. The chapters must progress "
@@ -752,7 +767,13 @@ async def build_story_bible(
             "flood night, the accident, the signing) to ONE absolute date-and-time line "
             "('FLOOD NIGHT = 13 Aug, 20:30'); every retrospective reference — dates, weekdays, "
             "hours, 'X years ago' spans — must DERIVE from that pinned line, and no flashback "
-            "may restate the anchor with a different date or hour.\n"
+            "may restate the anchor with a different date or hour. If the story runs a DAY "
+            "COUNTER (a drought count, a vigil count), pin its EPOCH as an explicit line "
+            "('DROUGHT EPOCH = 3 June 2019; every day-count in every chapter derives from "
+            "THIS date') — counters must NEVER be re-derived from the protagonist's arrival "
+            "or any other event, and a chapter may never reuse an earlier chapter's count "
+            "after story time has advanced (roll-9 class: the arrival-day number reappearing "
+            "fifty days later).\n"
             "11. SIGNATURE-PROP CUSTODY — for each SIGNATURE OBJECT the story's imagery leans on "
             "(the umbrella, the letter, the ring — at most 3), pin a CUSTODY CHAIN: one line per "
             "custody CHANGE (who hands it to whom, in which chapter, via what ON-PAGE handover) "

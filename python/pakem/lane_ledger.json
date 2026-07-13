@@ -219,6 +219,20 @@
       "FACT-TUPLE toll pair 3-vs-14 (2/8 2026-07-13 rain-8roll: R6,R8)",
       "European-conference handwriting tell (crossed sevens, Geneva R3 / Hamburg R8) — forensic-tell class, invent a different tell",
       "eleven-as-hidden-count rhetoric ('eleven ghosts' = 14-3, R8) — the banned 11 structuring arithmetic"
+    ],
+    "banned_title_tokens": [
+      "weight",
+      "the weight of",
+      "anatomy of",
+      "false",
+      "ledger written in",
+      "price of a clear sky",
+      "cost of a",
+      "clear sky",
+      "gathering",
+      "first drop",
+      "when the clouds",
+      "dry spell"
     ]
   }
 }
