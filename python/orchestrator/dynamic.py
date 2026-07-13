@@ -350,6 +350,36 @@ _OUTLINE_SYSTEM = (
 def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
                     words_per_chapter: int) -> str:
     style_clause = f" in a {style} style" if style else ""
+    # ROUND-5 STRUCTURAL MANDATES (NARASI_OUTLINE_MANDATES, default OFF, fiction only).
+    # Seven rolls x four lenses converged on ONE diagnosis: the remaining defects are
+    # ABSENCES (a delivery scene never allocated, a reconciliation bridge missing, a
+    # secondary with no arc, evidence that costs nothing) — and scenes are BORN here,
+    # in the outline. Every downstream gate (bible pins, counters, critic, revise)
+    # can only protect what the outline allocated; the revise pass is explicitly
+    # forbidden from inserting scenes. OFF ⟹ prompt byte-identical.
+    _mand = ""
+    try:
+        from .static import _is_fiction_style as _ofis
+        _ofic = bool(_ofis(style)) if style else False
+    except Exception:  # noqa: BLE001 — mandates are an enhancement
+        _ofic = False
+    if _ofic and os.environ.get("NARASI_OUTLINE_MANDATES", "0").strip().lower() in ("1", "true", "yes", "on"):
+        _mand = (
+            "\n\nSTRUCTURAL MANDATES (fiction):\n"
+            "1. KEYSTONE SLOTS — every decision, confession, evidence-DISCOVERY, or handover the "
+            "plot depends on gets its OWN scene, named inside a chapter summary ('Ch6: the "
+            "postmaster delivers the held letters; the brother reads the first one on-page'). A "
+            "keystone implied between chapters is a structural defect.\n"
+            "2. PAYOFF OWNERS — any hook a chapter opens (a delayed envelope, a deadline, a "
+            "threat) names the LATER chapter that pays it, written into that chapter's summary.\n"
+            "3. ONE SECONDARY ARC — one non-lead character gets a stated want and an on-page "
+            "turn spanning at least two chapters.\n"
+            "4. BRIDGE BEAT — if the leads rupture, allocate the beat that turns the wounded "
+            "party back (what they learn or receive that changes their mind) BEFORE any reunion "
+            "scene; a reunion without its bridge reads unearned.\n"
+            "5. EVIDENCE COSTS — each major discovery costs the finder something on-page (time, "
+            "risk, a relationship, an admission) — never a convenient box that happens to hold "
+            "everything.\n\n")
     return (
         f"TOPIC:\n{topic}\n\n"
         f"Design a {n}-chapter outline{style_clause}. The chapters must progress "
@@ -368,6 +398,7 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
         "rather than letting a generic sub-plot (a fraud, a buried record) resolve while the hook "
         "hangs. A premise with no such posed puzzle owes no answer-chapter — do not invent one. "
         f"Titles and summaries in {language}.\n\n"
+        + _mand +
         "Return ONLY a JSON array, no prose, no code fences, in EXACTLY this shape:\n"
         '[{"title": "chapter title", "summary": "1-2 sentences on what it covers", '
         f'"words": {words_per_chapter}}}]'

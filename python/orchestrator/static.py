@@ -540,11 +540,61 @@ async def narrate_chapters(
         _fic = _is_fiction_style(style)
         try:
             from .dynamic import build_story_bible
-            _bible = await build_story_bible(
-                topic, list(ctx.chapters or chapters), is_fiction=_fic,
-                style=style, language=language,
-                manager_model=m_model, telemetry_sink=telemetry_sink,
-            )
+            # ── BEST-OF-N SKELETON (NARASI_BIBLE_BEST_OF, default 0=OFF, round-5) ──
+            # One roll samples the generator's MEDIAN skeleton; every craft ceiling the
+            # 7-roll lens corpus names (keystone allocation, secondary arc, evidence
+            # cost, bridge beat) is a SKELETON property decided at bible time. N
+            # candidates in PARALLEL cost the same wall-clock as one (the bible is
+            # the serial bottleneck), plus one ~5s cheap judge call. Winner flows into
+            # the untouched pin → validator → enforce path. Any failure ⟹ candidate #1
+            # (or the single-call path when N<2). Cost: N× bible tokens, only when set.
+            _bo_n = 0
+            if _fic:
+                try:
+                    _bo_n = max(0, min(3, int(str(os.environ.get("NARASI_BIBLE_BEST_OF", "0")).strip() or "0")))
+                except Exception:  # noqa: BLE001
+                    _bo_n = 0
+            if _bo_n >= 2:
+                _cands_raw = await asyncio.gather(
+                    *[build_story_bible(
+                        topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                        style=style, language=language,
+                        manager_model=m_model, telemetry_sink=telemetry_sink)
+                      for _ in range(_bo_n)],
+                    return_exceptions=True)
+                _cands = [c for c in _cands_raw if isinstance(c, str) and c.strip()]
+                _bible = _cands[0] if _cands else ""
+                if len(_cands) >= 2:
+                    try:
+                        from laozhang_api import _narasi_cheap_call as _bj_call, _narasi_parse_json as _bj_parse
+                        _bj_sys = (
+                            "You are judging candidate STORY BIBLES written for the same premise and "
+                            "outline. Pick the one that will produce the strongest serialized melodrama. "
+                            "Score each on: (1) KEYSTONE ALLOCATION — decisions, confessions, "
+                            "evidence-discoveries and handovers pinned to named ON-PAGE scenes; "
+                            "(2) SECONDARY ARC — a non-lead with a stated want and a turn; "
+                            "(3) EVIDENCE COST — discoveries cost the finder something, no convenient "
+                            "single-box finds; (4) SPINE — calendar/timeline complete and arithmetic-"
+                            "consistent; (5) FRESHNESS — specific, non-generic names and beats. Return "
+                            "ONLY JSON: {\"winner\": <1-based index>, \"reason\": \"<one line>\"}.")
+                        _bj_user = "\n\n".join(
+                            f"===== CANDIDATE {i + 1} =====\n{c[:9000]}" for i, c in enumerate(_cands))
+                        _bj_raw, _bj_cr = await _bj_call(_bj_sys, _bj_user, tenant_id=tenant_id,
+                                                         user_id=None, job_uuid=None, json_mode=True)
+                        _bj = _bj_parse(_bj_raw) if isinstance(_bj_raw, str) else (_bj_raw or {})
+                        _w = int((_bj or {}).get("winner") or 1)
+                        if 1 <= _w <= len(_cands):
+                            _bible = _cands[_w - 1]
+                        log.info("bible best-of-%d: %d candidate(s), winner #%d — %s",
+                                 _bo_n, len(_cands), _w, str((_bj or {}).get("reason") or "")[:120])
+                    except Exception as _bje:  # noqa: BLE001 — judge is an enhancement
+                        log.warning("bible best-of judge failed (non-fatal, candidate #1 kept): %s", _bje)
+            else:
+                _bible = await build_story_bible(
+                    topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                    style=style, language=language,
+                    manager_model=m_model, telemetry_sink=telemetry_sink,
+                )
             if _bible:
                 ctx.canonical_facts = _bible
                 ctx.facts_are_bible = _fic  # True ⟹ invent framing; False ⟹ [VERIFY] framing
