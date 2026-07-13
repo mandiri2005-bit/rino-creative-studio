@@ -108,51 +108,11 @@ _DB_STATUS = {
 
 
 
-_NUM_WORDS_XL = {
-    # en → int
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
-    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
-    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "nineteen": 19,
-    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "ninety": 90,
-    # id → int (the premise language of this studio's briefs)
-    "satu": 1, "dua": 2, "tiga": 3, "empat": 4, "lima": 5, "enam": 6, "tujuh": 7,
-    "delapan": 8, "sembilan": 9, "sepuluh": 10, "sebelas": 11, "belas": None,
-}
-
-
 def _premise_term_in_topic(term: str, topic: str) -> bool:
-    """ROUND-8: the premise exemption greps the ENGLISH term in the topic — but this
-    studio's briefs are INDONESIAN, so banned «eleven» was injected for scrubbing on
-    a premise whose load-bearing count was written «sebelas» (roll-11: the revise was
-    asked to remove the story's central number and only failed to land by luck).
-    Word-boundary match first; for numeric terms, match by VALUE across en/id words
-    and digits."""
-    import re as _xre
-    if not term:
-        return False
-    t = topic or ""
-    if _xre.search(r"(?i)\b" + _xre.escape(term) + r"\b", t):
-        return True
-    _val = None
-    _tl = term.strip().lower()
-    if _tl.isdigit():
-        _val = int(_tl)
-    elif _tl in _NUM_WORDS_XL and _NUM_WORDS_XL[_tl]:
-        _val = _NUM_WORDS_XL[_tl]
-    if _val is None:
-        return False
-    if _xre.search(r"\b" + str(_val) + r"\b", t):
-        return True
-    for _w, _v in _NUM_WORDS_XL.items():
-        if _v == _val and _xre.search(r"(?i)\b" + _w + r"\b", t):
-            return True
-    # id compounds: "X belas" (11-19) — sebelas already listed; "dua belas" etc.
-    if 12 <= _val <= 19:
-        _ones = {2: "dua", 3: "tiga", 4: "empat", 5: "lima", 6: "enam", 7: "tujuh", 8: "delapan", 9: "sembilan"}
-        _w = _ones.get(_val - 10)
-        if _w and _xre.search(r"(?i)\b" + _w + r"\s+belas\b", t):
-            return True
-    return False
+    """ROUND-10: moved to narasi_counters.premise_term_in_topic (static needs it too
+    and cannot import this module); thin delegation kept for call sites and tests."""
+    import narasi_counters as _pnc
+    return _pnc.premise_term_in_topic(term, topic)
 
 
 def _r7_env_on(name: str) -> bool:
@@ -209,6 +169,13 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
                     break
         # — numeric ledger: one referent, multiple values (unintentional drift) —
         if _r7_env_on("NARASI_NUMERIC_LEDGER_ENFORCE"):
+            for e in ((result.get("numeric_ledger_report") or {}).get("sum_errors") or [])[:2]:
+                out.append({
+                    "type": "numeric_arithmetic", "severity": "high",
+                    "evidence": str(e.get("quote") or e.get("note"))[:200],
+                    "fix": (f"The stated total is wrong: {e.get('note')}. Correct the total to "
+                            f"{e.get('expected')} EVERYWHERE it appears, and if a person is counted "
+                            f"in two components, make the narration subtract them explicitly.")})
             for r in ((result.get("numeric_ledger_report") or {}).get("drifts") or [])[:3]:
                 out.append({
                     "type": "numeric_drift", "severity": "high",
@@ -220,6 +187,37 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
     except Exception:  # noqa: BLE001
         return out
     return out
+
+
+def _numeric_sum_errors(equations: list) -> list[dict]:
+    """ROUND-10: three rolls of one premise produced three DIFFERENT wrong totals for
+    the same subtraction (17-should-be-16, 18-should-be-17) — every one failed to
+    subtract the mislabeled body counted twice. Deterministic: components must sum to
+    the stated total; a named overlap means the correct total is sum-1. Pure function."""
+    import re as _sre
+    out: list[dict] = []
+    for eq in equations or []:
+        if not isinstance(eq, dict):
+            continue
+        try:
+            comps = [int(_sre.sub(r"[^\d]", "", str(c))) for c in (eq.get("components") or []) if _sre.sub(r"[^\d]", "", str(c))]
+            total = int(_sre.sub(r"[^\d]", "", str(eq.get("stated_total") or "")))
+        except Exception:  # noqa: BLE001
+            continue
+        if not comps or total <= 0:
+            continue
+        _sum = sum(comps)
+        _overlap = str(eq.get("overlap") or "").strip()
+        _want = _sum - 1 if _overlap else _sum
+        if total != _want:
+            out.append({
+                "stated": total, "component_sum": _sum, "overlap": _overlap,
+                "expected": _want, "quote": str(eq.get("quote") or "")[:120],
+                "chapter": eq.get("chapter"),
+                "note": (f"stated total {total} but components sum to {_sum}"
+                         + (f" with «{_overlap}» counted in two components — correct total {_want}"
+                            if _overlap else f" — correct total {_want}"))})
+    return out[:4]
 
 
 def _numeric_drifts(referents: list) -> list[dict]:
@@ -972,6 +970,16 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _ta, _tb = _tt.strip().lower(), _tr.strip().lower()
                     if _ta and _tb and _ta != _tb and _ta not in _tb and _tb not in _ta:
                         _tiwarn.append(f"ch {_tn} header '{_tt}' != outline title '{_tr}'")
+            try:
+                # ROUND-10: 'Weight' shipped again in a FINAL header — check final
+                # headers against the lane's banned tokens too (outline check can be
+                # bypassed by writer retitles).
+                from orchestrator.dynamic import _title_ban_hits as _tbh_fn
+                _tbh2 = _tbh_fn([{"title": t} for _, t in _tihdrs], str(body.get("style") or ""))
+                if _tbh2:
+                    _tiwarn.extend(f"banned-token: {h}" for h in _tbh2[:3])
+            except Exception:  # noqa: BLE001
+                pass
             if _tiwarn:
                 log.warning("title integrity: %d issue(s): %s", len(_tiwarn), _tiwarn[:4])
     except Exception as e:  # noqa: BLE001
@@ -1058,8 +1066,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "official/covered-up value with a true value (cover-up plots), set "
                         "intentional_contrast=true for that referent. Return ONLY JSON: "
                         "{\"referents\":[{\"name\":\"<referent>\",\"intentional_contrast\":false,"
-                        "\"values\":[{\"value\":\"<as written>\",\"chapter\":<n>}]}]} — max 20 referents, "
-                        "only numbers the plot depends on.")
+                        "\"values\":[{\"value\":\"<as written>\",\"chapter\":<n>}]}],"
+                        "\"equations\":[{\"stated_total\":\"<number>\",\"components\":[\"<n1>\",\"<n2>\"],"
+                        "\"overlap\":\"<name of any person counted in TWO components, else empty>\","
+                        "\"quote\":\"<short>\",\"chapter\":<n>}]} — max 20 referents; equations = every "
+                        "stated arithmetic claim (a total with its parts); values as PLAIN NUMBERS "
+                        "without units. If the story itself establishes that one person appears in two "
+                        "components (a mislabeled body counted both officially and among the hidden), "
+                        "NAME them in overlap — that is a double-count the total must subtract.")
                     _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:60000], tenant_id=tenant_id,
                                                   user_id=user_id, job_uuid=job_uuid, json_mode=True)
                     if sink is not None and _nlcc:
@@ -1112,8 +1126,13 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             log.warning("numeric ledger returned no referents on a %d-char book — raw head: %s",
                                         len(_nlbk), str(_nlraw)[:200].replace("\n", " "))
                     _nldr = _numeric_drifts(_nlrefs if isinstance(_nlrefs, list) else [])
+                    _nleq = (_nld or {}).get("equations") if isinstance(_nld, dict) else None
+                    _nlse = _numeric_sum_errors(_nleq if isinstance(_nleq, list) else [])
                     result["numeric_ledger_report"] = {
-                        "referents": len(_nlrefs or []), "drifts": _nldr}
+                        "referents": len(_nlrefs or []), "drifts": _nldr, "sum_errors": _nlse}
+                    if _nlse:
+                        log.warning("numeric ledger: %d arithmetic error(s): %s",
+                                    len(_nlse), [e["note"][:90] for e in _nlse[:3]])
                     if _nldr:
                         log.warning("numeric ledger: %d referent(s) with conflicting values: %s",
                                     len(_nldr), [f"{d['referent']}={d['values']}" for d in _nldr[:4]])
@@ -1276,6 +1295,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                    f"premise-specific choice (previous stories in this lane already "
                                    f"used it); keep the sentence's meaning and rhythm."})
                     for f in ((_mctrs.get("timeline_arith") or {}).get("findings") or [])[:4]:
+                        if (f.get("kind") == "span_alternation"
+                                and _r7_env_on("NARASI_NUMERIC_LEDGER")):
+                            # ROUND-10: roll-13's 14y-vs-15y alternation was two TRUE values
+                            # (fire 15y ago, demolition/letters 14y) — injecting it nudged
+                            # CORRECT text. The referent-aware numeric gate owns value drift.
+                            continue
                         _mech.append({
                             "type": "timeline_arithmetic", "severity": "high",
                             "evidence": str(f.get("context") or f.get("note") or "")[:200],
@@ -1690,6 +1715,37 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 if _forks:
                     log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only): %s",
                                 len(_forks), job_id, [str(f)[:90] for f in _forks[:5]])
+                    # ROUND-10 (NARASI_CANON_ENFORCE_NONREVEAL, default OFF): forks on
+                    # WHEN/PARTICIPANTS fields are mechanical attribution errors (roll-13:
+                    # WHO opened the door forked across four chapters) — repairing them
+                    # spoils no reveal. false_versions/summary/key_action forks stay
+                    # report-only (r4.1 reveal protection). ONE bounded chunked-revise
+                    # pass, cap 4, never raises.
+                    try:
+                        if str(os.environ.get("NARASI_CANON_ENFORCE_NONREVEAL", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                            _nrv = [f for f in _forks
+                                    if str((f or {}).get("field") or "").split(".")[0] in ("when", "participants")][:4]
+                            if _nrv:
+                                _nrviol = [{
+                                    "type": "canon_attribution", "severity": "high",
+                                    "evidence": str(f.get("found") or "")[:200],
+                                    "fix": (f"The fact sheet pins event «{f.get('event')}» {f.get('field')} "
+                                            f"differently than this chapter states — align the chapter to "
+                                            f"the fact sheet's version; change nothing else.")}
+                                    for f in _nrv]
+                                from laozhang_api import _narasi_revise_chunked as _nrev
+                                _nrmodel = str(body.get("model") or "") or "claude-opus-4-6"
+                                _nrnew, _nrcr = await _nrev(_cbook, _nrviol, style, language, _nrmodel,
+                                                            tenant_id=tenant_id, user_id=user_id,
+                                                            job_uuid=job_uuid)
+                                if sink is not None and _nrcr:
+                                    sink.credits += int(_nrcr)
+                                if _nrnew and len(str(_nrnew).split()) >= int(len(_cbook.split()) * 0.9):
+                                    result["book" if result.get("book") else "output"] = str(_nrnew)
+                                    log.info("canon-enforce: %d non-reveal fork(s) sent to revise — book updated",
+                                             len(_nrviol))
+                    except Exception as _nre:  # noqa: BLE001
+                        log.warning("canon-enforce non-reveal failed (non-fatal): %s", _nre)
                     # enforce (opt-in, default OFF): feed the forks to ONE bounded whole-book revise,
                     # reusing the #53 revise infra + its >=90%-word guard. Never blocks; keeps original.
                     if str(os.environ.get("NARASI_CANON_DIFF_REVISE", "0")).strip().lower() in ("1", "true", "yes", "on"):

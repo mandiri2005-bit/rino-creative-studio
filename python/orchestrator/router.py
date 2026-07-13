@@ -381,6 +381,34 @@ async def _run_topic_to_book(req: dict, settings: "_Settings", *,
     except (TypeError, ValueError):
         n_chapters = 5
     words_per = int(req.get("words_per_chapter", req.get("word_target", 800)) or 800)
+    # ROUND-10 (NARASI_PREMISE_WORD_TARGET, default OFF): three rolls of one premise
+    # shipped ~52% of the commissioned length because the brief's explicit
+    # "3.600–4.000 kata / episode" never reached words_per_chapter. When the topic
+    # states a per-chapter target (id or en), the premise IS the contract — override.
+    if str(os.environ.get("NARASI_PREMISE_WORD_TARGET", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            import re
+            _wt_rx = re.compile(
+                r"(\d{1,2}[.,]?\d{3})\s*[–\-—]\s*(\d{1,2}[.,]?\d{3})\s*(?:kata|words)|"
+                r"(?:kata|words)\s*(?:per|/)\s*(?:episode|chapter|bab)\D{0,12}(\d{1,2}[.,]?\d{3})|"
+                r"(\d{1,2}[.,]?\d{3})\s*(?:kata|words)\s*(?:per|/)\s*(?:episode|chapter|bab)", re.I)
+            _cands = []
+            for m in _wt_rx.finditer(str(topic or "")):
+                nums = [g for g in m.groups() if g]
+                vals = [int(re.sub(r"[.,]", "", g)) for g in nums]
+                if len(vals) == 2:
+                    _cands.append((vals[0] + vals[1]) // 2)
+                elif vals:
+                    _cands.append(vals[0])
+            _cands = [v for v in _cands if 500 <= v <= 6000]
+            if _cands:
+                _wp_new = _cands[0]
+                if _wp_new != words_per:
+                    log.info("premise word-target: %d words/chapter parsed from the brief (was %d) — premise wins",
+                             _wp_new, words_per)
+                    words_per = _wp_new
+        except Exception as _wte:  # noqa: BLE001
+            log.warning("premise word-target parse failed (non-fatal): %s", _wte)
 
     if settings.orch_mode == "static":
         # Forced static: no manager outline call — use the deterministic outline.

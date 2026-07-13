@@ -2684,6 +2684,48 @@ _REAL_BRANDS_LONG = (
 # Halla) only count WITH a corporate tail — same rule as the two-letter groups.
 _REAL_BRANDS_SHORT = ("SK", "LG", "GS", "CJ", "KT", "DL",
                       "Booyoung", "Hoban", "Halla", "HDC", "Taeyoung")
+_NUM_WORDS_XL = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "ninety": 90,
+    "satu": 1, "dua": 2, "tiga": 3, "empat": 4, "lima": 5, "enam": 6, "tujuh": 7,
+    "delapan": 8, "sembilan": 9, "sepuluh": 10, "sebelas": 11,
+}
+
+
+def premise_term_in_topic(term: str, topic: str) -> bool:
+    """ROUND-10 (moved here from narration_api so orchestrator.static can use it
+    without a circular import): premise exemption with cross-language number
+    matching — banned «eleven» is premise-supplied when the Indonesian brief says
+    «sebelas». Word-boundary first; numeric terms match by VALUE across en/id
+    words and digits."""
+    if not term:
+        return False
+    t = topic or ""
+    if re.search(r"(?i)\b" + re.escape(term) + r"\b", t):
+        return True
+    _val = None
+    _tl = term.strip().lower()
+    if _tl.isdigit():
+        _val = int(_tl)
+    elif _tl in _NUM_WORDS_XL:
+        _val = _NUM_WORDS_XL[_tl]
+    if _val is None:
+        return False
+    if re.search(r"\b" + str(_val) + r"\b", t):
+        return True
+    for _w, _v in _NUM_WORDS_XL.items():
+        if _v == _val and re.search(r"(?i)\b" + _w + r"\b", t):
+            return True
+    if 12 <= _val <= 19:
+        _ones = {2: "dua", 3: "tiga", 4: "empat", 5: "lima", 6: "enam", 7: "tujuh", 8: "delapan", 9: "sembilan"}
+        _w = _ones.get(_val - 10)
+        if _w and re.search(r"(?i)\b" + _w + r"\s+belas\b", t):
+            return True
+    return False
+
+
 def _lev_le1(a: str, b: str) -> bool:
     """Edit distance <= 1 (round-8: Hanshin≈Hanjin — the model orbited the
     BLOCKLIST itself one roll after Hanjin was banned)."""

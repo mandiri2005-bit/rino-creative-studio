@@ -7810,7 +7810,13 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
             if _i > 0:
                 import logging as _lg
                 _lg.getLogger("narasi").info("consistency critic: primary timed out — verdict via fallback %s", _cm)
-            _cqp = _narasi_parse_json(raw)
+            # ROUND-10: 4/4 long-book rolls returned the verdict wrapped in ```json fences
+            # and the parse silently dropped it — roll-13's discarded verdict contained a
+            # real canon_fork catch. Strip fences before parsing.
+            import re as _fre
+            _craw = _fre.sub(r"^\s*```(?:json)?\s*", "", str(raw or "").strip())
+            _craw = _fre.sub(r"\s*```\s*$", "", _craw)
+            _cqp = _narasi_parse_json(_craw)
             if not isinstance(_cqp, dict) or _cqp.get("score") is None:
                 # ROUND-8 (rolls 11-12: score=None twice on 20k-word books, silently) —
                 # the raw head tells the next roll whether this is truncation, a refusal,

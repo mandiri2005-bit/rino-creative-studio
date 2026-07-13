@@ -586,7 +586,10 @@ async def narrate_chapters(
                             "only documents and verdicts about them; (7) CAST PERSISTENCE — every "
                             "named supporting character is given a RETURN appearance or a stated exit; "
                             "family members central to the premise (a mother, a mentor) get at least "
-                            "one scene of their own, never introduced-then-forgotten. Return "
+                            "one scene of their own, never introduced-then-forgotten. "
+                            "When candidates score similarly on criteria 1-5, criteria 6-7 DECIDE "
+                            "the winner — a skeleton that embodies its antagonist and keeps its "
+                            "cast alive beats an otherwise-equal one that does not. Return "
                             "ONLY JSON: {\"winner\": <1-based index>, \"reason\": \"<one line>\"}.")
                         _bj_user = "\n\n".join(
                             f"===== CANDIDATE {i + 1} =====\n{c[:9000]}" for i, c in enumerate(_cands))
@@ -611,6 +614,63 @@ async def narrate_chapters(
                 ctx.facts_are_bible = _fic  # True ⟹ invent framing; False ⟹ [VERIFY] framing
                 log.info("narrate_chapters: %s pinned (%d chars, style=%s, fiction=%s)",
                          "story bible" if _fic else "continuity sheet", len(_bible), style, _fic)
+                # ROUND-10 ANTAGONIST SCENE ALLOCATION (NARASI_ANTAG_SCENE_CHECK, default
+                # OFF): the opposing power stayed faceless 16/16 files even with the motive
+                # pin (CRAFT_LEVERS_V2) live — pins buy MOTIVE, not SCENES; an unallocated
+                # scene never gets written on a 2k-word canvas. Extract-and-check over the
+                # outline: if no chapter gives the antagonist an on-page scene, ONE bounded
+                # amendment call rewrites a single mid-book chapter summary. Never raises.
+                try:
+                    if (_fic and str(os.environ.get("NARASI_ANTAG_SCENE_CHECK", "0")).strip().lower() in ("1", "true", "yes", "on")):
+                        from laozhang_api import _narasi_cheap_call as _as_call, _narasi_parse_json as _as_parse
+                        _as_ch = list(ctx.chapters or chapters or [])
+                        _as_outline = "\n".join(
+                            f"{i + 1}. {str((c or {}).get('title') or '')} — {str((c or {}).get('summary') or '')[:220]}"
+                            for i, c in enumerate(_as_ch) if isinstance(c, dict))
+                        if _as_outline:
+                            _as_sys = (
+                                "You are checking a chapter outline against its story fact-sheet. Question: "
+                                "does ANY chapter give the story's OPPOSING POWER (the antagonist person or "
+                                "the responsible institution's named officer) an ON-PAGE scene — a "
+                                "confrontation, deposition, offer, threat, or appearance — rather than "
+                                "existing only in documents, verdicts and reports? Return ONLY JSON: "
+                                "{\"allocated\": true|false, \"chapter\": <n or null>, \"antagonist\": \"<who>\"}")
+                            _as_raw, _as_cr = await _as_call(_as_sys,
+                                                             "OUTLINE:\n" + _as_outline + "\n\nFACT-SHEET (head):\n" + _bible[:3500],
+                                                             tenant_id=tenant_id, user_id=None,
+                                                             job_uuid=None, json_mode=True)
+                            _as_d = _as_parse(_as_raw) if isinstance(_as_raw, str) else (_as_raw or {})
+                            if isinstance(_as_d, dict) and _as_d.get("allocated") is False:
+                                _as_sys2 = (
+                                    "The outline below never puts the opposing power on-page. Pick ONE chapter "
+                                    "between the midpoint and the second-to-last, and rewrite ONLY its summary "
+                                    "so it now contains one on-page scene with the antagonist "
+                                    f"({str(_as_d.get('antagonist') or 'the responsible officer')[:60]}) — a "
+                                    "confrontation, deposition, offer or threat that fits the existing beats; "
+                                    "keep every other element of that summary. Return ONLY JSON: "
+                                    "{\"chapter\": <n>, \"summary\": \"<the full rewritten summary>\"}")
+                                _as_raw2, _as_cr2 = await _as_call(_as_sys2, _as_outline,
+                                                                   tenant_id=tenant_id, user_id=None,
+                                                                   job_uuid=None, json_mode=True)
+                                _as_d2 = _as_parse(_as_raw2) if isinstance(_as_raw2, str) else (_as_raw2 or {})
+                                try:
+                                    _as_n = int((_as_d2 or {}).get("chapter") or 0)
+                                    _as_sum = str((_as_d2 or {}).get("summary") or "").strip()
+                                except Exception:  # noqa: BLE001
+                                    _as_n, _as_sum = 0, ""
+                                if 2 <= _as_n <= len(_as_ch) and len(_as_sum) > 60 and isinstance(_as_ch[_as_n - 1], dict):
+                                    _as_ch[_as_n - 1]["summary"] = _as_sum
+                                    if ctx.chapters:
+                                        ctx.chapters = _as_ch
+                                    log.info("antag-scene check: no on-page antagonist scene — chapter %d summary amended (%s)",
+                                             _as_n, str(_as_d.get("antagonist") or "?")[:50])
+                                else:
+                                    log.info("antag-scene check: amendment unusable — outline kept")
+                            else:
+                                log.info("antag-scene check: allocated=%s chapter=%s",
+                                         (_as_d or {}).get("allocated"), (_as_d or {}).get("chapter"))
+                except Exception as _ase:  # noqa: BLE001
+                    log.warning("antag-scene check failed (non-fatal): %s", _ase)
                 # LEDGER VALIDATOR at BIBLE time (NARASI_LEDGER_VALIDATOR, default OFF):
                 # a ledger hit committed in the bible poisons every chapter (roll-3
                 # 'eleven-month drought'), so scan the bible the moment it is pinned —
@@ -651,9 +711,12 @@ async def narrate_chapters(
                                     # Roll 6 paid a 160s re-roll chasing hits that included exactly
                                     # this class. Word-boundary match against the topic text.
                                     import re as _pre
+                                    # ROUND-10: cross-language exemption (the injection path got this
+                                    # in r8; the bible-level filter here kept chasing «11»/«19» on a
+                                    # premise that wrote «sebelas» — roll-13 surgical burn).
+                                    from narasi_counters import premise_term_in_topic as _ptt
                                     _terms = [t for t in _terms_all
-                                              if t and not _pre.search(
-                                                  r"(?i)\b" + _pre.escape(t) + r"\b", topic or "")][:12]
+                                              if t and not _ptt(t, topic or "")][:12]
                                     if not _terms:
                                         log.info("ledger-enforce: all %d bible hit(s) premise-supplied (%s) — re-roll skipped",
                                                  len(_terms_all), ", ".join(_terms_all[:6]))
@@ -686,6 +749,48 @@ async def narrate_chapters(
                                                                                  tenant_id=tenant_id, user_id=None,
                                                                                  job_uuid=None, json_mode=True)
                                                 _sp = _sp_parse(_sp_raw) if isinstance(_sp_raw, str) else (_sp_raw or {})
+                                                if isinstance(_sp, dict) and not (_sp.get("lines") or []):
+                                                    _sp = None   # empty parse → try salvage below
+                                                if not isinstance(_sp, dict):
+                                                    # ROUND-10 SALVAGE (roll-13: head showed a VALID
+                                                    # {"lines":[{"old":...}]} start — token-cap truncation
+                                                    # again): recover individually balanced old/new pairs.
+                                                    _sraw = str(_sp_raw or "")
+                                                    _spairs = []
+                                                    for _sm in _sre.finditer(r"\{", _sraw):
+                                                        _st2 = _sm.start()
+                                                        if not _sre.search(r"\"old\"", _sraw[_st2:_st2 + 80]):
+                                                            continue
+                                                        _d2, _in2, _e2 = 0, False, False
+                                                        for _i2 in range(_st2, min(len(_sraw), _st2 + 3000)):
+                                                            _c2 = _sraw[_i2]
+                                                            if _in2:
+                                                                if _e2:
+                                                                    _e2 = False
+                                                                elif _c2 == "\\":
+                                                                    _e2 = True
+                                                                elif _c2 == '"':
+                                                                    _in2 = False
+                                                            elif _c2 == '"':
+                                                                _in2 = True
+                                                            elif _c2 == "{":
+                                                                _d2 += 1
+                                                            elif _c2 == "}":
+                                                                _d2 -= 1
+                                                                if _d2 == 0:
+                                                                    try:
+                                                                        import json as _sjson
+                                                                        _o2 = _sjson.loads(_sraw[_st2:_i2 + 1])
+                                                                        if isinstance(_o2, dict) and _o2.get("old") and _o2.get("new"):
+                                                                            _spairs.append(_o2)
+                                                                    except Exception:  # noqa: BLE001
+                                                                        pass
+                                                                    break
+                                                        if len(_spairs) >= 14:
+                                                            break
+                                                    if _spairs:
+                                                        _sp = {"lines": _spairs}
+                                                        log.info("ledger-enforce surgical: SALVAGED %d patch pair(s) from truncated response", len(_spairs))
                                                 if not isinstance(_sp, dict):
                                                     # ROUND-6 (SBF roll): parse returned None and the
                                                     # .get() below crashed the whole surgical path —
