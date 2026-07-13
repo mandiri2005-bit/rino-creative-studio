@@ -178,6 +178,25 @@ Do NOT compensate with unmarked aphoristic one-liners — the [ANCHOR] budget IS
 (RULE 2 governs in-paragraph sentence texture; this budget governs STANDALONE aphoristic lines — they do not conflict.)"""
 
 
+# ── DRAMATIZATION MANDATES (NARASI_DRAMA_MANDATES, round-3 craft) ──
+# Three lenses × five rolls of one premise converged on ONE structural defect class:
+# the pivotal decision happens OFF-PAGE (roll 5: the evidence surrender lives in a
+# single pluperfect clause — "retrieved that dawn" — while a ramyeon dinner gets a
+# full scene) and an on-page PROMISE goes unpaid ("knew it would not stay buried
+# long" — never surfaces again). Fiction regimes only; appended by build_style_block.
+DRAMA_MANDATES = """DRAMATIZATION MANDATES (structural — these outrank scene-level economy):
+- KEYSTONE ON-PAGE: any decision that turns the case or the central relationship — surrendering
+  evidence, a confession, breaking or keeping a promise, naming the culprit — must be RENDERED
+  as an on-page scene: the place, the beat before, the decision made in real time, one line of
+  reaction. NEVER deliver a keystone as completed summary ("the copy had been submitted that
+  dawn") while lesser moments get full scenes. If the outline gives this chapter a keystone,
+  the keystone IS the chapter's biggest scene.
+- PROMISES ARE DEBTS: a narration line that promises consequence ("it would not stay buried
+  long"; "she would pay for that") creates a debt the story must pay ON-PAGE. If this chapter
+  reaches the moment a standing promise falls due, render the payment as a scene — never let
+  the consequence happen off-page or stay implicit."""
+
+
 __all__ = [
     "FACTUAL_INTEGRITY",
     "CRAFT_RULES",
@@ -186,4 +205,5 @@ __all__ = [
     "VIDEO_MODIFIER",
     "VIDEO_RULE5_LEGACY",
     "VIDEO_RULE5_CAPPED",
+    "DRAMA_MANDATES",
 ]

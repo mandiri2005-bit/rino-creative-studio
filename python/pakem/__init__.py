@@ -30,6 +30,7 @@ import os as _os
 
 from .assets import (
     CRAFT_RULES,
+    DRAMA_MANDATES,
     FACTUAL_INTEGRITY,
     GENERATION_PREAMBLE,
     LANGUAGE_DIRECTIVE,
@@ -136,6 +137,12 @@ def build_style_block(style, video_mode: bool = False) -> str:
     if _regime == "fiction" and str(_os.environ.get("NARASI_REGIME_BLOCK_NORMALIZE", "0")).strip().lower() in ("1", "true", "yes", "on"):
         _regime = "fictional"
     rules = rules.rstrip() + "\n" + _REGIME_BLOCKS.get(_regime, _REGIME_BLOCKS["strict"])
+    # Dramatization mandates (NARASI_DRAMA_MANDATES, default OFF) — round-3 craft:
+    # keystone decisions rendered on-page + narrative promises paid on-page. Fiction
+    # regimes only (a documentary summarizing an outcome is normal nonfiction craft).
+    if (_regime in ("fiction", "fictional")
+            and str(_os.environ.get("NARASI_DRAMA_MANDATES", "0")).strip().lower() in ("1", "true", "yes", "on")):
+        rules = rules.rstrip() + "\n\n" + DRAMA_MANDATES
     # Dual-path selector (dual-path doc §1): compare the style's NATIVE medium with the
     # job's output target. Native match → light normalization only (VIDEO_MODIFIER on the
     # video path, nothing extra on book). Mismatch → the aggressive transform block.

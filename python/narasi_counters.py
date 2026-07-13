@@ -2085,6 +2085,36 @@ def _reglossing_scan(text: str, *, repeat_cap: Optional[int] = None) -> dict:
                 if re.search(r"\s(?:—|–|--)\s", _head_seg):
                     continue
                 counts[term] = counts.get(term, 0) + 1
+        # ── acronym/phrase alias pass (NARASI_REGLOSS_ALIAS, default OFF) ──
+        # The single-token head regex is blind to the roll-5 AWS class: 'the AWS — …'
+        # (head 3 chars, under the 4-char floor) and 'The Automatic Weather Station —
+        # the ring of instruments…' (multi-word head) are the SAME term glossed twice.
+        # Normalize phrase heads to their INITIALS and bare acronyms to themselves, so
+        # aws == automatic-weather-station; ≥2 ⟹ one alias:* entry in the report.
+        if os.environ.get("NARASI_REGLOSS_ALIAS", "0").strip().lower() in ("1", "true", "yes", "on"):
+            _ph: dict[str, int] = {}
+            for m2 in re.finditer(
+                    r"\b((?:[A-Z][\wÀ-ÿ'’-]*\s+){1,3}[A-Z][\wÀ-ÿ'’-]+|[A-Z]{2,6})\s+(?:—|–|--)\s+",
+                    text or ""):
+                # same paired-dash aside guards as the main loop
+                _tail2 = (text or "")[m2.end():m2.end() + 90]
+                _close2 = re.search(r"\s(?:—|–|--)\s", _tail2)
+                _stop2 = re.search(r"[.!?\n]", _tail2)
+                if _close2 and (not _stop2 or _close2.start() < _stop2.start()):
+                    continue
+                _hs2 = re.split(r"[.!?\n]", (text or "")[max(0, m2.start() - 160):m2.start()])[-1]
+                if re.search(r"\s(?:—|–|--)\s", _hs2):
+                    continue
+                _words = [w for w in re.split(r"\s+", m2.group(1).strip()) if w]
+                if len(_words) > 1 and _words[0].lower() in ("the", "a", "an"):
+                    _words = _words[1:]
+                _key = ("".join(w[0] for w in _words).upper()
+                        if len(_words) > 1 else _words[0].upper())
+                if len(_key) >= 2:
+                    _ph[_key] = _ph.get(_key, 0) + 1
+            for _k2, _n2 in _ph.items():
+                if _n2 >= 2:
+                    counts["alias:" + _k2.lower()] = counts.get("alias:" + _k2.lower(), 0) + _n2
         reglossed = {t: n for t, n in counts.items() if n >= 2}
         if reglossed:
             out["status"] = "FLAG"; out["count"] = len(reglossed)
@@ -2626,6 +2656,10 @@ def _ledger_validator_on() -> bool:
     return os.environ.get("NARASI_LEDGER_VALIDATOR", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _timeline_arith_on() -> bool:
+    return os.environ.get("NARASI_TIMELINE_ARITH", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _ledger_en_num(n: int) -> str:
     if 0 <= n < 20:
         return _LEDGER_EN_ONES[n]
@@ -3153,6 +3187,25 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         if _ledger_validator_on():
             report["counters"]["ledger_hits"] = ledger_hits_scan(
                 text, bible=bible or "", style_key=(style_entry or {}).get("key"))
+
+        # ── timeline arithmetic (NARASI_TIMELINE_ARITH, default OFF) — report-only.
+        # 5/5 rain rolls drifted on DERIVED spans while absolute dates held ("Three
+        # months after the flood" beside 13 Aug → 17 Oct; "fourteen years" ×7
+        # alternating "fifteen years" ×3). Prompts cannot do arithmetic; the
+        # deterministic pass in narasi_arithmetic can. EN-only v1 (the interval/
+        # alternation tables are en); other langs ⟹ key absent. FLAG-never-OVER —
+        # can never drive the diet loop.
+        if _timeline_arith_on() and (lang or "en").split("-")[0].lower() == "en":
+            try:
+                import narasi_arithmetic as _na
+                _tl = _na.scan_arithmetic(text, lang="en")
+                report["counters"]["timeline_arith"] = {
+                    "status": "FLAG" if _tl.get("findings") else "PASS",
+                    "count": len(_tl.get("findings") or []),
+                    "findings": (_tl.get("findings") or [])[:8],
+                }
+            except Exception:  # noqa: BLE001 — linter is an enhancement, never blocks the scan
+                pass
 
         # ── reglossing budget promotion (NARASI_REGLOSS_BUDGET, default OFF) ──
         # FLAG→BUDGETED: cap read RAW from style_spec.counters.regloss_max (env

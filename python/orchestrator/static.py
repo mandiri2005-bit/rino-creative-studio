@@ -565,6 +565,34 @@ async def narrate_chapters(
                             log.warning("ledger validator: %d BIBLE-level ledger hit(s) at pin time: %s",
                                         _lrep["bible_hits"],
                                         sorted({str(h.get("term")) for h in _lrep.get("hits") or []})[:10])
+                            # LEDGER ENFORCE (NARASI_LEDGER_ENFORCE, default OFF): Law 1 of the
+                            # 5-roll audit — a WARN nobody acts on is a dead ban. ONE bible
+                            # re-roll with the violating terms quoted back; the re-roll is
+                            # pinned ONLY if it strictly reduces bible-level hits (never
+                            # trades sideways, never loops). Cost: one extra manager call,
+                            # only on the hit path. Failure ⟹ original bible stands.
+                            if str(os.environ.get("NARASI_LEDGER_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                                try:
+                                    _terms = sorted({str(h.get("term", "")).split(":", 1)[-1]
+                                                     for h in _lrep.get("hits") or []
+                                                     if h.get("where") == "bible"})[:12]
+                                    _bible2 = await build_story_bible(
+                                        topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                                        style=style, language=language,
+                                        manager_model=m_model, telemetry_sink=telemetry_sink,
+                                        extra_negative=", ".join(_terms))
+                                    _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
+                                             if _bible2 else {})
+                                    if _bible2 and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
+                                        ctx.canonical_facts = _bible2
+                                        log.info("ledger-enforce: bible re-rolled — hits %d → %d, re-roll pinned",
+                                                 _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
+                                    else:
+                                        log.info("ledger-enforce: re-roll not better (hits %d → %s) — original kept",
+                                                 _lrep.get("bible_hits"),
+                                                 (_rep2.get("bible_hits") if _bible2 else "no bible"))
+                                except Exception as _lee:  # noqa: BLE001
+                                    log.warning("ledger-enforce re-roll failed (non-fatal): %s", _lee)
                 except Exception as _lve:  # noqa: BLE001
                     log.warning("bible ledger scan failed (non-fatal): %s", _lve)
         except Exception as _be:  # noqa: BLE001

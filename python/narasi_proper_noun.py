@@ -457,6 +457,15 @@ _PHANTOM_GEOORG = frozenset({
     "Industries", "Engineering", "Development", "Partners", "Bank", "Filings",
     "District", "Province", "Station", "Hospital", "University", "Institute",
     "Tower", "Plaza", "Harbor", "Port", "City", "County",
+    # round-3 (roll-5 review): org-unit components the round-2 list missed
+    "Division", "Command", "Headquarters", "Directorate", "Branch",
+})
+# Month names as candidate COMPONENTS ('From May', 'By August the town…') are date
+# fragments, never persons (roll-5 'From May' FP — the phantom scan's only wrong flag).
+_PHANTOM_MONTHS = frozenset({
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December",
+    "Januari", "Februari", "Maret", "Mei", "Juni", "Juli", "Agustus", "Oktober", "Desember",
 })
 # (c) trailing possessive ("Taegang Construction's") stripped per-component.
 _POSSESSIVE_RX = re.compile(r"[’']s$")
@@ -534,6 +543,8 @@ def phantom_name_scan(text: str, *, bible: str = "", tail_frac: float = 0.25,
                 continue
             if any(p in _PHANTOM_GEOORG for p in parts):
                 continue              # FP (b): geo/org component ('East China Sea')
+            if any(p in _PHANTOM_MONTHS for p in parts):
+                continue              # FP (d): month component ('From May') — a date, not a person
             tok2 = " ".join(parts)
             _off = tok.find(tok2)
             first_full.setdefault(tok2, m.start() + (_off if _off >= 0 else 0))

@@ -318,6 +318,153 @@ def scan_interval_vs_dates(text: str, lang: str = "fr",
     return findings
 
 
+# ── EN spans (round-3 craft, NARASI_TIMELINE_ARITH) ─────────────────────────
+# 5/5 rain rolls drifted on DERIVED spans while the absolute dates held
+# ("Three months after the flood" with 13 Aug → 17 Oct on the same page = 2
+# months; "fourteen years" ×7 alternating with "fifteen years" ×3). Prompts
+# cannot do arithmetic; these two deterministic checks can. WARN-feed only —
+# same contract as the fr scanners: flags, never touches text.
+_DATE_RX_EN = re.compile(
+    r"(?i)\b(?P<day>\d{1,2})\s+(?P<month>january|february|march|april|may|june|july|"
+    r"august|september|october|november|december)\s+(?P<year>1[5-9]\d{2}|20\d{2})\b"
+    r"|\b(?P<month2>january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+(?P<day2>\d{1,2}),\s+(?P<year2>1[5-9]\d{2}|20\d{2})\b")
+
+_INTERVAL_RX_EN = re.compile(
+    r"(?i)\b(?P<n_word>\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|"
+    r"(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)-\w+)\s+"
+    r"(?P<unit>days?|weeks?|months?|years?)\s+"
+    r"(?P<rel>after|later|since|earlier|before|ago)\b")
+
+_EN_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+            "seventy": 70, "eighty": 80, "ninety": 90}
+
+
+def _en_num(tok: str) -> int | None:
+    t = tok.lower().strip()
+    if t.isdigit():
+        return int(t)
+    if t in _AGE_WORDS["en"]:
+        return _AGE_WORDS["en"][t]
+    if "-" in t:
+        tens, _, unit = t.partition("-")
+        if tens in _EN_TENS and unit in _AGE_WORDS["en"] and _AGE_WORDS["en"][unit] < 10:
+            return _EN_TENS[tens] + _AGE_WORDS["en"][unit]
+    return None
+
+
+def _dates_en(text: str) -> list[tuple[int, tuple[int, int, int]]]:
+    out: list[tuple[int, tuple[int, int, int]]] = []
+    for m in _DATE_RX_EN.finditer(text):
+        day = m.group("day") or m.group("day2")
+        mon = m.group("month") or m.group("month2")
+        yr = m.group("year") or m.group("year2")
+        t = _parse_date(day, mon, yr, "en")
+        if t:
+            out.append((m.start(), t))
+    return out
+
+
+def scan_interval_vs_dates_en(text: str) -> list[dict]:
+    """EN twin of scan_interval_vs_dates. Candidate dates = inline dates within
+    ±800 chars; when the WHOLE manuscript carries few full dates (≤6, the fiction
+    norm — one disaster date + one reveal date), all of them join the candidate
+    set, because the reference event ("after the flood") is usually dated far
+    from the derived-span sentence. No candidate pair ⟹ no finding (miss-safe,
+    never FP-by-guess)."""
+    findings: list[dict] = []
+    if not text:
+        return findings
+    dates = _dates_en(text)
+    if len(dates) < 2:
+        return findings
+    _unit_days = {"day": 1.0, "week": 7.0, "month": 30.44, "year": 365.25}
+    for m in _INTERVAL_RX_EN.finditer(text):
+        # "ago"/"earlier" anchor to an implicit undated NOW — no date pair can
+        # confirm or refute them (a correct "five years ago" would flag). Skip.
+        if m.group("rel").lower() in ("ago", "earlier"):
+            continue
+        n = _en_num(m.group("n_word"))
+        if n is None or n <= 0:
+            continue
+        unit = m.group("unit").lower().rstrip("s")
+        stated = n * _unit_days.get(unit, 0)
+        if stated < 14:      # scene-jump idioms ("three days later") — not worth flagging
+            continue
+        near = [(p, t) for p, t in dates if abs(p - m.start()) < 800]
+        cands = list(near)
+        if len(dates) <= 6:
+            for p, t in dates:
+                if (p, t) not in cands:
+                    cands.append((p, t))
+        if len(cands) < 2:
+            continue
+        tol = max(10.0, 0.18 * stated) if unit in ("month", "year") else max(2.0, 0.1 * stated)
+        ok = False
+        pairs: list[tuple[int, int, int]] = []
+        for i, (pa, ta) in enumerate(cands):
+            for pb, tb in cands[i + 1:]:
+                actual = abs(_days_between(ta, tb))
+                if actual == 0:
+                    continue
+                pairs.append((pa, pb, actual))
+                if abs(actual - stated) <= tol:
+                    ok = True
+                    break
+            if ok:
+                break
+        if not ok and pairs:
+            findings.append({
+                "kind": "interval_arithmetic",
+                "stated_phrase": m.group(0),
+                "stated_interval_days": round(stated),
+                "candidate_pairs": pairs[:5],
+                "context": re.sub(r"\s+", " ", text[max(0, m.start() - 70):m.start() + 130]).strip(),
+                "note": f"stated span ≈{round(stated)}d matches no date pair (tol ±{round(tol)}d)",
+            })
+    return findings[:8]
+
+
+def scan_span_alternation(text: str) -> list[dict]:
+    """Adjacent-value span alternation: the SAME long duration stated as both N
+    and N+1 years ("fourteen years" ×7 vs "fifteen years" ×3 — 5/5 rain rolls
+    drifted this way). Guards against legitimate patterns: N ≥ 5 (everyday small
+    spans exempt), BOTH values ≥2 uses, YEARS only (month durations legitimately
+    grow as story time passes: a 9-month drought becomes a 10-month drought),
+    and the two values must INTERLEAVE in the text — a monotonic switch is
+    progression (an anniversary passing), alternation is drift."""
+    findings: list[dict] = []
+    if not text:
+        return findings
+    unit = "year"
+    pos: dict[int, list[int]] = {}
+    rx = re.compile(_INTERVAL_RX_EN.pattern.replace(
+        r"(?P<unit>days?|weeks?|months?|years?)\s+"
+        r"(?P<rel>after|later|since|earlier|before|ago)\b",
+        r"(?P<unit>" + unit + r"s?)\b"))
+    for m in rx.finditer(text):
+        n = _en_num(m.group("n_word"))
+        if n is not None and n >= 5:
+            pos.setdefault(n, []).append(m.start())
+    for a in sorted(pos):
+        b = a + 1
+        if b not in pos or len(pos[a]) < 2 or len(pos[b]) < 2:
+            continue
+        if max(pos[a]) < min(pos[b]) or max(pos[b]) < min(pos[a]):
+            continue     # monotonic switch = story time passing, not drift
+        dom = a if len(pos[a]) >= len(pos[b]) else b
+        findings.append({
+            "kind": "span_alternation",
+            "unit": unit,
+            "values": {str(a): len(pos[a]), str(b): len(pos[b])},
+            "note": f"'{a} {unit}s' ×{len(pos[a])} vs '{b} {unit}s' ×{len(pos[b])} "
+                    f"interleaved — pick one (dominant: {dom})",
+        })
+    return findings
+
+
 def scan_arithmetic(text: str, *, lang: str = "fr",
                      known_dob: dict[str, int] | None = None,
                      seed_dates: dict[str, tuple[int, int, int]] | None = None
@@ -328,11 +475,15 @@ def scan_arithmetic(text: str, *, lang: str = "fr",
     try:
         age = scan_age_across_scenes(text, lang=lang, known_dob=known_dob)
         interval = scan_interval_vs_dates(text, lang=lang, seed_dates=seed_dates)
-        findings = age + interval
+        spans: list[dict] = []
+        if (lang or "").split("-")[0].lower() == "en":
+            interval = interval + scan_interval_vs_dates_en(text)
+            spans = scan_span_alternation(text)
+        findings = age + interval + spans
         return {
             "status": "FAIL" if findings else "PASS",
             "findings": findings,
-            "counts": {"age": len(age), "interval": len(interval)},
+            "counts": {"age": len(age), "interval": len(interval), "span": len(spans)},
         }
     except Exception as exc:  # noqa: BLE001
         return {"status": "PASS", "findings": [], "counts": {}, "_error": str(exc)}

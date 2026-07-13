@@ -646,6 +646,16 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             _lhits["bible_hits"],
                             sorted({str(h.get("term")) for h in _lhits.get("hits") or []
                                     if h.get("where") == "bible"})[:10])
+            # Timeline arithmetic (report-only WARN): derived spans vs dated events
+            # ("Three months after the flood" beside 13 Aug → 17 Oct) + adjacent
+            # year-span alternation (fourteen×7 vs fifteen×3). Enforcement rides the
+            # critique injection below (NARASI_LEDGER_ENFORCE), not this WARN.
+            _tlrep = (rep.get("counters") or {}).get("timeline_arith") or {}
+            if _tlrep.get("count"):
+                log.warning("timeline arithmetic: %d derived-span mismatch(es): %s",
+                            _tlrep["count"],
+                            [str(f.get("stated_phrase") or f.get("values"))
+                             for f in _tlrep.get("findings") or []][:5])
             if rep.get("over_budget"):
                 log.warning("counters still over budget after %d diet loop(s): %s",
                             loops, rep["over_budget"])
@@ -804,6 +814,42 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             if sink is not None and _cqc:
                 sink.credits += int(_cqc)
             _cpay = _cq
+            # ── LEDGER/TIMELINE ENFORCEMENT (NARASI_LEDGER_ENFORCE, default OFF): the
+            # deterministic scans (lane-ledger hits, timeline arithmetic) fire WARNs that
+            # nothing acts on — Law 1 of the 5-roll audit: report-only bans are dead.
+            # When ON, feed them to the EXISTING revise as synthetic high-severity
+            # violations, mechanical-first (they are certainties; the critic's findings
+            # are probabilistic). Types are ledger_hit/timeline_arithmetic — never
+            # canon_fork — so the reveal-protection filter below is untouched. Revise
+            # still requires NARASI_CRITIQUE_REVISE=1; with it OFF this only enriches
+            # the persisted critique payload. Never raises.
+            if os.environ.get("NARASI_LEDGER_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+                try:
+                    _mech: list[dict] = []
+                    _mctrs = (result.get("counter_report") or {}).get("counters") or {}
+                    for h in ((_mctrs.get("ledger_hits") or {}).get("hits") or [])[:8]:
+                        if h.get("where") != "manuscript":
+                            continue   # bible-level hits are handled at bible time (re-roll)
+                        _mterm = str(h.get("term") or "").split(":", 1)[-1]
+                        _mech.append({
+                            "type": "ledger_hit", "severity": "high",
+                            "evidence": str(h.get("snippet") or _mterm)[:200],
+                            "fix": f"Replace the lane-overused item «{_mterm}» with a fresh, "
+                                   f"premise-specific choice (previous stories in this lane already "
+                                   f"used it); keep the sentence's meaning and rhythm."})
+                    for f in ((_mctrs.get("timeline_arith") or {}).get("findings") or [])[:4]:
+                        _mech.append({
+                            "type": "timeline_arithmetic", "severity": "high",
+                            "evidence": str(f.get("context") or f.get("note") or "")[:200],
+                            "fix": (f"Unify the alternating duration — {f.get('note')}"
+                                    if f.get("kind") == "span_alternation" else
+                                    f"Correct the stated span to match the dated events — {f.get('note')}")})
+                    if _mech:
+                        _cq["violations"] = (_mech + list(_cq.get("violations") or []))[:20]
+                        log.info("ledger-enforce: injected %d mechanical violation(s) into critique/revise",
+                                 len(_mech))
+                except Exception as _mie:  # noqa: BLE001
+                    log.warning("ledger-enforce injection failed (non-fatal): %s", _mie)
             # CANON_FORK-REVISE SAFETY: a canon_fork stays REPORT-ONLY by DEFAULT (never drives a revise),
             # for BOTH fiction and nonfiction. The critic diffs chapters against the pinned fact sheet but
             # CANNOT tell a real fork (river pusaran victim/age swap = error) from a DESIGNED REVEAL that
@@ -971,20 +1017,75 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             import json as _cjson, re as _cre
             _cf = str(result.get("canonical_facts") or "")   # str-guard: a non-str value can't TypeError _cre.search
             _reg = None
+            _reg_dbg = ""   # head of the closest-looking block that failed to parse (roll-5: silent 'parse failed')
             if _cf:
+                # Registry extraction, three shapes (roll 5 proved two aren't enough — sonnet
+                # emitted the registry under a prose heading, unfenced and without the
+                # canon_registry key): (1) fenced ```json block, (2) canon_registry: {...},
+                # (3) any brace-BALANCED object whose head mentions "events" (string-aware
+                # brace counter, bounded). Each candidate gets a second chance with trailing
+                # commas stripped — the most common model-JSON dirt.
+                _cands = []
                 _m = _cre.search(r"```(?:json)?\s*(\{.*?\})\s*```", _cf, _cre.S)
-                if not _m:
-                    _m = _cre.search(r"canon_registry\"?\s*[:=]\s*(\{.*\})", _cf, _cre.S)
                 if _m:
-                    try:
-                        _reg = _cjson.loads(_m.group(1))
-                    except Exception:  # noqa: BLE001
-                        _reg = None
+                    _cands.append(_m.group(1))
+                _m = _cre.search(r"canon_registry\"?\s*[:=]\s*(\{.*\})", _cf, _cre.S)
+                if _m:
+                    _cands.append(_m.group(1))
+                for _bm in _cre.finditer(r"\{", _cf):
+                    if len(_cands) >= 6:
+                        break
+                    _st = _bm.start()
+                    if not _cre.search(r"\"events\"", _cf[_st:_st + 400]):
+                        continue
+                    _depth, _in_s, _esc = 0, False, False
+                    for _i in range(_st, min(len(_cf), _st + 20000)):
+                        _c = _cf[_i]
+                        if _in_s:
+                            if _esc:
+                                _esc = False
+                            elif _c == "\\":
+                                _esc = True
+                            elif _c == '"':
+                                _in_s = False
+                        elif _c == '"':
+                            _in_s = True
+                        elif _c == "{":
+                            _depth += 1
+                        elif _c == "}":
+                            _depth -= 1
+                            if _depth == 0:
+                                _cands.append(_cf[_st:_i + 1])
+                                break
+                for _cand in _cands:
+                    for _txt in (_cand, _cre.sub(r",\s*([}\]])", r"\1", _cand)):
+                        try:
+                            _p = _cjson.loads(_txt)
+                        except Exception:  # noqa: BLE001
+                            _reg_dbg = _reg_dbg or _txt[:200]
+                            continue
+                        if isinstance(_p, dict):
+                            # unwrap {"canon_registry": {...}} — both nestings are in the wild
+                            if "events" not in _p and isinstance(_p.get("canon_registry"), dict):
+                                _p = _p["canon_registry"]
+                            _reg = _p
+                            break
+                    if _reg is not None:
+                        break
             _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None
             if isinstance(_events, list) and _events:
                 from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
                 _cbook = result.get("book") or result.get("output") or ""
                 _forks = []
+                # COUNTERPOINT NUMBERS (bible heading 17, round-3): deliberately divergent
+                # value pairs (official 112/287 vs private 291) are DESIGN, not forks — the
+                # roll-5 critic scored 4.0 by misreading exactly this. Quote the sanction
+                # list into every event auditor. Absent/'none' ⟹ prompt unchanged.
+                _cpt = ""
+                _cpm = _cre.search(r"(?is)\bCOUNTERPOINT\s+NUMBERS?\b\s*[—:\-]?\s*"
+                                   r"(.{0,500}?)(?=\n\s*(?:\d{1,2}\.|[A-Z][A-Z &]{6,})|\Z)", _cf)
+                if _cpm and _cpm.group(1).strip().rstrip(".").strip("'\"").lower() != "none":
+                    _cpt = _cre.sub(r"\s+", " ", _cpm.group(1)).strip()[:400]
                 for _ev in _events[:8]:
                     if not isinstance(_ev, dict) or not _cbook:
                         continue
@@ -998,7 +1099,9 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "renders this event with a value DIFFERENT from the canonical one and NOT a sanctioned "
                         "false version before its correction — even if it reads like an intended reveal. Return "
                         "ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<field>\",\"found\":\"<value>\","
-                        "\"expected\":\"<canonical value>\"}]}. Empty list if the book is consistent with canon.")
+                        "\"expected\":\"<canonical value>\"}]}. Empty list if the book is consistent with canon."
+                        + ((" SANCTIONED COUNTERPOINT PAIRS (the story keeps BOTH values alive by design "
+                            "— never report either as a fork): " + _cpt) if _cpt else ""))
                     try:
                         _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:12000],
                                                              tenant_id=tenant_id, user_id=user_id,
@@ -1048,8 +1151,13 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _reason = ("canonical_facts absent" if not _cf else
                            "registry parse failed" if _reg is None else
                            "registry has no events")
+                # self-diagnosing skip (roll 5 said only 'parse failed' — nothing to act on):
+                # quote the closest-looking block, or the bible tail when nothing looked like one.
+                if _reason == "registry parse failed" and not _reg_dbg:
+                    _reg_dbg = "no registry-shaped block found; bible tail: " + _cf[-160:]
                 result["canon_diff"] = {"events_checked": 0, "forks": [], "skipped": _reason}
-                log.info("canon-diff: skipped for job %s — %s", job_id, _reason)
+                log.info("canon-diff: skipped for job %s — %s%s", job_id, _reason,
+                         (" | " + _cre.sub(r"\s+", " ", _reg_dbg)) if _reg_dbg else "")
     except Exception as e:  # noqa: BLE001
         log.warning("canon-diff gate failed (non-fatal): %s", e)
 

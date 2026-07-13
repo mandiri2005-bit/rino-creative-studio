@@ -7613,6 +7613,18 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         if canon_aware:
             _ext += ("If a check-8 or check-11 finding contradicts a fact PINNED in the CANONICAL "
                      "FACT SHEET, report it as canon_fork (check 0), not provenance/causality.\n")
+        # Round-3 (NARASI_DRAMA_MANDATES): the off-page-keystone class all three review
+        # lenses converged on across 5 rolls — pivotal decision in pluperfect summary,
+        # explicit promise never paid. Own flag so live EXTENDED_CHECKS behavior is
+        # untouched; rides the extended block (checks 8-12 must be on for #13 to exist).
+        if os.getenv("NARASI_DRAMA_MANDATES", "0").strip().lower() in ("1", "true", "yes", "on"):
+            _ext += (
+                "13. OFF-PAGE KEYSTONE (report as type 'causality', severity high) — the story's "
+                "PIVOTAL decision, confession, or evidence-handover is delivered only as completed "
+                "summary (pluperfect: 'had been submitted that dawn') while smaller moments get "
+                "full scenes; the decision's on-page beat is missing. ALSO flag (type "
+                "'dropped_hook') an explicit narrative PROMISE of consequence ('it would not stay "
+                "buried long') that no later chapter pays on-page.\n")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
     # CANON CONFORMANCE (check 0) — only when a CANONICAL FACT SHEET (story bible) is supplied in
@@ -7641,6 +7653,11 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         "WITHOUT being that sanctioned later correction is a violation. ALSO flag 'canon_fork' when "
         "two chapters narrate the SAME past event with incompatible specifics. "
         + _verify_clause +
+        "EXCEPTION — COUNTERPOINT NUMBERS: if the fact sheet carries a COUNTERPOINT NUMBERS "
+        "section pinning a PAIR of deliberately different values for one measurement (an official "
+        "record vs a private measurement), the two values coexisting is the DESIGN — never flag "
+        "either value, or the gap between them, as a canon_fork or timeline error; flag only a "
+        "THIRD value that matches neither. "
         "When in doubt whether a divergence is an authorial lie or an error, FLAG IT — the FACT SHEET, "
         "not your charity, is the arbiter.\n"
         if canon_aware else "")
@@ -7875,6 +7892,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     total_cr = 0
     changed = False
     _n_revised = 0
+    _n_targeted = 0
     _n_attempts = 0
     out = []
     for _p in parts:
@@ -7882,6 +7900,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         if not _vs or not _p.strip():
             out.append(_p)
             continue
+        _n_targeted += 1
         # Cap SUCCESSFUL revises at _max_ch; give ATTEMPTS 2x headroom so a burst of early-chapter
         # timeouts/errors doesn't consume the budget and starve later chapters whose fix would land.
         if _n_revised >= _max_ch or _n_attempts >= 2 * _max_ch:
@@ -7965,7 +7984,20 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             changed = True
             _n_revised += 1
         else:
+            # 4 consecutive prod runs landed nothing with zero diagnostics — name the
+            # guard that rejected each chapter rewrite so the no-op is attributable.
+            import logging as _lg
+            _lg.getLogger("narasi").warning(
+                "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
+                "heads_ok=%s, wrapper_free=%s, fidelity=%.2f (min %.2f)",
+                _ow, _nw, int(_ow * 0.9), int(_ow * 1.4), _heads_ok, _no_wrapper, _fid, _min_fid)
             out.append(_p)
+    import logging as _lg
+    _lg.getLogger("narasi").log(
+        (20 if changed else 30),   # INFO when something landed, WARNING on a full no-op
+        "chunked revise: %d violation(s) in, %d chapter(s) targeted, %d revised%s",
+        len(viol), _n_targeted, _n_revised,
+        "" if changed else " — NOTHING LANDED (unmapped evidence or all rewrites rejected)")
     if not changed:
         return full_text, total_cr
     return "".join(out), total_cr

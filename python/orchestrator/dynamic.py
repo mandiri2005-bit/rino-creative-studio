@@ -542,7 +542,7 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         heads += (", CAUSALITY POLICY, CALENDAR SPINE, SIGNATURE-PROP CUSTODY, NAMING CONVENTIONS, "
                   "ENTITY INTRODUCTIONS & FINALE CAST, PROPERTY & LEVERAGE, GEOGRAPHY POLICY, "
-                  "AFTERMATH COMMIT")
+                  "AFTERMATH COMMIT, COUNTERPOINT NUMBERS")
     return (
         f"TOPIC / PREMISE:\n{topic}\n\n"
         f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
@@ -561,6 +561,7 @@ async def build_story_bible(
     manager_model: Optional[str] = None,
     timeout: Optional[float] = None,
     telemetry_sink: Optional[Any] = None,
+    extra_negative: Optional[str] = None,
 ) -> str:
     """ONE manager call → a canonical fact-sheet pinning the piece's load-bearing specifics
     (names, the central subject's fixed identity, locations, timeline, POV, key reveal) so
@@ -672,10 +673,13 @@ async def build_story_bible(
     # real-geo errors (Mokpo '90km northeast' of Haenam; actually ~35km NNW), and aftermath/casualty
     # numbers never committed. Round 2 extends heading 10 (FLASHBACK ANCHOR), broadens 13 (role tag
     # at FIRST mention for ANY plot-force entity, not just finale), and adds 14 PROPERTY & LEVERAGE,
-    # 15 GEOGRAPHY POLICY, 16 AFTERMATH COMMIT. Headings 9-16 = eight sections total.
+    # 15 GEOGRAPHY POLICY, 16 AFTERMATH COMMIT. ROUND 3 adds 17 COUNTERPOINT NUMBERS (the
+    # deliberate two-gauge divergence 112/287 vs 291 that the critic misread as a canon fork —
+    # roll-5 score-4.0 anomaly); canon-diff and critic check #0 consume it as a sanction list.
+    # Headings 9-17 = nine sections total.
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
-            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these eight sections:\n"
+            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these nine sections:\n"
             "9. CAUSALITY POLICY — if the premise has a central SYMBOLIC or seemingly supernatural "
             "causation (e.g. 'the rain returns when the truth is told'), COMMIT its metaphysics NOW "
             "as exactly ONE of: LITERAL-MAGICAL (the world really works this way), AMBIGUOUS-BY-DESIGN "
@@ -744,6 +748,14 @@ async def build_story_bible(
             "count, sentence, settlement) as EXACT values that every chapter touching the "
             "aftermath must reuse verbatim. If the premise ends before any aftermath exists, "
             "write 'none'.\n"
+            "17. COUNTERPOINT NUMBERS — if the plot deliberately keeps TWO versions of the same "
+            "measurement or count alive (an official record vs a private measurement, a cover "
+            "story's figure vs the truth), pin each PAIR on one line: the two exact values, who "
+            "holds each, and the chapter where the gap is revealed ('official rain total 112mm "
+            "(agency record) vs 291mm (private gauge), gap revealed Ch6'). These pairs are "
+            "SANCTIONED DIVERGENCES: continuity tools treat the two values as ONE designed fact, "
+            "never a contradiction — and writers must never average, reconcile, or 'correct' one "
+            "toward the other. If the premise has no counterpoint pair, write 'none'.\n"
             "These sections are SECONDARY to headings 1-8: never let them shorten or weaken the #8 "
             "SIGNATURE HOOK payoff commitment.")
     # CANON REGISTRY (Phase 2a) — emit a MACHINE-CHECKABLE twin of the prose fact-sheet so a later
@@ -856,6 +868,15 @@ async def build_story_bible(
                     "premise-specific choices for every one of these slots.")
         except Exception:  # noqa: BLE001 — ledger is an enhancement; its absence must never block a bible
             pass
+    # ENFORCEMENT RE-ROLL (round-3, caller-driven via NARASI_LEDGER_ENFORCE): the first
+    # draft's bible-level ledger hits, quoted back so the retry knows exactly what to
+    # replace. None (default) ⟹ byte-identical prompt.
+    if extra_negative:
+        system = system + (
+            "\n\nENFORCEMENT RE-ROLL — your previous draft violated the lane ledger by using: "
+            + str(extra_negative)[:600] +
+            ". Regenerate the bible WITHOUT these items or near-variants of them; replace each "
+            "with a fresh, premise-specific invention. Every other requirement above still applies.")
     prompt = _story_bible_prompt(topic, outline, language, is_fiction)
     # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
     # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a
