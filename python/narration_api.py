@@ -107,6 +107,109 @@ _DB_STATUS = {
 }
 
 
+
+def _r7_env_on(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _r7_actuator_violations(result: dict) -> list[dict]:
+    """ROUND-7: teeth for the round-6 report-only gates. Reads the already-computed
+    reports off `result` and returns synthetic mechanical violations for the
+    existing revise channel — same contract as the ledger/timeline/brand
+    injections (types never collide with canon_fork, so the reveal-protection
+    filter is untouched). Each actuator behind its own flag, default OFF; the
+    matching SCAN flag must also be on or the report is simply absent. Never
+    raises."""
+    out: list[dict] = []
+    try:
+        _ctrs = (result.get("counter_report") or {}).get("counters") or {}
+        # — abort-seam: the ban swerve shipped into prose ("made barley — no.") —
+        if _r7_env_on("NARASI_ABORT_SEAM_ENFORCE"):
+            for h in ((_ctrs.get("abort_seam") or {}).get("hits") or [])[:3]:
+                out.append({
+                    "type": "abort_seam", "severity": "high",
+                    "evidence": str(h.get("snippet") or "")[:200],
+                    "fix": ("A mid-clause self-correction artifact shipped into the prose "
+                            "(a started word, an em-dash, 'no.', then the corrected choice). "
+                            "Delete the false start and the correction marker; keep ONLY the "
+                            "corrected choice, reflowing the sentence naturally.")})
+        # — coda repeat: identical chapter-closing line used twice —
+        if _r7_env_on("NARASI_CODA_DEDUP_ENFORCE"):
+            for pr in ((_ctrs.get("coda_repeat") or {}).get("pairs") or [])[:2]:
+                _chs = pr.get("chapters") or ["?", "?"]
+                out.append({
+                    "type": "coda_repeat", "severity": "high",
+                    "evidence": str(pr.get("coda") or "")[:200],
+                    "fix": (f"Chapters {_chs[0]} and {_chs[1]} end with this IDENTICAL closing "
+                            f"line. Rewrite the chapter-{_chs[1]} ending so each chapter closes "
+                            f"distinctly — new image or plain action, not a variation of the "
+                            f"same aphorism.")})
+        # — domain plausibility: hard law/medicine/engineering errors —
+        if _r7_env_on("NARASI_DOMAIN_ENFORCE"):
+            _nd = 0
+            for c in ((result.get("domain_plausibility_report") or {}).get("claims") or []):
+                if str(c.get("severity") or "").lower() != "high":
+                    continue
+                out.append({
+                    "type": "domain_error", "severity": "high",
+                    "evidence": str(c.get("quote") or "")[:200],
+                    "fix": (f"Domain error ({c.get('domain')}): {str(c.get('why') or '')[:160]} "
+                            f"— correct it with the SMALLEST edit that makes the claim "
+                            f"professionally plausible; keep the scene and its emotional beat "
+                            f"intact.")})
+                _nd += 1
+                if _nd >= 3:
+                    break
+        # — numeric ledger: one referent, multiple values (unintentional drift) —
+        if _r7_env_on("NARASI_NUMERIC_LEDGER_ENFORCE"):
+            for r in ((result.get("numeric_ledger_report") or {}).get("drifts") or [])[:3]:
+                out.append({
+                    "type": "numeric_drift", "severity": "high",
+                    "evidence": str(r.get("evidence") or r.get("referent") or "")[:200],
+                    "fix": (f"The referent «{r.get('referent')}» carries conflicting values "
+                            f"{r.get('values')} across chapters. Pick the value the story's "
+                            f"dated facts support and unify EVERY mention; do not touch "
+                            f"deliberate official-vs-true contrasts.")})
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+def _numeric_drifts(referents: list) -> list[dict]:
+    """ROUND-7 deterministic post-check for the numeric-ledger cheap call: a
+    referent with ≥2 distinct normalized values that the extractor did NOT mark
+    as an intentional official-vs-true contrast is a drift. Pure function —
+    unit-tested against the lens-4 catch list."""
+    import re as _re
+    _words = {"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+              "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+              "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+              "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+              "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
+              "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70",
+              "eighty": "80", "ninety": "90", "hundred": "100", "thousand": "1000"}
+    drifts: list[dict] = []
+    for r in referents or []:
+        if not isinstance(r, dict) or r.get("intentional_contrast"):
+            continue
+        vals: list[str] = []
+        for v in (r.get("values") or []):
+            _raw = (v or {}).get("value") if isinstance(v, dict) else v
+            _s = str(_raw).lower().strip()
+            # spelled → digits so "six" and "6" never read as a drift pair
+            _s = " ".join(_words.get(w, w) for w in _re.split(r"[\s-]+", _s))
+            _s = _re.sub(r"[,\s]", "", _s)
+            if _s and _s not in vals:
+                vals.append(_s)
+        if len(vals) >= 2:
+            drifts.append({"referent": str(r.get("name") or "?"),
+                           "values": vals[:4],
+                           "evidence": "; ".join(
+                               f"{(v or {}).get('value')}@ch{(v or {}).get('chapter')}"
+                               for v in (r.get("values") or [])[:4] if isinstance(v, dict))})
+    return drifts[:6]
+
+
 def _chapters_key(job_id: str) -> str:
     return f"narration:{job_id}:chapters"
 
@@ -849,6 +952,56 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("domain plausibility check failed (non-fatal): %s", e)
 
+    # ── (0.87) NUMERIC LEDGER (NARASI_NUMERIC_LEDGER, default OFF, round-7 — lens-4
+    # P1.1, the single gate that would have caught the most findings across 11 QA'd
+    # files): one bounded cheap call extracts every plot-load-bearing number WITH its
+    # referent; a deterministic post-check flags referents carrying >=2 distinct
+    # values. Deliberate official-vs-true contrasts (COUNTERPOINT NUMBERS, heading
+    # 17) are marked intentional by the extractor and skipped. Report-only unless
+    # NARASI_NUMERIC_LEDGER_ENFORCE. Fiction-only. Never raises.
+    try:
+        if _r7_env_on("NARASI_NUMERIC_LEDGER"):
+            _nl_fic = False
+            try:
+                from pakem import resolve_style as _nl_rs
+                _nle = _nl_rs(str(body.get("style") or "")) or {}
+                _nl_fic = bool(_nle.get("is_fiction")) or str(
+                    _nle.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+            except Exception:  # noqa: BLE001
+                _nl_fic = False
+            _nlkey = "book" if result.get("book") else "output"
+            _nlbk = result.get(_nlkey) or ""
+            if _nl_fic and _nlbk:
+                from laozhang_api import _narasi_cheap_call as _nlcall, _narasi_parse_json as _nlparse
+                _nlsys = (
+                    "You are a numeric-continuity extractor for a multi-chapter story. List every "
+                    "PLOT-LOAD-BEARING number with its referent: death/injury tolls, ages and age "
+                    "gaps, money amounts, durations, day-counts, list positions, measurements, "
+                    "classification levels. For each referent collect EVERY distinct value the text "
+                    "states, with the chapter number. Where the story DELIBERATELY contrasts an "
+                    "official/covered-up value with a true value (cover-up plots), set "
+                    "intentional_contrast=true for that referent. Return ONLY JSON: "
+                    "{\"referents\":[{\"name\":\"<referent>\",\"intentional_contrast\":false,"
+                    "\"values\":[{\"value\":\"<as written>\",\"chapter\":<n>}]}]} — max 20 referents, "
+                    "only numbers the plot depends on.")
+                _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:60000], tenant_id=tenant_id,
+                                              user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                if sink is not None and _nlcc:
+                    sink.credits += int(_nlcc)
+                _nld = _nlparse(_nlraw) if isinstance(_nlraw, str) else (_nlraw or {})
+                _nlrefs = (_nld or {}).get("referents") if isinstance(_nld, dict) else None
+                _nldr = _numeric_drifts(_nlrefs if isinstance(_nlrefs, list) else [])
+                result["numeric_ledger_report"] = {
+                    "referents": len(_nlrefs or []), "drifts": _nldr}
+                if _nldr:
+                    log.warning("numeric ledger: %d referent(s) with conflicting values: %s",
+                                len(_nldr), [f"{d['referent']}={d['values']}" for d in _nldr[:4]])
+                else:
+                    log.info("numeric ledger: %d referent(s), no unintentional drift",
+                             len(_nlrefs or []))
+    except Exception as e:  # noqa: BLE001
+        log.warning("numeric ledger check failed (non-fatal): %s", e)
+
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
     # Phase 3 (2026-07-05): pass `style` through so gate_text's per-style R-FG counters
     # (M threshold table, J source-note density, LL factual-ending, HH human-anchor,
@@ -972,6 +1125,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                             f"culpable/liable entity — legal risk. Rename it to a clearly "
                                             f"fictional company (phonetically distinct from any real "
                                             f"conglomerate) at EVERY occurrence, keeping scene content intact.")})
+                    # ROUND-7 ACTUATORS: teeth for the round-6 report-only gates
+                    # (abort-seam, coda-repeat, domain errors, numeric drift) — one
+                    # helper, unit-tested, same synthetic-violation contract.
+                    _mech.extend(_r7_actuator_violations(result))
                     if _mech:
                         _cq["violations"] = (_mech + list(_cq.get("violations") or []))[:20]
                         log.info("ledger-enforce: injected %d mechanical violation(s) into critique/revise",
