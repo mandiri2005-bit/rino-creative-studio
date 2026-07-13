@@ -2675,6 +2675,7 @@ def _brand_scan_on() -> bool:
 # match bare; two-letter groups (SK/LG/GS/CJ/KT) only with a corporate tail, so
 # prose like "LG?" or Korean romanization noise can't FP.
 _REAL_BRANDS_LONG = (
+    "Hanshin",   # round-8: Hanshin E&C is real — culpable-builder slot 2 rolls running
     "Samsung", "Hyundai", "Doosan", "Lotte", "Hanwha", "POSCO", "Daewoo", "Kumho",
     "Hanjin", "Ssangyong", "Kolon", "Hankook", "Naver", "Kakao", "Coupang", "Celltrion",
     "Hyosung",
@@ -2683,6 +2684,32 @@ _REAL_BRANDS_LONG = (
 # Halla) only count WITH a corporate tail — same rule as the two-letter groups.
 _REAL_BRANDS_SHORT = ("SK", "LG", "GS", "CJ", "KT", "DL",
                       "Booyoung", "Hoban", "Halla", "HDC", "Taeyoung")
+def _lev_le1(a: str, b: str) -> bool:
+    """Edit distance <= 1 (round-8: Hanshin≈Hanjin — the model orbited the
+    BLOCKLIST itself one roll after Hanjin was banned)."""
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:
+        return sum(1 for x, y in zip(a, b) if x != y) <= 1
+    if la > lb:
+        a, b, la, lb = b, a, lb, la
+    i = j = diff = 0
+    while i < la and j < lb:
+        if a[i] != b[j]:
+            diff += 1
+            if diff > 1:
+                return False
+            j += 1
+        else:
+            i += 1
+            j += 1
+    return True
+
+
 _BRAND_TAIL = (r"(?:\s+(?:Group|Corporation|Corp|Construction|Engineering|E&C|Heavy|"
                r"Marine|Industries|Industrial|Telecom|Electronics|Chemical|Energy|"
                r"Development|Builders?|Shipbuilding))")
@@ -2727,6 +2754,29 @@ def real_brand_scan(text: str, *, bible: str = "") -> dict:
                         "count": len(rx.findall(txt)),
                         "role": _brand_role(txt, rx),
                         "snippet": re.sub(r"\s+", " ", txt[max(0, m.start() - 40):m.end() + 60])[:130]})
+        # round-8 FUZZY pass: capitalized token + corporate tail, edit-distance <=1 to a
+        # blocklisted name but not exact — catches the Hanjin→Hanshin orbit class.
+        _fz_rx = re.compile(r"\b([A-Z][a-z]{4,})" + _BRAND_TAIL)
+        _fz_names = [b.lower() for b in list(_REAL_BRANDS_LONG) + list(_REAL_BRANDS_SHORT) if len(b) >= 5]
+        for where, txt in (("bible", bible or ""), ("manuscript", text or "")):
+            if not txt:
+                continue
+            _fz_seen = set()
+            for m2 in _fz_rx.finditer(txt):
+                cand = m2.group(1)
+                if cand.lower() in _fz_names or cand in _fz_seen:
+                    continue
+                for bn in _fz_names:
+                    if _lev_le1(cand, bn):
+                        _fz_seen.add(cand)
+                        out["hits"].append({
+                            "brand": f"{cand}≈{bn}", "where": where, "fuzzy": True,
+                            "count": len(re.findall(r"\b" + re.escape(cand) + r"\b", txt)),
+                            "role": _brand_role(txt, re.compile(r"\b" + re.escape(cand) + r"\b")),
+                            "snippet": re.sub(r"\s+", " ", txt[max(0, m2.start() - 40):m2.end() + 60])[:130]})
+                        break
+                if len(_fz_seen) >= 4:
+                    break
         out["status"] = "FLAG" if out["hits"] else "PASS"
         return out
     except Exception:  # noqa: BLE001
@@ -2819,6 +2869,14 @@ def _ledger_fuzzy_on() -> bool:
     return os.environ.get("NARASI_LEDGER_FUZZY", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+_REAL_GEO_WHITELIST = {
+    # round-8: real Korean geography that collided with the fictional-place prefix net
+    # (Cheonggyecheon/Cheongnyangni ≈ banned "Cheongpa" — the real places are fine)
+    "cheonggyecheon", "cheongnyangni", "cheongju", "cheongdam", "gangnam", "jongno",
+    "dongdaemun", "yeongdeungpo", "cheonan", "chuncheon", "changsin", "yeongdo",
+}
+
+
 def ledger_fuzzy_names(text: str, *, style_key: Optional[str] = None) -> dict:
     """Round-5.1 near-variant net (Law-4 endgame evidence: Ik-ro reused VERBATIM in
     R8 while Yul-so/Bok-rye/Noh dodged exact bans by 1-2 edits). Hyphenated given-name
@@ -2862,6 +2920,8 @@ def ledger_fuzzy_names(text: str, *, style_key: Optional[str] = None) -> dict:
             place_cands = sorted({m.group(1) for m in re.finditer(
                 r"\b([A-Z][a-zà-ÿ]{4,}(?:-(?:ro|gil|dong|gu|si|gun|do|myeon|eup|ri))?)\b", text or "")})
             for c in place_cands[:60]:
+                if c.lower().split("-")[0] in _REAL_GEO_WHITELIST:
+                    continue   # round-8: real geography is not an orbit
                 for b in banned_places:
                     if len(b) >= 5 and c.lower() != b.lower() and c[:5].lower() == b[:5].lower()                             and (c, b) not in seen:
                         seen.add((c, b))

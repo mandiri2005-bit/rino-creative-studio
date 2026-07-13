@@ -567,6 +567,11 @@ async def narrate_chapters(
                 if len(_cands) >= 2:
                     try:
                         from laozhang_api import _narasi_cheap_call as _bj_call, _narasi_parse_json as _bj_parse
+                        # ROUND-8 (user directive, 14-file evidence): "supporting characters thin"
+                        # and "antagonist never appears" survived EVERY roll across three premises —
+                        # they are ABSENCES born at the skeleton, so the doctrine-legal lever is the
+                        # SELECTION rubric, not another generator instruction. Criteria 6-7 make the
+                        # judge prefer skeletons that embody the antagonist and keep the cast alive.
                         _bj_sys = (
                             "You are judging candidate STORY BIBLES written for the same premise and "
                             "outline. Pick the one that will produce the strongest serialized melodrama. "
@@ -575,7 +580,13 @@ async def narrate_chapters(
                             "(2) SECONDARY ARC — a non-lead with a stated want and a turn; "
                             "(3) EVIDENCE COST — discoveries cost the finder something, no convenient "
                             "single-box finds; (4) SPINE — calendar/timeline complete and arithmetic-"
-                            "consistent; (5) FRESHNESS — specific, non-generic names and beats. Return "
+                            "consistent; (5) FRESHNESS — specific, non-generic names and beats; "
+                            "(6) ANTAGONIST EMBODIED — the opposing power has at least one named "
+                            "ON-PAGE scene (a confrontation, a deposition, an offer, a threat), not "
+                            "only documents and verdicts about them; (7) CAST PERSISTENCE — every "
+                            "named supporting character is given a RETURN appearance or a stated exit; "
+                            "family members central to the premise (a mother, a mentor) get at least "
+                            "one scene of their own, never introduced-then-forgotten. Return "
                             "ONLY JSON: {\"winner\": <1-based index>, \"reason\": \"<one line>\"}.")
                         _bj_user = "\n\n".join(
                             f"===== CANDIDATE {i + 1} =====\n{c[:9000]}" for i, c in enumerate(_cands))

@@ -1053,6 +1053,15 @@ async def build_story_bible(
     # Vertex model so the job still completes. Env-overridable.
     _fallback = (os.environ.get("NARASI_BIBLE_FALLBACK_MODEL", "gemini-2.5-flash") or "").strip()
     _chain = [_primary] + ([_fallback] if (_fallback and _fallback != _primary) else [])
+    # ROUND-8 (roll-11 bible-less disaster): prod pinned BOTH chain slots to opus-family
+    # models and BOTH timed out at 300s — the fast-model fallback this docstring promises
+    # never ran, and 10 chapters went out with no canon (two load-bearing forks). A
+    # LAST-RESORT slot that env config cannot accidentally remove: default WORKER_MODEL,
+    # disable with NARASI_BIBLE_LAST_RESORT=0.
+    if str(os.environ.get("NARASI_BIBLE_LAST_RESORT", "1")).strip().lower() in ("1", "true", "yes", "on"):
+        _lr = os.environ.get("NARASI_BIBLE_LAST_RESORT_MODEL", "").strip() or WORKER_MODEL
+        if _lr and _lr not in _chain:
+            _chain.append(_lr)
     # Right-size the bible: it is a numbered fact-sheet (~2-4k tokens), NOT a book. Leaving max_tokens unset
     # made it inherit the opus 128k ceiling → a heavy, slow non-streaming KIE request that outran its timeout
     # and hung the read. Cap it (env-tunable). The bible uses the SAME global per-rung failover timing as
@@ -1101,6 +1110,9 @@ async def build_story_bible(
             log.info("build_story_bible: model %s returned no usable bible (attempt %d/%d)%s",
                      _mdl, _i + 1, len(_chain),
                      " — failing over" if _i + 1 < len(_chain) else " — proceeding without one")
+    log.warning("BIBLE-LESS ROLL: all %d bible attempt(s) failed — %d parallel chapters will "
+                "run with NO canonical facts (fork risk HIGH; see roll-11 postmortem)",
+                len(_chain), len(outline or []))
     return ""
 
 

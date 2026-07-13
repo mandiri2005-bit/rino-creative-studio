@@ -7810,7 +7810,16 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
             if _i > 0:
                 import logging as _lg
                 _lg.getLogger("narasi").info("consistency critic: primary timed out — verdict via fallback %s", _cm)
-            return _narasi_normalize_critique(_narasi_parse_json(raw)), int(cr)
+            _cqp = _narasi_parse_json(raw)
+            if not isinstance(_cqp, dict) or _cqp.get("score") is None:
+                # ROUND-8 (rolls 11-12: score=None twice on 20k-word books, silently) —
+                # the raw head tells the next roll whether this is truncation, a refusal,
+                # or a formatting drift.
+                import logging as _lg
+                _lg.getLogger("narasi").warning(
+                    "consistency critic: unparseable/score-less verdict — raw head: %s",
+                    str(raw)[:220].replace(chr(10), " "))
+            return _narasi_normalize_critique(_cqp), int(cr)
         except Exception as _e:
             import logging as _lg
             if _i + 1 < len(_chain):
@@ -8067,6 +8076,13 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         "chunked revise: %d violation(s) in, %d chapter(s) targeted, %d revised%s",
         len(viol), _n_targeted, _n_revised,
         "" if changed else " — NOTHING LANDED (unmapped evidence or all rewrites rejected)")
+    if _n_targeted == 0 and viol:
+        # ROUND-8 (rolls 11-12: two consecutive full no-ops with zero diagnostics on the
+        # UNMAPPED side — the REJECTED side already logs). Name each violation whose
+        # evidence text matched no chapter part, so the mapping failure is attributable.
+        _lg.getLogger("narasi").warning(
+            "chunked revise: UNMAPPED evidence heads: %s",
+            [str((v or {}).get("evidence") or "")[:70] for v in viol[:5]])
     if not changed:
         return full_text, total_cr
     return "".join(out), total_cr

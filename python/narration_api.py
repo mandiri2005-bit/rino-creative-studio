@@ -108,6 +108,53 @@ _DB_STATUS = {
 
 
 
+_NUM_WORDS_XL = {
+    # en → int
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "ninety": 90,
+    # id → int (the premise language of this studio's briefs)
+    "satu": 1, "dua": 2, "tiga": 3, "empat": 4, "lima": 5, "enam": 6, "tujuh": 7,
+    "delapan": 8, "sembilan": 9, "sepuluh": 10, "sebelas": 11, "belas": None,
+}
+
+
+def _premise_term_in_topic(term: str, topic: str) -> bool:
+    """ROUND-8: the premise exemption greps the ENGLISH term in the topic — but this
+    studio's briefs are INDONESIAN, so banned «eleven» was injected for scrubbing on
+    a premise whose load-bearing count was written «sebelas» (roll-11: the revise was
+    asked to remove the story's central number and only failed to land by luck).
+    Word-boundary match first; for numeric terms, match by VALUE across en/id words
+    and digits."""
+    import re as _xre
+    if not term:
+        return False
+    t = topic or ""
+    if _xre.search(r"(?i)\b" + _xre.escape(term) + r"\b", t):
+        return True
+    _val = None
+    _tl = term.strip().lower()
+    if _tl.isdigit():
+        _val = int(_tl)
+    elif _tl in _NUM_WORDS_XL and _NUM_WORDS_XL[_tl]:
+        _val = _NUM_WORDS_XL[_tl]
+    if _val is None:
+        return False
+    if _xre.search(r"\b" + str(_val) + r"\b", t):
+        return True
+    for _w, _v in _NUM_WORDS_XL.items():
+        if _v == _val and _xre.search(r"(?i)\b" + _w + r"\b", t):
+            return True
+    # id compounds: "X belas" (11-19) — sebelas already listed; "dua belas" etc.
+    if 12 <= _val <= 19:
+        _ones = {2: "dua", 3: "tiga", 4: "empat", 5: "lima", 6: "enam", 7: "tujuh", 8: "delapan", 9: "sembilan"}
+        _w = _ones.get(_val - 10)
+        if _w and _xre.search(r"(?i)\b" + _w + r"\s+belas\b", t):
+            return True
+    return False
+
+
 def _r7_env_on(name: str) -> bool:
     return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
 
@@ -625,6 +672,29 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     style = str(body.get("style") or "").strip()
     language = str(body.get("language") or "id").strip()
 
+    # ── (0.05) FRONT-MATTER STRIP — runs BEFORE every scan (NARASI_FRONTMATTER_STRIP, default OFF, round-8):
+    # roll-12 exported the ENTIRE production brief — bilingual synopsis, episode
+    # targets, markdown tables — as 339 lines before "Chapter 1:" (input-passthrough),
+    # which also exploded the revise splitter to 27 parts. Deterministic: when a
+    # Chapter-1 heading exists and the preamble before it is large AND carries brief
+    # markers (markdown headers / target lines / synopsis labels), drop the preamble.
+    # Never fires on a clean book (preamble < 400 chars or no markers). Never raises.
+    try:
+        if str(os.environ.get("NARASI_FRONTMATTER_STRIP", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            import re as _fmre
+            _fmkey = "book" if result.get("book") else "output"
+            _fmbk = result.get(_fmkey) or ""
+            _fmm = _fmre.search(r"(?m)^Chapter\s+1\s*[:.]", _fmbk)
+            if _fmm and _fmm.start() > 400:
+                _fmpre = _fmbk[:_fmm.start()]
+                if _fmre.search(r"(?m)^#{1,3} |\*\*Target|Target\s*:|Sinopsis|Logline|Estimasi|Episode \d+ —", _fmpre):
+                    result[_fmkey] = _fmbk[_fmm.start():]
+                    log.warning("front-matter STRIPPED: %d chars of pre-Chapter-1 brief echo removed "
+                                "(%d markdown/target markers)", _fmm.start(),
+                                len(_fmre.findall(r"(?m)^#{1,3} |Target\s*:", _fmpre)))
+    except Exception as e:  # noqa: BLE001
+        log.warning("front-matter strip failed (non-fatal): %s", e)
+
     # ── (0) CC v4 §1: deterministic counters + surgical diet loop (max 2). Budgets come
     # from the style's style_spec (only harari is tuned today; others = OFF/UNMEASURED).
     # Runs BEFORE the terminal gate so a diet rewrite can never ship bracket residue.
@@ -990,6 +1060,51 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     sink.credits += int(_nlcc)
                 _nld = _nlparse(_nlraw) if isinstance(_nlraw, str) else (_nlraw or {})
                 _nlrefs = (_nld or {}).get("referents") if isinstance(_nld, dict) else None
+                if not _nlrefs:
+                    # ROUND-8: two rolls running returned "0 referent(s)" SILENTLY on
+                    # number-saturated books while a 17-vs-16 toll error sat in the text —
+                    # same truncation family as the registry fallback. Salvage individually
+                    # balanced referent objects, then WARN with the head if still empty.
+                    _nls = str(_nlraw or "")
+                    _nsal = []
+                    import re as _nre
+                    import json as _njson
+                    for _nbm in _nre.finditer(r"\{", _nls):
+                        _nst = _nbm.start()
+                        if not _nre.search(r"\"name\"", _nls[_nst:_nst + 120]):
+                            continue
+                        _nd2, _nin, _nesc = 0, False, False
+                        for _ni in range(_nst, min(len(_nls), _nst + 4000)):
+                            _nc = _nls[_ni]
+                            if _nin:
+                                if _nesc:
+                                    _nesc = False
+                                elif _nc == "\\":
+                                    _nesc = True
+                                elif _nc == '"':
+                                    _nin = False
+                            elif _nc == '"':
+                                _nin = True
+                            elif _nc == "{":
+                                _nd2 += 1
+                            elif _nc == "}":
+                                _nd2 -= 1
+                                if _nd2 == 0:
+                                    try:
+                                        _nobj = _njson.loads(_nre.sub(r",\s*([}\]])", r"\1", _nls[_nst:_ni + 1]))
+                                        if isinstance(_nobj, dict) and _nobj.get("name") and _nobj.get("values"):
+                                            _nsal.append(_nobj)
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    break
+                        if len(_nsal) >= 20:
+                            break
+                    if _nsal:
+                        _nlrefs = _nsal
+                        log.info("numeric ledger: SALVAGED %d referent(s) from truncated response", len(_nsal))
+                    elif len(_nlbk) > 20000:
+                        log.warning("numeric ledger returned no referents on a %d-char book — raw head: %s",
+                                    len(_nlbk), str(_nlraw)[:200].replace("\n", " "))
                 _nldr = _numeric_drifts(_nlrefs if isinstance(_nlrefs, list) else [])
                 result["numeric_ledger_report"] = {
                     "referents": len(_nlrefs or []), "drifts": _nldr}
@@ -1001,6 +1116,50 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                              len(_nlrefs or []))
     except Exception as e:  # noqa: BLE001
         log.warning("numeric ledger check failed (non-fatal): %s", e)
+
+    # ── (0.88) ENTITY ATTRIBUTES (NARASI_ENTITY_ATTR_CHECK, default OFF, round-8):
+    # roll-12 shipped Prosecutor Kim as "She" in Ch8 and "a man whose nameplate read
+    # only KIM" in Ch9 — the R4 attribute-fork class (ages 7/9/26, Dr. Chae vs
+    # Director Yun) in its gender form. One bounded cheap extract-and-check call;
+    # report-only. Fiction-only. Never raises.
+    try:
+        if _r7_env_on("NARASI_ENTITY_ATTR_CHECK"):
+            _ea_fic = False
+            try:
+                from pakem import resolve_style as _ea_rs
+                _eae = _ea_rs(str(body.get("style") or "")) or {}
+                _ea_fic = bool(_eae.get("is_fiction")) or str(
+                    _eae.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+            except Exception:  # noqa: BLE001
+                _ea_fic = False
+            _eakey = "book" if result.get("book") else "output"
+            _eabk = result.get(_eakey) or ""
+            if _ea_fic and _eabk:
+                from laozhang_api import _narasi_cheap_call as _eacall, _narasi_parse_json as _eaparse
+                _easys = (
+                    "You are an entity-attribute continuity checker for a multi-chapter story. For "
+                    "every NAMED character, track three attributes across chapters: gender pronouns "
+                    "used for them, professional title/rank, and stated age. Report ONLY characters "
+                    "where an attribute CONTRADICTS between chapters without in-story explanation "
+                    "(a promotion explains a title change; a disguise explains a pronoun change). "
+                    "Return ONLY JSON: {\"drifts\":[{\"name\":\"<char>\",\"kind\":\"gender|title|age\","
+                    "\"evidence\":\"<the two contradicting usages, chapter-tagged>\"}]} — max 6, real "
+                    "contradictions only.")
+                _earaw, _eacc = await _eacall(_easys, _eabk[:60000], tenant_id=tenant_id,
+                                              user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                if sink is not None and _eacc:
+                    sink.credits += int(_eacc)
+                _ead = _eaparse(_earaw) if isinstance(_earaw, str) else (_earaw or {})
+                _eadr = (_ead or {}).get("drifts") if isinstance(_ead, dict) else None
+                if isinstance(_eadr, list) and _eadr:
+                    result["entity_attr_report"] = {"drifts": _eadr[:6]}
+                    log.warning("entity attributes: %d drift(s): %s",
+                                len(_eadr[:6]),
+                                [f"{d.get('name')}/{d.get('kind')}" for d in _eadr[:4] if isinstance(d, dict)])
+                else:
+                    log.info("entity attributes: no drift")
+    except Exception as e:  # noqa: BLE001
+        log.warning("entity attribute check failed (non-fatal): %s", e)
 
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
     # Phase 3 (2026-07-05): pass `style` through so gate_text's per-style R-FG counters
@@ -1095,8 +1254,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         if _mvdem and str(h.get("term") or "").startswith("floor:"):
                             continue   # orbit-value policy (round-6): floors WARN-only
                         _mterm = str(h.get("term") or "").split(":", 1)[-1]
-                        if _mterm and _mre.search(r"(?i)\b" + _mre.escape(_mterm) + r"\b", _mtopic):
-                            continue   # premise-supplied — not a lane tic
+                        if _mterm and _premise_term_in_topic(_mterm, _mtopic):
+                            continue   # premise-supplied — not a lane tic (round-8: cross-language)
                         _mech.append({
                             "type": "ledger_hit", "severity": "high",
                             "evidence": str(h.get("snippet") or _mterm)[:200],
@@ -1516,7 +1675,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         log.warning("canon-diff event scan failed (non-fatal): %s", _e)
                 result["canon_diff"] = {"events_checked": len(_events[:8]), "forks": _forks[:20]}
                 if _forks:
-                    log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only)", len(_forks), job_id)
+                    log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only): %s",
+                                len(_forks), job_id, [str(f)[:90] for f in _forks[:5]])
                     # enforce (opt-in, default OFF): feed the forks to ONE bounded whole-book revise,
                     # reusing the #53 revise infra + its >=90%-word guard. Never blocks; keeps original.
                     if str(os.environ.get("NARASI_CANON_DIFF_REVISE", "0")).strip().lower() in ("1", "true", "yes", "on"):

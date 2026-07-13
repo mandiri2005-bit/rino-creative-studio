@@ -467,6 +467,9 @@ _PHANTOM_GEOORG = frozenset({
     "El", "Niño", "Niña", "Nino", "Nina", "Oscillation",
     # round-6 (SBF FP): capitalized classification terminology read as a late name
     "Severity", "Level",
+    # round-8 (roll-12 FPs): institutional/organizational tokens and letter salutations
+    "Prosecutor", "Committee", "Association", "Memorial", "Redress", "Courtroom",
+    "Interview", "Special", "Urban", "Dear",
 })
 # Month names as candidate COMPONENTS ('From May', 'By August the town…') are date
 # fragments, never persons (roll-5 'From May' FP — the phantom scan's only wrong flag).
