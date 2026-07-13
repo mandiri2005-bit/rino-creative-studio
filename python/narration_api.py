@@ -771,6 +771,84 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("phantom-name scan failed (non-fatal): %s", e)
 
+    # ── (0.8) TITLE INTEGRITY (round-6, deterministic, log-only): two historical rolls
+    # shipped a CLIPPED chapter-4 title ("Of the Shadow", "Of the Drought") and nothing
+    # noticed — assembled headers were never compared to the outline-derived records.
+    # Also catches duplicate and missing headers. Never edits; never raises.
+    try:
+        import re as _tire
+        _tikey = "book" if result.get("book") else "output"
+        _tibk = result.get(_tikey) or ""
+        if _tibk:
+            _tihdrs = _tire.findall(r"(?m)^Chapter\s+(\d+)\s*[:.]\s*(.+?)\s*$", _tibk)
+            _tiwarn = []
+            _tiseen: dict = {}
+            for _tn, _tt in _tihdrs:
+                if _tt in _tiseen:
+                    _tiwarn.append(f"duplicate title '{_tt}' (ch {_tiseen[_tt]} & {_tn})")
+                _tiseen[_tt] = _tn
+                if len(_tt) < 8 or _tt.lower().startswith("of "):
+                    _tiwarn.append(f"suspect/clipped title ch {_tn}: '{_tt}'")
+            _tirecs = [str(r.get("title") or "") for r in (result.get("chapters") or []) if r.get("title")]
+            if _tirecs and _tihdrs and len(_tirecs) == len(_tihdrs):
+                for _ti, ((_tn, _tt), _tr) in enumerate(zip(_tihdrs, _tirecs), 1):
+                    _ta, _tb = _tt.strip().lower(), _tr.strip().lower()
+                    if _ta and _tb and _ta != _tb and _ta not in _tb and _tb not in _ta:
+                        _tiwarn.append(f"ch {_tn} header '{_tt}' != outline title '{_tr}'")
+            if _tiwarn:
+                log.warning("title integrity: %d issue(s): %s", len(_tiwarn), _tiwarn[:4])
+    except Exception as e:  # noqa: BLE001
+        log.warning("title integrity check failed (non-fatal): %s", e)
+
+    # ── (0.85) DOMAIN PLAUSIBILITY (NARASI_DOMAIN_PLAUSIBILITY, default OFF, round-6):
+    # the SBF 4-lens review surfaced a defect family no deterministic scan can reach —
+    # legal procedure (US-style class action + discovery in a Korean court, a charge
+    # that doesn't fit the act, a 4-month filing-to-dissolution timeline), medicine
+    # (one temporal-bone fragment destroying BOTH cochlear nerves), engineering
+    # (7-story "unreinforced" slab). One bounded cheap extract-and-check call lists
+    # implausible domain claims; report-only WARN (selection/verification lane — no
+    # prompt rules were added for this). Fiction-only. Never raises.
+    try:
+        if str(os.environ.get("NARASI_DOMAIN_PLAUSIBILITY", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            _dp_fic = False
+            try:
+                from pakem import resolve_style as _dp_rs
+                _dpe = _dp_rs(str(body.get("style") or "")) or {}
+                _dp_fic = bool(_dpe.get("is_fiction")) or str(
+                    _dpe.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+            except Exception:  # noqa: BLE001
+                _dp_fic = False
+            _dpkey = "book" if result.get("book") else "output"
+            _dpbk = result.get(_dpkey) or ""
+            if _dp_fic and _dpbk:
+                from laozhang_api import _narasi_cheap_call as _dpcall, _narasi_parse_json as _dpparse
+                _dpsys = (
+                    "You are a domain-plausibility checker for fiction. Scan the manuscript for "
+                    "claims about LAW/legal procedure, MEDICINE/anatomy, or ENGINEERING/physics "
+                    "that a professional in that field would call clearly wrong or impossible — "
+                    "the kind that breaks reader trust (a metal hammer kept in a prison cell; a "
+                    "charge name that does not match the act; one lateral impact destroying both "
+                    "cochlear nerves; an unreinforced 7-story concrete slab). IGNORE stylistic "
+                    "choices, genre conventions, and anything merely unlikely. Return ONLY JSON: "
+                    "{\"claims\":[{\"quote\":\"<short exact quote>\",\"domain\":\"law|medicine|engineering\","
+                    "\"why\":\"<one line>\",\"severity\":\"high|low\"}]} — max 8, hard errors only.")
+                _dpraw, _dpcc = await _dpcall(_dpsys, _dpbk[:60000], tenant_id=tenant_id,
+                                              user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                if sink is not None and _dpcc:
+                    sink.credits += int(_dpcc)
+                _dpd = _dpparse(_dpraw) if isinstance(_dpraw, str) else (_dpraw or {})
+                _dpcl = (_dpd or {}).get("claims") if isinstance(_dpd, dict) else None
+                if isinstance(_dpcl, list) and _dpcl:
+                    result["domain_plausibility_report"] = {"claims": _dpcl[:8]}
+                    log.warning("domain plausibility: %d implausible claim(s): %s",
+                                len(_dpcl[:8]),
+                                [f"{c.get('domain')}: {str(c.get('quote') or '')[:60]}"
+                                 for c in _dpcl[:4] if isinstance(c, dict)])
+                else:
+                    log.info("domain plausibility: no hard errors flagged")
+    except Exception as e:  # noqa: BLE001
+        log.warning("domain plausibility check failed (non-fatal): %s", e)
+
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
     # Phase 3 (2026-07-05): pass `style` through so gate_text's per-style R-FG counters
     # (M threshold table, J source-note density, LL factual-ending, HH human-anchor,
@@ -831,6 +909,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             if sink is not None and _cqc:
                 sink.credits += int(_cqc)
             _cpay = _cq
+            # ROUND-6 observability (#14 diagnosis): the critic's finding TYPES were never
+            # logged, so "double-delivered scene survived to print" (SBF Ch5/Ch6) cannot be
+            # split into detect-failure vs repair-failure from the logs. One compact line.
+            try:
+                log.info("critic findings preview: %s",
+                         [f"{(v.get('type') or '?')}:{str(v.get('evidence') or v.get('description') or '')[:60]}"
+                          for v in (_cq.get("violations") or [])[:12]])
+            except Exception:  # noqa: BLE001
+                pass
             # ── LEDGER/TIMELINE ENFORCEMENT (NARASI_LEDGER_ENFORCE, default OFF): the
             # deterministic scans (lane-ledger hits, timeline arithmetic) fire WARNs that
             # nothing acts on — Law 1 of the 5-roll audit: report-only bans are dead.
@@ -848,9 +935,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     # user's own premise supplies (surname Han in 'Han Seo-jin').
                     import re as _mre
                     _mtopic = str(body.get("topic") or body.get("goal") or body.get("brief") or "")
+                    _mvdem = os.environ.get("NARASI_LEDGER_VALUE_DEMOTE", "0").strip().lower() in ("1", "true", "yes", "on")
                     for h in ((_mctrs.get("ledger_hits") or {}).get("hits") or [])[:8]:
                         if h.get("where") != "manuscript":
                             continue   # bible-level hits are handled at bible time (re-roll)
+                        if _mvdem and str(h.get("term") or "").startswith("floor:"):
+                            continue   # orbit-value policy (round-6): floors WARN-only
                         _mterm = str(h.get("term") or "").split(":", 1)[-1]
                         if _mterm and _mre.search(r"(?i)\b" + _mre.escape(_mterm) + r"\b", _mtopic):
                             continue   # premise-supplied — not a lane tic
@@ -867,6 +957,21 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             "fix": (f"Unify the alternating duration — {f.get('note')}"
                                     if f.get("kind") == "span_alternation" else
                                     f"Correct the stated span to match the dated events — {f.get('note')}")})
+                    # ROUND-6 BRAND ACTUATOR (NARASI_BRAND_ENFORCE, default OFF): two files
+                    # running named a REAL chaebol as the culpable entity (Doosan R8,
+                    # Hanjin SBF) — the scan caught both and nothing acted (Law 1). Only
+                    # role=="culpable" hits are injected; brands as props (a dented grey
+                    # Hyundai) stay WARN-only.
+                    if os.environ.get("NARASI_BRAND_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+                        for h in ((_mctrs.get("real_brands") or {}).get("hits") or [])[:3]:
+                            if h.get("where") == "manuscript" and h.get("role") == "culpable":
+                                _mech.append({
+                                    "type": "real_brand", "severity": "high",
+                                    "evidence": str(h.get("snippet") or h.get("brand"))[:200],
+                                    "fix": (f"The real-world company «{h.get('brand')}» is used as a "
+                                            f"culpable/liable entity — legal risk. Rename it to a clearly "
+                                            f"fictional company (phonetically distinct from any real "
+                                            f"conglomerate) at EVERY occurrence, keeping scene content intact.")})
                     if _mech:
                         _cq["violations"] = (_mech + list(_cq.get("violations") or []))[:20]
                         log.info("ledger-enforce: injected %d mechanical violation(s) into critique/revise",
@@ -1155,11 +1260,56 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         log.info("canon-registry: fallback extraction recovered %d event(s) from prose bible",
                                  len(_xd["events"]))
                     else:
-                        # r5.2 (roll-9): this path failed SILENTLY for an entire roll while the
-                        # flag was live — the cheap call returned something without events and
-                        # nothing was logged. Name the failure so the next roll self-diagnoses.
-                        log.warning("canon-registry fallback returned no events — raw head: %s",
-                                    str(_xraw)[:220].replace("\n", " "))
+                        # ROUND-6 (SBF roll): the r5.2 WARN did its job — it showed the cheap
+                        # call RETURNING a valid-looking events JSON that the plain parse still
+                        # rejected (token-cap truncation ⟹ unbalanced tail). Salvage: brace-scan
+                        # the raw string for INDIVIDUALLY balanced event objects and rebuild the
+                        # registry from the complete ones; a truncated final object is dropped,
+                        # not fatal. WARN only when even salvage finds nothing.
+                        _xs = str(_xraw or "")
+                        _sal = []
+                        import re as _xre
+                        import json as _xjson
+                        for _bm in _xre.finditer(r"\{", _xs):
+                            _st = _bm.start()
+                            if not _xre.search(r"\"(?:id|summary)\"", _xs[_st:_st + 200]):
+                                continue
+                            _depth, _in_s, _esc = 0, False, False
+                            for _i in range(_st, min(len(_xs), _st + 8000)):
+                                _c = _xs[_i]
+                                if _in_s:
+                                    if _esc:
+                                        _esc = False
+                                    elif _c == "\\":
+                                        _esc = True
+                                    elif _c == '"':
+                                        _in_s = False
+                                elif _c == '"':
+                                    _in_s = True
+                                elif _c == "{":
+                                    _depth += 1
+                                elif _c == "}":
+                                    _depth -= 1
+                                    if _depth == 0:
+                                        _cand = _xs[_st:_i + 1]
+                                        for _txt in (_cand, _xre.sub(r",\s*([}\]])", r"\1", _cand)):
+                                            try:
+                                                _obj = _xjson.loads(_txt)
+                                            except Exception:  # noqa: BLE001
+                                                continue
+                                            if isinstance(_obj, dict) and _obj.get("id") and _obj.get("summary"):
+                                                _sal.append(_obj)
+                                            break
+                                        break
+                            if len(_sal) >= 8:
+                                break
+                        if _sal:
+                            _reg = {"events": _sal}
+                            log.info("canon-registry: fallback SALVAGED %d complete event(s) from truncated response",
+                                     len(_sal))
+                        else:
+                            log.warning("canon-registry fallback returned no events — raw head: %s",
+                                        str(_xraw)[:220].replace("\n", " "))
                 except Exception as _xe:  # noqa: BLE001
                     log.warning("canon-registry fallback extraction failed (non-fatal): %s", _xe)
             _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None

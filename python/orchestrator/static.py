@@ -623,9 +623,17 @@ async def narrate_chapters(
                             # only on the hit path. Failure ⟹ original bible stands.
                             if str(os.environ.get("NARASI_LEDGER_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
                                 try:
+                                    # ORBIT-VALUE POLICY (round-6, NARASI_LEDGER_VALUE_DEMOTE): floor
+                                    # numbers are VALUES, not named entities — SBF stood its whole
+                                    # premise on banned floor 6 (Units 601/701, the composition
+                                    # "Floor 6½") and enforcement would have asked a patch call to
+                                    # rewrite the story's load-bearing address. Demote the floor
+                                    # category to WARN-only; names/foods/numbers stay enforced.
+                                    _vdem = str(os.environ.get("NARASI_LEDGER_VALUE_DEMOTE", "0")).strip().lower() in ("1", "true", "yes", "on")
                                     _terms_all = sorted({str(h.get("term", "")).split(":", 1)[-1]
                                                          for h in _lrep.get("hits") or []
-                                                         if h.get("where") == "bible"})
+                                                         if h.get("where") == "bible"
+                                                         and not (_vdem and str(h.get("term", "")).startswith("floor:"))})
                                     # PREMISE EXEMPTION (round-4, roll-6 lesson): a term the USER's
                                     # premise itself supplies (surname Han from 'Han Seo-jin') is not
                                     # a lane tic — the bible MUST use it, so it can never re-roll away.
@@ -667,6 +675,13 @@ async def narrate_chapters(
                                                                                  tenant_id=tenant_id, user_id=None,
                                                                                  job_uuid=None, json_mode=True)
                                                 _sp = _sp_parse(_sp_raw) if isinstance(_sp_raw, str) else (_sp_raw or {})
+                                                if not isinstance(_sp, dict):
+                                                    # ROUND-6 (SBF roll): parse returned None and the
+                                                    # .get() below crashed the whole surgical path —
+                                                    # 18 poisoned bans sailed into MAP unpatched.
+                                                    log.warning("ledger-enforce surgical: unparseable patch response (head: %s) — original bible stands",
+                                                                str(_sp_raw)[:160].replace("\n", " "))
+                                                    _sp = {}
                                                 _bible2 = _bible
                                                 _n_patched = 0
                                                 for _pair in (_sp.get("lines") or []):

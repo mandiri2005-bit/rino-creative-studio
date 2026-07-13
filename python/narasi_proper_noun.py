@@ -465,6 +465,8 @@ _PHANTOM_GEOORG = frozenset({
     "Correction", "Formal", "Amendment", "Notice",
     # climate-pattern terms (post-ñ-fix, 'El Niño' now survives whole — still not a person)
     "El", "Niño", "Niña", "Nino", "Nina", "Oscillation",
+    # round-6 (SBF FP): capitalized classification terminology read as a late name
+    "Severity", "Level",
 })
 # Month names as candidate COMPONENTS ('From May', 'By August the town…') are date
 # fragments, never persons (roll-5 'From May' FP — the phantom scan's only wrong flag).

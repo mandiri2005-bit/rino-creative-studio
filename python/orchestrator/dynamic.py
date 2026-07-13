@@ -424,6 +424,37 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
     )
 
 
+def _title_ban_hits(chapters: list, style) -> list:
+    """ROUND-6 (#6): banned_title_tokens reached the OUTLINE PROMPT in r5.2 and the
+    very next roll used 'The Weight of a Withdrawn Warning' anyway — Law 1 again:
+    an instruction without a checker is a suggestion. Deterministic check of
+    outline titles against the lane's banned tokens; empty for non-lane styles.
+    Never raises."""
+    try:
+        import json as _tj
+        import os as _tos
+        from pakem import resolve_style_key as _trsk
+        _tkey = _trsk(style) if style else None
+        if not _tkey:
+            return []
+        _tpath = _tos.path.join(_tos.path.dirname(__file__), "..", "pakem", "lane_ledger.json")
+        with open(_tpath, encoding="utf-8") as _tf:
+            _tlane = (_tj.load(_tf) or {}).get(_tkey) or {}
+        _ttok = [str(x).lower() for x in (_tlane.get("banned_title_tokens") or [])][:14]
+        if not _ttok:
+            return []
+        hits = []
+        for ch in chapters or []:
+            _tt = str((ch or {}).get("title") or "").lower()
+            for tok in _ttok:
+                if tok and tok in _tt:
+                    hits.append(f"'{(ch or {}).get('title')}' contains banned token '{tok}'")
+                    break
+        return hits
+    except Exception:  # noqa: BLE001
+        return []
+
+
 async def outline_from_topic(
     topic: str,
     *,
@@ -464,6 +495,37 @@ async def outline_from_topic(
     if res.get("ok") and res.get("output"):
         parsed = _parse_json_loose(res["output"])
         chapters = _normalize_outline(parsed, topic, n, words_per_chapter)
+
+    # ROUND-6 TITLE-BAN ENFORCE (NARASI_TITLE_BAN_ENFORCE, default OFF): verify the
+    # outline's titles against the lane's banned tokens; on a hit, ONE re-roll with
+    # the rejection quoted back, accepted only if it strictly reduces hits. The r5.2
+    # prompt-side ban alone was violated on its first live roll ('Weight' 8/10 files).
+    if (chapters and os.environ.get("NARASI_TITLE_BAN_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on")):
+        try:
+            _tbh = _title_ban_hits(chapters, style)
+            if _tbh:
+                log.info("title-ban enforce: %d banned title(s) in outline (%s) — one re-roll",
+                         len(_tbh), _tbh[:2])
+                _tbres = await run_worker(
+                    worker,
+                    _outline_prompt(topic, n, style, language, words_per_chapter)
+                    + ("\n\nPREVIOUS ATTEMPT REJECTED — these chapter titles used banned title "
+                       "words: " + "; ".join(_tbh[:4]) + ". Regenerate the SAME outline structure "
+                       "with completely different, fresh title shapes that avoid every banned "
+                       "title word listed above."),
+                    timeout=timeout, task_id="planner:outline-titlefix",
+                )
+                if _tbres.get("ok") and _tbres.get("output"):
+                    _tbp = _parse_json_loose(_tbres["output"])
+                    _tbch = _normalize_outline(_tbp, topic, n, words_per_chapter)
+                    if _tbch and len(_title_ban_hits(_tbch, style)) < len(_tbh):
+                        chapters = _tbch
+                        log.info("title-ban enforce: re-roll accepted (%d → %d banned title(s))",
+                                 len(_tbh), len(_title_ban_hits(_tbch, style)))
+                    else:
+                        log.info("title-ban enforce: re-roll no better — original outline kept")
+        except Exception as _tbe:  # noqa: BLE001
+            log.warning("title-ban enforce failed (non-fatal): %s", _tbe)
 
     if chapters:
         return {"chapters": chapters, "source": "manager", "model": m_model, "ok": True}

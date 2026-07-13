@@ -579,6 +579,15 @@ _MD_DATE_RX = re.compile(
     r"september|october|november|december)\b")
 
 
+_revert_rxes = (
+    re.compile(r"(?i)\b(\d{1,2},\d{3}|\d{3,4})\s+days\b"),
+    re.compile(r"(?i)\b((?:one|two|three|four|five|six|seven|eight|nine)\s+thousand"
+               r"[a-z ,-]{0,50}?)\s+days\b"),
+    re.compile(r"(?i)\b((?:one|two|three|four|five|six|seven|eight|nine)?\s*hundred"
+               r"[a-z ,-]{0,40}?)\s+days\b"),
+)
+
+
 def scan_day_counters(text: str) -> list[dict]:
     """Running day-ledger vs calendar dates. Never raises; [] on clean text."""
     findings: list[dict] = []
@@ -614,13 +623,6 @@ def scan_day_counters(text: str) -> list[dict]:
         # reused the ARRIVAL number after ~50 story-days): any value that reappears
         # AFTER a larger value has been recorded is a frozen/reverted ledger. This
         # works on UNPAIRED counters too (no nearby date needed) — collect all.
-        _revert_rxes = (
-            re.compile(r"(?i)\b(\d{1,2},\d{3}|\d{3,4})\s+days\b"),
-            re.compile(r"(?i)\b((?:one|two|three|four|five|six|seven|eight|nine)\s+thousand"
-                       r"[a-z ,-]{0,50}?)\s+days\b"),
-            re.compile(r"(?i)\b((?:one|two|three|four|five|six|seven|eight|nine)?\s*hundred"
-                       r"[a-z ,-]{0,40}?)\s+days\b"),
-        )
         _allc: list[tuple[int, int]] = []
         _spans_seen2: set = set()
         for rx in _revert_rxes:
@@ -703,10 +705,85 @@ def scan_span_alternation(text: str) -> list[dict]:
     return findings
 
 
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_WD_RX = re.compile(r"(?i)\b(" + "|".join(_WEEKDAYS) + r")\b")
+
+
+def scan_weekday_mismatch(text: str) -> list[dict]:
+    """ROUND-6 v2 (lens-4 P2.4): a weekday named within 60 chars of a full date is
+    checkable against the real calendar (R8/R9 both happened to get it right —
+    cheap to assert forever). Month-year pins carry the day=15 sentinel, so
+    day==15 dates are skipped rather than false-checked. Report-only."""
+    import datetime as _dt
+    out: list[dict] = []
+    slop: dict = {}
+    for pos, d in _dates_en(text, slop_out=slop):
+        # d is a (Y, M, D) tuple; month-year pins use the day=15 sentinel — skip those
+        if slop.get(pos, 0) != 0 or d[2] == 15:
+            continue
+        try:
+            _date = _dt.date(*d)
+        except ValueError:
+            continue
+        lo, hi = max(0, pos - 60), min(len(text), pos + 90)
+        m = _WD_RX.search(text[lo:hi])
+        if not m:
+            continue
+        want = _WEEKDAYS[_date.weekday()]
+        if m.group(1).lower() != want:
+            out.append({"kind": "weekday_mismatch",
+                        "note": (f"'{m.group(1)}' beside {_date.isoformat()} — "
+                                 f"real calendar says {want.capitalize()}"),
+                        "context": text[lo:hi].replace("\n", " ")})
+        if len(out) >= 3:
+            break
+    return out
+
+
+def scan_frozen_durations(text: str, prior_findings: list[dict]) -> list[dict]:
+    """ROUND-6 v2 (lens-4 superset of the r5.2 REVERT check): the same day-count
+    value recurring far apart while dated events pass between (R9: '1,826 days'
+    in Ch1 AND Ch8, 50 story-days later). REVERT only fires when a larger value
+    intervenes; this covers the no-intervening-peak case. Any value the REVERT
+    check already reported is skipped so one defect never double-fires.
+    Report-only."""
+    reported = " | ".join(str(f.get("note") or "") for f in (prior_findings or []))
+    vals: list[tuple[int, int]] = []
+    for rx in _revert_rxes:
+        for m in rx.finditer(text):
+            nv = _en_num_ext(m.group(1))
+            if nv is not None and 100 <= nv <= 3000:
+                vals.append((m.start(), nv))
+    vals.sort()
+    dedup: list[tuple[int, int]] = []
+    for pos, nv in vals:
+        if not any(abs(pos - p2) < 12 for p2, _ in dedup):
+            dedup.append((pos, nv))
+    slop: dict = {}
+    dates = [(pos, d) for pos, d in _dates_en(text, slop_out=slop) if slop.get(pos, 0) == 0]
+    out: list[dict] = []
+    flagged: set[int] = set()
+    for i, (p1, v1) in enumerate(dedup):
+        if v1 in flagged or str(v1) in reported:
+            continue
+        for p2, v2_ in dedup[i + 1:]:
+            if v2_ != v1 or (p2 - p1) < 20000:
+                continue
+            between = {d for pos, d in dates if p1 < pos < p2}
+            if len(between) >= 2:
+                flagged.add(v1)
+                out.append({"kind": "frozen_duration",
+                            "note": (f"day-counter FROZEN: '{v1} days' repeats {p2 - p1} chars apart "
+                                     f"while {len(between)} dated event(s) pass between"),
+                            "context": text[max(0, p2 - 80):p2 + 60].replace("\n", " ")})
+                break
+    return out[:3]
+
+
 def scan_arithmetic(text: str, *, lang: str = "fr",
                      known_dob: dict[str, int] | None = None,
-                     seed_dates: dict[str, tuple[int, int, int]] | None = None
-                     ) -> dict:
+                     seed_dates: dict[str, tuple[int, int, int]] | None = None,
+                     v2: bool = False) -> dict:
     """SPEC v1 §3.3 entry point. Combined report of age + interval findings.
     Returns {status: PASS|FAIL, findings: [...], counts: {...}}.
     Never raises."""
@@ -720,11 +797,21 @@ def scan_arithmetic(text: str, *, lang: str = "fr",
             spans = scan_span_alternation(text)
             days = scan_day_counters(text)
         findings = age + interval + spans + days
+        counts = {"age": len(age), "interval": len(interval),
+                  "span": len(spans), "day": len(days)}
+        if v2 and (lang or "").split("-")[0].lower() == "en":
+            frozen = scan_frozen_durations(text, findings)
+            weekday = scan_weekday_mismatch(text)
+            if frozen:
+                findings = findings + frozen
+                counts["frozen"] = len(frozen)
+            if weekday:
+                findings = findings + weekday
+                counts["weekday"] = len(weekday)
         return {
             "status": "FAIL" if findings else "PASS",
             "findings": findings,
-            "counts": {"age": len(age), "interval": len(interval),
-                       "span": len(spans), "day": len(days)},
+            "counts": counts,
         }
     except Exception as exc:  # noqa: BLE001
         return {"status": "PASS", "findings": [], "counts": {}, "_error": str(exc)}

@@ -2656,6 +2656,10 @@ def _ledger_validator_on() -> bool:
     return os.environ.get("NARASI_LEDGER_VALIDATOR", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _timeline_v2_on() -> bool:
+    return os.environ.get("NARASI_TIMELINE_ARITH_V2", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _timeline_arith_on() -> bool:
     return os.environ.get("NARASI_TIMELINE_ARITH", "0").strip().lower() in ("1", "true", "yes", "on")
 
@@ -2684,6 +2688,25 @@ _BRAND_TAIL = (r"(?:\s+(?:Group|Corporation|Corp|Construction|Engineering|E&C|He
                r"Development|Builders?|Shipbuilding))")
 
 
+_BRAND_CULPABLE_RX = re.compile(
+    r"(?i)liab|guilt|falsif|bribe|criminal|defendant|dissolv|negligen|indict|convict|"
+    r"fraud|cover-up|withdrew the report|lawsuit|sued|charge")
+
+
+def _brand_role(text: str, rx) -> str:
+    """ROUND-6 (lens-4 CC brief): a real brand as VILLAIN (Doosan R8, Hanjin SBF)
+    is a legal blocker; a real brand as PROP (a dented grey Hyundai, a Verbatim
+    drive) is normal fiction furniture. A brand is culpable if ANY of its
+    occurrences sits within ±150 chars of culpability vocabulary — first-mention-
+    only classification inverted Hanjin/Hyundai on the SBF roll (Hanjin's 'liable'
+    is its tenth mention; Hyundai's only mention brushed the word 'collapse')."""
+    for m in rx.finditer(text):
+        lo, hi = max(0, m.start() - 150), min(len(text), m.end() + 150)
+        if _BRAND_CULPABLE_RX.search(text[lo:hi]):
+            return "culpable"
+    return "prop"
+
+
 def real_brand_scan(text: str, *, bible: str = "") -> dict:
     """Report-only FLAG/PASS: real Korean conglomerate names used as in-story
     corporate entities. Never raises; never OVER (excluded from diet)."""
@@ -2702,6 +2725,7 @@ def real_brand_scan(text: str, *, bible: str = "") -> dict:
                     out["hits"].append({
                         "brand": brand, "where": where,
                         "count": len(rx.findall(txt)),
+                        "role": _brand_role(txt, rx),
                         "snippet": re.sub(r"\s+", " ", txt[max(0, m.start() - 40):m.end() + 60])[:130]})
         out["status"] = "FLAG" if out["hits"] else "PASS"
         return out
@@ -2728,6 +2752,67 @@ def _levenshtein_le2(a: str, b: str) -> bool:
             return False
         prev = cur
     return prev[-1] <= 2
+
+
+def _abort_seam_on() -> bool:
+    return os.environ.get("NARASI_ABORT_SEAM_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+_ABORT_SEAM_RX = re.compile(r"\b\w[\w-]* \u2014 no\.\s+[A-Z]")
+
+
+def abort_seam_scan(text: str) -> dict:
+    """ROUND-6 (SBF roll): the chapter-level ban line can make the model start a
+    banned default, cancel itself MID-CLAUSE, and ship the correction into prose
+    ("Eo-jin made barley \u2014 no. He boiled water for instant coffee"). The gate
+    worked; its skid mark reached the reader. Deterministic net for that seam
+    shape. Quoted dialogue is exempt \u2014 characters may legitimately say "\u2014 no.".
+    Report-only."""
+    hits = []
+    if not text:
+        return {"count": 0, "hits": []}
+    for m in _ABORT_SEAM_RX.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line = text[line_start:text.find("\n", m.end()) if text.find("\n", m.end()) != -1 else len(text)]
+        # inside quoted speech on the same line -> legit self-interruption
+        if line.count('"') >= 2 or "\u201c" in line[:m.start() - line_start]:
+            continue
+        hits.append({"snippet": text[max(0, m.start() - 60):m.end() + 40].replace("\n", " ")})
+        if len(hits) >= 6:
+            break
+    return {"count": len(hits), "hits": hits}
+
+
+def _coda_dedup_on() -> bool:
+    return os.environ.get("NARASI_CODA_DEDUP_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def coda_repeat_scan(text: str) -> dict:
+    """ROUND-6 (SBF roll): Ch3 and Ch4 shipped the IDENTICAL closing aphorism
+    ("Some truths are buried under concrete, others under a signature.") \u2014 a 2x
+    verbatim repeat sits below REFRAIN_SCAN's radar. Compare each chapter's final
+    non-empty line, normalized; flag exact duplicates. Report-only."""
+    if not text:
+        return {"count": 0, "pairs": []}
+    blocks = re.split(r"(?m)^(?=Chapter \d+\s*[:.])", text)
+    codas: list[tuple[int, str]] = []
+    for b in blocks:
+        m = re.match(r"Chapter (\d+)", b)
+        if not m:
+            continue
+        lines = [ln.strip() for ln in b.rstrip().split("\n") if ln.strip()]
+        if len(lines) >= 2:
+            codas.append((int(m.group(1)), re.sub(r"\s+", " ", lines[-1]).lower()))
+    seen: dict[str, int] = {}
+    pairs = []
+    for ch, coda in codas:
+        if len(coda) < 25:
+            continue
+        if coda in seen:
+            pairs.append({"chapters": [seen[coda], ch], "coda": coda[:120]})
+        else:
+            seen[coda] = ch
+    return {"count": len(pairs), "pairs": pairs}
 
 
 def _ledger_fuzzy_on() -> bool:
@@ -3322,6 +3407,14 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         if _brand_scan_on():
             report["counters"]["real_brands"] = real_brand_scan(text, bible=bible or "")
 
+        # ── abort-seam scan (NARASI_ABORT_SEAM_SCAN, default OFF) — round-6, report-only.
+        if _abort_seam_on():
+            report["counters"]["abort_seam"] = abort_seam_scan(text)
+
+        # ── chapter-coda verbatim repeat (NARASI_CODA_DEDUP_SCAN, default OFF) — round-6.
+        if _coda_dedup_on():
+            report["counters"]["coda_repeat"] = coda_repeat_scan(text)
+
         # ── near-variant name net (NARASI_LEDGER_FUZZY, default OFF).
         if _ledger_fuzzy_on():
             report["counters"]["ledger_fuzzy"] = ledger_fuzzy_names(
@@ -3337,7 +3430,7 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         if _timeline_arith_on() and (lang or "en").split("-")[0].lower() == "en":
             try:
                 import narasi_arithmetic as _na
-                _tl = _na.scan_arithmetic(text, lang="en")
+                _tl = _na.scan_arithmetic(text, lang="en", v2=_timeline_v2_on())
                 report["counters"]["timeline_arith"] = {
                     "status": "FLAG" if _tl.get("findings") else "PASS",
                     "count": len(_tl.get("findings") or []),

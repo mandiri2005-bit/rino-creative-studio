@@ -3,6 +3,10 @@
   "_seeded_from": "5-roll kdrama audit 2026-07-09/10 (fallen-angel, Lumi, Archivist, Keyframe, Royal Blueprint), grep-verified + auto-extracted rain-lane 5-roll sweep 2026-07-13 (tools/ledger_extract.py; prompted premise names Seo-jin/Do-yun/Kang deliberately excluded) + 6-roll re-sweep 2026-07-13 (adds R6 Mujin lane: Roh 2/6, Haean-ro/Taegang 2/6, barograph family 4/6, title frames) + 7-roll re-sweep (fourth-ring RETURNED in R7 — phrase bans are bible-level only; Daesong org-rotation; title verbatim R5=R7) + 8-roll sweep (fact-tuple convergence: R8 remixed R6's Ik-ro/L4→2/3-vs-14/Aug-13; Doosan REAL brand → NARASI_BRAND_SCAN)",
   "kdrama_serial": {
     "given_names": [
+      "Ji-ho (SBF male lead)",
+      "Doo-kyeong (SBF attorney)",
+      "Mu-taek (SBF antagonist)",
+      "Seong-hye (SBF mother)",
       "Cheong-u (2/5 rolls 2026-07-13 rain-5roll)",
       "Gi-cheol (3/5 rolls 2026-07-13 rain-5roll)",
       "Yul-bi (2/5 rolls 2026-07-13 rain-5roll)",
@@ -106,7 +110,9 @@
       "Woo",
       "Gwak",
       "Shin",
-      "Jang"
+      "Jang",
+      "Seok (SBF)",
+      "Lim (SBF; Im-variant)"
     ],
     "timestamp_minutes": [
       ":14 (used 7x across rolls)",
@@ -168,7 +174,9 @@
       "Dongjak-gu (2/7 2026-07-13 rain-7roll)",
       "Haemaru (2026-07-13 rain-8roll)",
       "Beomseok-gil (2026-07-13 rain-8roll)",
-      "Boryeong (2/8 2026-07-13 rain-8roll)"
+      "Boryeong (2/8 2026-07-13 rain-8roll)",
+      "Seongnyu (R9 reservoir → SBF arts center — crossed premises verbatim)",
+      "Cheongpa (SBF building)"
     ],
     "verbatim_phrases": [
       "…and kept the smallest for himself (caregiver-denies-own-portion closing line — verbatim in 2 rolls)",
@@ -194,7 +202,9 @@
       "on the stool behind the counter (3/7 2026-07-13 rain-7roll)",
       "a town that had not seen rain (3/8 2026-07-13 rain-8roll)",
       "it the way a person holds something (3/8 2026-07-13 rain-8roll)",
-      "something she had not seen in (3/8 2026-07-13 rain-8roll)"
+      "something she had not seen in (3/8 2026-07-13 rain-8roll)",
+      "Silence is not the absence of sound (R2 anchor → SBF Ch1 coda, near-verbatim across premises)",
+      "Some truths are buried under concrete (SBF — shipped twice verbatim in one book)"
     ],
     "recycled_beats": [
       "equinox/solstice shadow-alignment reveal as the climax (already used cross-lane)",
@@ -218,7 +228,9 @@
       "FACT-TUPLE classification pair Level 4→2 (2/8 2026-07-13 rain-8roll: R6,R8)",
       "FACT-TUPLE toll pair 3-vs-14 (2/8 2026-07-13 rain-8roll: R6,R8)",
       "European-conference handwriting tell (crossed sevens, Geneva R3 / Hamburg R8) — forensic-tell class, invent a different tell",
-      "eleven-as-hidden-count rhetoric ('eleven ghosts' = 14-3, R8) — the banned 11 structuring arithmetic"
+      "eleven-as-hidden-count rhetoric ('eleven ghosts' = 14-3, R8) — the banned 11 structuring arithmetic",
+      "official toll N vs real M via reclassification — cardiac/traffic (3 files running, crossed premises R6/R8/R9→SBF)",
+      "Level N→Level 1/2 falsified safety rating grammar (4 files running incl. SBF Level 3→1)"
     ],
     "banned_title_tokens": [
       "weight",
