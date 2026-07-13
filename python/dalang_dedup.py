@@ -67,10 +67,24 @@ def _embed(text: str, task: str = "SEMANTIC_SIMILARITY"):
     the query and the index side use SEMANTIC_SIMILARITY → the two vectors stay in one
     comparable space (mixing RETRIEVAL_QUERY/DOCUMENT would put them in asymmetric subspaces
     and weaken the cosine). None on any failure (fail-open)."""
-    if not _GEMINI_API_KEY or not (text or "").strip():
+    if not (text or "").strip():
+        return None
+    # ROUND-8 / corpus fix (user-authorized): the 403 flood — this embedder still used the
+    # raw GEMINI key while the project's credentials moved to Vertex OAuth; gg_enhance got
+    # the OAuth route in 3821242 but the dedup embed path never did. Prefer the proven
+    # OAuth embedder (lazy import — laozhang imports this module at load, so a top-level
+    # import back would be circular); fall back to the key path only if OAuth is absent.
+    try:
+        from laozhang_api import _vertex_embed as _vx   # lazy: avoids circular import
+        _v = _vx(text[:8000], task=task)
+        if _v:
+            return _v
+    except Exception as e:  # noqa: BLE001
+        log.warning("dedup embed (oauth) err — falling back to key path: %s", e)
+    if not _GEMINI_API_KEY:
         return None
     try:
-        from nusantara_corpus import _gg_embed         # reuse the proven embedder
+        from nusantara_corpus import _gg_embed         # legacy key-based embedder
         return _gg_embed(text[:8000], _GEMINI_API_KEY, task=task)
     except Exception as e:
         log.warning("dedup embed err: %s", e)
