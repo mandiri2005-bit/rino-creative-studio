@@ -638,6 +638,54 @@ async def narrate_chapters(
                                     if not _terms:
                                         log.info("ledger-enforce: all %d bible hit(s) premise-supplied (%s) — re-roll skipped",
                                                  len(_terms_all), ", ".join(_terms_all[:6]))
+                                    elif str(os.environ.get("NARASI_LEDGER_ENFORCE_SURGICAL", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                                        # ROUND-5.1 SURGICAL RE-ROLL: two consecutive prod rolls burned a FULL
+                                        # bible regeneration (203s, 234s) and both came back WORSE (10→13,
+                                        # 16→28) — a fresh roll of the whole sheet re-samples every slot,
+                                        # including the clean ones. The bible is a LINE-ORIENTED sheet, so
+                                        # patch ONLY the offending lines: one cheap JSON call rewrites them
+                                        # in place (~15s), exact-string splice, re-scan, accept only on
+                                        # strict decrease. Any failure ⟹ original bible stands.
+                                        try:
+                                            import re as _sre
+                                            from laozhang_api import _narasi_cheap_call as _sp_call, _narasi_parse_json as _sp_parse
+                                            _bad_lines = []
+                                            for _ln in _bible.split("\n"):
+                                                if any(_sre.search(r"(?i)\b" + _sre.escape(t) + r"\b", _ln) for t in _terms):
+                                                    _bad_lines.append(_ln)
+                                                if len(_bad_lines) >= 14:
+                                                    break
+                                            if _bad_lines:
+                                                _sp_sys = (
+                                                    "You are patching single lines of a story fact-sheet. Each line below "
+                                                    "contains one or more BANNED lane items: " + ", ".join(_terms) + ". "
+                                                    "Rewrite EACH line replacing every banned item (and near-variants) with a "
+                                                    "fresh, premise-appropriate invention; keep the line's structure, meaning "
+                                                    "and everything else IDENTICAL. Return ONLY JSON: "
+                                                    "{\"lines\": [{\"old\": \"<exact original line>\", \"new\": \"<patched line>\"}]}")
+                                                _sp_raw, _sp_cr = await _sp_call(_sp_sys, "\n".join(_bad_lines),
+                                                                                 tenant_id=tenant_id, user_id=None,
+                                                                                 job_uuid=None, json_mode=True)
+                                                _sp = _sp_parse(_sp_raw) if isinstance(_sp_raw, str) else (_sp_raw or {})
+                                                _bible2 = _bible
+                                                _n_patched = 0
+                                                for _pair in (_sp.get("lines") or []):
+                                                    _old, _newl = str(_pair.get("old") or ""), str(_pair.get("new") or "")
+                                                    if _old and _newl and _bible2.count(_old) == 1:
+                                                        _bible2 = _bible2.replace(_old, _newl, 1)
+                                                        _n_patched += 1
+                                                _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
+                                                         if _n_patched else {})
+                                                if _n_patched and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
+                                                    ctx.canonical_facts = _bible2
+                                                    log.info("ledger-enforce SURGICAL: %d line(s) patched — hits %d → %d, pinned",
+                                                             _n_patched, _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
+                                                else:
+                                                    log.info("ledger-enforce SURGICAL: no improvement (%d patched, hits %d → %s) — original kept",
+                                                             _n_patched, _lrep.get("bible_hits"),
+                                                             (_rep2.get("bible_hits") if _n_patched else "n/a"))
+                                        except Exception as _spe:  # noqa: BLE001
+                                            log.warning("ledger-enforce surgical failed (non-fatal): %s", _spe)
                                     else:
                                         _bible2 = await build_story_bible(
                                             topic, list(ctx.chapters or chapters), is_fiction=_fic,

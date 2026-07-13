@@ -2660,6 +2660,116 @@ def _timeline_arith_on() -> bool:
     return os.environ.get("NARASI_TIMELINE_ARITH", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _brand_scan_on() -> bool:
+    return os.environ.get("NARASI_BRAND_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# ── real-brand scan (round-5.1; roll-8 S1: 'Doosan Marine Engineering' — a real
+# chaebol — cast as the culpable company behind 14 deaths = defamation exposure).
+# Fiction may reference the real world, but a REAL conglomerate as wrongdoing's
+# named actor is a legal/brand risk the lane must never ship silently. Long names
+# match bare; two-letter groups (SK/LG/GS/CJ/KT) only with a corporate tail, so
+# prose like "LG?" or Korean romanization noise can't FP.
+_REAL_BRANDS_LONG = (
+    "Samsung", "Hyundai", "Doosan", "Lotte", "Hanwha", "POSCO", "Daewoo", "Kumho",
+    "Hanjin", "Ssangyong", "Kolon", "Hankook", "Naver", "Kakao", "Coupang", "Celltrion",
+    "Hyosung",
+)
+# Names that collide with people/places in prose ("Tae-young" unhyphenated, Mount
+# Halla) only count WITH a corporate tail — same rule as the two-letter groups.
+_REAL_BRANDS_SHORT = ("SK", "LG", "GS", "CJ", "KT", "DL",
+                      "Booyoung", "Hoban", "Halla", "HDC", "Taeyoung")
+_BRAND_TAIL = (r"(?:\s+(?:Group|Corporation|Corp|Construction|Engineering|E&C|Heavy|"
+               r"Marine|Industries|Industrial|Telecom|Electronics|Chemical|Energy|"
+               r"Development|Builders?|Shipbuilding))")
+
+
+def real_brand_scan(text: str, *, bible: str = "") -> dict:
+    """Report-only FLAG/PASS: real Korean conglomerate names used as in-story
+    corporate entities. Never raises; never OVER (excluded from diet)."""
+    out: dict = {"status": "OFF", "hits": []}
+    if not _brand_scan_on():
+        return out
+    try:
+        pats = [(b, re.compile(r"\b" + re.escape(b) + r"\b")) for b in dict.fromkeys(_REAL_BRANDS_LONG)]
+        pats += [(b, re.compile(r"\b" + re.escape(b) + _BRAND_TAIL)) for b in _REAL_BRANDS_SHORT]
+        for where, txt in (("bible", bible or ""), ("manuscript", text or "")):
+            if not txt:
+                continue
+            for brand, rx in pats:
+                m = rx.search(txt)
+                if m:
+                    out["hits"].append({
+                        "brand": brand, "where": where,
+                        "count": len(rx.findall(txt)),
+                        "snippet": re.sub(r"\s+", " ", txt[max(0, m.start() - 40):m.end() + 60])[:130]})
+        out["status"] = "FLAG" if out["hits"] else "PASS"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "hits": []}
+
+
+def _levenshtein_le2(a: str, b: str) -> bool:
+    """True when edit distance ≤ 2 (early-exit band algorithm, lowercase compare)."""
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 2:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        row_min = i
+        for j, cb in enumerate(b, 1):
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+            cur.append(v)
+            row_min = min(row_min, v)
+        if row_min > 2:
+            return False
+        prev = cur
+    return prev[-1] <= 2
+
+
+def _ledger_fuzzy_on() -> bool:
+    return os.environ.get("NARASI_LEDGER_FUZZY", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def ledger_fuzzy_names(text: str, *, style_key: Optional[str] = None) -> dict:
+    """Round-5.1 near-variant net (Law-4 endgame evidence: Ik-ro reused VERBATIM in
+    R8 while Yul-so/Bok-rye/Noh dodged exact bans by 1-2 edits). Hyphenated given-name
+    candidates in the text vs ledger given_names at edit distance ≤2 (exact hits are
+    the exact scan's job — only true near-misses reported). FLAG/PASS, report-only."""
+    out: dict = {"status": "OFF", "hits": []}
+    if not _ledger_fuzzy_on():
+        return out
+    try:
+        import json as _j
+        _p = os.path.join(os.path.dirname(__file__), "pakem", "lane_ledger.json")
+        with open(_p, encoding="utf-8") as f:
+            lane = (_j.load(f) or {}).get((style_key or "").strip()) or {}
+        banned = [_ledger_term(x) for x in (lane.get("given_names") or []) if _ledger_term(x)]
+        if not banned:
+            return {"status": "PASS", "hits": []}
+        cands = sorted({m.group(1) for m in re.finditer(r"\b([A-Z][a-z]+-[a-z]+)\b", text or "")})
+        seen: set = set()
+        for c in cands[:80]:
+            for b in banned:
+                if c.lower() == b.lower():
+                    break   # exact — the exact scan owns it
+                # same-initial requirement: suffix-driven pairs (Yeon-ok≈Byeong-ok,
+                # Jae-sung≈Tae-sun) are coincidence, not dodging; a dodge keeps the head.
+                if c[:1].lower() != b[:1].lower():
+                    continue
+                if _levenshtein_le2(c, b) and (c, b) not in seen:
+                    seen.add((c, b))
+                    out["hits"].append({"name": c, "near": b})
+                    break
+        out["status"] = "FLAG" if out["hits"] else "PASS"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "hits": []}
+
+
 def _ledger_en_num(n: int) -> str:
     if 0 <= n < 20:
         return _LEDGER_EN_ONES[n]
@@ -3187,6 +3297,15 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         if _ledger_validator_on():
             report["counters"]["ledger_hits"] = ledger_hits_scan(
                 text, bible=bible or "", style_key=(style_entry or {}).get("key"))
+
+        # ── real-brand scan (NARASI_BRAND_SCAN, default OFF) — roll-8 Doosan class.
+        if _brand_scan_on():
+            report["counters"]["real_brands"] = real_brand_scan(text, bible=bible or "")
+
+        # ── near-variant name net (NARASI_LEDGER_FUZZY, default OFF).
+        if _ledger_fuzzy_on():
+            report["counters"]["ledger_fuzzy"] = ledger_fuzzy_names(
+                text, style_key=(style_entry or {}).get("key"))
 
         # ── timeline arithmetic (NARASI_TIMELINE_ARITH, default OFF) — report-only.
         # 5/5 rain rolls drifted on DERIVED spans while absolute dates held ("Three

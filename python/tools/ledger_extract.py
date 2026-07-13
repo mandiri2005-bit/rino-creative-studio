@@ -402,6 +402,41 @@ def aggregate(files: list[str], raw_texts: list[str], min_rolls: int) -> dict:
                             opener[s].append(lab)
     agg["ch1_opener_echoes"] = dict(sorted(opener.items(), key=lambda kv: -len(kv[1]))[:8])
 
+    # ── FACT-TUPLES (round-5.1; Law-4 qualitative escalation: R8 remixed R6's whole
+    # fact-set — Ik-ro + Level 4→2 + 3-vs-14 + Aug-13. Token bans can't see a SCHEMA;
+    # extract the recurring fact-shapes themselves.) ──
+    def _facts_one(t: str) -> dict:
+        f: dict = {"md": set(), "lvl": set(), "toll": set()}
+        for m in re.finditer(r"(?i)\b(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b", t):
+            f["md"].add(f"{int(m.group(1))} {m.group(2).title()}")
+        for m in re.finditer(r"(?i)\bLevel\s+(\d)\b.{0,160}?\bLevel\s+(\d)\b", t, re.S):
+            a, b = int(m.group(1)), int(m.group(2))
+            if a != b:
+                f["lvl"].add(f"Level {max(a,b)}→{min(a,b)}")
+        nums = []
+        for m in re.finditer(r"(?i)\b(three|nine|fourteen|\d{1,2})\b(?=[^.\n]{0,70}(?:dead|death|casualt|missing|drowned|victim|fatalit))", t):
+            tok = m.group(1).lower()
+            v = int(tok) if tok.isdigit() else {"three": 3, "nine": 9, "fourteen": 14}.get(tok)
+            if v and 2 <= v <= 60:
+                nums.append(v)
+        for i in range(len(nums)):
+            for j in range(i + 1, len(nums)):
+                if nums[i] != nums[j]:
+                    f["toll"].add(f"{min(nums[i], nums[j])}-vs-{max(nums[i], nums[j])}")
+        return f
+
+    _facts = [_facts_one(t) for t in texts]
+    tuples: dict[str, list[str]] = defaultdict(list)
+    for i, f in enumerate(_facts):
+        for kind, vals in f.items():
+            for v in vals:
+                key = {"md": "disaster/flashback date", "lvl": "classification pair",
+                       "toll": "toll pair"}[kind] + f": {v}"
+                if labels[i] not in tuples[key]:
+                    tuples[key].append(labels[i])
+    agg["fact_tuples"] = {k: rs for k, rs in sorted(tuples.items(), key=lambda kv: -len(kv[1]))
+                          if len(rs) >= min_rolls}
+
     # chapter-title echoes: shared content tokens + near-dup titles across rolls
     ttok: dict[str, list[str]] = defaultdict(list)
     for i, ts in enumerate(titles_per):
@@ -487,6 +522,8 @@ def emit_fragment(agg: dict, lane: str, existing: Optional[dict], date: str,
         beats.setdefault(f"chapter-title near-dup: '{min(td['a'], td['b'], key=len)}'", td["rolls"])
     for w, r in list((agg.get("title_token_echoes") or {}).items())[:4]:
         beats.setdefault(f"chapter-title token echo: '{w}'", r)
+    for ft, r in list((agg.get("fact_tuples") or {}).items())[:8]:
+        beats.setdefault(f"FACT-TUPLE {ft}", r)
     frag["recycled_beats"] = new_terms("recycled_beats", beats, lambda v, r: f"{v} {ann(r)}")
     return {lane: {k: v for k, v in frag.items() if v}}
 

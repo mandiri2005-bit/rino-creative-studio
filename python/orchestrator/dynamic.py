@@ -379,7 +379,11 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
             "scene; a reunion without its bridge reads unearned.\n"
             "5. EVIDENCE COSTS — each major discovery costs the finder something on-page (time, "
             "risk, a relationship, an admission) — never a convenient box that happens to hold "
-            "everything.\n\n")
+            "everything.\n"
+            "6. PRESENT-TENSE STAKES — if the story raises a LIVE physical danger in its "
+            "present (an incoming storm, a flood risk), the lead ACTS on it on-page (a warning "
+            "issued, an evacuation started) — the protagonist may not ignore the same class of "
+            "danger the backstory punished someone for ignoring.\n\n")
     return (
         f"TOPIC:\n{topic}\n\n"
         f"Design a {n}-chapter outline{style_clause}. The chapters must progress "
@@ -573,7 +577,8 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         heads += (", CAUSALITY POLICY, CALENDAR SPINE, SIGNATURE-PROP CUSTODY, NAMING CONVENTIONS, "
                   "ENTITY INTRODUCTIONS & FINALE CAST, PROPERTY & LEVERAGE, GEOGRAPHY POLICY, "
-                  "AFTERMATH COMMIT, COUNTERPOINT NUMBERS, EVIDENCE CHAIN & CUSTODY, CONTIGUOUS SCENES")
+                  "AFTERMATH COMMIT, COUNTERPOINT NUMBERS, EVIDENCE CHAIN & CUSTODY, CONTIGUOUS SCENES, "
+                  "EVIDENCE MAP")
     # CANON REGISTRY suppression fix (round-4): the SYSTEM addendum asks for a fenced
     # canon_registry JSON block, but THIS prompt says "Output ONLY the numbered sheet …
     # One item per line. No preamble, no prose" — the JSON block is neither a numbered
@@ -723,7 +728,7 @@ async def build_story_bible(
     # climax staged twice with contradictory seats/transport). Headings 9-19 = eleven sections.
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
-            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these eleven sections:\n"
+            "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these twelve sections:\n"
             "9. CAUSALITY POLICY — if the premise has a central SYMBOLIC or seemingly supernatural "
             "causation (e.g. 'the rain returns when the truth is told'), COMMIT its metaphysics NOW "
             "as exactly ONE of: LITERAL-MAGICAL (the world really works this way), AMBIGUOUS-BY-DESIGN "
@@ -789,7 +794,10 @@ async def build_story_bible(
             "others) or FICTIONAL-TOWN (an invented town, freely mapped — optionally 'in the "
             "manner of' a real region, but never named as a real town). DEFAULT to "
             "FICTIONAL-TOWN unless the premise itself NAMES a real town. NEVER a real town "
-            "with invented geography.\n"
+            "with invented geography. The SAME rule governs INSTITUTIONS and HISTORY: a REAL "
+            "company, agency, or conglomerate may NEVER be the story's wrongdoer — invent a "
+            "fictional firm 'in the manner of' one; and never present an invented historical "
+            "episode of a real institution as documented fact.\n"
             "16. AFTERMATH COMMIT — pin the consequence beats the ending must land: what happens "
             "to the antagonist, the company, and the case or investigation AFTER the climax (one "
             "line each), plus the KEY PUBLIC NUMBERS the in-world record would state (casualty "
@@ -822,6 +830,13 @@ async def build_story_bible(
             "refer to the earlier half as a separate past event. Pin each attendee's seat/position "
             "and travel mode ONCE, here, and every chapter touching the scene reuses them "
             "verbatim. If no scene spans chapters, write 'none'.\n"
+            "20. EVIDENCE MAP — for EVERY physical evidence object (a negative, a tape, a "
+            "letter bundle, an altered report): ONE line each — WHAT it is, WHO created it, "
+            "the ONE place it has been hidden all these years, WHO finds it, in WHICH "
+            "chapter, and each custody move after that. Two objects may NEVER swap hiding "
+            "places, finders, or discovery chapters; if the story holds both a document and "
+            "a recording, give each its own line and keep them distinct in every chapter "
+            "that touches them. If no evidence objects exist, write 'none'.\n"
             "These sections are SECONDARY to headings 1-8: never let them shorten or weaken the #8 "
             "SIGNATURE HOOK payoff commitment.")
     # CANON REGISTRY (Phase 2a) — emit a MACHINE-CHECKABLE twin of the prose fact-sheet so a later

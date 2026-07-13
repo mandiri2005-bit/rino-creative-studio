@@ -7637,6 +7637,22 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
                 "earlier rendering as a SEPARATE past event ('the briefing two days ago'). ALSO "
                 "flag (type 'entity_drift') one ROLE held by two names ('her supervisor Dr. X' in "
                 "one chapter, 'her supervisor Director Y' in another) unless a handover is shown.\n")
+        # Round-5.1 (NARASI_DOMAIN_CHECK): three rolls of instrument/physics overreach —
+        # a pressure roll "proving" wind+rainfall (R6), rainfall setting seawall load
+        # (R7), 2,400mm/72h leaving a town with puddles + tides stopping in a drought +
+        # anemometer cups "facing east" (R8). Deterministic nets can't know physics;
+        # the critic can when told to check it. Own flag, rides the extended block.
+        if os.getenv("NARASI_DOMAIN_CHECK", "0").strip().lower() in ("1", "true", "yes", "on"):
+            _ext += (
+                "15. DOMAIN PLAUSIBILITY (report as type 'provenance', severity medium) — "
+                "instruments, physics, and institutions must act within their REAL "
+                "capabilities: a pressure recorder cannot prove wind speed or rainfall "
+                "totals; rainfall does not set a seawall's load (storm surge does); tides do "
+                "not stop during a drought; anemometer cups spin but do not point; a stated "
+                "rainfall total must be survivable by the setting that then shows only "
+                "puddles; an agency or council may only wield powers such a body actually "
+                "has. Flag any rendering that exceeds the tool's or institution's real "
+                "capability.\n")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
     # CANON CONFORMANCE (check 0) — only when a CANONICAL FACT SHEET (story bible) is supplied in

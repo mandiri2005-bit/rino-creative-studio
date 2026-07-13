@@ -650,6 +650,23 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             # ("Three months after the flood" beside 13 Aug → 17 Oct) + adjacent
             # year-span alternation (fourteen×7 vs fifteen×3). Enforcement rides the
             # critique injection below (NARASI_LEDGER_ENFORCE), not this WARN.
+            _brep = (rep.get("counters") or {}).get("real_brands") or {}
+            if _brep.get("hits"):
+                log.warning("REAL-BRAND scan: %d hit(s) — real conglomerate as in-story entity (legal risk): %s",
+                            len(_brep["hits"]),
+                            [f"{h.get('brand')}@{h.get('where')}" for h in _brep["hits"]][:5])
+            _fzrep = (rep.get("counters") or {}).get("ledger_fuzzy") or {}
+            if _fzrep.get("hits"):
+                # premise-supplied names (Do-yun) inevitably near-match some banned name;
+                # they are the user's, not a dodge — same exemption as the enforce path.
+                import re as _fre
+                _ftopic = str(body.get("topic") or body.get("goal") or body.get("brief") or "")
+                _fhits = [h for h in _fzrep["hits"]
+                          if not _fre.search(r"(?i)\b" + _fre.escape(str(h.get("name") or "")) + r"\b", _ftopic)]
+                if _fhits:
+                    log.warning("ledger fuzzy: %d near-variant name(s) dodging bans: %s",
+                                len(_fhits),
+                                [f"{h.get('name')}≈{h.get('near')}" for h in _fhits][:6])
             _tlrep = (rep.get("counters") or {}).get("timeline_arith") or {}
             if _tlrep.get("count"):
                 log.warning("timeline arithmetic: %d derived-span mismatch(es): %s",
