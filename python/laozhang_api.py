@@ -1182,6 +1182,15 @@ def _narasi_failover_on() -> bool:
     return str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _claude_native_on(model: str = "") -> bool:
+    """True when native-Claude routing should serve `model`: NARASI_CLAUDE_NATIVE=1, CLAUDE_API_KEY set,
+    and `model` is a claude-* id. Independent of NARASI_FAILOVER_ENABLED. BYOK is checked SEPARATELY by
+    the caller (a server key must never serve a per-request-key job)."""
+    return (str(os.environ.get("NARASI_CLAUDE_NATIVE", "0")).strip().lower() in ("1", "true", "yes", "on")
+            and bool((os.environ.get("CLAUDE_API_KEY", "") or "").strip())
+            and str(model).startswith("claude-"))
+
+
 def _narasi_failover_chain(model: str = "") -> list[tuple[str, str, str, str, str]]:
     """(name, protocol, endpoint, api_key, per-provider model id), cheapest-first. protocol
     is 'anthropic' (native Messages API — KIE serves Claude at /claude/v1/messages),
@@ -1191,6 +1200,20 @@ def _narasi_failover_chain(model: str = "") -> list[tuple[str, str, str, str, st
     chain; Gemini (Rino 2026-07-06) → 2-rung Vertex/LaoZhang chain. Keys read at call
     time so newly-set env vars are picked up; an empty-key rung is skipped. LaoZhang
     honours BYOK (_req_key)."""
+    # NATIVE-FIRST (NARASI_CLAUDE_NATIVE=1 + CLAUDE_API_KEY): rung 1 = Anthropic's OpenAI-compatible
+    # endpoint on the user's OWN key (no reseller markup); rung 2 = LaoZhang FALLBACK so a native
+    # outage / 4xx / 5xx still serves. The 3 model knobs (bible/worker/critique) land here for ANY
+    # claude-* id. LaoZhang rung id is env-tunable (NARASI_CLAUDE_FALLBACK_MODEL) because LaoZhang may
+    # not serve a brand-new Anthropic id — default = same id (that rung just skips/advances on a 4xx;
+    # an empty LAOZHANG_API_KEY skips it too, leaving native-only + the model-level _narasi_complete net).
+    if _claude_native_on(model) and not _byok_active():
+        _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
+        _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
+        _fb   = (os.environ.get("NARASI_CLAUDE_FALLBACK_MODEL", "") or model).strip()
+        return [
+            ("claude",   "openai", _base,    _ck,                       model),
+            ("laozhang", "openai", BASE_URL, _req_key.get() or API_KEY, _fb),
+        ]
     if model in _NARASI_GEMINI_FAILOVER_MODELS:
         return _narasi_gemini_failover_chain(model)
     if model in _NARASI_SONNET_FAILOVER_MODELS:
@@ -1553,6 +1576,15 @@ class _NarasiFailoverClient:
                 rung_timeout = max(1.0, min(float(_NARASI_FAILOVER_TIMEOUT), remaining))
                 call_kw = dict(kw)
                 call_kw["model"] = model_id
+                if name == "claude":
+                    # Anthropic's native adaptive-thinking models (Opus 4.7/4.8, Sonnet 5) REJECT
+                    # temperature/top_p/top_k (400) — they don't sample on temp. Strip them ONLY on the
+                    # native rung so the critique/revise call sites (temperature 0.1/0.2) serve NATIVELY
+                    # instead of 400-ing straight into the LaoZhang fallback (which would defeat native-
+                    # first for NARASI_CRITIQUE_MODEL). No behaviour loss: these models ignore temp
+                    # natively; the MAP/chapter path sends none; the laozhang fallback rung keeps temp.
+                    for _sk in ("temperature", "top_p", "top_k"):
+                        call_kw.pop(_sk, None)
                 try:
                     if proto == "anthropic":
                         resp = _anthropic_messages_create(endpoint, key, model_id,
@@ -1615,21 +1647,17 @@ def make_narasi_client(model: str = ""):
     # BYOK: the user pays their provider on their OWN key (credits=0). Never route BYOK through
     # a server-keyed failover rung — that would serve on the platform key yet bill 0. make_client
     # honours the per-request key, so BYOK always goes straight through it.
-    # ── NATIVE CLAUDE (NARASI_CLAUDE_NATIVE=1 + CLAUDE_API_KEY; default OFF/empty → unreachable, so the
-    #    routing below is byte-identical). Serve ANY claude-* model straight from Anthropic's own API on
-    #    YOUR key, bypassing the KIE/LaoZhang/AtlasCloud resellers — via Anthropic's OpenAI-compatible
-    #    endpoint (https://api.anthropic.com/v1) so it drops into the existing .chat.completions path with
-    #    no new handler. Covers NARASI_BIBLE_MODEL / WORKER_MODEL / NARASI_CRITIQUE_MODEL whenever they
-    #    name a claude-* id (claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5, …). BYOK still wins (a
-    #    server key must never serve a per-request-key job). No service_tier sent ⇒ STANDARD tier (Priority
-    #    is commitment-only / no longer purchasable and same per-token price). NARASI_CLAUDE_BASE_URL
-    #    overrides the endpoint (e.g. a gateway). ──
-    _claude_key = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
-    if (_claude_key and not _byok_active() and str(model).startswith("claude-")
-            and str(os.environ.get("NARASI_CLAUDE_NATIVE", "0")).strip().lower() in ("1", "true", "yes", "on")):
-        return OpenAI(api_key=_claude_key,
-                      base_url=(os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip())
-    if not _narasi_failover_on() or _byok_active():
+    if _byok_active():
+        return make_client(model)
+    # ── NATIVE CLAUDE (NARASI_CLAUDE_NATIVE=1 + CLAUDE_API_KEY): route any claude-* model through the
+    #    failover client with a NATIVE-FIRST chain — Anthropic's OpenAI-compat endpoint on your OWN key,
+    #    then LaoZhang as the reseller FALLBACK (built in _narasi_failover_chain). Independent of
+    #    NARASI_FAILOVER_ENABLED; covers NARASI_BIBLE_MODEL / WORKER_MODEL / NARASI_CRITIQUE_MODEL. Default
+    #    OFF / empty key → _claude_native_on is False → falls through to the UNCHANGED routing below
+    #    (byte-identical). No service_tier sent ⇒ STANDARD tier. NARASI_CLAUDE_BASE_URL overrides endpoint. ──
+    if _claude_native_on(model):
+        return _NarasiFailoverClient(model)
+    if not _narasi_failover_on():
         return make_client(model)
     if (model in _NARASI_FAILOVER_MODELS
             or model in _NARASI_GEMINI_FAILOVER_MODELS
