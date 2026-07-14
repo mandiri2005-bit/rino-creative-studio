@@ -675,6 +675,64 @@ async def narrate_chapters(
                                          (_as_d or {}).get("allocated"), (_as_d or {}).get("chapter"))
                 except Exception as _ase:  # noqa: BLE001
                     log.warning("antag-scene check failed (non-fatal): %s", _ase)
+
+                # ROUND-12 WARMTH SCENE ALLOCATION (NARASI_WARMTH_SCENE_CHECK, default OFF --
+                # the sanctioned register exception, opened on request). warmth-bonding beats
+                # read 0 across 17 files even with NARASI_KDRAMA_WARMTH_MOVE tightening the
+                # gate: the checklist line is IGNORED because warmth is a SCENE, not a rule.
+                # Same lever as the antagonist check -- post-bible extract-and-check over the
+                # outline: if the two leads share no on-page warmth beat before the plot turns,
+                # amend ONE early chapter's summary to carry one. Two-hander premises only.
+                try:
+                    if (_fic and str(os.environ.get("NARASI_WARMTH_SCENE_CHECK", "0")).strip().lower() in ("1", "true", "yes", "on")):
+                        from laozhang_api import _narasi_cheap_call as _ws_call, _narasi_parse_json as _ws_parse
+                        _ws_ch = list(ctx.chapters or chapters or [])
+                        _ws_outline = "\n".join(
+                            f"{i + 1}. {str((c or {}).get('title') or '')} -- {str((c or {}).get('summary') or '')[:220]}"
+                            for i, c in enumerate(_ws_ch) if isinstance(c, dict))
+                        if _ws_outline and len(_ws_ch) >= 4:
+                            _ws_sys = (
+                                "You are checking a chapter outline against its story fact-sheet for a "
+                                "melodrama. Question: do the TWO LEADS share at least one ON-PAGE beat of "
+                                "quiet warmth or bonding -- a shared meal, an unguarded moment, a small "
+                                "kindness, ease between them -- BEFORE the central betrayal or plot turn, so "
+                                "later rupture has an earned bond to break? A working partnership or shared "
+                                "investigation alone does NOT count; it must be a moment of human closeness. "
+                                "Return ONLY JSON: {\"allocated\": true|false, \"chapter\": <n or null>}")
+                            _ws_raw, _ws_cr = await _ws_call(
+                                _ws_sys, "OUTLINE:\n" + _ws_outline + "\n\nFACT-SHEET (head):\n" + _bible[:3500],
+                                tenant_id=tenant_id, user_id=None, job_uuid=None, json_mode=True)
+                            _ws_d = _ws_parse(_ws_raw) if isinstance(_ws_raw, str) else (_ws_raw or {})
+                            if isinstance(_ws_d, dict) and _ws_d.get("allocated") is False:
+                                _ws_sys2 = (
+                                    "The outline gives the two leads no on-page warmth before the plot turns. "
+                                    "Pick ONE chapter in the FIRST HALF and rewrite ONLY its summary so it now "
+                                    "includes one small, understated bonding beat between the leads -- a shared "
+                                    "meal, a quiet gesture, a moment of ease -- woven into the existing action, "
+                                    "NOT a romance subplot and NOT displacing the chapter's plot work. Keep "
+                                    "every other element. Return ONLY JSON: {\"chapter\": <n>, \"summary\": \"<full rewritten summary>\"}")
+                                _ws_raw2, _ws_cr2 = await _ws_call(_ws_sys2, _ws_outline,
+                                                                  tenant_id=tenant_id, user_id=None,
+                                                                  job_uuid=None, json_mode=True)
+                                _ws_d2 = _ws_parse(_ws_raw2) if isinstance(_ws_raw2, str) else (_ws_raw2 or {})
+                                try:
+                                    _ws_n = int((_ws_d2 or {}).get("chapter") or 0)
+                                    _ws_sum = str((_ws_d2 or {}).get("summary") or "").strip()
+                                except Exception:  # noqa: BLE001
+                                    _ws_n, _ws_sum = 0, ""
+                                _ws_half = max(2, len(_ws_ch) // 2)
+                                if 1 <= _ws_n <= _ws_half and len(_ws_sum) > 60 and isinstance(_ws_ch[_ws_n - 1], dict):
+                                    _ws_ch[_ws_n - 1]["summary"] = _ws_sum
+                                    if ctx.chapters:
+                                        ctx.chapters = _ws_ch
+                                    log.info("warmth-scene check: no on-page bonding beat -- ch %d summary amended", _ws_n)
+                                else:
+                                    log.info("warmth-scene check: amendment unusable (ch %s) -- outline kept", _ws_n)
+                            else:
+                                log.info("warmth-scene check: allocated=%s chapter=%s",
+                                         (_ws_d or {}).get("allocated"), (_ws_d or {}).get("chapter"))
+                except Exception as _wse:  # noqa: BLE001
+                    log.warning("warmth-scene check failed (non-fatal): %s", _wse)
                 # LEDGER VALIDATOR at BIBLE time (NARASI_LEDGER_VALIDATOR, default OFF):
                 # a ledger hit committed in the bible poisons every chapter (roll-3
                 # 'eleven-month drought'), so scan the bible the moment it is pinned —

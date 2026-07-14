@@ -299,11 +299,23 @@ async def generate_narration(req: dict) -> dict[str, Any]:
     # every scenario (A chaptered, B topic-to-book, D goal) inherits it. Scenario A
     # (production narration jobs) reads word_target off each chapter dict, so also
     # stamp it there when the caller did not pin an explicit per-chapter target.
+    # ROUND-12 (user reframe: the 36-40k in the brief is ASPIRATIONAL prose; the real
+    # length contract is the UI word target). An EXPLICIT request target must WIN over
+    # the brief text, else NARASI_PREMISE_WORD_TARGET balloons the book to the brief's
+    # number against the user's setting. The brief parse fills in ONLY when the caller
+    # pinned no explicit per-chapter / total target.
+    _has_explicit_target = (req.get("words_per_chapter") is not None
+                            or req.get("word_target") is not None
+                            or req.get("words") is not None)
     _wpc_base = int(req.get("words_per_chapter", req.get("word_target", 800)) or 800)
-    _wpc = _premise_words_per_chapter(
+    _wpc = _wpc_base if _has_explicit_target else _premise_words_per_chapter(
         str(req.get("topic") or req.get("goal") or req.get("brief") or ""), _wpc_base)
-    # Flags-off contract: only mutate req when the parser actually changed the target
-    # (flag ON and a brief target parsed). Flag OFF ⟹ _wpc == _wpc_base ⟹ true no-op.
+    if _has_explicit_target:
+        _brief_wpc = _premise_words_per_chapter(str(req.get("topic") or ""), _wpc_base)
+        if _brief_wpc != _wpc_base:
+            log.info("premise word-target: brief states a different length but the request "
+                     "pins an explicit target (%d/ch) — request wins", _wpc_base)
+    # Flags-off contract: only mutate req when the parser actually changed the target.
     if _wpc and _wpc != _wpc_base:
         req["words_per_chapter"] = _wpc
         for _key in ("chapters", "outline", "titles"):
