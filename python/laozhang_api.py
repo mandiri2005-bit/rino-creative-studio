@@ -8000,6 +8000,132 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     # every span cannot blow up cost); keeping all spans only ensures the erroring chapter stays REACHABLE.
     _vspans = [(v, [s for s in sps if s]) for (v, sps) in _vspans]
     _vspans = [(v, sps) for (v, sps) in _vspans if sps]
+    # ── ROUND-15 PARALLEL fast-path (NARASI_REVISE_PARALLEL>=2, default 0=OFF → the serial loop below
+    #    runs verbatim / byte-identical). MEASURED: the serial loop revises up to _max_ch targeted
+    #    chapters ONE AT A TIME; each opus chapter-rewrite is ~5 min, so 4 chapters ≈ 22 min per revise
+    #    pass (job rsmyws7s: 1333s + 1263s across TWO passes = 43 min). This path revises the SAME
+    #    targeted chapters CONCURRENTLY (bounded Semaphore) → ~one 5-min wave. It is an EXACT MIRROR of
+    #    every accept-guard in the serial loop below — the two MUST stay in sync (any drift = a
+    #    corruption escape; adversarially audited). Cost is serial-faithful: the COMMON case (drafts
+    #    accept) fires exactly _max_ch calls like serial; only rejections/timeouts fire the wave-2
+    #    headroom, still capped at serial's 2*_max_ch attempt budget. ≤ _max_ch chapters accepted, in
+    #    part order (same set serial accepts). Fail-safe identical: error/timeout/reject keeps ORIGINAL. ──
+    _rev_par = _envint("NARASI_REVISE_PARALLEL", 0)
+    if _rev_par >= 2:
+        async def _revise_one_part(_p, _vs):
+            # EXACT MIRROR of the serial per-part body below — KEEP IN SYNC. Returns (text_or_None, cr).
+            # Never raises (any exception → keep original chapter, like the serial except: branch).
+            _directives = "\n".join(
+                f"- [{v.get('severity', '?')}/{v.get('type', '?')}] {str(v.get('evidence', ''))[:420]} "
+                f"→ FIX: {str(v.get('fix', ''))[:420]}" for v in _vs[:8])
+            _trail = _p[len(_p.rstrip()):]           # preserve inter-chapter whitespace on re-join
+            _body = _p.rstrip()
+            _sys = ("You are fixing consistency problems in ONE chapter of a multi-chapter story. Make "
+                    "the SMALLEST changes that reconcile each problem — reword only the sentences carrying "
+                    "the contradiction; keep every other sentence, the chapter heading, the length, the "
+                    "style and language IDENTICAL. Return the corrected chapter (same heading) and nothing else. "
+                    "If a listed problem does not occur in THIS chapter's text, ignore it silently. If NO "
+                    "problem applies, return the chapter EXACTLY as given. Your output must BEGIN with the "
+                    "chapter's heading line and END with the chapter's last prose line — NEVER include "
+                    "notes, analysis, reasoning, or any commentary about the problems.")
+            _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
+                  f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
+            _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
+                       max(1500, int(len(_body.split()) * 2) + 600))
+            try:
+                _resp = await asyncio.wait_for(asyncio.to_thread(
+                    lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model).chat.completions.create(
+                        model=resolved, messages=[{"role": "system", "content": _s},
+                                                  {"role": "user", "content": _b}],
+                        temperature=0.2, max_tokens=_c, stream=False, timeout=NARASI_REVISE_TIMEOUT)),
+                    timeout=NARASI_REVISE_TIMEOUT)
+            except Exception:
+                return None, 0                       # incl. TimeoutError → keep original chapter
+            if not getattr(_resp, "choices", None):
+                return None, 0
+            _new = (_resp_content(_resp) or "").strip()   # null-safe extractor
+            _cr = int(await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid) or 0)
+            if not _new:
+                return None, _cr
+            _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
+            if _nl.startswith("```"):
+                _nl = _re.sub(r'^```[a-zA-Z]*\n?', '', _nl)
+                _nl = _re.sub(r'\n?```\s*$', '', _nl)
+                _new = _nl.strip()
+            _new = _new.replace("\r\n", "\n").replace("\r", "\n")
+            _ow, _nw = len(_body.split()), len(_new.split())
+            _no_wrapper = not _re.match(
+                r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated|need)|of course|'
+                r'looking at|no change|since none|re-reading|given that|the chapter)\b', _new)
+            _tail_meta = bool(_re.search(
+                r'(?im)^\s*(note:|looking at|no change|since none of|the chapter is returned|'
+                r'i need to analy|given that none|however, re-reading)', _new[-1200:]))
+            _HEADLINE_RX = r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$'
+            _bhl = _re.findall(_HEADLINE_RX, _body)
+            _heads_ok = _bhl == _re.findall(_HEADLINE_RX, _new)
+            _starts_ok = (not _bhl or not _body.lstrip().startswith(_bhl[0].strip())
+                          or _new.lstrip().startswith(_bhl[0].strip()))
+            import difflib as _difflib
+            _fid = _difflib.SequenceMatcher(None, _body.split(), _new.split()).ratio()
+            try:
+                _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+            except Exception:
+                _min_fid = 0.55
+            if (int(_ow * 0.9) <= _nw <= int(_ow * 1.4)
+                    and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
+                    and _fid >= _min_fid):
+                return _new + _trail, _cr
+            import logging as _lg
+            _lg.getLogger("narasi").warning(
+                "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
+                "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, fidelity=%.2f (min %.2f)",
+                _ow, _nw, int(_ow * 0.9), int(_ow * 1.4), _heads_ok, _no_wrapper,
+                _starts_ok, _tail_meta, _fid, _min_fid)
+            return None, _cr
+
+        # Plan targeted parts in ORDER (pure, same predicate as the serial loop).
+        _plan = []
+        for _i, _p in enumerate(parts):
+            _vs = [v for (v, sps) in _vspans if _p.strip() and any(s and _occ(s, _p) for s in sps)]
+            if _vs and _p.strip():
+                _plan.append((_i, _p, _vs))
+        _sem = asyncio.Semaphore(_rev_par)
+
+        async def _guarded(_i, _p, _vs):
+            async with _sem:
+                _txt, _cr = await _revise_one_part(_p, _vs)
+            return _i, _txt, _cr
+
+        # Fire in up to TWO concurrent waves so the COMMON case (drafts accept) costs exactly _max_ch
+        # LLM calls — the SAME as serial — instead of eagerly firing all 2*_max_ch. Wave 1 = the first
+        # _max_ch targeted chapters; ONLY if fewer than _max_ch land (rejections/timeouts) does wave 2
+        # fire the headroom (next up to _max_ch), preserving serial's retry resilience while staying
+        # capped at the serial 2*_max_ch attempt budget. Acceptance stays first-_max_ch-successes in
+        # PART ORDER → the exact chapter set serial accepts; untargeted/over-budget parts keep original.
+        _accepted, _p_total_cr, _p_revised = {}, 0, 0
+        for _wave in (_plan[:_max_ch], _plan[_max_ch: 2 * _max_ch]):
+            if _p_revised >= _max_ch or not _wave:
+                break                                        # enough landed → don't fire the headroom
+            _wave_res = await asyncio.gather(*[_guarded(_i, _p, _vs) for (_i, _p, _vs) in _wave])
+            for _i, _txt, _cr in sorted(_wave_res, key=lambda t: t[0]):   # accept in PART ORDER
+                _p_total_cr += int(_cr or 0)
+                if _txt is not None and _p_revised < _max_ch:            # first _max_ch successes only
+                    _accepted[_i] = _txt
+                    _p_revised += 1
+        import logging as _lgp
+        _lgp.getLogger("narasi").log(
+            (20 if _accepted else 30),
+            "chunked revise [parallel x%d]: %d violation(s) in, %d chapter(s) targeted, %d revised%s",
+            _rev_par, len(viol), len(_plan), _p_revised,
+            "" if _accepted else " — NOTHING LANDED (unmapped evidence or all rewrites rejected)")
+        if not _plan and viol:
+            _lgp.getLogger("narasi").warning(
+                "chunked revise [parallel]: UNMAPPED evidence heads: %s",
+                [str((v or {}).get("evidence") or "")[:70] for v in viol[:5]])
+        if not _accepted:
+            return full_text, _p_total_cr
+        return "".join(_accepted.get(_i, _p) for _i, _p in enumerate(parts)), _p_total_cr
+
     total_cr = 0
     changed = False
     _n_revised = 0
