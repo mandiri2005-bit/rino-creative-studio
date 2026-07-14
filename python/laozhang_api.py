@@ -300,6 +300,9 @@ MODELS = {
     "claude-opus-4-6": "claude-opus-4-6",
     "claude-opus-4-7": "claude-opus-4-7",
     "claude-opus-4-7-thinking": "claude-opus-4-7-thinking",
+    "claude-opus-4-8": "claude-opus-4-8",
+    "claude-sonnet-5": "claude-sonnet-5",
+    "claude-haiku-4-5": "claude-haiku-4-5",
     # Ultra-cheap
     "glm": "glm-4.5-flash",
     "gpt-5-nano": "gpt-5-nano",
@@ -417,6 +420,9 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "claude-opus-4-6": 128000,   # 128K output ceiling (Rino 2026-07-08) — whole-book revise can emit a full corrected book in one output
     "claude-opus-4-7": 64000,
     "claude-opus-4-7-thinking": 64000,
+    "claude-opus-4-8": 64000,
+    "claude-sonnet-5": 64000,
+    "claude-haiku-4-5": 64000,
     # Ultra-cheap
     "glm-4.5-flash": 4096,
     "gpt-5-nano": 64000,
@@ -515,10 +521,20 @@ _MODEL_COSTS_PER_M: dict[str, tuple[float, float]] = {
     "gpt-5-nano":             (0.05,   0.40),
     "o3-mini":                (1.10,   4.40),
     "o3":                    (10.00,  40.00),
-    # Anthropic
+    # Anthropic — generic prefixes; the "claude-opus" generic is the DEPRECATED Opus 4.1 rate ($15/$75).
     "claude-haiku":           (0.80,   4.00),
     "claude-sonnet":          (3.00,  15.00),
     "claude-opus":           (15.00,  75.00),
+    # Anthropic — explicit per-model (longest-matching prefix WINS in _calc_cost). Opus 4.5→4.8 = $5/$25
+    # (NOT 4.1's $15/$75); Sonnet 5 $3/$15; Haiku 4.5 $1/$5. narasi meters BREAK-EVEN (markup ×1) via
+    # credit_catalog.operation_usd → _calc_cost, so these ARE the credit charge, not just telemetry.
+    # (Anthropic docs 2026-07; Sonnet 5 intro $2/$10 through 2026-08-31 — kept at standard $3/$15.)
+    "claude-opus-4-5":        (5.00,  25.00),
+    "claude-opus-4-6":        (5.00,  25.00),
+    "claude-opus-4-7":        (5.00,  25.00),
+    "claude-opus-4-8":        (5.00,  25.00),
+    "claude-sonnet-5":        (3.00,  15.00),
+    "claude-haiku-4-5":       (1.00,   5.00),
     # DeepSeek (alias + upstream)
     "deepseek-chat":          (0.27,   1.10),
     "deepseek-v3":            (0.27,   1.10),
@@ -1599,6 +1615,20 @@ def make_narasi_client(model: str = ""):
     # BYOK: the user pays their provider on their OWN key (credits=0). Never route BYOK through
     # a server-keyed failover rung — that would serve on the platform key yet bill 0. make_client
     # honours the per-request key, so BYOK always goes straight through it.
+    # ── NATIVE CLAUDE (NARASI_CLAUDE_NATIVE=1 + CLAUDE_API_KEY; default OFF/empty → unreachable, so the
+    #    routing below is byte-identical). Serve ANY claude-* model straight from Anthropic's own API on
+    #    YOUR key, bypassing the KIE/LaoZhang/AtlasCloud resellers — via Anthropic's OpenAI-compatible
+    #    endpoint (https://api.anthropic.com/v1) so it drops into the existing .chat.completions path with
+    #    no new handler. Covers NARASI_BIBLE_MODEL / WORKER_MODEL / NARASI_CRITIQUE_MODEL whenever they
+    #    name a claude-* id (claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5, …). BYOK still wins (a
+    #    server key must never serve a per-request-key job). No service_tier sent ⇒ STANDARD tier (Priority
+    #    is commitment-only / no longer purchasable and same per-token price). NARASI_CLAUDE_BASE_URL
+    #    overrides the endpoint (e.g. a gateway). ──
+    _claude_key = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
+    if (_claude_key and not _byok_active() and str(model).startswith("claude-")
+            and str(os.environ.get("NARASI_CLAUDE_NATIVE", "0")).strip().lower() in ("1", "true", "yes", "on")):
+        return OpenAI(api_key=_claude_key,
+                      base_url=(os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip())
     if not _narasi_failover_on() or _byok_active():
         return make_client(model)
     if (model in _NARASI_FAILOVER_MODELS
