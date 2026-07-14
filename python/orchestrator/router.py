@@ -304,9 +304,12 @@ async def generate_narration(req: dict) -> dict[str, Any]:
     # the brief text, else NARASI_PREMISE_WORD_TARGET balloons the book to the brief's
     # number against the user's setting. The brief parse fills in ONLY when the caller
     # pinned no explicit per-chapter / total target.
-    _has_explicit_target = (req.get("words_per_chapter") is not None
-                            or req.get("word_target") is not None
-                            or req.get("words") is not None)
+    # word_min/word_max are the UI's length fields (MIN/MAX WORDS — the real contract);
+    # word_target/words_per_chapter/words are alternate explicit pins. ANY of them means
+    # the caller set the length, so the aspirational brief number must not override.
+    _has_explicit_target = any(req.get(_k) is not None for _k in (
+        "words_per_chapter", "word_target", "words", "word_min", "word_max",
+        "min_words", "max_words"))
     _wpc_base = int(req.get("words_per_chapter", req.get("word_target", 800)) or 800)
     _wpc = _wpc_base if _has_explicit_target else _premise_words_per_chapter(
         str(req.get("topic") or req.get("goal") or req.get("brief") or ""), _wpc_base)
