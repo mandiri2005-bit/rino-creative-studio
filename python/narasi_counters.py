@@ -2859,7 +2859,16 @@ def _meta_ref_on() -> bool:
 
 _META_REF_RX = re.compile(
     r"(?i)\b(?:belongs to|that(?:'s| is) for|save(?:d)? for|see|in|comes in|"
-    r"covered in|happens in)\s+(?:ch|chapter|chap|episode|ep)\.?\s*\d+\b"
+    r"covered in|happens in)\s+(?:ch|chapter|chap|episode|ep)\.?\s*"
+    # ROUND-14: match a DIGIT (Ch9) OR a spelled-out ordinal/cardinal (roll-15 gap:
+    # "the map she had drawn in Chapter Three" slipped past the digit-only r13 regex).
+    r"(?:\d{1,2}|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|"
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth))\b"
+    # ROUND-14 audit: a real out-of-world leak is followed by punctuation ("belongs to
+    # Ch9.", "in Chapter Three, and"); "chapter one OF her life" / "chapter twelve of the
+    # report" is a metaphor or an in-world document ref — not a generator artifact. Skip it.
+    r"(?!\s+of\b)"
     r"|\bthe rest\s+[\u2014\-]\s*that belongs to\b")
 
 

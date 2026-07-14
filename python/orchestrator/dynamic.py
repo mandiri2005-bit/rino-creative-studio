@@ -717,6 +717,54 @@ async def build_story_bible(
     # both #1+#2 ON): no-op on deploy, and a no-op on two-hander premises (no recurring secondaries to
     # deepen). Lives in the fact-sheet, which already bans prose/subplots, so the want stays a compact
     # pinned attribute — worst case = mild noise or ignored.
+    # ROUND-14 BIBLE SCALE (NARASI_BIBLE_SCALE, default OFF): the fact-sheet was a fixed
+    # ~10k chars whether it drove 10 chapters or 16 — roll-16 (40k/16) shared a 10-chapter-
+    # sized bible across 16 chapters, so the extra chapters invented their own specifics
+    # (cast renamed, floor/date forks) and the critic scored 4.0. Tell the bible the chapter
+    # count and require it to pin a NAMED, LOCKED set proportional to the book length so the
+    # later chapters inherit facts instead of improvising. FICTION-only; append-only.
+    if is_fiction and os.environ.get("NARASI_BIBLE_SCALE", "0").strip().lower() in ("1", "true", "yes", "on"):
+        _bs_n = max(1, len(outline or []))
+        system = system + (
+            f"\n\nADDENDUM — SCALE TO {_bs_n} CHAPTERS: this fact-sheet must anchor a "
+            f"{_bs_n}-chapter book. Pin EVERY load-bearing specific ONCE, here, so no later "
+            "chapter has to invent one: the FULL NAMED CAST (every character the plot names — "
+            "leads, family, the antagonist/officer, each witness/victim named on the page), each "
+            "with a fixed full name and role; every KEY DATE, QUANTITY and PLACE; and the exact "
+            "value of any fact stated more than once. A longer book needs MORE pinned names and "
+            "facts, not a longer prose sheet — keep it a terse locked list. Any name or number a "
+            "chapter needs that is NOT pinned here is a fork waiting to happen.")
+    # ROUND-14 PREMISE NAME LOCK (NARASI_PREMISE_NAME_LOCK, default OFF): the brief NAMES its
+    # leads (e.g. "Lee Seo-an", "Lee Hae-won"); roll-16 renamed them (Song/Do-yoon/Hwang) because
+    # best-of-3 reinvented the cast. Extract the premise-supplied full names and order the bible
+    # to USE THEM VERBATIM for those roles. Deterministic name grab (Latin given-surname shapes,
+    # incl. hyphenated Korean given names); append-only; no-op when the brief names no one.
+    if is_fiction and os.environ.get("NARASI_PREMISE_NAME_LOCK", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            import re as _pnl_re
+            # ROUND-14 audit: the given-surname shape also matches hyphenated English
+            # adjectives/places ("New York-based", "Han River-side"). A romanized Korean
+            # given name never ends in a common English word — drop those tails.
+            _pnl_stop = {"based", "adjacent", "side", "style", "related", "driven", "level",
+                         "owned", "run", "led", "backed", "facing", "bound", "wide", "term",
+                         "old", "new", "free", "born", "made", "year", "story", "life",
+                         "class", "scale", "wing", "bank", "front", "born", "long"}
+            _pnl = []
+            for _m in _pnl_re.finditer(r"\b([A-Z][a-z]+)\s+([A-Z][a-z]+(?:-[a-z]+)+)\b", str(topic or "")):
+                _full = _m.group(0)
+                if _m.group(2).rsplit("-", 1)[-1].lower() in _pnl_stop:
+                    continue
+                if _full not in _pnl:
+                    _pnl.append(_full)
+            _pnl = _pnl[:8]
+            if _pnl:
+                system = system + (
+                    "\n\nADDENDUM — PREMISE NAME LOCK: the brief names these characters — use each "
+                    "EXACTLY as written for that same role, never a re-invented substitute: "
+                    + ", ".join(_pnl) + ". You may add fresh names ONLY for characters the brief "
+                    "leaves unnamed.")
+        except Exception:  # noqa: BLE001
+            pass
     if is_fiction and os.environ.get("NARASI_CRAFT_LEVERS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
             "\n\nADDENDUM to heading 1 (CHARACTERS) — SECONDARY DEPTH: for each NAMED secondary who "

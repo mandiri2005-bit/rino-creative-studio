@@ -641,13 +641,23 @@ async def narrate_chapters(
                                                              job_uuid=None, json_mode=True)
                             _as_d = _as_parse(_as_raw) if isinstance(_as_raw, str) else (_as_raw or {})
                             if isinstance(_as_d, dict) and _as_d.get("allocated") is False:
+                                _as_depth = (
+                                    " In that scene the antagonist must VOICE their own logic — "
+                                    "rationalizing the wrong as procedure, duty, risk-management or "
+                                    "necessity (e.g. 'the level was unoccupied; opening it would have "
+                                    "endangered the crew') — a coherent, specific justification shown "
+                                    "through what they SAY and DO, never cartoon malice and never a "
+                                    "confession of guilt. Give them one human tell (composure, a flicker, "
+                                    "a deflection). Make them a person with a position, not a name on a form."
+                                    if os.environ.get("NARASI_ANTAG_DEPTH", "0").strip().lower() in ("1", "true", "yes", "on")
+                                    else "")
                                 _as_sys2 = (
                                     "The outline below never puts the opposing power on-page. Pick ONE chapter "
                                     "between the midpoint and the second-to-last, and rewrite ONLY its summary "
                                     "so it now contains one on-page scene with the antagonist "
                                     f"({str(_as_d.get('antagonist') or 'the responsible officer')[:60]}) — a "
                                     "confrontation, deposition, offer or threat that fits the existing beats; "
-                                    "keep every other element of that summary. Return ONLY JSON: "
+                                    "keep every other element of that summary." + _as_depth + " Return ONLY JSON: "
                                     "{\"chapter\": <n>, \"summary\": \"<the full rewritten summary>\"}")
                                 _as_raw2, _as_cr2 = await _as_call(_as_sys2, _as_outline,
                                                                    tenant_id=tenant_id, user_id=None,
@@ -733,6 +743,65 @@ async def narrate_chapters(
                                          (_ws_d or {}).get("allocated"), (_ws_d or {}).get("chapter"))
                 except Exception as _wse:  # noqa: BLE001
                     log.warning("warmth-scene check failed (non-fatal): %s", _wse)
+
+                # ROUND-14 SUPPORTING-CAST DEPTH (NARASI_CAST_DEPTH, default OFF): all four lenses
+                # scored supporting cast ~7.5 across 18 files even at 40k -- the prosecutor, the mother,
+                # the witnesses stay FUNCTIONS. CRAFT_LEVERS pins a want in the bible, but a want with no
+                # SCENE never reaches the page. Same allocation lever as antag/warmth: if no named
+                # secondary gets a beat with a PERSONAL STAKE of their own, amend one chapter summary so
+                # one does. Deepens a character the outline already has; never invents one. Fiction-only.
+                try:
+                    if (_fic and str(os.environ.get("NARASI_CAST_DEPTH", "0")).strip().lower() in ("1", "true", "yes", "on")):
+                        from laozhang_api import _narasi_cheap_call as _cd_call, _narasi_parse_json as _cd_parse
+                        _cd_ch = list(ctx.chapters or chapters or [])
+                        _cd_outline = "\n".join(
+                            f"{i + 1}. {str((c or {}).get('title') or '')} -- {str((c or {}).get('summary') or '')[:220]}"
+                            for i, c in enumerate(_cd_ch) if isinstance(c, dict))
+                        if _cd_outline and len(_cd_ch) >= 5:
+                            _cd_sys = (
+                                "You are checking a chapter outline against its story fact-sheet. Question: does "
+                                "any NAMED SUPPORTING character (not the two leads, not the antagonist) -- a "
+                                "prosecutor, a parent, a witness, a colleague -- get at least one on-page beat "
+                                "driven by a PERSONAL STAKE of their OWN (a private reason they care, a cost they "
+                                "carry, a hesitation, a mistake) rather than only delivering information or "
+                                "procedure? Return ONLY JSON: {\"allocated\": true|false, \"chapter\": <n or null>, "
+                                "\"who\": \"<name>\"}")
+                            _cd_raw, _cd_cr = await _cd_call(
+                                _cd_sys, "OUTLINE:\n" + _cd_outline + "\n\nFACT-SHEET (head):\n" + _bible[:3500],
+                                tenant_id=tenant_id, user_id=None, job_uuid=None, json_mode=True)
+                            _cd_d = _cd_parse(_cd_raw) if isinstance(_cd_raw, str) else (_cd_raw or {})
+                            if isinstance(_cd_d, dict) and _cd_d.get("allocated") is False:
+                                _cd_sys2 = (
+                                    "The outline keeps its supporting cast as functions. Pick ONE named supporting "
+                                    "character the outline ALREADY uses (not a lead, not the antagonist) and ONE "
+                                    "chapter they appear in, and rewrite ONLY that chapter's summary so it gives "
+                                    "that character a single beat with a personal stake of their own -- a private "
+                                    "reason they care, a cost, a hesitation, a small human turn -- woven into the "
+                                    "existing action, without a new subplot and without displacing the plot work. "
+                                    "Keep every other element. Return ONLY JSON: {\"chapter\": <n>, "
+                                    "\"summary\": \"<full rewritten summary>\"}")
+                                _cd_raw2, _cd_cr2 = await _cd_call(_cd_sys2, _cd_outline,
+                                                                  tenant_id=tenant_id, user_id=None,
+                                                                  job_uuid=None, json_mode=True)
+                                _cd_d2 = _cd_parse(_cd_raw2) if isinstance(_cd_raw2, str) else (_cd_raw2 or {})
+                                try:
+                                    _cd_n = int((_cd_d2 or {}).get("chapter") or 0)
+                                    _cd_sum = str((_cd_d2 or {}).get("summary") or "").strip()
+                                except Exception:  # noqa: BLE001
+                                    _cd_n, _cd_sum = 0, ""
+                                if 2 <= _cd_n <= len(_cd_ch) and len(_cd_sum) > 60 and isinstance(_cd_ch[_cd_n - 1], dict):
+                                    _cd_ch[_cd_n - 1]["summary"] = _cd_sum
+                                    if ctx.chapters:
+                                        ctx.chapters = _cd_ch
+                                    log.info("cast-depth check: no personal-stake beat -- ch %d amended (%s)",
+                                             _cd_n, str(_cd_d.get("who") or "?")[:40])
+                                else:
+                                    log.info("cast-depth check: amendment unusable -- outline kept")
+                            else:
+                                log.info("cast-depth check: allocated=%s (%s)",
+                                         (_cd_d or {}).get("allocated"), str((_cd_d or {}).get("who") or "?")[:40])
+                except Exception as _cde:  # noqa: BLE001
+                    log.warning("cast-depth check failed (non-fatal): %s", _cde)
                 # LEDGER VALIDATOR at BIBLE time (NARASI_LEDGER_VALIDATOR, default OFF):
                 # a ledger hit committed in the bible poisons every chapter (roll-3
                 # 'eleven-month drought'), so scan the bible the moment it is pinned —
