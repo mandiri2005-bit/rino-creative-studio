@@ -241,6 +241,38 @@ def classify(req: dict, settings: "_Settings") -> str:
 # ===========================================================================
 # generate_narration — the async front door.
 # ===========================================================================
+def _premise_words_per_chapter(topic: str, current: int) -> int:
+    """ROUND-11 (bug: the r10 parser lived in _run_topic_to_book / scenario B, but the
+    production narration jobs classify as scenario A — it never ran, and three rolls
+    shipped ~52% length with the flag correctly set). Hoisted so generate_narration
+    calls it for EVERY scenario. Parses a per-chapter word target stated in the brief
+    (id/en), range-midpoint, bounded 500..6000. Returns `current` unchanged when the
+    flag is off, nothing parses, or on any error."""
+    if str(os.environ.get("NARASI_PREMISE_WORD_TARGET", "0")).strip().lower() not in ("1", "true", "yes", "on"):
+        return current
+    try:
+        import re as _re
+        _rx = _re.compile(
+            r"(\d{1,2}[.,]?\d{3})\s*[\u2013\-\u2014]\s*(\d{1,2}[.,]?\d{3})\s*(?:kata|words)|"
+            r"(?:kata|words)\s*(?:per|/)\s*(?:episode|chapter|bab)\D{0,12}(\d{1,2}[.,]?\d{3})|"
+            r"(\d{1,2}[.,]?\d{3})\s*(?:kata|words)\s*(?:per|/)\s*(?:episode|chapter|bab)", _re.I)
+        _cands = []
+        for m in _rx.finditer(str(topic or "")):
+            vals = [int(_re.sub(r"[.,]", "", g)) for g in m.groups() if g]
+            if len(vals) == 2:
+                _cands.append((vals[0] + vals[1]) // 2)
+            elif vals:
+                _cands.append(vals[0])
+        _cands = [v for v in _cands if 500 <= v <= 6000]
+        if _cands and _cands[0] != current:
+            log.info("premise word-target: %d words/chapter parsed from the brief (was %d) — premise wins",
+                     _cands[0], current)
+            return _cands[0]
+    except Exception as _e:  # noqa: BLE001
+        log.warning("premise word-target parse failed (non-fatal): %s", _e)
+    return current
+
+
 async def generate_narration(req: dict) -> dict[str, Any]:
     """Dispatch a narration request to the right strategy and return a unified result.
 
@@ -262,6 +294,23 @@ async def generate_narration(req: dict) -> dict[str, Any]:
     """
     req = dict(req or {})
     settings = _Settings(req)
+
+    # ROUND-11: derive the per-chapter target from the brief ONCE, before routing, so
+    # every scenario (A chaptered, B topic-to-book, D goal) inherits it. Scenario A
+    # (production narration jobs) reads word_target off each chapter dict, so also
+    # stamp it there when the caller did not pin an explicit per-chapter target.
+    _wpc = _premise_words_per_chapter(
+        str(req.get("topic") or req.get("goal") or req.get("brief") or ""),
+        int(req.get("words_per_chapter", req.get("word_target", 800)) or 800))
+    if _wpc:
+        req.setdefault("words_per_chapter", _wpc)
+        req["words_per_chapter"] = _wpc
+        for _key in ("chapters", "outline", "titles"):
+            _lst = req.get(_key)
+            if isinstance(_lst, list):
+                for _c in _lst:
+                    if isinstance(_c, dict) and not _c.get("word_target") and not _c.get("words"):
+                        _c["word_target"] = _wpc
 
     style = req.get("style")
     language = str(req.get("language", "id") or "id")
@@ -380,35 +429,9 @@ async def _run_topic_to_book(req: dict, settings: "_Settings", *,
         n_chapters = max(1, int(n_chapters))
     except (TypeError, ValueError):
         n_chapters = 5
+    # ROUND-11: word-target parse hoisted to generate_narration (runs for every
+    # scenario); req["words_per_chapter"] already carries the premise target here.
     words_per = int(req.get("words_per_chapter", req.get("word_target", 800)) or 800)
-    # ROUND-10 (NARASI_PREMISE_WORD_TARGET, default OFF): three rolls of one premise
-    # shipped ~52% of the commissioned length because the brief's explicit
-    # "3.600–4.000 kata / episode" never reached words_per_chapter. When the topic
-    # states a per-chapter target (id or en), the premise IS the contract — override.
-    if str(os.environ.get("NARASI_PREMISE_WORD_TARGET", "0")).strip().lower() in ("1", "true", "yes", "on"):
-        try:
-            import re
-            _wt_rx = re.compile(
-                r"(\d{1,2}[.,]?\d{3})\s*[–\-—]\s*(\d{1,2}[.,]?\d{3})\s*(?:kata|words)|"
-                r"(?:kata|words)\s*(?:per|/)\s*(?:episode|chapter|bab)\D{0,12}(\d{1,2}[.,]?\d{3})|"
-                r"(\d{1,2}[.,]?\d{3})\s*(?:kata|words)\s*(?:per|/)\s*(?:episode|chapter|bab)", re.I)
-            _cands = []
-            for m in _wt_rx.finditer(str(topic or "")):
-                nums = [g for g in m.groups() if g]
-                vals = [int(re.sub(r"[.,]", "", g)) for g in nums]
-                if len(vals) == 2:
-                    _cands.append((vals[0] + vals[1]) // 2)
-                elif vals:
-                    _cands.append(vals[0])
-            _cands = [v for v in _cands if 500 <= v <= 6000]
-            if _cands:
-                _wp_new = _cands[0]
-                if _wp_new != words_per:
-                    log.info("premise word-target: %d words/chapter parsed from the brief (was %d) — premise wins",
-                             _wp_new, words_per)
-                    words_per = _wp_new
-        except Exception as _wte:  # noqa: BLE001
-            log.warning("premise word-target parse failed (non-fatal): %s", _wte)
 
     if settings.orch_mode == "static":
         # Forced static: no manager outline call — use the deterministic outline.

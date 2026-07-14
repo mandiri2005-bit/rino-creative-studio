@@ -472,6 +472,8 @@ _PHANTOM_GEOORG = frozenset({
     "Interview", "Special", "Urban", "Dear",
     # round-10 (roll-13 FPs): more institutional tokens + 'No English' artifact
     "Board", "Registry", "English", "Census",
+    # round-11 (roll-14 FPs): role-title prefix + collective-descriptor phantoms
+    "Attorney", "Holdings", "Residents", "Apartments",
 })
 # Month names as candidate COMPONENTS ('From May', 'By August the town…') are date
 # fragments, never persons (roll-5 'From May' FP — the phantom scan's only wrong flag).

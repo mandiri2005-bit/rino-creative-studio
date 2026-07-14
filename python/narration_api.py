@@ -220,6 +220,31 @@ def _numeric_sum_errors(equations: list) -> list[dict]:
     return out[:4]
 
 
+_MONTHS_NORM = {"january": 1, "february": 2, "march": 3, "april": 4, "may": 5,
+                "june": 6, "july": 7, "august": 8, "september": 9, "october": 10,
+                "november": 11, "december": 12}
+
+
+_WEEKDAYS_L = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _is_date_like(v: str) -> bool:
+    """ROUND-11: roll-14's three numeric 'drifts' were one demolition date in mixed
+    surface forms (Thursday / January 2010 / January twenty-seventh). Dates are the
+    TIMELINE gate's domain, not the numeric-ledger's — a referent whose values are
+    date descriptions must not be scored as count drift. Date-like = names a month, a
+    weekday, or a bare 4-digit year."""
+    import re as _re
+    t = str(v).lower()
+    if any(w in t for w in _WEEKDAYS_L):
+        return True
+    if any(w in t for w in _MONTHS_NORM):
+        return True
+    if _re.search(r"\b(?:19|20)\d{2}\b", t):
+        return True
+    return False
+
+
 def _numeric_drifts(referents: list) -> list[dict]:
     """ROUND-7 deterministic post-check for the numeric-ledger cheap call: a
     referent with ≥2 distinct normalized values that the extractor did NOT mark
@@ -237,11 +262,17 @@ def _numeric_drifts(referents: list) -> list[dict]:
     for r in referents or []:
         if not isinstance(r, dict) or r.get("intentional_contrast"):
             continue
+        _raws = [(v or {}).get("value") if isinstance(v, dict) else v
+                 for v in (r.get("values") or [])]
+        # skip date-referents entirely: dates belong to the timeline gate, and partial
+        # date forms legitimately differ without conflicting (roll-14 3 FP).
+        _rname = str(r.get("name") or "").lower()
+        _date_hits = sum(1 for x in _raws if _is_date_like(str(x)))
+        if _raws and ("date" in _rname or _date_hits * 2 >= len(_raws)):
+            continue
         vals: list[str] = []
-        for v in (r.get("values") or []):
-            _raw = (v or {}).get("value") if isinstance(v, dict) else v
+        for _raw in _raws:
             _s = str(_raw).lower().strip()
-            # spelled → digits so "six" and "6" never read as a drift pair
             _s = " ".join(_words.get(w, w) for w in _re.split(r"[\s-]+", _s))
             _s = _re.sub(r"[,\s]", "", _s)
             if _s and _s not in vals:
@@ -1740,9 +1771,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                                             job_uuid=job_uuid)
                                 if sink is not None and _nrcr:
                                     sink.credits += int(_nrcr)
-                                if _nrnew and len(str(_nrnew).split()) >= int(len(_cbook.split()) * 0.9):
+                                if (_nrnew and str(_nrnew) != _cbook
+                                        and len(str(_nrnew).split()) >= int(len(_cbook.split()) * 0.9)):
                                     result["book" if result.get("book") else "output"] = str(_nrnew)
                                     log.info("canon-enforce: %d non-reveal fork(s) sent to revise — book updated",
+                                             len(_nrviol))
+                                else:
+                                    # ROUND-11: r10 logged "book updated" even on a no-op revise
+                                    # (roll-14: evidence 'someone' mapped to no chapter).
+                                    log.info("canon-enforce: %d non-reveal fork(s) sent — revise landed nothing",
                                              len(_nrviol))
                     except Exception as _nre:  # noqa: BLE001
                         log.warning("canon-enforce non-reveal failed (non-fatal): %s", _nre)

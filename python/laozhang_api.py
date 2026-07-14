@@ -7817,6 +7817,57 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
             _craw = _fre.sub(r"^\s*```(?:json)?\s*", "", str(raw or "").strip())
             _craw = _fre.sub(r"\s*```\s*$", "", _craw)
             _cqp = _narasi_parse_json(_craw)
+            if (not isinstance(_cqp, dict) or _cqp.get("score") is None) and "{" in _craw:
+                # ROUND-11: fence-strip (r10) fixed the ```json wrapper, but roll-14 hit
+                # the SECOND layer — the verdict JSON is truncated at the token cap
+                # (valid head, cut tail). Salvage the score and any complete violation
+                # objects from the balanced prefix.
+                import re as _sfre
+                import json as _sfjson
+                _sc = None
+                _msc = _sfre.search(r'"score"\s*:\s*([0-9.]+)', _craw)
+                if _msc:
+                    try:
+                        _sc = float(_msc.group(1))
+                    except Exception:  # noqa: BLE001
+                        _sc = None
+                _svs = []
+                for _bm in _sfre.finditer(r"\{", _craw):
+                    _st = _bm.start()
+                    if not _sfre.search(r'"(?:type|evidence|severity)"', _craw[_st:_st + 120]):
+                        continue
+                    _d, _in, _e = 0, False, False
+                    for _i in range(_st, min(len(_craw), _st + 4000)):
+                        _c = _craw[_i]
+                        if _in:
+                            if _e:
+                                _e = False
+                            elif _c == "\\":
+                                _e = True
+                            elif _c == '"':
+                                _in = False
+                        elif _c == '"':
+                            _in = True
+                        elif _c == "{":
+                            _d += 1
+                        elif _c == "}":
+                            _d -= 1
+                            if _d == 0:
+                                try:
+                                    _o = _sfjson.loads(_craw[_st:_i + 1])
+                                    if isinstance(_o, dict) and _o.get("type"):
+                                        _svs.append(_o)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                break
+                    if len(_svs) >= 20:
+                        break
+                if _sc is not None or _svs:
+                    _cqp = {"score": _sc, "violations": _svs, "summary": ""}
+                    import logging as _lg
+                    _lg.getLogger("narasi").info(
+                        "consistency critic: SALVAGED score=%s + %d violation(s) from truncated verdict",
+                        _sc, len(_svs))
             if not isinstance(_cqp, dict) or _cqp.get("score") is None:
                 # ROUND-8 (rolls 11-12: score=None twice on 20k-word books, silently) —
                 # the raw head tells the next roll whether this is truncation, a refusal,

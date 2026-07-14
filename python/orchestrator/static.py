@@ -662,7 +662,11 @@ async def narrate_chapters(
                                     _as_ch[_as_n - 1]["summary"] = _as_sum
                                     if ctx.chapters:
                                         ctx.chapters = _as_ch
-                                    log.info("antag-scene check: no on-page antagonist scene — chapter %d summary amended (%s)",
+                                    # ROUND-11: the cheap check names the antagonist; the amend
+                                    # call may target a DIFFERENT figure (roll-14 logged "Kang
+                                    # Seong-ho" — the tragic father, not the corporate opponent).
+                                    # Log both so the amendment is auditable.
+                                    log.info("antag-scene check: no on-page antagonist scene — ch %d amended (check named: %s)",
                                              _as_n, str(_as_d.get("antagonist") or "?")[:50])
                                 else:
                                     log.info("antag-scene check: amendment unusable — outline kept")
