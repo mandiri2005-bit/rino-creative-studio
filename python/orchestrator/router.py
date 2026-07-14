@@ -299,11 +299,12 @@ async def generate_narration(req: dict) -> dict[str, Any]:
     # every scenario (A chaptered, B topic-to-book, D goal) inherits it. Scenario A
     # (production narration jobs) reads word_target off each chapter dict, so also
     # stamp it there when the caller did not pin an explicit per-chapter target.
+    _wpc_base = int(req.get("words_per_chapter", req.get("word_target", 800)) or 800)
     _wpc = _premise_words_per_chapter(
-        str(req.get("topic") or req.get("goal") or req.get("brief") or ""),
-        int(req.get("words_per_chapter", req.get("word_target", 800)) or 800))
-    if _wpc:
-        req.setdefault("words_per_chapter", _wpc)
+        str(req.get("topic") or req.get("goal") or req.get("brief") or ""), _wpc_base)
+    # Flags-off contract: only mutate req when the parser actually changed the target
+    # (flag ON and a brief target parsed). Flag OFF ⟹ _wpc == _wpc_base ⟹ true no-op.
+    if _wpc and _wpc != _wpc_base:
         req["words_per_chapter"] = _wpc
         for _key in ("chapters", "outline", "titles"):
             _lst = req.get(_key)
