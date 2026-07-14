@@ -1191,7 +1191,31 @@ def _claude_native_on(model: str = "") -> bool:
             and str(model).startswith("claude-"))
 
 
-def _narasi_failover_chain(model: str = "") -> list[tuple[str, str, str, str, str]]:
+def _worker_kie_first_on() -> bool:
+    """NARASI_WORKER_KIE_FIRST=1 (Rino 2026-07-15): reorder the WORKER_MODEL (MAP/per-chapter,
+    role=='worker') failover chain to KIE-first -> LaoZhang -> native Claude LAST, instead of
+    the native-first order every other role (bible/critique/manager/polish) still uses. Scoped
+    to role=='worker' only in _narasi_failover_chain — this flag alone changes nothing for any
+    other call. Default OFF = unchanged native-first routing for every role, byte-identical."""
+    return str(os.environ.get("NARASI_WORKER_KIE_FIRST", "0")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _narasi_worker_kie_first_chain(model: str) -> list[tuple[str, str, str, str, str]]:
+    """WORKER_MODEL override chain (NARASI_WORKER_KIE_FIRST=1): KIE first, LaoZhang second,
+    native Claude LAST. Unlike the legacy opus-only kie/laozhang/atlascloud chain further below
+    (which hardcodes a fixed opus id per rung), every rung here gets the ACTUAL requested model
+    id verbatim — so KIE/LaoZhang correctly serve whatever WORKER_MODEL resolves to (e.g.
+    sonnet-5), never a silently-substituted opus build."""
+    _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
+    _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
+    return [
+        ("kie",      "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model),
+        ("laozhang", "openai",    BASE_URL,                                 _req_key.get() or API_KEY,          model),
+        ("claude",   "openai",    _base,                                    _ck,                                model),
+    ]
+
+
+def _narasi_failover_chain(model: str = "", role: str = "") -> list[tuple[str, str, str, str, str]]:
     """(name, protocol, endpoint, api_key, per-provider model id), cheapest-first. protocol
     is 'anthropic' (native Messages API — KIE serves Claude at /claude/v1/messages),
     'openai' (OpenAI-compatible /v1/chat/completions — LaoZhang, AtlasCloud), or
@@ -1206,6 +1230,11 @@ def _narasi_failover_chain(model: str = "") -> list[tuple[str, str, str, str, st
     # claude-* id. LaoZhang rung id is env-tunable (NARASI_CLAUDE_FALLBACK_MODEL) because LaoZhang may
     # not serve a brand-new Anthropic id — default = same id (that rung just skips/advances on a 4xx;
     # an empty LAOZHANG_API_KEY skips it too, leaving native-only + the model-level _narasi_complete net).
+    # WORKER_MODEL override (NARASI_WORKER_KIE_FIRST=1, role=='worker' only): checked BEFORE the
+    # native-first branch so it wins for MAP/per-chapter calls specifically; every other role
+    # (bible/critique/manager/polish, role != 'worker') is untouched and stays native-first.
+    if role == "worker" and _worker_kie_first_on() and str(model).startswith("claude-") and not _byok_active():
+        return _narasi_worker_kie_first_chain(model)
     if _claude_native_on(model) and not _byok_active():
         _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
         _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
@@ -1535,8 +1564,9 @@ class _NarasiFailoverClient:
         def __init__(self, outer: "_NarasiFailoverClient"):
             self.completions = _NarasiFailoverClient._Completions(outer)
 
-    def __init__(self, model: str = ""):
+    def __init__(self, model: str = "", role: str = ""):
         self._model = model or NARASI_DEFAULT_MODEL
+        self._role = role
         # MODEL-TRACE (Rino: diagnose WORKER_MODEL vs NARASI_DEFAULT_MODEL). A narasi client built
         # with an EMPTY model silently defaults to NARASI_DEFAULT_MODEL (opus-4-6) — if the MAP/worker
         # is billed as opus-4-6 despite WORKER_MODEL=sonnet-5, THIS warning pinpoints the empty caller.
@@ -1554,7 +1584,7 @@ class _NarasiFailoverClient:
     def _create(self, **kw):
         # Canonical cheapest-first chain, walked fresh EVERY call — no reorder,
         # no memory (Rino 2026-07-06: "Attempt 2 (fresh state) = Attempt 1").
-        chain = _narasi_failover_chain(self._model)
+        chain = _narasi_failover_chain(self._model, self._role)
         if _narasi_skip_kie.get():
             # Bible cold-KIE skip: start at rung 2. No-op for sonnet/gemini chains (no 'kie' rung);
             # if the filtered chain has no keyed rung, the existing attempted==0 branch below
@@ -1647,10 +1677,14 @@ class _NarasiFailoverClient:
         raise RuntimeError("narasi failover exhausted — all aggregators failed: " + " | ".join(errors))
 
 
-def make_narasi_client(model: str = ""):
+def make_narasi_client(model: str = "", role: str = ""):
     """Narasi client factory. Returns the multi-aggregator failover client for narasi
     models when NARASI_FAILOVER_ENABLED is on; otherwise the standard make_client
     (so unlisted models and the flag-off state keep today's exact behavior).
+
+    `role` (optional, e.g. "worker"/"manager") is forwarded to the failover client so
+    _narasi_failover_chain can apply role-scoped routing (NARASI_WORKER_KIE_FIRST for
+    role=='worker'). Every existing caller omits it (role="") and is unaffected.
 
     Two model families are eligible for failover, each with its own chain:
       * Claude Opus (_NARASI_FAILOVER_MODELS): 3-rung KIE→LaoZhang→AtlasCloud
@@ -1669,13 +1703,13 @@ def make_narasi_client(model: str = ""):
     #    OFF / empty key → _claude_native_on is False → falls through to the UNCHANGED routing below
     #    (byte-identical). No service_tier sent ⇒ STANDARD tier. NARASI_CLAUDE_BASE_URL overrides endpoint. ──
     if _claude_native_on(model):
-        return _NarasiFailoverClient(model)
+        return _NarasiFailoverClient(model, role=role)
     if not _narasi_failover_on():
         return make_client(model)
     if (model in _NARASI_FAILOVER_MODELS
             or model in _NARASI_GEMINI_FAILOVER_MODELS
             or model in _NARASI_SONNET_FAILOVER_MODELS):
-        return _NarasiFailoverClient(model)
+        return _NarasiFailoverClient(model, role=role)
     return make_client(model)
 
 

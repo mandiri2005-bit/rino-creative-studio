@@ -172,12 +172,14 @@ except Exception as _imp_err:  # noqa: BLE001 - intentional broad fallback
                 return round((tokens_in * in_p + tokens_out * out_p) / 1_000_000, 8)
         return 0.0
 
-    def _lz_make_client(model: str = ""):  # type: ignore
+    def _lz_make_client(model: str = "", role: str = ""):  # type: ignore
         """Replicated env client factory (mirrors laozhang_api.make_client).
 
         Builds an OpenAI-compatible client from env. DeepSeek-direct models use
         DEEPSEEK_API_KEY; everything else uses LAOZHANG_API_KEY. No keys are
-        hardcoded — both come from the environment.
+        hardcoded — both come from the environment. `role` is accepted for
+        signature parity with the real make_narasi_client but unused here — this
+        fallback has no failover chain to route (dev/partial-deps environments only).
         """
         from openai import OpenAI  # local import: keep module import light
         resolved = MODELS.get(model, model)
@@ -385,10 +387,12 @@ def _build_messages(system: str, task: str) -> list[dict[str, str]]:
 
 
 def _sync_chat(model: str, messages: list[dict[str, str]], *,
-               temperature: float, max_tokens: int):
+               temperature: float, max_tokens: int, role: str = ""):
     """Blocking single chat-completion call against the env-built client.
-    Mirrors laozhang_api's call shape: client.chat.completions.create(...)."""
-    client = _lz_make_client(model)
+    Mirrors laozhang_api's call shape: client.chat.completions.create(...).
+    `role` (e.g. "worker" for MAP/chapter calls) is forwarded so make_narasi_client
+    can apply role-scoped routing (NARASI_WORKER_KIE_FIRST)."""
+    client = _lz_make_client(model, role=role)
     resolved = MODELS.get(model, model)
     return client.chat.completions.create(
         model=resolved,
@@ -470,7 +474,7 @@ async def run_worker(
             resp = await asyncio.wait_for(
                 asyncio.to_thread(
                     _sync_chat, model, messages,
-                    temperature=worker.temperature, max_tokens=max_tokens,
+                    temperature=worker.temperature, max_tokens=max_tokens, role=worker.role,
                 ),
                 timeout=timeout,
             )
