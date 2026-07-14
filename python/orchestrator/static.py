@@ -1270,12 +1270,36 @@ async def _polish_reduce(
         if len(chunks) > 1:
             c_instr, c_role = _polish_instruction(mode, topic, language, is_chunk=True)
             polished, any_ok = [], False
-            for i, ch in enumerate(chunks):
-                _o, _ok = await _polish_one(ch, instruction=c_instr, role=c_role, model=manager_model,
-                                            timeout=timeout, telemetry_sink=telemetry_sink,
-                                            task_id=f"polish:{mode}:chunk{i + 1}/{len(chunks)}")
-                polished.append(_o)
-                any_ok = any_ok or _ok
+            # ── PARALLEL polish (NARASI_POLISH_PARALLEL>=2; default 0 = the serial loop below runs
+            #    verbatim / byte-identical). Chunks are INDEPENDENT — each polishes its own chapter group,
+            #    rejoined IN ORDER — so run them concurrently: N serial chunks (job rsmyws7s = 752s, of
+            #    which 2 flaky chunks wasted ~458s) collapse to ~one wave (the slowest chunk). asyncio.gather
+            #    preserves input order → identical rejoin. _polish_one NEVER raises (keeps its original
+            #    chunk on truncation/timeout), so a bad chunk cannot abort the gather — its waste just
+            #    OVERLAPS the good chunks instead of adding serially. ──
+            try:
+                _pp = int(str(os.environ.get("NARASI_POLISH_PARALLEL", "0")).strip() or "0")
+            except Exception:
+                _pp = 0
+            if _pp >= 2:
+                _psem = asyncio.Semaphore(_pp)
+
+                async def _polish_chunk(_i, _ch):
+                    async with _psem:
+                        return await _polish_one(_ch, instruction=c_instr, role=c_role, model=manager_model,
+                                                 timeout=timeout, telemetry_sink=telemetry_sink,
+                                                 task_id=f"polish:{mode}:chunk{_i + 1}/{len(chunks)}")
+
+                for _o, _ok in await asyncio.gather(*[_polish_chunk(i, ch) for i, ch in enumerate(chunks)]):
+                    polished.append(_o)
+                    any_ok = any_ok or _ok
+            else:
+                for i, ch in enumerate(chunks):
+                    _o, _ok = await _polish_one(ch, instruction=c_instr, role=c_role, model=manager_model,
+                                                timeout=timeout, telemetry_sink=telemetry_sink,
+                                                task_id=f"polish:{mode}:chunk{i + 1}/{len(chunks)}")
+                    polished.append(_o)
+                    any_ok = any_ok or _ok
             rejoined = "\n\n".join(polished)
             # Align with the per-chunk 75% guard: heavy mode legitimately compresses, so a
             # rejoin in [75%,85%) is real editing, not truncation — an 85% floor would nuke a
