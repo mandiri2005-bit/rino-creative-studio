@@ -1537,6 +1537,14 @@ class _NarasiFailoverClient:
 
     def __init__(self, model: str = ""):
         self._model = model or NARASI_DEFAULT_MODEL
+        # MODEL-TRACE (Rino: diagnose WORKER_MODEL vs NARASI_DEFAULT_MODEL). A narasi client built
+        # with an EMPTY model silently defaults to NARASI_DEFAULT_MODEL (opus-4-6) — if the MAP/worker
+        # is billed as opus-4-6 despite WORKER_MODEL=sonnet-5, THIS warning pinpoints the empty caller.
+        if not (model or "").strip():
+            print(f"[narasi-model] ⚠ failover client built with EMPTY model → "
+                  f"defaulted to NARASI_DEFAULT_MODEL={NARASI_DEFAULT_MODEL} (caller passed no model)")
+        else:
+            print(f"[narasi-model] failover client requested model={self._model}")
         self.chat = _NarasiFailoverClient._Chat(self)
 
     def with_options(self, **_kw):
@@ -1614,6 +1622,11 @@ class _NarasiFailoverClient:
                         object.__setattr__(resp, "_narasi_served_by", name)
                     except Exception:
                         pass
+                    # MODEL-TRACE (Rino): the model that ACTUALLY served this call + the rung.
+                    # `client._model` is what was requested; `model_id` is what the winning rung
+                    # sent upstream (they differ if a fallback rung remapped the id).
+                    print(f"[narasi-model] SERVED rung={name} model_id={model_id} "
+                          f"(requested client._model={self._model})")
                     if name != primary or rung_attempt > 1:
                         print(f"[narasi-failover] served by {name} "
                               f"(attempt {rung_attempt}, {model_id})")

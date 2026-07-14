@@ -455,6 +455,10 @@ async def run_worker(
     ceiling = max_tokens_for(model)
     max_tokens = min(worker.max_tokens or ceiling, ceiling)
     messages = _build_messages(worker.system, task)
+    # MODEL-TRACE (Rino): the model THIS worker call actually resolved to, with its inputs.
+    # task_id doubles as the phase label (ch1..chN = MAP, manager:polish = polish, etc.).
+    log.info("[narasi-model] run_worker[%s] role=%s style=%r worker.model=%r → resolved=%s",
+             task_id or "?", worker.role, worker.style, worker.model, model)
 
     started = time.monotonic()
     last_err = ""

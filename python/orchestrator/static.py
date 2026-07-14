@@ -517,6 +517,12 @@ async def narrate_chapters(
 
     w_model = worker_model or route_model(role="worker", style=style)
     m_model = manager_model or MANAGER_MODEL
+    # MODEL-TRACE (Rino: diagnose WORKER_MODEL vs NARASI_DEFAULT_MODEL). Which model the MAP
+    # (per-chapter worker) will use, and where it came from: the explicit worker_model arg, the
+    # WORKER_MODEL env, or route_model's per-style hint. Manager (polish/merge) model too.
+    log.info("[narasi-model] PHASE=map worker=%s manager=%s | src: worker_model_arg=%r "
+             "WORKER_MODEL_env=%r style=%r route_model=%s", w_model, m_model, worker_model,
+             os.environ.get("WORKER_MODEL"), style, route_model(role="worker", style=style))
 
     # 1) ONE shared context for the whole job (one RAG retrieval, reused).
     ctx = shared_context or await build_shared_context(
