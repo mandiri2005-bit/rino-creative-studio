@@ -1357,6 +1357,26 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     # (abort-seam, coda-repeat, domain errors, numeric drift) — one
                     # helper, unit-tested, same synthetic-violation contract.
                     _mech.extend(_r7_actuator_violations(result))
+                    # ROUND-13 META-LEAK: an outline artifact ("The rest -- that belongs
+                    # to Ch9.") leaked into dialogue. Deterministic scan -> delete-directive.
+                    if os.environ.get("NARASI_METALEAK_SCAN", "0").strip().lower() in ("1", "true", "yes", "on"):
+                        try:
+                            import narasi_counters as _mlc
+                            _mlk = "book" if result.get("book") else "output"
+                            _mlr = _mlc.meta_reference_scan(result.get(_mlk) or "")
+                            for _h in (_mlr.get("hits") or [])[:3]:
+                                _mech.append({
+                                    "type": "meta_leak", "severity": "high",
+                                    "evidence": str(_h.get("snippet") or "")[:200],
+                                    "fix": ("This line contains an out-of-world reference to a chapter/"
+                                            "episode number ('Ch9', 'chapter 5', 'episode 3') -- a "
+                                            "generator artifact. Rewrite the sentence to remove the "
+                                            "chapter reference entirely; a character never names the "
+                                            "story's own chapters. Keep the surrounding meaning.")})
+                            if _mlr.get("count"):
+                                log.warning("meta-leak: %d out-of-world chapter reference(s) in prose", _mlr["count"])
+                        except Exception:  # noqa: BLE001
+                            pass
                     if _mech:
                         _cq["violations"] = (_mech + list(_cq.get("violations") or []))[:20]
                         log.info("ledger-enforce: injected %d mechanical violation(s) into critique/revise",
@@ -1381,10 +1401,65 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             except Exception:  # noqa: BLE001
                 _isfic_rev = True
             _fork_revise = os.environ.get("NARASI_CANON_FORK_REVISE", "0").strip().lower() in ("1", "true", "yes", "on")
+            # ROUND-13 CANON-FORK CLASSIFY (NARASI_CANON_FORK_CLASSIFY, default OFF):
+            # r11's critic-salvage finally SURFACED real forks, but the r4.1 reveal-
+            # protection drops ALL canon_forks from revise -- so plain continuity errors
+            # (floor 8 vs 12, envelope 16x11 vs 13, Unit 703 vs 508) are protected right
+            # alongside genuine designed reveals. One cheap call sorts each canon_fork
+            # into "reveal" (a deliberate surface-lie/buried-truth the mystery depends on
+            # -- KEEP protected) or "continuity" (the same neutral fact stated two
+            # incompatible ways with no in-story reason -- SAFE to revise). Fail-safe:
+            # any error -> the fork stays protected (current behavior). The revisable ids
+            # are consulted by both the trigger filter and the revise-input filter below.
+            _revisable_fork_ev = set()
+            if (_isfic_rev and not _fork_revise
+                    and os.environ.get("NARASI_CANON_FORK_CLASSIFY", "0").strip().lower() in ("1", "true", "yes", "on")):
+                try:
+                    _cf_list = [v for v in (_cq.get("violations") or [])
+                                if str(v.get("type", "")).lower() == "canon_fork"][:12]
+                    if _cf_list:
+                        from laozhang_api import _narasi_cheap_call as _cfcall, _narasi_parse_json as _cfparse
+                        _cf_num = "\n".join(f"{i}. {str(v.get('evidence') or '')[:200]}"
+                                             for i, v in enumerate(_cf_list))
+                        _cf_sys = (
+                            "You are triaging continuity flags in a mystery manuscript. Each item is a "
+                            "fact stated two different ways across chapters. Classify EACH as:\n"
+                            "- \"reveal\": the two versions are a DELIBERATE surface-lie vs buried-truth that "
+                            "the mystery's twist depends on (an identity, a death, a cover-up value the plot "
+                            "later corrects on purpose). Fixing it would spoil the story.\n"
+                            "- \"continuity\": a neutral fact (a measurement, a floor count, an object's "
+                            "dimensions, a unit number, a passing date) stated two incompatible ways with NO "
+                            "in-story reason -- a plain error safe to unify.\n"
+                            "When unsure, answer \"reveal\". Return ONLY JSON: "
+                            "{\"items\":[{\"i\":<index>,\"class\":\"reveal|continuity\"}]}")
+                        _cf_raw, _cf_cr = await _cfcall(_cf_sys, _cf_num, tenant_id=tenant_id,
+                                                        user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                        if sink is not None and _cf_cr:
+                            sink.credits += int(_cf_cr)
+                        _cf_d = _cfparse(_cf_raw) if isinstance(_cf_raw, str) else (_cf_raw or {})
+                        for _it in ((_cf_d or {}).get("items") or []):
+                            try:
+                                if str(_it.get("class") or "").lower() == "continuity":
+                                    _idx = int(_it.get("i"))
+                                    if 0 <= _idx < len(_cf_list):
+                                        _revisable_fork_ev.add(str(_cf_list[_idx].get("evidence") or ""))
+                            except Exception:  # noqa: BLE001
+                                continue
+                        if _revisable_fork_ev:
+                            log.info("canon-fork classify: %d/%d fork(s) are plain continuity errors -> revisable",
+                                     len(_revisable_fork_ev), len(_cf_list))
+                except Exception as _cfe:  # noqa: BLE001
+                    log.warning("canon-fork classify failed (non-fatal, all forks stay protected): %s", _cfe)
+
+            def _fork_protected(_v) -> bool:
+                # a canon_fork is protected UNLESS classify marked its evidence continuity
+                return (str(_v.get("type", "")).lower() == "canon_fork"
+                        and (not _fork_revise or not _isfic_rev)
+                        and str(_v.get("evidence") or "") not in _revisable_fork_ev)
+
             _cbad = [v for v in (_cq.get("violations") or [])
                      if str(v.get("severity", "")).lower() in ("critical", "high")
-                     and not (str(v.get("type", "")).lower() == "canon_fork"
-                              and (not _fork_revise or not _isfic_rev))]
+                     and not _fork_protected(v)]
             if _narasi_critique_revise_enabled() and _cbad:
                 _t_rev0 = time.monotonic()
                 # r4.1 — REVEAL-PROTECTION SECOND DOOR (roll-6 captured KIE payload): the
@@ -1399,8 +1474,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _cq_rev = dict(_cq)
                 _cq_rev["violations"] = [
                     v for v in (_cq.get("violations") or [])
-                    if not (str(v.get("type", "")).lower() == "canon_fork"
-                            and (not _fork_revise or not _isfic_rev))
+                    if not _fork_protected(v)
                     and not any(t in str(v.get("fix", "")).lower()[:60]
                                 for t in ("retracted", "no change needed", "no fix needed"))
                     # roll-7 routing hole: a fix that needs a NEW SCENE ("dramatize the

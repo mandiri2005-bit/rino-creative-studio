@@ -2853,6 +2853,35 @@ def _abort_seam_on() -> bool:
 _ABORT_SEAM_RX = re.compile(r"\b\w[\w-]* \u2014 no\.\s+[A-Z]")
 
 
+def _meta_ref_on() -> bool:
+    return os.environ.get("NARASI_METALEAK_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+_META_REF_RX = re.compile(
+    r"(?i)\b(?:belongs to|that(?:'s| is) for|save(?:d)? for|see|in|comes in|"
+    r"covered in|happens in)\s+(?:ch|chapter|chap|episode|ep)\.?\s*\d+\b"
+    r"|\bthe rest\s+[\u2014\-]\s*that belongs to\b")
+
+
+def meta_reference_scan(text: str) -> dict:
+    """ROUND-13 (roll-15 regression): an outline/generator artifact leaked into a
+    character's DIALOGUE -- 'The rest -- that belongs to Ch9.' The r4.1 meta-leak
+    guards catch analysis BLOCKS, not an in-clause chapter self-reference. A story's
+    own characters never say 'Ch9' / 'chapter 9' / 'episode 3'; deterministic net.
+    Report-only."""
+    hits = []
+    if not text:
+        return {"count": 0, "hits": []}
+    for m in _META_REF_RX.finditer(text):
+        lo = text.rfind("\n", 0, m.start()) + 1
+        hi = text.find("\n", m.end())
+        line = text[lo:hi if hi != -1 else len(text)]
+        hits.append({"snippet": line.strip()[:160]})
+        if len(hits) >= 6:
+            break
+    return {"count": len(hits), "hits": hits}
+
+
 def abort_seam_scan(text: str) -> dict:
     """ROUND-6 (SBF roll): the chapter-level ban line can make the model start a
     banned default, cancel itself MID-CLAUSE, and ship the correction into prose
@@ -3512,6 +3541,10 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         # ── abort-seam scan (NARASI_ABORT_SEAM_SCAN, default OFF) — round-6, report-only.
         if _abort_seam_on():
             report["counters"]["abort_seam"] = abort_seam_scan(text)
+
+        # -- meta-reference scan (NARASI_METALEAK_SCAN, default OFF) -- round-13.
+        if _meta_ref_on():
+            report["counters"]["meta_reference"] = meta_reference_scan(text)
 
         # ── chapter-coda verbatim repeat (NARASI_CODA_DEDUP_SCAN, default OFF) — round-6.
         if _coda_dedup_on():
