@@ -879,6 +879,20 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             _tlrep["count"],
                             [str(f.get("stated_phrase") or f.get("values"))
                              for f in _tlrep.get("findings") or []][:5])
+            _nmrep = (rep.get("counters") or {}).get("numeric_magnitude") or {}
+            if _nmrep.get("magnitude") or _nmrep.get("year_forks"):
+                log.warning("numeric magnitude: %d scale fork(s), %d year fork(s): %s",
+                            len(_nmrep.get("magnitude") or []), len(_nmrep.get("year_forks") or []),
+                            [f.get("note") for f in (_nmrep.get("magnitude") or []) + (_nmrep.get("year_forks") or [])][:4])
+            _alrep = (rep.get("counters") or {}).get("age_ledger") or {}
+            if _alrep.get("count"):
+                log.warning("age ledger: %d age/span fork(s): %s",
+                            _alrep["count"], [f.get("note") for f in _alrep.get("findings") or []][:4])
+            _axrep = (rep.get("counters") or {}).get("alias_ledger") or {}
+            if _axrep.get("forks") or _axrep.get("misfiled"):
+                log.warning("alias ledger: %d alias/legal fork(s), %d doc-misfile(s): %s",
+                            len(_axrep.get("forks") or []), len(_axrep.get("misfiled") or []),
+                            [f.get("note") for f in (_axrep.get("misfiled") or []) + (_axrep.get("forks") or [])][:4])
             if rep.get("over_budget"):
                 log.warning("counters still over budget after %d diet loop(s): %s",
                             loops, rep["over_budget"])
@@ -1338,6 +1352,27 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             "fix": (f"Unify the alternating duration — {f.get('note')}"
                                     if f.get("kind") == "span_alternation" else
                                     f"Correct the stated span to match the dated events — {f.get('note')}")})
+                    if _r7_env_on("NARASI_NUMERIC_MAGNITUDE"):
+                        for f in ((_mctrs.get("numeric_magnitude") or {}).get("magnitude") or [])[:2] + ((_mctrs.get("numeric_magnitude") or {}).get("year_forks") or [])[:2]:
+                            _mech.append({"type": "numeric_magnitude", "severity": "high",
+                                "evidence": str(f.get("note") or "")[:200],
+                                "fix": (f"Numeric scale/date inconsistency: {f.get('note')}. Reconcile the "
+                                        f"figures so per-item × count matches the stated total (or correct "
+                                        f"the total), and pin the referent to ONE year everywhere.")})
+                    if _r7_env_on("NARASI_AGE_LEDGER"):
+                        for f in ((_mctrs.get("age_ledger") or {}).get("findings") or [])[:4]:
+                            _mech.append({"type": "age_ledger", "severity": "high",
+                                "evidence": str(f.get("note") or "")[:200],
+                                "fix": (f"{f.get('note')}. Unify to the single value the story's dated facts "
+                                        f"support at EVERY mention; do not touch a deliberate official-vs-true contrast.")})
+                    if _r7_env_on("NARASI_ALIAS_LEDGER"):
+                        for f in ((_mctrs.get("alias_ledger") or {}).get("misfiled") or [])[:3]:
+                            _mech.append({"type": "alias_legal_lock", "severity": "high",
+                                "evidence": str(f.get("context") or f.get("note") or "")[:200],
+                                "fix": (f"{f.get('note')}. On a system-generated document (envelope, registry, "
+                                        f"court file) use the character's LEGAL/registered name «{f.get('legal')}» at "
+                                        f"EVERY such mention; reserve the alias for informal in-world speech, and never "
+                                        f"label the legal name as the 'working name'.")})
                     # ROUND-6 BRAND ACTUATOR (NARASI_BRAND_ENFORCE, default OFF): two files
                     # running named a REAL chaebol as the culpable entity (Doosan R8,
                     # Hanjin SBF) — the scan caught both and nothing acted (Law 1). Only
@@ -1353,6 +1388,35 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                             f"culpable/liable entity — legal risk. Rename it to a clearly "
                                             f"fictional company (phonetically distinct from any real "
                                             f"conglomerate) at EVERY occurrence, keeping scene content intact.")})
+                    if os.environ.get("NARASI_BRAND_REPORT", "0").strip().lower() in ("1", "true", "yes", "on"):
+                        try:
+                            # ROUND-15 fix: scan the real-brand list DIRECTLY so this gate is
+                            # self-sufficient — the earlier version consumed real_brand_scan's
+                            # hits, which are empty unless NARASI_BRAND_SCAN is ALSO on (a hidden
+                            # co-dependency). Culpable brands stay owned by NARASI_BRAND_ENFORCE
+                            # (skipped here); this reports only non-culpable in-story ENTITY use.
+                            import narasi_counters as _brc
+                            import re as _bre
+                            _brbook = result.get("book") or result.get("output") or ""
+                            _brent = []
+                            for _brand in list(_brc._REAL_BRANDS_LONG):
+                                _brx = _bre.compile(r"\b" + _bre.escape(_brand) + r"\b")
+                                _bm = _brx.search(_brbook)
+                                if not _bm or _brc._brand_role(_brbook, _brx) == "culpable":
+                                    continue   # absent, or culpable (BRAND_ENFORCE owns culpable)
+                                if _brc._brand_entity_use(_brbook, _brx):
+                                    _brent.append(_brand)
+                                    if len(_brent) <= 6:
+                                        _snip = _bre.sub(r"\s+", " ", _brbook[max(0, _bm.start() - 40):_bm.end() + 80])
+                                        _mech.append({"type": "real_brand_entity", "severity": "low",
+                                            "evidence": (_snip or _brand)[:200],
+                                            "fix": (f"The real company «{_brand}» is used as an in-story entity "
+                                                    f"(firm/client/employer). Consider renaming to a clearly "
+                                                    f"fictional company to avoid brand/legal risk; nominative prop use is fine.")})
+                            if _brent:
+                                log.warning("REAL-BRAND entity-use (report-only): %d non-culpable in-story entity hit(s): %s", len(_brent), _brent[:5])
+                        except Exception:  # noqa: BLE001
+                            pass
                     # ROUND-7 ACTUATORS: teeth for the round-6 report-only gates
                     # (abort-seam, coda-repeat, domain errors, numeric drift) — one
                     # helper, unit-tested, same synthetic-violation contract.
@@ -1375,6 +1439,22 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                             "story's own chapters. Keep the surrounding meaning.")})
                             if _mlr.get("count"):
                                 log.warning("meta-leak: %d out-of-world chapter reference(s) in prose", _mlr["count"])
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if os.environ.get("NARASI_PROVENANCE_LEAK", "0").strip().lower() in ("1", "true", "yes", "on"):
+                        try:
+                            import narasi_counters as _plc
+                            _plk = "book" if result.get("book") else "output"
+                            _plr = _plc.provenance_leak_scan(result.get(_plk) or "")
+                            for _h in (_plr.get("hits") or [])[:3]:
+                                _mech.append({"type": "provenance_leak", "severity": "high",
+                                    "evidence": str(_h.get("snippet") or "")[:200],
+                                    "fix": ("This line cites the story's own scaffolding (story bible / "
+                                            "outline / canon / fact-sheet) — a generator artifact, not "
+                                            "in-world text. Delete the citation phrase and state the fact "
+                                            "plainly; a character never references the story bible.")})
+                            if _plr.get("count"):
+                                log.warning("provenance-leak: %d scaffolding citation(s) in prose", _plr["count"])
                         except Exception:  # noqa: BLE001
                             pass
                     if _mech:

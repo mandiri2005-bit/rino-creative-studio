@@ -2358,6 +2358,81 @@ def _derived_number_scan(chapters: list) -> dict:
         return {"status": "PASS", "wordcount_mismatches": [], "currency_flags": []}
 
 
+# ── numeric-magnitude + year-fork scanner (NARASI_NUMERIC_MAGNITUDE, default OFF) ──
+# round-15, report-only. Per-item money value × victim count that can't reconcile with a
+# stated grand total (≈10× off), plus a single money-referent tied to years ≥2 apart.
+# Deterministic arithmetic only; reuses _a2_leadnum (forward-ref, resolved at call time).
+_MAGN_CUR = r"(?:won|₩|dollars?|USD|rupiah|Rp)"
+_MAGN_MONEY_RX = re.compile(
+    r"\b(?P<lead>\d[\d.,]*|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)"
+    r"\s*(?P<scale>thousand|million|billion)?\s*" + _MAGN_CUR + r"\b", re.I)
+_MAGN_SCALE = {"thousand": 1e3, "million": 1e6, "billion": 1e9}
+_MAGN_PERITEM_RX = re.compile(r"\b(?:each|apiece|a\s+piece|per\s+(?:person|victim|family|household|worker|head)|per\s+capita)\b", re.I)
+_MAGN_TOTAL_RX = re.compile(r"\b(?:total(?:l?ing|led)?|in\s+total|altogether|combined|in\s+all|aggregate|amounted?\s+to|came\s+to)\b", re.I)
+_MAGN_COUNT_RX = re.compile(r"\b(\d[\d,]{1,6}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:victims?|families|households?|people|persons?|workers?|residents?|survivors?|claimants?|employees?)\b", re.I)
+# ROUND-15: only SPECIFIC transactional actions (a single dated event) — NOT broad/
+# historical nouns ("the compensation"/"the demolition") that legitimately appear beside
+# many backstory years (2005/2009 redevelopment) and would false-fork.
+_MAGN_REFERENTS = ("the routing", "the transfer", "the payment", "the disbursement",
+                   "the override", "the redirect", "the reroute", "the wire",
+                   "the remittance", "the payout")
+
+def _magn_value(lead, scale):
+    v = _a2_leadnum(lead)
+    return None if v is None else v * _MAGN_SCALE.get((scale or "").lower(), 1.0)
+
+def numeric_magnitude_scan(text: str) -> dict:
+    out = {"status": "PASS", "magnitude": [], "year_forks": []}
+    if not text:
+        return out
+    try:
+        per_item, totals = [], []
+        for m in _MAGN_MONEY_RX.finditer(text):
+            val = _magn_value(m.group("lead"), m.group("scale"))
+            if val is None or val <= 0:
+                continue
+            ctx = text[max(0, m.start() - 60):m.end() + 60]
+            # A billion-plus figure is structurally an AGGREGATE — no per-victim payout is a
+            # billion won — so classify it as a total FIRST, before the per-item cue check.
+            # Otherwise a nearby "Each …" from an adjacent sentence (swept into the ±60
+            # window) silently reclassifies the grand total as per-item and the gate misses.
+            # Below that, an explicit per-item cue ("each family got …") is a stronger, more
+            # local signal than a distant "total" word a ±60 window can sweep in.
+            if val >= 1e9:
+                totals.append(val)
+            elif _MAGN_PERITEM_RX.search(ctx):
+                per_item.append(val)
+            elif _MAGN_TOTAL_RX.search(ctx):
+                totals.append(val)
+            elif val < 1e8:
+                per_item.append(val)
+        counts = [c for cm in _MAGN_COUNT_RX.finditer(text) if (c := _a2_leadnum(cm.group(1))) and c > 0]
+        n_max = max(counts) if counts else None
+        if per_item and totals:
+            max_item, max_total = max(per_item), max(totals)
+            expected = max_item * n_max if n_max else max_item
+            ratio = (max_total / expected) if expected else 0.0
+            if ratio >= 10 or (expected and expected / max_total >= 10):
+                out["magnitude"].append({"max_per_item": max_item, "stated_total": max_total,
+                    "victim_count": n_max, "ratio": round(ratio, 1),
+                    "note": (f"per-item max {max_item:,.0f} × count {int(n_max) if n_max else '(none stated)'} "
+                             f"≈ {expected:,.0f}, but stated total {max_total:,.0f} (≈{ratio:.0f}× off)")})
+        for kw in _MAGN_REFERENTS:
+            years = set()
+            for km in re.finditer(r"\b" + re.escape(kw) + r"\b", text, re.I):
+                for ym in re.finditer(r"\b(?:19|20)\d{2}\b", text[max(0, km.start() - 120):km.end() + 120]):
+                    years.add(int(ym.group(0)))
+            if len(years) >= 2 and max(years) - min(years) >= 2:
+                out["year_forks"].append({"referent": kw, "years": sorted(years),
+                    "note": f"'{kw}' tied to years {sorted(years)} ({max(years)-min(years)}y apart)"})
+        if out["magnitude"] or out["year_forks"]:
+            out["status"] = "FLAG"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "magnitude": [], "year_forks": []}
+
+
 _DENIAL_RX = re.compile(
     r"(?i)\b(?:denial mode|in denial|state of denial|denial was still|"
     r"mode penyangkalan(?:\s+masih(?:\s+aktif)?)?|dalam penyangkalan|penyangkalan masih aktif)\b")
@@ -2664,6 +2739,14 @@ def _timeline_arith_on() -> bool:
     return os.environ.get("NARASI_TIMELINE_ARITH", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _numeric_magnitude_on() -> bool:
+    return os.environ.get("NARASI_NUMERIC_MAGNITUDE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _age_ledger_on() -> bool:
+    return os.environ.get("NARASI_AGE_LEDGER", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _brand_scan_on() -> bool:
     return os.environ.get("NARASI_BRAND_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
 
@@ -2774,6 +2857,27 @@ def _brand_role(text: str, rx) -> str:
         if _BRAND_CULPABLE_RX.search(text[lo:hi]):
             return "culpable"
     return "prop"
+
+
+# ── real-brand entity-use predicate (NARASI_BRAND_REPORT, default OFF) — round-15,
+# report-only. A real brand used as an in-story CORPORATE ENTITY (firm/client/employer/
+# HQ/board) within ±120 chars, distinct from culpable use (real_brand_scan/_brand_role
+# own that) and nominative prop use ("a dented grey Hyundai"). Consumed only by the gated
+# narration_api consumer; defining it here changes nothing until that flag is on.
+_BRAND_ENTITY_RX = re.compile(
+    r"\b(?:group|corp\w*|company|firm|law\s+firm|conglomerate|chaebol|holdings?|"
+    r"subsidiary|affiliate|client|contractor|developer|builder|CEO|chairman|board|"
+    r"headquarters|HQ|executives?|shares?|stock|IPO|merger|acquired|"
+    r"employ\w+|represent(?:ed|s|ing)?)\b", re.I)
+
+def _brand_entity_use(text: str, rx) -> bool:
+    if not text:
+        return False
+    for m in rx.finditer(text):
+        lo, hi = max(0, m.start() - 120), min(len(text), m.end() + 120)
+        if _BRAND_ENTITY_RX.search(text[lo:hi]):
+            return True
+    return False
 
 
 def real_brand_scan(text: str, *, bible: str = "") -> dict:
@@ -2891,6 +2995,37 @@ def meta_reference_scan(text: str) -> dict:
     return {"count": len(hits), "hits": hits}
 
 
+# ── provenance-citation leak (NARASI_PROVENANCE_LEAK, default OFF) — round-15,
+# report-only. In-world prose that cites the story's own scaffolding (story bible /
+# outline / canon / fact-sheet) — a generator artifact a character would never utter.
+def _provenance_leak_on() -> bool:
+    return os.environ.get("NARASI_PROVENANCE_LEAK", "0").strip().lower() in ("1", "true", "yes", "on")
+
+_PROVENANCE_RX = re.compile(
+    # trigger + an UNAMBIGUOUS craft-doc artifact (never an ordinary in-world noun)
+    r"\b(?:per|as\s+per|according\s+to|noted?\s+in|listed\s+in|from|see)\s+"
+    r"(?:the\s+)?(?:story\s+bible|series\s+bible|show\s+bible|"
+    r"fact[-\s]?sheet|character\s+sheet|continuity\s+(?:bible|notes?)|"
+    # weak nouns (outline/canon/spec/synopsis/treatment) ONLY when story/series/character-
+    # qualified — "the outline of the valley" is in-world; "the story outline" is a leak.
+    r"(?:story|series|character|plot|episode|season|show)\s+"
+    r"(?:outline|canon|spec(?:\s+sheet)?|synopsis|treatment|brief|arc))\b"
+    r"|\b(?:canonical\s+facts?|per\s+canon|story\s+bible|fact[-\s]?sheet)\b", re.I)
+
+def provenance_leak_scan(text: str) -> dict:
+    hits = []
+    if not text:
+        return {"count": 0, "hits": []}
+    for m in _PROVENANCE_RX.finditer(text):
+        lo = text.rfind("\n", 0, m.start()) + 1
+        hi = text.find("\n", m.end())
+        line = text[lo:hi if hi != -1 else len(text)]
+        hits.append({"snippet": line.strip()[:160], "cite": m.group(0)})
+        if len(hits) >= 6:
+            break
+    return {"count": len(hits), "hits": hits}
+
+
 def abort_seam_scan(text: str) -> dict:
     """ROUND-6 (SBF roll): the chapter-level ban line can make the model start a
     banned default, cancel itself MID-CLAUSE, and ship the correction into prose
@@ -2947,6 +3082,10 @@ def coda_repeat_scan(text: str) -> dict:
 
 def _ledger_fuzzy_on() -> bool:
     return os.environ.get("NARASI_LEDGER_FUZZY", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _alias_ledger_on() -> bool:
+    return os.environ.get("NARASI_ALIAS_LEDGER", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 _REAL_GEO_WHITELIST = {
@@ -3013,6 +3152,70 @@ def ledger_fuzzy_names(text: str, *, style_key: Optional[str] = None) -> dict:
         return out
     except Exception:  # noqa: BLE001
         return {"status": "PASS", "hits": []}
+
+
+# ── alias↔legal-name lock (NARASI_ALIAS_LEDGER, default OFF) — round-15, report-only.
+# One surname carrying ≥2 given-names is an alias/legal fork; the dominant (most-used)
+# given-name is presumed legal. An alias landing in a document/registry context (envelope,
+# RRN, court file) — or the legal name labelled a "working name" — is a misfile.
+_ALIAS_SURNAME_GIVEN_RX = re.compile(r"\b([A-Z][a-z]+)\s+([A-Z][a-z]+-[a-z]+)\b")
+# ROUND-15: sentence-initial / common capitalized words are NOT surnames — kills the
+# "But Do-yoon" / "And So-ra" false forks (a capitalized clause-opener + a hyphenated
+# Korean given name). Real Korean surnames are outside this closed set.
+_ALIAS_STOP_SN = {"But", "And", "The", "When", "Then", "That", "This", "She", "He",
+                  "They", "His", "Her", "Their", "It", "As", "At", "In", "On", "For",
+                  "With", "From", "So", "Yet", "Now", "Here", "There", "Not", "No", "If",
+                  "Or", "Nor", "Because", "Since", "While", "After", "Before", "Later",
+                  "Outside", "Inside", "Every", "Each", "Some", "What", "Why", "How",
+                  "Where", "Who", "Above", "Below", "Behind", "Beside", "Even", "Only",
+                  "Both", "Still", "Once", "Never", "Always", "Perhaps", "Maybe", "Of"}
+_ALIAS_DOC_RX = re.compile(
+    r"\b(?:envelope|addressed\s+to|registry|registered|resident\s+registration(?:\s+number)?|"
+    r"\bRRN\b|court\s+(?:file|record|filing)|official\s+record|birth\s+certificate|ID\s+card|"
+    r"identity\s+card|deed|census|registration\s+card|legal\s+name|registered\s+name)\b", re.I)
+_ALIAS_LABEL_RX = re.compile(r"\b(?:working\s+name|alias|goes\s+by|known\s+as|assumed\s+name|pen\s+name|street\s+name)\b", re.I)
+
+def alias_legal_lock_scan(text: str) -> dict:
+    out = {"status": "PASS", "forks": [], "misfiled": []}
+    if not text:
+        return out
+    try:
+        by_surname: dict = {}
+        for m in _ALIAS_SURNAME_GIVEN_RX.finditer(text):
+            sn, gv = m.group(1), m.group(2)
+            if sn in _ALIAS_STOP_SN:
+                continue
+            by_surname.setdefault(sn, {}).setdefault(gv, []).append(m.start())
+        for sn, givens in by_surname.items():
+            if len(givens) < 2:
+                continue
+            ranked = sorted(givens, key=lambda g: len(givens[g]), reverse=True)
+            legal, aliases = ranked[0], ranked[1:]
+            out["forks"].append({"family": sn, "legal_presumed": f"{sn} {legal}",
+                "aliases": [f"{sn} {a}" for a in aliases],
+                "note": (f"surname '{sn}' carries {len(givens)} given-names "
+                         f"{[f'{sn} {g}' for g in ranked]} — alias vs legal fork; lock system/registry docs to the legal name")})
+            for a in aliases:
+                for pos in givens[a]:
+                    win = text[max(0, pos - 90):pos + 90]
+                    if _ALIAS_DOC_RX.search(win):
+                        out["misfiled"].append({"name": f"{sn} {a}", "legal": f"{sn} {legal}",
+                            "note": f"'{sn} {a}' (alias) appears in a document/registry context where legal name '{sn} {legal}' is required",
+                            "context": win.strip().replace(chr(10), " ")[:120]})
+                        break
+            for pos in givens[legal]:
+                win = text[max(0, pos - 60):pos + 60]
+                if _ALIAS_LABEL_RX.search(win):
+                    out["misfiled"].append({"name": f"{sn} {legal}", "legal": f"{sn} {legal}",
+                        "note": f"the dominant/legal name '{sn} {legal}' is labelled a working/assumed name (backwards)",
+                        "context": win.strip().replace(chr(10), " ")[:120]})
+                    break
+        out["forks"], out["misfiled"] = out["forks"][:5], out["misfiled"][:5]
+        if out["forks"] or out["misfiled"]:
+            out["status"] = "FLAG"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "forks": [], "misfiled": []}
 
 
 def _ledger_en_num(n: int) -> str:
@@ -3555,6 +3758,10 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         if _meta_ref_on():
             report["counters"]["meta_reference"] = meta_reference_scan(text)
 
+        # -- provenance-citation leak (NARASI_PROVENANCE_LEAK, default OFF) -- round-15.
+        if _provenance_leak_on():
+            report["counters"]["provenance_leak"] = provenance_leak_scan(text)
+
         # ── chapter-coda verbatim repeat (NARASI_CODA_DEDUP_SCAN, default OFF) — round-6.
         if _coda_dedup_on():
             report["counters"]["coda_repeat"] = coda_repeat_scan(text)
@@ -3582,6 +3789,22 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
                 }
             except Exception:  # noqa: BLE001 — linter is an enhancement, never blocks the scan
                 pass
+
+        # -- numeric magnitude + year fork (NARASI_NUMERIC_MAGNITUDE, default OFF) -- round-15, report-only.
+        if _numeric_magnitude_on():
+            report["counters"]["numeric_magnitude"] = numeric_magnitude_scan(text)
+
+        # -- age/duration fork ledger (NARASI_AGE_LEDGER, default OFF) -- round-15, EN v1, report-only.
+        if _age_ledger_on() and (lang or "en").split("-")[0].lower() == "en":
+            try:
+                import narasi_arithmetic as _na
+                report["counters"]["age_ledger"] = _na.scan_age_ledger(text)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # -- alias↔legal-name lock (NARASI_ALIAS_LEDGER, default OFF) -- round-15, report-only.
+        if _alias_ledger_on():
+            report["counters"]["alias_ledger"] = alias_legal_lock_scan(text)
 
         # ── reglossing budget promotion (NARASI_REGLOSS_BUDGET, default OFF) ──
         # FLAG→BUDGETED: cap read RAW from style_spec.counters.regloss_max (env

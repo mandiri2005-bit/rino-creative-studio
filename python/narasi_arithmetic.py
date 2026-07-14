@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-__all__ = ["scan_arithmetic", "AGE_ANCHORS", "INTERVAL_ANCHORS"]
+__all__ = ["scan_arithmetic", "AGE_ANCHORS", "INTERVAL_ANCHORS", "scan_age_ledger"]
 
 # ── number-word tables (spelled small ages 0-19; enough for age-of-person anchors) ──
 _AGE_WORDS: dict[str, dict[str, int]] = {
@@ -703,6 +703,132 @@ def scan_span_alternation(text: str) -> list[dict]:
                     f"interleaved — pick one (dominant: {dom})",
         })
     return findings
+
+
+# ── same-entity age fork + elapsed-span consistency (NARASI_AGE_LEDGER) ──────
+# Park "fifty-seven" (Ch-x) vs "sixty-seven" (Ch-y); a fire→now span "eighteen
+# years" vs the same disappearance "fifteen years". Report-only; reuses _en_num.
+_AGEWORD_ALT = "|".join(sorted(
+    list(_AGE_WORDS["en"].keys())
+    + [f"{t}-{u}" for t in _EN_TENS for u in
+       ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")],
+    key=len, reverse=True))
+# COMPOUND tens only ("fifty-seven") — for the low-FP "at/turned <age>" branch, where a
+# bare simple number ("at six") would false-positive but a spelled compound almost never
+# means anything but an age.
+_COMPOUND_AGE_ALT = "|".join(sorted(
+    [f"{t}-{u}" for t in _EN_TENS for u in
+     ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")],
+    key=len, reverse=True))
+# NOTE: re.I flag (NOT inline (?i) mid-pattern — that's a re.error on 3.11+).
+_AGE_TOKEN_RX = re.compile(
+    r"\b(?P<age>\d{1,3}|" + _AGEWORD_ALT + r")\s+years?[\s-]?old\b"
+    r"|\baged\s+(?P<age2>\d{1,3}|" + _AGEWORD_ALT + r")\b(?!-)"
+    r"|\bwas\s+(?P<age3>" + _AGEWORD_ALT + r")\b(?!-)(?!\s+years)"
+    # age-context ONLY: a spelled compound after 'at/turned' is an AGE when a clause
+    # boundary, 'years'/'old', or a function word follows — NOT a proper noun (address:
+    # 'at fifty-seven Baker Street'/'Court') or a countable noun ('turned fifty-seven
+    # pages/letters'). Positive lookahead is stricter than a unit blacklist (which a proper
+    # noun or an unlisted noun slips past).
+    r"|\b(?:at|turned)\s+(?P<age4>" + _COMPOUND_AGE_ALT + r")\b(?!-)"
+    r"(?=\s*(?:[,.;:!?)\]}—–-]|years?\b|old\b|$|"
+    r"(?:with|and|but|or|nor|in|on|as|now|still|already|yet|when|while|he|she|they|him|"
+    r"his|her|their|before|after|despite|though|because|then|so|by|for|to|from|of|"
+    r"without|even|almost|nearly|felt|looked|seemed|knew|stood|sat|walked|ran|"
+    r"last|this|next|just|recently|ago|back|only|barely|once|again|these|those)\b))", re.I)
+_NAME_TOKEN_RX = re.compile(r"\b([A-Z][a-z]{2,}(?:[- ][A-Z][a-z]+)*)\b")
+_AGE_STOP_NAMES = {"The", "He", "She", "They", "It", "His", "Her", "Their", "But",
+                   "And", "When", "Then", "That", "This", "Chapter", "Detective",
+                   "Doctor", "Prosecutor", "Officer", "Mr", "Mrs", "Ms",
+                   # sentence-starting function words (closed set) that get captured as
+                   # false subjects, plus the manuscript's two city names
+                   "Why", "How", "What", "Where", "Here", "There", "Now", "Because",
+                   "After", "Before", "Once", "Later", "Still", "Even", "Only", "Just",
+                   "Since", "While", "Though", "Seoul", "Busan"}
+_SPAN_ANCHORS = ("fire", "flood", "disappearance", "vanished", "disappeared",
+                 "went missing", "wait", "waiting", "silence", "collapse", "accident",
+                 "death", "died", "explosion", "sank", "sinking", "divorce", "verdict")
+_SPAN_YEARS_RX = re.compile(
+    r"(?i)\b(?P<n>\d{1,3}|"
+    + "|".join(sorted(list(_AGE_WORDS["en"].keys()) + list(_EN_TENS.keys()),
+                      key=len, reverse=True)) + r")\s+years?\b")
+
+
+def scan_same_entity_age_fork(text: str) -> list[dict]:
+    """Same capitalized person-name given >=2 distinct ages (digits or spelled, incl.
+    compound tens 'fifty-seven'). Report-only; reuses the r5.2/r3 _en_num map."""
+    if not text:
+        return []
+    ages_by_name: dict[str, set] = {}
+    givens_by_surname: dict[str, set] = {}
+    for m in _AGE_TOKEN_RX.finditer(text):
+        age = _en_num(m.group("age") or m.group("age2") or m.group("age3") or m.group("age4") or "")
+        if age is None or not (1 <= age <= 120):
+            continue
+        cand = None
+        for nm in _NAME_TOKEN_RX.finditer(text[max(0, m.start() - 220):m.start()]):
+            if nm.group(1).split()[0].split("-")[0] not in _AGE_STOP_NAMES:
+                cand = nm.group(1)
+        if cand:
+            parts = cand.split()
+            surname = parts[0]
+            ages_by_name.setdefault(surname, set()).add(age)
+            if len(parts) >= 2:  # a full "Surname Given" reference — record the given name
+                givens_by_surname.setdefault(surname, set()).add(parts[1])
+    out = []
+    for name, ages in ages_by_name.items():
+        # Korean-order names collapse to the surname; if that surname carries >=2 distinct
+        # given names, the ages likely belong to DIFFERENT people (Kim Do-yoon vs Kim
+        # Seo-an) — don't fork. A single-person surname (bare refs + <=1 given) still forks.
+        if len(givens_by_surname.get(name, set())) >= 2:
+            continue
+        if len(ages) >= 2 and (max(ages) - min(ages)) >= 2:
+            out.append({"kind": "same_entity_age_fork", "subject": name,
+                        "ages": sorted(ages),
+                        "note": f"'{name}' given ages {sorted(ages)} — pick one"})
+    return out[:6]
+
+
+def scan_elapsed_span_consistency(text: str) -> list[dict]:
+    """Same anchor event given >=2 distinct '<N> years' elapsed spans (fire 18y vs
+    same disappearance 15y). N>=3 (small everyday spans exempt). Report-only."""
+    if not text:
+        return []
+    by_anchor: dict[str, set] = {}
+    for m in _SPAN_YEARS_RX.finditer(text):
+        n = _en_num(m.group("n"))
+        if n is None or n < 3:
+            continue
+        ctx = text[max(0, m.start() - 90):m.end() + 90].lower()
+        # Not every "<N> years" is an elapsed-since span. Exclude (a) backward references
+        # ("<N> years BEFORE the fire" = demolition timing) and (b) comparative age GAPS
+        # ("three years OLDER" = a sibling's age difference) — neither is time-since-anchor.
+        _tail = text[m.end():m.end() + 40].lstrip().lower()
+        if _tail.startswith(("before", "prior", "ahead of", "older", "younger",
+                             "apart", "senior", "junior", "my senior", "my junior")):
+            continue
+        for a in _SPAN_ANCHORS:
+            # word-boundary: "fire" must not match "firefighter" (a false anchor that
+            # would attach an unrelated "three years" span to the fire event).
+            if re.search(r"\b" + re.escape(a) + r"\b", ctx):
+                by_anchor.setdefault(a, set()).add(n)
+                break
+    out = []
+    for anchor, ns in by_anchor.items():
+        if len(ns) >= 2 and (max(ns) - min(ns)) >= 1:
+            out.append({"kind": "elapsed_span_fork", "anchor": anchor,
+                        "spans": sorted(ns),
+                        "note": f"span since '{anchor}' stated as {sorted(ns)} years — unify"})
+    return out[:6]
+
+
+def scan_age_ledger(text: str) -> dict:
+    """NARASI_AGE_LEDGER entry point. {status, count, findings}. Never raises."""
+    try:
+        f = scan_same_entity_age_fork(text) + scan_elapsed_span_consistency(text)
+        return {"status": "FLAG" if f else "PASS", "count": len(f), "findings": f[:8]}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "findings": [], "_error": str(exc)}
 
 
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
