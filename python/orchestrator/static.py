@@ -310,7 +310,14 @@ def _scaled_timeout(base: float, word_target: int) -> float:
         cap = float(os.environ.get("NARASI_WORKER_TIMEOUT_MAX", "900"))
         est = int(word_target) * 1.45 / 40.0 * 1.3
         t = max(float(base), min(cap, est))
-        if str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        # NARASI_WORKER_KIE_FIRST (Rino 2026-07-15) puts a THIRD rung (kie) ahead of laozhang/
+        # claude for this exact per-chapter call — same cold-hang exposure as the legacy
+        # NARASI_FAILOVER_ENABLED chain, so it needs the identical budget floor. Checked
+        # independently (not just as an addition to the condition above) since the two flags
+        # are unrelated and either can be on alone.
+        _failover_armed = (str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+                            or str(os.environ.get("NARASI_WORKER_KIE_FIRST", "0")).strip().lower() in ("1", "true", "yes", "on"))
+        if _failover_armed:
             budget = float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET", "840")) + 90.0
             t = max(t, budget)   # deliberately allowed to exceed `cap` — failover wants the wait
         return t

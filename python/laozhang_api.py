@@ -1201,18 +1201,27 @@ def _worker_kie_first_on() -> bool:
 
 
 def _narasi_worker_kie_first_chain(model: str) -> list[tuple[str, str, str, str, str]]:
-    """WORKER_MODEL override chain (NARASI_WORKER_KIE_FIRST=1): KIE first, LaoZhang second,
-    native Claude LAST. Unlike the legacy opus-only kie/laozhang/atlascloud chain further below
-    (which hardcodes a fixed opus id per rung), every rung here gets the ACTUAL requested model
-    id verbatim — so KIE/LaoZhang correctly serve whatever WORKER_MODEL resolves to (e.g.
-    sonnet-5), never a silently-substituted opus build."""
+    """WORKER_MODEL override chain (NARASI_WORKER_KIE_FIRST=1): KIE first (opus-family models
+    only — see below), LaoZhang second, native Claude LAST. Unlike the legacy opus-only
+    kie/laozhang/atlascloud chain further below (which hardcodes a fixed opus id per rung),
+    every rung here gets the ACTUAL requested model id verbatim — so LaoZhang/native correctly
+    serve whatever WORKER_MODEL resolves to (e.g. sonnet-5), never a silently-substituted opus
+    build.
+
+    KIE rung is INCLUDED only when `model` is in `_NARASI_FAILOVER_MODELS` (the opus family) —
+    KIE is documented elsewhere in this file as opus-only (see _narasi_sonnet_failover_chain:
+    "KIE serves opus (not sonnet)"). Sending a non-opus id there would burn up to
+    _NARASI_RUNG_ATTEMPTS against a rung guaranteed to fail before ever reaching LaoZhang/
+    native — the opposite of this flag's speed goal. For a non-opus WORKER_MODEL (the flag's
+    own stated example use case) the chain is simply [laozhang, claude]."""
     _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
     _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
-    return [
-        ("kie",      "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model),
-        ("laozhang", "openai",    BASE_URL,                                 _req_key.get() or API_KEY,          model),
-        ("claude",   "openai",    _base,                                    _ck,                                model),
-    ]
+    chain: list[tuple[str, str, str, str, str]] = []
+    if model in _NARASI_FAILOVER_MODELS:
+        chain.append(("kie", "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model))
+    chain.append(("laozhang", "openai", BASE_URL,                                 _req_key.get() or API_KEY,          model))
+    chain.append(("claude",   "openai", _base,                                    _ck,                                model))
+    return chain
 
 
 def _narasi_failover_chain(model: str = "", role: str = "") -> list[tuple[str, str, str, str, str]]:
@@ -1233,7 +1242,14 @@ def _narasi_failover_chain(model: str = "", role: str = "") -> list[tuple[str, s
     # WORKER_MODEL override (NARASI_WORKER_KIE_FIRST=1, role=='worker' only): checked BEFORE the
     # native-first branch so it wins for MAP/per-chapter calls specifically; every other role
     # (bible/critique/manager/polish, role != 'worker') is untouched and stays native-first.
-    if role == "worker" and _worker_kie_first_on() and str(model).startswith("claude-") and not _byok_active():
+    # Requires _claude_native_on(model) too — "demote native to last" only makes sense when
+    # native routing is actually configured; without this guard, a deployment running the
+    # LEGACY NARASI_FAILOVER_ENABLED chain (no native routing at all) would have this branch
+    # silently replace its 3-keyed-rung kie/laozhang/atlascloud chain with a 2-keyed-rung
+    # kie/laozhang chain (the 'claude' rung comes up keyless/dead without CLAUDE_API_KEY),
+    # dropping the AtlasCloud fallback for no reason.
+    if (role == "worker" and _worker_kie_first_on() and str(model).startswith("claude-")
+            and _claude_native_on(model) and not _byok_active()):
         return _narasi_worker_kie_first_chain(model)
     if _claude_native_on(model) and not _byok_active():
         _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
@@ -1750,11 +1766,16 @@ def _resp_err_detail(resp) -> str:
         return "no choices/content"
 
 
-def _narasi_complete(model: str, messages: list, max_tokens: int):
+def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = ""):
     """Resilient SYNCHRONOUS narasi chat completion. Tries `model` then _NARASI_MODEL_FALLBACKS
     until one returns usable content (guards choices=None / empty). Byte-identical to a plain
     create when the primary works. Returns (resp, used_model). Raises RuntimeError with the
-    collected per-model detail if EVERY candidate yields nothing. Call inside asyncio.to_thread."""
+    collected per-model detail if EVERY candidate yields nothing. Call inside asyncio.to_thread.
+
+    `role` (e.g. "worker" for the Classic engine's per-chapter loop) is forwarded to
+    make_narasi_client so NARASI_WORKER_KIE_FIRST applies here too — this is the Classic
+    engine's per-chapter call, the same role as the Dalang engine's run_worker(). Every other
+    caller omits it (role="") and is unaffected."""
     tried: list[str] = []
     seen: list[str] = []
     for m in [model] + _NARASI_MODEL_FALLBACKS:
@@ -1764,7 +1785,7 @@ def _narasi_complete(model: str, messages: list, max_tokens: int):
         rm = MODELS.get(m, m)
         mt = int(max_tokens) if m == model else min(int(max_tokens), MODEL_MAX_TOKENS.get(rm, DEFAULT_MAX_TOKENS))
         try:
-            resp = make_narasi_client(m).chat.completions.create(
+            resp = make_narasi_client(m, role=role).chat.completions.create(
                 model=rm, messages=messages, max_tokens=mt, stream=False)
             if _resp_content(resp) is not None:
                 if m != model:
@@ -10653,7 +10674,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 # whole job). Only under crash-safe → the write path is byte-identical to v1 when off.
                 try:
                     resp, _used_m = await asyncio.wait_for(
-                        asyncio.to_thread(_narasi_complete, model, _msgs, safe_max),
+                        asyncio.to_thread(_narasi_complete, model, _msgs, safe_max, "worker"),
                         timeout=DALANG_CHAPTER_LLM_TIMEOUT)
                 except asyncio.TimeoutError:
                     errors.append({"id": chap_id, "error": f"chapter LLM timed out (>{int(DALANG_CHAPTER_LLM_TIMEOUT)}s)"})
@@ -10665,7 +10686,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     continue
             else:
                 try:
-                    resp, _used_m = _narasi_complete(model, _msgs, safe_max)
+                    resp, _used_m = _narasi_complete(model, _msgs, safe_max, role="worker")
                 except Exception as _lex:
                     errors.append({"id": chap_id, "error": f"chapter LLM failed: {str(_lex)[:200]}"})
                     _logging.getLogger("narasi").warning("[narasi] bab %s LLM no-content — skipped: %s", chap_id, _lex)
@@ -10688,7 +10709,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             if len(text.split()) < 50:
                 _log.warning(f"[narasi] bab {chap_id} EMPTY -- retrying")
                 try:
-                    resp2, _used_m2 = _narasi_complete(model, _msgs, safe_max)
+                    resp2, _used_m2 = _narasi_complete(model, _msgs, safe_max, role="worker")
                     _rtext = (_resp_content(resp2) or "").strip()
                 except Exception:
                     resp2, _rtext = None, ""
