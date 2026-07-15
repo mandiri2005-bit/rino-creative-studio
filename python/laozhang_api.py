@@ -1192,11 +1192,13 @@ def _claude_native_on(model: str = "") -> bool:
 
 
 def _worker_kie_first_on() -> bool:
-    """NARASI_WORKER_KIE_FIRST=1 (Rino 2026-07-15): reorder the WORKER_MODEL (MAP/per-chapter,
-    role=='worker') failover chain to KIE-first -> LaoZhang -> native Claude LAST, instead of
-    the native-first order every other role (bible/critique/manager/polish) still uses. Scoped
-    to role=='worker' only in _narasi_failover_chain — this flag alone changes nothing for any
-    other call. Default OFF = unchanged native-first routing for every role, byte-identical."""
+    """NARASI_WORKER_KIE_FIRST=1 (Rino 2026-07-15, widened 2026-07-15 to also cover
+    role=='manager'): reorder the WORKER_MODEL/MANAGER_MODEL failover chain to KIE-first ->
+    LaoZhang -> native Claude LAST, instead of the native-first order every OTHER role
+    (bible/critique — anything routed via an explicit model override, not through
+    WORKER_MODEL/MANAGER_MODEL) still uses. Scoped to role in ('worker', 'manager') in
+    _narasi_failover_chain — this flag alone changes nothing for any other call. Default OFF =
+    unchanged native-first routing for every role, byte-identical."""
     return str(os.environ.get("NARASI_WORKER_KIE_FIRST", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -1241,16 +1243,18 @@ def _narasi_failover_chain(model: str = "", role: str = "") -> list[tuple[str, s
     # claude-* id. LaoZhang rung id is env-tunable (NARASI_CLAUDE_FALLBACK_MODEL) because LaoZhang may
     # not serve a brand-new Anthropic id — default = same id (that rung just skips/advances on a 4xx;
     # an empty LAOZHANG_API_KEY skips it too, leaving native-only + the model-level _narasi_complete net).
-    # WORKER_MODEL override (NARASI_WORKER_KIE_FIRST=1, role=='worker' only): checked BEFORE the
-    # native-first branch so it wins for MAP/per-chapter calls specifically; every other role
-    # (bible/critique/manager/polish, role != 'worker') is untouched and stays native-first.
+    # WORKER_MODEL/MANAGER_MODEL override (NARASI_WORKER_KIE_FIRST=1, role in ('worker',
+    # 'manager') — Rino 2026-07-15, widened same day from worker-only): checked BEFORE the
+    # native-first branch so it wins for MAP/per-chapter AND polish/merge/synthesize calls;
+    # any OTHER role (bible/critique — routed via an explicit per-call model override, not
+    # WORKER_MODEL/MANAGER_MODEL) is untouched and stays native-first.
     # Requires _claude_native_on(model) too — "demote native to last" only makes sense when
     # native routing is actually configured; without this guard, a deployment running the
     # LEGACY NARASI_FAILOVER_ENABLED chain (no native routing at all) would have this branch
     # silently replace its 3-keyed-rung kie/laozhang/atlascloud chain with a 2-keyed-rung
     # kie/laozhang chain (the 'claude' rung comes up keyless/dead without CLAUDE_API_KEY),
     # dropping the AtlasCloud fallback for no reason.
-    if (role == "worker" and _worker_kie_first_on() and str(model).startswith("claude-")
+    if (role in ("worker", "manager") and _worker_kie_first_on() and str(model).startswith("claude-")
             and _claude_native_on(model) and not _byok_active()):
         return _narasi_worker_kie_first_chain(model)
     if _claude_native_on(model) and not _byok_active():
