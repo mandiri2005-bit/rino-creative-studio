@@ -244,7 +244,7 @@ async def plan_subtasks(
     m_model = manager_model or MANAGER_MODEL
 
     worker = Worker(
-        name="planner:subtasks", role="manager", model=m_model,
+        name="planner:subtasks", role="manager", phase="plan_subtasks", model=m_model,
         system=_PLAN_SYSTEM, temperature=0.3, telemetry_sink=telemetry_sink,
     )
     res = await run_worker(
@@ -483,7 +483,7 @@ async def outline_from_topic(
     m_model = manager_model or MANAGER_MODEL
 
     worker = Worker(
-        name="planner:outline", role="manager", model=m_model,
+        name="planner:outline", role="manager", phase="outline", model=m_model,
         system=_OUTLINE_SYSTEM, temperature=0.5, telemetry_sink=telemetry_sink,
     )
     res = await run_worker(
@@ -1132,7 +1132,7 @@ async def build_story_bible(
             _skip_var = None
     for _i, _mdl in enumerate(_chain):
         worker = Worker(
-            name="planner:bible", role="manager", model=_mdl,
+            name="planner:bible", role="manager", phase="bible", model=_mdl,
             system=system, temperature=0.3, max_tokens=_bib_max, telemetry_sink=telemetry_sink,
         )
         _skip_tok = _skip_var.set(True) if _skip_var is not None else None

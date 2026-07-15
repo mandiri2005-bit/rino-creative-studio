@@ -1192,22 +1192,25 @@ def _claude_native_on(model: str = "") -> bool:
 
 
 def _worker_kie_first_on() -> bool:
-    """NARASI_WORKER_KIE_FIRST=1 (Rino 2026-07-15, widened 2026-07-15 to also cover
-    role=='manager'): reorder the WORKER_MODEL/MANAGER_MODEL failover chain to KIE-first ->
-    LaoZhang -> native Claude LAST, instead of the native-first order every OTHER role
-    (bible/critique — anything routed via an explicit model override, not through
-    WORKER_MODEL/MANAGER_MODEL) still uses. Scoped to role in ('worker', 'manager') in
-    _narasi_failover_chain — this flag alone changes nothing for any other call. Default OFF =
-    unchanged native-first routing for every role, byte-identical."""
+    """NARASI_WORKER_KIE_FIRST=1 (Rino 2026-07-15; widened same day to role in ('worker',
+    'manager'); widened AGAIN 2026-07-15 to ALL phases): reorder the failover chain to
+    KIE-first -> LaoZhang -> native Claude LAST, for EVERY narasi LLM call (bible, MAP/
+    per-chapter, polish/merge/synthesize, critique, revise, canon-diff-revise — no role
+    restriction at all anymore). The native ("claude") rung is now OPTIONAL within the
+    chain — see _narasi_worker_kie_first_chain — so NARASI_CLAUDE_NATIVE=0 (or no
+    CLAUDE_API_KEY) fully BYPASSES native for every phase, leaving [kie, laozhang]; setting
+    NARASI_CLAUDE_NATIVE=1 adds native back as the last-resort rung. Default OFF = unchanged
+    native-first routing for every call, byte-identical."""
     return str(os.environ.get("NARASI_WORKER_KIE_FIRST", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _narasi_worker_kie_first_chain(model: str) -> list[tuple[str, str, str, str, str]]:
-    """WORKER_MODEL override chain (NARASI_WORKER_KIE_FIRST=1): KIE first, LaoZhang second,
-    native Claude LAST. Unlike the legacy opus-only kie/laozhang/atlascloud chain further below
-    (which hardcodes a fixed opus id per rung), every rung here gets the ACTUAL requested model
-    id verbatim — so KIE/LaoZhang/native correctly serve whatever WORKER_MODEL resolves to
-    (e.g. sonnet-5), never a silently-substituted opus build.
+    """KIE-first override chain (NARASI_WORKER_KIE_FIRST=1): KIE first, LaoZhang second,
+    native Claude LAST — for ANY narasi phase now, not just worker/manager. Unlike the legacy
+    opus-only kie/laozhang/atlascloud chain further below (which hardcodes a fixed opus id per
+    rung), every rung here gets the ACTUAL requested model id verbatim — so KIE/LaoZhang/
+    native correctly serve whatever model was actually requested (e.g. sonnet-5), never a
+    silently-substituted opus build.
 
     KIE rung is included for ANY claude-* model — Rino 2026-07-15: an earlier version of this
     function gated the KIE rung to _NARASI_FAILOVER_MODELS (opus-only), based on
@@ -1217,18 +1220,34 @@ def _narasi_worker_kie_first_chain(model: str) -> list[tuple[str, str, str, str,
     model allowlist (which is exactly what went stale last time), let the API's own response
     decide: a model KIE genuinely doesn't serve returns an error, the existing per-rung retry/
     advance-on-failure logic in _create() already costs at most _NARASI_RUNG_ATTEMPTS failed
-    calls before falling through to LaoZhang — a small, bounded cost, not a hang or crash."""
-    _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
-    _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
+    calls before falling through to LaoZhang — a small, bounded cost, not a hang or crash.
+
+    Native rung is CONDITIONAL (Rino 2026-07-15): only appended when _claude_native_on(model)
+    is true (NARASI_CLAUDE_NATIVE=1 + CLAUDE_API_KEY set). This is the "if claude_native=0,
+    bypass the native route" behavior — a deployment with NO Anthropic key at all (KIE_API_KEY
+    + LAOZHANG_API_KEY only) still gets a fully working 2-rung [kie, laozhang] chain; native
+    is opt-in extra resilience on top, not a requirement."""
     chain: list[tuple[str, str, str, str, str]] = [
         ("kie", "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model),
+        ("laozhang", "openai", BASE_URL, _req_key.get() or API_KEY, model),
     ]
-    chain.append(("laozhang", "openai", BASE_URL,                                 _req_key.get() or API_KEY,          model))
-    chain.append(("claude",   "openai", _base,                                    _ck,                                model))
+    if _claude_native_on(model):
+        _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
+        _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
+        chain.append(("claude", "openai", _base, _ck, model))
     return chain
 
 
-def _narasi_failover_chain(model: str = "", role: str = "") -> list[tuple[str, str, str, str, str]]:
+def _narasi_failover_chain(model: str = "", role: str = "", phase: str = "") -> list[tuple[str, str, str, str, str]]:
+    """Thin wrapper: builds the chain via _narasi_failover_chain_base(model, role) exactly as
+    before (role-driven routing logic untouched), then applies the per-phase/per-provider
+    switchboard (_apply_phase_provider_gate) on top. `phase` defaults to "" (no caller opted in)
+    → the gate is a no-op passthrough, so this wrapper is byte-identical to calling the base
+    function directly when no caller passes phase."""
+    return _apply_phase_provider_gate(_narasi_failover_chain_base(model, role), model, phase)
+
+
+def _narasi_failover_chain_base(model: str = "", role: str = "") -> list[tuple[str, str, str, str, str]]:
     """(name, protocol, endpoint, api_key, per-provider model id), cheapest-first. protocol
     is 'anthropic' (native Messages API — KIE serves Claude at /claude/v1/messages),
     'openai' (OpenAI-compatible /v1/chat/completions — LaoZhang, AtlasCloud), or
@@ -1243,19 +1262,21 @@ def _narasi_failover_chain(model: str = "", role: str = "") -> list[tuple[str, s
     # claude-* id. LaoZhang rung id is env-tunable (NARASI_CLAUDE_FALLBACK_MODEL) because LaoZhang may
     # not serve a brand-new Anthropic id — default = same id (that rung just skips/advances on a 4xx;
     # an empty LAOZHANG_API_KEY skips it too, leaving native-only + the model-level _narasi_complete net).
-    # WORKER_MODEL/MANAGER_MODEL override (NARASI_WORKER_KIE_FIRST=1, role in ('worker',
-    # 'manager') — Rino 2026-07-15, widened same day from worker-only): checked BEFORE the
-    # native-first branch so it wins for MAP/per-chapter AND polish/merge/synthesize calls;
-    # any OTHER role (bible/critique — routed via an explicit per-call model override, not
-    # WORKER_MODEL/MANAGER_MODEL) is untouched and stays native-first.
-    # Requires _claude_native_on(model) too — "demote native to last" only makes sense when
-    # native routing is actually configured; without this guard, a deployment running the
-    # LEGACY NARASI_FAILOVER_ENABLED chain (no native routing at all) would have this branch
-    # silently replace its 3-keyed-rung kie/laozhang/atlascloud chain with a 2-keyed-rung
-    # kie/laozhang chain (the 'claude' rung comes up keyless/dead without CLAUDE_API_KEY),
-    # dropping the AtlasCloud fallback for no reason.
-    if (role in ("worker", "manager") and _worker_kie_first_on() and str(model).startswith("claude-")
-            and _claude_native_on(model) and not _byok_active()):
+    # KIE-FIRST OVERRIDE (NARASI_WORKER_KIE_FIRST=1 — Rino 2026-07-15, widened from
+    # worker-only -> worker+manager -> ALL phases/roles same day): checked BEFORE the
+    # native-first branch so it wins for EVERY narasi LLM call — bible, MAP/per-chapter,
+    # polish/merge/synthesize, critique, revise, canon-diff-revise — no role restriction.
+    # Does NOT require _claude_native_on(model) as a gate (unlike the earlier worker+manager
+    # version) — native participation is now DECIDED INSIDE _narasi_worker_kie_first_chain
+    # (conditional on _claude_native_on), so NARASI_CLAUDE_NATIVE=0 correctly BYPASSES native
+    # for every phase rather than blocking the whole KIE-first override. ⚠ Trade-off: a
+    # deployment relying on the LEGACY NARASI_FAILOVER_ENABLED chain (kie/laozhang/atlascloud,
+    # hardcoded opus ids) for AtlasCloud coverage will have that chain SUPERSEDED by this
+    # 2-rung [kie, laozhang] chain when both flags are set — this is the intended effect of
+    # opting into a universal override, not an oversight; AtlasCloud is simply not part of
+    # this chain. Still requires model.startswith("claude-") and BYOK-off (never route a
+    # per-request key through server-keyed aggregators).
+    if _worker_kie_first_on() and str(model).startswith("claude-") and not _byok_active():
         return _narasi_worker_kie_first_chain(model)
     if _claude_native_on(model) and not _byok_active():
         _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
@@ -1310,6 +1331,185 @@ def _narasi_gemini_failover_chain(model: str) -> list[tuple[str, str, str, str, 
         ("vertex",   "vertex_genai", "-",       vertex_key,                    model),
         ("laozhang", "openai",       BASE_URL,  _req_key.get() or API_KEY,     model),
     ]
+
+
+# ── Per-phase, per-provider switchboard (Rino 2026-07-15) ───────────────────────────────
+# Every narasi LLM call site now tags itself with an explicit `phase` (outline / bible / worker
+# / manager / critique / revise / canon_diff_revise / cheap — independent of `role`, which only
+# ever distinguished worker/manager and keeps driving the OTHER existing flags above unchanged).
+# NARASI_{PHASE}_{PROVIDER}=0 force-EXCLUDES that provider from `phase`'s chain even if the
+# routing logic above would normally include it; =1 force-INCLUDES a rung for the 5 providers
+# below that are NEVER part of the built-in chain. Every flag defaults UNSET → both effects are
+# no-ops, so with phase="" (no caller opted in, or NARASI_{PHASE}_{PROVIDER} untouched) the chain
+# is returned byte-identical to today. Existing-rung provider names (kie/laozhang/claude/
+# atlascloud/vertex) are aliased to the flag vocabulary the user specified (KIE/LAOZHANG/
+# CLAUDE_NATIVE/ATLASCLOUD/GEMINI) via _RUNG_TO_FLAG_PROVIDER.
+_RUNG_TO_FLAG_PROVIDER = {
+    "kie": "kie", "laozhang": "laozhang", "claude": "claude_native",
+    "atlascloud": "atlascloud", "vertex": "gemini",
+}
+_ALL_FLAG_PROVIDERS = ("kie", "laozhang", "claude_native", "atlascloud", "gemini",
+                       "aimlapi", "deepseek", "openai", "gemini_direct", "fal")
+
+
+def _narasi_phase_has_override(phase: str) -> bool:
+    """True iff at least one NARASI_{PHASE}_{PROVIDER} flag is explicitly set for this phase,
+    across every known provider name. make_narasi_client uses this to decide whether a
+    phase-tagged call should route through the failover client AT ALL — routing through it
+    unconditionally (merely because a `phase` string was passed) would itself be a behavior
+    change (a different call path than plain make_client, independent of any actual filtering),
+    breaking byte-identity for every phase-tagged call site the moment this feature shipped, even
+    with zero flags ever set. Gating on "at least one real override exists" keeps a phase with no
+    configured flags 100% untouched."""
+    if not phase:
+        return False
+    return any(_narasi_phase_provider_flag(phase, p) is not None for p in _ALL_FLAG_PROVIDERS)
+
+
+def _narasi_phase_provider_flag(phase: str, provider: str) -> Optional[str]:
+    """Reads NARASI_{PHASE}_{PROVIDER} (e.g. NARASI_BIBLE_KIE, NARASI_CRITIQUE_AIMLAPI). Returns
+    "1"/"0" when explicitly set (any casing / 1|true|yes|on vs anything else), None when unset or
+    blank. None is the default and means "no override — defer to the routing logic untouched"."""
+    if not phase or not provider:
+        return None
+    v = os.environ.get(f"NARASI_{phase.strip().upper()}_{provider.strip().upper()}")
+    if v is None or not v.strip():
+        return None
+    return "1" if v.strip().lower() in ("1", "true", "yes", "on") else "0"
+
+
+def _narasi_extra_provider_rungs(model: str, phase: str) -> list[tuple[str, str, str, str, str]]:
+    """Rungs for the 5 providers that are never part of the built-in chain-building logic — each
+    appears ONLY when its own NARASI_{PHASE}_{PROVIDER}=1 override is set. Each carries its OWN
+    env-tunable served model id (never the requested `model` verbatim) since these are entirely
+    different model families (gpt/deepseek/gemini, not claude) — mirrors the existing
+    NARASI_ATLASCLOUD_MODEL precedent of a rung serving a deliberately different build than what
+    was requested. An empty key auto-skips, same contract as every other rung. FAL is the one
+    provider with no synchronous LLM REST endpoint (confirmed against fal.ai/docs 2026-07-15 —
+    even the OpenRouter-passthrough model is submit/poll/fetch only) so it gets its own
+    "fal_queue" protocol + _fal_llm_create, not the plain OpenAI-SDK "openai" branch the other 4
+    reuse as-is."""
+    extra: list[tuple[str, str, str, str, str]] = []
+    if _narasi_phase_provider_flag(phase, "aimlapi") == "1":
+        extra.append(("aimlapi", "openai", "https://api.aimlapi.com/v1",
+                       os.environ.get("AIMLAPI_API_KEY", ""),
+                       (os.environ.get("NARASI_AIMLAPI_MODEL") or model or "gpt-5-mini").strip()))
+    if _narasi_phase_provider_flag(phase, "deepseek") == "1":
+        extra.append(("deepseek", "openai", "https://api.deepseek.com",
+                       (os.environ.get("DEEPSEEK_LAOZHANG_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""),
+                       (os.environ.get("NARASI_DEEPSEEK_MODEL") or "deepseek-v4-pro").strip()))
+    if _narasi_phase_provider_flag(phase, "openai") == "1":
+        extra.append(("openai_direct", "openai", "https://api.openai.com/v1",
+                       os.environ.get("OPENAI_API_KEY", ""),
+                       (os.environ.get("NARASI_OPENAI_MODEL") or "gpt-5.6-terra").strip()))
+    if _narasi_phase_provider_flag(phase, "gemini_direct") == "1":
+        extra.append(("gemini_direct", "openai", "https://generativelanguage.googleapis.com/v1beta/openai",
+                       os.environ.get("GEMINI_API_KEY", ""),
+                       (os.environ.get("NARASI_GEMINI_DIRECT_MODEL") or "gemini-2.5-flash").strip()))
+    if _narasi_phase_provider_flag(phase, "fal") == "1":
+        extra.append(("fal", "fal_queue", "https://queue.fal.run/fal-ai/any-llm",
+                       os.environ.get("FAL_API_KEY", ""),
+                       (os.environ.get("NARASI_FAL_MODEL") or "anthropic/claude-3.5-sonnet").strip()))
+    return extra
+
+
+def _apply_phase_provider_gate(chain: list[tuple[str, str, str, str, str]], model: str,
+                               phase: str) -> list[tuple[str, str, str, str, str]]:
+    """Applies the switchboard above to an already-built chain. phase="" (no caller opted in) is
+    a pure no-op passthrough — this is what makes the whole feature byte-identical by default."""
+    if not phase:
+        return chain
+    gated = [c for c in chain if _narasi_phase_provider_flag(phase, _RUNG_TO_FLAG_PROVIDER.get(c[0], c[0])) != "0"]
+    return gated + _narasi_extra_provider_rungs(model, phase)
+
+
+def _fal_llm_create(model: str, messages: list, max_tokens: int, timeout: float,
+                    temperature: Optional[float] = None, response_json: bool = False) -> "_AdaptedResp":
+    """Call FAL's fal-ai/any-llm via the async queue protocol (submit -> poll status_url -> GET
+    response_url) — FAL has no synchronous LLM REST endpoint. Auth is "Authorization: Key
+    <FAL_API_KEY>" (NOT Bearer), which is why this can't reuse the plain OpenAI-SDK "openai"
+    protocol branch like the other 4 new rungs. Runs the whole cycle in a daemon thread bounded
+    by `timeout` wall-clock (mirrors _vertex_gemini_create's thread+join pattern), polling every
+    2s. Raises RuntimeError on any failure/timeout so the caller (_create) advances the chain.
+
+    Payload shape (Rino 2026-07-15, audit-corrected): fal-ai/any-llm's real input schema is FLAT
+    {prompt, system_prompt, model, max_tokens, temperature} — NOT an OpenAI messages array
+    (confirmed against fal.ai/docs/examples/model-apis/use-llms and fal.ai/models/fal-ai/any-llm/
+    api). any-llm has no multi-turn concept, so a multi-message conversation is collapsed into one
+    prompt string. An earlier version of this function sent an OpenAI-style {"messages": [...]}
+    body, which any-llm would reject outright (missing the required "prompt" field) — every call
+    would have failed closed (advances the chain) rather than corrupting output, but the rung
+    would have been silently 100% non-functional whenever enabled."""
+    key = os.environ.get("FAL_API_KEY", "")
+    if not key:
+        raise RuntimeError("fal_queue: FAL_API_KEY not set")
+    headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+    sys_txt = "\n\n".join(m.get("content", "") for m in messages if m.get("role") == "system" and m.get("content"))
+    convo = [m for m in messages if m.get("role") in ("user", "assistant") and m.get("content")]
+    if len(convo) > 1:
+        prompt_txt = "\n\n".join(f"{m.get('role', 'user').upper()}: {m.get('content', '')}" for m in convo)
+    else:
+        prompt_txt = convo[0].get("content", "") if convo else ""
+    payload: dict = {"model": model, "prompt": prompt_txt, "max_tokens": int(max_tokens)}
+    if sys_txt:
+        payload["system_prompt"] = sys_txt
+    if temperature is not None:
+        payload["temperature"] = float(temperature)
+    if response_json:
+        # Undocumented for any-llm specifically; harmless if the underlying model ignores it —
+        # every caller that sets this already has fence-strip + regex-salvage JSON parsing as a
+        # fallback net (_narasi_parse_json), so this is a best-effort addition, not a hard contract.
+        payload["response_format"] = {"type": "json_object"}
+    result: dict = {"text": None, "tin": 0, "tout": 0, "err": None}
+    def _run() -> None:
+        try:
+            # Sub-request timeouts scale with the caller's rung budget (Rino 2026-07-15,
+            # audit-corrected) instead of hardcoded 30/15/30 — late in a failover chain walk,
+            # `timeout` can be well under 30s, and a fixed 30s submit call could keep this thread
+            # alive past the outer t.join(timeout) deadline below.
+            sub_timeout = min(30.0, max(1.0, float(timeout)))
+            r = _requests.post("https://queue.fal.run/fal-ai/any-llm", headers=headers, json=payload, timeout=sub_timeout)
+            r.raise_for_status()
+            sub = r.json() or {}
+            status_url = sub.get("status_url")
+            response_url = sub.get("response_url")
+            if not status_url or not response_url:
+                raise RuntimeError(f"fal_queue: submit missing status/response url: {sub}")
+            deadline = time.monotonic() + float(timeout) - 5.0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"fal_queue: poll deadline exceeded ({timeout:.0f}s)")
+                sr = _requests.get(status_url, headers=headers, timeout=min(15.0, max(1.0, remaining)))
+                sr.raise_for_status()
+                st = (sr.json() or {}).get("status", "")
+                if st == "COMPLETED":
+                    break
+                if st in ("ERROR", "FAILED"):
+                    raise RuntimeError(f"fal_queue: job status={st}")
+                time.sleep(2.0)
+            fr = _requests.get(response_url, headers=headers, timeout=sub_timeout)
+            fr.raise_for_status()
+            data = fr.json() or {}
+            # "output" is any-llm's documented response field; the OpenAI-choices shape is kept
+            # only as a defensive fallback, not the primary contract.
+            text = (data.get("output") or ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+            result["text"] = (text or "").strip() or None
+            usage = data.get("usage") or {}
+            result["tin"] = int(usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0)
+            result["tout"] = int(usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0)
+        except Exception as _e:
+            result["err"] = _e
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(float(timeout))
+    if t.is_alive():
+        raise RuntimeError(f"fal_queue timeout after {timeout:.1f}s (thread abandoned)")
+    if result["err"] is not None:
+        raise result["err"]
+    if not result["text"]:
+        raise RuntimeError("fal_queue returned no text")
+    return _AdaptedResp(result["text"], "stop", result["tin"], result["tout"])
 
 
 def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
@@ -1588,9 +1788,10 @@ class _NarasiFailoverClient:
         def __init__(self, outer: "_NarasiFailoverClient"):
             self.completions = _NarasiFailoverClient._Completions(outer)
 
-    def __init__(self, model: str = "", role: str = ""):
+    def __init__(self, model: str = "", role: str = "", phase: str = ""):
         self._model = model or NARASI_DEFAULT_MODEL
         self._role = role
+        self._phase = phase
         # MODEL-TRACE (Rino: diagnose WORKER_MODEL vs NARASI_DEFAULT_MODEL). A narasi client built
         # with an EMPTY model silently defaults to NARASI_DEFAULT_MODEL (opus-4-6) — if the MAP/worker
         # is billed as opus-4-6 despite WORKER_MODEL=sonnet-5, THIS warning pinpoints the empty caller.
@@ -1608,7 +1809,7 @@ class _NarasiFailoverClient:
     def _create(self, **kw):
         # Canonical cheapest-first chain, walked fresh EVERY call — no reorder,
         # no memory (Rino 2026-07-06: "Attempt 2 (fresh state) = Attempt 1").
-        chain = _narasi_failover_chain(self._model, self._role)
+        chain = _narasi_failover_chain(self._model, self._role, self._phase)
         if _narasi_skip_kie.get():
             # Bible cold-KIE skip: start at rung 2. No-op for sonnet/gemini chains (no 'kie' rung);
             # if the filtered chain has no keyed rung, the existing attempted==0 branch below
@@ -1659,6 +1860,12 @@ class _NarasiFailoverClient:
                                                       call_kw.get("max_tokens") or 4000, rung_timeout,
                                                       temperature=call_kw.get("temperature"),
                                                       response_json=bool(call_kw.get("response_format")))
+                    elif proto == "fal_queue":
+                        resp = _fal_llm_create(model_id,
+                                               call_kw.get("messages") or [],
+                                               call_kw.get("max_tokens") or 4000, rung_timeout,
+                                               temperature=call_kw.get("temperature"),
+                                               response_json=bool(call_kw.get("response_format")))
                     else:
                         cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
                         resp = cli.chat.completions.create(**call_kw)
@@ -1701,7 +1908,38 @@ class _NarasiFailoverClient:
         raise RuntimeError("narasi failover exhausted — all aggregators failed: " + " | ".join(errors))
 
 
-def make_narasi_client(model: str = "", role: str = ""):
+def _narasi_will_chain(model: str, phase: str = "") -> bool:
+    """Single source of truth for "will make_narasi_client(model, phase=phase) actually build a
+    multi-rung _NarasiFailoverClient, or fall through to a plain single-provider make_client?"
+    (Rino 2026-07-15 — extracted after an audit caught two bugs from this decision being
+    re-derived in two places: (1) NARASI_WORKER_KIE_FIRST only affected chain CONTENTS inside
+    _narasi_failover_chain_base, never whether a failover client got built in the first place —
+    so on a deployment with e.g. only KIE_API_KEY + LAOZHANG_API_KEY set (no CLAUDE_API_KEY,
+    NARASI_FAILOVER_ENABLED off), NARASI_WORKER_KIE_FIRST=1 was a complete no-op, contradicting
+    its own docstring's promise; (2) the critique/revise timeout floor (_narasi_critique_timeout/
+    _narasi_revise_timeout) checked a separately-maintained OR of flags that didn't account for
+    BYOK or actual model-family membership, so it could floor a call's timeout to ~930s even when
+    that call was guaranteed to get a plain, non-chaining client. Both callers now defer to this
+    one function so they can't drift apart again.
+
+    BYOK always wins (a per-request key must never be routed through a server-keyed chain).
+    Native-Claude, an active phase-provider override, or NARASI_WORKER_KIE_FIRST on a claude-*
+    model each independently justify a failover client. Otherwise NARASI_FAILOVER_ENABLED must be
+    on AND the model must be in one of the three legacy eligibility sets — exactly the pre-
+    existing behavior this function replaces without changing."""
+    if _byok_active():
+        return False
+    _phase_active = bool(phase) and _narasi_phase_has_override(phase)
+    _kie_first_active = _worker_kie_first_on() and str(model).startswith("claude-")
+    if _claude_native_on(model) or _phase_active or _kie_first_active:
+        return True
+    if not _narasi_failover_on():
+        return False
+    return (model in _NARASI_FAILOVER_MODELS or model in _NARASI_GEMINI_FAILOVER_MODELS
+            or model in _NARASI_SONNET_FAILOVER_MODELS)
+
+
+def make_narasi_client(model: str = "", role: str = "", phase: str = ""):
     """Narasi client factory. Returns the multi-aggregator failover client for narasi
     models when NARASI_FAILOVER_ENABLED is on; otherwise the standard make_client
     (so unlisted models and the flag-off state keep today's exact behavior).
@@ -1710,30 +1948,17 @@ def make_narasi_client(model: str = "", role: str = ""):
     _narasi_failover_chain can apply role-scoped routing (NARASI_WORKER_KIE_FIRST for
     role=='worker'). Every existing caller omits it (role="") and is unaffected.
 
-    Two model families are eligible for failover, each with its own chain:
-      * Claude Opus (_NARASI_FAILOVER_MODELS): 3-rung KIE→LaoZhang→AtlasCloud
-      * Gemini (_NARASI_GEMINI_FAILOVER_MODELS): 2-rung Vertex→LaoZhang (Rino
-        2026-07-06, unblocks the outline path — NARASI_OUTLINE_MODEL=gemini-*
-        was routing straight to LaoZhang with no failover)."""
-    # BYOK: the user pays their provider on their OWN key (credits=0). Never route BYOK through
-    # a server-keyed failover rung — that would serve on the platform key yet bill 0. make_client
-    # honours the per-request key, so BYOK always goes straight through it.
-    if _byok_active():
-        return make_client(model)
-    # ── NATIVE CLAUDE (NARASI_CLAUDE_NATIVE=1 + CLAUDE_API_KEY): route any claude-* model through the
-    #    failover client with a NATIVE-FIRST chain — Anthropic's OpenAI-compat endpoint on your OWN key,
-    #    then LaoZhang as the reseller FALLBACK (built in _narasi_failover_chain). Independent of
-    #    NARASI_FAILOVER_ENABLED; covers NARASI_BIBLE_MODEL / WORKER_MODEL / NARASI_CRITIQUE_MODEL. Default
-    #    OFF / empty key → _claude_native_on is False → falls through to the UNCHANGED routing below
-    #    (byte-identical). No service_tier sent ⇒ STANDARD tier. NARASI_CLAUDE_BASE_URL overrides endpoint. ──
-    if _claude_native_on(model):
-        return _NarasiFailoverClient(model, role=role)
-    if not _narasi_failover_on():
-        return make_client(model)
-    if (model in _NARASI_FAILOVER_MODELS
-            or model in _NARASI_GEMINI_FAILOVER_MODELS
-            or model in _NARASI_SONNET_FAILOVER_MODELS):
-        return _NarasiFailoverClient(model, role=role)
+    `phase` (optional, e.g. "outline"/"bible"/"critique"/"revise"/"canon_diff_revise" — Rino
+    2026-07-15, independent of `role`) is forwarded so the per-phase/per-provider switchboard
+    (NARASI_{PHASE}_{PROVIDER}) applies. Callers that omit it (phase="") are unaffected.
+
+    Client-selection decision now lives in _narasi_will_chain (see its docstring) — this
+    function just constructs whichever client that decision calls for. BYOK, native-Claude, an
+    active phase override, NARASI_WORKER_KIE_FIRST on a claude-* model, or NARASI_FAILOVER_ENABLED
+    + eligible-model-family membership are the only ways to get the failover client; everything
+    else is the plain single-provider make_client, byte-identical to pre-switchboard behavior."""
+    if _narasi_will_chain(model, phase):
+        return _NarasiFailoverClient(model, role=role, phase=phase)
     return make_client(model)
 
 
@@ -1774,7 +1999,7 @@ def _resp_err_detail(resp) -> str:
         return "no choices/content"
 
 
-def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = ""):
+def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = "", phase: str = ""):
     """Resilient SYNCHRONOUS narasi chat completion. Tries `model` then _NARASI_MODEL_FALLBACKS
     until one returns usable content (guards choices=None / empty). Byte-identical to a plain
     create when the primary works. Returns (resp, used_model). Raises RuntimeError with the
@@ -1783,7 +2008,10 @@ def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = ""
     `role` (e.g. "worker" for the Classic engine's per-chapter loop) is forwarded to
     make_narasi_client so NARASI_WORKER_KIE_FIRST applies here too — this is the Classic
     engine's per-chapter call, the same role as the Dalang engine's run_worker(). Every other
-    caller omits it (role="") and is unaffected."""
+    caller omits it (role="") and is unaffected.
+
+    `phase` (Rino 2026-07-15) is forwarded so the per-phase/per-provider switchboard applies to
+    this call site too. Omitted by callers that don't need it (phase="")."""
     tried: list[str] = []
     seen: list[str] = []
     for m in [model] + _NARASI_MODEL_FALLBACKS:
@@ -1793,7 +2021,7 @@ def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = ""
         rm = MODELS.get(m, m)
         mt = int(max_tokens) if m == model else min(int(max_tokens), MODEL_MAX_TOKENS.get(rm, DEFAULT_MAX_TOKENS))
         try:
-            resp = make_narasi_client(m, role=role).chat.completions.create(
+            resp = make_narasi_client(m, role=role, phase=phase).chat.completions.create(
                 model=rm, messages=messages, max_tokens=mt, stream=False)
             if _resp_content(resp) is not None:
                 if m != model:
@@ -7271,8 +7499,29 @@ NARASI_CRITIQUE_GATE         = float(os.getenv("NARASI_CRITIQUE_GATE", "8.5"))
 # ceiling): a healthy opus-4.6 critic is ~45-60s / revise ~90-120s, so 120s / 240s = ~2× headroom
 # yet still finite. A fast-failed json→plain retry fits inside the single ceiling; a genuinely hung
 # first attempt simply bails at the ceiling (degraded → skip) instead of paying for a 2nd hang.
-NARASI_CRITIQUE_TIMEOUT      = float(os.getenv("NARASI_CRITIQUE_TIMEOUT", "120"))
-NARASI_REVISE_TIMEOUT        = float(os.getenv("NARASI_REVISE_TIMEOUT", "240"))
+def _narasi_critique_timeout(model: str = "") -> float:
+    """Per-critique-call timeout, floored to the failover chain's budget when this specific
+    (model, phase) call is actually going to walk a multi-rung chain — via _narasi_will_chain,
+    the SAME decision make_narasi_client uses to pick a client (Rino 2026-07-15: an earlier
+    version keyed off a separately-maintained flag OR that ignored BYOK and model-family
+    eligibility, so it could floor a call's timeout even when it was guaranteed to get a plain
+    non-chaining client — audit-caught). Unfloored default (120s) is unchanged when no chain is
+    active for this call (today's exact behavior)."""
+    base = float(os.getenv("NARASI_CRITIQUE_TIMEOUT", "120"))
+    if _narasi_will_chain(model, "critique"):
+        return max(base, float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET") or 840) + 90.0)
+    return base
+
+
+def _narasi_revise_timeout(model: str = "", phase: str = "revise") -> float:
+    """Per-revise-call timeout. Same floor logic as _narasi_critique_timeout(). `phase` defaults
+    to "revise" (the chunked-revise call sites) — _narasi_consistency_revise passes
+    "canon_diff_revise" instead, since that call is tagged with its OWN phase and needs its OWN
+    NARASI_CANON_DIFF_REVISE_* overrides checked, not "revise"'s."""
+    base = float(os.getenv("NARASI_REVISE_TIMEOUT", "240"))
+    if _narasi_will_chain(model, phase):
+        return max(base, float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET") or 840) + 90.0)
+    return base
 # Cheap-model side-calls (fact-extract, rolling-summary, register-gate, regime-mismatch scan) run
 # on book[:12000] with tiny output — a healthy call is a few seconds. The shared _narasi_cheap_call
 # primitive was UNGUARDED (bare to_thread); a degraded cheap model could hang every gate that uses
@@ -7470,7 +7719,7 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
     resolved = MODELS.get(model, model)
     safe_max = min(int(max_tokens), MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
     try:
-        client = make_narasi_client(model)
+        client = make_narasi_client(model, phase="cheap")
         def _call(use_fmt):
             kw = dict(model=resolved,
                       messages=[{"role": "system", "content": system},
@@ -7922,13 +8171,13 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
         resolved = MODELS.get(_cm, _cm)
         safe_max = min(2000, MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
         try:
-            client = make_narasi_client(_cm)
-            def _call(use_fmt, _res=resolved, _sm=safe_max, _cl=client):
+            client = make_narasi_client(_cm, phase="critique")
+            def _call(use_fmt, _res=resolved, _sm=safe_max, _cl=client, _m=_cm):
                 kw = dict(model=_res,
                           messages=[{"role": "system", "content": _sys},
                                     {"role": "user", "content": _u}],
                           temperature=0.1, max_tokens=_sm, stream=False,
-                          timeout=NARASI_CRITIQUE_TIMEOUT)
+                          timeout=_narasi_critique_timeout(_m))
                 if use_fmt:
                     kw["response_format"] = {"type": "json_object"}
                 return _cl.chat.completions.create(**kw)
@@ -7938,7 +8187,7 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
                 except Exception:
                     return await asyncio.to_thread(lambda: _c(False))
             # Bound each model's TOTAL time (both attempts) so a hung model can't stall GATES.
-            resp = await asyncio.wait_for(_run(), timeout=NARASI_CRITIQUE_TIMEOUT)
+            resp = await asyncio.wait_for(_run(), timeout=_narasi_critique_timeout(_cm))
             cr  = (await _log_narasi_usage(tenant_id, user_id, _cm, resp, job_id=job_uuid) or 0)
             raw = (resp.choices[0].message.content or "").strip()
             if _i > 0:
@@ -8042,7 +8291,7 @@ def _revise_min_severities():
 
 
 async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
-                                 tenant_id, user_id, job_uuid):
+                                 tenant_id, user_id, job_uuid, phase="revise"):
     """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
     violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
@@ -8168,11 +8417,11 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                        max(1500, int(len(_body.split()) * 2) + 600))
             try:
                 _resp = await asyncio.wait_for(asyncio.to_thread(
-                    lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model).chat.completions.create(
+                    lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model, phase=phase).chat.completions.create(
                         model=resolved, messages=[{"role": "system", "content": _s},
                                                   {"role": "user", "content": _b}],
-                        temperature=0.2, max_tokens=_c, stream=False, timeout=NARASI_REVISE_TIMEOUT)),
-                    timeout=NARASI_REVISE_TIMEOUT)
+                        temperature=0.2, max_tokens=_c, stream=False, timeout=_narasi_revise_timeout(rev_model, phase))),
+                    timeout=_narasi_revise_timeout(rev_model, phase))
             except Exception:
                 return None, 0                       # incl. TimeoutError → keep original chapter
             if not getattr(_resp, "choices", None):
@@ -8297,11 +8546,11 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         _n_attempts += 1                         # count every LLM call (incl. timeouts) → bounds cost
         try:
             _resp = await asyncio.wait_for(asyncio.to_thread(
-                lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model).chat.completions.create(
+                lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model, phase=phase).chat.completions.create(
                     model=resolved, messages=[{"role": "system", "content": _s},
                                               {"role": "user", "content": _b}],
-                    temperature=0.2, max_tokens=_c, stream=False, timeout=NARASI_REVISE_TIMEOUT)),
-                timeout=NARASI_REVISE_TIMEOUT)
+                    temperature=0.2, max_tokens=_c, stream=False, timeout=_narasi_revise_timeout(rev_model, phase))),
+                timeout=_narasi_revise_timeout(rev_model, phase))
         except Exception:
             out.append(_p)                       # incl. TimeoutError → keep original chapter
             continue
@@ -8433,7 +8682,8 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
         try:
             return await _narasi_revise_chunked(
                 full_text, viol, style, language, rev_model,
-                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                phase="canon_diff_revise")
         except Exception as _ce:
             import logging as _lg
             _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
@@ -8455,12 +8705,12 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
           f"\n\n[FULL BOOK — return the corrected version, unchanged except for the fixes]\n{full_text}")
     try:
         resp = await asyncio.wait_for(asyncio.to_thread(
-            lambda: make_narasi_client(rev_model).chat.completions.create(
+            lambda: make_narasi_client(rev_model, phase="canon_diff_revise").chat.completions.create(
                 model=resolved, messages=[{"role": "system", "content": _sys},
                                           {"role": "user", "content": _u}],
                 temperature=0.2, max_tokens=safe_max, stream=False,
-                timeout=NARASI_REVISE_TIMEOUT)),
-            timeout=NARASI_REVISE_TIMEOUT)
+                timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"))),
+            timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"))
     except Exception:
         return full_text, 0
     if not getattr(resp, "choices", None):
@@ -10085,7 +10335,7 @@ async def _narasi_outline_impl(body: dict):
     revise_instruction = (body.get("revise_instruction") or "").strip()
     current_outline = (body.get("current_outline") or "").strip()
     outline_for_brief = (body.get("outline") or "").strip()
-    client = make_narasi_client(model)
+    client = make_narasi_client(model, phase="outline")
     lang_label = _resolve_narasi_lang(language)
     # Resolve tenant + user UUID once for usage logging (auth dependency set the context)
     _ou_ctx = _tenant_ctx.get()
@@ -10549,7 +10799,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     lang_label = _resolve_narasi_lang(language)
     tmp_dir = Path(f"/app/data/narasi_temp/{job_id}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    client = make_narasi_client(model)
+    client = make_narasi_client(model, phase="worker")
     errors = []
     _meter_actual = 0   # Step 4: credits actually consumed (to settle the hold)
 
@@ -10708,7 +10958,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     continue
             else:
                 try:
-                    resp, _used_m = _narasi_complete(model, _msgs, safe_max, role="worker")
+                    resp, _used_m = _narasi_complete(model, _msgs, safe_max, role="worker", phase="worker")
                 except Exception as _lex:
                     errors.append({"id": chap_id, "error": f"chapter LLM failed: {str(_lex)[:200]}"})
                     _logging.getLogger("narasi").warning("[narasi] bab %s LLM no-content — skipped: %s", chap_id, _lex)
@@ -10731,7 +10981,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             if len(text.split()) < 50:
                 _log.warning(f"[narasi] bab {chap_id} EMPTY -- retrying")
                 try:
-                    resp2, _used_m2 = _narasi_complete(model, _msgs, safe_max, role="worker")
+                    resp2, _used_m2 = _narasi_complete(model, _msgs, safe_max, role="worker", phase="worker")
                     _rtext = (_resp_content(resp2) or "").strip()
                 except Exception:
                     resp2, _rtext = None, ""
@@ -10788,8 +11038,13 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     if _rep.get("duplicate"):
                         _of = _rep.get("of_index", -1)
                         await rc.set_progress(job_id, f"Menulis ulang bab {i+1} (mirip bab lain)…"[:200])
+                        # Own "revise" phase-tagged client (Rino 2026-07-15, audit-corrected) —
+                        # was previously reusing the shared "worker" client, so NARASI_REVISE_*
+                        # overrides never reached this call despite the function being named
+                        # _narasi_revise. Byte-identical when no override is configured.
+                        _revise_client = make_narasi_client(model, phase="revise")
                         text, _dc = await _narasi_revise(
-                            client, model, resolved_model, safe_max, _msgs, text,
+                            _revise_client, model, resolved_model, safe_max, _msgs, text,
                             {"coherence_violations": [
                                 f"terlalu mirip/mengulang bab {(_of + 1) if _of >= 0 else '?'}"],
                              "notes": "hindari pengulangan; bawa sudut / informasi baru"},
@@ -10810,8 +11065,9 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     _revised = False
                     if (_cscore is not None and _cscore < DALANG_CRITIC_GATE) or _cviol:
                         await rc.set_progress(job_id, f"Merevisi bab {i+1}/{len(chapters)}…"[:200])
+                        _revise_client = make_narasi_client(model, phase="revise")
                         text, _rvc = await _narasi_revise(
-                            client, model, resolved_model, safe_max, _msgs, text, _critic,
+                            _revise_client, model, resolved_model, safe_max, _msgs, text, _critic,
                             tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid)
                         _chap_cr += _rvc
                         _revised = True

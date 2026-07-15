@@ -399,7 +399,7 @@ async def _run_single(req: dict, *, style: Optional[str],
     if word_target:
         ask = f"{prompt}\n\nWrite about {word_target} words. Output language: {language}."
     worker = Worker(
-        name="single", role="worker",
+        name="single", role="worker", phase="worker",
         model=req.get("worker_model") or route_model(role="worker", style=style),
         style=style, telemetry_sink=telemetry_sink,
     )
@@ -490,7 +490,7 @@ async def _run_dynamic_goal(req: dict, settings: "_Settings", *,
 
     async def _run_one(st: dict) -> dict[str, Any]:
         worker = Worker(
-            name=f"dyn:{st.get('role','task')}", role="worker", model=w_model,
+            name=f"dyn:{st.get('role','task')}", role="worker", phase="worker", model=w_model,
             style=style, system=f"You are the {st.get('role','specialist')}.",
             telemetry_sink=telemetry_sink,
         )

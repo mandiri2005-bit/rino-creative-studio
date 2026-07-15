@@ -172,14 +172,19 @@ except Exception as _imp_err:  # noqa: BLE001 - intentional broad fallback
                 return round((tokens_in * in_p + tokens_out * out_p) / 1_000_000, 8)
         return 0.0
 
-    def _lz_make_client(model: str = "", role: str = ""):  # type: ignore
+    def _lz_make_client(model: str = "", role: str = "", phase: str = ""):  # type: ignore
         """Replicated env client factory (mirrors laozhang_api.make_client).
 
         Builds an OpenAI-compatible client from env. DeepSeek-direct models use
         DEEPSEEK_API_KEY; everything else uses LAOZHANG_API_KEY. No keys are
-        hardcoded — both come from the environment. `role` is accepted for
-        signature parity with the real make_narasi_client but unused here — this
-        fallback has no failover chain to route (dev/partial-deps environments only).
+        hardcoded — both come from the environment. `role`/`phase` are accepted
+        for signature parity with the real make_narasi_client but unused here —
+        this fallback has no failover chain or phase-provider switchboard to
+        route (dev/partial-deps environments only). Rino 2026-07-15: `phase` was
+        added here because _sync_chat now unconditionally passes phase= on every
+        call (including phase="") — omitting it from this signature raised
+        TypeError on every single run_worker call in any environment that takes
+        this fallback path (audit-caught).
         """
         from openai import OpenAI  # local import: keep module import light
         resolved = MODELS.get(model, model)
@@ -338,6 +343,7 @@ class Worker:
     tune the call. Pass either an explicit model or a style to be routed."""
     name: str = "worker"
     role: str = "worker"
+    phase: str = ""
     model: Optional[str] = None
     style: Optional[str] = None
     system: str = ""
@@ -387,12 +393,14 @@ def _build_messages(system: str, task: str) -> list[dict[str, str]]:
 
 
 def _sync_chat(model: str, messages: list[dict[str, str]], *,
-               temperature: float, max_tokens: int, role: str = ""):
+               temperature: float, max_tokens: int, role: str = "", phase: str = ""):
     """Blocking single chat-completion call against the env-built client.
     Mirrors laozhang_api's call shape: client.chat.completions.create(...).
     `role` (e.g. "worker" for MAP/chapter calls) is forwarded so make_narasi_client
-    can apply role-scoped routing (NARASI_WORKER_KIE_FIRST)."""
-    client = _lz_make_client(model, role=role)
+    can apply role-scoped routing (NARASI_WORKER_KIE_FIRST).
+    `phase` (Rino 2026-07-15, independent of role) is forwarded so the per-phase/
+    per-provider switchboard (NARASI_{PHASE}_{PROVIDER}) applies here too."""
+    client = _lz_make_client(model, role=role, phase=phase)
     resolved = MODELS.get(model, model)
     return client.chat.completions.create(
         model=resolved,
@@ -475,6 +483,7 @@ async def run_worker(
                 asyncio.to_thread(
                     _sync_chat, model, messages,
                     temperature=worker.temperature, max_tokens=max_tokens, role=worker.role,
+                    phase=worker.phase,
                 ),
                 timeout=timeout,
             )
@@ -613,6 +622,7 @@ async def synthesize(
     manager = Worker(
         name=f"manager:{role}",
         role="manager",
+        phase="manager",
         model=model or MANAGER_MODEL,
         system=system or "You are a meticulous senior editor.",
         temperature=temperature,

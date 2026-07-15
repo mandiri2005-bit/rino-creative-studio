@@ -198,6 +198,7 @@ async def cowork(
         worker = Worker(
             name=f"cowork:{name}",
             role="worker",
+            phase="worker",
             model=w_model,
             style=style,
             system=str(role.get("system", "")),
@@ -400,7 +401,7 @@ async def _write_chapter(
             f"Target ~{word_target} words. Return ONLY the chapter body."
         )
         worker = Worker(
-            name=f"ch{no + 1}", role="worker", model=worker_model,
+            name=f"ch{no + 1}", role="worker", phase="worker", model=worker_model,
             style=style, telemetry_sink=telemetry_sink,
         )
         res = await run_worker(worker, prompt, timeout=timeout, task_id=f"ch{no + 1}")
@@ -434,6 +435,7 @@ async def _write_chapter(
     worker = Worker(
         name=f"ch{no + 1}",
         role="worker",
+        phase="worker",
         model=worker_model,
         style=style,
         system=composed.messages[0]["content"],

@@ -59,7 +59,7 @@ ROUTER-INTEGRATION EXAMPLE (how a /narration runtime wires it together)
                 rag_passages=ctx.passages,             # retrieved ONCE, reused
             )
             return await run_worker(
-                Worker(name=f"ch{ch['index']}", style=style,
+                Worker(name=f"ch{ch['index']}", style=style, phase="worker",
                        system=composed.messages[0]["content"]),
                 composed.messages[1]["content"],
             )
