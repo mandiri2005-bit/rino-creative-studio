@@ -1201,24 +1201,26 @@ def _worker_kie_first_on() -> bool:
 
 
 def _narasi_worker_kie_first_chain(model: str) -> list[tuple[str, str, str, str, str]]:
-    """WORKER_MODEL override chain (NARASI_WORKER_KIE_FIRST=1): KIE first (opus-family models
-    only — see below), LaoZhang second, native Claude LAST. Unlike the legacy opus-only
-    kie/laozhang/atlascloud chain further below (which hardcodes a fixed opus id per rung),
-    every rung here gets the ACTUAL requested model id verbatim — so LaoZhang/native correctly
-    serve whatever WORKER_MODEL resolves to (e.g. sonnet-5), never a silently-substituted opus
-    build.
+    """WORKER_MODEL override chain (NARASI_WORKER_KIE_FIRST=1): KIE first, LaoZhang second,
+    native Claude LAST. Unlike the legacy opus-only kie/laozhang/atlascloud chain further below
+    (which hardcodes a fixed opus id per rung), every rung here gets the ACTUAL requested model
+    id verbatim — so KIE/LaoZhang/native correctly serve whatever WORKER_MODEL resolves to
+    (e.g. sonnet-5), never a silently-substituted opus build.
 
-    KIE rung is INCLUDED only when `model` is in `_NARASI_FAILOVER_MODELS` (the opus family) —
-    KIE is documented elsewhere in this file as opus-only (see _narasi_sonnet_failover_chain:
-    "KIE serves opus (not sonnet)"). Sending a non-opus id there would burn up to
-    _NARASI_RUNG_ATTEMPTS against a rung guaranteed to fail before ever reaching LaoZhang/
-    native — the opposite of this flag's speed goal. For a non-opus WORKER_MODEL (the flag's
-    own stated example use case) the chain is simply [laozhang, claude]."""
+    KIE rung is included for ANY claude-* model — Rino 2026-07-15: an earlier version of this
+    function gated the KIE rung to _NARASI_FAILOVER_MODELS (opus-only), based on
+    _narasi_sonnet_failover_chain's "KIE serves opus (not sonnet)" docstring claim. That claim
+    is STALE — it's dated 2026-07-06 and refers to claude-sonnet-4-6; KIE's own pricing page
+    confirms it now bills claude-sonnet-5 with real per-token rates. Rather than re-hardcode a
+    model allowlist (which is exactly what went stale last time), let the API's own response
+    decide: a model KIE genuinely doesn't serve returns an error, the existing per-rung retry/
+    advance-on-failure logic in _create() already costs at most _NARASI_RUNG_ATTEMPTS failed
+    calls before falling through to LaoZhang — a small, bounded cost, not a hang or crash."""
     _ck   = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
     _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
-    chain: list[tuple[str, str, str, str, str]] = []
-    if model in _NARASI_FAILOVER_MODELS:
-        chain.append(("kie", "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model))
+    chain: list[tuple[str, str, str, str, str]] = [
+        ("kie", "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model),
+    ]
     chain.append(("laozhang", "openai", BASE_URL,                                 _req_key.get() or API_KEY,          model))
     chain.append(("claude",   "openai", _base,                                    _ck,                                model))
     return chain
@@ -1277,15 +1279,17 @@ def _narasi_failover_chain(model: str = "", role: str = "") -> list[tuple[str, s
 
 
 def _narasi_sonnet_failover_chain(model: str) -> list[tuple[str, str, str, str, str]]:
-    """Sonnet failover → LaoZhang (Rino 2026-07-06: "Non-failover (sonnet) →
-    failover laozhang"). MANAGER_MODEL defaults to claude-sonnet-4-6, used for
-    every polish/merge/synthesize. Before this, sonnet went through the plain
-    make_client with no failover-client retry — a single transient blip failed
-    the polish. Now sonnet is served by LaoZhang with per-rung retry
-    (NARASI_RUNG_ATTEMPTS), same resilience path as opus. Single rung: KIE serves
-    opus (not sonnet), so there is no cheaper primary to fail over FROM — LaoZhang
-    is both primary and failover target. Model id passes through verbatim."""
+    """Sonnet failover: KIE first, LaoZhang second (Rino 2026-07-06, KIE rung added
+    2026-07-15). MANAGER_MODEL defaults to claude-sonnet-4-6, used for every polish/merge/
+    synthesize. Originally LaoZhang-only ("Non-failover (sonnet) → failover laozhang") on the
+    claim "KIE serves opus (not sonnet)" — that claim is STALE (dated 2026-07-06, predates
+    claude-sonnet-5; KIE's own pricing page now bills claude-sonnet-5 with real per-token
+    rates). Rather than re-hardcode a model allowlist, KIE is tried for any model here too —
+    a model it genuinely doesn't serve costs at most NARASI_RUNG_ATTEMPTS failed calls before
+    falling through to LaoZhang (see _create()), not a hang. Model id passes through verbatim
+    to both rungs."""
     return [
+        ("kie", "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model),
         ("laozhang", "openai", BASE_URL, _req_key.get() or API_KEY, model),
     ]
 
