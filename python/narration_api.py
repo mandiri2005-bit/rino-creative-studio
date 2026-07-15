@@ -1588,6 +1588,23 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             if rec.get("content"):
                 rec["content"], _r = _ngate.gate_text(rec["content"], lang=language, mode=_mode, style=style)
         result["gate_report"] = gate_report
+        # Observability fix (2026-07-16): unattributed_voice_scan (and every other
+        # gate_text()-internal scanner) only ever populates stats[...] — narasi_gate.py
+        # has zero logging of its own by design (pure scanner, caller decides what to
+        # log). Every OTHER new gate this round (name_uniqueness/order/typo, entity
+        # attrs) logs its own outcome at its narration_api.py call site; this one
+        # didn't, so a job with NARASI_UNATTRIBUTED_VOICE_SCAN=1 genuinely on gave no
+        # way to tell from Railway logs whether it ran or found anything — confirmed
+        # via a live job today where the flag was reportedly on the whole time but no
+        # log line ever appeared. Log it the same way its narration_api.py-native
+        # siblings do; no behavior change, pure visibility.
+        _uv_flags = (gate_report or {}).get("flags") or {}
+        if _uv_flags.get("unattributed_voice_flag"):
+            log.warning("unattributed_voice: %d hit(s): %s",
+                        _uv_flags.get("unattributed_voice_hits") or 0,
+                        (_uv_flags.get("unattributed_voice_samples") or [])[:2])
+        elif "unattributed_voice_hits" in _uv_flags:
+            log.info("unattributed_voice: no hits")
     except Exception as e:  # noqa: BLE001
         log.warning("v3 terminal gate failed (non-fatal): %s", e)
 
