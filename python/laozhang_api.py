@@ -10419,7 +10419,12 @@ async def narasi_generate(body: dict,
 
         chapters = body.get("chapters") or []
         topic    = (body.get("topic") or "").strip()
-        model    = (body.get("model") or "gemini-2.5-flash").strip()
+        # AUDIT FIX (2026-07-15): same WORKER_MODEL fallback as _narasi_generate_impl — this
+        # `model` sizes the credit HOLD (estimate_units below) before the background task
+        # runs. Without the fallback it would size the hold off "gemini-2.5-flash" pricing
+        # while the actual generation (now correctly WORKER_MODEL-aware) runs an expensive
+        # model — an under-reserved hold for the real cost.
+        model    = (body.get("model") or os.environ.get("WORKER_MODEL") or "gemini-2.5-flash").strip()
         job_id = (body.get("pre_job_id") or str(uuid.uuid4())[:8])[:16]
 
         # ── Step 4 metering: HOLD an estimate for the whole job up front ────────
@@ -10524,7 +10529,16 @@ async def _persist_asset(tenant_id, *, asset_type, filename, data: bytes,
 
 
 async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi_user, _meter_op=None):
-    model    = (body.get("model")    or "gemini-2.5-flash").strip()
+    # AUDIT FIX (2026-07-15): this had ZERO env-var integration — body.get("model") or a
+    # hardcoded "gemini-2.5-flash", nothing else. The Classic engine is the Storyboard FE's
+    # DEFAULT (Dalang is opt-in), and NarasiTool.tsx unconditionally sends model=chatModel
+    # (itself a hardcoded FE constant, "claude-opus-4-6" as of this writing) on every
+    # generate/retry call — meaning WORKER_MODEL was NEVER consulted for the majority of
+    # narasi jobs, silently, the entire time that env var has existed. Added the same
+    # WORKER_MODEL fallback the Dalang path already has (route_model's default), so a client
+    # that sends nothing (as of the matching FE fix) actually gets the server-configured model
+    # instead of a second, independent hardcoded default.
+    model    = (body.get("model")    or os.environ.get("WORKER_MODEL") or "gemini-2.5-flash").strip()
     topic    = (body.get("topic")    or "").strip()
     style    = (body.get("style")    or "storytelling").strip()
     language = (body.get("language") or "id").strip()
