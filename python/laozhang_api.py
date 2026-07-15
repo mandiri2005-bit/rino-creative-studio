@@ -7494,6 +7494,15 @@ def _dalang_v2_enabled() -> bool:
     # byte-identical to v1.
     return _flag_on("DALANG_V2_ENABLED", "0")
 
+def _dalang_antitrunc_enabled() -> bool:
+    # Standalone truncation guard, independent of the DALANG_V2_ENABLED bundle: fires the SAME
+    # word-gate + bounded continuation re-call (see _narasi_word_verdict/_narasi_continuation)
+    # when a chapter ends with finish_reason=='length' or undershoots its word floor, without
+    # opting into v2's series-state context / fact ledger / critic. OFF (default) ⟹ a chapter
+    # that hits the token ceiling mid-sentence ships as-is — root cause of the Th-6 Ch1/Ch4
+    # mid-sentence truncations (v1 path has no truncation check at all once text >= 50 words).
+    return _flag_on("DALANG_ANTITRUNC_ENABLED", "0")
+
 def _dalang_fact_ledger_enabled() -> bool:
     # Slice 3 sub-feature (requires v2): per-chapter fact extraction + rolling summary,
     # injected into the next chapter's context for cross-chapter consistency.
@@ -11076,8 +11085,10 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 _kept_usage = getattr(resp, "usage", None)
             # ── Slice 3 (§4.3/§4.4, fix H2): deterministic word gate → bounded continuation
             # re-call on the FINAL text (undershoot/truncation are APPENDED, not restarted);
-            # the extra cost is folded into _chap_cr BEFORE the Slice-2 metering fork. ──
-            if _dalang_v2_enabled():
+            # the extra cost is folded into _chap_cr BEFORE the Slice-2 metering fork.
+            # Fires under full v2 OR the standalone anti-truncation flag (r21) — the latter
+            # opts into just this safety net without the rest of v2's bundle. ──
+            if _dalang_v2_enabled() or _dalang_antitrunc_enabled():
                 await rc.set_progress(job_id, f"Memeriksa bab {i+1}/{len(chapters)}…"[:200])
                 _verdict = _narasi_word_verdict(text, word_min, word_max, finish)
                 if _verdict["undershoot"] or _verdict["truncated"]:
@@ -11366,8 +11377,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 _result["partial"] = bool(_partial.get("partial"))
                 if _partial.get("partial"):
                     _result["undershoot_report"] = _partial
-                if _truncated_chapters:   # F7: display-only truncation signal (word gate can't catch it)
-                    _result["truncated_chapters"] = _truncated_chapters
+            # F7 (r21: also under the standalone anti-truncation flag, not just full v2) —
+            # display-only truncation signal (word gate can't catch a length-cut chapter that
+            # cleared the floor after the bounded continuation retries were exhausted).
+            if (_dalang_v2_enabled() or _dalang_antitrunc_enabled()) and _truncated_chapters:
+                _result["truncated_chapters"] = _truncated_chapters
             # Slice 4: surface critic scores (sampled per-chapter + whole-book) for the FE (U3).
             if _dalang_critic_enabled():
                 if _chapter_scores:

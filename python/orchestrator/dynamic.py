@@ -367,9 +367,10 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
         _mand = (
             "\n\nSTRUCTURAL MANDATES (fiction):\n"
             "1. KEYSTONE SLOTS — every decision, confession, evidence-DISCOVERY, or handover the "
-            "plot depends on gets its OWN scene, named inside a chapter summary ('Ch6: the "
-            "postmaster delivers the held letters; the brother reads the first one on-page'). A "
-            "keystone implied between chapters is a structural defect.\n"
+            "plot depends on gets its OWN scene, named as a plain prose sentence inside a chapter "
+            "summary (e.g. 'the postmaster delivers the held letters and the brother reads the "
+            "first one on-page' — NOT a labelled 'Scene N —' or 'ChN:' line). A keystone implied "
+            "between chapters is a structural defect.\n"
             "2. PAYOFF OWNERS — any hook a chapter opens (a delayed envelope, a deadline, a "
             "threat) names the LATER chapter that pays it, written into that chapter's summary.\n"
             "3. ONE SECONDARY ARC — one non-lead character gets a stated want and an on-page "
@@ -383,7 +384,10 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
             "6. PRESENT-TENSE STAKES — if the story raises a LIVE physical danger in its "
             "present (an incoming storm, a flood risk), the lead ACTS on it on-page (a warning "
             "issued, an evacuation started) — the protagonist may not ignore the same class of "
-            "danger the backstory punished someone for ignoring.\n\n")
+            "danger the backstory punished someone for ignoring.\n"
+            "Write every summary as ordinary prose sentences (what happens), never as a "
+            "numbered/labelled scene list — the summary is a planning aid, not text to be "
+            "copied.\n\n")
         # r5.2 TITLE BANS: chapter titles are born HERE, before the bible, so the lane
         # ledger's title findings never reached them ('The Weight of Clear Skies'
         # VERBATIM across two rolls; 'weight' in titles 7/9). Data-driven, fail-open.

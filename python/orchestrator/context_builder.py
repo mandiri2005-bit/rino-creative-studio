@@ -234,7 +234,22 @@ class SharedContext:
             desc = str(ch.get("summary", ch.get("description", "")) or "").strip()
             head = f"{i}. {title}" if title else f"{i}."
             lines.append(head + (f" — {desc}" if desc else ""))
-        return "\n".join(lines)
+        # Leak fix (2026-07): this list is INTERNAL planning context, rendered for
+        # cross-chapter awareness only. Without a disclaimer, workers sometimes echo
+        # its "N. Title — description" shape (or STRUCTURAL MANDATES' embedded
+        # "Scene N —" phrasing, see dynamic.py) verbatim into finished prose.
+        # AUDIT NOTE: intentionally left unconditional (no flag), unlike this round's
+        # other new checks — this is a defect scrub for the confirmed "Scene N--" leak
+        # (see _scrub_chapter_leaks in static.py), not a new gate. It only ever REMOVES
+        # an instruction to copy internal planning text verbatim, so it has no plausible
+        # downside; gating a confirmed leak-fix behind a default-OFF flag would leave the
+        # leak live by default. Confirmed intentional — not an oversight, do not re-flag.
+        return (
+            "(Internal planning notes — for cross-chapter awareness only. Do not "
+            "reproduce this list, its numbering, or its \"Chapter N — summary\" "
+            "phrasing in your output; write flowing prose, not a scene list.)\n"
+            + "\n".join(lines)
+        )
 
     # -- per-worker scope -------------------------------------------------
     def scope_for(self, no: int) -> str:
@@ -254,7 +269,19 @@ class SharedContext:
             f"YOUR SCOPE — you are writing ONLY chapter {no + 1} of {n}: \"{mine_title}\".",
         ]
         if mine_desc:
-            lines.append(f"What this chapter covers: {mine_desc}")
+            # Leak fix (2026-07): mine_desc is planning text (sometimes phrased as
+            # "Scene N — ..." per STRUCTURAL MANDATES in dynamic.py) — flag it as
+            # reference-only so the writer-model doesn't copy it in verbatim.
+            # AUDIT NOTE: intentionally left unconditional (no flag), unlike this round's
+            # other new checks — this is a defect scrub for the confirmed "Scene N--" leak
+            # (see _scrub_chapter_leaks in static.py), not a new gate. It only ever REMOVES
+            # an instruction to copy internal planning text verbatim, so it has no plausible
+            # downside; gating a confirmed leak-fix behind a default-OFF flag would leave the
+            # leak live by default. Confirmed intentional — not an oversight, do not re-flag.
+            lines.append(
+                "What this chapter covers (internal planning note — do not copy "
+                f"this literally or as a scene list; render it as flowing prose): {mine_desc}"
+            )
 
         # What you do NOT own: every OTHER chapter, named so this worker can steer clear.
         not_owned: list[str] = []

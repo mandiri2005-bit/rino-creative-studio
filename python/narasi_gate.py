@@ -1685,18 +1685,80 @@ def merge_fusion_scan(text: str) -> dict[str, Any]:
 #    Sunjo", "from arrival or from today", "[name of district]". These survive the fill step
 #    and are ship-blockers for book output (2 of 7 corpus pieces hit them). Report-only,
 #    high-precision: verified 0 FP on the clean literary pieces. The Indonesian cousin
-#    (sekitar/kira-kira + slot) is placeholder_leak_scan; this is the English pattern. ──
+#    (sekitar/kira-kira + slot) is placeholder_leak_scan; this is the English pattern.
+#    Widened 2026-07-15 (Tier 1a): the adjective/noun lists above missed two confirmed prod
+#    leaks — "the around major Seoul daily with investigative desk, specify name newspaper"
+#    and "around address held by the Seoul Family Court...". Added: (a) around+adjective
+#    (major/primary/nearby/etc, no article in between — "around a major X" stays unflagged,
+#    only the ungrammatical article-less "around major X" fires) + a wider noun tail incl.
+#    address/location/publication/outlet/newspaper; (b) bare "around address/residence/
+#    location" (no adjective — the hedge sits directly on the slot noun, same shape as
+#    "around 8-12 billion"); (c) "specify name/title/date/..." — a bare instruction verb
+#    immediately touching its (unresolved) object noun. Verified 0 FP against "she looked
+#    around the room" / "revolved around major office politics" / "around a major heist".
+#    NOTE (as originally written 2026-07-15): pattern (a)'s gap between the adjective and
+#    the noun tail was capped at 4 words with no comma in the separator class, so it did
+#    NOT actually reach across "major Seoul daily with investigative desk, specify name
+#    newspaper" (7 filler words incl. a comma) — pattern (c) below was the one that caught
+#    that leak string, via its own "specify name" match, purely by coincidence. Corrected
+#    2026-07-16 (adversarial audit, Tier 1b): pattern (a)'s gap widened to {0,10} words and
+#    its separator class widened to cross a comma, so it now reaches this leak directly
+#    (see below). Patterns (b)/(c) were ALSO tightened same pass — the bare "around
+#    address/residence/location" and "specify name/title/..." shapes fired on ordinary
+#    prose ("around residence halls", "specify address and date of birth"); they now only
+#    match the leaked shape (hedge noun at a clause boundary — end-of-clause punctuation,
+#    "held", "by", or end of string), not any bare occurrence of the noun. ──
 _INSTRUCTION_RESIDUE_PATS = [
     re.compile(r"\baround\s+(?:appropriate|relevant|suitable|the\s+relevant|a\s+suitable|an?\s+appropriate)\b", re.I),
     re.compile(r"\b(?:appropriate|relevant|suitable)\s+(?:\w+[-\s]){0,4}?(?:painter|artist|period|era|name|names|"
                r"district|neighbou?rhood|figure|place|region|dynasty|master|value|amount|price|character|song|city|street)\b", re.I),
     re.compile(r"\baround\s+\d+\s*[-–—]\s*\d+\b"),
     re.compile(r"\b(?:around|during|circa|about)\s+[A-Z][a-z]+\s+or\s+[A-Z][a-z]+\b"),
-    re.compile(r"\bname\s+of\s+(?:the\s+|an?\s+)?(?:district|neighbou?rhood|painter|artist|place|character|person|"
+    # Article-less only (2026-07-16, caught while regression-testing the pattern-(a) split
+    # above): the optional "(?:the\s+|an?\s+)?" article let this match ordinary grammatical
+    # English ("the name of the street") identically to the actual leak shape ("name of
+    # district" — a raw unfilled slot marker, which by definition has no article). Same
+    # article-less-is-the-tell design already used for the "around major X" patterns above.
+    re.compile(r"\bname\s+of\s+(?:district|neighbou?rhood|painter|artist|place|character|person|"
                r"figure|city|street|region|company|brand|song|dynasty)\b", re.I),
     re.compile(r"\[[^\]\n]{2,50}\]"),
     re.compile(r"\b(?:TODO|FIXME|PLACEHOLDER|TBD)\b"),
     re.compile(r"\bfrom\s+\w+\s+or\s+from\s+\w+\b", re.I),
+    # (a) SPLIT 2026-07-16 (2nd adversarial audit pass): the prior single pattern widened
+    # its gap to {0,10}+comma-crossing to reach the confirmed leak ("...major Seoul daily
+    # with investigative desk, specify name newspaper"), but that same wide gap then
+    # false-positived on ordinary prose whenever ANY of ~20 generic nouns (city/street/
+    # name/price/place/etc — common words with no special connection to a hedge) turned up
+    # within 10 words/a comma of an "around <adjective>" opener ("walked around major
+    # landmarks in the old quarter, sketching the buildings on every street" -> false hit
+    # via "street"). Fix: two patterns instead of one. (a-narrow) keeps the ORIGINAL tight
+    # {0,4}-word, no-comma gap for the generic noun tail — these words are too common to
+    # risk a wide reach. (a-wide) keeps the {0,10}+comma-crossing gap, but ONLY for the
+    # narrow, leak-specific noun tail (address/location/publication/outlet/newspaper) that
+    # motivated the widening in the first place — uncommon enough in this shape that a
+    # wider reach doesn't pick up unrelated prose.
+    re.compile(r"\baround\s+(?:major|primary|leading|prominent|nearby|large|well-known|well\s+known|"
+               r"small|minor|popular|respected|top)\s+(?:\w+[-\s]){0,4}?(?:painter|artist|period|era|"
+               r"name|names|district|neighbou?rhood|figure|place|region|dynasty|master|value|amount|"
+               r"price|character|song|city|street)\b", re.I),
+    re.compile(r"\baround\s+(?:major|primary|leading|prominent|nearby|large|well-known|well\s+known|"
+               r"small|minor|popular|respected|top)\s+(?:\w+[-,\s]+){0,10}?(?:address|location|"
+               r"publication|outlet|newspaper)\b", re.I),
+    # (b)/(c) tightened 2026-07-16 (adversarial audit): a bare "around address/residence/
+    # location" or "specify name/title/..." fires on ordinary prose ("around residence
+    # halls", "around location scouting for...", "specify address and date of birth",
+    # "specify name and title on the form") — real collocations, not leaked hedges. The
+    # leaked shape has the slot noun sitting alone at a clause boundary ("around address
+    # held by...", "...desk, specify name" — no sensible word follows). Require the noun
+    # be followed by end-of-clause: whitespace+punctuation, "held", "by", or end of string.
+    # RETIGHTENED 2026-07-16 (2nd adversarial audit pass): a comma/semicolon after the
+    # slot noun is exactly the shape of ordinary enumeration/list phrasing ("specify name,
+    # rank, and serial number", "around location; the trail went cold") — dropped from the
+    # clause-end class, keeping only unambiguous sentence-enders (. ! ?), end-of-string,
+    # or the "held"/"by" continuation (neither leak string needs a comma/semicolon to match).
+    re.compile(r"\baround\s+(?:address|residence|location)\b(?=\s*(?:[.!?]|$)|\s+(?:held|by)\b)", re.I),
+    re.compile(r"\bspecify\s+(?:name|title|date|address|location|number|amount|price|value)\b"
+               r"(?=\s*(?:[.!?]|$)|\s+(?:held|by)\b)", re.I),
 ]
 
 
@@ -1721,6 +1783,111 @@ def instruction_residue_scan(text: str) -> dict[str, Any]:
                 return {"instruction_residue_hits": len(samples),
                         "instruction_residue_samples": samples}
     return {"instruction_residue_hits": len(samples), "instruction_residue_samples": samples}
+
+
+def _unattributed_voice_scan_on() -> bool:
+    """NARASI_UNATTRIBUTED_VOICE_SCAN=1 arms unattributed_voice_scan below. Default OFF
+    ⟹ scan never runs ⟹ report/stats byte-identical, matching every other gate in this
+    file (see e.g. _refrain_scan_on in narasi_counters.py for the same convention)."""
+    return os.environ.get("NARASI_UNATTRIBUTED_VOICE_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# ── Unattributed collective-voice leak (narasi manuscript S2-Th-6, review flag,
+#    2026-07-16). A chapter closed on an unquoted, unattributed second-person/first-
+#    person-plural COLLECTIVE-voice sentence that breaks otherwise-strict close-third
+#    POV with no clear speaker — "You call it administrative efficiency; we call it an
+#    eviction with a cleaner pen." — reading like a stray manifesto/pull-quote fragment
+#    leaking into prose rather than a deliberate character line; never happens elsewhere
+#    in that manuscript. Report-only, deterministic, modeled stylistically on
+#    narasi_counters._unattributed_expert_scan (never-raise, PASS/FLAG dict, capped
+#    samples). Conservative by design — false positives on ordinary narration are worse
+#    than missing some cases — so a sentence only flags when ALL of: (a) it carries no
+#    quotation-mark character at all (any quote is treated as possibly-attributed
+#    dialogue and skipped, even if the tag sits outside the quoted span); (b) it uses a
+#    collective you/your/we/our pronoun; AND (c) it has a rhetorical antithesis shape —
+#    opens with "You/We call it…" / "You/We say…" framing AND the OPPOSING pronoun side
+#    also appears later in the sentence, OR a semicolon- or vs/versus-joined clause pairs
+#    a you/your side against a we/our side where BOTH clauses share the same rhetorical
+#    framing verb ("call it"/"say"). Plain second-person POV narration ("You could see
+#    the harbor from the ridge"), quoted dialogue ("You know what I mean," she said), a
+#    bare framing opener with no opposing clause ("We say the harvest was good this
+#    year"), and an ordinary paired-observation sentence that merely mixes pronoun
+#    families without a shared framing verb ("You could see the boats; we watched from
+#    the porch") all carry no such antithesis shape and are NOT flagged (2026-07-16,
+#    tightened after an adversarial audit caught all three as false positives in the
+#    first version). Gated behind NARASI_UNATTRIBUTED_VOICE_SCAN (default OFF). ──
+# QUOTE_CHARS retightened 2026-07-16 (adversarial audit): the plain ASCII/curly apostrophe
+# was matching mid-word contractions/possessives ("it's", "you're"), silently exempting
+# most contraction-bearing target sentences as "possibly-attributed dialogue" even though
+# no actual dialogue quote was present. Only treat ' / ‘ / ’ as a quote DELIMITER — not
+# flanked by a word character on both sides — leaving genuine 'quoted' dialogue exempted
+# while contractions/possessives no longer are.
+_UV_QUOTE_CHARS_RX = re.compile(r"[\"“”]|(?<!\w)[\'‘’]|[\'‘’](?!\w)")
+_UV_COLLECTIVE_PRON_RX = re.compile(r"\b(?:you|your|we|our)\b", re.I)
+_UV_FRAMING_RX = re.compile(r"^(?:you|we)\s+(?:call\s+it|say)\b", re.I)
+_UV_YOU_SIDE_RX = re.compile(r"\b(?:you|your)\b", re.I)
+_UV_WE_SIDE_RX = re.compile(r"\b(?:we|our)\b", re.I)
+_UV_VERSUS_RX = re.compile(r"\bversus\b|\bvs\.?\b", re.I)
+# Shared rhetorical-frame verb required on BOTH sides of a semicolon/versus split before
+# treating mixed you/we pronouns as an antithesis (added 2026-07-16, adversarial audit) —
+# see the two false-positive classes documented in unattributed_voice_scan's docstring.
+_UV_ANTITHESIS_VERB_RX = re.compile(r"\bcall(?:s|ing|ed)?\s+it\b|\bsay(?:s|ing)?\b|\bsaid\b", re.I)
+
+
+def unattributed_voice_scan(text: str) -> dict:
+    """Report-only: an unattributed, unquoted collective-voice (you/we) sentence with a
+    rhetorical antithesis shape — a stray manifesto/pull-quote fragment breaking close-
+    third POV. status FLAG/PASS. Never raises."""
+    out = {"status": "PASS", "count": 0, "samples": []}
+    try:
+        hits: list[str] = []
+        for para in (text or "").split("\n"):
+            for s in re.split(r"(?<=[.!?])\s+", para):
+                s = s.strip()
+                if not s or not _UV_COLLECTIVE_PRON_RX.search(s):
+                    continue
+                if _UV_QUOTE_CHARS_RX.search(s):
+                    continue  # a real quote char — possibly-attributed dialogue, skip
+                antithesis = False
+                fm = _UV_FRAMING_RX.match(s)
+                if fm:
+                    # Opener matched ("You call it…"/"We say…") — only an antithesis if
+                    # the OPPOSING pronoun side also appears later in the sentence; a bare
+                    # opener with nothing to contrast ("We say the harvest was good this
+                    # year") must NOT flag (audit-caught false positive, 2026-07-16).
+                    rest = s[fm.end():]
+                    opener_is_you = s[:3].lower().startswith("you")
+                    antithesis = bool(
+                        _UV_WE_SIDE_RX.search(rest) if opener_is_you
+                        else _UV_YOU_SIDE_RX.search(rest)
+                    )
+                if not antithesis:
+                    parts = None
+                    if ";" in s:
+                        parts = s.split(";", 1)
+                    elif _UV_VERSUS_RX.search(s):
+                        parts = _UV_VERSUS_RX.split(s, 1)
+                    if parts and len(parts) >= 2:
+                        left, right = parts[0], parts[1]
+                        # Require a shared rhetorical framing verb on BOTH clauses, not
+                        # just bare you/we pronoun presence on each side — an ordinary
+                        # paired-observation sentence ("You could see the boats gliding
+                        # by; we watched from the porch") merely mixes pronoun families
+                        # without any rhetorical contrast (audit-caught, 2026-07-16).
+                        if _UV_ANTITHESIS_VERB_RX.search(left) and _UV_ANTITHESIS_VERB_RX.search(right) and (
+                            (_UV_YOU_SIDE_RX.search(left) and _UV_WE_SIDE_RX.search(right)) or
+                            (_UV_WE_SIDE_RX.search(left) and _UV_YOU_SIDE_RX.search(right))
+                        ):
+                            antithesis = True
+                if antithesis:
+                    hits.append(s[:200])
+        out["count"] = len(hits)
+        if hits:
+            out["status"] = "FLAG"
+            out["samples"] = hits[:10]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "samples": []}
 
 
 # ── Number-format consistency (narasi "The Version He Loved", 2026-07-07). Report-only. A
@@ -2018,6 +2185,15 @@ def gate_text(text: str, lang: str = "en", mode: str = "book", *,
             stats["instruction_residue_samples"] = _ir["instruction_residue_samples"]
             if _ir["instruction_residue_hits"]:
                 stats["instruction_residue_flag"] = True
+            # Unattributed collective-voice leak (manuscript S2-Th-6 review flag,
+            # 2026-07-16) — report-only, gated (NARASI_UNATTRIBUTED_VOICE_SCAN,
+            # default OFF ⟹ block skipped ⟹ stats byte-identical).
+            if _unattributed_voice_scan_on():
+                _uv = unattributed_voice_scan(out)
+                stats["unattributed_voice_hits"] = _uv["count"]
+                stats["unattributed_voice_samples"] = _uv["samples"]
+                if _uv["count"]:
+                    stats["unattributed_voice_flag"] = True
             # Number-format consistency + Korean-ceramics fact-check (TVHL lens).
             _nf = number_format_scan(out)
             stats["number_format_styles"] = _nf["number_format_styles"]

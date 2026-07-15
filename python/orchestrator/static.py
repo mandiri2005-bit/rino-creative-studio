@@ -281,6 +281,18 @@ def _placeholder(ch: dict, no: int, reason: str) -> str:
 # truncation regardless of word count. Kill switch: NARASI_WORDGATE=0 (default ON).
 _WORDGATE_RETRIES = int(os.environ.get("DALANG_MAX_CHAPTER_RETRIES", "2"))
 _TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_length")
+# Ceiling companion to the 0.9x floor above: a chapter running 30%+ OVER word_target is a
+# spec-adherence regression (confirmed 2026-07-15: a book shipped at 53,655 words against a
+# ~40,000 target). Report-only — see the ceiling check inside _apply_word_gate below. Kept
+# deliberately loose (30%) so it fires only on genuinely egregious overshoot, not routine
+# variance — do NOT reuse this as the model-facing prompt ceiling (audit-caught 2026-07-16:
+# an earlier patch did exactly that, which told the model a LOOSER ceiling than the assembler's
+# own pre-existing 1.15x default — the opposite of fixing the overshoot).
+_WORDGATE_CEILING_FACTOR = 1.3
+# The actual ceiling STATED TO THE MODEL — tighter than the alarm threshold above by design;
+# matches pakem.assembler.Chapter's own pre-existing 1.15x default so both code paths (the
+# fallback prompt below and the compose() chapter dict) agree on one real ceiling.
+_WORDGATE_PROMPT_CEILING_FACTOR = 1.15
 
 
 def _res_truncated(r: Any) -> bool:
@@ -331,38 +343,83 @@ async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
     """Continue an undershooting chapter (< 0.9×target) up to _WORDGATE_RETRIES rounds.
     The continuation reuses the SAME worker (same cached system prefix: style rules +
     coherence contract) with the full model output ceiling, so a follow-up round can
-    never itself be length-starved for targets under the admission cap."""
-    if not _wordgate_on() or not res.get("ok") or not res.get("output"):
-        return res
-    floor = int(int(word_target) * 0.9)
-    text = str(res["output"])
-    rounds = 0
-    last = res  # the result whose truncation flag we track as the tail grows
-    # Continue while the chapter is UNDER the floor OR the last call was truncated by the
-    # model's output ceiling (a truncated chapter above the floor would otherwise ship
-    # mid-sentence). Bounded by _WORDGATE_RETRIES either way.
-    while (len(text.split()) < floor or _res_truncated(last)) and rounds < _WORDGATE_RETRIES:
-        rounds += 1
-        need = max(50, floor - len(text.split()))
-        cont_task = (
-            "You are continuing YOUR OWN chapter draft. The chapter so far:\n\n---\n"
-            + text +
-            "\n---\n\nCONTINUE the chapter EXACTLY from its last sentence — do NOT repeat or "
-            "summarize anything already written, do NOT restart, do NOT add a new heading or "
-            f"closing recap. Add at least {need} words, deepening the scene or argument already "
-            "in progress, in the same language and register. Return ONLY the continuation text."
-        )
-        cres = await run_worker(worker, cont_task, timeout=timeout, task_id=f"{task_id}:cont{rounds}")
-        add = (cres.get("output") or "").strip() if isinstance(cres, dict) else ""
-        if not add:
-            break
-        text = text.rstrip() + "\n\n" + add
-        last = cres
-    if rounds:
-        log.info("%s: word-gate continued %d round(s) → %d words (target %d, truncated_tail=%s)",
-                 task_id, rounds, len(text.split()), word_target, _res_truncated(last))
-        res = {**res, "output": text, "continued": rounds}
+    never itself be length-starved for targets under the admission cap.
+
+    Also runs a report-only CEILING check on the final word count (independent of the
+    NARASI_WORDGATE on/off flag — this is pure defect-visibility, not a new gate): if the
+    chapter is 30%+ OVER word_target, logs a warning. Never mutates output for this."""
+    if _wordgate_on() and res.get("ok") and res.get("output"):
+        floor = int(int(word_target) * 0.9)
+        text = str(res["output"])
+        rounds = 0
+        last = res  # the result whose truncation flag we track as the tail grows
+        # Continue while the chapter is UNDER the floor OR the last call was truncated by the
+        # model's output ceiling (a truncated chapter above the floor would otherwise ship
+        # mid-sentence). Bounded by _WORDGATE_RETRIES either way.
+        while (len(text.split()) < floor or _res_truncated(last)) and rounds < _WORDGATE_RETRIES:
+            rounds += 1
+            need = max(50, floor - len(text.split()))
+            cont_task = (
+                "You are continuing YOUR OWN chapter draft. The chapter so far:\n\n---\n"
+                + text +
+                "\n---\n\nCONTINUE the chapter EXACTLY from its last sentence — do NOT repeat or "
+                "summarize anything already written, do NOT restart, do NOT add a new heading or "
+                f"closing recap. Add at least {need} words, deepening the scene or argument already "
+                "in progress, in the same language and register. Return ONLY the continuation text."
+            )
+            cres = await run_worker(worker, cont_task, timeout=timeout, task_id=f"{task_id}:cont{rounds}")
+            add = (cres.get("output") or "").strip() if isinstance(cres, dict) else ""
+            if not add:
+                break
+            text = text.rstrip() + "\n\n" + add
+            last = cres
+        if rounds:
+            log.info("%s: word-gate continued %d round(s) → %d words (target %d, truncated_tail=%s)",
+                     task_id, rounds, len(text.split()), word_target, _res_truncated(last))
+            res = {**res, "output": text, "continued": rounds}
+
+    try:
+        if res.get("ok") and res.get("output"):
+            _final_wc = len(str(res["output"]).split())
+            _ceiling = int(int(word_target) * _WORDGATE_CEILING_FACTOR)
+            if word_target and _final_wc > _ceiling:
+                log.warning(
+                    "%s: chapter word count %d exceeds ceiling %d (target %d words, +%.0f%% over target)",
+                    task_id, _final_wc, _ceiling, word_target,
+                    ((_final_wc / word_target) - 1.0) * 100.0)
+    except Exception as _wce:  # noqa: BLE001
+        log.warning("%s: word-ceiling check failed (non-fatal): %s", task_id, _wce)
+
     return res
+
+
+# ── Deterministic leak-scrub for outline-planning residue in generated prose. ──
+# Confirmed defect (2026-07-15): a chapter shipped with literal "Scene N--..." planning
+# lines embedded in the prose, plus a stray trailing "#" left after the real closing
+# line. Both are pure regex/string ops on the chapter text — no LLM call, no flag (a
+# defect scrub that never fires on clean output is safe to always run).
+_SCENE_LEAK_RE = re.compile(r'^[ \t]*Scenes?[ \t]+\d+[ \t]*(?:—|-{1,2})[ \t]*.*$')
+_TRAILING_HASH_RE = re.compile(r'(?:^|\s)#$')
+
+
+def _scrub_chapter_leaks(text: str, *, task_id: str) -> str:
+    """Always trims trailing whitespace from one chapter's generated text;
+    additionally strips leaked outline-planning lines ('Scene 2--...') and a bare
+    trailing hash if present. NOT byte-identical on clean input that merely has
+    trailing whitespace/newlines — those are always stripped regardless of whether
+    either leak pattern matched."""
+    if not text:
+        return text
+    kept = []
+    for ln in text.split("\n"):
+        if _SCENE_LEAK_RE.match(ln):
+            log.warning("%s: scrubbed leaked outline-planning line: %r", task_id, ln)
+            continue
+        kept.append(ln)
+    scrubbed = "\n".join(kept).rstrip()
+    if _TRAILING_HASH_RE.search(scrubbed):
+        scrubbed = _TRAILING_HASH_RE.sub("", scrubbed).rstrip()
+    return scrubbed
 
 
 async def _write_chapter(
@@ -388,6 +445,11 @@ async def _write_chapter(
     Returns a dict tagged with `no` so the MAP can be sorted back into book order.
     """
     word_target = int(ch.get("word_target", ch.get("words", 800)) or 800)
+    # Firm ceiling companion to word_target — stated in the prompt itself so the model
+    # treats the target as a ceiling too, not just a floor (2026-07-15: a book shipped
+    # at 53,655 words against a ~40,000 target). Deliberately tighter than the separate
+    # _WORDGATE_CEILING_FACTOR alarm threshold used below — see that constant's comment.
+    word_max = int(word_target * _WORDGATE_PROMPT_CEILING_FACTOR)
     # CC v3: scale the per-chapter timeout to the target so big chapters (≤8k words)
     # aren't killed by the flat default while small ones keep the tight bound.
     timeout = _scaled_timeout(timeout, word_target)
@@ -398,7 +460,8 @@ async def _write_chapter(
         prompt = (
             f"{ctx.brief_block()}\n\n{ctx.scope_for(no)}\n\n"
             f"Write chapter {no + 1} of {total}: \"{ch.get('title','')}\". "
-            f"Target ~{word_target} words. Return ONLY the chapter body."
+            f"Target ~{word_target} words. Do not exceed {word_max} words. "
+            "Return ONLY the chapter body."
         )
         worker = Worker(
             name=f"ch{no + 1}", role="worker", phase="worker", model=worker_model,
@@ -407,6 +470,8 @@ async def _write_chapter(
         res = await run_worker(worker, prompt, timeout=timeout, task_id=f"ch{no + 1}")
         res = await _apply_word_gate(res, worker=worker, word_target=word_target,
                                      timeout=timeout, task_id=f"ch{no + 1}")
+        if res.get("output"):
+            res["output"] = _scrub_chapter_leaks(res["output"], task_id=f"ch{no + 1}")
         res["no"] = no
         return res
 
@@ -425,6 +490,13 @@ async def _write_chapter(
             "index": no,
             "total": total,
             "word_target": word_target,
+            # Propagate the same 1.3x ceiling used in the fallback prompt + the
+            # _apply_word_gate WARN check — omitting these left Chapter.__post_init__
+            # silently defaulting to its own unrelated 0.85x/1.15x figures, so the
+            # "Do not exceed" instruction never reached the model on this (primary,
+            # production) path. Audit-confirmed dead-code fix, 2026-07-16.
+            "word_min": int(word_target * 0.9),
+            "word_max": word_max,
         },
         prev_tail=ctx.scope_for(no),      # anti-collision scope (per chapter, NOT cached)
         rag_passages=ctx.passages,        # retrieved ONCE in build_shared_context, reused
@@ -449,6 +521,8 @@ async def _write_chapter(
     )
     res = await _apply_word_gate(res, worker=worker, word_target=word_target,
                                  timeout=timeout, task_id=f"ch{no + 1}")
+    if res.get("output"):
+        res["output"] = _scrub_chapter_leaks(res["output"], task_id=f"ch{no + 1}")
     res["no"] = no
     res["cache_key"] = composed.cache_key
     return res
@@ -1014,7 +1088,12 @@ async def narrate_chapters(
 
     async def _bounded(no: int, ch: dict) -> dict[str, Any]:
         if no in _pre:   # S2: checkpointed on a previous attempt — reuse, zero spend
-            return {"ok": True, "output": _pre[no], "no": no, "model": w_model, "resumed": True}
+            # Resumed content bypasses _write_chapter entirely, so it must get the same
+            # leak scrub freshly-generated chapters get below — otherwise a checkpoint
+            # captured before the scrub existed (or containing a leak some other way)
+            # would ship un-scrubbed forever.
+            _resumed_output = _scrub_chapter_leaks(_pre[no], task_id=f"ch{no + 1}")
+            return {"ok": True, "output": _resumed_output, "no": no, "model": w_model, "resumed": True}
         async with sem:
             res = await _write_chapter(
                 ctx=ctx, ch=ch, no=no, total=total,
@@ -1081,6 +1160,64 @@ async def narrate_chapters(
         })
 
     n_ok = sum(1 for c in chapter_records if c["ok"])
+
+    # POST-MAP CHAPTER-BOUNDARY CONTINUITY CHECK (NARASI_CHAPTER_BOUNDARY_CHECK, default
+    # OFF): chapters MAP in genuine parallel (asyncio.ensure_future, gathered via
+    # as_completed above) — no chapter ever sees another chapter's ACTUAL generated prose,
+    # only the static outline's summary (ctx.scope_for, built pre-MAP). Confirmed real-world
+    # consequence: ch1 ended with a character taking a train alone at night and arriving;
+    # ch2 opened re-staging the same inciting incident from scratch with a different
+    # character taking a car in the morning. Making generation sequential would fight the
+    # MAP-parallelism perf work — out of scope. CHEAP option instead: for each adjacent
+    # chapter pair, ONE bounded cheap-model call judges whether N+1's opening contradicts or
+    # redundantly re-stages something N's ending already resolved. REPORT-ONLY — logs a
+    # WARNING, never revises (matches every other gate in this file). Bounded at exactly
+    # total-1 calls (loop below), skipping pairs where either side failed to generate.
+    # Never raises.
+    if str(os.environ.get("NARASI_CHAPTER_BOUNDARY_CHECK", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            if total >= 2:
+                from laozhang_api import _narasi_cheap_call as _bc_call, _narasi_parse_json as _bc_parse
+                _bc_sys = (
+                    "You are checking two adjacent chapters of a narrative for a continuity "
+                    "break at the seam between them. You are given the ENDING of chapter N and "
+                    "the OPENING of chapter N+1. Question: does the OPENING of chapter N+1 "
+                    "CONTRADICT or REDUNDANTLY RE-STAGE something the ENDING of chapter N already "
+                    "resolved — e.g. re-introducing an event, journey, decision or arrival that "
+                    "already happened, with different details (different character, different "
+                    "means, different time of day)? Return ONLY JSON: {\"broken\": true|false, "
+                    "\"reason\": \"<one sentence, or empty if broken=false>\"}")
+                # Number-keyed lookup, NOT positional list indexing: the exception handler
+                # above can append a "no": -1 placeholder for a chapter task that raised,
+                # and since chapter_records is sorted by "no", that -1 entry sorts to the
+                # very front and shifts every subsequent record's LIST POSITION out of sync
+                # with its actual chapter number — positional chapter_records[_bi]/[_bi+1]
+                # access would then silently compare a non-adjacent pair (e.g. ch2 vs ch4,
+                # skipping ch3) without ever raising. Keying by "no" sidesteps that entirely.
+                _bc_by_no = {c["no"]: c for c in chapter_records if c.get("no", -1) >= 0}
+                for _bi in range(total - 1):
+                    _bc_a, _bc_b = _bc_by_no.get(_bi), _bc_by_no.get(_bi + 1)
+                    if _bc_a is None or _bc_b is None:
+                        continue   # missing chapter record (e.g. the -1 exception placeholder) — nothing adjacent to compare
+                    if not (_bc_a.get("ok") and _bc_b.get("ok")):
+                        continue   # a placeholder-failed chapter has nothing real to check
+                    _bc_tail = " ".join((_bc_a.get("content") or "").split()[-300:])
+                    _bc_head = " ".join((_bc_b.get("content") or "").split()[:300])
+                    if not _bc_tail or not _bc_head:
+                        continue
+                    _bc_u = (f"CHAPTER {int(_bc_a.get('no', 0)) + 1} ENDING:\n{_bc_tail}\n\n"
+                             f"CHAPTER {int(_bc_b.get('no', 0)) + 1} OPENING:\n{_bc_head}")
+                    _bc_raw, _bc_cr = await _bc_call(_bc_sys, _bc_u, tenant_id=tenant_id,
+                                                     user_id=None, job_uuid=None, json_mode=True)
+                    _bc_d = _bc_parse(_bc_raw) if isinstance(_bc_raw, str) else (_bc_raw or {})
+                    if isinstance(_bc_d, dict) and _bc_d.get("broken") is True:
+                        log.warning(
+                            "chapter-boundary check: ch %d -> ch %d looks like a continuity "
+                            "break (%s)", int(_bc_a.get("no", 0)) + 1, int(_bc_b.get("no", 0)) + 1,
+                            str(_bc_d.get("reason") or "")[:200])
+        except Exception as _bce:  # noqa: BLE001
+            log.warning("chapter-boundary check failed (non-fatal): %s", _bce)
+
     # Assemble WITH a per-chapter heading so the result is classified per-bab while
     # the manager polish keeps the prose flowing. Heading uses the outline title
     # (1-based by position); chapters with no title get a bare "## Bab N".

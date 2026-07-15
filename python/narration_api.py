@@ -286,6 +286,213 @@ def _numeric_drifts(referents: list) -> list[dict]:
     return drifts[:6]
 
 
+def _name_uniqueness_scan(text: str) -> list[dict]:
+    """NEW gate (2026-07-15): confirmed miss — a manuscript used the identical full
+    name 'Yoon Hye-jin' for two unrelated characters (a council committee chair, an
+    unrelated widow) introduced in different chapters. The nearest relative,
+    narasi_gate.phonetic_collision_scan, solves the OPPOSITE problem (different-
+    but-similar names assumed to be one person) and explicitly treats identical
+    strings as the SAME person — so this is a genuinely new class. Deterministic:
+    the SAME full name introduced via 'named X Y' with a DIFFERING description
+    clause in >=2 places is flagged. A character introduced once and simply
+    referenced afterward — or re-introduced with the same (recapped) description —
+    does NOT fire. Pure function; narrow by design (mirrors phonetic_collision_
+    scan's high-precision-first philosophy) — start narrow, broaden if the corpus
+    demands it."""
+    import re as _nre
+    if not text:
+        return []
+    _intro_rx = _nre.compile(
+        r"\bnamed\s+([A-Z][a-z]+(?:-[a-z]+)?(?:\s+[A-Z][a-z]+(?:-[a-z]+)?){1,2})"
+        r"(?:,\s*([^.\n]{4,160}))?"
+    )
+    by_name: dict[str, list[str]] = {}
+    for m in _intro_rx.finditer(text):
+        name = m.group(1).strip()
+        ctx = (m.group(2) or "").strip()
+        by_name.setdefault(name, []).append(ctx)
+    collisions: list[dict] = []
+    for name, ctxs in by_name.items():
+        if len(ctxs) < 2:
+            continue
+        # de-dupe near-identical description clauses — a verbatim recap of the SAME
+        # character re-introduced later is not a collision — by comparing only the
+        # FIRST comma/semicolon-delimited clause of each captured context (2026-07-16
+        # fix: a blind 40-char prefix of the WHOLE context truncated across the actual
+        # description-clause boundary into trailing verb-phrase text, e.g. "...the head
+        # of the ICU night shift, now exhausted after a double shift." vs "...the head
+        # of the ICU night shift, as she rushes down the corridor." — natural prose
+        # almost never ends the sentence right at the description clause, so those two
+        # diverge before the 40-char cutoff even though the description clause itself
+        # is identical, producing a false collision). Splitting on the first comma/
+        # semicolon isolates just the description clause for the dedup key.
+        uniq: list[str] = []
+        seen_heads: set = set()
+        for c in ctxs:
+            head = _nre.split(r"[,;]", c, maxsplit=1)[0].strip().lower()
+            if head in seen_heads:
+                continue
+            seen_heads.add(head)
+            uniq.append(c)
+        if len(uniq) < 2:
+            continue
+        collisions.append({
+            "name": name, "contexts": uniq[:4],
+            "note": (f"'{name}' is introduced with 'named {name}' in {len(uniq)} "
+                     f"distinct contexts — likely two different characters sharing "
+                     f"one name.")})
+        if len(collisions) >= 5:
+            break
+    return collisions
+
+
+def _name_order_scan(text: str) -> list[dict]:
+    """NEW gate (2026-07-16): a manuscript review found the same character rendered
+    as 'Yuna Song' (Western given-family order) in one chapter and 'Song Yuna'
+    (Korean surname-first order) in another — same two name tokens, reversed order,
+    likely the same person but currently undetected by any existing gate.
+    Deterministic, report-only: scans ALL two-token capitalized name occurrences
+    (mirrors the 'named X Y' token shape used by _name_uniqueness_scan above, but
+    does not require the word 'named' — it matches any two-token capitalized name
+    anywhere in the prose) and groups them by the SORTED pair of tokens, so
+    'Yuna Song' and 'Song Yuna' hash to the same group regardless of which order
+    appears first. A group is only flagged when BOTH orderings are actually
+    present — a name repeated any number of times in a single consistent order is
+    not a collision. Pure function; never raises; capped at 5.
+    Stop-word guarded (2026-07-16, audit fix) against the codebase's established
+    closed-class filler-word list (narasi_counters._ALIAS_STOP_SN — But/And/The/
+    When/She/He/etc), which kills the sentence-initial-FILLER false positive
+    ('But Yuna...'). KNOWN RESIDUAL LIMITATION, not fully closed by a finite stop
+    list: an ordinary English content word that is ALSO a character's surname and
+    happens to open a sentence in a reduced-relative-clause ('Song Yuna had once
+    loved...', where 'Song' is capitalized only by sentence position) can still
+    false-positive. Closing that fully needs sentence-boundary + corroboration
+    logic, not just a bigger stop list — deferred; report-only + default-off
+    keeps the blast radius to a dashboard field, not manuscript mutation."""
+    import re as _nre
+    import narasi_counters as _nc  # reuse the established stop-word set, don't fork it
+    if not text:
+        return []
+    _name_rx = _nre.compile(
+        r"\b([A-Z][a-z]+(?:-[a-z]+)?)\s+([A-Z][a-z]+(?:-[a-z]+)?)\b")
+    # group key -> literal form -> occurrence count
+    groups: dict[tuple, dict[str, int]] = {}
+    for m in _name_rx.finditer(text):
+        tok1, tok2 = m.group(1), m.group(2)
+        # Stop-word guard (audit-caught, 2026-07-16): without this, a sentence-initial
+        # filler word ("But Yuna...") or a reduced-relative-clause common noun ("Song
+        # Yuna had once loved...", where "Song" is capitalized only because it opens the
+        # clause) gets captured as a two-token "name" and can collide with a real
+        # character's actual name. Same convention already used by narasi_counters'
+        # _ALIAS_SURNAME_GIVEN_RX/_ALIAS_STOP_SN for this exact problem class — checked
+        # on BOTH tokens here since neither capture group has a shape constraint that
+        # would already exclude a stop word.
+        if tok1 in _nc._ALIAS_STOP_SN or tok2 in _nc._ALIAS_STOP_SN:
+            continue
+        literal = f"{tok1} {tok2}"
+        key = tuple(sorted((tok1, tok2)))
+        bucket = groups.setdefault(key, {})
+        bucket[literal] = bucket.get(literal, 0) + 1
+    inconsistencies: list[dict] = []
+    for key, forms in groups.items():
+        if len(forms) < 2:
+            continue
+        # BOTH orderings present means >=2 distinct literal forms whose token pair
+        # sorts to the same key — since key is a 2-tuple, any 2+ distinct literals
+        # here are, by construction, the two possible orderings of the same tokens.
+        inconsistencies.append({
+            "tokens": list(key),
+            "forms": [{"text": lit, "count": cnt} for lit, cnt in sorted(
+                forms.items(), key=lambda kv: -kv[1])],
+            "note": (f"Name tokens {key[0]!r}/{key[1]!r} appear in both orders "
+                     f"({', '.join(sorted(forms.keys()))}) — likely the same "
+                     f"character rendered inconsistently.")})
+        if len(inconsistencies) >= 5:
+            break
+    return inconsistencies
+
+
+def _name_typo_scan(text: str) -> list[dict]:
+    """NEW gate (2026-07-16): a manuscript review found a chore-list line "Call
+    Seo-ra's clinic" where the established character name elsewhere in the same
+    manuscript is "So-ra" (part of "Seol So-ra") — a one-letter typo, and also
+    confusingly one letter off from an unrelated protagonist name ("Seo-an"), a
+    real reader-confusion risk. Deterministic, report-only: (1) builds a registry
+    of canonical hyphenated Korean-style given names ([A-Z][a-z]+-[a-z]+) that
+    appear 3+ times in the text (repetition threshold — establishes it as a real,
+    recurring character name rather than a one-off), (2) scans for any OTHER
+    hyphenated-name-shaped token NOT in that canonical set but within a local
+    edit-distance-1 of a canonical name, (3) flags it as a likely typo. Pure
+    function; never raises; capped at 5."""
+    import re as _nre
+
+    def _edit_distance_1(a: str, b: str) -> bool:
+        """True iff a and b differ by exactly one character substitution,
+        insertion, or deletion. O(n), length-difference-gated — sufficient for
+        short name tokens; not a full DP Levenshtein implementation."""
+        if a == b:
+            return False
+        la, lb = len(a), len(b)
+        if abs(la - lb) > 1:
+            return False
+        if la == lb:
+            # substitution: exactly one differing position
+            diffs = sum(1 for x, y in zip(a, b) if x != y)
+            return diffs == 1
+        # insertion/deletion: la != lb by exactly 1 — walk both, allow one skip
+        shorter, longer = (a, b) if la < lb else (b, a)
+        i = j = 0
+        skipped = False
+        while i < len(shorter) and j < len(longer):
+            if shorter[i] == longer[j]:
+                i += 1
+                j += 1
+                continue
+            if skipped:
+                return False
+            skipped = True
+            j += 1
+        return True
+
+    if not text:
+        return []
+    _hy_rx = _nre.compile(r"\b[A-Z][a-z]+-[a-z]+\b")
+    counts: dict[str, int] = {}
+    for m in _hy_rx.finditer(text):
+        tok = m.group(0)
+        counts[tok] = counts.get(tok, 0) + 1
+    canonical = {tok: cnt for tok, cnt in counts.items() if cnt >= 3}
+    if not canonical:
+        return []
+    typos: list[dict] = []
+    flagged: set = set()
+    for tok, cnt in counts.items():
+        if tok in canonical or tok in flagged:
+            continue
+        # Repetition guard (audit-caught, 2026-07-16): a token repeated 2+ times reads as
+        # an intentional, independently-established name (e.g. "Min-i" used 2+ times
+        # alongside "Min-a" 3+ times — plausible distinct sibling/cousin names, not a
+        # slip), not a one-off typo. A genuine typo like "Seo-ra" appearing once in a
+        # chore-list line is exactly the cnt==1 signature this preserves.
+        if cnt > 1:
+            continue
+        for canon, canon_cnt in canonical.items():
+            if tok == canon:
+                continue
+            if _edit_distance_1(tok, canon):
+                typos.append({
+                    "typo": tok, "typo_count": cnt,
+                    "canonical": canon, "canonical_count": canon_cnt,
+                    "note": (f"{tok!r} appears {cnt} time(s) and is one character "
+                             f"off from the established name {canon!r} (seen "
+                             f"{canon_cnt} times) — likely a typo.")})
+                flagged.add(tok)
+                break
+        if len(typos) >= 5:
+            break
+    return typos
+
+
 def _chapters_key(job_id: str) -> str:
     return f"narration:{job_id}:chapters"
 
@@ -1231,6 +1438,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         # only KIM" in Ch9 — the R4 attribute-fork class (ages 7/9/26, Dr. Chae vs
         # Director Yun) in its gender form. One bounded cheap extract-and-check call;
         # report-only. Fiction-only. Never raises.
+        # (2026-07-15) confirmed miss: Han So-ra's child was "daughter" in one chapter,
+        # "son" in another chapter — same referent — and this gate said "no drift"
+        # because it only tracked NAMED characters, never relation-descriptors of
+        # people mentioned-but-not-independently-tracked. Prompt now also tracks
+        # relation slots (named char + relation type, e.g. "So-ra's child") as a
+        # fourth drift kind. Still report-only, same flag, same never-raise contract.
         try:
             if _r7_env_on("NARASI_ENTITY_ATTR_CHECK"):
                 _ea_fic = False
@@ -1248,12 +1461,19 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _easys = (
                         "You are an entity-attribute continuity checker for a multi-chapter story. For "
                         "every NAMED character, track three attributes across chapters: gender pronouns "
-                        "used for them, professional title/rank, and stated age. Report ONLY characters "
-                        "where an attribute CONTRADICTS between chapters without in-story explanation "
-                        "(a promotion explains a title change; a disguise explains a pronoun change). "
-                        "Return ONLY JSON: {\"drifts\":[{\"name\":\"<char>\",\"kind\":\"gender|title|age\","
-                        "\"evidence\":\"<the two contradicting usages, chapter-tagged>\"}]} — max 6, real "
-                        "contradictions only.")
+                        "used for them, professional title/rank, and stated age. ALSO track relation "
+                        "descriptors for people who are only MENTIONED in relation to a named character "
+                        "and never independently named/tracked themselves — e.g. a character's daughter, "
+                        "son, wife, husband, mother, father, sister, or brother. Treat each such relation "
+                        "as its own tracked slot keyed by the named character plus the relation type (so "
+                        "'So-ra's daughter' and 'So-ra's son' referring to the same child are the SAME "
+                        "slot). Report ONLY cases where an attribute or relation descriptor CONTRADICTS "
+                        "between chapters without in-story explanation (a promotion explains a title "
+                        "change; a disguise explains a pronoun change; an adoption or remarriage explains "
+                        "a relation change). Return ONLY JSON: {\"drifts\":[{\"name\":\"<char, or '<char>'s "
+                        "<relation slot>' for a mentioned-but-unnamed relative>\",\"kind\":\"gender|title|"
+                        "age|relation\",\"evidence\":\"<the two contradicting usages, chapter-tagged>\"}]} "
+                        "— max 6, real contradictions only.")
                     _earaw, _eacc = await _eacall(_easys, _eabk[:60000], tenant_id=tenant_id,
                                                   user_id=user_id, job_uuid=job_uuid, json_mode=True)
                     if sink is not None and _eacc:
@@ -1270,10 +1490,86 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         except Exception as e:  # noqa: BLE001
             log.warning("entity attribute check failed (non-fatal): %s", e)
 
+    def _r9_gate_name_uniqueness():
+        # ── (0.89) NAME UNIQUENESS (NARASI_NAME_UNIQUENESS_CHECK, default OFF, NEW
+        # gate, 2026-07-15): confirmed miss — a manuscript used the identical full
+        # name "Yoon Hye-jin" for two unrelated characters (a council committee
+        # chair, an unrelated widow) introduced in different chapters. No existing
+        # gate catches this; phonetic_collision_scan (narasi_gate.py) is the nearest
+        # relative and solves the OPPOSITE problem (different-but-similar names
+        # assumed to be one person), so it does not overlap this flag. Deterministic
+        # regex — see _name_uniqueness_scan — so unlike its two async siblings above
+        # this needs no LLM call and runs synchronously rather than joining the
+        # cheap-call gather. New flag (not a shared one): this is a genuinely new
+        # gate, not an extension of an existing on/off-gated check. Report-only.
+        # Never raises.
+        try:
+            if _r7_env_on("NARASI_NAME_UNIQUENESS_CHECK"):
+                _nukey = "book" if result.get("book") else "output"
+                _nubk = result.get(_nukey) or ""
+                _nucol = _name_uniqueness_scan(_nubk)
+                if _nucol:
+                    result["name_uniqueness_report"] = {"collisions": _nucol}
+                    log.warning("name uniqueness: %d name(s) reused across distinct characters: %s",
+                                len(_nucol), [c.get("name") for c in _nucol[:4]])
+                else:
+                    log.info("name uniqueness: no collision")
+        except Exception as e:  # noqa: BLE001
+            log.warning("name uniqueness check failed (non-fatal): %s", e)
+
+    def _r9_gate_name_order():
+        # ── NAME ORDER CONSISTENCY (NARASI_NAME_ORDER_CHECK, default OFF, NEW gate,
+        # 2026-07-16): a manuscript review found the same character rendered as
+        # "Yuna Song" (Western given-family order) in one chapter and "Song Yuna"
+        # (Korean surname-first order) in another — same two name tokens, reversed
+        # order, likely the same person but currently undetected. Deterministic
+        # regex — see _name_order_scan — synchronous, no LLM call. Report-only.
+        # Never raises.
+        try:
+            if _r7_env_on("NARASI_NAME_ORDER_CHECK"):
+                _nokey = "book" if result.get("book") else "output"
+                _nobk = result.get(_nokey) or ""
+                _noinc = _name_order_scan(_nobk)
+                if _noinc:
+                    result["name_order_report"] = {"inconsistencies": _noinc}
+                    log.warning("name order: %d name(s) rendered in both orders: %s",
+                                len(_noinc), [i.get("tokens") for i in _noinc[:4]])
+                else:
+                    log.info("name order: no inconsistency")
+        except Exception as e:  # noqa: BLE001
+            log.warning("name order check failed (non-fatal): %s", e)
+
+    def _r9_gate_name_typo():
+        # ── NAME TYPO / NEAR-MISS (NARASI_NAME_TYPO_CHECK, default OFF, NEW gate,
+        # 2026-07-16): a manuscript review found a chore-list line "Call Seo-ra's
+        # clinic" where the established character name elsewhere in the same
+        # manuscript is "So-ra" — a one-letter typo, and also confusingly one
+        # letter off from an unrelated protagonist name ("Seo-an"), a real
+        # reader-confusion risk. Deterministic — see _name_typo_scan — synchronous,
+        # no LLM call. Report-only. Never raises.
+        try:
+            if _r7_env_on("NARASI_NAME_TYPO_CHECK"):
+                _ntkey = "book" if result.get("book") else "output"
+                _ntbk = result.get(_ntkey) or ""
+                _nttyp = _name_typo_scan(_ntbk)
+                if _nttyp:
+                    result["name_typo_report"] = {"typos": _nttyp}
+                    log.warning("name typo: %d likely typo(s): %s",
+                                len(_nttyp), [t.get("typo") for t in _nttyp[:4]])
+                else:
+                    log.info("name typo: no likely typo")
+        except Exception as e:  # noqa: BLE001
+            log.warning("name typo check failed (non-fatal): %s", e)
+
     # ROUND-9 (speed): the three cheap-call gates are independent — run them
     # CONCURRENTLY instead of serially (sum→max: ~60-110s → ~50s when all on).
     # Each keeps its own flag check and its own never-raise try inside.
     await asyncio.gather(_r9_gate_domain(), _r9_gate_numeric(), _r9_gate_entity())
+    # Deterministic, no LLM call — runs synchronously right after (not folded into
+    # the gather above, which exists specifically to overlap LLM latency).
+    _r9_gate_name_uniqueness()
+    _r9_gate_name_order()
+    _r9_gate_name_typo()
 
 
     # ── (1) terminal deterministic gate (localized per §2/§3) ──
@@ -1377,6 +1673,30 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             "fix": f"Replace the lane-overused item «{_mterm}» with a fresh, "
                                    f"premise-specific choice (previous stories in this lane already "
                                    f"used it); keep the sentence's meaning and rhythm."})
+                    # Tier 1a (2026-07-15): instruction_residue_scan / placeholder_leak_scan
+                    # (narasi_gate.py) were report-only — gate_report is computed earlier in
+                    # this fn (v3 terminal gate, above) and its hits only ever reached a WARN,
+                    # never critique/revise (Law 1, same failure ledger_hits_scan had). Same
+                    # contract as ledger_hits above: unconditional under NARASI_LEDGER_ENFORCE,
+                    # no separate sub-flag.
+                    _gflags = gate_report.get("flags") or {}
+                    for _irs in (_gflags.get("instruction_residue_samples") or [])[:6]:
+                        _mech.append({
+                            "type": "instruction_residue", "severity": "high",
+                            "evidence": str(_irs)[:200],
+                            "fix": ("This is an unresolved template slot/instruction that leaked "
+                                    "into prose (a hedge word like 'around' standing in for a value "
+                                    "the generator never filled in). Replace it with the actual, "
+                                    "specific value the story establishes; remove the hedge wording "
+                                    "entirely.")})
+                    for _pls in (_gflags.get("placeholder_leak_samples") or [])[:6]:
+                        _mech.append({
+                            "type": "placeholder_leak", "severity": "high",
+                            "evidence": str(_pls)[:200],
+                            "fix": ("This is an unresolved descriptive-slot hedge ('sekitar/kira-"
+                                    "kira' + an unfilled instruction) that leaked into prose. "
+                                    "Replace it with the actual, specific value the story "
+                                    "establishes; remove the hedge wording entirely.")})
                     for f in ((_mctrs.get("timeline_arith") or {}).get("findings") or [])[:4]:
                         if (f.get("kind") == "span_alternation"
                                 and _r7_env_on("NARASI_NUMERIC_LEDGER")):
