@@ -2724,6 +2724,19 @@ _LEDGER_STATIC_TICS: tuple = (
     ("steady hands as data",
      r"(?i)\bsteady\s+hands?\b[^.\n]{0,80}\b(?:data|numbers?|metrics?|charts?|spreadsheets?)\b"
      r"|\b(?:data|numbers?|metrics?|charts?|spreadsheets?)\b[^.\n]{0,80}\bsteady\s+hands?\b", 1),
+    # r16 (S2-Th-3 finding): a hedged approximate duration ("around 4-5 minutes") followed by
+    # precise arithmetic language on that same imprecise figure ("The math was not generous") —
+    # the tell is HEDGING then COMPUTING on the hedge, not the hedge alone (an ordinary "around
+    # 5 minutes" is unremarkable prose; scoping to the math-tell keeps this high-precision).
+    # AUDIT FIX: the gap `[^.\n]{0,150}` stopped at the FIRST period, missing the real
+    # motivating example ("around 4-5 minutes. ... The math was not generous.") where the
+    # hedge and its math-tell are in ADJACENT sentences, not the same one. Widened to permit
+    # crossing exactly one sentence boundary while staying line-bounded (never crosses a
+    # paragraph break).
+    ("hedged duration then math",
+     r"(?i)\b(?:around|about|roughly|approximately)\s+\d{1,3}(?:[-–]\d{1,3})?\s+"
+     r"(?:minutes?|seconds?|hours?)\b[^\n]{0,180}\b(?:the math|do(?:ing)? the math|"
+     r"that (?:left|gave|meant)|which (?:left|meant)|not generous|wasn't generous)\b", 1),
 )
 
 
@@ -2745,6 +2758,10 @@ def _numeric_magnitude_on() -> bool:
 
 def _age_ledger_on() -> bool:
     return os.environ.get("NARASI_AGE_LEDGER", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _canon_anchor_on() -> bool:
+    return os.environ.get("NARASI_CANON_ANCHOR", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _brand_scan_on() -> bool:
@@ -2973,7 +2990,29 @@ _META_REF_RX = re.compile(
     # Ch9.", "in Chapter Three, and"); "chapter one OF her life" / "chapter twelve of the
     # report" is a metaphor or an in-world document ref — not a generator artifact. Skip it.
     r"(?!\s+of\b)"
-    r"|\bthe rest\s+[\u2014\-]\s*that belongs to\b")
+    r"|\bthe rest\s+[\u2014\-]\s*that belongs to\b"
+    # r16 (S2-Th-3 finding): "during Season One's Archive opening" leaked past the ch/chapter/
+    # episode-only lexicon (trigger word "during" and noun "Season" were both outside it).
+    # Scoped to "Season <Ordinal/Number>" \u2014 a serialized-production self-reference with no
+    # plausible diegetic reading in MOST cases (unlike "chapter one OF her life", a common
+    # in-world metaphor the sibling branch above already carves out). Deliberately NOT
+    # extending to "this season"/"this volume" \u2014 both have real diegetic uses (weather/
+    # harvest/sports; a physical book prop) per adversarial review.
+    # AUDIT FIX: added the SAME "(?!\s+of\b)" carve-out as the sibling branch \u2014 "Season Two
+    # OF the tournament" is a genuine in-world sports/competition reference, not a meta-leak
+    # (missed in the original cut). A second exclusion (a character WATCHING an in-world
+    # show's "Season One") is a Python-level context check in meta_reference_scan below,
+    # since a variable-length preceding-verb lookbehind isn't expressible in one regex.
+    r"|\bSeason\s+(?:One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|\d{1,2})\b(?!\s+of\b)")
+
+
+# r16 AUDIT FIX: a character diegetically WATCHING an in-world show's "Season One" ("she'd
+# binge-watched Season Two over the weekend") is a legitimate in-story activity, not a
+# production self-reference — excluded via a short pre-context check (a variable-length
+# preceding-verb lookbehind isn't expressible in _META_REF_RX's single regex).
+_META_WATCH_VERB_RX = re.compile(
+    r"(?i)\b(?:watch(?:ed|ing)?|binge[- ]watch(?:ed|ing)?|stream(?:ed|ing)?|"
+    r"finish(?:ed|ing)?|start(?:ed|ing)?|rewatch(?:ed|ing)?)\s+(?:the\s+(?:show\s+)?)?$")
 
 
 def meta_reference_scan(text: str) -> dict:
@@ -2986,6 +3025,8 @@ def meta_reference_scan(text: str) -> dict:
     if not text:
         return {"count": 0, "hits": []}
     for m in _META_REF_RX.finditer(text):
+        if m.group(0).lower().startswith("season") and _META_WATCH_VERB_RX.search(text[max(0, m.start() - 30):m.start()]):
+            continue  # "binge-watched Season Two" — an in-world viewing activity, not a leak
         lo = text.rfind("\n", 0, m.start()) + 1
         hi = text.find("\n", m.end())
         line = text[lo:hi if hi != -1 else len(text)]
@@ -3056,13 +3097,23 @@ def coda_repeat_scan(text: str) -> dict:
     """ROUND-6 (SBF roll): Ch3 and Ch4 shipped the IDENTICAL closing aphorism
     ("Some truths are buried under concrete, others under a signature.") \u2014 a 2x
     verbatim repeat sits below REFRAIN_SCAN's radar. Compare each chapter's final
-    non-empty line, normalized; flag exact duplicates. Report-only."""
+    non-empty line, normalized; flag exact duplicates. Report-only.
+
+    r16 (S2-Th-3 finding): the normalization used to only collapse whitespace + case, so a
+    maxim repeated with only its TRAILING PUNCTUATION changed ("...allowed to knock." vs
+    "...allowed to knock;") slipped past as two "different" strings. Now also strips trailing
+    punctuation before the equality compare \u2014 the stored `coda` (used for the reported
+    snippet) is unaffected, only the dedup KEY changes."""
     if not text:
         return {"count": 0, "pairs": []}
-    blocks = re.split(r"(?m)^(?=Chapter \d+\s*[:.])", text)
+    # AUDIT FIX (r16): the internal pipeline format is "## Chapter N: Title" (per
+    # orchestrator/static.py's _chapter_md / _POLISH_CHAPTER_SPLIT_RX) — a bare "Chapter N"
+    # split never matched, making this scanner dead code on every real chaptered manuscript.
+    # "#{0,3}\s*" accepts 0-3 leading #'s so a bare-text export (no markdown) still matches too.
+    blocks = re.split(r"(?m)^(?=#{0,3}\s*Chapter \d+\s*[:.])", text)
     codas: list[tuple[int, str]] = []
     for b in blocks:
-        m = re.match(r"Chapter (\d+)", b)
+        m = re.match(r"#{0,3}\s*Chapter (\d+)", b)
         if not m:
             continue
         lines = [ln.strip() for ln in b.rstrip().split("\n") if ln.strip()]
@@ -3073,10 +3124,17 @@ def coda_repeat_scan(text: str) -> dict:
     for ch, coda in codas:
         if len(coda) < 25:
             continue
-        if coda in seen:
-            pairs.append({"chapters": [seen[coda], ch], "coda": coda[:120]})
+        # AUDIT FIX: keep ?/! in the strip charclass EXCLUDED — a coda ending in "?" is a
+        # question, one ending in "." is a statement; stripping both to the same key would
+        # merge two codas with the SAME words but different clause type (different meaning)
+        # into a false "duplicate". Only strip punctuation that's genuinely craft-equivalent
+        # (period/semicolon/comma/ellipsis/quotes) — a real near-verbatim repeat differing
+        # ONLY by one of these still collapses to the same key.
+        _key = re.sub(r"[.;,…\"'“”]+$", "", coda).strip()
+        if _key in seen:
+            pairs.append({"chapters": [seen[_key], ch], "coda": coda[:120]})
         else:
-            seen[coda] = ch
+            seen[_key] = ch
     return {"count": len(pairs), "pairs": pairs}
 
 
@@ -3216,6 +3274,268 @@ def alias_legal_lock_scan(text: str) -> dict:
         return out
     except Exception:  # noqa: BLE001
         return {"status": "PASS", "forks": [], "misfiled": []}
+
+
+# ── r16-S1: unsubstituted template-placeholder scan (NARASI_PLACEHOLDER_SCAN) ────────────
+# S2-Th-3 finding: a raw '[date of today]' token survived to the final manuscript (L3373,
+# "Reinterred Jeonju, [date of today]. Consent tier: public.") — the date-substitution step
+# silently no-op'd, and the phantom-name gate mislabeled the bracket as a name. Curated token
+# list (NOT a generic bracket scan — real in-world brackets like stage directions
+# "[Cut to black]" or a citation must not fire).
+def _placeholder_scan_on() -> bool:
+    return os.environ.get("NARASI_PLACEHOLDER_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+_PLACEHOLDER_RX = re.compile(
+    r"\[(?:date of today|today's date|current date|insert[^\]]{0,40}|TODO[^\]]{0,40}|TBD|"
+    r"placeholder[^\]]{0,40}|character name[^\]]{0,20}|\bNAME\b[^\]]{0,20}|XXX+|"
+    r"fill[- ]in[^\]]{0,40}|to be (?:determined|decided|filled)[^\]]{0,20})\]", re.I)
+
+
+def placeholder_scan(text: str) -> dict:
+    """Unsubstituted template-placeholder tokens shipped in final prose. Report-only."""
+    out = {"count": 0, "hits": []}
+    if not text:
+        return out
+    try:
+        for m in _PLACEHOLDER_RX.finditer(text):
+            lo = text.rfind("\n", 0, m.start()) + 1
+            hi = text.find("\n", m.end())
+            line = text[lo:hi if hi != -1 else len(text)]
+            out["hits"].append({"token": m.group(0), "snippet": line.strip()[:160]})
+            if len(out["hits"]) >= 6:
+                break
+        out["count"] = len(out["hits"])
+        return out
+    except Exception:  # noqa: BLE001
+        return {"count": 0, "hits": []}
+
+
+# ── r16-S2: entity-quantity consistency gate (NARASI_ENTITY_QTY) ─────────────────────────
+# S2-Th-3 finding: "the Shadow Ledger" pinned at 37 names/entries throughout Ch5/Ch8, then
+# Ch10 attributes "112 unlisted victims" to the same ledger with zero setup — an unforeshadowed
+# resize. Tracks a named quantitative entity (Ledger/Registry/Archive/Database/etc) and flags
+# >=2 widely divergent counts attributed to it. Reuses the r15-B style: nearest-entity
+# attribution within a proximity window, ratio-based divergence threshold.
+def _entity_qty_on() -> bool:
+    return os.environ.get("NARASI_ENTITY_QTY", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+_ENTITY_ANCHOR_RX = re.compile(
+    r"\b(?:the\s+)?((?:[A-Z][a-z]+\s+){0,2}(?:Ledger|Registry|Archive|Database|List|Trust|Fund|Program))\b")
+_QTY_UNIT_RX = re.compile(
+    r"\b(\d[\d,]{0,5}"                                     # digits: "112"
+    r"|[a-z]+\s+hundred(?:\s+and)?\s+[a-z]+(?:-[a-z]+)?"   # "one hundred and twelve" / "one hundred twelve"
+    r"|[a-z]+\s+hundred"                                    # "one hundred"
+    r"|[a-z]+(?:-[a-z]+)?)"                                 # "thirty-seven" / "twelve"
+    # up to 2 filler words ("unlisted", "additional") between the number and the unit noun.
+    r"\s+(?:[a-z]+\s+){0,2}(?:names?|entries|entr(?:y|ies)|pages?|letters?|"
+    r"envelopes?|victims?|people|persons?|records?)\b", re.I)
+
+
+def _entity_qty_num(s: str) -> Optional[int]:
+    """Word/digit -> int, including 'thirty-seven' and 'one hundred and twelve'-style
+    compounds (bare _a2_leadnum only covers simple 1-20/tens/hundred alone)."""
+    s = (s or "").strip().lower()
+    if re.match(r"^[\d,]+$", s):
+        try:
+            return int(s.replace(",", ""))
+        except Exception:  # noqa: BLE001
+            return None
+    m = re.match(r"^(\w+)\s+hundred(?:\s+and)?(?:\s+(\w+(?:-\w+)?))?$", s)
+    if m:
+        h = _A2_NW.get(m.group(1))
+        if h is None:
+            return None
+        rest = 0
+        if m.group(2):
+            r = m.group(2)
+            if "-" in r:
+                t, o = r.split("-", 1)
+                rest = _A2_NW.get(t, 0) + _A2_NW.get(o, 0)
+            else:
+                rest = _A2_NW.get(r, 0)
+        return h * 100 + rest
+    if "-" in s:
+        t, o = s.split("-", 1)
+        if t in _A2_NW and o in _A2_NW:
+            return _A2_NW[t] + _A2_NW[o]
+    return _A2_NW.get(s)
+
+
+def entity_quantity_scan(text: str) -> dict:
+    """Same named quantitative entity given >=2 widely divergent counts. Report-only."""
+    out = {"status": "PASS", "forks": []}
+    if not text:
+        return out
+    try:
+        qty_by_entity: dict[str, set] = {}
+        for m in _QTY_UNIT_RX.finditer(text):
+            n = _entity_qty_num(m.group(1))
+            if n is None or not (2 <= n <= 100000):
+                continue
+            win = text[max(0, m.start() - 200):m.end() + 200]
+            em = None
+            for e in _ENTITY_ANCHOR_RX.finditer(win):
+                em = e  # last match in window wins — same nearest-mention convention as r15
+            if em:
+                # Normalize away a leading "The"/"the" so a sentence-initial capitalized mention
+                # ("The Shadow Ledger...") and a mid-sentence one ("...the Shadow Ledger had...")
+                # key to the SAME entity instead of silently forking on capitalization alone.
+                ename = re.sub(r"^the\s+", "", re.sub(r"\s+", " ", em.group(1)).strip(), flags=re.I)
+                qty_by_entity.setdefault(ename, set()).add(int(n))
+        for ename, qtys in qty_by_entity.items():
+            if len(qtys) >= 2:
+                lo, hi = min(qtys), max(qtys)
+                if lo > 0 and hi / lo >= 2.0 and (hi - lo) >= 10:
+                    out["forks"].append({"entity": ename, "counts": sorted(qtys),
+                        "note": f"'{ename}' given counts {sorted(qtys)} — unify or explain the discrepancy"})
+        out["forks"] = out["forks"][:5]
+        if out["forks"]:
+            out["status"] = "FLAG"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "forks": []}
+
+
+# ── r16-S2: kinship term/label mismatch (NARASI_KINSHIP_SCAN) ────────────────────────────
+# S2-Th-3 finding: Seo-an is correctly called "imo" (Korean: maternal aunt) twice, then the
+# SAME chapter's clerk scene labels her "the applicant's paternal aunt" — a direct
+# self-contradiction. Lexicon-level cross-check (Korean kinship term vs English maternal/
+# paternal label), not a full family graph — much narrower FP surface.
+def _kinship_scan_on() -> bool:
+    return os.environ.get("NARASI_KINSHIP_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+_KINSHIP_KR_TERM_RX = re.compile(r"\b(imo|gomo|emo)\b", re.I)
+_KINSHIP_EN_LABEL_RX = re.compile(r"\b(maternal|paternal)\s+(aunt|uncle)\b", re.I)
+_KINSHIP_NAME_RX = re.compile(r"\b([A-Z][a-z]+(?:-[a-z]+)?)\b")
+_KINSHIP_STOP_NAMES = {"The", "He", "She", "They", "It", "His", "Her", "Their", "But", "And",
+                        "When", "Then", "That", "This", "Chapter", "Detective", "Doctor",
+                        "Prosecutor", "Officer", "Mr", "Mrs", "Ms", "Why", "How", "What",
+                        "Where", "Here", "There", "Now", "Because", "After", "Before",
+                        # AUDIT FIX: common capitalized dialogue-starter words were being
+                        # mistaken for names by _nearest_name ("Thank you, imo" -> "Thank"
+                        # outranked the real speaker's name several dialogue-lines earlier).
+                        "Thank", "You", "Your", "Yours", "I'm", "You're", "We're", "They're",
+                        "Yes", "No", "Well", "So", "Oh", "Ah", "Please", "Sorry", "Come", "Go",
+                        "Look", "Wait", "Stop", "Let", "We", "I", "Not", "Just", "Still",
+                        "Even", "Only"}
+
+
+def kinship_term_scan(text: str) -> dict:
+    """Korean kinship term (imo/emo=maternal, gomo=paternal) used for a relation elsewhere
+    labelled with the CONTRADICTING English side, for the SAME named character. Report-only.
+
+    AUDIT FIX (r16): the original version tracked ONE global term_side for the whole
+    manuscript and used "both terms present anywhere" as a full kill-switch — either bug could
+    misfire: an unrelated character's correctly-labelled paternal side would read as
+    "contradicting" a totally different character's imo, OR detection would be silently
+    disabled entirely the moment a manuscript legitimately used both imo and gomo for two
+    different people. Now scoped PER-CHARACTER via nearest-preceding-name attribution (the
+    same mechanism scan_same_entity_age_fork/scan_tenure_ledger already use) — a mismatch only
+    fires when the SAME named character is described with both a Korean term and a
+    contradicting English label."""
+    out = {"status": "PASS", "mismatches": []}
+    if not text:
+        return out
+    try:
+        def _nearest_name(pos: int) -> Optional[str]:
+            # 400-char window (wider than the age/tenure scanners' 220) — a kinship term used
+            # vocatively in dialogue ("Imo bought me sundaeguk") is often several dialogue
+            # lines removed from the scene's last narrated name (real-manuscript case: ~350
+            # chars from "Not at Seo-an." to "Imo bought me..." with only pronoun-only dialogue
+            # lines in between).
+            cand = None
+            for nm in _KINSHIP_NAME_RX.finditer(text[max(0, pos - 400):pos]):
+                if nm.group(1) not in _KINSHIP_STOP_NAMES:
+                    cand = nm.group(1)
+            return cand
+
+        side_by_name: dict[str, str] = {}
+        for m in _KINSHIP_KR_TERM_RX.finditer(text):
+            side = "maternal" if m.group(1).lower() in ("imo", "emo") else "paternal"
+            cand = _nearest_name(m.start())
+            if cand:
+                side_by_name.setdefault(cand, side)  # first-seen side is this character's established term
+        for m in _KINSHIP_EN_LABEL_RX.finditer(text):
+            side = m.group(1).lower()
+            cand = _nearest_name(m.start())
+            if not cand or cand not in side_by_name or side_by_name[cand] == side:
+                continue
+            lo = text.rfind("\n", 0, m.start()) + 1
+            hi = text.find("\n", m.end())
+            line = text[lo:hi if hi != -1 else len(text)]
+            out["mismatches"].append({
+                "note": (f"'{cand}' is described with the Korean term for "
+                         f"'{side_by_name[cand]} aunt/uncle' elsewhere, but here labelled "
+                         f"'{side} {m.group(2).lower()}' — contradiction"),
+                "context": line.strip()[:160]})
+            if len(out["mismatches"]) >= 4:
+                break
+        if out["mismatches"]:
+            out["status"] = "FLAG"
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "mismatches": []}
+
+
+# ── r16-S1: character-location continuity heuristic (NARASI_LOCATION_CONTINUITY) ─────────
+# S2-Th-3 finding: Do-yoon explicitly stays behind in Seoul in Ch1 ("I'll stay with the other
+# thirty-six... I'll photograph every envelope"), Seo-an drives to Donghae alone — then Do-yoon
+# is simply AT the Donghae shelter at the start of Ch2, zero travel/arrival beat. Deliberately
+# LOW-CONFIDENCE by design (name-proximity + verb-presence, not real scene/blocking tracking):
+# report-only, a miss is silent, a hit still needs human judgment.
+def _location_continuity_on() -> bool:
+    return os.environ.get("NARASI_LOCATION_CONTINUITY", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+_STAY_BEHIND_RX = re.compile(
+    r"\b([A-Z][a-z]+(?:-[a-z]+)?)\b[^.\n]{0,60}\b(?:would\s+|will\s+|'ll\s+)?sta(?:y|ying|yed)\b"
+    r"[^.\n]{0,30}\b(?:behind|in|at|here)\b"
+    r"|\b(?:stayed|remained)\s+behind\b[^.\n]{0,60}\b([A-Z][a-z]+(?:-[a-z]+)?)\b", re.I)
+_TRAVEL_ARRIVAL_RX = re.compile(
+    r"(?i)\b(?:arrived|drove|driving|took the|reached|made it to|walked in|entered|appeared|"
+    r"boarded|caught the|showed up|got (?:to|there)|pulled up|stepped (?:off|out)|traveled|"
+    r"followed (?:her|him|them)|caught up)\b")
+
+
+def location_continuity_scan(text: str) -> list[dict]:
+    """A character explicitly stated to stay/remain in ONE chapter, then named at the START of
+    the NEXT chapter with no travel/arrival verb nearby — a possible unbridged location jump.
+    Heuristic, report-only."""
+    if not text:
+        return []
+    try:
+        # AUDIT FIX (r16): same dead-code gap as coda_repeat_scan — the internal pipeline
+        # format is "## Chapter N: Title", not bare "Chapter N".
+        blocks = re.split(r"(?m)^(?=#{0,3}\s*Chapter \d+\s*[:.])", text)
+        chapters = []
+        for b in blocks:
+            m = re.match(r"#{0,3}\s*Chapter (\d+)", b)
+            if m:
+                chapters.append((int(m.group(1)), b))
+        chapters.sort(key=lambda c: c[0])
+        out = []
+        for i in range(len(chapters) - 1):
+            _, body = chapters[i]
+            next_no, next_body = chapters[i + 1]
+            for m in _STAY_BEHIND_RX.finditer(body):
+                name = m.group(1) or m.group(2)
+                if not name:
+                    continue
+                head = next_body[:400]
+                if (re.search(r"\b" + re.escape(name) + r"\b", head)
+                        and not _TRAVEL_ARRIVAL_RX.search(head)):
+                    out.append({"kind": "location_continuity_gap", "subject": name,
+                        "note": (f"'{name}' stated to stay/remain behind, then appears at the "
+                                 f"start of Chapter {next_no} with no travel/arrival beat nearby")})
+                    break
+            if len(out) >= 4:
+                break
+        return out
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _ledger_en_num(n: int) -> str:
@@ -3805,6 +4125,37 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
         # -- alias↔legal-name lock (NARASI_ALIAS_LEDGER, default OFF) -- round-15, report-only.
         if _alias_ledger_on():
             report["counters"]["alias_ledger"] = alias_legal_lock_scan(text)
+
+        # -- canon-anchor absolute-date fork (NARASI_CANON_ANCHOR, default OFF) -- round-16,
+        # EN v1 (reuses narasi_arithmetic's date extraction), report-only.
+        if _canon_anchor_on() and (lang or "en").split("-")[0].lower() == "en":
+            try:
+                import narasi_arithmetic as _na2
+                _cf = _na2.scan_canon_anchor_dates(text)
+                report["counters"]["canon_anchor"] = {
+                    "status": "FLAG" if _cf else "PASS", "count": len(_cf), "findings": _cf}
+            except Exception:  # noqa: BLE001
+                pass
+
+        # -- unsubstituted template-placeholder scan (NARASI_PLACEHOLDER_SCAN, default OFF) --
+        # round-16, report-only.
+        if _placeholder_scan_on():
+            report["counters"]["placeholder"] = placeholder_scan(text)
+
+        # -- entity-quantity consistency (NARASI_ENTITY_QTY, default OFF) -- round-16, report-only.
+        if _entity_qty_on():
+            report["counters"]["entity_qty"] = entity_quantity_scan(text)
+
+        # -- kinship term/label mismatch (NARASI_KINSHIP_SCAN, default OFF) -- round-16, report-only.
+        if _kinship_scan_on():
+            report["counters"]["kinship"] = kinship_term_scan(text)
+
+        # -- character-location continuity heuristic (NARASI_LOCATION_CONTINUITY, default OFF)
+        # -- round-16, LOW-confidence by design, report-only (never injected into revise).
+        if _location_continuity_on():
+            _lc = location_continuity_scan(text)
+            report["counters"]["location_continuity"] = {
+                "status": "FLAG" if _lc else "PASS", "count": len(_lc), "findings": _lc}
 
         # ── reglossing budget promotion (NARASI_REGLOSS_BUDGET, default OFF) ──
         # FLAG→BUDGETED: cap read RAW from style_spec.counters.regloss_max (env

@@ -15,10 +15,12 @@
 # only flags for the surgical rewrite loop.
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
-__all__ = ["scan_arithmetic", "AGE_ANCHORS", "INTERVAL_ANCHORS", "scan_age_ledger"]
+__all__ = ["scan_arithmetic", "AGE_ANCHORS", "INTERVAL_ANCHORS", "scan_age_ledger",
+           "scan_canon_anchor_dates", "scan_tenure_ledger"]
 
 # ── number-word tables (spelled small ages 0-19; enough for age-of-person anchors) ──
 _AGE_WORDS: dict[str, dict[str, int]] = {
@@ -823,12 +825,148 @@ def scan_elapsed_span_consistency(text: str) -> list[dict]:
 
 
 def scan_age_ledger(text: str) -> dict:
-    """NARASI_AGE_LEDGER entry point. {status, count, findings}. Never raises."""
+    """NARASI_AGE_LEDGER entry point. {status, count, findings}. Never raises.
+    r16: also includes scan_tenure_ledger — same "numeric fact pinned per character" concept
+    as the age fork, riding the same flag rather than adding a new one."""
     try:
-        f = scan_same_entity_age_fork(text) + scan_elapsed_span_consistency(text)
+        f = (scan_same_entity_age_fork(text) + scan_elapsed_span_consistency(text)
+             + scan_tenure_ledger(text))
         return {"status": "FLAG" if f else "PASS", "count": len(f), "findings": f[:8]}
     except Exception as exc:  # noqa: BLE001
         return {"status": "PASS", "count": 0, "findings": [], "_error": str(exc)}
+
+
+# ── r16-S1: canon-anchor absolute-date fork (NARASI_CANON_ANCHOR) ────────────────────────
+# S2-Th-3 review finding: a sequel manuscript uniformly re-dated the prior season's fire
+# anchor from S1 canon (2 Oct 2011) to a fabricated "September 22, 2008" — the internal
+# elapsed-span fork (15y vs 16y) was already caught by scan_elapsed_span_consistency, but
+# nothing checked the ABSOLUTE date itself, and nothing checked it against an external canon
+# constant. Two independent checks, reusing _dates_en (already extracts (Y,M,D) with position):
+#   (a) internal: the SAME anchor word given >=2 distinct absolute dates in one manuscript —
+#       no canon pin needed.
+#   (b) external: the anchor's stated date does not match a pinned canon constant, set via
+#       NARASI_CANON_ANCHOR_NAME (e.g. "fire") + NARASI_CANON_ANCHOR_DATE (YYYY-MM-DD, from
+#       the prior season's adjudicated canon). Both env-driven; empty = check (b) simply
+#       never fires, (a) always runs when NARASI_CANON_ANCHOR is on.
+def _canon_anchor_pin() -> tuple[str, tuple[int, int, int] | None]:
+    name = (os.environ.get("NARASI_CANON_ANCHOR_NAME", "") or "").strip().lower()
+    raw = (os.environ.get("NARASI_CANON_ANCHOR_DATE", "") or "").strip()
+    if not name or not raw:
+        return "", None
+    try:
+        y, m, d = (int(x) for x in raw.split("-"))
+        return name, (y, m, d)
+    except Exception:  # noqa: BLE001
+        return "", None
+
+
+def scan_canon_anchor_dates(text: str) -> list[dict]:
+    """Same anchor event (fire/disappearance/etc, reusing _SPAN_ANCHORS) given >=2 distinct
+    ABSOLUTE dates internally, and/or a stated date that contradicts an external canon pin
+    (NARASI_CANON_ANCHOR_NAME/_DATE). Report-only; reuses _dates_en.
+
+    AUDIT FIX: a bare-year mention near an anchor word ("survivors were still discussing the
+    fire by 2020") was being treated as a SECOND date of the anchor event itself, not what it
+    usually is — ordinary retrospective/anniversary prose referencing WHEN something was later
+    discussed, not when it happened. _dates_en already tags this precision tier via slop_out
+    (bare year = ±185d slop, vs 0.0 for a full or month-year date) — excluded here entirely."""
+    if not text:
+        return []
+    canon_name, canon_date = _canon_anchor_pin()
+    _slop: dict = {}
+    by_anchor: dict[str, set] = {}
+    for pos, date in _dates_en(text, slop_out=_slop):
+        if _slop.get(pos, 0.0) >= 185.0:
+            continue  # bare-year precision — not reliable evidence of the anchor's OWN date
+        ctx = text[max(0, pos - 90):pos + 90].lower()
+        for a in _SPAN_ANCHORS:
+            if re.search(r"\b" + re.escape(a) + r"\b", ctx):
+                by_anchor.setdefault(a, set()).add(date)
+                break
+    out = []
+    for anchor, dates in by_anchor.items():
+        ds = sorted(f"{y:04d}-{m:02d}-{d:02d}" for y, m, d in dates)
+        if len(dates) >= 2:
+            out.append({"kind": "canon_date_fork", "anchor": anchor, "dates": ds,
+                        "note": f"'{anchor}' given {len(dates)} distinct absolute dates {ds} — unify"})
+        elif canon_date and anchor == canon_name and canon_date not in dates:
+            out.append({"kind": "canon_date_violation", "anchor": anchor, "stated": ds[0],
+                        "canon": f"{canon_date[0]:04d}-{canon_date[1]:02d}-{canon_date[2]:02d}",
+                        "note": f"'{anchor}' stated as {ds[0]} but canon pins it to "
+                                 f"{canon_date[0]:04d}-{canon_date[1]:02d}-{canon_date[2]:02d}"})
+    return out[:6]
+
+
+# ── r16-S2: numeric tenure/experience ledger (extends scan_same_entity_age_fork's pattern) ──
+# S2-Th-3 finding: a clerk's age forked 38-vs-28 (already covered by scan_same_entity_age_fork)
+# but Do-yoon's POSTAL TENURE forked "two decades" vs "fifteen years" — a different attribute
+# (years-of-experience, not age) on the same character, missed by the age-only scanner. Same
+# name-attribution mechanism (220-char lookback, _AGE_STOP_NAMES), different trigger phrases.
+_TENURE_TOKEN_RX = re.compile(
+    r"\b(?:spent|for)\s+(?P<t1>\d{1,3}|" + "|".join(sorted(
+        list(_AGE_WORDS["en"].keys()) + [f"{t}-{u}" for t in _EN_TENS for u in
+        ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")],
+        key=len, reverse=True)) + r")\s+(?:years?|decades?)\b"
+    r"|\b(?P<t2>\d{1,3}|(?:two|three|four|five|six|seven|eight|nine|ten))\s+decades?\b", re.I)
+# Local (not the shared _NAME_TOKEN_RX): Korean-order given names can have a ONE-consonant-
+# vowel first syllable ("Do-yoon", "Yu-jin") — _NAME_TOKEN_RX's [a-z]{2,} minimum (tuned for
+# r15's age-fork on names like "Park"/"Seo-an") misses these entirely. Widened ONLY for the
+# hyphenated-compound branch (a bare unhyphenated 2-char capitalized word, e.g. a stray "Do"
+# starting a sentence, still requires the {2,} minimum) so this can't regress into matching
+# ordinary capitalized dialogue-starter words.
+_TENURE_NAME_RX = re.compile(r"\b([A-Z][a-z]+-[a-z]+|[A-Z][a-z]{2,}(?:[- ][A-Z][a-z]+)*)\b")
+# Institutional/object nouns that read as a capitalized "subject" immediately before a tenure
+# phrase ("the Archive... two decades") but are never a PERSON's tenure — same spirit as
+# _AGE_STOP_NAMES (function words) for a different false-attribution class.
+_TENURE_STOP_NOUNS = {"Archive", "Trust", "Program", "Ledger", "Layer", "Protocol", "Committee",
+                       "Court", "Fund", "System", "Registry", "Department", "Office", "Agency",
+                       "Bureau", "Foundation", "Institute", "Council", "Board", "Division",
+                       "Unit", "Center", "Centre", "Program", "Shelter", "City", "Government"}
+
+
+def scan_tenure_ledger(text: str) -> list[dict]:
+    """Same capitalized person-name given >=2 distinct tenure/years-of-experience figures
+    ("spent two decades" vs "fifteen years", the same career). 'decade' tokens are ×10'd
+    before comparison. Report-only; mirrors scan_same_entity_age_fork's mechanism (with a
+    locally-widened name pattern + an institutional-noun stoplist, see above)."""
+    if not text:
+        return []
+    tenure_by_name: dict[str, set] = {}
+    givens_by_surname: dict[str, set] = {}
+    for m in _TENURE_TOKEN_RX.finditer(text):
+        raw = m.group("t1") or m.group("t2")
+        n = _en_num(raw) if not raw.isdigit() else int(raw)
+        if n is None:
+            continue
+        if "decade" in text[m.start():m.end()].lower():
+            n *= 10
+        if not (1 <= n <= 70):
+            continue
+        cand = None
+        for nm in _TENURE_NAME_RX.finditer(text[max(0, m.start() - 220):m.start()]):
+            key = nm.group(1).split()[0].split("-")[0]
+            if key not in _AGE_STOP_NAMES and key not in _TENURE_STOP_NOUNS:
+                cand = nm.group(1)
+        if cand:
+            parts = cand.split()
+            # AUDIT FIX: only split off "-" when cand is "Surname Given[-name]" (2+ space-
+            # separated words, parts[0] IS a real surname). A bare single-token hyphenated
+            # match ("Do-yoon", from _TENURE_NAME_RX's compound branch) IS the whole given
+            # name — splitting it on "-" truncated the reported subject to just "Do".
+            if len(parts) >= 2:
+                surname = parts[0].split("-")[0]
+                givens_by_surname.setdefault(surname, set()).add(parts[1])
+            else:
+                surname = cand
+            tenure_by_name.setdefault(surname, set()).add(n)
+    out = []
+    for name, tenures in tenure_by_name.items():
+        if len(givens_by_surname.get(name, set())) >= 2:
+            continue  # different people sharing a surname — same guard as the age fork
+        if len(tenures) >= 2 and (max(tenures) - min(tenures)) >= 2:
+            out.append({"kind": "tenure_fork", "subject": name, "years": sorted(tenures),
+                        "note": f"'{name}' given tenure/experience {sorted(tenures)} years — pick one"})
+    return out[:6]
 
 
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")

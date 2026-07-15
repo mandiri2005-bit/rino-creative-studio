@@ -669,6 +669,23 @@ async def _run_narration_job(
     await _apply_v3_gates(result, body, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
                           sink=sink, job_id=job_id)
     log.info("narration job %s: GATES done in %.1fs", job_id, time.monotonic() - _t_gates)
+    # POST-GATES DEDUP GUARD (narasi round-16 postmortem, second layer — orchestrator.static's
+    # narrate_chapters already runs this BEFORE polish/critique/revise; this is the LAST point
+    # before the manuscript is persisted/returned, after _apply_v3_gates' critique-revise and
+    # canon-diff-revise passes have made their own text edits. Reuses the exact same helper so
+    # the two layers share one definition. Never raises; a no-op when nothing duplicated.
+    try:
+        _dgkey = "book" if result.get("book") else "output"
+        _dgtxt = result.get(_dgkey) or ""
+        if _dgtxt:
+            from orchestrator.static import _dedup_chapter_blocks as _dedup_final
+            _dgtxt2, _dg_dropped = _dedup_final(_dgtxt)
+            if _dg_dropped:
+                result[_dgkey] = _dgtxt2
+                log.warning("narration job %s: POST-GATES dedup guard collapsed %d duplicate "
+                            "chapter-heading block(s)", job_id, _dg_dropped)
+    except Exception as _dge:  # noqa: BLE001 - a dedup bug must never break generation
+        log.debug("narration job %s: post-gates dedup guard skipped (%s)", job_id, _dge)
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -893,6 +910,27 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 log.warning("alias ledger: %d alias/legal fork(s), %d doc-misfile(s): %s",
                             len(_axrep.get("forks") or []), len(_axrep.get("misfiled") or []),
                             [f.get("note") for f in (_axrep.get("misfiled") or []) + (_axrep.get("forks") or [])][:4])
+            _carep = (rep.get("counters") or {}).get("canon_anchor") or {}
+            if _carep.get("count"):
+                log.warning("canon anchor: %d date fork(s): %s",
+                            _carep["count"], [f.get("note") for f in _carep.get("findings") or []][:4])
+            _phrep = (rep.get("counters") or {}).get("placeholder") or {}
+            if _phrep.get("count"):
+                log.warning("placeholder scan: %d unsubstituted token(s): %s",
+                            _phrep["count"], [h.get("token") for h in _phrep.get("hits") or []][:4])
+            _eqrep = (rep.get("counters") or {}).get("entity_qty") or {}
+            if _eqrep.get("forks"):
+                log.warning("entity quantity: %d entity count fork(s): %s",
+                            len(_eqrep["forks"]), [f.get("note") for f in _eqrep["forks"]][:4])
+            _knrep = (rep.get("counters") or {}).get("kinship") or {}
+            if _knrep.get("mismatches"):
+                log.warning("kinship term: %d term/label mismatch(es): %s",
+                            len(_knrep["mismatches"]), [m.get("note") for m in _knrep["mismatches"]][:4])
+            # location_continuity: WARN-only by design (low-confidence heuristic, never injected).
+            _lcrep = (rep.get("counters") or {}).get("location_continuity") or {}
+            if _lcrep.get("count"):
+                log.warning("location continuity (heuristic, report-only): %d possible gap(s): %s",
+                            _lcrep["count"], [f.get("note") for f in _lcrep.get("findings") or []][:4])
             if rep.get("over_budget"):
                 log.warning("counters still over budget after %d diet loop(s): %s",
                             loops, rep["over_budget"])
@@ -1373,6 +1411,79 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                         f"court file) use the character's LEGAL/registered name «{f.get('legal')}» at "
                                         f"EVERY such mention; reserve the alias for informal in-world speech, and never "
                                         f"label the legal name as the 'working name'.")})
+                    # ROUND-16 ACTUATORS (S2-Th-3 postmortem): canon-anchor date fork, an
+                    # unsubstituted template placeholder, a named-entity quantity fork, and a
+                    # kinship term/label mismatch — same _mech/severity-high contract as the
+                    # round-15 siblings above. location_continuity is deliberately NOT injected
+                    # here (WARN-only — see its own docstring on why it stays report-only).
+                    if _r7_env_on("NARASI_CANON_ANCHOR"):
+                        for f in ((_mctrs.get("canon_anchor") or {}).get("findings") or [])[:3]:
+                            _mech.append({"type": "canon_anchor", "severity": "high",
+                                "evidence": str(f.get("note") or "")[:200],
+                                "fix": (f"{f.get('note')}. Anchor this event to ONE absolute date at EVERY "
+                                        f"mention" + (f" — the canonical date is {f.get('canon')}."
+                                                       if f.get("canon") else "."))})
+                    if _r7_env_on("NARASI_PLACEHOLDER_SCAN"):
+                        for h in ((_mctrs.get("placeholder") or {}).get("hits") or [])[:4]:
+                            _mech.append({"type": "placeholder_token", "severity": "high",
+                                "evidence": str(h.get("snippet") or h.get("token"))[:200],
+                                "fix": (f"Replace the unsubstituted template token «{h.get('token')}» with "
+                                        f"the actual value the story establishes (or the correct current "
+                                        f"in-story date/name).")})
+                    if _r7_env_on("NARASI_ENTITY_QTY"):
+                        for f in ((_mctrs.get("entity_qty") or {}).get("forks") or [])[:3]:
+                            _mech.append({"type": "entity_quantity", "severity": "high",
+                                "evidence": str(f.get("note") or "")[:200],
+                                "fix": (f"{f.get('note')}. Pin ONE count for this entity and use it at "
+                                        f"every mention; if a larger figure is intentional (a broader total "
+                                        f"vs a specific sub-list), name that distinction explicitly in the prose.")})
+                    if _r7_env_on("NARASI_KINSHIP_SCAN"):
+                        for f in ((_mctrs.get("kinship") or {}).get("mismatches") or [])[:3]:
+                            _mech.append({"type": "kinship_mismatch", "severity": "high",
+                                "evidence": str(f.get("context") or f.get("note") or "")[:200],
+                                "fix": (f"{f.get('note')}. Use the consistent side (maternal/paternal) "
+                                        f"established elsewhere in the manuscript for this relationship "
+                                        f"at EVERY mention.")})
+                    # ROUND-16 STYLE-COUNTER ENFORCEMENT (NARASI_STYLE_COUNTER_ENFORCE, default
+                    # OFF): epithet/anchors/aphorisms/reglossing/anchor_voice go OVER budget and
+                    # sit purely as a WARN (narasi_counters.py:3816 — prod runs
+                    # NARASI_DIET_MAX_LOOPS=0, so the separate full-book "diet loop" rewrite
+                    # mechanism these counters were built for never actually fires). This rides
+                    # the SAME already-parallelized consistency-revise path as every other r16
+                    # actuator instead — independent of the diet loop, does not touch
+                    # NARASI_DIET_MAX_LOOPS/_diet_worthy/surgical_prompt at all. Evidence is the
+                    # counter's own real quoted "sentences" (epithet/anchors/aphorisms/
+                    # anchor_voice); reglossing has no "sentences" field, so its over-cap TERMS
+                    # are used instead.
+                    if os.environ.get("NARASI_STYLE_COUNTER_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+                        _over = set(rep.get("over_budget") or [])
+                        # AUDIT FIX: read from `rep` (the raw scan_manuscript output), NOT
+                        # `_mctrs` — `_mctrs` is result["counter_report"]["counters"], which
+                        # explicitly strips the "sentences" key a few lines above (the dict
+                        # comprehension `if kk != "sentences"`). Reading from _mctrs made this
+                        # whole block a silent no-op: over_budget correctly listed the counter,
+                        # but every `.get("sentences")` returned None, so 0 _mech entries were
+                        # ever appended for epithet/anchors/aphorisms/anchor_voice.
+                        _rawctrs = rep.get("counters") or {}
+                        for _ckey in ("epithet", "anchors", "aphorisms", "anchor_voice"):
+                            if _ckey not in _over:
+                                continue
+                            _cdat = _rawctrs.get(_ckey) or {}
+                            for _sent in (_cdat.get("sentences") or [])[:3]:
+                                _mech.append({"type": f"style_counter_{_ckey}", "severity": "high",
+                                    "evidence": str(_sent)[:200],
+                                    "fix": (f"This line contributes to the manuscript exceeding its "
+                                            f"'{_ckey}' budget ({_cdat.get('count')}/{_cdat.get('budget', '?')}). "
+                                            f"Rewrite it to remove the repeated device while preserving "
+                                            f"the sentence's meaning.")})
+                        if "reglossing" in _over:
+                            _rg = _rawctrs.get("reglossing") or {}
+                            for _term, _cnt in list((_rg.get("terms") or {}).items())[:3]:
+                                _mech.append({"type": "style_counter_reglossing", "severity": "high",
+                                    "evidence": f"term «{_term}» re-glossed {_cnt}× (budget {_rg.get('budget', '?')})",
+                                    "fix": (f"The term «{_term}» is re-defined with an em-dash gloss "
+                                            f"{_cnt} times. Define it ONCE on first use; every later "
+                                            f"mention should use the bare term with no re-gloss.")})
                     # ROUND-6 BRAND ACTUATOR (NARASI_BRAND_ENFORCE, default OFF): two files
                     # running named a REAL chaebol as the culpable entity (Doosan R8,
                     # Hanjin SBF) — the scan caught both and nothing acted (Law 1). Only

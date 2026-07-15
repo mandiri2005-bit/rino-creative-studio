@@ -1109,6 +1109,19 @@ async def narrate_chapters(
 
     # 3) REDUCE — optional manager polish over the assembled book.
     _t_polish = time.monotonic()  # timing: POLISH phase (Rino 2026-07-06)
+    # Floor manager_timeout the SAME way _scaled_timeout floors the per-chapter timeout: when a
+    # failover chain is armed (legacy NARASI_FAILOVER_ENABLED, or NARASI_WORKER_KIE_FIRST now
+    # that it also covers role=='manager' — Rino 2026-07-15), a hung early rung (cold KIE) must
+    # not be killed by the flat 240s default before the chain can fall through to laozhang/
+    # native. Same cold-KIE-hang class NARASI_BIBLE_SKIP_KIE and _scaled_timeout's own floor
+    # exist to avoid, now reachable on the polish/manager path too. Applies to every internal
+    # _polish_reduce call site (whole-book and each NARASI_POLISH_PARALLEL chunk alike) since
+    # they all receive this same `timeout` value.
+    _mgr_timeout = manager_timeout
+    if (str(os.environ.get("NARASI_FAILOVER_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+            or str(os.environ.get("NARASI_WORKER_KIE_FIRST", "0")).strip().lower() in ("1", "true", "yes", "on")):
+        _mgr_timeout = max(_mgr_timeout,
+                           float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET", "840")) + 90.0)
     polished_book, did_polish = await _polish_reduce(
         book=book,
         topic=topic,
@@ -1116,7 +1129,7 @@ async def narrate_chapters(
         language=language,
         polish=polish,
         manager_model=m_model,
-        timeout=manager_timeout,
+        timeout=_mgr_timeout,
         telemetry_sink=telemetry_sink,
         any_failures=(n_ok < total),
     )
@@ -1130,6 +1143,13 @@ async def narrate_chapters(
     # R-FG5 TERMINAL: the polish is the last LLM touch and can reintroduce brackets —
     # the deterministic gate must run AFTER it, so residue can never ship.
     polished_book = _gate(polished_book, lang=language)
+    # POST-ASSEMBLY DEDUP GUARD (narasi round-16 postmortem, job nny3va3j): a chunked-polish
+    # completion can echo/duplicate a chapter block under its own preserved heading. Regardless
+    # of root cause, the final book must never carry two blocks for the same chapter number.
+    polished_book, _n_dedup_dropped = _dedup_chapter_blocks(polished_book)
+    if _n_dedup_dropped:
+        log.warning("narrate_chapters: POST-ASSEMBLY dedup guard collapsed %d duplicate "
+                    "chapter-heading block(s)", _n_dedup_dropped)
 
     return {
         "ok": n_ok > 0,
@@ -1184,6 +1204,69 @@ def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool 
 
 
 _POLISH_CHAPTER_SPLIT_RX = re.compile(r"(?m)(?=^## )")
+# AUDIT FIX (r16): the bare `(\d+)` capture collapsed "Chapter 3a"/"Chapter 3.5" into the
+# SAME key as plain "Chapter 3" — a genuinely distinct chapter would then be silently DELETED
+# as a false "duplicate". The negative lookahead rejects a match immediately followed by a
+# lowercase letter or a decimal point, so "3a"/"3.5" no longer match at all (nums[i]=None,
+# which the "fails safe" branch below always KEEPS) while plain "Chapter 3:"/"Chapter 3 —"
+# still match normally.
+_CH_HEADER_NUM_RX = re.compile(r"^##\s+\D*?(\d+)(?![a-z.])")
+
+
+def _dedup_chapter_blocks(book: str) -> tuple[str, int]:
+    """Defense-in-depth safety net (narasi round-16 postmortem, job nny3va3j): scan the final
+    assembled/polished book for repeated '## <label> N' chapter headings and keep only the LAST
+    occurrence of each chapter number, dropping earlier duplicate blocks — regardless of root
+    cause (a bloated polish-chunk echo — see the upper-bound guard in _polish_one/_polish_reduce
+    — a stale resume, or anything else). Splits on the same '^## ' boundary _split_into_chunks
+    already trusts, so behavior stays consistent with the chunker. Preserves original relative
+    order (a pure filter, never a re-sort), so a correctly-ordered book is byte-identical.
+    _CH_HEADER_NUM_RX matches a leading non-digit run then a digit run, which covers every
+    language template in laozhang_api._NARASI_HEADER_LABELS ("Chapter {n}", "Bab {n}", "第{n}章",
+    "{n}장", ...) since they all interpolate a plain digit run into the heading; a part with no
+    matching digit (None) is always kept (fails safe — never mistaken for a duplicate). Never
+    raises; returns (book, 0) when every heading number is already unique or none are found."""
+    try:
+        parts = [p for p in _POLISH_CHAPTER_SPLIT_RX.split(book) if p.strip()]
+        if len(parts) <= 1:
+            return book, 0
+        nums: list[Optional[int]] = []
+        for p in parts:
+            m = _CH_HEADER_NUM_RX.match(p.split("\n", 1)[0].strip())
+            nums.append(int(m.group(1)) if m else None)
+        # AUDIT FIX (r16), then RE-VERIFIED and CORRECTED against the real manuscript: the
+        # audit raised a valid hypothetical ("keep LAST" could retain a corrupted/truncated
+        # duplicate appended AFTER a good original) and an initial fix switched to "prefer the
+        # LONGEST occurrence" unconditionally — but empirically re-testing that against the
+        # REAL bug (4 real duplicated chapters) showed it picks the WRONG (stale/duplicate,
+        # EARLIER) occurrence in 3 of 4 cases, because two independent regenerations of the
+        # same chapter differ in length by mere noise (a few dozen words either way — 3235 vs
+        # 3217, or an exact tie), which carries no correctness signal. "Keep last" alone
+        # correctly resolved all 4/4 real cases (the pipeline's later generation is the
+        # authoritative one). Default back to "keep last"; ONLY override it when the last
+        # occurrence is drastically shorter than the best earlier one (looks truncated, not
+        # just ordinary length variance) — narrow protection for the audit's scenario without
+        # being noise-sensitive for the actual observed failure mode.
+        occurrences: dict[int, list[int]] = {}
+        for i, n in enumerate(nums):
+            if n is not None:
+                occurrences.setdefault(n, []).append(i)
+        keep_idx: dict[int, int] = {}
+        for n, idxs in occurrences.items():
+            last_i = idxs[-1]
+            if len(idxs) == 1:
+                keep_idx[n] = last_i
+                continue
+            best_i = max(idxs, key=lambda i: len(parts[i].split()))
+            last_words = len(parts[last_i].split())
+            best_words = len(parts[best_i].split())
+            keep_idx[n] = best_i if last_words < best_words * 0.5 else last_i
+        keep = [i for i, n in enumerate(nums) if n is None or keep_idx[n] == i]
+        if len(keep) == len(parts):
+            return book, 0        # nothing duplicated
+        return "\n\n".join(parts[i].strip() for i in keep), len(parts) - len(keep)
+    except Exception:  # noqa: BLE001 - a dedup bug must never break generation
+        return book, 0
 
 
 def _split_into_chunks(book: str, chunk_words: int):
@@ -1208,7 +1291,16 @@ def _split_into_chunks(book: str, chunk_words: int):
 
 async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink, task_id):
     """Polish ONE blob (whole book or a chunk) via synthesize. Returns (out, ok). Post-
-    truncation guard (>=75% words) keeps the original on a cut/degraded pass. Never raises."""
+    truncation guard (>=75% words) keeps the original on a cut/degraded pass. Post-bloat guard
+    (<=135% words) does the SAME for the opposite failure: neither a "light" (preserve length)
+    nor a "heavy" (same-length reconciling edit) polish instruction should legitimately double a
+    chunk's length — a materially LONGER output is exactly as anomalous as a shorter one and was
+    previously accepted unconditionally. narasi round-16 postmortem (job nny3va3j): a long-input
+    polish chunk degenerated on a long-context failure mode (the instruction requires preserving
+    every "## Chapter N" heading exactly, and the model echoed/re-derived the section instead of
+    only editing it), producing one completion with each "## Chapter N" heading TWICE — silently
+    accepted, landing as a 14K-word divergent duplicate of Ch1-4 prepended to the real book.
+    Never raises."""
     wrapped = [{"ok": True, "output": text, "model": model}]
     _t = time.monotonic()
     res = await synthesize(instruction, wrapped, role=role, model=model, timeout=timeout,
@@ -1219,9 +1311,14 @@ async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink
              time.monotonic() - _t, _tel.get("tokens_in"), _tel.get("tokens_out"))
     if res.get("ok") and res.get("output"):
         out = str(res["output"])
-        if len(out.split()) < int(len(text.split()) * 0.75):
+        _in_w, _out_w = len(text.split()), len(out.split())
+        if _out_w < int(_in_w * 0.75):
             log.warning("_polish_reduce: %s output %d words < 75%% of %d — discarding (truncation guard)",
-                        task_id, len(out.split()), len(text.split()))
+                        task_id, _out_w, _in_w)
+            return text, False
+        if _out_w > int(_in_w * 1.35):
+            log.warning("_polish_reduce: %s output %d words > 135%% of %d — discarding (bloat/duplication guard)",
+                        task_id, _out_w, _in_w)
             return text, False
         return out, True
     log.warning("_polish_reduce: %s failed (%s) — keeping unpolished", task_id, res.get("error"))
@@ -1314,11 +1411,20 @@ async def _polish_reduce(
                     polished.append(_o)
                     any_ok = any_ok or _ok
             rejoined = "\n\n".join(polished)
-            # Align with the per-chunk 75% guard: heavy mode legitimately compresses, so a
-            # rejoin in [75%,85%) is real editing, not truncation — an 85% floor would nuke a
-            # valid heavy polish that every chunk already accepted.
-            if len(rejoined.split()) < int(_book_words * 0.75):   # lost too much → keep original
+            # Align with the per-chunk 75%/135% guards in _polish_one: heavy mode legitimately
+            # compresses, so a rejoin in [75%,85%) is real editing, not truncation — an 85%
+            # floor would nuke a valid heavy polish that every chunk already accepted. The
+            # upper bound is defense-in-depth (round-16 postmortem): each chunk is already
+            # capped individually, so this should be structurally unreachable, but mirrors the
+            # same symmetry in case a future change bypasses _polish_one's own check.
+            _rejoined_w = len(rejoined.split())
+            if _rejoined_w < int(_book_words * 0.75):   # lost too much → keep original
                 log.warning("_polish_reduce: chunked polish lost >25%% words — discarding, keeping original")
+                return book, False
+            if _rejoined_w > int(_book_words * 1.35):   # gained too much → keep original
+                log.warning("_polish_reduce: chunked polish rejoin %d words > 135%% of %d — "
+                            "discarding, keeping original (bloat/duplication guard)",
+                            _rejoined_w, _book_words)
                 return book, False
             log.info("_polish_reduce: chunked polish done — %d chunks (<=%d words each), applied=%s",
                      len(chunks), chunk_words, any_ok)
