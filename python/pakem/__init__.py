@@ -30,6 +30,7 @@ import os as _os
 
 from .assets import (
     CRAFT_RULES,
+    CRAFT_TIC_CAPS,
     DRAMA_MANDATES,
     FACTUAL_INTEGRITY,
     GENERATION_PREAMBLE,
@@ -182,6 +183,14 @@ def build_style_block(style, video_mode: bool = False) -> str:
                             "\"; \"".join(_phr) + "\".") if _phr else ""))
         except Exception:  # noqa: BLE001 — ledger is an enhancement, never blocks a chapter
             pass
+    # PROSE TIC CAPS (NARASI_CRAFT_CAPS_PROMPT, default OFF, round-5 craft) — see
+    # pakem.assets.CRAFT_TIC_CAPS for the evidence this responds to (manuscript
+    # review this session: aphorism-paragraph scene-closers and staccato dialogue
+    # runs used as a default register rather than sparingly). Unlike DRAMA_MANDATES/
+    # LANE_LEDGER above this is NOT regime-gated — either tic can surface in fiction
+    # or dramatized non-fiction alike. Byte-identical prompt when the flag is OFF.
+    if str(_os.environ.get("NARASI_CRAFT_CAPS_PROMPT", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        rules = rules.rstrip() + "\n\n" + CRAFT_TIC_CAPS
     # Dual-path selector (dual-path doc §1): compare the style's NATIVE medium with the
     # job's output target. Native match → light normalization only (VIDEO_MODIFIER on the
     # video path, nothing extra on book). Mismatch → the aggressive transform block.

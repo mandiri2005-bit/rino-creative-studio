@@ -8095,9 +8095,13 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
                 "code) whose ACQUISITION is narrated only as a completed fact ('the code she had "
                 "obtained six days ago') with no discovery scene. ALSO flag (type 'dropped_hook') "
                 "an explicit narrative PROMISE of consequence ('it would not stay buried long') "
-                "that no later chapter pays on-page, and a THREAT/STAKE opened in the final "
-                "chapter ('if the catchment fills by tonight, the harbor floods') that the story "
-                "ends without answering.\n"
+                "that no later chapter pays on-page, a THREAT/STAKE opened in the final chapter "
+                "('if the catchment fills by tonight, the harbor floods') that the story ends "
+                "without answering, and any named character or subplot given an active, "
+                "unresolved stake ANYWHERE in the book (an accusation, a disappearance, an "
+                "ongoing threat, a promised investigation, an open question about someone's fate) "
+                "that the ending never addresses — INCLUDING when the ending explicitly closes "
+                "out other similar parties but silently omits this one.\n"
                 "14. DOUBLE-DELIVERED SCENE (report as type 'spatial', severity high) — the same "
                 "event, session, or gathering is dramatized TWICE (typically across adjacent "
                 "chapters) with re-staged introductions or contradictory particulars: different "
@@ -8159,6 +8163,21 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         if canon_aware else "")
     if canon_aware:
         _enum = "canon_fork|" + _enum
+    # Round-6 (NARASI_QUOTE_GROUNDING_CHECK): a quote+em-dash attribution presented as verbatim
+    # dialogue with NO earlier grounding anywhere in the book (fabricated/misattributed quote) —
+    # confirmed real instance this session. Applies to fiction AND nonfiction alike (misattribution
+    # is arguably worse in nonfiction, so not gated on is_fiction) and does NOT ride
+    # NARASI_CRITIQUE_EXTENDED_CHECKS/NARASI_DRAMA_MANDATES — own flag, default OFF, so it can be
+    # validated independently before being trusted. Reuses the 'provenance' type token (check 1's
+    # object-provenance family) so _enum and downstream consumers are unchanged.
+    _check16 = (
+        "16. ATTRIBUTED QUOTE GROUNDING (report as type 'provenance') — a sentence presented in "
+        "quotation marks with an explicit character attribution (a dialogue tag, an em-dash "
+        "byline, or similar) must correspond to something that character actually says, or a "
+        "close paraphrase of it, appearing EARLIER in the book. Flag a quote+attribution pair "
+        "that has NO earlier grounding anywhere in the text as a fabricated/misattributed quote.\n"
+        if os.getenv("NARASI_QUOTE_GROUNDING_CHECK", "0").strip().lower() in ("1", "true", "yes", "on")
+        else "")
     return (
         "You are a strict CONTINUITY editor doing a fresh-eyes read of a COMPLETE multi-chapter "
         "story you did NOT write. Judge whole-draft CONSISTENCY" + _extra + " but NEVER prose "
@@ -8180,7 +8199,7 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         "and tense stay consistent across the WHOLE book. Flag a chapter that switches (a "
         "second-person book with one first-person chapter; a present-tense book with a past-tense "
         "chapter) — cite the chapter and the switched pronoun/tense.\n"
-        + _check7 + _ext +
+        + _check7 + _ext + _check16 +
         "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
         "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
         "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"

@@ -197,6 +197,19 @@ DRAMA_MANDATES = """DRAMATIZATION MANDATES (structural — these outrank scene-l
   the consequence happen off-page or stay implicit."""
 
 
+# ── PROSE TIC CAPS (NARASI_CRAFT_CAPS_PROMPT, round-5 craft) ──
+# Manuscript review this session flagged two tics repeated across every reviewed
+# roll: scenes closing on a standalone gnomic/philosophical paragraph ("A crack is
+# a rumor the wall tells about itself.") 5-11+ times per chapter, and long runs of
+# one-to-three-word dialogue exchanges ("Yes." / "When?" / "No.") used as the
+# default register in nearly every scene instead of a rare high-tension beat.
+# Appended by build_style_block; NOT regime-gated (either tic can appear in
+# fiction or dramatized non-fiction alike).
+CRAFT_TIC_CAPS = """PROSE TIC BUDGET (structural — these are caps, not suggestions):
+- A standalone gnomic/philosophical closer ("A crack is a rumor the wall tells about itself.") is a device, not a default scene-ender. Budget roughly ONE such line per chapter, used only where it earns its place — end other scenes on action, image, or a plain line instead.
+- A run of one-to-three-word dialogue exchanges ("Yes." / "When?" / "No.") reads as tension only when it is rare. Reserve that rhythm for AT MOST one clearly-earned beat per chapter and vary dialogue length everywhere else."""
+
+
 __all__ = [
     "FACTUAL_INTEGRITY",
     "CRAFT_RULES",
@@ -206,4 +219,5 @@ __all__ = [
     "VIDEO_RULE5_LEGACY",
     "VIDEO_RULE5_CAPPED",
     "DRAMA_MANDATES",
+    "CRAFT_TIC_CAPS",
 ]
