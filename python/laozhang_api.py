@@ -1367,60 +1367,136 @@ def _narasi_phase_has_override(phase: str) -> bool:
 
 
 def _narasi_phase_provider_flag(phase: str, provider: str) -> Optional[str]:
-    """Reads NARASI_{PHASE}_{PROVIDER} (e.g. NARASI_BIBLE_KIE, NARASI_CRITIQUE_AIMLAPI). Returns
-    "1"/"0" when explicitly set (any casing / 1|true|yes|on vs anything else), None when unset or
-    blank. None is the default and means "no override — defer to the routing logic untouched"."""
+    """Reads NARASI_{PHASE}_{PROVIDER} (e.g. NARASI_BIBLE_KIE, NARASI_CRITIQUE_AIMLAPI) and
+    returns its RAW stripped value, or None when unset/blank. None is the default and means "no
+    override — defer to the routing logic untouched". Callers classify the raw value via
+    _narasi_flag_decision (Rino 2026-07-15: widened from a normalized "1"/"0" return so the same
+    variable can also carry a model-id override, e.g. NARASI_REVISE_LAOZHANG=gemini-2-5-flash)."""
     if not phase or not provider:
         return None
     v = os.environ.get(f"NARASI_{phase.strip().upper()}_{provider.strip().upper()}")
     if v is None or not v.strip():
         return None
-    return "1" if v.strip().lower() in ("1", "true", "yes", "on") else "0"
+    return v.strip()
 
 
-def _narasi_extra_provider_rungs(model: str, phase: str) -> list[tuple[str, str, str, str, str]]:
-    """Rungs for the 5 providers that are never part of the built-in chain-building logic — each
-    appears ONLY when its own NARASI_{PHASE}_{PROVIDER}=1 override is set. Each carries its OWN
-    env-tunable served model id (never the requested `model` verbatim) since these are entirely
-    different model families (gpt/deepseek/gemini, not claude) — mirrors the existing
-    NARASI_ATLASCLOUD_MODEL precedent of a rung serving a deliberately different build than what
-    was requested. An empty key auto-skips, same contract as every other rung. FAL is the one
-    provider with no synchronous LLM REST endpoint (confirmed against fal.ai/docs 2026-07-15 —
-    even the OpenRouter-passthrough model is submit/poll/fetch only) so it gets its own
-    "fal_queue" protocol + _fal_llm_create, not the plain OpenAI-SDK "openai" branch the other 4
-    reuse as-is."""
-    extra: list[tuple[str, str, str, str, str]] = []
-    if _narasi_phase_provider_flag(phase, "aimlapi") == "1":
-        extra.append(("aimlapi", "openai", "https://api.aimlapi.com/v1",
-                       os.environ.get("AIMLAPI_API_KEY", ""),
-                       (os.environ.get("NARASI_AIMLAPI_MODEL") or model or "gpt-5-mini").strip()))
-    if _narasi_phase_provider_flag(phase, "deepseek") == "1":
-        extra.append(("deepseek", "openai", "https://api.deepseek.com",
-                       (os.environ.get("DEEPSEEK_LAOZHANG_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""),
-                       (os.environ.get("NARASI_DEEPSEEK_MODEL") or "deepseek-v4-pro").strip()))
-    if _narasi_phase_provider_flag(phase, "openai") == "1":
-        extra.append(("openai_direct", "openai", "https://api.openai.com/v1",
-                       os.environ.get("OPENAI_API_KEY", ""),
-                       (os.environ.get("NARASI_OPENAI_MODEL") or "gpt-5.6-terra").strip()))
-    if _narasi_phase_provider_flag(phase, "gemini_direct") == "1":
-        extra.append(("gemini_direct", "openai", "https://generativelanguage.googleapis.com/v1beta/openai",
-                       os.environ.get("GEMINI_API_KEY", ""),
-                       (os.environ.get("NARASI_GEMINI_DIRECT_MODEL") or "gemini-2.5-flash").strip()))
-    if _narasi_phase_provider_flag(phase, "fal") == "1":
-        extra.append(("fal", "fal_queue", "https://queue.fal.run/fal-ai/any-llm",
-                       os.environ.get("FAL_API_KEY", ""),
-                       (os.environ.get("NARASI_FAL_MODEL") or "anthropic/claude-3.5-sonnet").strip()))
-    return extra
+_NARASI_FLAG_FALSY = ("0", "false", "no", "off")
+_NARASI_FLAG_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _narasi_flag_decision(raw: str) -> tuple[bool, str]:
+    """Classifies a raw NARASI_{PHASE}_{PROVIDER} value into (enabled, model_override). A
+    recognized falsy token -> (False, ""); a recognized truthy token -> (True, "") (use the
+    phase's normal/default model); ANY other non-empty string -> (True, that string) — the value
+    IS a model id, which implicitly also means "on". This is what lets one variable double as
+    both an on/off switch and a per-phase-per-provider model override with no separate flag."""
+    low = raw.strip().lower()
+    if low in _NARASI_FLAG_FALSY:
+        return False, ""
+    if low in _NARASI_FLAG_TRUTHY:
+        return True, ""
+    return True, raw.strip()
+
+
+def _narasi_build_rung(flag_provider: str, model: str) -> Optional[tuple[str, str, str, str, str]]:
+    """Builds a single rung tuple for ANY of the 10 canonical switchboard providers, given the
+    model id that should actually be sent. Used both to REPLACE an existing rung's model in place
+    (an explicit override on a provider already in the chain) and to APPEND a rung for a provider
+    that isn't part of the phase's normal chain at all (force-include). An empty resolved API key
+    auto-skips downstream (_create's `if not key: continue`), so force-including a provider whose
+    key isn't configured is a safe no-op, not a crash. Returns None for an unrecognized name
+    (defensive; every name here is one of _ALL_FLAG_PROVIDERS)."""
+    if flag_provider == "kie":
+        return ("kie", "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""), model)
+    if flag_provider == "laozhang":
+        return ("laozhang", "openai", BASE_URL, _req_key.get() or API_KEY, model)
+    if flag_provider == "claude_native":
+        _ck = (os.environ.get("CLAUDE_API_KEY", "") or "").strip()
+        _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
+        return ("claude", "openai", _base, _ck, model)
+    if flag_provider == "atlascloud":
+        return ("atlascloud", "openai", "https://api.atlascloud.ai/api/v1", os.environ.get("ATLASCLOUD_API_KEY", ""), model)
+    if flag_provider == "gemini":
+        vertex_key = "oauth" if _ensure_vertex() else ""
+        return ("vertex", "vertex_genai", "-", vertex_key, model)
+    if flag_provider == "aimlapi":
+        return ("aimlapi", "openai", "https://api.aimlapi.com/v1", os.environ.get("AIMLAPI_API_KEY", ""), model)
+    if flag_provider == "deepseek":
+        return ("deepseek", "openai", "https://api.deepseek.com",
+                (os.environ.get("DEEPSEEK_LAOZHANG_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""), model)
+    if flag_provider == "openai":
+        return ("openai_direct", "openai", "https://api.openai.com/v1", os.environ.get("OPENAI_API_KEY", ""), model)
+    if flag_provider == "gemini_direct":
+        return ("gemini_direct", "openai", "https://generativelanguage.googleapis.com/v1beta/openai",
+                os.environ.get("GEMINI_API_KEY", ""), model)
+    if flag_provider == "fal":
+        return ("fal", "fal_queue", "https://queue.fal.run/fal-ai/any-llm", os.environ.get("FAL_API_KEY", ""), model)
+    return None
+
+
+def _narasi_default_model_for(flag_provider: str, requested_model: str) -> str:
+    """Served-model id when a provider is force-included WITHOUT an explicit
+    NARASI_{PHASE}_{PROVIDER}=<model-id> override (i.e. the flag was just "1"/"true"/etc).
+    kie/laozhang/claude_native pass the requested model straight through (same claude-* family
+    they'd normally serve); atlascloud keeps its established NARASI_ATLASCLOUD_MODEL/opus-4-8
+    default (it has never served the requested id verbatim, even in the legacy chain); gemini
+    (Vertex) and the 4 other new providers each default to their OWN model family via a
+    NARASI_*_MODEL env var — Rino 2026-07-15, audit-corrected: an earlier version fell through to
+    `requested_model` for gemini too, which is a DIFFERENT model family (Vertex only serves
+    Gemini ids) — force-including it bare on a claude-* phase would have sent e.g.
+    "claude-opus-4-6" to Vertex, guaranteeing every attempt fails."""
+    if flag_provider == "atlascloud":
+        return (os.environ.get("NARASI_ATLASCLOUD_MODEL", "claude-opus-4-8") or "claude-opus-4-8").strip()
+    if flag_provider == "gemini":
+        return (os.environ.get("NARASI_GEMINI_MODEL") or "gemini-2.5-flash").strip()
+    if flag_provider == "aimlapi":
+        return (os.environ.get("NARASI_AIMLAPI_MODEL") or requested_model or "gpt-5-mini").strip()
+    if flag_provider == "deepseek":
+        return (os.environ.get("NARASI_DEEPSEEK_MODEL") or "deepseek-v4-pro").strip()
+    if flag_provider == "openai":
+        return (os.environ.get("NARASI_OPENAI_MODEL") or "gpt-5.6-terra").strip()
+    if flag_provider == "gemini_direct":
+        return (os.environ.get("NARASI_GEMINI_DIRECT_MODEL") or "gemini-2.5-flash").strip()
+    return requested_model  # kie / laozhang / claude_native
 
 
 def _apply_phase_provider_gate(chain: list[tuple[str, str, str, str, str]], model: str,
                                phase: str) -> list[tuple[str, str, str, str, str]]:
-    """Applies the switchboard above to an already-built chain. phase="" (no caller opted in) is
-    a pure no-op passthrough — this is what makes the whole feature byte-identical by default."""
+    """Applies the switchboard to an already-built chain. phase="" (no caller opted in) is a pure
+    no-op passthrough — this is what makes the whole feature byte-identical by default. For each
+    of the 10 canonical providers: if it's already a rung in `chain` and flagged 0/false/off ->
+    dropped; if flagged with a model-id override -> its model id is replaced in place; if it's
+    NOT already in `chain` and flagged on (bool or with a model override) -> a fresh rung is
+    appended via _narasi_build_rung. A provider with no flag set for this phase is left exactly
+    as the routing logic above produced it."""
     if not phase:
         return chain
-    gated = [c for c in chain if _narasi_phase_provider_flag(phase, _RUNG_TO_FLAG_PROVIDER.get(c[0], c[0])) != "0"]
-    return gated + _narasi_extra_provider_rungs(model, phase)
+    result: list[tuple[str, str, str, str, str]] = []
+    seen: set[str] = set()
+    for c in chain:
+        fp = _RUNG_TO_FLAG_PROVIDER.get(c[0], c[0])
+        seen.add(fp)
+        raw = _narasi_phase_provider_flag(phase, fp)
+        if raw is None:
+            result.append(c)
+            continue
+        enabled, override = _narasi_flag_decision(raw)
+        if not enabled:
+            continue
+        result.append((c[0], c[1], c[2], c[3], override) if override else c)
+    for fp in _ALL_FLAG_PROVIDERS:
+        if fp in seen:
+            continue
+        raw = _narasi_phase_provider_flag(phase, fp)
+        if raw is None:
+            continue
+        enabled, override = _narasi_flag_decision(raw)
+        if not enabled:
+            continue
+        rung = _narasi_build_rung(fp, override or _narasi_default_model_for(fp, model))
+        if rung:
+            result.append(rung)
+    return result
 
 
 def _fal_llm_create(model: str, messages: list, max_tokens: int, timeout: float,
