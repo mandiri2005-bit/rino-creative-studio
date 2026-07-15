@@ -1299,7 +1299,7 @@ def _narasi_failover_chain_base(model: str = "", role: str = "") -> list[tuple[s
     return [
         ("kie",        "anthropic", "https://api.kie.ai/claude/v1/messages", os.environ.get("KIE_API_KEY", ""),        _kie_model),
         ("laozhang",   "openai",    BASE_URL,                                _req_key.get() or API_KEY,                 _lz_model),
-        ("atlascloud", "openai",    "https://api.atlascloud.ai/api/v1",      os.environ.get("ATLASCLOUD_API_KEY", ""),  _atlas_model),
+        ("atlascloud", "openai",    "https://api.atlascloud.ai/v1",          os.environ.get("ATLASCLOUD_API_KEY", ""),  _atlas_model),
     ]
 
 
@@ -1415,7 +1415,7 @@ def _narasi_build_rung(flag_provider: str, model: str) -> Optional[tuple[str, st
         _base = (os.environ.get("NARASI_CLAUDE_BASE_URL") or "https://api.anthropic.com/v1").strip()
         return ("claude", "openai", _base, _ck, model)
     if flag_provider == "atlascloud":
-        return ("atlascloud", "openai", "https://api.atlascloud.ai/api/v1", os.environ.get("ATLASCLOUD_API_KEY", ""), model)
+        return ("atlascloud", "openai", "https://api.atlascloud.ai/v1", os.environ.get("ATLASCLOUD_API_KEY", ""), model)
     if flag_provider == "gemini":
         vertex_key = "oauth" if _ensure_vertex() else ""
         return ("vertex", "vertex_genai", "-", vertex_key, model)
