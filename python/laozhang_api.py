@@ -512,7 +512,7 @@ def _dynamic_max_tokens(model: str, prompt_chars: int, hard_ceiling: int = 12800
 # ── Cost estimation (USD) — used by log_usage() after each stream ────────────
 # Keys match either the user-facing alias OR the resolved upstream name.
 # Prices are best-effort $/1M tokens (input, output); update as rates change.
-_MODEL_COSTS_PER_M: dict[str, tuple[float, float]] = {
+_MODEL_COSTS_PER_M: dict[str, tuple[float, float] | list[tuple[int, float, float]]] = {
     # OpenAI
     "gpt-4o-mini":            (0.15,   0.60),
     "gpt-4o":                 (5.00,  15.00),
@@ -525,15 +525,20 @@ _MODEL_COSTS_PER_M: dict[str, tuple[float, float]] = {
     "claude-haiku":           (0.80,   4.00),
     "claude-sonnet":          (3.00,  15.00),
     "claude-opus":           (15.00,  75.00),
-    # Anthropic — explicit per-model (longest-matching prefix WINS in _calc_cost). Opus 4.5→4.8 = $5/$25
-    # (NOT 4.1's $15/$75); Sonnet 5 $3/$15; Haiku 4.5 $1/$5. narasi meters BREAK-EVEN (markup ×1) via
+    # Anthropic — explicit per-model (longest-matching prefix WINS in _calc_cost). Opus 4.5/4.7/4.8 = $5/$25
+    # (NOT 4.1's $15/$75); Haiku 4.5 $1/$5. narasi meters BREAK-EVEN (markup ×1) via
     # credit_catalog.operation_usd → _calc_cost, so these ARE the credit charge, not just telemetry.
-    # (Anthropic docs 2026-07; Sonnet 5 intro $2/$10 through 2026-08-31 — kept at standard $3/$15.)
+    # (Anthropic docs 2026-07.) Opus 4-6 tiers at 200K input tokens: <200K $5/$25, >=200K $10/$37.50 —
+    # list value = [(threshold_tokens, in_$/M, out_$/M), ...] sorted ascending; _calc_cost brackets on
+    # tokens_in (prompt size), NOT tokens_out, per verified real-call data.
+    # Sonnet 5 is LaoZhang-calibrated to Anthropic's intro rate $2/$10 (through 2026-08-31) — was
+    # incorrectly listed at the deprecated $3/$15 "standard" rate (~50% overcharge); re-verify after
+    # 2026-08-31 once Anthropic's actual post-intro standard rate is known.
     "claude-opus-4-5":        (5.00,  25.00),
-    "claude-opus-4-6":        (5.00,  25.00),
+    "claude-opus-4-6":        [(0, 5.00, 25.00), (200_000, 10.00, 37.50)],
     "claude-opus-4-7":        (5.00,  25.00),
     "claude-opus-4-8":        (5.00,  25.00),
-    "claude-sonnet-5":        (3.00,  15.00),
+    "claude-sonnet-5":        (2.00,  10.00),
     "claude-haiku-4-5":       (1.00,   5.00),
     # DeepSeek (alias + upstream)
     "deepseek-chat":          (0.27,   1.10),
@@ -557,7 +562,12 @@ _MODEL_COSTS_PER_M: dict[str, tuple[float, float]] = {
 
 def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     """Estimate USD cost. Checks the alias and the resolved upstream name,
-    longest-matching prefix wins. Returns 0.0 only if nothing matches."""
+    longest-matching prefix wins. Returns 0.0 only if nothing matches.
+
+    A table entry may be a flat (in_price, out_price) tuple, or a list of
+    (threshold_tokens, in_price, out_price) tuples for tiered pricing (e.g.
+    Opus 4-6's 200K-token price step) — the tier is selected by bracketing
+    on tokens_in (prompt size), using the highest threshold not exceeding it."""
     names = [model.lower(), str(MODELS.get(model, "")).lower()]
     for name in names:
         if not name:
@@ -565,7 +575,14 @@ def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
         key = max((k for k in _MODEL_COSTS_PER_M if name.startswith(k)),
                   key=len, default=None)
         if key:
-            in_p, out_p = _MODEL_COSTS_PER_M[key]
+            entry = _MODEL_COSTS_PER_M[key]
+            if isinstance(entry, list):
+                in_p, out_p = entry[0][1], entry[0][2]
+                for threshold, tier_in_p, tier_out_p in entry:
+                    if tokens_in >= threshold:
+                        in_p, out_p = tier_in_p, tier_out_p
+            else:
+                in_p, out_p = entry
             return round((tokens_in * in_p + tokens_out * out_p) / 1_000_000, 8)
     return 0.0
 
@@ -8220,7 +8237,11 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
                 "not stop during a drought; anemometer cups spin but do not point; a stated "
                 "rainfall total must be survivable by the setting that then shows only "
                 "puddles; an agency or council may only wield powers such a body actually "
-                "has. Flag any rendering that exceeds the tool's or institution's real "
+                "has. An analytical instrument may only detect what its physical principle "
+                "measures: a gas chromatograph separates and detects VOLATILE organic compounds, "
+                "not heavy metals (lead, arsenic, cadmium, chromium require ICP-MS, AAS, or XRF); "
+                "do not let a story assign an instrument a measurement outside its real physical "
+                "capability. Flag any rendering that exceeds the tool's or institution's real "
                 "capability.\n")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")

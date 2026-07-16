@@ -158,7 +158,8 @@ class Charge:
                      tok_in: int = 0, tok_out: int = 0,
                      provider: Optional[str] = None,
                      usd: Optional[float] = None,
-                     credits_actual: Optional[int] = None) -> int:
+                     credits_actual: Optional[int] = None,
+                     zero_usage_totals: bool = False) -> int:
         """Finalise at ACTUAL cost. Returns credits actually charged.
 
         `credits_actual`: the caller ALREADY priced every call at CATALOG rates
@@ -172,7 +173,21 @@ class Charge:
         manager use different-priced models) — credits are then derived from the
         true blended cost via usd_to_credits, instead of mis-pricing the whole
         token total at this Charge's single `model`. When both omitted, behaviour
-        is unchanged: price `units` at `self.model`."""
+        is unchanged: price `units` at `self.model`.
+        `zero_usage_totals`: the caller already logs its own per-call usage_logs
+        rows (narasi's ⚡ sink — one row per upstream call, via db.log_usage), so
+        this settle-time row's tok_in/tok_out/cost_usd would double-count the job's
+        already-logged totals on any SUM() aggregation. Set True to log tok_in=0,
+        tok_out=0, cost_usd=0 instead of the real totals — the row still gets
+        WRITTEN (not skipped) so `credits`/GL/revenue_idr attribution (derived from
+        `credits`, not `cost_usd`) is preserved; only the fields that duplicate the
+        per-call rows are zeroed. (An earlier version of this parameter,
+        skip_usage_row, skipped the row entirely — that silently zeroed narasi's
+        revenue/GL columns forever, breaking eval/cost_dashboard.py --endpoint
+        narasi. Fixed to zero only the duplicating fields instead.) Default False
+        preserves "always record real totals" for every other caller (chat/image/
+        video/tts via begin_charge→settle), where settle is the ONLY place a usage
+        row is ever written."""
         if self._done:
             return 0
         self._done = True
@@ -193,9 +208,16 @@ class Charge:
             except Exception as e:
                 log.warning("settle commit(%s) failed: %s", self.op_id, e)
         # Always record the usage row (credits=0 for BYOK) so nothing is invisible.
+        # zero_usage_totals=True (narasi): log tok_in/tok_out/cost_usd as 0 instead
+        # of the real totals, since those are already correctly captured across the
+        # caller's own per-call rows — only `credits` (and the GL/revenue fields it
+        # derives) needs to land here.
         try:
+            _row_tok_in = 0 if zero_usage_totals else int(tok_in)
+            _row_tok_out = 0 if zero_usage_totals else int(tok_out)
+            _row_usd = 0.0 if zero_usage_totals else eff_usd
             await _db.log_usage(self.tenant_id, self.user_id, self.model,
-                                self.endpoint, int(tok_in), int(tok_out), eff_usd,
+                                self.endpoint, _row_tok_in, _row_tok_out, _row_usd,
                                 session_id=session_id, job_id=job_id,
                                 provider=provider or _provider_for(self.model),
                                 credits=actual)

@@ -62,6 +62,18 @@ VID_MARKUP_HI       = float(os.getenv("VID_MARKUP_HI",        "2.5"))   # >$0.12
 VID_MARKUP_USD_GATE = float(os.getenv("VID_MARKUP_USD_GATE",  "0.12"))   # per-second threshold
 GOLPO_MARKUP        = float(os.getenv("GOLPO_MARKUP",         "3"))
 
+# ── Narasi re-metering (OFF by default) ────────────────────────────────────────
+# Business decision (not a bug fix): narasi has been billed at break-even (×1) since
+# the WS-8 job-contract convergence; confirmed decision (2026-07-16) is a 50% margin
+# once enabled. Dedicated constant, NOT a reuse of CREDIT_MARGIN — usd_to_credits()
+# already applies CREDIT_MARGIN globally to every op unconditionally, so reusing it
+# here would compound to CREDIT_MARGIN² for narasi alone the moment ops ever raises
+# the global knob for an unrelated reason (every other op's own dedicated constant,
+# e.g. GOLPO_MARKUP/VID_MARKUP_*, avoids exactly this collision — narasi now does
+# too). Applies ON TOP OF the corrected base cost table (_MODEL_COSTS_PER_M).
+NARASI_MARKUP_ENABLED = os.environ.get("NARASI_MARKUP_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+NARASI_MARKUP          = float(os.getenv("NARASI_MARKUP",          "1.5"))   # 50% margin when enabled
+
 # ── Recipe (one-click Format) fee ─────────────────────────────────────────────
 # Flat orchestration fee added ON TOP of the Σ per-step meters (image keyframes +
 # video clips + TTS + music) for a one-click recipe like Product Ad. It is NOT a new
@@ -510,7 +522,9 @@ def _op_markup(operation: str, model: str, units: Union[int, float, dict], usd: 
         return VID_MARKUP_LO if _video_usd_per_sec(model, size) <= VID_MARKUP_USD_GATE else VID_MARKUP_HI
     if op == "golpo":
         return GOLPO_MARKUP
-    return 1.0   # chat / tts / narasi / embedding → break-even
+    if op == "narasi" and NARASI_MARKUP_ENABLED:
+        return NARASI_MARKUP  # dedicated constant — does NOT compound with CREDIT_MARGIN
+    return 1.0   # chat / tts / narasi (unless NARASI_MARKUP_ENABLED) / embedding → break-even
 
 
 # Round the SELL price (credits) UP to the next multiple of IMG_CREDIT_ROUNDUP (5):

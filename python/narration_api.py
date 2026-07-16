@@ -2752,10 +2752,23 @@ async def _settle(meter_op: Optional[str], tenant_id: str, user_id: Optional[str
         # blended). The usd path priced from the orchestrator's provider table and
         # undercharged ~4x (itaatga7: 488 vs catalog 1988). usd stays as fallback + the
         # COGS number on the usage row.
+        # zero_usage_totals=True: the ⚡ sink already writes its own per-call
+        # usage_logs row for every CallTelemetry (_UsageSink.__call__ → _log_one →
+        # db.log_usage, credits=0 each). Without this flag, Charge.settle()'s
+        # generic "always record real totals" write adds a 22nd phantom row
+        # repeating the job's aggregate tok_in/tok_out/cost_usd as if it were one
+        # more upstream call, double-counting those columns on any downstream
+        # usage_logs aggregation. The settle row is still WRITTEN (not skipped) —
+        # only its tok_in/tok_out/cost_usd are logged as 0 — so `credits` (and the
+        # revenue_idr/markup_factor/GL codes database.log_usage derives from it)
+        # still lands correctly; only the per-call-duplicating fields are zeroed.
+        # Credits/GL are unaffected regardless (commit() uses the in-process
+        # sink.credits scalar, never SUMs usage_logs).
         await charge.settle(
             {"tokens_in": sink.tokens_in, "tokens_out": sink.tokens_out},
             job_id=job_uuid, tok_in=sink.tokens_in, tok_out=sink.tokens_out,
-            usd=_usd, credits_actual=(sink.credits if (sink.credits or 0) > 0 else None))
+            usd=_usd, credits_actual=(sink.credits if (sink.credits or 0) > 0 else None),
+            zero_usage_totals=True)
     except Exception as e:  # noqa: BLE001
         log.warning("settle hold(%s) failed (non-fatal): %s", meter_op, e)
 
