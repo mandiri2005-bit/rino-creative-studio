@@ -7616,6 +7616,16 @@ def _dalang_v2_enabled() -> bool:
     # byte-identical to v1.
     return _flag_on("DALANG_V2_ENABLED", "0")
 
+def _narasi_outline_async_enabled() -> bool:
+    # R36/R36b follow-up: master switch for the fire-and-forget job-id+poll path on
+    # POST /narasi/outline (mirrors /narasi/generate's asyncio.create_task shape).
+    # OFF (default) ⟹ narasi_outline() never looks at body.get("async") at all — the
+    # route is byte-identical to the pre-existing synchronous behavior for EVERY
+    # caller, including the ones that already opted in via the body flag (belt and
+    # suspenders: this flag must ALSO be ON, not just the per-request signal, or the
+    # request silently falls back to synchronous). See _narasi_outline_impl_guarded.
+    return _flag_on("NARASI_OUTLINE_ASYNC", "0")
+
 def _dalang_antitrunc_enabled() -> bool:
     # Standalone truncation guard, independent of the DALANG_V2_ENABLED bundle: fires the SAME
     # word-gate + bounded continuation re-call (see _narasi_word_verdict/_narasi_continuation)
@@ -7754,6 +7764,61 @@ def _narasi_cheap_timeout(model: str = "", phase: str = "cheap") -> float:
     base = NARASI_CHEAP_TIMEOUT
     if _narasi_will_chain(model, phase):
         return max(base, float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET") or 840) + 90.0)
+    return base
+# NARASI_OUTLINE_TIMEOUT bounds the outline/brief LLM calls in _narasi_outline_impl (no top-level
+# constant — read inline at each call site). Confirmed live in prod 2026-07-17: Railway logs
+# showed "[narasi-failover] claude empty (attempt 1/2, claude-sonnet-5)" immediately followed by
+# "[narasi] outline LLM timed out after 200s" and a Cloudflare 504 — the flat 200s cut the outer
+# asyncio.wait_for off mid-chain-walk, before the failover client's own multi-rung deadline logic
+# (default 840s budget) ever got a chance to give up cleanly on rung 1 and try rung 2/3. Same
+# undersized-outer-timeout bug class as _narasi_critique_timeout/_narasi_revise_timeout/
+# _narasi_cheap_timeout — same fix.
+
+
+def _narasi_outline_timeout(model: str = "", phase: str = "") -> float:
+    """Per-outline-call timeout — covers BOTH call sites in _narasi_outline_impl (the "outline"
+    action and the "brief" action), floored to the failover chain's budget when this specific
+    (model, phase) call is actually going to walk a multi-rung chain — via _narasi_will_chain,
+    the SAME decision make_narasi_client uses to pick a client (same pattern as
+    _narasi_critique_timeout/_narasi_revise_timeout/_narasi_cheap_timeout — Rino 2026-07-17).
+
+    `phase` defaults to "" — NOT "outline". Both _narasi_outline_impl call sites invoke
+    _narasi_complete(model, messages, max_tokens) WITHOUT a `phase` kwarg, so phase="" is what
+    actually reaches make_narasi_client(m, role=role, phase=phase) inside _narasi_complete's
+    fallback loop — the chain-decision point that matters. (_narasi_outline_impl DOES build a
+    `client = make_narasi_client(model, phase="outline")` near its top, but that client object is
+    never the one that issues the completion — _narasi_complete does its own model-fallback loop
+    and its own client construction — so phase="outline" never actually reaches a chain decision
+    for either call site today. Defaulting to "" here matches that real behavior instead of
+    inventing a phase string nothing forwards.) Unfloored default (NARASI_OUTLINE_TIMEOUT, 200s)
+    is unchanged when no chain is active for this call (today's exact behavior).
+
+    UNLIKE _narasi_cheap_timeout/_narasi_critique_timeout/_narasi_revise_timeout, this timeout is
+    additionally CAPPED at an edge ceiling (audit-caught 2026-07-17). Those three siblings live
+    inside a fire-and-forget background job: /narasi/generate spawns
+    _narasi_generate_impl_guarded via `asyncio.create_task(...)` and returns a job_id immediately
+    (see the `asyncio.create_task(_narasi_generate_impl_guarded(...))` call near the
+    `POST /narasi/generate` handler) — no client HTTP connection is held open while those calls
+    run, so flooring their outer wait_for to the failover chain's own budget (840s+90s=930s) only
+    costs backend/provider time, never a client response. /narasi/outline is different: its
+    `POST /narasi/outline` handler (`narasi_outline`) directly `await`s `_narasi_outline_impl(body)`
+    and returns its result AS the HTTP response — the client connection is held open for the
+    entire call. The real ceiling in front of that connection is Node's global
+    `server.timeout = 660000` / `server.keepAliveTimeout = 660000` (660s — backend/server.js
+    lines 3526-3527), which is SHORTER than the 930s chain-budget floor above. Without a cap,
+    a chaining call in the 660-930s band gets its client connection killed by Node at 660s (the
+    caller gets nothing useful) while Python keeps burning provider API spend for up to ~270s more
+    on a response nobody will ever receive — worse than the old flat-200s behavior for that band,
+    which never even reached 660s. So the floored value is additionally capped below 660s via
+    NARASI_OUTLINE_EDGE_CEILING (default 630.0 — a 30s safety margin under the live 660s Node
+    value) so Python gives up and returns its own clean, informative 504 BEFORE Node would
+    silently kill the connection with no useful response body. Revisit NARASI_OUTLINE_EDGE_CEILING
+    if backend/server.js's `server.timeout` value ever changes."""
+    base = float(os.environ.get("NARASI_OUTLINE_TIMEOUT") or 200)
+    if _narasi_will_chain(model, phase):
+        floored = max(base, float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET") or 840) + 90.0)
+        edge_ceiling = float(os.environ.get("NARASI_OUTLINE_EDGE_CEILING") or 630.0)
+        return min(floored, edge_ceiling)
     return base
 # Slice 5: repetition-guard thresholds — 5-gram Jaccard (deterministic) + Qdrant cosine.
 DALANG_DEDUP_THRESHOLD     = float(os.getenv("DALANG_DEDUP_THRESHOLD", "0.18"))
@@ -8342,6 +8407,18 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         if os.getenv("NARASI_QUOTE_GROUNDING_CHECK", "0").strip().lower() in ("1", "true", "yes", "on")
         else "")
     return (
+        # BELT-AND-SUSPENDERS (Rino 2026-07-17): the numbered checklist below invites a
+        # step-by-step narrative walkthrough before the model ever reaches the "Output ONLY
+        # JSON" instruction at the end of the prompt — on one real production job that
+        # narration alone exhausted the whole max_tokens budget before any '{' appeared,
+        # losing the verdict entirely (see safe_max below for the paired token-budget fix).
+        # This second, forceful instance goes FIRST so the model sees the format constraint
+        # before it ever sees the checklist that tempts it to narrate. Purely additive —
+        # the original end-of-prompt instruction stays untouched.
+        "CRITICAL OUTPUT FORMAT: your entire response must be a single JSON object and nothing "
+        "else. Do NOT write any analysis, commentary, or step-by-step walkthrough before or "
+        "after the JSON. Do not narrate your reasoning process. Begin your response immediately "
+        "with the JSON object's opening brace.\n\n"
         "You are a strict CONTINUITY editor doing a fresh-eyes read of a COMPLETE multi-chapter "
         "story you did NOT write. Judge whole-draft CONSISTENCY" + _extra + " but NEVER prose "
         "taste. Read the entire book, then hunt for contradictions each chapter hides because it "
@@ -8456,7 +8533,18 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
                 _crit_lz_override, _i + 1, len(_chain), _cm, _crit_lz_override)
             continue
         resolved = MODELS.get(_cm, _cm)
-        safe_max = min(2000, MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
+        # Was a hardcoded min(2000, ...) sized only for "the JSON is small", with zero margin
+        # for the narrative preamble the numbered checklist above invites (see the CRITICAL
+        # OUTPUT FORMAT reinforcement in _consistency_critic_sys). Confirmed production incident:
+        # the response was cut off mid-narrative before any '{' appeared, losing the whole
+        # verdict. 5000 ≈ 2.5x the old budget — headroom for BOTH a worst-case full JSON (up to
+        # 20 violations x ~110 tokens each + a 600-char summary ≈ 2500 tokens, which alone was
+        # already tight against the old 2000 cap) AND a residual narrative preamble that
+        # survives despite the strengthened instruction, without opening the door to an
+        # effectively unbounded walkthrough. Env-tunable, still hard-floored by the model's own
+        # output ceiling so this can never request more than the model can actually return.
+        safe_max = min(_envint("NARASI_CRITIQUE_MAX_TOKENS", 5000),
+                        MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
         try:
             client = make_narasi_client(_cm, phase="critique")
             def _call(use_fmt, _res=resolved, _sm=safe_max, _cl=client, _m=_cm):
@@ -8616,7 +8704,23 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
               and not _re.fullmatch(r'(?i)(vs|and|then|or|but|to|the|a|an)', s.strip())]
         return sp   # NO prose fallback → un-quotable structural violations stay UNMAPPED (report-only)
 
-    _vspans = [(v, _spans(v.get("evidence"))) for v in viol]
+    def _chn_locators(ev):
+        # DETERMINISTIC CHAPTER-LOCATOR BYPASS (2026-07-17): numeric_drift / numeric_arithmetic's
+        # evidence is (at least partly) a machine-synthesized summary like "34@ch1; 30@ch2" — not
+        # quotable manuscript text, so _spans() legitimately finds nothing. But the chapter numbers
+        # in that string ARE reliable (code-generated, not LLM free-form) — parse them directly. This
+        # is deterministic PARSING, not fuzzy text search, so it needs no _occ() substring match.
+        return [int(n) for n in _re.findall(r'@ch(\d+)', str(ev or ""), flags=_re.IGNORECASE)]
+
+    # 3-tuple (violation, quoted_spans, chapter_locator_numbers). chnos is only ever populated
+    # when sps is empty — a violation that already has a locatable quote keeps using the existing
+    # quote-match path unchanged, so this stays strictly additive (zero behavior change for any
+    # type whose evidence carries a real quoted span).
+    _vspans = []
+    for _v in viol:
+        _sps = _spans(_v.get("evidence"))
+        _chnos = _chn_locators(_v.get("evidence")) if not _sps else []
+        _vspans.append((_v, _sps, _chnos))
     # Split into [preamble?, chapter, chapter, …] on the UNION of BOTH heading styles in ONE pass
     # (lookahead, no chars consumed → ''.join(parts) reconstructs the original EXACTLY). ONE shared
     # opener pattern drives BOTH the split AND the per-chapter heading count (below) so they can NEVER
@@ -8645,6 +8749,31 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         parts = [full_text or ""]
     import logging as _lgs
     _lgs.getLogger("narasi").info("chunked revise: split into %d part(s)", len(parts))
+
+    def _part_chapter_num(p):
+        # DETERMINISTIC CHAPTER-LOCATOR BYPASS: the chapter number a part's OWN heading names,
+        # e.g. "## Chapter 3: ..." -> 3, "## Bab 12" -> 12. narasi always emits headings as
+        # "## <label>" regardless of language (_chapter_label) — "## Chapitre 4", "## 第3章",
+        # "## 1장" — so the FIRST digit run on the opening heading line is always the chapter
+        # number, even for CJK/Korean labels with no ASCII "Chapter"/"Bab" keyword. A part with
+        # no heading at all (e.g. a preamble before chapter 1) -> None.
+        _m = _re.match(r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$', p)
+        if not _m:
+            return None
+        _n = _re.search(r'\d+', _m.group(0))
+        return int(_n.group(0)) if _n else None
+
+    _part_chnums = [_part_chapter_num(_p) for _p in parts]
+
+    def _viol_targets_part(sps, chnos, p_idx, p_text):
+        # Quoted-span match (existing behavior, unchanged) OR — only ever reachable when the
+        # violation had NO quoted span at all (chnos is empty otherwise, see _vspans build
+        # above) — a deterministic @chN chapter-locator match. Additive: a violation type that
+        # already resolves via a quoted span never even consults chnos/_part_chnums.
+        if any(s and _occ(s, p_text) for s in sps):
+            return True
+        return bool(chnos) and _part_chnums[p_idx] in chnos
+
     _max_ch = _envint("NARASI_REVISE_MAX_CHAPTERS", 4)
     _sev = _revise_min_severities()
     # A violation with a MISSING / blank / unrecognized severity must NOT be silently dropped — the
@@ -8653,7 +8782,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     def _sevof(v):
         _s = str(v.get("severity", "") or "").strip().lower()
         return _s if _s in ("critical", "high", "medium", "low") else "medium"
-    _vspans = [(v, sps) for (v, sps) in _vspans if _sevof(v) in _sev]
+    _vspans = [(v, sps, chnos) for (v, sps, chnos) in _vspans if _sevof(v) in _sev]
 
     def _occ(s, txt):
         # Locate a span in a chapter. WORD-BOUNDARY match for ASCII-alphanumeric-bounded spans so a short
@@ -8669,8 +8798,10 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     # mis-routed the revise to the WRONG (correct) chapters. Fanout is bounded instead by the per-book /
     # per-attempt _max_ch caps below (each chapter revised at most once, at most _max_ch total → keeping
     # every span cannot blow up cost); keeping all spans only ensures the erroring chapter stays REACHABLE.
-    _vspans = [(v, [s for s in sps if s]) for (v, sps) in _vspans]
-    _vspans = [(v, sps) for (v, sps) in _vspans if sps]
+    _vspans = [(v, [s for s in sps if s], chnos) for (v, sps, chnos) in _vspans]
+    # Keep a violation if it has a real quoted span OR a parsed @chN locator (additive bypass) —
+    # only a violation with NEITHER stays dropped here, exactly as it was before this fix.
+    _vspans = [(v, sps, chnos) for (v, sps, chnos) in _vspans if sps or chnos]
     # ── ROUND-15 PARALLEL fast-path (NARASI_REVISE_PARALLEL>=2, default 0=OFF → the serial loop below
     #    runs verbatim / byte-identical). MEASURED: the serial loop revises up to _max_ch targeted
     #    chapters ONE AT A TIME; each opus chapter-rewrite is ~5 min, so 4 chapters ≈ 22 min per revise
@@ -8758,7 +8889,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # Plan targeted parts in ORDER (pure, same predicate as the serial loop).
         _plan = []
         for _i, _p in enumerate(parts):
-            _vs = [v for (v, sps) in _vspans if _p.strip() and any(s and _occ(s, _p) for s in sps)]
+            _vs = [v for (v, sps, chnos) in _vspans
+                   if _p.strip() and _viol_targets_part(sps, chnos, _i, _p)]
             if _vs and _p.strip():
                 _plan.append((_i, _p, _vs))
         _sem = asyncio.Semaphore(_rev_par)
@@ -8804,8 +8936,9 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     _n_targeted = 0
     _n_attempts = 0
     out = []
-    for _p in parts:
-        _vs = [v for (v, sps) in _vspans if _p.strip() and any(s and _occ(s, _p) for s in sps)]
+    for _pi, _p in enumerate(parts):
+        _vs = [v for (v, sps, chnos) in _vspans
+               if _p.strip() and _viol_targets_part(sps, chnos, _pi, _p)]
         if not _vs or not _p.strip():
             out.append(_p)
             continue
@@ -10363,8 +10496,43 @@ async def narration_prompt(
 @app.post("/narasi/outline")
 async def narasi_outline(body: dict,
                          user: CurrentUser = Depends(get_current_user)):
-    """Generate or revise a narrative outline with chapter weights."""
+    """Generate or revise a narrative outline with chapter weights.
+
+    Sync-by-default / opt-in-async (R36/R36b follow-up): a caller that sends
+    `"async": true` in the request body, AND NARASI_OUTLINE_ASYNC=1 is set
+    server-side, gets the SAME fire-and-forget job_id/poll shape POST
+    /narasi/generate already uses — this returns {"ok": True, "job_id": ...,
+    "status": "started"} immediately and the LLM call runs in the background
+    (_narasi_outline_impl_guarded); poll GET /narasi/outline/status/{job_id}.
+    Grepped body.get(...) usage across narasi_outline/_narasi_outline_impl first
+    — "async" is not used anywhere in the existing body-dict contract.
+
+    Any caller that omits `async` (or when the flag is off) gets EXACTLY today's
+    synchronous behavior below, byte-identical — required for classic-studio.html
+    (until updated) AND app.wimba.ai's storyboard app (source outside this repo,
+    may never opt in)."""
     import traceback as _tb
+    if bool(body.get("async")) and _narasi_outline_async_enabled():
+        try:
+            _narasi_admit(body, kind="outline")   # Slice 0 (§7): clamp fan-out + model whitelist
+            _tenant = user.tenant_id
+            _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
+            job_id = (body.get("pre_job_id") or str(uuid.uuid4())[:8])[:16]
+            try:
+                await db.create_narasi_job(_tenant, _user, job_id,
+                                           (body.get("topic") or "").strip(),
+                                           total_chapters=_pint(body.get("chap_count") or 5, 5))
+            except Exception as _e:
+                import logging as _lg; _lg.getLogger("narasi").warning(
+                    "create_narasi_job (outline async) failed (non-fatal): %s", _e)
+            await rc.set_progress(job_id, "Generating outline…")
+            asyncio.create_task(_narasi_outline_impl_guarded(body, job_id, _tenant, _user))
+            return {"ok": True, "job_id": job_id, "status": "started"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            _tb.print_exc()
+            raise HTTPException(500, f"{type(e).__name__}: {e}")
     try:
         _narasi_admit(body, kind="outline")   # Slice 0 (§7): clamp fan-out + model whitelist
         result = await _narasi_outline_impl(body)
@@ -10387,6 +10555,78 @@ async def narasi_outline(body: dict,
     except Exception as e:
         _tb.print_exc()
         raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
+async def _narasi_outline_impl_guarded(body: dict, job_id: str, tenant_id, user_id):
+    """R36/R36b follow-up: background counterpart of the synchronous
+    `await _narasi_outline_impl(body)` call above, used only on the opt-in async
+    path (body["async"]=true AND NARASI_OUTLINE_ASYNC=1). Runs the SAME
+    _narasi_outline_impl(body) unchanged — this function does not redesign it,
+    only wraps it — then persists a pollable result via the SAME jobs-table +
+    Redis-progress pattern narasi_generate/_narasi_generate_impl_guarded use, so
+    GET /narasi/outline/status/{job_id} can report queued/running/done/failed.
+
+    No client HTTP connection is held open while this runs, so the
+    _narasi_outline_timeout/NARASI_OUTLINE_EDGE_CEILING problem (Cloudflare/Node
+    edge timeout racing a slow LLM call — the R36/R36b root cause) structurally
+    does not apply to this path: the job returns instantly and polling has its
+    own, much longer natural timeout tolerance. _narasi_outline_timeout itself is
+    untouched and still governs the still-default synchronous path.
+
+    Never raises — any failure (including the impl's own HTTPException on a
+    timed-out or unparseable LLM response) is caught and persisted as a 'failed'
+    job so a poller always converges instead of hanging forever."""
+    try:
+        try:
+            result = await _narasi_outline_impl(body)
+        except HTTPException as _he:
+            await _narasi_outline_finish_failed(tenant_id, job_id, str(_he.detail))
+            return
+        except Exception as _e:
+            import logging as _lg
+            _lg.getLogger("narasi").exception("[narasi] outline async job %s crashed", job_id)
+            await _narasi_outline_finish_failed(tenant_id, job_id, f"{type(_e).__name__}: {_e}")
+            return
+
+        # Live-capture: outline → R2 + assets (Media Vault → Outline), downloadable.
+        # Same best-effort block the synchronous route runs inline above; duplicated
+        # (not shared) so the synchronous default path stays byte-for-byte untouched.
+        try:
+            _ot = (result or {}).get("outline_text", "") if isinstance(result, dict) else ""
+            if _ot.strip() and tenant_id:
+                await _persist_asset(
+                    tenant_id, asset_type="document", source_job_type=None,
+                    filename=f"outline-{uuid.uuid4().hex[:8]}.txt",
+                    data=_ot.encode("utf-8"), content_type="text/plain; charset=utf-8",
+                    user_id=None, metadata={"kind": "outline",
+                                            "topic": (body.get("topic") or ""),
+                                            "style": (body.get("style") or "")})
+        except Exception as _pe:
+            import logging as _lg; _lg.getLogger("narasi").warning(
+                "outline R2 persist failed (async, non-fatal): %s", _pe)
+
+        if isinstance(result, dict) and result.get("ok") is False:
+            await _narasi_outline_finish_failed(
+                tenant_id, job_id, result.get("error") or "outline generation failed")
+        else:
+            try:
+                await db.finish_narasi_job(tenant_id, job_id, "done", result=result)
+            except Exception as _e:
+                import logging as _lg; _lg.getLogger("narasi").warning(
+                    "finish_narasi_job (outline async, done) failed (non-fatal): %s", _e)
+    finally:
+        await rc.delete_progress(job_id)
+
+
+async def _narasi_outline_finish_failed(tenant_id, job_id: str, error: str) -> None:
+    """Best-effort terminal 'error' write for an async outline job. Never raises —
+    a DB hiccup here must not crash the background task (mirrors every other
+    finish_narasi_job call site in this file, which all wrap it non-fatally)."""
+    try:
+        await db.finish_narasi_job(tenant_id, job_id, "error", error=error)
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning(
+            "finish_narasi_job (outline async, error) failed (non-fatal): %s", _e)
 
 
 # Maps a language code to a display name; otherwise passes the value through
@@ -10749,10 +10989,12 @@ async def _narasi_outline_impl(body: dict):
         )
         # Same NARASI_OUTLINE_TIMEOUT guard the outline call below uses — a hung brief model must
         # not stall the HTTP request (and leave the provider billed for a discarded response).
+        # _narasi_outline_timeout (not the flat constant) floors this to the failover chain's own
+        # budget when this call is actually going to chain — see its docstring.
         try:
             resp, _um = await asyncio.wait_for(
                 asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], 1000),
-                timeout=float(os.environ.get("NARASI_OUTLINE_TIMEOUT") or 200))
+                timeout=_narasi_outline_timeout(model))
         except asyncio.TimeoutError:
             import logging as _lg
             _lg.getLogger("narasi").warning("[narasi] brief LLM timed out (model=%s)", model)
@@ -10815,7 +11057,10 @@ async def _narasi_outline_impl(body: dict):
     # DALANG_CHAPTER_LLM_TIMEOUT; parity for the outline path. Recommendation for the
     # operator: also switch NARASI_OUTLINE_MODEL to a fast model (gemini-2.5-flash via
     # Vertex-direct after cd0c9c0) so this timeout is a safety net, not a hot path.
-    _outline_timeout = float(os.environ.get("NARASI_OUTLINE_TIMEOUT") or 200)
+    # _narasi_outline_timeout (not the flat constant) floors this to the failover chain's own
+    # budget when this call is actually going to chain — see its docstring; today's exact
+    # (unfloored) value when no chain is active.
+    _outline_timeout = _narasi_outline_timeout(model)
     try:
         resp, _um = await asyncio.wait_for(
             asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], max_tok),
@@ -11789,6 +12034,36 @@ async def narasi_status(job_id: str,
             "total": row.get("progress_total") or 0,
             "result": row.get("result_payload"),
             "error": row.get("error_message"),
+            "found": True}
+
+
+@app.get("/narasi/outline/status/{job_id}")
+async def narasi_outline_status(job_id: str,
+                                user: CurrentUser = Depends(get_current_user)):
+    """R36/R36b follow-up: poll target for the opt-in async POST /narasi/outline
+    path (body["async"]=true + NARASI_OUTLINE_ASYNC=1). A DEDICATED endpoint
+    rather than overloading /narasi/status/{job_id} above: that endpoint's shape
+    (progress/current/total tuned for the per-chapter checkbox table) doesn't fit
+    an outline result, and its `status` value is the raw jobs.status enum text
+    (processing/done/error/...) rather than the fixed queued/running/done/failed
+    vocabulary a poller for this endpoint expects. Same underlying jobs-table row
+    + Redis progress key as narasi_status — just reshaped for this caller."""
+    _tenant = user.tenant_id or db._DEV_TENANT_ID
+    row = None
+    try:
+        row = await db.get_job_by_external(_tenant, job_id)
+    except Exception:
+        row = None
+    live = await rc.get_progress(job_id)
+    if not row:
+        return {"job_id": job_id, "status": "running" if live else "queued",
+                "outline": None, "error": None, "found": False}
+    _raw_status = row.get("status")
+    _status = {"done": "done", "error": "failed", "cancelled": "failed"}.get(_raw_status, "running")
+    return {"job_id": job_id,
+            "status": _status,
+            "outline": row.get("result_payload") if _status == "done" else None,
+            "error": row.get("error_message") if _status == "failed" else None,
             "found": True}
 
 

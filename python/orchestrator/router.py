@@ -460,6 +460,7 @@ async def _run_topic_to_book(req: dict, settings: "_Settings", *,
             topic, n_chapters=n_chapters, style=style, language=language,
             words_per_chapter=words_per, manager_model=req.get("manager_model"),
             telemetry_sink=telemetry_sink,
+            tenant_id=tenant_id, job_uuid=job_id,
         )
 
     chapters = outline_res["chapters"]

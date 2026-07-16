@@ -341,6 +341,158 @@ def _normalize_outline(parsed: Any, topic: str, n: int, words_per_chapter: int) 
     return out
 
 
+def _normalize_reveals(parsed: Any) -> list[dict]:
+    """Extract a well-formed "reveals" ledger from a parsed outline response (Flag
+    NARASI_OUTLINE_REVEALS). Pure — no LLM, no I/O — and completely INDEPENDENT of
+    _normalize_outline: this function reads the SAME `parsed` object but only ever looks
+    at the separate "reveals" key, so it can NEVER affect the chapters extraction above,
+    in either direction.
+
+    Fail-safe by construction: returns [] on ANY malformation — parsed is not a dict,
+    "reveals" is absent or not a list, an item is not a dict, an item is missing any of
+    id/secret/chapter/characters_involved/method, "chapter" is not a plain int (bool
+    excluded — bool is a Python int subclass but not a valid chapter number here), or
+    "characters_involved" is not a list. This covers "flag off" too: when
+    NARASI_OUTLINE_REVEALS is OFF, _outline_prompt never asks for a "reveals" key, so
+    `parsed` (a bare list, or a dict with no "reveals" key) hits the `not isinstance(parsed,
+    dict)` or `not isinstance(items, list)` guard below and returns [] — a no-op. NEVER
+    raises: the whole body is wrapped so a single malformed item cannot take down the call.
+    """
+    try:
+        if not isinstance(parsed, dict):
+            return []
+        items = parsed.get("reveals")
+        if not isinstance(items, list):
+            return []
+        out: list[dict] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if not all(k in it for k in ("id", "secret", "chapter", "characters_involved", "method")):
+                continue
+            rid, secret, chapter, chars, method = (
+                it.get("id"), it.get("secret"), it.get("chapter"),
+                it.get("characters_involved"), it.get("method"),
+            )
+            if not (isinstance(secret, str) and secret.strip()):
+                continue
+            if not isinstance(chapter, int) or isinstance(chapter, bool):
+                continue
+            if not isinstance(chars, list):
+                continue
+            if not (isinstance(method, str) and method.strip()):
+                continue
+            chars_clean = [str(c).strip() for c in chars if str(c or "").strip()]
+            out.append({
+                "id": str(rid).strip() if rid not in (None, "") else f"r{len(out) + 1}",
+                "secret": secret.strip(),
+                "chapter": chapter,
+                "characters_involved": chars_clean,
+                "method": method.strip(),
+            })
+        return out
+    except Exception:  # noqa: BLE001 — reveals extraction must NEVER affect chapters
+        return []
+
+
+# ===========================================================================
+# FLAG NARASI_OUTLINE_FIDELITY (default OFF, fiction only — same _ofic gating pattern as
+# NARASI_OUTLINE_MANDATES / NARASI_OUTLINE_REVEALS above). Root cause (confirmed on a real
+# manuscript, "The Trash Project" pitch): the outline prompt's "Make the STRUCTURE original"
+# instruction — a deliberate, intentional copyright-mitigation guard against near-verbatim
+# reproduction of a synopsis a user might paste from an existing copyrighted work — fires
+# UNIFORMLY regardless of how much structure the user's own topic already supplies. On a
+# topic with an extremely detailed chapter-by-chapter breakdown, that uniform "make it
+# original" pressure caused the outline to INVERT a stated character's backstory (a victim
+# who reported toxic waste leaks -> the generated version instead had him take a corporate
+# bribe and stay silent, flipping the story's moral premise) and invent a major subplot
+# (hidden-heir/DNA-paternity/corporate-succession) with zero basis anywhere in the input.
+# This flag scales the guidance to the input's own detail level instead of applying the same
+# "invent freely" pressure no matter how detailed the source already is.
+# ===========================================================================
+_TOPIC_DETAIL_HEADER_RE = re.compile(
+    r"^[ \t]*(?:episode|chapter|bab)\s*\d+\s*[:.]",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _classify_topic_detail(topic: str) -> str:
+    """Pure, deterministic, NO LLM — classifies how much structural detail the caller's
+    topic input already supplies (Flag NARASI_OUTLINE_FIDELITY). Cheap: one regex pass plus
+    a word count, no I/O, no network.
+
+    Returns one of "minimal" / "moderate" / "detailed":
+
+      "detailed"  — the topic contains 3 or more per-chapter/episode headers (a line
+                    starting with "Episode"/"Chapter"/"Bab", case-insensitive, then a
+                    number, then ':' or '.') where EACH qualifying header is followed by
+                    a real synopsis — at least ~15 words of body text before the next
+                    header or the end of the string. A bare list of episode TITLES with
+                    no synopsis under any of them does not qualify as any one header's
+                    body is too short, so it never crosses the well-populated count.
+                    Structure matters more than raw length here: this can fire even on a
+                    short-ish topic, as long as it is genuinely broken down per chapter.
+      "moderate"  — no qualifying per-chapter breakdown, but the topic is long (over
+                    roughly 250 words) — e.g. a logline plus character descriptions with
+                    no chapter-by-chapter map.
+      "minimal"   — short title or logline only (the common case today).
+
+    Never raises: any failure (unexpected input shape, regex edge case) falls back to
+    "minimal" — the SAME "invent freely" instruction the flag would otherwise leave
+    dominant by default, so a classification failure degrades to today's behavior, never
+    to an over-constrained one.
+    """
+    try:
+        text = topic or ""
+        word_count = len(text.split())
+
+        matches = list(_TOPIC_DETAIL_HEADER_RE.finditer(text))
+        well_populated = 0
+        for i, m in enumerate(matches):
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            if len(text[start:end].split()) >= 15:
+                well_populated += 1
+
+        if well_populated >= 3:
+            return "detailed"
+        if word_count > 250:
+            return "moderate"
+        return "minimal"
+    except Exception:  # noqa: BLE001 — classification is an enhancement, never blocks the outline
+        return "minimal"
+
+
+# The three instruction blocks Flag NARASI_OUTLINE_FIDELITY selects between. Each is a single
+# sentence-fragment meant to be appended inline next to the existing anti-overlap instruction
+# in _outline_prompt (leading space, no trailing space) — NOT a restructuring of the prompt.
+_FIDELITY_MINIMAL = (
+    " The topic above is a short title or logline with no per-chapter breakdown — full "
+    "creative invention of plot, character, and subplot from this premise is expected and "
+    "appropriate."
+)
+
+_FIDELITY_MODERATE = (
+    " The topic above states some character traits, premise facts, and named entities — "
+    "preserve every one of those exactly as given, while plot and chapter structure may be "
+    "freely invented to fill in whatever the topic does not specify."
+)
+
+_FIDELITY_DETAILED = (
+    " The topic above already provides a detailed chapter-by-chapter or episode-by-episode "
+    "breakdown. Your job is to ADAPT this into the requested chapter structure, preserving "
+    "every stated plot beat, character arc, character backstory and motivation, and "
+    "specified structural choice (for example a public versus private climax, or a "
+    "character's stated moral status) exactly as given. You may combine, resequence, or add "
+    "connective, sensory, or dialogue detail between stated beats for pacing. You must NOT "
+    "invent new major subplots that have no basis anywhere in the input, and you must NOT "
+    "alter a named character's stated backstory, motivation, or moral standing (for example, "
+    "if the input states a character was fired for a specific reason, do not change this to "
+    "the character having been complicit, bribed, or otherwise morally different) unless the "
+    "input itself is genuinely ambiguous or silent on that specific point."
+)
+
+
 _OUTLINE_SYSTEM = (
     "You are an editor who designs the chapter structure of a narrative book or "
     "long-form script from a single topic. Return ONLY JSON."
@@ -348,7 +500,7 @@ _OUTLINE_SYSTEM = (
 
 
 def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
-                    words_per_chapter: int) -> str:
+                    words_per_chapter: int, topic_detail: Optional[str] = None) -> str:
     style_clause = f" in a {style} style" if style else ""
     # ROUND-5 STRUCTURAL MANDATES (NARASI_OUTLINE_MANDATES, default OFF, fiction only).
     # Seven rolls x four lenses converged on ONE diagnosis: the remaining defects are
@@ -403,28 +555,105 @@ def _outline_prompt(topic: str, n: int, style: Optional[str], language: str,
                           + ", ".join(_ttok) + ". Invent fresh title shapes.\n\n")
         except Exception:  # noqa: BLE001 — titles enhancement never blocks the outline
             pass
+    # REVEAL LEDGER (flag NARASI_OUTLINE_REVEALS, default OFF, fiction only — same gating
+    # convention as NARASI_OUTLINE_MANDATES above). Root cause (confirmed on a real
+    # manuscript): the single-shot outline call independently invents the SAME secret as a
+    # "fresh" reveal in two different chapters (Ch3 and Ch5 both staging one confession as
+    # new) because nothing forces the model to commit each secret to exactly one chapter, and
+    # nothing records the reveals in a form two DIFFERENT phrasings of the same fact can later
+    # be compared against. Ask for a parallel "reveals" ledger, in neutral OMNISCIENT phrasing
+    # (not each character's own in-scene wording) so a downstream dedup check (Flag
+    # NARASI_REVEAL_DEDUP_CHECK) can compare reveals across chapters for paraphrase-blindness.
+    # OFF ⟹ prompt/schema byte-identical (bare chapters array, unchanged).
+    _reveals_clause = ""
+    _reveals_schema = ""
+    if _ofic and os.environ.get("NARASI_OUTLINE_REVEALS", "0").strip().lower() in ("1", "true", "yes", "on"):
+        _reveals_clause = (
+            "\n\nREVEAL LEDGER: separately from the chapter list, enumerate every "
+            "PLOT-CRITICAL secret, confession, or reveal in this story — anything a "
+            "character conceals that the plot later discloses. Commit EACH one to exactly "
+            "ONE chapter as its first-reveal — the chapter where it is FIRST disclosed on "
+            "the page — and never let the same underlying secret be staged as a fresh "
+            "revelation in more than one chapter. Describe each secret in NEUTRAL, "
+            "OMNISCIENT-NARRATOR phrasing (the objective underlying fact, e.g. 'the will "
+            "names the daughter as sole heir'), NOT in any character's own in-scene wording "
+            "or euphemism — this is what lets two different phrasings of the SAME fact be "
+            "recognized later as one reveal, not two.\n"
+        )
+        _reveals_schema = (
+            ', "reveals": [{"id": "r1", "secret": "neutral omniscient-POV description of the '
+            'underlying fact", "chapter": 1, "characters_involved": ["name1", "name2"], '
+            '"method": "how it is revealed"}]'
+        )
+    if _reveals_schema:
+        _return_block = (
+            "Return ONLY a JSON object, no prose, no code fences, in EXACTLY this shape:\n"
+            '{"chapters": [{"title": "chapter title", "summary": "1-2 sentences on what it '
+            f'covers", "words": {words_per_chapter}}}]'
+            + _reveals_schema + "}"
+        )
+    else:
+        _return_block = (
+            "Return ONLY a JSON array, no prose, no code fences, in EXACTLY this shape:\n"
+            '[{"title": "chapter title", "summary": "1-2 sentences on what it covers", '
+            f'"words": {words_per_chapter}}}]'
+        )
+    # FIDELITY CLAUSE (flag NARASI_OUTLINE_FIDELITY, default OFF, fiction only — same _ofic
+    # gate as _mand/_reveals_clause above). Independent of both: reads only `topic_detail`
+    # (precomputed once by the caller via _classify_topic_detail, see outline_from_topic) or,
+    # if not supplied, classifies inline as a self-contained fallback. Selects exactly ONE of
+    # the three instruction blocks and appends it inline next to the existing anti-overlap
+    # sentence below — it does not touch _mand, _reveals_clause, or _return_block in any way.
+    # OFF ⟹ _fidelity_clause == "" ⟹ prompt byte-identical (including byte-identical to Flags
+    # 1/2's own additions — this clause is spliced in below, not entangled with theirs).
+    _fidelity_clause = ""
+    # ANTI-TROPE / FIDELITY CONFLICT (same flag+gate as _fidelity_clause above): the
+    # unconditional "avoid the buried-document/hidden-crime shape" instruction below is a
+    # deliberate copyright-mitigation guard, but at topic_detail=="detailed" it directly
+    # fights _FIDELITY_DETAILED's "preserve every stated plot beat... do NOT invent new
+    # major subplots" instruction — confirmed on a real manuscript ("The Trash Project")
+    # where this exact tension inverted a stated character's backstory. At that tier,
+    # fidelity to the user's own given structure should dominate — the same principle the
+    # flag's own minimal tier already applies at the OPPOSITE extreme (full creative
+    # invention licensed there). So the anti-trope sentence is suppressed ONLY when the
+    # flag is on AND topic_detail=="detailed"; every other combination (flag off, or flag
+    # on at "moderate"/"minimal") keeps it, byte-identical to before this fix.
+    _suppress_antitrope = False
+    if _ofic and os.environ.get("NARASI_OUTLINE_FIDELITY", "0").strip().lower() in ("1", "true", "yes", "on"):
+        _detail = topic_detail if topic_detail in ("minimal", "moderate", "detailed") else _classify_topic_detail(topic)
+        if _detail == "detailed":
+            _fidelity_clause = _FIDELITY_DETAILED
+            _suppress_antitrope = True
+        elif _detail == "moderate":
+            _fidelity_clause = _FIDELITY_MODERATE
+        else:
+            _fidelity_clause = _FIDELITY_MINIMAL
+    _antitrope_clause = "" if _suppress_antitrope else (
+        " Make the STRUCTURE original: build it from THIS topic's specific "
+        "hook, NOT as a re-skin of a famous novel/film with the details swapped, and NOT as the "
+        "over-used \"a buried document/record exposes a hidden past crime\" shape — if it drifts "
+        "there, choose a different engine."
+    )
     return (
         f"TOPIC:\n{topic}\n\n"
         f"Design a {n}-chapter outline{style_clause}. The chapters must progress "
         "logically (a hook that opens, development in the middle, a resonant close) "
         "and must NOT overlap — each chapter owns a distinct part of the story so "
-        "parallel writers won't repeat each other. Order the chapters in CHRONOLOGICAL "
+        "parallel writers won't repeat each other."
+        + _fidelity_clause +
+        " Order the chapters in CHRONOLOGICAL "
         "sequence — no chapter set earlier in time than the one before it (no rewinding to "
         "an earlier event as a whole chapter). And make sure every EXTERNAL stake the story "
         "opens — a deadline, a debt, a threat, a search — is RESOLVED by the final chapters, "
-        "never left dangling. Make the STRUCTURE original: build it from THIS topic's specific "
-        "hook, NOT as a re-skin of a famous novel/film with the details swapped, and NOT as the "
-        "over-used \"a buried document/record exposes a hidden past crime\" shape — if it drifts "
-        "there, choose a different engine. And IF the premise poses a DISTINCTIVE hook — a "
+        "never left dangling."
+        + _antitrope_clause +
+        " And IF the premise poses a DISTINCTIVE hook — a "
         "recurring image, an anomaly, a specific mystery the opening raises and frames as a "
         "question to answer — make sure a specific late chapter DELIVERS its answer on the page, "
         "rather than letting a generic sub-plot (a fraud, a buried record) resolve while the hook "
         "hangs. A premise with no such posed puzzle owes no answer-chapter — do not invent one. "
         f"Titles and summaries in {language}.\n\n"
-        + _mand +
-        "Return ONLY a JSON array, no prose, no code fences, in EXACTLY this shape:\n"
-        '[{"title": "chapter title", "summary": "1-2 sentences on what it covers", '
-        f'"words": {words_per_chapter}}}]'
+        + _mand + _reveals_clause + _return_block
     )
 
 
@@ -459,6 +688,237 @@ def _title_ban_hits(chapters: list, style) -> list:
         return []
 
 
+# ===========================================================================
+# FLAG NARASI_REVEAL_DEDUP_CHECK (default OFF; only acts when Flag NARASI_OUTLINE_REVEALS
+# is ALSO on and produced 2+ reveals). Catches the paraphrase-blind half of the same
+# duplicate-reveal bug the ledger records: two reveals in DIFFERENT chapters that share a
+# character and, on closer (LLM) inspection, turn out to describe the SAME underlying
+# secret despite different wording (a hidden file in one reveal vs a corporate payoff in
+# another, both actually the same confession).
+# ===========================================================================
+_NAME_NORM_RE = re.compile(r"[\s\-_]+")
+
+
+def _norm_char_name(name: str) -> str:
+    """Pure, deterministic — casefold + collapse whitespace/'-'/'_' so trivial LLM
+    formatting variance between two reveal entries for the SAME character (e.g.
+    "Do-hyun" vs "Do Hyun", or "  Mira " vs "mira") doesn't defeat the exact-match set
+    intersection in _candidate_reveal_pairs below. Deliberately NOT fuzzy/Levenshtein —
+    that is a different, larger problem; this only closes the casing/spacing gap. Never
+    raises: any failure falls back to the original string (worst case, back to today's
+    exact-match behavior for that one name)."""
+    try:
+        return _NAME_NORM_RE.sub(" ", str(name or "")).strip().casefold()
+    except Exception:  # noqa: BLE001
+        return str(name or "")
+
+
+def _candidate_reveal_pairs(reveals: list) -> list[tuple[dict, dict]]:
+    """Pure, deterministic, NO LLM — the cost-saving pre-filter for the dedup check.
+
+    Returns only pairs of reveals that (a) sit in DIFFERENT chapters, and (b) share at
+    least one name in characters_involved (compared via _norm_char_name so casing/
+    spacing variance doesn't silently defeat the match) — a same-chapter pair can't be a
+    cross-chapter duplicate reveal, and two reveals about disjoint characters are
+    exceedingly unlikely to be the same secret. Fewer than 2 reveals, or no qualifying
+    pair, -> []. This is the COMMON case: most outlines have no overlapping-cast
+    cross-chapter reveals, so this filter alone keeps the LLM call in Flag 2 step 2 from
+    ever firing. Never raises."""
+    try:
+        if not isinstance(reveals, list) or len(reveals) < 2:
+            return []
+        pairs: list[tuple[dict, dict]] = []
+        for i in range(len(reveals)):
+            a = reveals[i]
+            if not isinstance(a, dict):
+                continue
+            a_chars = {_norm_char_name(x) for x in (a.get("characters_involved") or [])}
+            for j in range(i + 1, len(reveals)):
+                b = reveals[j]
+                if not isinstance(b, dict):
+                    continue
+                if a.get("chapter") == b.get("chapter"):
+                    continue
+                b_chars = {_norm_char_name(x) for x in (b.get("characters_involved") or [])}
+                if a_chars & b_chars:
+                    pairs.append((a, b))
+        return pairs
+    except Exception:  # noqa: BLE001
+        return []
+
+
+_REVEAL_DEDUP_SYS = (
+    "You are checking a fiction outline's REVEAL LEDGER for accidental duplicates: two "
+    "reveals that were phrased differently but actually stage the SAME underlying secret "
+    "as a fresh revelation TWICE, once in each of two different chapters (e.g. 'a hidden "
+    "file surfaces' in one chapter and 'a corporate payoff comes to light' in another, "
+    "when both are really the same confession described two ways). Some pairs below are "
+    "innocuous — genuinely different secrets that merely happen to share a character. "
+    "Judge ONLY whether the SECRET ITSELF is the same underlying fact, never by shared "
+    "characters or surface wording alone. Do NOT flag a pair where the earlier chapter "
+    "only hints, suspects, or partially reveals the fact and the later chapter is the "
+    "first FULL, CONFIRMED disclosure — that is intentional dramatic structure (a "
+    "foreshadow-then-confirm), not a duplicate. Only flag when BOTH chapters "
+    "independently stage a full, confirmed reveal of the same fact as if it were new "
+    "information. Return ONLY JSON: {\"duplicates\": [{\"pair\": "
+    "<1-based index into the numbered list below>, \"keep_chapter\": <int, the earlier/"
+    "canonical chapter that keeps the reveal>, \"demote_chapter\": <int, the later chapter "
+    "that must stop re-staging it as new>}]}. If no pair is a true duplicate, return "
+    "{\"duplicates\": []}."
+)
+
+_REVEAL_AMEND_SYS = (
+    "You are editing ONE chapter summary in a fiction outline. This chapter's summary "
+    "currently re-stages a secret as a FRESH reveal, but that secret was already revealed "
+    "earlier in the story, in an earlier chapter. Rewrite the summary so this chapter "
+    "treats the fact as ALREADY KNOWN by this point — it may reference the fact or its "
+    "consequences, but must NOT re-stage the disclosure itself as new information to the "
+    "reader or characters. Keep every other plot beat in the summary; change only how this "
+    "one fact is handled. Do not delete, shorten, or invent unrelated content, and do not "
+    "mention that this is an edit. Return ONLY JSON: {\"summary\": \"<the full rewritten "
+    "chapter summary>\"}"
+)
+
+
+async def _reveal_dedup_amend(chapters: list, reveals: list, *, tenant_id=None, job_uuid=None,
+                              telemetry_sink=None) -> list:
+    """FLAG NARASI_REVEAL_DEDUP_CHECK step 2-3: given the chapters list and the Flag-1
+    reveals ledger, find and fix genuine cross-chapter duplicate reveals.
+
+    Step 1 (pre-filter): _candidate_reveal_pairs (pure, no LLM). If it returns no pairs —
+    the common case — this returns `chapters` UNCHANGED with ZERO LLM calls.
+
+    Step 2 (check): if there ARE candidate pairs, ONE holistic cheap LLM call
+    (_narasi_cheap_call) presents ALL candidate pairs together and asks which (if any) are
+    true duplicates despite different wording.
+
+    Step 3 (amend): for each CONFIRMED duplicate, ONE bounded keep/demote amend call
+    (mirrors static.py's extract-and-check-then-amend shape, e.g. the antag-scene /
+    warmth-scene / cast-depth checks) rewrites ONLY the demoted/later chapter's summary to
+    treat the fact as already known — never deletes a chapter, never re-rolls the outline,
+    never auto-merges beyond that one summary edit. Bounded to at most 5 amends per call.
+
+    BILLING (telemetry_sink, default None — same param outline_from_topic's own manager
+    call already receives via its Worker/run_worker): outline_from_topic's Worker call
+    reaches the job's real settlement total AUTOMATICALLY, by invoking telemetry_sink as
+    a Callable[[CallTelemetry], None] (see core.py's run_worker -> _emit). The two
+    _narasi_cheap_call invocations below are NOT routed through run_worker/_emit, so they
+    never reach that path on their own — that gap is the fix here. When the caller's
+    telemetry_sink happens to expose a duck-typed `.credits` running-total attribute (the
+    same "job-level running total" convention laozhang_api._log_narasi_usage's own
+    docstring documents, and the exact convention narration_api.py's _UsageSink /
+    charge.settle(credits_actual=sink.credits) already settles from — see narration_api.py
+    GATES-phase sites, e.g. "if sink is not None and _dpcc: sink.credits += int(_dpcc)"),
+    fold each call's cost into it directly and drop that call's own usage_logs credits to 0
+    (credit_row=False) so the cost is counted exactly once, at settlement, not twice.
+    telemetry_sink is a bare Callable[[CallTelemetry], None] in every call path this
+    function is reachable from today (outline_from_topic's caller wraps the real sink in a
+    checkbox-updating closure with no .credits of its own) — so this degrades to a no-op
+    accumulation, and credit_row stays True as a fallback, keeping the cost visible in
+    usage_logs exactly as before rather than silently disappearing. Deciding credit_row
+    once, before either call, avoids a call landing with credit_row=False on the hope of an
+    accumulation that then turns out to be impossible.
+
+    Returns a NEW list (chapters is never mutated in place). Never raises: any failure at
+    any step returns `chapters` unchanged."""
+    try:
+        pairs = _candidate_reveal_pairs(reveals)
+        if not pairs:
+            return chapters
+        from laozhang_api import _narasi_cheap_call as _rd_call, _narasi_parse_json as _rd_parse
+
+        # Decided ONCE, before any call: can this telemetry_sink actually absorb a direct
+        # credit accumulation? See the docstring BILLING section above.
+        _sink_can_absorb = telemetry_sink is not None and hasattr(telemetry_sink, "credits")
+        _credit_row = not _sink_can_absorb
+
+        def _fold_credits(cr) -> None:
+            if not (_sink_can_absorb and cr):
+                return
+            try:
+                telemetry_sink.credits += cr
+            except Exception as _sce:  # noqa: BLE001 — sink accumulation must never break the dedup check
+                log.warning("reveal-dedup: telemetry sink credit accumulation failed (non-fatal): %s", _sce)
+
+        def _fmt(r: dict) -> str:
+            return (f"ch{r.get('chapter')}: \"{r.get('secret')}\" "
+                    f"(characters: {', '.join(r.get('characters_involved') or [])}; "
+                    f"method: {r.get('method')})")
+
+        _user = "\n\n".join(
+            f"PAIR {i + 1}:\n  A ({_fmt(a)})\n  B ({_fmt(b)})"
+            for i, (a, b) in enumerate(pairs)
+        )
+        _raw, _cr = await _rd_call(
+            _REVEAL_DEDUP_SYS, _user, tenant_id=tenant_id, user_id=None,
+            job_uuid=job_uuid, json_mode=True, credit_row=_credit_row,
+        )
+        _fold_credits(_cr)
+        _parsed = _rd_parse(_raw) if isinstance(_raw, str) else (_raw or {})
+        dupes = (_parsed or {}).get("duplicates") if isinstance(_parsed, dict) else None
+        if not isinstance(dupes, list) or not dupes:
+            log.info("reveal-dedup check: %d candidate pair(s), 0 confirmed duplicate(s)", len(pairs))
+            return chapters
+
+        out = [dict(c) if isinstance(c, dict) else c for c in chapters]
+        out_by_id = {c.get("id"): idx for idx, c in enumerate(out) if isinstance(c, dict)}
+        amended = 0
+        for d in dupes[:5]:
+            if not isinstance(d, dict):
+                continue
+            try:
+                pair_idx = int(d.get("pair") or 0)
+                demote_ch = int(d.get("demote_chapter"))
+                keep_ch = int(d.get("keep_chapter"))
+            except (TypeError, ValueError):
+                continue
+            if not (1 <= pair_idx <= len(pairs)) or demote_ch == keep_ch:
+                continue
+            a, b = pairs[pair_idx - 1]
+            valid_chapters = {a.get("chapter"), b.get("chapter")}
+            if demote_ch not in valid_chapters or keep_ch not in valid_chapters:
+                continue
+            # A correct duplicate-reveal fix always demotes the LATER occurrence (the
+            # earlier one is the legitimate first-disclosure) — never the earlier one. A
+            # judge response that picks the earlier chapter as demote_chapter is an
+            # invalid/unusable verdict for this pair: skip it rather than apply a
+            # backwards edit.
+            if demote_ch <= keep_ch:
+                log.warning(
+                    "reveal-dedup: pair %d judge picked demote_chapter=%d <= keep_chapter=%d "
+                    "(must demote the LATER chapter) — skipping amend for this pair",
+                    pair_idx, demote_ch, keep_ch)
+                continue
+            idx = out_by_id.get(demote_ch)
+            if idx is None or not isinstance(out[idx], dict) or not out[idx].get("summary"):
+                continue
+            secret = a.get("secret") if a.get("chapter") == keep_ch else b.get("secret")
+            _amend_user = (
+                f"THE FACT (already known as of chapter {keep_ch}): {secret}\n\n"
+                f"CHAPTER {demote_ch} CURRENT SUMMARY:\n{out[idx].get('summary')}"
+            )
+            _araw, _acr = await _rd_call(
+                _REVEAL_AMEND_SYS, _amend_user, tenant_id=tenant_id, user_id=None,
+                job_uuid=job_uuid, json_mode=True, credit_row=_credit_row,
+            )
+            _fold_credits(_acr)
+            _ad = _rd_parse(_araw) if isinstance(_araw, str) else (_araw or {})
+            new_summary = str((_ad or {}).get("summary") or "").strip()
+            if len(new_summary) > 40:
+                out[idx] = {**out[idx], "summary": new_summary}
+                amended += 1
+                log.info("reveal-dedup: pair %d confirmed duplicate — ch%d demoted (kept ch%d)",
+                         pair_idx, demote_ch, keep_ch)
+            else:
+                log.info("reveal-dedup: amend unusable for ch%d — chapter summary kept", demote_ch)
+        log.info("reveal-dedup check: %d candidate pair(s), %d confirmed, %d amended",
+                 len(pairs), len(dupes), amended)
+        return out
+    except Exception as _rde:  # noqa: BLE001 — dedup check must never block the outline
+        log.warning("reveal-dedup check failed (non-fatal): %s", _rde)
+        return chapters
+
+
 async def outline_from_topic(
     topic: str,
     *,
@@ -469,11 +929,19 @@ async def outline_from_topic(
     manager_model: Optional[str] = None,
     timeout: float = 90.0,
     telemetry_sink: Optional[Any] = None,
+    tenant_id: Optional[str] = None,
+    job_uuid: Optional[str] = None,
 ) -> dict[str, Any]:
     """Ask the manager for `n_chapters` chapter {title, summary, words} entries.
 
     Robust like plan_subtasks: on any failure FALLS BACK to a deterministic
     generic outline so a bare topic always yields a runnable chapter list.
+
+    tenant_id/job_uuid (both optional, default None): forwarded ONLY to the Flag-2
+    NARASI_REVEAL_DEDUP_CHECK cheap-call credit logging below — this function's LLM outline
+    call itself does not need them. Threaded through so the dedup check's usage_logs rows
+    attribute to the right tenant/job; None is safe (the cheap call still runs, just with no
+    tenant/job attribution) and preserves the flags-off, byte-identical-caller contract.
 
     Returns:
         {
@@ -486,19 +954,41 @@ async def outline_from_topic(
     n = max(1, int(n_chapters or 5))
     m_model = manager_model or MANAGER_MODEL
 
+    # Fiction gate shared by ALL THREE flags below — same convention as NARASI_OUTLINE_MANDATES
+    # / _outline_prompt's own _ofic check. Soft: any import/lookup failure -> False (flags OFF).
+    try:
+        from .static import _is_fiction_style as _otfis
+        _is_fic = bool(_otfis(style)) if style else False
+    except Exception:  # noqa: BLE001 — gating is an enhancement, never blocks the outline
+        _is_fic = False
+
+    # FLAG NARASI_OUTLINE_FIDELITY: classify the topic's own structural detail level ONCE per
+    # outline request (pure/cheap — no LLM), so BOTH the initial _outline_prompt call below AND
+    # the title-ban reroll's call further down (same topic, unchanged) select the SAME
+    # instruction block instead of reclassifying redundantly. Computed unconditionally (it's
+    # cheap and side-effect-free); _outline_prompt only USES it when the flag+fiction gate
+    # passes, so this is a no-op when the flag is off.
+    _topic_detail = _classify_topic_detail(topic)
+
     worker = Worker(
         name="planner:outline", role="manager", phase="outline", model=m_model,
         system=_OUTLINE_SYSTEM, temperature=0.5, telemetry_sink=telemetry_sink,
     )
     res = await run_worker(
-        worker, _outline_prompt(topic, n, style, language, words_per_chapter),
+        worker, _outline_prompt(topic, n, style, language, words_per_chapter, topic_detail=_topic_detail),
         timeout=timeout, task_id="planner:outline",
     )
 
     chapters: list[dict] = []
+    # FLAG NARASI_OUTLINE_REVEALS reveals ledger (see _normalize_reveals docstring for the
+    # fail-safe contract): extracted from the SAME `parsed` object as chapters, via a fully
+    # separate key/function, so a malformed or absent reveals block can NEVER affect
+    # `chapters` above — the two extractions cannot interact.
+    reveals: list[dict] = []
     if res.get("ok") and res.get("output"):
         parsed = _parse_json_loose(res["output"])
         chapters = _normalize_outline(parsed, topic, n, words_per_chapter)
+        reveals = _normalize_reveals(parsed)
 
     # ROUND-6 TITLE-BAN ENFORCE (NARASI_TITLE_BAN_ENFORCE, default OFF): verify the
     # outline's titles against the lane's banned tokens; on a hit, ONE re-roll with
@@ -512,7 +1002,7 @@ async def outline_from_topic(
                          len(_tbh), _tbh[:2])
                 _tbres = await run_worker(
                     worker,
-                    _outline_prompt(topic, n, style, language, words_per_chapter)
+                    _outline_prompt(topic, n, style, language, words_per_chapter, topic_detail=_topic_detail)
                     + ("\n\nPREVIOUS ATTEMPT REJECTED — these chapter titles used banned title "
                        "words: " + "; ".join(_tbh[:4]) + ". Regenerate the SAME outline structure "
                        "with completely different, fresh title shapes that avoid every banned "
@@ -524,12 +1014,32 @@ async def outline_from_topic(
                     _tbch = _normalize_outline(_tbp, topic, n, words_per_chapter)
                     if _tbch and len(_title_ban_hits(_tbch, style)) < len(_tbh):
                         chapters = _tbch
+                        # Re-derive reveals from THIS SAME re-roll response — not left stale
+                        # against the discarded chapters, not left pointing at chapter shapes
+                        # (titles/order) that just changed. _normalize_reveals is malformation-
+                        # safe on its own, so this is a plain re-extraction, never a hazard.
+                        reveals = _normalize_reveals(_tbp)
                         log.info("title-ban enforce: re-roll accepted (%d → %d banned title(s))",
                                  len(_tbh), len(_title_ban_hits(_tbch, style)))
                     else:
                         log.info("title-ban enforce: re-roll no better — original outline kept")
+                        # reveals intentionally left untouched: it already matches the ORIGINAL
+                        # (kept) chapters, since the re-roll was rejected.
         except Exception as _tbe:  # noqa: BLE001
             log.warning("title-ban enforce failed (non-fatal): %s", _tbe)
+
+    # FLAG NARASI_REVEAL_DEDUP_CHECK (default OFF; only does anything when Flag 1 is ALSO on
+    # and produced 2+ reveals — both conditions checked here AND inside _reveal_dedup_amend's
+    # pre-filter). Runs BEFORE build_story_bible is ever invoked downstream: the router
+    # (_run_topic_to_book) calls outline_from_topic, THEN passes the returned chapters into
+    # narrate_chapters -> build_story_bible, so a demoted duplicate is fixed in the outline
+    # before the bible (and every parallel chapter writer) ever sees it.
+    if (_is_fic and len(reveals) >= 2
+            and os.environ.get("NARASI_REVEAL_DEDUP_CHECK", "0").strip().lower() in ("1", "true", "yes", "on")):
+        chapters = await _reveal_dedup_amend(
+            chapters, reveals, tenant_id=tenant_id, job_uuid=job_uuid,
+            telemetry_sink=telemetry_sink,
+        )
 
     if chapters:
         return {"chapters": chapters, "source": "manager", "model": m_model, "ok": True}

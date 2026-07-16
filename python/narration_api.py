@@ -119,6 +119,27 @@ def _r7_env_on(name: str) -> bool:
     return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _wq(s, n: int = 110) -> str:
+    """EVIDENCE-LOCATABILITY (2026-07-17): quote-wrap a manuscript-verbatim snippet so
+    laozhang_api.py's _narasi_revise_chunked._spans() can find it — that regex only
+    extracts text sitting BETWEEN literal quote characters, so an evidence string with
+    no quote marks at all is silently unmappable (_spans() == [], the violation never
+    reaches a chapter, NARASI_*_ENFORCE lands nothing) even when the underlying text is
+    a real, locatable manuscript excerpt. _spans() also caps the captured span at 120
+    chars — truncate to fit, but ONLY at a whitespace boundary, never mid-word: a
+    mid-word cut would make the trailing edge fail _occ()'s \\b-bounded match against
+    the original text (the char right after the cut, in the real manuscript, is not a
+    word boundary). Returns '' for empty/falsy input so callers don't ship a bare '\"\"'
+    violation string."""
+    s = str(s or "").strip()
+    if not s:
+        return ""
+    if len(s) > n:
+        _head = s[:n]
+        s = _head.rsplit(" ", 1)[0] if " " in _head else _head
+    return f'"{s}"' if s else ""
+
+
 def _r7_actuator_violations(result: dict) -> list[dict]:
     """ROUND-7: teeth for the round-6 report-only gates. Reads the already-computed
     reports off `result` and returns synthetic mechanical violations for the
@@ -131,27 +152,37 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
     try:
         _ctrs = (result.get("counter_report") or {}).get("counters") or {}
         # — abort-seam: the ban swerve shipped into prose ("made barley — no.") —
+        # EVIDENCE-LOCATABILITY: `snippet` is a real character-offset slice of the actual
+        # chapter text (narasi_counters.abort_seam_scan, newline→space normalized only) —
+        # quote-wrap so _spans() can pull it out of an otherwise-plain evidence string.
         if _r7_env_on("NARASI_ABORT_SEAM_ENFORCE"):
             for h in ((_ctrs.get("abort_seam") or {}).get("hits") or [])[:3]:
                 out.append({
                     "type": "abort_seam", "severity": "high",
-                    "evidence": str(h.get("snippet") or "")[:200],
+                    "evidence": _wq(h.get("snippet"))[:200],
                     "fix": ("A mid-clause self-correction artifact shipped into the prose "
                             "(a started word, an em-dash, 'no.', then the corrected choice). "
                             "Delete the false start and the correction marker; keep ONLY the "
                             "corrected choice, reflowing the sentence naturally.")})
         # — coda repeat: identical chapter-closing line used twice —
+        # EVIDENCE-LOCATABILITY: `coda` is now the ORIGINAL-CASE closing line (narasi_counters.
+        # coda_repeat_scan case-preservation fix) — quote-wrap so _spans() can locate it.
         if _r7_env_on("NARASI_CODA_DEDUP_ENFORCE"):
             for pr in ((_ctrs.get("coda_repeat") or {}).get("pairs") or [])[:2]:
                 _chs = pr.get("chapters") or ["?", "?"]
                 out.append({
                     "type": "coda_repeat", "severity": "high",
-                    "evidence": str(pr.get("coda") or "")[:200],
+                    "evidence": _wq(pr.get("coda"))[:200],
                     "fix": (f"Chapters {_chs[0]} and {_chs[1]} end with this IDENTICAL closing "
                             f"line. Rewrite the chapter-{_chs[1]} ending so each chapter closes "
                             f"distinctly — new image or plain action, not a variation of the "
                             f"same aphorism.")})
         # — domain plausibility: hard law/medicine/engineering errors —
+        # EVIDENCE-LOCATABILITY: the domain-plausibility gate's post-check (see _r9_gate_domain)
+        # now guarantees every surviving claim's "quote" is a verified literal substring of the
+        # manuscript sent — quote-wrap it here too, else it reaches _narasi_revise_chunked with
+        # no enclosing quote chars at all and _spans() finds nothing (same bug class as the
+        # other 6 types below, just not one of the originally-investigated 7 — same fix applies).
         if _r7_env_on("NARASI_DOMAIN_ENFORCE"):
             _nd = 0
             for c in ((result.get("domain_plausibility_report") or {}).get("claims") or []):
@@ -159,7 +190,7 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
                     continue
                 out.append({
                     "type": "domain_error", "severity": "high",
-                    "evidence": str(c.get("quote") or "")[:200],
+                    "evidence": _wq(c.get("quote"))[:200],
                     "fix": (f"Domain error ({c.get('domain')}): {str(c.get('why') or '')[:160]} "
                             f"— correct it with the SMALLEST edit that makes the claim "
                             f"professionally plausible; keep the scene and its emotional beat "
@@ -168,11 +199,21 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
                 if _nd >= 3:
                     break
         # — numeric ledger: one referent, multiple values (unintentional drift) —
+        # EVIDENCE-LOCATABILITY (numeric_arithmetic): `quote` comes from the ledger extractor's
+        # "equations" schema, now prompted for a VERBATIM-as-written sentence (see the numeric-
+        # ledger system prompt) — quote-wrap it so _spans() can find it. Belt-and-suspenders:
+        # append the extractor's own "@chN" chapter locator (same pattern numeric_drift's
+        # evidence already uses below) so laozhang_api.py's deterministic @chN bypass can still
+        # route this violation even when the quote isn't a perfect verbatim match — and route the
+        # fully-synthetic `note` fallback (no manuscript text at all) the same way.
         if _r7_env_on("NARASI_NUMERIC_LEDGER_ENFORCE"):
             for e in ((result.get("numeric_ledger_report") or {}).get("sum_errors") or [])[:2]:
+                _nae = _wq(e.get("quote")) or str(e.get("note") or "")[:180]
+                if e.get("chapter") is not None:
+                    _nae = f"{_nae} @ch{e.get('chapter')}"
                 out.append({
                     "type": "numeric_arithmetic", "severity": "high",
-                    "evidence": str(e.get("quote") or e.get("note"))[:200],
+                    "evidence": _nae[:200],
                     "fix": (f"The stated total is wrong: {e.get('note')}. Correct the total to "
                             f"{e.get('expected')} EVERYWHERE it appears, and if a person is counted "
                             f"in two components, make the narration subtract them explicitly.")})
@@ -1343,17 +1384,32 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _dpbk = result.get(_dpkey) or ""
                 if _dp_fic and _dpbk:
                     from laozhang_api import _narasi_cheap_call as _dpcall, _narasi_parse_json as _dpparse
+                    # HARDENING (2026-07-17, confirmed hallucination/echo mechanism): a cheap/fast
+                    # model given unlabeled illustrative examples in the system prompt AND an
+                    # undelimited manuscript blob in the user turn will sometimes return the
+                    # EXAMPLE wording verbatim as its "quote" (or otherwise paraphrase/invent one)
+                    # instead of a real manuscript excerpt — the schema never said "verbatim" and
+                    # nothing marked the examples as off-limits. Three prompt-side fixes plus a
+                    # deterministic post-check (belt-and-suspenders — catches this regardless of
+                    # whether the wording changes fully close the model's tendency to hallucinate).
                     _dpsys = (
-                        "You are a domain-plausibility checker for fiction. Scan the manuscript for "
-                        "claims about LAW/legal procedure, MEDICINE/anatomy, or ENGINEERING/physics "
-                        "that a professional in that field would call clearly wrong or impossible — "
-                        "the kind that breaks reader trust (a metal hammer kept in a prison cell; a "
-                        "charge name that does not match the act; one lateral impact destroying both "
-                        "cochlear nerves; an unreinforced 7-story concrete slab). IGNORE stylistic "
-                        "choices, genre conventions, and anything merely unlikely. Return ONLY JSON: "
-                        "{\"claims\":[{\"quote\":\"<short exact quote>\",\"domain\":\"law|medicine|engineering\","
-                        "\"why\":\"<one line>\",\"severity\":\"high|low\"}]} — max 8, hard errors only.")
-                    _dpraw, _dpcc = await _dpcall(_dpsys, _dpbk[:60000], tenant_id=tenant_id,
+                        "You are a domain-plausibility checker for fiction. Scan the MANUSCRIPT TEXT "
+                        "below for claims about LAW/legal procedure, MEDICINE/anatomy, or ENGINEERING/"
+                        "physics that a professional in that field would call clearly wrong or "
+                        "impossible — the kind that breaks reader trust. The following are ILLUSTRATIVE "
+                        "CATEGORIES ONLY, describing the KIND of error to look for — they are NOT "
+                        "manuscript text and must NEVER be echoed or reused as your answer, verbatim or "
+                        "paraphrased (a metal hammer kept in a prison cell; a charge name that does not "
+                        "match the act; one lateral impact destroying both cochlear nerves; an "
+                        "unreinforced 7-story concrete slab). IGNORE stylistic choices, genre "
+                        "conventions, and anything merely unlikely. Return ONLY JSON: "
+                        "{\"claims\":[{\"quote\":\"<verbatim substring copied character-for-character "
+                        "from the MANUSCRIPT TEXT below — never from these instructions or examples>\","
+                        "\"domain\":\"law|medicine|engineering\",\"why\":\"<one line>\","
+                        "\"severity\":\"high|low\"}]} — max 8, hard errors only.")
+                    _dpsrc = _dpbk[:60000]
+                    _dpuser = "MANUSCRIPT TEXT:\n\"\"\"\n" + _dpsrc + "\n\"\"\""
+                    _dpraw, _dpcc = await _dpcall(_dpsys, _dpuser, tenant_id=tenant_id,
                                                   user_id=user_id, job_uuid=job_uuid, json_mode=True,
                                                   credit_row=False)
                     if sink is not None and _dpcc:
@@ -1361,11 +1417,29 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _dpd = _dpparse(_dpraw) if isinstance(_dpraw, str) else (_dpraw or {})
                     _dpcl = (_dpd or {}).get("claims") if isinstance(_dpd, dict) else None
                     if isinstance(_dpcl, list) and _dpcl:
-                        result["domain_plausibility_report"] = {"claims": _dpcl[:8]}
-                        log.warning("domain plausibility: %d implausible claim(s): %s",
-                                    len(_dpcl[:8]),
-                                    [f"{c.get('domain')}: {str(c.get('quote') or '')[:60]}"
-                                     for c in _dpcl[:4] if isinstance(c, dict)])
+                        # DETERMINISTIC POST-CHECK: drop any claim whose "quote" is not an actual
+                        # literal substring of the exact manuscript slice sent — this is the robust
+                        # half of the fix, independent of prompt compliance (same idiom as
+                        # _numeric_drifts/_numeric_sum_errors' deterministic post-checks elsewhere
+                        # in this file). A dropped claim never reaches domain_plausibility_report,
+                        # so NARASI_DOMAIN_ENFORCE can never inject a hallucinated/echoed "fix".
+                        _dpverified = [c for c in _dpcl if isinstance(c, dict)
+                                       and str(c.get("quote") or "").strip()
+                                       and str(c.get("quote")) in _dpsrc]
+                        _dpdropped = len(_dpcl) - len(_dpverified)
+                        if _dpdropped:
+                            log.warning("domain plausibility: dropped %d/%d claim(s) — quote not "
+                                        "found verbatim in manuscript (hallucinated/echoed)",
+                                        _dpdropped, len(_dpcl))
+                        if _dpverified:
+                            result["domain_plausibility_report"] = {"claims": _dpverified[:8]}
+                            log.warning("domain plausibility: %d implausible claim(s): %s",
+                                        len(_dpverified[:8]),
+                                        [f"{c.get('domain')}: {str(c.get('quote') or '')[:60]}"
+                                         for c in _dpverified[:4] if isinstance(c, dict)])
+                        else:
+                            log.info("domain plausibility: no verified hard errors flagged "
+                                     "(%d claim(s) dropped as unverifiable)", _dpdropped)
                     else:
                         log.info("domain plausibility: no hard errors flagged")
         except Exception as e:  # noqa: BLE001
@@ -1405,7 +1479,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "\"values\":[{\"value\":\"<as written>\",\"chapter\":<n>}]}],"
                         "\"equations\":[{\"stated_total\":\"<number>\",\"components\":[\"<n1>\",\"<n2>\"],"
                         "\"overlap\":\"<name of any person counted in TWO components, else empty>\","
-                        "\"quote\":\"<short>\",\"chapter\":<n>}]} — max 20 referents; equations = every "
+                        "\"quote\":\"<verbatim sentence containing the total, copied exactly as "
+                        "written>\",\"chapter\":<n>}]} — max 20 referents; equations = every "
                         "stated arithmetic claim (a total with its parts); values as PLAIN NUMBERS "
                         "without units. If the story itself establishes that one person appears in two "
                         "components (a mislabeled body counted both officially and among the hidden), "
@@ -1903,9 +1978,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 if _brc._brand_entity_use(_brbook, _brx):
                                     _brent.append(_brand)
                                     if len(_brent) <= 6:
+                                        # EVIDENCE-LOCATABILITY: _snip is a real character-offset
+                                        # slice of the actual book text around the confirmed brand
+                                        # match — quote-wrap so _spans() can locate it.
                                         _snip = _bre.sub(r"\s+", " ", _brbook[max(0, _bm.start() - 40):_bm.end() + 80])
                                         _mech.append({"type": "real_brand_entity", "severity": "low",
-                                            "evidence": (_snip or _brand)[:200],
+                                            "evidence": (_wq(_snip) or _wq(_brand))[:200],
                                             "fix": (f"The real company «{_brand}» is used as an in-story entity "
                                                     f"(firm/client/employer). Consider renaming to a clearly "
                                                     f"fictional company to avoid brand/legal risk; nominative prop use is fine.")})
@@ -1925,9 +2003,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             _mlk = "book" if result.get("book") else "output"
                             _mlr = _mlc.meta_reference_scan(result.get(_mlk) or "")
                             for _h in (_mlr.get("hits") or [])[:3]:
+                                # EVIDENCE-LOCATABILITY: `snippet` is the raw manuscript line
+                                # (case-preserved, only .strip()'d) around the meta-ref match —
+                                # quote-wrap so _spans() can locate it.
                                 _mech.append({
                                     "type": "meta_leak", "severity": "high",
-                                    "evidence": str(_h.get("snippet") or "")[:200],
+                                    "evidence": _wq(_h.get("snippet"))[:200],
                                     "fix": ("This line contains an out-of-world reference to a chapter/"
                                             "episode number ('Ch9', 'chapter 5', 'episode 3') -- a "
                                             "generator artifact. Rewrite the sentence to remove the "
@@ -1943,8 +2024,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             _plk = "book" if result.get("book") else "output"
                             _plr = _plc.provenance_leak_scan(result.get(_plk) or "")
                             for _h in (_plr.get("hits") or [])[:3]:
+                                # EVIDENCE-LOCATABILITY: same pattern as meta_leak — `snippet` is
+                                # a raw, case-preserved manuscript line — quote-wrap it.
                                 _mech.append({"type": "provenance_leak", "severity": "high",
-                                    "evidence": str(_h.get("snippet") or "")[:200],
+                                    "evidence": _wq(_h.get("snippet"))[:200],
                                     "fix": ("This line cites the story's own scaffolding (story bible / "
                                             "outline / canon / fact-sheet) — a generator artifact, not "
                                             "in-world text. Delete the citation phrase and state the fact "
@@ -2173,12 +2256,30 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     if str(os.environ.get("NARASI_REGISTER_GATE_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
                         try:
                             from laozhang_api import _narasi_consistency_revise
+                            # EVIDENCE-LOCATABILITY: "required move not executed" reports an
+                            # ABSENCE — by definition there is no manuscript text to point at, so
+                            # it is left as-is (permanently unmappable; the whole-book revise path
+                            # this default-routes through needs no per-chapter locator anyway).
                             _rv = [{"type": "register", "severity": "high",
                                     "evidence": f"required move not executed: {m}",
                                     "fix": f"execute the '{m}' move at least once in the book"}
                                    for m in moves if counts.get(m, 0) < 1]
+
+                            def _bp_ev(t):
+                                # "banned phrasing present": `banned` already confirmed via a
+                                # LOWERCASE substring test that `t` genuinely occurs in the book —
+                                # but `t` itself is the pakem CONFIG's own casing, not the
+                                # manuscript's actual casing/position, so echoing it verbatim
+                                # rarely _occ()-matches real prose. Recover the REAL span/casing
+                                # from the book and quote-wrap THAT; fall back to the old synthetic
+                                # string (unmappable but safe — never a false locator) if the
+                                # recovered slice doesn't case-fold back to `t` (e.g. a rare
+                                # Unicode case-folding length mismatch).
+                                _bidx = low.find(t.lower())
+                                _rc = book[_bidx:_bidx + len(t)] if _bidx >= 0 else ""
+                                return _wq(_rc) if _rc and _rc.lower() == t.lower() else f"banned phrasing present: {t}"
                             _rv += [{"type": "register", "severity": "high",
-                                     "evidence": f"banned phrasing present: {t}",
+                                     "evidence": _bp_ev(t),
                                      "fix": f"remove the banned phrasing '{t}'"} for t in banned]
                             _rkey = "book" if result.get("book") else "output"
                             _rbk = result.get(_rkey) or ""
@@ -2377,11 +2478,25 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "renders this event with a value DIFFERENT from the canonical one and NOT a sanctioned "
                         "false version before its correction — even if it reads like an intended reveal. Return "
                         "ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<field>\",\"found\":\"<value>\","
-                        "\"expected\":\"<canonical value>\"}]}. Empty list if the book is consistent with canon."
+                        "\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt from THIS chapter, copied "
+                        "character-for-character from the book text, that shows the found value — never "
+                        "paraphrased>\"}]}. Empty list if the book is consistent with canon."
                         + ((" SANCTIONED COUNTERPOINT PAIRS (the story keeps BOTH values alive by design "
                             "— never report either as a fork): " + _cpt) if _cpt else ""))
                     try:
-                        _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:12000],
+                        # EVIDENCE-LOCATABILITY (Task 5, 2026-07-17): raised from [:12000] to match
+                        # domain-plausibility's [:60000] cap — a manuscript beyond ~2-3 chapters was
+                        # otherwise auditing facts in chapters the model was never shown. No comment/
+                        # commit evidence the 12000 was a DELIBERATE cost choice, so raising per the
+                        # task's instruction. COST NOTE worth flagging: this call fires once PER
+                        # EVENT (<=8/job) with the SAME leading slice each time, so THIS gate's own
+                        # manuscript-token spend rises ~5x (proportional to the slice), same 8-call
+                        # ceiling as before — and, per job, it now spends up to 8x MORE manuscript
+                        # tokens than domain-plausibility's equivalent ONE call at the same [:60000]
+                        # cap (8×60000 vs domain-plausibility's 1×60000). Flagging for Rino to weigh;
+                        # not dialed back here since the task asked to match the cap unless the
+                        # smaller value was demonstrably deliberate, which it isn't.
+                        _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:60000],
                                                              tenant_id=tenant_id, user_id=user_id,
                                                              job_uuid=job_uuid, json_mode=True,
                                                              credit_row=False)
@@ -2393,7 +2508,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 _forks.append({"event": _ev.get("id") or _ev.get("summary"),
                                                "chapter": _f.get("chapter"), "field": _f.get("field"),
                                                "found": str(_f.get("found"))[:160],
-                                               "expected": str(_f.get("expected"))[:160]})
+                                               "expected": str(_f.get("expected"))[:160],
+                                               # fail-safe: absent on an older/malformed response —
+                                               # empty string, never crashes the rest of parsing.
+                                               "quote": str(_f.get("quote") or "")[:160]})
                     except Exception as _e:  # noqa: BLE001
                         log.warning("canon-diff event scan failed (non-fatal): %s", _e)
                 result["canon_diff"] = {"events_checked": len(_events[:8]), "forks": _forks[:20]}
@@ -2411,9 +2529,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             _nrv = [f for f in _forks
                                     if str((f or {}).get("field") or "").split(".")[0] in ("when", "participants")][:4]
                             if _nrv:
+                                # EVIDENCE-LOCATABILITY (Task 3): prefer the auditor's new verbatim
+                                # "quote" field (quote-wrapped for _spans()) over the bare "found"
+                                # paraphrase. Fail-safe: an older/malformed response with no "quote"
+                                # falls back to the prior behavior — bare found value, still
+                                # unmappable but never a crash.
                                 _nrviol = [{
                                     "type": "canon_attribution", "severity": "high",
-                                    "evidence": str(f.get("found") or "")[:200],
+                                    "evidence": (_wq(f.get("quote")) or str(f.get("found") or "")[:200]),
                                     "fix": (f"The fact sheet pins event «{f.get('event')}» {f.get('field')} "
                                             f"differently than this chapter states — align the chapter to "
                                             f"the fact sheet's version; change nothing else.")}

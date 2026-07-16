@@ -3248,7 +3248,16 @@ def coda_repeat_scan(text: str) -> dict:
     maxim repeated with only its TRAILING PUNCTUATION changed ("...allowed to knock." vs
     "...allowed to knock;") slipped past as two "different" strings. Now also strips trailing
     punctuation before the equality compare \u2014 the stored `coda` (used for the reported
-    snippet) is unaffected, only the dedup KEY changes."""
+    snippet) is unaffected, only the dedup KEY changes.
+
+    EVIDENCE-LOCATABILITY (2026-07-17): `coda` used to be lowercased at capture time (below),
+    so the "reported snippet" the r16 comment above describes was ALREADY case-destroyed before
+    r16 ever touched it \u2014 a real, verbatim chapter-closing line, but with its case wiped, so
+    laozhang_api.py's _occ() (a CASE-SENSITIVE \\b-bounded search) could almost never re-locate
+    it against the real mixed-case manuscript (sentences are virtually always capitalized).
+    `coda` now keeps the manuscript's ORIGINAL case; lowercasing is applied only inline, when
+    building the dedup `_key` below \u2014 extending the same store-vs-dedup separation r16
+    already established for punctuation-stripping to case as well."""
     if not text:
         return {"count": 0, "pairs": []}
     # AUDIT FIX (r16): the internal pipeline format is "## Chapter N: Title" (per
@@ -3263,7 +3272,8 @@ def coda_repeat_scan(text: str) -> dict:
             continue
         lines = [ln.strip() for ln in b.rstrip().split("\n") if ln.strip()]
         if len(lines) >= 2:
-            codas.append((int(m.group(1)), re.sub(r"\s+", " ", lines[-1]).lower()))
+            # EVIDENCE-LOCATABILITY: original case preserved here (no .lower()) -- see docstring.
+            codas.append((int(m.group(1)), re.sub(r"\s+", " ", lines[-1])))
     seen: dict[str, int] = {}
     pairs = []
     for ch, coda in codas:
@@ -3274,8 +3284,9 @@ def coda_repeat_scan(text: str) -> dict:
         # merge two codas with the SAME words but different clause type (different meaning)
         # into a false "duplicate". Only strip punctuation that's genuinely craft-equivalent
         # (period/semicolon/comma/ellipsis/quotes) — a real near-verbatim repeat differing
-        # ONLY by one of these still collapses to the same key.
-        _key = re.sub(r"[.;,…\"'“”]+$", "", coda).strip()
+        # ONLY by one of these still collapses to the same key. .lower() applied HERE ONLY --
+        # the dedup key must stay case-insensitive; `coda` itself stays original-case.
+        _key = re.sub(r"[.;,…\"'“”]+$", "", coda).strip().lower()
         if _key in seen:
             pairs.append({"chapters": [seen[_key], ch], "coda": coda[:120]})
         else:
