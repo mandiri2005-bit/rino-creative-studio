@@ -1398,6 +1398,83 @@ def _narasi_flag_decision(raw: str) -> tuple[bool, str]:
     return True, raw.strip()
 
 
+def _narasi_phase_laozhang_override(phase: str) -> Optional[str]:
+    """Read-only helper (Rino 2026-07-16) for a retry loop that walks a chain of DIFFERENT model
+    ids against the SAME provider rung — e.g. build_story_bible's primary-then-fallback chain,
+    which all funnel through the laozhang rung. NARASI_{PHASE}_LAOZHANG (see
+    _narasi_phase_provider_flag / _narasi_flag_decision above) rewrites the laozhang rung's served
+    model IN PLACE regardless of what model the caller actually requested for that attempt — so a
+    caller retrying with a DIFFERENT model string after a failure can silently end up repeating
+    the EXACT SAME call if this override happens to match a model already tried (confirmed live:
+    NARASI_BIBLE_LAOZHANG=claude-sonnet-5 pinned BOTH the primary attempt and the "fallback"
+    attempt to claude-sonnet-5, so the intended failover never actually happened — two more
+    claude-sonnet-5 calls were billed for a fallback that was supposed to be a different, faster
+    model). Returns the override model id when one is explicitly set — enabled=True AND the value
+    is a real model string, not a bare "1"/"true" toggle (which just means "use the phase's
+    normal/default model" and carries no model identity to compare against) — else None. A caller
+    should treat None (unset, or a bare on/off toggle) as "no override in play, nothing to dedup
+    against"."""
+    raw = _narasi_phase_provider_flag(phase, "laozhang")
+    if raw is None:
+        return None
+    enabled, override = _narasi_flag_decision(raw)
+    if not enabled or not override:
+        return None
+    return override
+
+
+def _narasi_phase_laozhang_sole_rung(phase: str) -> bool:
+    """Read-only helper (Rino 2026-07-16, round-26 fix closing a round-25 adversarial-audit gap)
+    that confirms laozhang is the ONLY rung in `phase`'s chain, so a caller can safely skip a
+    WHOLE chain-attempt on account of _narasi_phase_laozhang_override above pinning it to an
+    already-tried model. Each chain attempt in build_story_bible (and the sibling loops in
+    _narasi_consistency_critique / _narasi_complete) doesn't make a single laozhang call — it
+    builds a FULL multi-rung failover chain per model id (e.g. kie+laozhang+atlascloud for
+    opus-family models), and _apply_phase_provider_gate can additionally force-include a rung for
+    5 OTHER providers on top of that. Skipping the whole attempt via `continue` whenever the
+    laozhang leg is doomed also discards every OTHER rung in that same attempt, which serve the
+    correctly-requested model and are completely unaffected by the override — that's only safe
+    when laozhang is confirmed to be the SOLE rung for this phase. Checking this requires two
+    groups of the 9 non-laozhang switchboard providers, with OPPOSITE unset-handling, because
+    they differ in whether they can be present without an explicit flag:
+
+    GROUP A — _GROUP_A_NATURAL = ('kie', 'claude_native', 'atlascloud', 'gemini'): these can
+    appear NATURALLY in _narasi_failover_chain_base's built-in per-model-family chain even when
+    their own switchboard flag is UNSET. So for group A, unset (None) means "cannot confirm
+    absence" and must be treated conservatively as "may still be present" -> return False
+    immediately, same as an explicit enabled=True.
+
+    GROUP B — _GROUP_B_FORCE_ONLY = ('aimlapi', 'deepseek', 'openai', 'gemini_direct', 'fal'):
+    per _apply_phase_provider_gate's own docstring these are NEVER part of the built-in chain —
+    they only appear at all when force-included via an explicit truthy NARASI_{PHASE}_{PROVIDER}
+    flag. So for group B, unset (None) genuinely means "absent" -> continue checking rather than
+    bailing out; only an explicit enabled=True (a real force-included extra rung) returns False.
+
+    Returns True only when every provider in BOTH groups clears its check (group A all explicitly
+    enabled=False; group B all either unset or explicitly enabled=False) — i.e. laozhang has no
+    silent natural sibling AND no force-included extra rung. Conservative by design: any ambiguity
+    resolves to False, since a false positive here would silently reintroduce the bug this helper
+    exists to prevent (round-25 confirmed the four-provider-only version of this check wrongly
+    returned True when a group-B provider was force-included, discarding that legitimate rung)."""
+    _GROUP_A_NATURAL = ("kie", "claude_native", "atlascloud", "gemini")
+    _GROUP_B_FORCE_ONLY = ("aimlapi", "deepseek", "openai", "gemini_direct", "fal")
+    for fp in _GROUP_A_NATURAL:
+        raw = _narasi_phase_provider_flag(phase, fp)
+        if raw is None:
+            return False
+        enabled, _ = _narasi_flag_decision(raw)
+        if enabled:
+            return False
+    for fp in _GROUP_B_FORCE_ONLY:
+        raw = _narasi_phase_provider_flag(phase, fp)
+        if raw is None:
+            continue
+        enabled, _ = _narasi_flag_decision(raw)
+        if enabled:
+            return False
+    return True
+
+
 def _narasi_build_rung(flag_provider: str, model: str) -> Optional[tuple[str, str, str, str, str]]:
     """Builds a single rung tuple for ANY of the 10 canonical switchboard providers, given the
     model id that should actually be sent. Used both to REPLACE an existing rung's model in place
@@ -2090,8 +2167,28 @@ def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = ""
     this call site too. Omitted by callers that don't need it (phase="")."""
     tried: list[str] = []
     seen: list[str] = []
+    # Same dedup guard as build_story_bible / _narasi_consistency_critique's chain loops (see
+    # _narasi_phase_laozhang_override / _narasi_phase_laozhang_sole_rung docstrings above):
+    # NARASI_WORKER_LAOZHANG can pin the laozhang rung to a model already tried earlier in THIS
+    # call, making a later fallback candidate silently repeat an already-failed call instead of
+    # the different model it was meant to try. Only skip the WHOLE candidate when laozhang is
+    # confirmed the SOLE rung for "worker" — otherwise skipping would also discard unaffected
+    # sibling rungs (kie/claude_native/atlascloud/vertex) that might still succeed. This loop
+    # iterates `m` directly (no enumerate), so "first candidate" is tracked via `seen` being
+    # still empty and "already tried" via membership in `seen`, which is built up as we go,
+    # BEFORE the current `m` is appended to it.
+    _wk_lz_override = _narasi_phase_laozhang_override("worker")
+    _wk_lz_sole_rung = _narasi_phase_laozhang_sole_rung("worker")
     for m in [model] + _NARASI_MODEL_FALLBACKS:
         if not m or m in seen:
+            continue
+        if seen and _wk_lz_override and _wk_lz_override in seen and _wk_lz_sole_rung:
+            print(f"[narasi] worker fallback candidate {m} skipped — NARASI_WORKER_LAOZHANG pins "
+                  f"the laozhang rung to {_wk_lz_override} regardless of what this candidate "
+                  f"asked for, and {_wk_lz_override} was already tried and failed earlier in "
+                  f"this call, so this candidate would only repeat that same doomed call and "
+                  f"double-bill it.")
+            tried.append(f"{m}:skipped(laozhang-pinned-doomed)")
             continue
         seen.append(m)
         rm = MODELS.get(m, m)
@@ -8271,7 +8368,25 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
     # still runs inside each attempt via make_narasi_client. Set NARASI_CRITIQUE_FALLBACK_MODEL="" to disable.
     _fallback = (os.getenv("NARASI_CRITIQUE_FALLBACK_MODEL", os.getenv("WORKER_MODEL", "gemini-2.5-flash")) or "").strip()
     _chain = [crit_model] + ([_fallback] if (_fallback and _fallback != crit_model) else [])
+    # Same dedup guard as build_story_bible's chain loop (see _narasi_phase_laozhang_override /
+    # _narasi_phase_laozhang_sole_rung docstrings above): NARASI_CRITIQUE_LAOZHANG can pin the
+    # laozhang rung to a model already tried earlier in THIS chain, making a later attempt
+    # silently repeat an already-failed call instead of the different model it requested. Only
+    # skip the WHOLE attempt when laozhang is confirmed the SOLE rung for "critique" — otherwise
+    # skipping would also discard unaffected sibling rungs (kie/claude_native/atlascloud/vertex)
+    # that might still succeed. No guarded import needed here (already inside laozhang_api.py).
+    _crit_lz_override = _narasi_phase_laozhang_override("critique")
+    _crit_lz_sole_rung = _narasi_phase_laozhang_sole_rung("critique")
     for _i, _cm in enumerate(_chain):
+        if _i > 0 and _crit_lz_override and _crit_lz_override in _chain[:_i] and _crit_lz_sole_rung:
+            import logging as _lg
+            _lg.getLogger("narasi").warning(
+                "consistency critic: NARASI_CRITIQUE_LAOZHANG pins the laozhang rung to model %s "
+                "regardless of what this attempt (%d/%d, requested %s) asked for — %s was "
+                "already tried and failed earlier in this chain, so this attempt would only "
+                "repeat that same doomed call and double-bill it. Skipping.",
+                _crit_lz_override, _i + 1, len(_chain), _cm, _crit_lz_override)
+            continue
         resolved = MODELS.get(_cm, _cm)
         safe_max = min(2000, MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
         try:

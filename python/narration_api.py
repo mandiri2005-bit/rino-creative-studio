@@ -836,6 +836,8 @@ async def _run_narration_job(
         await _finalize(
             job_id, job_uuid, tenant_id, status=_STATUS_CANCELLED,
             result=None, error="Job cancelled by user")
+        log.info("narration job %s cancelled and finalized after %.1fs",
+                 job_id, time.monotonic() - started)
         # A7 (Rino 2026-07-04): cancel charges the chapters ALREADY generated (partial
         # commit), refunding only the unused remainder — the sink holds the real cost of
         # every completed call at cancel time, and charge.settle() commits actual + refunds

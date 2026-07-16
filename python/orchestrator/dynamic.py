@@ -1134,7 +1134,54 @@ async def build_story_bible(
             from laozhang_api import _narasi_skip_kie as _skip_var  # type: ignore
         except Exception:  # noqa: BLE001
             _skip_var = None
+    # Confirmed live this session (billing evidence): with NARASI_BIBLE_LAOZHANG set to a model
+    # id, the laozhang rung's served model gets rewritten IN PLACE regardless of which _chain
+    # entry this attempt actually requested — so attempt 2 (meant to fail over to a DIFFERENT,
+    # faster model) can silently re-run the EXACT SAME model attempt 1 already tried and failed,
+    # double-billing for a "fallback" that never actually fires. Look the override up ONCE,
+    # up front, so the loop below can detect and skip that specific waste. Guarded import:
+    # laozhang_api may be unimportable in standalone orchestrator use — then this is a silent
+    # no-op (None), same as the _skip_var import above.
+    _lz_override = None
+    try:
+        from laozhang_api import _narasi_phase_laozhang_override  # type: ignore
+        _lz_override = _narasi_phase_laozhang_override("bible")
+    except Exception:  # noqa: BLE001
+        _lz_override = None
+    # ROUND-25 (adversarial audit of round-24's fix above): each _chain entry is NOT a single
+    # laozhang call — build_story_bible's Worker/run_worker path fans each model id out into a
+    # FULL multi-rung failover chain (e.g. kie+laozhang+atlascloud for opus-family models).
+    # Skipping the WHOLE attempt via `continue` below whenever the laozhang leg is doomed also
+    # discards every OTHER rung in that attempt (kie/claude_native/atlascloud/vertex), which
+    # serve the correctly-requested model and are completely unaffected by the override. That's
+    # only safe when laozhang is confirmed to be the SOLE rung for "bible" (every sibling
+    # provider explicitly force-excluded) — so require that confirmation too before skipping.
+    # Guarded import, same pattern as _lz_override above; False is the safe default (assume a
+    # sibling rung might exist, so do NOT skip).
+    _lz_sole_rung = False
+    try:
+        from laozhang_api import _narasi_phase_laozhang_sole_rung  # type: ignore
+        _lz_sole_rung = _narasi_phase_laozhang_sole_rung("bible")
+    except Exception:  # noqa: BLE001
+        _lz_sole_rung = False
     for _i, _mdl in enumerate(_chain):
+        # If NARASI_BIBLE_LAOZHANG pins the laozhang rung to a model already tried earlier in
+        # THIS chain, this attempt would just repeat that already-failed call verbatim rather
+        # than the different, presumably-more-reliable model it was requesting — skip it rather
+        # than wastefully repeating (and double-billing) a doomed call. No new flag needed: this
+        # only changes behavior in a scenario that is ALREADY broken (a fallback that silently
+        # isn't one), and it can only make that scenario fail faster/cheaper, never worse. Also
+        # require _lz_sole_rung: without it, skipping the whole attempt could discard a
+        # legitimate, unaffected sibling rung (kie/claude_native/atlascloud/vertex) that might
+        # have succeeded — the exact bug an adversarial audit caught in round 25.
+        if _i > 0 and _lz_override and _lz_override in _chain[:_i] and _lz_sole_rung:
+            log.warning(
+                "build_story_bible: NARASI_BIBLE_LAOZHANG pins the laozhang rung to model %s "
+                "regardless of what this attempt (%d/%d, requested %s) asked for — %s was "
+                "already tried and failed earlier in this chain, so this attempt would only "
+                "repeat that same doomed call and double-bill it. Skipping.",
+                _lz_override, _i + 1, len(_chain), _mdl, _lz_override)
+            continue
         worker = Worker(
             name="planner:bible", role="manager", phase="bible", model=_mdl,
             system=system, temperature=0.3, max_tokens=_bib_max, telemetry_sink=telemetry_sink,
