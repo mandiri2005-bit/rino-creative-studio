@@ -2779,11 +2779,18 @@ _REAL_BRANDS_LONG = (
     "Samsung", "Hyundai", "Doosan", "Lotte", "Hanwha", "POSCO", "Daewoo", "Kumho",
     "Hanjin", "Ssangyong", "Kolon", "Hankook", "Naver", "Kakao", "Coupang", "Celltrion",
     "Hyosung",
+    # banks (round-N: manuscript e75fgr0z used a real bank as bribe-laundering conduit)
+    "Nonghyup", "Kookmin", "Shinhan", "Woori", "KEB Hana",
+    # press (near-match camouflage spellings added directly, same rationale as the
+    # Hanjin≈Hanshin orbit fix at _lev_le1 — the model reliably reuses ONE transliteration)
+    "Hankyoreh", "Hangyeore Ilbo", "Chosun Ilbo", "JoongAng Ilbo", "Dong-A Ilbo",
 )
 # Names that collide with people/places in prose ("Tae-young" unhyphenated, Mount
 # Halla) only count WITH a corporate tail — same rule as the two-letter groups.
+# "Daesung" collides with a common real Korean given name (also an idol stage
+# name) — bare match would false-flag a character, not just Daesung Group.
 _REAL_BRANDS_SHORT = ("SK", "LG", "GS", "CJ", "KT", "DL",
-                      "Booyoung", "Hoban", "Halla", "HDC", "Taeyoung")
+                      "Booyoung", "Hoban", "Halla", "HDC", "Taeyoung", "Daesung")
 _NUM_WORDS_XL = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
     "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,

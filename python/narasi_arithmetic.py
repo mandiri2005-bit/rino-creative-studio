@@ -902,12 +902,31 @@ def scan_canon_anchor_dates(text: str) -> list[dict]:
 # but Do-yoon's POSTAL TENURE forked "two decades" vs "fifteen years" — a different attribute
 # (years-of-experience, not age) on the same character, missed by the age-only scanner. Same
 # name-attribution mechanism (220-char lookback, _AGE_STOP_NAMES), different trigger phrases.
+# round-17 (item 3, case 2): "fifteen years OF employment" / "twenty years OF fieldwork" has
+# neither a preceding spent/for trigger nor a bare-decades form — t1/t2 never matched it, so
+# the figures were never extracted, let alone compared. t3 adds the "N years/decades of <noun>"
+# shape, reusing the SAME number-word alternation (_AGEWORD_ALT, defined above for the age
+# scanner) rather than re-deriving it a third time.
 _TENURE_TOKEN_RX = re.compile(
     r"\b(?:spent|for)\s+(?P<t1>\d{1,3}|" + "|".join(sorted(
         list(_AGE_WORDS["en"].keys()) + [f"{t}-{u}" for t in _EN_TENS for u in
         ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")],
         key=len, reverse=True)) + r")\s+(?:years?|decades?)\b"
-    r"|\b(?P<t2>\d{1,3}|(?:two|three|four|five|six|seven|eight|nine|ten))\s+decades?\b", re.I)
+    r"|\b(?P<t2>\d{1,3}|(?:two|three|four|five|six|seven|eight|nine|ten))\s+decades?\b"
+    r"|\b(?P<t3>\d{1,3}|" + _AGEWORD_ALT + r")\s+(?:years?|decades?)\s+of\s+"
+    # AUDIT FIX: the trailing noun was a fully generic \w+, so "years of AGE"
+    # ("thirty years of age" — a character's stated age, not tenure) and unrelated
+    # attributes ("years of marriage", "years of practice on the violin") were all
+    # misparsed as career tenure. Narrowed to an explicit career/experience allowlist.
+    # "practice" alone is ambiguous ("practice as a surgeon" IS tenure; "practice on
+    # the violin" is NOT) and can't be cleanly disambiguated with a simple regex, so
+    # bare "practice" is excluded — only the qualified "practice as/in <role>" form
+    # (unambiguously career-shaped) is allowed, accepting reduced recall over the
+    # confirmed false-positive risk. "duty" got the same treatment after a second
+    # adversarial pass found "years of duty-free shopping" still matched bare —
+    # same ambiguity class as practice, same fix.
+    r"(?:employment|service|experience|fieldwork|tenure|work|career|"
+    r"(?:practice|duty)\s+(?:as|in))\b", re.I)
 # Local (not the shared _NAME_TOKEN_RX): Korean-order given names can have a ONE-consonant-
 # vowel first syllable ("Do-yoon", "Yu-jin") — _NAME_TOKEN_RX's [a-z]{2,} minimum (tuned for
 # r15's age-fork on names like "Park"/"Seo-an") misses these entirely. Widened ONLY for the
@@ -934,11 +953,12 @@ def scan_tenure_ledger(text: str) -> list[dict]:
     tenure_by_name: dict[str, set] = {}
     givens_by_surname: dict[str, set] = {}
     for m in _TENURE_TOKEN_RX.finditer(text):
-        raw = m.group("t1") or m.group("t2")
+        raw = m.group("t1") or m.group("t2") or m.group("t3")
         n = _en_num(raw) if not raw.isdigit() else int(raw)
         if n is None:
             continue
-        if "decade" in text[m.start():m.end()].lower():
+        unit = "decade" if "decade" in text[m.start():m.end()].lower() else "year"
+        if unit == "decade":
             n *= 10
         if not (1 <= n <= 70):
             continue
@@ -963,9 +983,10 @@ def scan_tenure_ledger(text: str) -> list[dict]:
     for name, tenures in tenure_by_name.items():
         if len(givens_by_surname.get(name, set())) >= 2:
             continue  # different people sharing a surname — same guard as the age fork
-        if len(tenures) >= 2 and (max(tenures) - min(tenures)) >= 2:
-            out.append({"kind": "tenure_fork", "subject": name, "years": sorted(tenures),
-                        "note": f"'{name}' given tenure/experience {sorted(tenures)} years — pick one"})
+        values = sorted(tenures)
+        if len(values) >= 2 and (max(values) - min(values)) >= 2:
+            out.append({"kind": "tenure_fork", "subject": name, "years": values,
+                        "note": f"'{name}' given tenure/experience {values} years — pick one"})
     return out[:6]
 
 
