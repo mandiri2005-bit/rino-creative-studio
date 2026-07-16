@@ -965,9 +965,14 @@ async def narrate_chapters(
                                                     "fresh, premise-appropriate invention; keep the line's structure, meaning "
                                                     "and everything else IDENTICAL. Return ONLY JSON: "
                                                     "{\"lines\": [{\"old\": \"<exact original line>\", \"new\": \"<patched line>\"}]}")
+                                                # budget scales with len(_bad_lines): the flat 800 default truncated
+                                                # mid-JSON at roll-13's 21 hits (SALVAGED only 1 patch pair) — each
+                                                # line needs its full original echoed back + a full rewrite + JSON overhead.
+                                                _sp_max_tokens = 300 + 350 * len(_bad_lines)
                                                 _sp_raw, _sp_cr = await _sp_call(_sp_sys, "\n".join(_bad_lines),
                                                                                  tenant_id=tenant_id, user_id=None,
-                                                                                 job_uuid=None, json_mode=True)
+                                                                                 job_uuid=None, max_tokens=_sp_max_tokens,
+                                                                                 json_mode=True)
                                                 _sp = _sp_parse(_sp_raw) if isinstance(_sp_raw, str) else (_sp_raw or {})
                                                 if isinstance(_sp, dict) and not (_sp.get("lines") or []):
                                                     _sp = None   # empty parse → try salvage below
