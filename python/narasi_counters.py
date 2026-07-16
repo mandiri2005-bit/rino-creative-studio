@@ -1977,6 +1977,102 @@ def _closing_tableau_scan(chapters: list[str]) -> dict:
         return {"status": "PASS", "count": 0, "motifs": {}, "sentences": []}
 
 
+# ── style-fingerprint saturation scan (own flag, NARASI_STYLE_SATURATION_SCAN,
+# default OFF) — a real manuscript flagged 'the way ' 79x, em-dash 301x, 'the
+# particular' 24x across a ~37K-word book: the model falling into the SAME repetitive
+# crutch phrasing manuscript-WIDE rather than varying its prose. Unlike opening_motif/
+# hedge_density/closing_tableau above (which scan per-CHAPTER openings/closings),
+# this scans the whole ASSEMBLED manuscript as one text — the saturation signal only
+# shows up at book scale. status FLAG-only, NEVER 'OVER' (see docstring below). Own
+# flag (not NARASI_REFRAIN_SCAN) so it is independently enableable. Never raises.
+_SAT_STOP = _OPENING_STOP | {
+    # short EN/ID function words _OPENING_STOP omits (it only holds len>=4 words) —
+    # needed so an all-function-word n-gram like 'of the'/'in the' is excluded, while
+    # a content-bearing one like 'the way'/'the particular' (only ONE stopword) is kept.
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "but", "nor",
+    "is", "are", "was", "be", "as", "by", "it", "he", "she", "his", "her", "its", "him",
+    "you", "your", "we", "our", "i", "my", "me", "us", "so", "if", "no", "not",
+    "do", "did", "can", "may", "had", "has", "who", "how", "why", "all", "any",
+    "one", "out", "up", "down", "off", "yet", "am",
+    "di", "ke", "dan", "itu", "ini", "ia", "ya", "apa", "kami", "kita",
+    "aku", "kau", "nya", "pun", "si", "se", "para",
+}
+
+
+def _style_saturation_scan_on() -> bool:
+    """NARASI_STYLE_SATURATION_SCAN=1 arms the manuscript-wide style-fingerprint
+    saturation scan below. Default OFF => report key absent, byte-identical."""
+    return os.environ.get("NARASI_STYLE_SATURATION_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _style_saturation_scan(text: str) -> dict:
+    """Report-only: manuscript-WIDE (whole assembled text, not per-chapter — unlike
+    _opening_motif_scan/_hedge_density_scan above) word/phrase crutch-repetition. Two
+    sub-signals: (a) top content-bearing n-grams (2-4 words, case/punctuation-normalized
+    via the word regex, sentence-scoped so a phrase never straddles a sentence boundary)
+    whose count exceeds a length-scaled rate; n-grams made ENTIRELY of function words
+    ('of the', 'in the') are excluded so the signal is CONTENT drift, not grammar. (b)
+    em-dash ('—') rate per 1000 words, a separate, simpler sub-metric.
+    status is FLAG-only, NEVER 'OVER' — same convention as _opening_motif_scan (see its
+    docstring): there is no single correct replacement for an overused phrase (or a raw
+    dash-rate), so auto-rewriting risks whack-a-mole substitution; a generation-prompt
+    steer is the right lever here, not the surgical sentence-diet loop. The em-dash
+    sub-metric COULD in principle be a real density budget (OVER-capable, in the
+    citations_max/aporia_max style) but this codebase has no calibrated baseline em-dash
+    ceiling to anchor one on, so — per the same caution that governs the phrase side —
+    it defaults FLAG-only too rather than guessing a number. Never raises."""
+    out = {
+        "status": "PASS", "count": 0, "n_words": 0, "threshold": 0, "phrases": {},
+        "em_dash": {"status": "PASS", "count": 0, "per_1000": 0.0, "threshold": 0.0},
+    }
+    try:
+        n_words = len(_OPENING_WORD_RX.findall(text or ""))
+        out["n_words"] = n_words
+        _min_words = int(os.environ.get("NARASI_STYLE_SATURATION_MIN_WORDS", "3000"))
+        if n_words < _min_words:
+            return out  # too short for a manuscript-wide rate signal to mean anything
+
+        # (a) content-bearing 2-4 gram saturation — sentence-scoped (mirrors the R-H3
+        # aporia repeated-phrase 4-gram approach further below in this file).
+        counts: dict[str, int] = {}
+        for s in _sentences(text):
+            toks = [w.lower() for w in _OPENING_WORD_RX.findall(s)]
+            for n in (2, 3, 4):
+                for i in range(max(0, len(toks) - n + 1)):
+                    gram = toks[i:i + n]
+                    if all(w in _SAT_STOP for w in gram):
+                        continue  # function-word-ONLY ('of the') — grammar, not a motif
+                    key = " ".join(gram)
+                    counts[key] = counts.get(key, 0) + 1
+
+        _rate = float(os.environ.get("NARASI_STYLE_SATURATION_RATE", "0.5"))   # per 1000 words
+        _floor = int(os.environ.get("NARASI_STYLE_SATURATION_FLOOR", "8"))     # ignore noise on shortish docs
+        thr = max(_floor, math.ceil(_rate * n_words / 1000))
+        out["threshold"] = thr
+        offenders = {g: c for g, c in counts.items() if c >= thr}
+        if offenders:
+            top = dict(sorted(offenders.items(), key=lambda kv: -kv[1])[:15])
+            out["status"] = "FLAG"
+            out["count"] = len(offenders)
+            out["phrases"] = top
+
+        # (b) em-dash rate — simple, separate sub-metric (FLAG-only; see docstring).
+        _ed_count = (text or "").count("—")
+        _ed_rate = (_ed_count / n_words * 1000) if n_words else 0.0
+        _ed_thr = float(os.environ.get("NARASI_STYLE_SATURATION_EMDASH_RATE", "4.0"))
+        ed = {"status": "PASS", "count": _ed_count, "per_1000": round(_ed_rate, 2), "threshold": _ed_thr}
+        if _ed_rate > _ed_thr:
+            ed["status"] = "FLAG"
+            out["status"] = "FLAG"
+        out["em_dash"] = ed
+        return out
+    except Exception:  # noqa: BLE001 — a broken scan must never break generation
+        return {
+            "status": "PASS", "count": 0, "n_words": 0, "threshold": 0, "phrases": {},
+            "em_dash": {"status": "PASS", "count": 0, "per_1000": 0.0, "threshold": 0.0},
+        }
+
+
 # ── nonfiction prose-integrity scanners (report-only, lens#2 "hedge-as-shield" batch) ──
 # Three more report-only scanners under the SAME NARASI_REFRAIN_SCAN flag, targeting the
 # nonfiction failure modes lens#2 surfaced on the Notebook/Banda pieces. status FLAG/PASS only
@@ -2777,13 +2873,20 @@ def _brand_scan_on() -> bool:
 _REAL_BRANDS_LONG = (
     "Hanshin",   # round-8: Hanshin E&C is real — culpable-builder slot 2 rolls running
     "Samsung", "Hyundai", "Doosan", "Lotte", "Hanwha", "POSCO", "Daewoo", "Kumho",
-    "Hanjin", "Ssangyong", "Kolon", "Hankook", "Naver", "Kakao", "Coupang", "Celltrion",
+    "Hanjin", "Ssangyong", "Kolon", "Naver", "Kakao", "Coupang", "Celltrion",
     "Hyosung",
     # banks (round-N: manuscript e75fgr0z used a real bank as bribe-laundering conduit)
     "Nonghyup", "Kookmin", "Shinhan", "Woori", "KEB Hana",
     # press (near-match camouflage spellings added directly, same rationale as the
     # Hanjin≈Hanshin orbit fix at _lev_le1 — the model reliably reuses ONE transliteration)
     "Hankyoreh", "Hangyeore Ilbo", "Chosun Ilbo", "JoongAng Ilbo", "Dong-A Ilbo",
+    # Hankuk/Hankook Ilbo: the literal multi-word press names bare-match here, same
+    # as Chosun Ilbo etc. above. Bare unmodified "Hankuk"/"Hankook" (no tail) is
+    # deliberately NOT listed here (round-N FP fix): both are just the McCune-
+    # Reischauer/Revised-Romanization spelling of "Korea" itself, so a bare
+    # unconditional match false-flags ordinary prose ("...got back to Hankuk") as
+    # a real-company hit. See _REAL_BRANDS_PRESS_ROOT below for the tail-gated form.
+    "Hankuk Ilbo", "Hankook Ilbo",
 )
 # Names that collide with people/places in prose ("Tae-young" unhyphenated, Mount
 # Halla) only count WITH a corporate tail — same rule as the two-letter groups.
@@ -2791,6 +2894,14 @@ _REAL_BRANDS_LONG = (
 # name) — bare match would false-flag a character, not just Daesung Group.
 _REAL_BRANDS_SHORT = ("SK", "LG", "GS", "CJ", "KT", "DL",
                       "Booyoung", "Hoban", "Halla", "HDC", "Taeyoung", "Daesung")
+# "Hankuk"/"Hankook" bare are generic Korea-romanization tokens, not brand-unambiguous
+# like Samsung/Hyundai — same collision class as _REAL_BRANDS_SHORT above, so they
+# only count as a hit WITH a tail. Unlike SHORT, the tail may be a PRESS suffix
+# (_PRESS_TAIL: "Hankuk Daily") as well as a corporate one (_BRAND_TAIL), since the
+# collision this protects against is specifically the "Hankuk/Hankook Ilbo" family —
+# kept as its own list (not folded into SHORT) so real_brand_scan can gate it on
+# BOTH tail regexes instead of _BRAND_TAIL alone.
+_REAL_BRANDS_PRESS_ROOT = ("Hankuk", "Hankook")
 _NUM_WORDS_XL = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
     "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
@@ -2864,6 +2975,12 @@ _BRAND_TAIL = (r"(?:\s+(?:Group|Corporation|Corp|Construction|Engineering|E&C|He
                r"Development|Builders?|Shipbuilding))")
 
 
+# press-style suffix, parallel to _BRAND_TAIL: lets the round-8 FUZZY pass (below)
+# protect newspaper names too — _BRAND_TAIL alone only recognizes corporate
+# suffixes, so a camouflage respelling of e.g. Hankuk Ilbo had no tail to anchor on.
+_PRESS_TAIL = r"(?:\s+(?:Daily|Ilbo|Times|Post|News|Shinmun))"
+
+
 _BRAND_CULPABLE_RX = re.compile(
     r"(?i)liab|guilt|falsif|bribe|criminal|defendant|dissolv|negligen|indict|convict|"
     r"fraud|cover-up|withdrew the report|lawsuit|sued|charge")
@@ -2913,6 +3030,10 @@ def real_brand_scan(text: str, *, bible: str = "") -> dict:
     try:
         pats = [(b, re.compile(r"\b" + re.escape(b) + r"\b")) for b in dict.fromkeys(_REAL_BRANDS_LONG)]
         pats += [(b, re.compile(r"\b" + re.escape(b) + _BRAND_TAIL)) for b in _REAL_BRANDS_SHORT]
+        # "Hankuk"/"Hankook" are generic Korea-romanization roots (see comment at
+        # _REAL_BRANDS_PRESS_ROOT) — only count with a PRESS or corporate tail, never bare.
+        pats += [(b, re.compile(r"\b" + re.escape(b) + r"(?:" + _BRAND_TAIL + "|" + _PRESS_TAIL + r")"))
+                 for b in _REAL_BRANDS_PRESS_ROOT]
         for where, txt in (("bible", bible or ""), ("manuscript", text or "")):
             if not txt:
                 continue
@@ -2924,10 +3045,15 @@ def real_brand_scan(text: str, *, bible: str = "") -> dict:
                         "count": len(rx.findall(txt)),
                         "role": _brand_role(txt, rx),
                         "snippet": re.sub(r"\s+", " ", txt[max(0, m.start() - 40):m.end() + 60])[:130]})
-        # round-8 FUZZY pass: capitalized token + corporate tail, edit-distance <=1 to a
-        # blocklisted name but not exact — catches the Hanjin→Hanshin orbit class.
-        _fz_rx = re.compile(r"\b([A-Z][a-z]{4,})" + _BRAND_TAIL)
-        _fz_names = [b.lower() for b in list(_REAL_BRANDS_LONG) + list(_REAL_BRANDS_SHORT) if len(b) >= 5]
+        # round-8 FUZZY pass: capitalized token + corporate OR press tail, edit-distance
+        # <=1 to a blocklisted name but not exact — catches the Hanjin→Hanshin orbit
+        # class, now also newspaper camouflage (e.g. Hankuk Ilbo -> Hanguk Ilbo).
+        _fz_rx = re.compile(r"\b([A-Z][a-z]{4,})(?:" + _BRAND_TAIL + "|" + _PRESS_TAIL + r")")
+        # _REAL_BRANDS_PRESS_ROOT included so "Hankuk"/"Hankook" stay available as FUZZY
+        # anchors (catching e.g. "Hanguk Ilbo") even though they were removed from the
+        # bare/unconditional exact-match pass above.
+        _fz_names = [b.lower() for b in list(_REAL_BRANDS_LONG) + list(_REAL_BRANDS_SHORT)
+                     + list(_REAL_BRANDS_PRESS_ROOT) if len(b) >= 5]
         for where, txt in (("bible", bible or ""), ("manuscript", text or "")):
             if not txt:
                 continue
@@ -2986,8 +3112,12 @@ def _meta_ref_on() -> bool:
 
 
 _META_REF_RX = re.compile(
+    # trigger-word gap: "before Chapter 6 hung between all of them" fell through the
+    # original alternation (no temporal/positional connectors). Added before/after/
+    # until/since. Deliberately NOT adding "by"/"through" — idiom-collision risk
+    # ("she'd read the whole thing by chapter six" is legitimate in-world narration).
     r"(?i)\b(?:belongs to|that(?:'s| is) for|save(?:d)? for|see|in|comes in|"
-    r"covered in|happens in)\s+(?:ch|chapter|chap|episode|ep)\.?\s*"
+    r"covered in|happens in|before|after|until|since)\s+(?:ch|chapter|chap|episode|ep)\.?\s*"
     # ROUND-14: match a DIGIT (Ch9) OR a spelled-out ordinal/cardinal (roll-15 gap:
     # "the map she had drawn in Chapter Three" slipped past the digit-only r13 regex).
     r"(?:\d{1,2}|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
@@ -2997,6 +3127,14 @@ _META_REF_RX = re.compile(
     # Ch9.", "in Chapter Three, and"); "chapter one OF her life" / "chapter twelve of the
     # report" is a metaphor or an in-world document ref — not a generator artifact. Skip it.
     r"(?!\s+of\b)"
+    # AUDIT FIX (comma-gap): the "of" carve-out above only looks at the word immediately
+    # after the match, so "since chapter one, in the book of his own life" — the SAME
+    # metaphor, with a short comma-delimited clause between the number and "of" — still
+    # matched as a leak. Bounded (<=4 words between the comma and "of", a literal
+    # possessive/article alternation right after "of", one more required trailing word)
+    # so a genuine leak that merely happens to contain "of" later in the sentence isn't
+    # re-exempted, and so the lookahead can't run away on adversarial/long input.
+    r"(?!\s*,\s+(?:\w+\s+){0,4}of\s+(?:her|his|their|its|your|my|our|the|a|an)\s+\w+)"
     r"|\bthe rest\s+[\u2014\-]\s*that belongs to\b"
     # r16 (S2-Th-3 finding): "during Season One's Archive opening" leaked past the ch/chapter/
     # episode-only lexicon (trigger word "during" and noun "Season" were both outside it).
@@ -4061,6 +4199,14 @@ def scan_manuscript(text: str, *, lang: str = "en", style_entry: Optional[dict] 
             report["counters"]["home_lang_bleed"] = _home_lang_bleed_scan(text, lang)
             # Homogenization tic-inventory (cross-roll telemetry; report-only FLAG-never-OVER).
             report["counters"]["homogenization_tics"] = _homogenization_tic_scan(text)
+
+        # ── style-fingerprint saturation (NARASI_STYLE_SATURATION_SCAN, default OFF) —
+        # manuscript-wide word/phrase + em-dash crutch-repetition (79x "the way", 301x
+        # em-dash in one ~37K-word manuscript). OWN flag, independent of NARASI_REFRAIN_SCAN.
+        # status FLAG-never-OVER → excluded from over_budget below, can never drive the diet
+        # loop (see _style_saturation_scan docstring for why). OFF ⟹ key absent ⟹ byte-identical.
+        if _style_saturation_scan_on():
+            report["counters"]["style_saturation"] = _style_saturation_scan(text)
 
         # ── lane-ledger validator (NARASI_LEDGER_VALIDATOR, default OFF) — report-only.
         # FLAG-never-OVER → excluded from over_budget below, can never drive the diet

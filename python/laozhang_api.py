@@ -537,7 +537,7 @@ _MODEL_COSTS_PER_M: dict[str, tuple[float, float] | list[tuple[int, float, float
     "claude-opus-4-5":        (5.00,  25.00),
     "claude-opus-4-6":        [(0, 5.00, 25.00), (200_000, 10.00, 37.50)],
     "claude-opus-4-7":        (5.00,  25.00),
-    "claude-opus-4-8":        (5.00,  25.00),
+    "claude-opus-4-8":        [(0, 5.00, 25.00), (200_000, 10.00, 37.50)],
     "claude-sonnet-5":        (2.00,  10.00),
     "claude-haiku-4-5":       (1.00,   5.00),
     # DeepSeek (alias + upstream)
@@ -712,7 +712,8 @@ def _calc_image_cost(model: str, count: int = 1) -> float:
     return round(price * max(0, int(count)), 6)
 
 
-async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, session_id=None, charge=False):
+async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, session_id=None, charge=False,
+                            credit_row: bool = True):
     """Best-effort usage logging for narasi LLM endpoints — writes to usage_logs
     with endpoint='narasi'. Never raises: cost tracking must not break generation.
     `user_id` MUST be the resolved users.id UUID (not the raw Clerk id).
@@ -720,7 +721,14 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
     Returns the credits this call costs so the caller can settle the job's hold.
     charge=True ALSO debits the balance now (for one-shot narasi LLM endpoints that
     don't go through a hold — outline/review/oneshot); the per-chapter /narasi/generate
-    path keeps charge=False and commits the summed total against its hold instead."""
+    path keeps charge=False and commits the summed total against its hold instead.
+    credit_row=False (default True): the REAL cr is still computed and RETURNED so the
+    caller can fold it into a job-level running total (e.g. sink.credits), but THIS row's
+    own credits field is logged as 0 — for callers whose cost is already/separately folded
+    into a job's settle-time aggregate, so SUM(usage_logs.credits) for the job doesn't double-
+    count it (mirrors the per-chapter _UsageSink._log_one convention, which hardcodes
+    credits=0 on its own rows for the identical reason). tokens/cost_usd stay real either way
+    for COGS observability."""
     try:
         usage = getattr(resp, "usage", None)
         tok_in  = int(getattr(usage, "prompt_tokens",     0) or 0) if usage else 0
@@ -758,7 +766,7 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
         await db.log_usage(tenant_id, user_id, model, "narasi",
                            tok_in, tok_out, cost,
                            job_id=job_id, session_id=session_id, provider=_provider,
-                           credits=cr)
+                           credits=(cr if credit_row else 0))
         return cr
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("log_usage (narasi) failed (non-fatal): %s", _e)
@@ -7726,6 +7734,27 @@ def _narasi_revise_timeout(model: str = "", phase: str = "revise") -> float:
 # primitive was UNGUARDED (bare to_thread); a degraded cheap model could hang every gate that uses
 # it up to the SDK default (~600s). Same wait_for + per-request timeout= pattern; 60s is generous.
 NARASI_CHEAP_TIMEOUT         = float(os.getenv("NARASI_CHEAP_TIMEOUT", "60"))
+
+
+def _narasi_cheap_timeout(model: str = "", phase: str = "cheap") -> float:
+    """Per-cheap-call timeout, floored to the failover chain's budget when this specific
+    (model, phase) call is actually going to walk a multi-rung chain — via _narasi_will_chain,
+    the SAME decision make_narasi_client uses to pick a client (same pattern as
+    _narasi_critique_timeout/_narasi_revise_timeout — Rino 2026-07-16). The "a healthy call is a
+    few seconds" assumption in the comment above NARASI_CHEAP_TIMEOUT only holds for a PLAIN
+    single-provider client; once a phase-provider override (NARASI_CHEAP_LAOZHANG /
+    NARASI_CHEAP_GEMINI / native-Claude / NARASI_WORKER_KIE_FIRST) activates a multi-rung
+    _NarasiFailoverClient for this primitive, that client walks its OWN
+    _NARASI_FAILOVER_CHAIN_BUDGET-sized deadline (default 840s) internally — completely
+    independent of whatever `timeout=` kwarg the caller passes into
+    client.chat.completions.create(**kw). Without this floor, a chaining cheap call gets cut off
+    by the caller's wait_for long before the failover client's own deadline logic ever gets a
+    chance to give up cleanly. Unfloored default (NARASI_CHEAP_TIMEOUT, 60s) is unchanged when no
+    chain is active for this call (today's exact behavior)."""
+    base = NARASI_CHEAP_TIMEOUT
+    if _narasi_will_chain(model, phase):
+        return max(base, float(os.environ.get("NARASI_FAILOVER_CHAIN_BUDGET") or 840) + 90.0)
+    return base
 # Slice 5: repetition-guard thresholds — 5-gram Jaccard (deterministic) + Qdrant cosine.
 DALANG_DEDUP_THRESHOLD     = float(os.getenv("DALANG_DEDUP_THRESHOLD", "0.18"))
 DALANG_DEDUP_SEM_THRESHOLD = float(os.getenv("DALANG_DEDUP_SEM_THRESHOLD", "0.86"))
@@ -7909,11 +7938,15 @@ def _narasi_parse_json(text: str):
 
 async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_uuid=None,
                              max_tokens: int = 800, temperature: float = 0.2,
-                             json_mode: bool = False):
+                             json_mode: bool = False, credit_row: bool = True):
     """Cheap narasi side-call (fact-extract / rolling-summary). Runs on DALANG_CHEAP_MODEL off
     the event loop. Logs usage with charge=False and RETURNS (text, cr) so the caller folds cr
     into the chapter's kept cost (settled via the umbrella hold → stays crash-safe). Never
-    raises → ('', 0) on any error."""
+    raises → ('', 0) on any error. credit_row=False (default True): forwarded to
+    _log_narasi_usage — the real cr is still computed and RETURNED so the caller folds it into
+    the umbrella hold, but this call's own usage_logs row is written with credits=0 (the caller
+    is a GATES-phase site whose credits are already covered by the job's zero_usage_totals
+    settle-time aggregate row, so a full-credits row here would double-count)."""
     model    = DALANG_CHEAP_MODEL
     resolved = MODELS.get(model, model)
     safe_max = min(int(max_tokens), MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
@@ -7934,8 +7967,19 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
             except Exception:
                 return await asyncio.to_thread(lambda: _call(False))   # relay rejected json_object
         # Guard: a degraded cheap model must not hang every gate that shares this primitive.
-        resp = await asyncio.wait_for(_run(), timeout=NARASI_CHEAP_TIMEOUT)
-        cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
+        # _run() may make up to 2 SEQUENTIAL attempts (json_mode call, then a plain-text
+        # fallback retry on exception), each individually budgeted at NARASI_CHEAP_TIMEOUT via
+        # the per-call `timeout=` kwarg in _call(). The outer wait_for must cover BOTH sequential
+        # attempts (worst case 2x), not just one, or it can cut off the retry -- or even a single
+        # slow first call -- before either has a real chance to finish. Per-attempt budget comes
+        # from _narasi_cheap_timeout (not the flat NARASI_CHEAP_TIMEOUT constant): when a
+        # phase-provider override makes this call's client chain through multiple rungs
+        # (make_narasi_client(model, phase="cheap") -> _NarasiFailoverClient, same decision via
+        # _narasi_will_chain), a single attempt can legitimately need up to the failover chain's
+        # own ~930s budget, not just 60s.
+        resp = await asyncio.wait_for(_run(), timeout=_narasi_cheap_timeout(model, "cheap") * 2)
+        cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid,
+                                      credit_row=credit_row) or 0)
         if _resp_content(resp) is None:
             # Empty 200 / no choices: today this surfaced only as a generic 'cheap call failed:
             # NoneType not subscriptable' (or nothing at all for blank content). Log WHO served
@@ -7951,7 +7995,8 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
                 # already fence-strips, so plain-text JSON parses fine downstream.
                 resp = await asyncio.wait_for(asyncio.to_thread(lambda: _call(False)),
                                               timeout=NARASI_CHEAP_TIMEOUT)
-                cr += (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid) or 0)
+                cr += (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid,
+                                               credit_row=credit_row) or 0)
                 if _resp_content(resp) is None:
                     _lg.getLogger("narasi").warning(
                         "cheap call EMPTY again on plain retry (model=%s detail=%s)",
@@ -8345,12 +8390,14 @@ def _narasi_normalize_critique(v) -> dict:
 
 async def _narasi_consistency_critique(full_text, style, language, *, model,
                                        tenant_id, user_id, job_uuid,
-                                       canonical_facts: str = ""):
+                                       canonical_facts: str = "", credit_row: bool = True):
     """Fresh-eyes whole-draft consistency critic → (verdict, cr). verdict =
     {score: float|None, violations: list[dict], summary: str}. Runs a capable model
     (NARASI_CRITIQUE_MODEL, else the chapter model, else the cheap model) over the FULL book
     (capped at NARASI_CRITIQUE_MAX_CHARS — NOT the 12k of the per-chapter critic). Logs usage
-    with charge=False so cr folds into the umbrella hold. Never raises → ({...}, 0)."""
+    with charge=False so cr folds into the umbrella hold. credit_row=False forwards to
+    _log_narasi_usage (see its docstring) for GATES-phase callers that already fold cr into a
+    job-level running total, so the row isn't double-counted. Never raises → ({...}, 0)."""
     crit_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
     # Fiction-gate the F10 dropped-hook check (#7): nonfiction gets checks 1-6 only, so a factual
     # piece can never be flagged for an open real-world question and REVISE can never fabricate an
@@ -8428,7 +8475,8 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
                     return await asyncio.to_thread(lambda: _c(False))
             # Bound each model's TOTAL time (both attempts) so a hung model can't stall GATES.
             resp = await asyncio.wait_for(_run(), timeout=_narasi_critique_timeout(_cm))
-            cr  = (await _log_narasi_usage(tenant_id, user_id, _cm, resp, job_id=job_uuid) or 0)
+            cr  = (await _log_narasi_usage(tenant_id, user_id, _cm, resp, job_id=job_uuid,
+                                          credit_row=credit_row) or 0)
             raw = (resp.choices[0].message.content or "").strip()
             if _i > 0:
                 import logging as _lg
@@ -8531,7 +8579,7 @@ def _revise_min_severities():
 
 
 async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
-                                 tenant_id, user_id, job_uuid, phase="revise"):
+                                 tenant_id, user_id, job_uuid, phase="revise", credit_row: bool = True):
     """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
     violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
@@ -8667,7 +8715,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             if not getattr(_resp, "choices", None):
                 return None, 0
             _new = (_resp_content(_resp) or "").strip()   # null-safe extractor
-            _cr = int(await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid) or 0)
+            _cr = int(await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid,
+                                             credit_row=credit_row) or 0)
             if not _new:
                 return None, _cr
             _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
@@ -8798,7 +8847,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             out.append(_p)
             continue
         _new = (_resp_content(_resp) or "").strip()   # null-safe extractor (no AttributeError escape)
-        _cr = (await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid) or 0)
+        _cr = (await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid,
+                                      credit_row=credit_row) or 0)
         total_cr += int(_cr)
         if not _new:
             out.append(_p)
@@ -8895,12 +8945,13 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
 
 
 async def _narasi_consistency_revise(full_text, critique, style, language, *, model,
-                                     tenant_id, user_id, job_uuid):
+                                     tenant_id, user_id, job_uuid, credit_row: bool = True):
     """Whole-book consistency revise (DISPATCHER). NARASI_REVISE_CHUNKED=1 → per-chapter CHUNKED path
     (bounded output per chapter → robust to a per-request output cap); default (0) → the whole-book
     path below (now a 128K output ceiling). Both minimal-edit + length-preserving; the whole-book path
     accepts the rewrite ONLY if it keeps ≥90% of the word count. Returns (new_text, cr) — original + 0
-    on any failure/degradation. Never raises."""
+    on any failure/degradation. credit_row=False forwards to _narasi_revise_chunked / _log_narasi_usage
+    for GATES-phase callers that already fold cr into a job-level running total. Never raises."""
     viol = critique.get("violations") or []
     if not viol:
         return full_text, 0
@@ -8923,7 +8974,7 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             return await _narasi_revise_chunked(
                 full_text, viol, style, language, rev_model,
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                phase="canon_diff_revise")
+                phase="canon_diff_revise", credit_row=credit_row)
         except Exception as _ce:
             import logging as _lg
             _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
@@ -8955,7 +9006,8 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
         return full_text, 0
     if not getattr(resp, "choices", None):
         return full_text, 0
-    cr  = (await _log_narasi_usage(tenant_id, user_id, rev_model, resp, job_id=job_uuid) or 0)
+    cr  = (await _log_narasi_usage(tenant_id, user_id, rev_model, resp, job_id=job_uuid,
+                                  credit_row=credit_row) or 0)
     new = (_resp_content(resp) or "").strip()          # null-safe (error-as-200 → no AttributeError)
     # r4.1: the whole-book path had NO wrapper/meta guard — the same scaffold-leak class
     # roll-7's chunked path shipped ("Note: … required no changes", "I need to analyze…")

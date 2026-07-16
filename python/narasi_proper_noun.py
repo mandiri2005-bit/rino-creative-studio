@@ -23,10 +23,12 @@
 #         disambiguate. Detection only — never automatic split.
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Optional
 
-__all__ = ["detect_entities", "verify_pass", "phantom_name_scan", "ENTITY_TABLE"]
+__all__ = ["detect_entities", "verify_pass", "phantom_name_scan",
+          "introduction_order_scan", "ENTITY_TABLE"]
 
 # ── Unified entity table. Kind ∈ {person, institution, place, treaty}. Seeded from
 # what shipped in narasi_entities.SCHOLAR_TABLE/WRONG_DOMAIN; new entries land here,
@@ -616,3 +618,263 @@ def phantom_name_scan(text: str, *, bible: str = "", tail_frac: float = 0.25,
     except Exception:  # noqa: BLE001 — a broken scan must never break generation
         return {"status": "PASS", "count": 0, "tail_frac": tail_frac,
                 "max_mentions": max_mentions, "names": []}
+
+
+# ── INTRODUCTION-ORDER scan (report-only) — "pre-introduction leak" defect class,
+# OPPOSITE polarity from phantom_name_scan above. Motivating case: "Cha Hyun-soo" and
+# "Song Dae-il" were casually name-dropped early (as a topic in someone else's dialogue /
+# in narrator exposition, with presupposing phrasing — as if the reader already knows
+# them) and only formally walked on-page, in a live scene, much later. phantom_name_scan
+# cannot catch this: its first_idx gate is position-only and does not look at mention
+# TYPE, so loosening its mentions threshold (tried this session, r28 in-session attempt,
+# NOT committed) could not fix the motivating case and reintroduced false positives on
+# legitimate ensemble-cast foreshadowing (a secondary character correctly first mentioned
+# late). This function is deliberately independent: it classifies EVERY occurrence of a
+# candidate name by local-context mention TYPE (casual/passing vs formal/scene-
+# introduction) and only flags when a CASUAL, PRESUPPOSING mention precedes the FIRST
+# FORMAL introduction by more than a proximity threshold. A candidate with no formal
+# introduction anywhere is NOT flagged here — that polarity belongs to phantom_name_scan.
+#
+# Candidate extraction below is adapted from phantom_name_scan's own extraction/stoplist/
+# heading-exclusion/possessive-stripping (same _PHANTOM_NAME_RX, _STOP, _PHANTOM_GEOORG,
+# _PHANTOM_MONTHS, _POSSESSIVE_RX, _is_heading_line — phantom_name_scan itself is NOT
+# modified). Unlike phantom_name_scan, this scan does NOT need the component-ownership /
+# shared-surname machinery: phantom needs it to count mentions across short/variant forms
+# of a name, but introduction_order_scan only re-searches the exact literal full-name
+# token it extracted (no bare-component probing), so a shared family surname ("Cha
+# Hyun-soo" / "Cha Min-jun") never collides — a bare "Cha" alone simply isn't counted as
+# an occurrence of either candidate. That is a narrower, more conservative target by
+# design (bias toward NOT flagging on ambiguous partial mentions).
+def _intro_order_scan_on() -> bool:
+    return os.environ.get("NARASI_INTRO_ORDER_SCAN", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# (1) live-scene action / perception / dialogue-attribution verbs, EN + ID, same
+# bilingual-alternation-in-one-regex convention as this module's own _ADVERSATIVE_RX
+# and narasi_counters.LANGUAGE_PACKS["id"]["attribution"] (explicit conjugated forms,
+# not stem-guessing — ID morphology doesn't inflect predictably enough for \w* stems).
+_IORT_SCENE_VERB_RX = re.compile(
+    r"(?i)\b(?:said|says|ask(?:ed|s)?|repl(?:y|ies|ied)|answer(?:ed|s|ing)?|"
+    r"whisper(?:ed|s|ing)?|shout(?:ed|s|ing)?|murmur(?:ed|s|ing)?|mutter(?:ed|s|ing)?|"
+    r"snap(?:ped|s|ping)?|laugh(?:ed|s|ing)?|sigh(?:ed|s|ing)?|nod(?:ded|s|ding)?|"
+    r"smil(?:ed|es|ing)?|frown(?:ed|s|ing)?|star(?:e|ed|es|ing)|glanc(?:e|ed|es|ing)|"
+    r"look(?:ed|s|ing)?|walk(?:ed|s|ing)?|ran|runs|running|enter(?:ed|s|ing)?|"
+    r"step(?:ped|s|ping)?|turn(?:ed|s|ing)?|stood|stands?|sat|sits|sitting|"
+    r"mov(?:ed|es|ing)|thought|thinks|thinking|wonder(?:ed|s|ing)?|"
+    r"remember(?:ed|s|ing)?|watch(?:ed|es|ing)?|listen(?:ed|s|ing)?|call(?:ed|s|ing)?|"
+    r"cried|cries|crying|appear(?:ed|s|ing)?|arriv(?:ed|es|ing)|grab(?:bed|s|bing)?|"
+    r"reach(?:ed|es|ing)?|push(?:ed|es|ing)?|pull(?:ed|s|ing)?|grip(?:ped|s|ping)?|"
+    # ID equivalents (kata/tanya/berjalan/melihat/pikir family)
+    r"kata|berkata|tanya|bertanya|jawab|menjawab|bisik|berbisik|teriak|berteriak|"
+    r"seru|menyeru|tawa|tertawa|senyum|tersenyum|angguk|mengangguk|tatap|menatap|"
+    r"pandang|memandang|lihat|melihat|jalan|berjalan|langkah|melangkah|lari|berlari|"
+    r"masuk|memasuki|balik|berbalik|menoleh|diam|terdiam|pikir|berpikir|ingat|"
+    r"mengingat|dengar|mendengar|panggil|memanggil|gumam|bergumam|mengerutkan|"
+    r"menghela|duduk|berdiri|gerak|bergerak)\b")
+# (2) appositive/role-defining clause right after the name: "X, a new detective," /
+# "X, seorang detektif baru," / "X, yang baru pindah ke kota,". Adapted from the SAME
+# shape as narasi_counters.LANGUAGE_PACKS["en"]["epithet"] (",\s+(?:an?|the)\s+[^,]{4,140},")
+# and the ID scholar epithet, generalized past scholar-only roles for fiction casts.
+_IORT_APPOSITIVE_RX = re.compile(r"^,\s+(?:an?|the|seorang|yang)\s+[^,]{3,140},")
+# (3) indefinite "new person" framing immediately before the name: "a man named X",
+# "someone called X", "seseorang bernama X", "seorang pria bernama X". Anchored at the
+# END of the pre-name window ($ = right at the name) so it must be adjacent, not just
+# present somewhere earlier in the paragraph.
+_IORT_INTRO_CUE_RX = re.compile(
+    r"(?i)\b(?:a|an|some|seorang|seseorang)\b[^.!?\n]{0,40}?"
+    r"\b(?:named|called|bernama|disebut(?:\s+sebagai)?|dikenal\s+sebagai)\s*$")
+# (4) callback/familiar language treating the name as already-known ("again", "as
+# usual", "lagi-lagi" — bare "lagi" excluded, too ambiguous with ID "more/still").
+_IORT_CALLBACK_RX = re.compile(
+    r"(?i)\b(?:again|as\s+usual|like\s+always|as\s+always|once\s+more|"
+    r"seperti\s+biasa(?:nya)?|lagi[- ]lagi)\b")
+# (5) quoted-dialogue span detector (double + curly quotes only — deliberately narrower
+# than this module's sibling _DN_QUOTE_RX-style patterns in narasi_counters.py, which
+# also match single/curly apostrophe-quotes; apostrophe-quote dialogue is skipped here
+# to avoid contraction false matches, consistent with abort_seam_scan's own
+# line.count('"') >= 2 convention). A name inside one of these spans is a mention
+# INSIDE another character's speech, not a live on-page appearance.
+_IORT_QUOTE_RX = re.compile(r'"([^"]{0,600})"|“([^”]{0,600})”')
+
+
+def _iort_heading_spans(text: str) -> list[tuple[int, int]]:
+    """Copy of phantom_name_scan's heading-line span builder (same _is_heading_line
+    predicate) — a candidate sitting on a chapter-title line is scaffold, not prose."""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    for line in text.split("\n"):
+        if _is_heading_line(line):
+            spans.append((pos, pos + len(line)))
+        pos += len(line) + 1
+    return spans
+
+
+def _iort_quote_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for m in _IORT_QUOTE_RX.finditer(text):
+        g = 1 if m.group(1) is not None else 2
+        spans.append((m.start(g), m.end(g)))
+    return spans
+
+
+def _iort_candidates(text: str, hspans: list[tuple[int, int]]) -> dict[str, int]:
+    """Adapted from phantom_name_scan step 1 (same regex/stoplist/heading-exclusion/
+    possessive-stripping) but WITHOUT the component-ownership/bare-component probing —
+    introduction_order_scan only ever re-searches the literal full token it extracts
+    here (see module docstring above for why that makes component-ownership moot).
+    Returns {normalized_full_token: earliest_occurrence_index} — the index is only a
+    seed; the caller re-collects ALL occurrences of each token separately."""
+    first_seen: dict[str, int] = {}
+    for m in _PHANTOM_NAME_RX.finditer(text):
+        if any(a <= m.start() < b or a < m.end() <= b for a, b in hspans):
+            continue                  # candidate sits on a chapter-heading line
+        tok = m.group(1)
+        parts = [_POSSESSIVE_RX.sub("", p) for p in tok.split()]
+        if any(len(p) >= 2 and p.isupper() for p in parts):
+            continue                  # ALL-CAPS run ('CIVIL FILINGS')
+        while parts and parts[0] in _STOP:
+            parts = parts[1:]
+        while parts and parts[-1] in _STOP:
+            parts = parts[:-1]
+        if len(parts) < 2:
+            continue
+        if any(p in _PHANTOM_GEOORG for p in parts):
+            continue                  # geo/org component ('East China Sea')
+        if any(p in _PHANTOM_MONTHS for p in parts):
+            continue                  # month component ('From May')
+        tok2 = " ".join(parts)
+        first_seen.setdefault(tok2, m.start())
+    return first_seen
+
+
+def introduction_order_scan(text: str, *, proximity_chars: int = 1200,
+                            max_candidates: int = 8) -> dict:
+    """Report-only PRE-INTRODUCTION-LEAK detection (opposite polarity from
+    phantom_name_scan). Returns
+    {"status": "PASS"|"FLAG"|"OFF", "count": int, "proximity_chars": int,
+     "names": [{name, first_casual_index, first_casual_frac, casual_sentence,
+                first_formal_index, first_formal_frac, formal_sentence,
+                gap_chars, cue}]}.
+
+    Per-occurrence mention-TYPE classification (the actual heuristic, for audit):
+      For EVERY occurrence of a candidate's literal full-name token:
+        in_dialogue   = the occurrence falls inside a quoted-speech span (double/curly
+                        quotes only).
+        scene_verb    = an EN or ID live-scene action/perception/dialogue-attribution
+                        verb (said/asked/walked/looked/thought/kata/tanya/berjalan/
+                        melihat/pikir/... — see _IORT_SCENE_VERB_RX) appears within a
+                        ±80-char window around the occurrence.
+        appositive    = a role-defining clause immediately follows the name
+                        ("X, a new detective," / "X, seorang detektif baru,").
+        intro_cue     = an indefinite "new person" frame immediately precedes the name
+                        ("a man named X" / "seseorang bernama X").
+      formal := (NOT in_dialogue) AND (scene_verb OR appositive OR intro_cue)
+      casual := NOT formal   (covers BOTH "only inside someone else's dialogue as a
+                topic" AND "narrator exposition/list with no scene grounding" — both
+                collapse to "not formally scene-grounded", per design).
+
+    Presupposition condition (computed ONLY at the first-casual occurrence, since that's
+    the mention that would read as an unintroduced-character bug):
+        callback      = familiar/callback language nearby ("again", "as usual",
+                        "lagi-lagi").
+        presuppose    = callback OR (NOT appositive AND NOT intro_cue) — i.e. a bare/
+                        definite mention with no explanatory apparatus is presupposing
+                        by default; an appositive or intro-cue at THAT SAME occurrence
+                        means it was actually a legitimate soft-introduction, not a bug.
+        flag_ready    = presuppose AND NOT intro_cue
+
+    Flags a candidate only when ALL of:
+      1. a first-casual occurrence exists,
+      2. a first-formal occurrence exists (no formal intro anywhere -> not flagged here,
+         that's phantom_name_scan's polarity),
+      3. first_casual_index < first_formal_index,
+      4. the gap between them exceeds `proximity_chars` (same-scene/same-chapter
+         ordering is normal narration, not flagged),
+      5. flag_ready holds at the first-casual occurrence.
+
+    Never edits text. Never raises. status is PASS/FLAG only (never OVER — same
+    FLAG-never-OVER contract as phantom_name_scan/_opening_motif_scan: can never enter
+    over_budget or drive the diet loop). Returns status "OFF" (inert, no scan work) when
+    NARASI_INTRO_ORDER_SCAN is not enabled — ships dark by default."""
+    out: dict[str, Any] = {"status": "OFF", "count": 0,
+                           "proximity_chars": proximity_chars, "names": []}
+    if not _intro_order_scan_on():
+        return out
+    out["status"] = "PASS"
+    try:
+        if not text or len(text) < 400:
+            return out
+        n = len(text)
+        hspans = _iort_heading_spans(text)
+        qspans = _iort_quote_spans(text)
+
+        def _in_any(idx: int, spans: list[tuple[int, int]]) -> bool:
+            return any(a <= idx < b for a, b in spans)
+
+        candidates = _iort_candidates(text, hspans)
+        if not candidates:
+            return out
+
+        hits: list[dict] = []
+        for tok, _seed_idx in candidates.items():
+            occ_idxs = [m.start() for m in
+                        re.finditer(r"\b" + re.escape(tok) + r"\b", text)
+                        if not _in_any(m.start(), hspans)]
+            if not occ_idxs:
+                continue
+
+            first_formal_idx: Optional[int] = None
+            first_casual_idx: Optional[int] = None
+            casual_cue = ""
+            for idx in occ_idxs:
+                end = idx + len(tok)
+                window_lo, window_hi = max(0, idx - 80), min(n, end + 80)
+                window = text[window_lo:window_hi]
+                in_dialogue = _in_any(idx, qspans)
+                has_scene_verb = bool(_IORT_SCENE_VERB_RX.search(window))
+                has_appositive = bool(_IORT_APPOSITIVE_RX.match(text[end:end + 200]))
+                has_intro_cue = bool(_IORT_INTRO_CUE_RX.search(text[max(0, idx - 70):idx]))
+                is_formal = (not in_dialogue) and (has_scene_verb or has_appositive
+                                                    or has_intro_cue)
+                if is_formal:
+                    if first_formal_idx is None:
+                        first_formal_idx = idx
+                    continue
+                # casual occurrence
+                if first_casual_idx is None:
+                    has_callback = bool(_IORT_CALLBACK_RX.search(window))
+                    presuppose = has_callback or (not has_appositive and not has_intro_cue)
+                    if presuppose and not has_intro_cue:
+                        first_casual_idx = idx
+                        casual_cue = "callback" if has_callback else "bare"
+                    # else: this casual mention was itself a soft/legitimate
+                    # introduction (intro-cue present) — keep scanning later
+                    # occurrences for a genuinely presupposing casual mention.
+
+            if first_casual_idx is None or first_formal_idx is None:
+                continue
+            if first_casual_idx >= first_formal_idx:
+                continue
+            gap = first_formal_idx - first_casual_idx
+            if gap <= proximity_chars:
+                continue               # same-scene/same-chapter ordering — not a defect
+
+            hits.append({
+                "name": tok,
+                "first_casual_index": first_casual_idx,
+                "first_casual_frac": round(first_casual_idx / n, 3),
+                "casual_sentence": _snip(text, first_casual_idx, first_casual_idx + len(tok)),
+                "first_formal_index": first_formal_idx,
+                "first_formal_frac": round(first_formal_idx / n, 3),
+                "formal_sentence": _snip(text, first_formal_idx, first_formal_idx + len(tok)),
+                "gap_chars": gap,
+                "cue": casual_cue,
+            })
+
+        if hits:
+            out["status"] = "FLAG"
+            out["count"] = len(hits)
+            out["names"] = sorted(hits, key=lambda h: h["first_casual_index"])[:max_candidates]
+        return out
+    except Exception:  # noqa: BLE001 — a broken scan must never break generation
+        return {"status": "PASS", "count": 0, "proximity_chars": proximity_chars, "names": []}

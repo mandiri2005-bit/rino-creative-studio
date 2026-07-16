@@ -1049,7 +1049,9 @@ async def build_story_bible(
     # Hae-rin/Ok — the next roll drew from the fallen-angel repertory instead: Gyeom/Chae-rin/
     # Hyeon-jae/Baek; the [C/H]a(e)-ri[n/m] female-name shape hit 4/4 rolls, :14 hit ×7). The fix is a
     # single GROWING per-lane ledger (pakem/lane_ledger.json — curated JSON per the corpus policy;
-    # raw data persists per-job in counter_report.homogenization_tics) injected as a NEGATIVE
+    # raw data persists per-job in counter_report.homogenization_tics, and — for the "overused_phrases"
+    # key below — counter_report.style_saturation once NARASI_STYLE_SATURATION_SCAN is curated in the
+    # same way) injected as a NEGATIVE
     # constraint at bible-time. Fail-open everywhere: missing file / unknown style / bad JSON ⟹ no
     # paragraph, bible unchanged. OFF ⟹ byte-identical.
     if is_fiction and os.environ.get("NARASI_LANE_LEDGER", "0").strip().lower() in ("1", "true", "yes", "on"):
@@ -1080,7 +1082,9 @@ async def build_story_bible(
                        if _lane.get("places") else "")
                     + ". BANNED verbatim "
                     "phrases (never reproduce these lines): " + _fmt("verbatim_phrases") + ". Overused "
-                    "BEATS (execute differently or SKIP): " + _fmt("recycled_beats") + ". Invent fresh, "
+                    "BEATS (execute differently or SKIP): " + _fmt("recycled_beats") + ". Overused STYLE "
+                    "PHRASES (word/phrase crutches this lane leans on — vary your prose, do not lean on "
+                    "these): " + _fmt("overused_phrases") + ". Invent fresh, "
                     "premise-specific choices for every one of these slots.")
         except Exception:  # noqa: BLE001 — ledger is an enhancement; its absence must never block a bible
             pass

@@ -1238,6 +1238,49 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("phantom-name scan failed (non-fatal): %s", e)
 
+    # ── (0.76) INTRODUCTION-ORDER scan (report-only) — "pre-introduction leak":
+    # OPPOSITE polarity from the (0.75) phantom-name scan above. A character casually
+    # name-dropped (dialogue topic / narrator exposition, presupposing phrasing) well
+    # BEFORE their formal narrative introduction (a live scene/POV appearance) — the
+    # "Cha Hyun-soo"/"Song Dae-il" class: both named early, formally introduced much
+    # later, reading as an unintroduced-character bug. Independent function
+    # (narasi_proper_noun.introduction_order_scan) — does NOT touch or reuse
+    # phantom_name_scan's position+frequency logic (a prior in-session attempt to loosen
+    # phantom_name_scan's own mentions threshold could not fix this polarity and
+    # reintroduced ensemble-cast false positives). Runs AFTER the 0.7 proper_noun pass
+    # for the same alias-unification reason as 0.75. status FLAG/PASS/OFF only — never
+    # over_budget, never edits text. Gated NARASI_INTRO_ORDER_SCAN (default OFF →
+    # skipped → byte-identical). FICTION-only, same rationale as 0.75 (nonfiction
+    # legitimately name-drops a scholar/figure before a fuller treatment later). Never
+    # raises.
+    try:
+        if str(os.environ.get("NARASI_INTRO_ORDER_SCAN", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            _io_fic = False
+            try:
+                from pakem import resolve_style as _io_rs
+                _ioe = _io_rs(str(body.get("style") or "")) or {}
+                _io_fic = bool(_ioe.get("is_fiction")) or str(
+                    _ioe.get("factual_regime") or "").strip().lower() in ("fiction", "fictional")
+            except Exception:  # noqa: BLE001
+                _io_fic = False
+            import narasi_proper_noun as _ppn2
+            _iokey = "book" if result.get("book") else "output"
+            _iobk = result.get(_iokey) or ""
+            if _io_fic and _iobk and hasattr(_ppn2, "introduction_order_scan"):
+                try:
+                    _io_prox = int(os.environ.get("NARASI_INTRO_ORDER_PROXIMITY_CHARS", "1200"))
+                except Exception:  # noqa: BLE001
+                    log.warning("NARASI_INTRO_ORDER_PROXIMITY_CHARS malformed — using 1200")
+                    _io_prox = 1200
+                _iorep = _ppn2.introduction_order_scan(_iobk, proximity_chars=_io_prox)
+                result["introduction_order_report"] = _iorep
+                if _iorep.get("status") == "FLAG":
+                    log.warning("introduction-order scan: %d pre-introduction leak(s) flagged (report-only): %s",
+                                _iorep.get("count", 0),
+                                [h.get("name") for h in _iorep.get("names") or []])
+    except Exception as e:  # noqa: BLE001
+        log.warning("introduction-order scan failed (non-fatal): %s", e)
+
     # ── (0.8) TITLE INTEGRITY (round-6, deterministic, log-only): two historical rolls
     # shipped a CLIPPED chapter-4 title ("Of the Shadow", "Of the Drought") and nothing
     # noticed — assembled headers were never compared to the outline-derived records.
@@ -1311,7 +1354,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "{\"claims\":[{\"quote\":\"<short exact quote>\",\"domain\":\"law|medicine|engineering\","
                         "\"why\":\"<one line>\",\"severity\":\"high|low\"}]} — max 8, hard errors only.")
                     _dpraw, _dpcc = await _dpcall(_dpsys, _dpbk[:60000], tenant_id=tenant_id,
-                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True,
+                                                  credit_row=False)
                     if sink is not None and _dpcc:
                         sink.credits += int(_dpcc)
                     _dpd = _dpparse(_dpraw) if isinstance(_dpraw, str) else (_dpraw or {})
@@ -1367,7 +1411,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "components (a mislabeled body counted both officially and among the hidden), "
                         "NAME them in overlap — that is a double-count the total must subtract.")
                     _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:60000], tenant_id=tenant_id,
-                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True,
+                                                  credit_row=False)
                     if sink is not None and _nlcc:
                         sink.credits += int(_nlcc)
                     _nld = _nlparse(_nlraw) if isinstance(_nlraw, str) else (_nlraw or {})
@@ -1477,7 +1522,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "age|relation\",\"evidence\":\"<the two contradicting usages, chapter-tagged>\"}]} "
                         "— max 6, real contradictions only.")
                     _earaw, _eacc = await _eacall(_easys, _eabk[:60000], tenant_id=tenant_id,
-                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                                                  user_id=user_id, job_uuid=job_uuid, json_mode=True,
+                                                  credit_row=False)
                     if sink is not None and _eacc:
                         sink.credits += int(_eacc)
                     _ead = _eaparse(_earaw) if isinstance(_earaw, str) else (_earaw or {})
@@ -1641,7 +1687,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             _cq, _cqc = await _narasi_consistency_critique(
                 _cbk, style, language, model=_cmodel,
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                canonical_facts=(result.get("canonical_facts") or ""))
+                canonical_facts=(result.get("canonical_facts") or ""), credit_row=False)
             _t_crit = time.monotonic() - _t_crit0
             _t_rev = 0.0
             # Fold the critic's cost into the sink so _settle actually bills it (the call
@@ -1963,7 +2009,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             "When unsure, answer \"reveal\". Return ONLY JSON: "
                             "{\"items\":[{\"i\":<index>,\"class\":\"reveal|continuity\"}]}")
                         _cf_raw, _cf_cr = await _cfcall(_cf_sys, _cf_num, tenant_id=tenant_id,
-                                                        user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                                                        user_id=user_id, job_uuid=job_uuid, json_mode=True,
+                                                        credit_row=False)
                         if sink is not None and _cf_cr:
                             sink.credits += int(_cf_cr)
                         _cf_d = _cfparse(_cf_raw) if isinstance(_cf_raw, str) else (_cf_raw or {})
@@ -2020,7 +2067,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                              len(_cq.get("violations") or []), len(_cq_rev["violations"]))
                 _crev, _crevc = await _narasi_consistency_revise(
                     _cbk, _cq_rev, style, language, model=_cmodel,
-                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, credit_row=False)
                 _t_rev = time.monotonic() - _t_rev0
                 if sink is not None and _crevc:
                     sink.credits += int(_crevc)
@@ -2139,7 +2186,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 _rnew, _rc = await _narasi_consistency_revise(
                                     _rbk, {"violations": _rv}, style_key, language,
                                     model=(body.get("model") or ""),
-                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                                    credit_row=False)
                                 if sink is not None and _rc:   # bill the revise (see block A note)
                                     sink.credits += int(_rc)
                                 if _rnew and _rnew != _rbk:
@@ -2237,7 +2285,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "one goes into false_versions. Include every named QUANTITY, list POSITION, and role-holder "
                         "the plot turns on. No prose.")
                     _xraw, _xcc = await _xcall(_xsys, _cf[:20000], tenant_id=tenant_id,
-                                               user_id=user_id, job_uuid=job_uuid, json_mode=True)
+                                               user_id=user_id, job_uuid=job_uuid, json_mode=True,
+                                               credit_row=False)
                     if sink is not None and _xcc:
                         sink.credits += int(_xcc)
                     _xd = _xparse(_xraw) if isinstance(_xraw, str) else (_xraw or {})
@@ -2334,7 +2383,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     try:
                         _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:12000],
                                                              tenant_id=tenant_id, user_id=user_id,
-                                                             job_uuid=job_uuid, json_mode=True)
+                                                             job_uuid=job_uuid, json_mode=True,
+                                                             credit_row=False)
                         if sink is not None and _cc:
                             sink.credits += int(_cc)
                         _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
@@ -2372,7 +2422,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 _nrmodel = str(body.get("model") or "") or "claude-opus-4-6"
                                 _nrnew, _nrcr = await _nrev(_cbook, _nrviol, style, language, _nrmodel,
                                                             tenant_id=tenant_id, user_id=user_id,
-                                                            job_uuid=job_uuid)
+                                                            job_uuid=job_uuid, credit_row=False)
                                 if sink is not None and _nrcr:
                                     sink.credits += int(_nrcr)
                                 if (_nrnew and str(_nrnew) != _cbook
@@ -2403,7 +2453,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 _cnew, _cc2 = await _narasi_consistency_revise(
                                     _cbk2, {"violations": _cv}, style, language,
                                     model=(body.get("model") or ""),
-                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid)
+                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                                    credit_row=False)
                                 if sink is not None and _cc2:
                                     sink.credits += int(_cc2)
                                 if _cnew and _cnew != _cbk2:
