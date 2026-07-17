@@ -129,13 +129,43 @@ def build_style_block(style, video_mode: bool = False) -> str:
     """
     entry = style if isinstance(style, dict) else resolve_style(style)
     rules = entry.get("style_rules_core", "")
+    # style_rules_book fallback (NARASI_STYLE_RULES_BOOK_FALLBACK, default OFF/unset).
+    # 5 P1 fiction specs (babad_hikayat, pewayangan_dalang, kdrama_serial,
+    # romance_contemporary, remaja_coming_of_age) store hand-authored generation-time
+    # craft prompt text under 'style_rules_book', but this function has only ever read
+    # 'style_rules_core' (empty/absent for all 5) -- style_rules_book was dead, never
+    # wired anywhere (confirmed by exhaustive grep). 355-1177 words of genre-defining
+    # craft content silently dropped per style per generation. Flag value is a
+    # comma-separated allowlist of style keys so this can be dark-shipped, staged, and
+    # rolled back per style; empty/"0"/"false" = fully off (byte-identical to before).
+    # Only kdrama_serial/romance_contemporary/remaja_coming_of_age are safe to enable
+    # this round -- babad_hikayat/pewayangan_dalang have separate blocking bugs
+    # (duplicate-key shadowing by registry_p23.py; factual_regime values missing from
+    # _REGIME_BLOCKS) that must be fixed first or this fallback would make things worse
+    # for those two specifically. DO NOT add them to the allowlist until then.
+    if not rules:
+        _rrb_raw = str(_os.environ.get("NARASI_STYLE_RULES_BOOK_FALLBACK", "")).strip()
+        _rrb_styles = (
+            {s.strip() for s in _rrb_raw.split(",") if s.strip()}
+            if _rrb_raw and _rrb_raw.lower() not in ("0", "false")
+            else set()
+        )
+        if entry.get("key") in _rrb_styles:
+            rules = entry.get("style_rules_book", "")
     rules = rules.rstrip() + "\n" + CLAIM_DISCIPLINE
     _regime = entry.get("factual_regime", "strict")
-    # P1 fiction styles (kdrama_serial/romance_contemporary/remaja_coming_of_age) declare
-    # 'fiction'; _REGIME_BLOCKS keys on 'fictional', so they silently fell back to the
-    # STRICT factual-rendering block at generation. Normalizing changes generation
-    # prompts, so it is flag-gated: NARASI_REGIME_BLOCK_NORMALIZE=1 to enable.
-    if _regime == "fiction" and str(_os.environ.get("NARASI_REGIME_BLOCK_NORMALIZE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+    # "fiction" (declared by all 3 P1 fiction target styles: kdrama_serial/
+    # romance_contemporary/remaja_coming_of_age) and "fictional" (the _REGIME_BLOCKS
+    # key) are the same regime under two spellings -- normalize unconditionally, no
+    # flag gate. This used to be gated behind NARASI_REGIME_BLOCK_NORMALIZE (default
+    # OFF), which was harmless while these 3 styles' style_rules_book content was
+    # itself dead (nothing to contradict) but became load-bearing once
+    # NARASI_STYLE_RULES_BOOK_FALLBACK activates real content for them: without this,
+    # they silently fall back to the STRICT/hedging nonfiction block, which directly
+    # contradicts kdrama_serial's own "commit into feeling, don't hedge" mandate.
+    # Only 3 registry entries anywhere declare factual_regime="fiction" (confirmed by
+    # grep), so this is precisely scoped -- no other style's regime resolution changes.
+    if _regime == "fiction":
         _regime = "fictional"
     rules = rules.rstrip() + "\n" + _REGIME_BLOCKS.get(_regime, _REGIME_BLOCKS["strict"])
     # Dramatization mandates (NARASI_DRAMA_MANDATES, default OFF) — round-3 craft:
