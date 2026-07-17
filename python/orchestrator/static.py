@@ -1179,6 +1179,13 @@ async def narrate_chapters(
     # WARNING, never revises (matches every other gate in this file). Bounded at exactly
     # total-1 calls (loop below), skipping pairs where either side failed to generate.
     # Never raises.
+    # _bc_findings feeds the "chapter_boundary_report" key on this function's return
+    # dict below (populated only when a "broken": true finding fires) — narration_api.py's
+    # _r7_actuator_violations() reads it from there (same result-dict-plumbing pattern
+    # numeric_ledger_report/domain_plausibility_report already use) to build an actionable
+    # violation, gated behind NARASI_CHAPTER_BOUNDARY_ENFORCE. Stays [] (key omitted from the
+    # log-only default) unless the ENFORCE flag route actually needs it.
+    _bc_findings: list[dict] = []
     if str(os.environ.get("NARASI_CHAPTER_BOUNDARY_CHECK", "0")).strip().lower() in ("1", "true", "yes", "on"):
         try:
             if total >= 2:
@@ -1216,10 +1223,19 @@ async def narrate_chapters(
                                                      user_id=None, job_uuid=None, json_mode=True)
                     _bc_d = _bc_parse(_bc_raw) if isinstance(_bc_raw, str) else (_bc_raw or {})
                     if isinstance(_bc_d, dict) and _bc_d.get("broken") is True:
+                        _bc_a_no1 = int(_bc_a.get("no", 0)) + 1   # chapter A's 1-based number
+                        _bc_b_no1 = int(_bc_b.get("no", 0)) + 1   # chapter B's 1-based number (the OPENING with the break)
                         log.warning(
                             "chapter-boundary check: ch %d -> ch %d looks like a continuity "
-                            "break (%s)", int(_bc_a.get("no", 0)) + 1, int(_bc_b.get("no", 0)) + 1,
-                            str(_bc_d.get("reason") or "")[:200])
+                            "break (%s)", _bc_a_no1, _bc_b_no1, str(_bc_d.get("reason") or "")[:200])
+                        # Record the finding regardless of NARASI_CHAPTER_BOUNDARY_ENFORCE (that
+                        # flag only controls whether narration_api.py converts it into a revise
+                        # violation) — capturing it here is free and keeps this report-only.
+                        _bc_findings.append({
+                            "chapter_a": _bc_a_no1, "chapter_b": _bc_b_no1,
+                            "head": _bc_head, "tail": _bc_tail,
+                            "reason": str(_bc_d.get("reason") or "")[:200],
+                        })
         except Exception as _bce:  # noqa: BLE001
             log.warning("chapter-boundary check failed (non-fatal): %s", _bce)
 
@@ -1314,6 +1330,13 @@ async def narrate_chapters(
         # count, so the raw text otherwise dies here.
         "canonical_facts": ctx.canonical_facts,
         "facts_are_bible": ctx.facts_are_bible,
+        # NARASI_CHAPTER_BOUNDARY_CHECK's findings (see _bc_findings above) — [] unless the
+        # flag is on AND at least one break fired. Same pattern numeric_ledger_report /
+        # domain_plausibility_report use: narration_api.py's _r7_actuator_violations() reads
+        # this key off `result` to build an actionable violation under NARASI_CHAPTER_
+        # BOUNDARY_ENFORCE. Present unconditionally (even when empty) so downstream code can
+        # always do a plain `.get("chapter_boundary_report")` without an extra existence check.
+        "chapter_boundary_report": {"breaks": _bc_findings},
     }
 
 

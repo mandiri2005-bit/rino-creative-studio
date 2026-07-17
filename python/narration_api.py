@@ -225,6 +225,34 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
                             f"{r.get('values')} across chapters. Pick the value the story's "
                             f"dated facts support and unify EVERY mention; do not touch "
                             f"deliberate official-vs-true contrasts.")})
+        # — chapter-boundary continuity break: chapter N+1's opening contradicts or
+        # redundantly re-stages something chapter N's ending already resolved —
+        # orchestrator/static.py's narrate_chapters() (NARASI_CHAPTER_BOUNDARY_CHECK) detects
+        # this at MAP time and reports it via "chapter_boundary_report" on `result` (same
+        # result-dict plumbing as numeric_ledger_report/domain_plausibility_report — see that
+        # function's own comments). Report-only unless this flag is on.
+        # EVIDENCE-LOCATABILITY: use "head" — the actual chapter N+1 OPENING text (real
+        # manuscript prose already in scope, a literal substring of the pre-polish chapter
+        # content) — NEVER the LLM's free-text "reason" (that's a paraphrase/explanation, not
+        # a verbatim excerpt; _wq()-wrapping a paraphrase would still fail _occ()'s literal
+        # substring match and land the violation in _narasi_revise_chunked's UNMAPPED bucket).
+        # Belt-and-suspenders: append the deterministic "@ch{N}" locator for chapter N+1 (the
+        # opening side, i.e. chapter_b — the break's fix always targets THAT chapter's
+        # opening) so the chunked-revise path can still route this violation even if polish
+        # (which runs between this evidence being captured and the revise call) has since
+        # touched the literal seam text and the quote no longer matches verbatim.
+        if _r7_env_on("NARASI_CHAPTER_BOUNDARY_ENFORCE"):
+            for b in ((result.get("chapter_boundary_report") or {}).get("breaks") or [])[:3]:
+                _bce = _wq(b.get("head"))
+                _bcb = b.get("chapter_b")
+                if _bcb is not None:
+                    _bce = f"{_bce} @ch{_bcb}"
+                out.append({
+                    "type": "chapter_boundary_break", "severity": "high",
+                    "evidence": _bce[:200],
+                    "fix": ("Add a brief bridging sentence or short scene resolving what the "
+                            "ending of the previous chapter left unresolved before this "
+                            "chapter's opening beat.")})
     except Exception:  # noqa: BLE001
         return out
     return out
@@ -286,11 +314,95 @@ def _is_date_like(v: str) -> bool:
     return False
 
 
+_RELATIVE_DATE_RX = None  # set below, after re is imported locally (module has no top-level `re`)
+
+
+def _relative_date_rx():
+    # Lazily-compiled so this file's established "import re locally, per-function" style is
+    # kept — matches _is_date_like/_numeric_drifts right above/below. Captures: a coarse time
+    # unit, a before/after direction, and a free-text event description — e.g. "the summer
+    # before the plant closed" -> ("summer", "before", "plant closed").
+    global _RELATIVE_DATE_RX
+    if _RELATIVE_DATE_RX is None:
+        import re as _re
+        _RELATIVE_DATE_RX = _re.compile(
+            r"^(?:the\s+)?(year|summer|spring|winter|fall|autumn|month|week|day)s?\s+"
+            r"(before|after)\s+(?:the\s+)?(.+?)(?:\s+(?:happened|occurred))?\.?$",
+            _re.IGNORECASE)
+    return _RELATIVE_DATE_RX
+
+
+def _build_date_anchor_map(referents: list) -> dict:
+    """FIX 2 (numeric-ledger relative-date-phrase vs absolute-year forks): a lightweight
+    event -> absolute-year lookup built from every referent's OWN values in the same
+    extraction pass — e.g. a referent named "plant closure" whose only stated value is
+    "2014" becomes the resolvable anchor for a phrase like "the summer before the plant
+    closed" appearing under a DIFFERENT referent elsewhere in the ledger. Keyed by
+    individual content words (>=4 chars, filler words dropped) from the anchor referent's
+    own name, so a relative-date phrase's event description only needs to share ONE
+    meaningful word with it to resolve — deliberately loose (this is a best-effort
+    cross-reference, not an entity-linker); narrow blast radius since it is only ever
+    consulted by the relative-date-fork check inside _numeric_drifts below. A referent
+    with zero or with 2+ DISTINCT bare years is not usable as an anchor (ambiguous — could
+    itself be the drift). Pure function; never raises."""
+    import re as _re
+    _stop = {"the", "a", "an", "was", "were", "is", "are", "of", "in", "on", "at", "to",
+             "and", "or", "that", "this", "its", "year", "years", "date", "dates"}
+    anchors: dict = {}
+    for r in referents or []:
+        if not isinstance(r, dict):
+            continue
+        _raws = [(v or {}).get("value") if isinstance(v, dict) else v
+                 for v in (r.get("values") or [])]
+        _years = {int(_m.group(0)) for _raw in _raws
+                  for _m in [_re.search(r"\b(?:19|20)\d{2}\b", str(_raw or ""))] if _m}
+        if len(_years) != 1:
+            continue  # no year, or an ambiguous/conflicting anchor — not usable as a reference point
+        _year = next(iter(_years))
+        for w in _re.findall(r"[a-z]{4,}", str(r.get("name") or "").lower()):
+            if w not in _stop:
+                anchors.setdefault(w, _year)
+    return anchors
+
+
+def _resolve_relative_date(phrase: str, anchor_map: dict) -> Optional[int]:
+    """FIX 2: resolve a relative-date phrase ("the summer before the plant closed") to an
+    approximate absolute year via `anchor_map` (see _build_date_anchor_map) — year-level
+    precision only, which is all the fork-comparison below needs. Returns None when the
+    phrase doesn't match the supported "<unit> before/after <event>" shape, or no anchor
+    word overlaps the event description (the common, expected case for most values — this
+    must stay a no-op for anything that isn't this specific relative-date-phrase shape)."""
+    import re as _re
+    m = _relative_date_rx().match(str(phrase or "").strip())
+    if not m:
+        return None
+    direction = m.group(2).lower()
+    event = m.group(3).lower()
+    year = None
+    for w in _re.findall(r"[a-z]{4,}", event):
+        if w in anchor_map:
+            year = anchor_map[w]
+            break
+    if year is None:
+        return None
+    return year - 1 if direction == "before" else year + 1
+
+
 def _numeric_drifts(referents: list) -> list[dict]:
     """ROUND-7 deterministic post-check for the numeric-ledger cheap call: a
     referent with ≥2 distinct normalized values that the extractor did NOT mark
     as an intentional official-vs-true contrast is a drift. Pure function —
-    unit-tested against the lens-4 catch list."""
+    unit-tested against the lens-4 catch list.
+
+    FIX 2 (relative-date-phrase vs absolute-year forks): before the blanket "mostly
+    date-like -> skip, defer to the TIMELINE gate" rule below (which exists for pure
+    SURFACE-FORM differences of the SAME date, e.g. "Jan 27" vs "January twenty-seventh"
+    — not for a genuine year mismatch), check whether THIS referent's own values combine a
+    bare absolute year with a phrase relative to another story event that resolves (via
+    _build_date_anchor_map/_resolve_relative_date) to a DIFFERENT year. That is a real
+    continuity conflict the blanket date-skip would otherwise silently swallow. Additive:
+    a referent with no relative-date phrase, or one that fails to resolve to any anchor,
+    falls through to the exact pre-existing logic unchanged."""
     import re as _re
     _words = {"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
               "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
@@ -299,12 +411,31 @@ def _numeric_drifts(referents: list) -> list[dict]:
               "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
               "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70",
               "eighty": "80", "ninety": "90", "hundred": "100", "thousand": "1000"}
+    _anchor_map = _build_date_anchor_map(referents)
     drifts: list[dict] = []
     for r in referents or []:
         if not isinstance(r, dict) or r.get("intentional_contrast"):
             continue
         _raws = [(v or {}).get("value") if isinstance(v, dict) else v
                  for v in (r.get("values") or [])]
+        # FIX 2: relative-date-phrase vs absolute-year fork — see function docstring.
+        _bare_years = {int(_m.group(0)) for _raw in _raws
+                       for _m in [_re.search(r"\b(?:19|20)\d{2}\b", str(_raw or ""))] if _m}
+        _resolved = [(str(_raw), _ry) for _raw in _raws
+                     for _ry in [_resolve_relative_date(str(_raw or ""), _anchor_map)]
+                     if _ry is not None]
+        if _bare_years and _resolved:
+            for _phrase, _ry in _resolved:
+                if _ry not in _bare_years:
+                    _by = sorted(_bare_years)[0]
+                    drifts.append({
+                        "referent": str(r.get("name") or "?"),
+                        "values": [str(_by), str(_ry)],
+                        "evidence": (f"{_by} vs \"{_phrase}\" (resolves to ~{_ry} via an "
+                                     f"established anchor date elsewhere in the story) — "
+                                     f"conflicting dates for the same referent")})
+                    break  # one drift per referent is enough signal
+            continue  # this referent's date-ness was already resolved above either way
         # skip date-referents entirely: dates belong to the timeline gate, and partial
         # date forms legitimately differ without conflicting (roll-14 3 FP).
         _rname = str(r.get("name") or "").lower()
@@ -734,6 +865,66 @@ class _UsageSink:
 
 
 # ---------------------------------------------------------------------------
+# Chapter-checkbox telemetry sink — wraps the REAL _UsageSink so it remains a
+# drop-in Callable[[CallTelemetry], None] (core.py's _emit only ever does
+# `sink(t)`, so a callable class instance satisfies every existing call site
+# identically to the bare closure it replaces), while additionally exposing a
+# `.credits` property that proxies straight through to the wrapped sink's real
+# `.credits` slot. This lets downstream orchestrator code that duck-types a
+# `.credits` running-total onto whatever telemetry_sink it receives (see
+# orchestrator/dynamic.py's _reveal_dedup_amend `_sink_can_absorb` check) fold
+# its cheap-call costs into the REAL settlement total (_settle reads
+# sink.credits as credits_actual) instead of silently degrading to a no-op.
+# ---------------------------------------------------------------------------
+class _ChapterCheckboxSink:
+    """Fans telemetry to the real usage sink AND flips per-chapter Redis
+    checkboxes as chapter workers report in. `credits` is a passthrough
+    property onto the wrapped `_UsageSink`, not separate state — mutating it
+    (e.g. `telemetry_sink.credits += cr`) mutates the real sink directly, the
+    same synchronous get-then-set with no intervening `await` that every other
+    `sink.credits += x` site in this module already relies on for safety under
+    asyncio's single-threaded cooperative scheduling."""
+
+    __slots__ = ("_sink", "_job_id", "_total", "_chapters_done", "_polish_progress_fired")
+
+    def __init__(self, sink: "_UsageSink", *, job_id: str, total: int):
+        self._sink = sink
+        self._job_id = job_id
+        self._total = total
+        self._chapters_done: set = set()
+        self._polish_progress_fired = False
+
+    @property
+    def credits(self) -> int:
+        return self._sink.credits
+
+    @credits.setter
+    def credits(self, value) -> None:
+        self._sink.credits = value
+
+    def __call__(self, t: CallTelemetry) -> None:
+        self._sink(t)  # keep accounting + usage logging
+        tid = (t.task_id or "")
+        if tid.startswith("ch") and tid[2:].isdigit():
+            no = int(tid[2:]) - 1
+            state = _STATUS_DONE if t.ok else _STATUS_FAILED
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(_set_chapter_state(self._job_id, no, state))
+                self._chapters_done.add(no)
+                # Rino: "Composing narration gak bisa dibuat lebih cepat" — chapters
+                # write in parallel already; the lingering banner after all boxes green
+                # is polish. Flip the progress message the moment the last chapter's
+                # telemetry lands so the UI doesn't stall on "Composing".
+                if (not self._polish_progress_fired
+                        and len(self._chapters_done) >= max(1, int(self._total))):
+                    self._polish_progress_fired = True
+                    loop.create_task(_safe_progress(self._job_id, "Polishing final draft…"))
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Cooperative cancel — a telemetry sink can't cancel, but the orchestrator runs
 # chapters via asyncio.as_completed inside narrate_chapters. We can't reach into
 # that loop, so cancellation is enforced at the JOB boundary: we race the whole
@@ -790,35 +981,16 @@ async def _run_narration_job(
     # writes chapters all at once at the end. To still light checkboxes AS work
     # lands, we pass a telemetry sink that flips the chapter field when its worker
     # call returns. CallTelemetry.task_id is "chN" (1-based) for chapter workers.
-    _chapters_done: set = set()
-    _polish_progress_fired = [False]
-
-    def _checkbox_from_telemetry(t: CallTelemetry) -> None:
-        sink(t)  # keep accounting + usage logging
-        tid = (t.task_id or "")
-        if tid.startswith("ch") and tid[2:].isdigit():
-            no = int(tid[2:]) - 1
-            state = _STATUS_DONE if t.ok else _STATUS_FAILED
-            try:
-                loop = asyncio.get_event_loop()
-                loop.create_task(_set_chapter_state(job_id, no, state))
-                _chapters_done.add(no)
-                # Rino: "Composing narration gak bisa dibuat lebih cepat" — chapters
-                # write in parallel already; the lingering banner after all boxes green
-                # is polish. Flip the progress message the moment the last chapter's
-                # telemetry lands so the UI doesn't stall on "Composing".
-                if (not _polish_progress_fired[0]
-                        and len(_chapters_done) >= max(1, int(total))):
-                    _polish_progress_fired[0] = True
-                    loop.create_task(_safe_progress(job_id, "Polishing final draft…"))
-            except Exception:  # noqa: BLE001
-                pass
+    # _ChapterCheckboxSink wraps the real `sink` (_UsageSink) and exposes a
+    # `.credits` passthrough so downstream duck-typed credit folding (e.g.
+    # orchestrator/dynamic.py's _reveal_dedup_amend) reaches real settlement.
+    _checkbox_sink = _ChapterCheckboxSink(sink, job_id=job_id, total=total)
 
     req = dict(body or {})
     req.update({
         "job_id": job_id,
         "tenant_id": tenant_id,
-        "telemetry_sink": _checkbox_from_telemetry,
+        "telemetry_sink": _checkbox_sink,
     })
 
     # Keep the credit hold's TTL warm across a long job so it never lapses and
@@ -1471,7 +1643,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "You are a numeric-continuity extractor for a multi-chapter story. List every "
                         "PLOT-LOAD-BEARING number with its referent: death/injury tolls, ages and age "
                         "gaps, money amounts, durations, day-counts, list positions, measurements, "
-                        "classification levels. For each referent collect EVERY distinct value the text "
+                        "classification levels, and years an object/event is dated to (a founding, an "
+                        "opening, a closure). For each referent collect EVERY distinct value the text "
                         "states, with the chapter number. Where the story DELIBERATELY contrasts an "
                         "official/covered-up value with a true value (cover-up plots), set "
                         "intentional_contrast=true for that referent. Return ONLY JSON: "
@@ -1482,9 +1655,13 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "\"quote\":\"<verbatim sentence containing the total, copied exactly as "
                         "written>\",\"chapter\":<n>}]} — max 20 referents; equations = every "
                         "stated arithmetic claim (a total with its parts); values as PLAIN NUMBERS "
-                        "without units. If the story itself establishes that one person appears in two "
-                        "components (a mislabeled body counted both officially and among the hidden), "
-                        "NAME them in overlap — that is a double-count the total must subtract.")
+                        "without units, EXCEPT: if a date is stated only as a phrase relative to another "
+                        "established story event rather than as a bare year (e.g. \"the year before the "
+                        "factory closed\", \"the summer the war ended\"), capture that phrase VERBATIM as "
+                        "the value instead of inventing a number for it — do not omit it. If the story "
+                        "itself establishes that one person appears in two components (a mislabeled body "
+                        "counted both officially and among the hidden), NAME them in overlap — that is a "
+                        "double-count the total must subtract.")
                     _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:60000], tenant_id=tenant_id,
                                                   user_id=user_id, job_uuid=job_uuid, json_mode=True,
                                                   credit_row=False)

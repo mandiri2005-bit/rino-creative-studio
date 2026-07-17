@@ -811,13 +811,16 @@ async def _reveal_dedup_amend(chapters: list, reveals: list, *, tenant_id=None, 
     GATES-phase sites, e.g. "if sink is not None and _dpcc: sink.credits += int(_dpcc)"),
     fold each call's cost into it directly and drop that call's own usage_logs credits to 0
     (credit_row=False) so the cost is counted exactly once, at settlement, not twice.
-    telemetry_sink is a bare Callable[[CallTelemetry], None] in every call path this
-    function is reachable from today (outline_from_topic's caller wraps the real sink in a
-    checkbox-updating closure with no .credits of its own) — so this degrades to a no-op
-    accumulation, and credit_row stays True as a fallback, keeping the cost visible in
-    usage_logs exactly as before rather than silently disappearing. Deciding credit_row
-    once, before either call, avoids a call landing with credit_row=False on the hope of an
-    accumulation that then turns out to be impossible.
+    telemetry_sink IS a real, credits-bearing accumulator in the one production call path
+    this function is reachable from (narration_api.py's _ChapterCheckboxSink wraps the real
+    _UsageSink and proxies `.credits` straight through to it, fixed 2026-07-17 — previously
+    it was a bare closure with no `.credits`, which made this fold a permanent no-op). When
+    telemetry_sink is None or genuinely lacks `.credits` (BYOK, metering-disabled, or a
+    future caller with no accounting), this still degrades gracefully: credit_row stays
+    True as a fallback, keeping the cost visible in usage_logs exactly as before rather
+    than silently disappearing. Deciding credit_row once, before either call, avoids a call
+    landing with credit_row=False on the hope of an accumulation that then turns out to be
+    impossible.
 
     Returns a NEW list (chapters is never mutated in place). Never raises: any failure at
     any step returns `chapters` unchanged."""

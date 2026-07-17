@@ -10849,6 +10849,210 @@ def _strip_beat_label(title: str) -> str:
     return out
 
 
+# ===========================================================================
+# FIX A (outline/description divergence) + FIX B (ported outline-fidelity flags) —
+# helpers for _narasi_outline_impl ("Dapur A", the actual production /narasi/outline
+# endpoint). See that function's own comments for the full root-cause writeups.
+# ===========================================================================
+def _narasi_derive_outline_text(chapters: list) -> str:
+    """FIX A — outline_text is DETERMINISTICALLY DERIVED from chapters[] (title +
+    description) in Python, NEVER independently requested from or trusted from the LLM's
+    raw JSON. Root cause this closes: the outline prompt used to ask for
+    "chapters[].description" (capped "1-2 sentences") AND a separate free-form
+    "outline_text" as two INDEPENDENTLY generated fields — so when the beatmap/twist
+    system injected rich structural instructions, the LLM elaborated in outline_text but
+    not in description, and outline_text (what the user reviews/approves in the Storyboard
+    "Edit outline directly" textarea) diverged completely from description (what actually
+    drives chapter generation — pakem/assembler.py build_static_prefix renders description
+    into every chapter's system prefix, and orchestrator/static.py reads it as the
+    per-chapter directive). Building outline_text FROM the already-parsed chapters
+    guarantees the two match 100% of the time, by construction, not by hoping the LLM kept
+    them consistent.
+
+    Fail-safe: never raises. A malformed chapter entry (not a dict) is skipped, not
+    crashed on. Returns "" if every chapter has empty title AND empty description, so the
+    caller can degrade to its own pre-existing fallback."""
+    try:
+        parts = []
+        for c in chapters or []:
+            if not isinstance(c, dict):
+                continue
+            title = str(c.get("title") or "").strip()
+            desc = str(c.get("description") or "").strip()
+            if not title and not desc:
+                continue
+            parts.append(f"## {title}\n\n{desc}\n" if title else f"{desc}\n")
+        return "\n".join(parts).strip()
+    except Exception:  # noqa: BLE001 — derivation is an enhancement, never blocks the outline
+        return ""
+
+
+def _narasi_normalize_reveals(parsed) -> list:
+    """FLAG NARASI_OUTLINE_REVEALS — parse the "reveals" ledger out of a parsed outline
+    JSON response. Thin, fail-safe wrapper delegating to orchestrator.dynamic's own
+    _normalize_reveals (built for Dapur B) rather than duplicating it: it is pure (no
+    LLM/I-O), reads ONLY the standalone "reveals" key (never touches "chapters", so it can
+    never affect chapter parsing in either direction), and the reveal-object SHAPE this
+    file's own prompt requests below (id/secret/chapter/characters_involved/method) is
+    IDENTICAL to Dapur B's by design — no adaptation needed. Only the import itself can
+    fail here (module layout change); _normalize_reveals' own body is already fail-safe on
+    malformed input. Always returns [] on any problem, never raises."""
+    try:
+        from orchestrator.dynamic import _normalize_reveals as _dyn_normalize_reveals
+        return _dyn_normalize_reveals(parsed)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+_NARASI_REVEAL_DEDUP_SYS = (
+    "You are checking a fiction outline's REVEAL LEDGER for accidental duplicates: two "
+    "reveals that were phrased differently but actually stage the SAME underlying secret "
+    "as a fresh revelation TWICE, once in each of two different chapters (e.g. 'a hidden "
+    "file surfaces' in one chapter and 'a corporate payoff comes to light' in another, "
+    "when both are really the same confession described two ways). Some pairs below are "
+    "innocuous — genuinely different secrets that merely happen to share a character. "
+    "Judge ONLY whether the SECRET ITSELF is the same underlying fact, never by shared "
+    "characters or surface wording alone. Do NOT flag a pair where the earlier chapter "
+    "only hints, suspects, or partially reveals the fact and the later chapter is the "
+    "first FULL, CONFIRMED disclosure — that is intentional dramatic structure (a "
+    "foreshadow-then-confirm), not a duplicate. Only flag when BOTH chapters "
+    "independently stage a full, confirmed reveal of the same fact as if it were new "
+    "information. Return ONLY JSON: {\"duplicates\": [{\"pair\": "
+    "<1-based index into the numbered list below>, \"keep_chapter\": <int, the earlier/"
+    "canonical chapter that keeps the reveal>, \"demote_chapter\": <int, the later chapter "
+    "that must stop re-staging it as new>}]}. If no pair is a true duplicate, return "
+    "{\"duplicates\": []}."
+)
+
+_NARASI_REVEAL_AMEND_SYS = (
+    "You are editing ONE chapter description in a fiction outline. This chapter's "
+    "description currently re-stages a secret as a FRESH reveal, but that secret was "
+    "already revealed earlier in the story, in an earlier chapter. Rewrite the description "
+    "so this chapter treats the fact as ALREADY KNOWN by this point — it may reference the "
+    "fact or its consequences, but must NOT re-stage the disclosure itself as new "
+    "information to the reader or characters. Keep every other plot beat in the "
+    "description; change only how this one fact is handled. Do not delete, shorten, or "
+    "invent unrelated content, and do not mention that this is an edit. Return ONLY JSON: "
+    "{\"description\": \"<the full rewritten chapter description>\"}"
+)
+
+
+async def _narasi_reveal_dedup_amend(chapters: list, reveals: list, *, tenant_id, user_id) -> list:
+    """FLAG NARASI_REVEAL_DEDUP_CHECK (Dapur A) — ported from orchestrator/dynamic.py's
+    _reveal_dedup_amend (built for Dapur B), adapted to THIS function's schema: chapters
+    key by a STRING "id" (Dapur B: int), and the operative per-chapter field to amend is
+    "description" (Dapur B: "summary") — Fix A above makes description the single source
+    of truth outline_text is derived from, so the amend target must be description, never
+    a field the derivation doesn't read.
+
+    Step 1 (pre-filter): orchestrator.dynamic._candidate_reveal_pairs, reused UNCHANGED —
+    it only reads the `reveals` list, whose shape is identical in both Dapur A and Dapur B
+    (see _narasi_normalize_reveals). No candidate pairs (the common case) → `chapters`
+    returned UNCHANGED, ZERO LLM calls.
+    Step 2 (check): one holistic cheap LLM call presents ALL candidate pairs together.
+    Step 3 (amend): for each CONFIRMED duplicate (bounded to 5), one bounded keep/demote
+    call rewrites ONLY the demoted (later) chapter's "description".
+
+    BILLING: uses _narasi_cheap_call exactly like every other cheap side-call already in
+    this file (_narasi_critic, _narasi_update_series_state, …) — its own internal
+    _log_narasi_usage call (default credit_row=True) IS this function's real settlement
+    path. Unlike Dapur B, _narasi_outline_impl has no telemetry_sink/job-hold concept to
+    fold into, so there is no separate accumulation step to get wrong here — the dedup
+    calls' cost lands as ordinary usage_logs rows, tenant/user-attributed, exactly like the
+    main outline call a few lines above the caller
+    (`_log_narasi_usage(_ou_tenant, _ou_user, model, resp)`).
+
+    Never raises: any failure at any step returns `chapters` unchanged."""
+    import logging as _lg
+    log = _lg.getLogger("narasi")
+    try:
+        from orchestrator.dynamic import _candidate_reveal_pairs as _cand_pairs
+        pairs = _cand_pairs(reveals)
+        if not pairs:
+            return chapters
+
+        def _fmt(r: dict) -> str:
+            return (f"ch{r.get('chapter')}: \"{r.get('secret')}\" "
+                    f"(characters: {', '.join(r.get('characters_involved') or [])}; "
+                    f"method: {r.get('method')})")
+
+        _user = "\n\n".join(
+            f"PAIR {i + 1}:\n  A ({_fmt(a)})\n  B ({_fmt(b)})"
+            for i, (a, b) in enumerate(pairs)
+        )
+        _raw, _cr = await _narasi_cheap_call(
+            _NARASI_REVEAL_DEDUP_SYS, _user, tenant_id=tenant_id, user_id=user_id,
+            json_mode=True,
+        )
+        _parsed = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+        dupes = (_parsed or {}).get("duplicates") if isinstance(_parsed, dict) else None
+        if not isinstance(dupes, list) or not dupes:
+            log.info("outline reveal-dedup: %d candidate pair(s), 0 confirmed duplicate(s)", len(pairs))
+            return chapters
+
+        out = [dict(c) if isinstance(c, dict) else c for c in chapters]
+        out_by_id = {}
+        for idx, c in enumerate(out):
+            if not isinstance(c, dict):
+                continue
+            try:
+                out_by_id[int(str(c.get("id")).strip())] = idx
+            except (TypeError, ValueError):
+                continue
+
+        amended = 0
+        for d in dupes[:5]:
+            if not isinstance(d, dict):
+                continue
+            try:
+                pair_idx = int(d.get("pair") or 0)
+                demote_ch = int(d.get("demote_chapter"))
+                keep_ch = int(d.get("keep_chapter"))
+            except (TypeError, ValueError):
+                continue
+            if not (1 <= pair_idx <= len(pairs)) or demote_ch == keep_ch:
+                continue
+            a, b = pairs[pair_idx - 1]
+            valid_chapters = {a.get("chapter"), b.get("chapter")}
+            if demote_ch not in valid_chapters or keep_ch not in valid_chapters:
+                continue
+            # A correct duplicate-reveal fix always demotes the LATER occurrence (the
+            # earlier one is the legitimate first-disclosure) — never the earlier one.
+            if demote_ch <= keep_ch:
+                log.warning(
+                    "outline reveal-dedup: pair %d judge picked demote_chapter=%d <= "
+                    "keep_chapter=%d (must demote the LATER chapter) — skipping",
+                    pair_idx, demote_ch, keep_ch)
+                continue
+            idx = out_by_id.get(demote_ch)
+            if idx is None or not isinstance(out[idx], dict) or not out[idx].get("description"):
+                continue
+            secret = a.get("secret") if a.get("chapter") == keep_ch else b.get("secret")
+            _amend_user = (
+                f"THE FACT (already known as of chapter {keep_ch}): {secret}\n\n"
+                f"CHAPTER {demote_ch} CURRENT DESCRIPTION:\n{out[idx].get('description')}"
+            )
+            _araw, _acr = await _narasi_cheap_call(
+                _NARASI_REVEAL_AMEND_SYS, _amend_user, tenant_id=tenant_id, user_id=user_id,
+                json_mode=True,
+            )
+            _ad = _narasi_parse_json(_araw) if isinstance(_araw, str) else (_araw or {})
+            new_desc = str((_ad or {}).get("description") or "").strip()
+            if len(new_desc) > 20:
+                out[idx] = {**out[idx], "description": new_desc}
+                amended += 1
+                log.info("outline reveal-dedup: pair %d confirmed duplicate — ch%d demoted (kept ch%d)",
+                         pair_idx, demote_ch, keep_ch)
+            else:
+                log.info("outline reveal-dedup: amend unusable for ch%d — description kept", demote_ch)
+        log.info("outline reveal-dedup: %d candidate pair(s), %d confirmed, %d amended",
+                 len(pairs), len(dupes), amended)
+        return out
+    except Exception as _rde:  # noqa: BLE001 — dedup check must never block the outline
+        log.warning("outline reveal-dedup check failed (non-fatal): %s", _rde)
+        return chapters
+
+
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
     # Outline + brief are structural planning served as a SYNCHRONOUS blocking request — a slow model
@@ -10873,6 +11077,75 @@ async def _narasi_outline_impl(body: dict):
     _ou_ctx = _tenant_ctx.get()
     _ou_tenant = _ou_ctx.tenant_id or None
     _ou_user = (await _resolve_user_uuid(_ou_ctx.tenant_id, _ou_ctx.user_id)) if _ou_ctx.user_id else None
+
+    # ── FIX B: ported outline-duplication-fidelity flags (Dapur A) ───────────────────
+    # NARASI_OUTLINE_REVEALS / NARASI_REVEAL_DEDUP_CHECK / NARASI_OUTLINE_FIDELITY were
+    # built for orchestrator/dynamic.py's outline_from_topic ("Dapur B") but Dapur B is
+    # UNREACHABLE by any real caller (the Storyboard FE always sends pre-populated
+    # "chapters" in its /api/narration request, which routes orchestrator/router.py's
+    # classify() to scenario A and never calls outline_from_topic at all) — so all 3 flags
+    # had zero real-world effect until ported here, into the endpoint that actually serves
+    # every outline request. Same fiction-only gate + fail-CLOSED-on-import-failure
+    # convention _outline_prompt / outline_from_topic themselves use for these exact flags.
+    # OFF (default) ⟹ every clause below is "" ⟹ prompt/schema byte-identical.
+    try:
+        from orchestrator.static import _is_fiction_style as _oi_isf
+        _oi_is_fic = bool(_oi_isf(style))
+    except Exception:  # noqa: BLE001 — gating is an enhancement, never blocks the outline
+        _oi_is_fic = False
+    _oi_reveals_on = _oi_is_fic and os.environ.get(
+        "NARASI_OUTLINE_REVEALS", "0").strip().lower() in ("1", "true", "yes", "on")
+    _oi_dedup_on = _oi_is_fic and os.environ.get(
+        "NARASI_REVEAL_DEDUP_CHECK", "0").strip().lower() in ("1", "true", "yes", "on")
+    _oi_fidelity_on = _oi_is_fic and os.environ.get(
+        "NARASI_OUTLINE_FIDELITY", "0").strip().lower() in ("1", "true", "yes", "on")
+
+    # FLAG NARASI_OUTLINE_REVEALS — schema/instruction fragments, applied to BOTH the fresh
+    # and revise branches below (a revision can introduce or restage a duplicate secret just
+    # as easily as a fresh generation can). Reveal-object shape is IDENTICAL to Dapur B's
+    # (see _narasi_normalize_reveals), so no adaptation needed there.
+    _oi_reveals_clause = (
+        "REVEAL LEDGER: separately from the chapter list, enumerate every "
+        "PLOT-CRITICAL secret, confession, or reveal in this story -- anything a character "
+        "conceals that the plot later discloses. Commit EACH one to exactly ONE chapter as "
+        "its first-reveal -- the chapter where it is FIRST disclosed on the page -- and "
+        "never let the same underlying secret be staged as a fresh revelation in more than "
+        "one chapter. Describe each secret in NEUTRAL, OMNISCIENT-NARRATOR phrasing (the "
+        "objective underlying fact), NOT in any character's own in-scene wording or "
+        "euphemism.\n\n"
+    ) if _oi_reveals_on else ""
+    _oi_reveals_schema = (
+        "  \"reveals\": array, each with: \"id\" (string), \"secret\" (neutral "
+        "omniscient-POV description of the underlying fact), \"chapter\" (integer -- the "
+        "SAME chapter number as its \"id\" above -- where it is FIRST disclosed), "
+        "\"characters_involved\" (array of name strings), \"method\" (how it is revealed)\n"
+    ) if _oi_reveals_on else ""
+
+    # FLAG NARASI_OUTLINE_FIDELITY — fresh-generation branch only. Mirrors Dapur B: the flag
+    # is built around a bare TOPIC's own detail level; the revise branch already works from
+    # current_outline + an explicit revise_instruction, not topic-invention pressure, so
+    # there's no equivalent "how much did the input already specify" question to answer there.
+    _oi_fidelity_block = ""
+    if _oi_fidelity_on:
+        try:
+            from orchestrator.dynamic import (
+                _classify_topic_detail as _oi_ctd,
+                _FIDELITY_MINIMAL as _oi_fid_min,
+                _FIDELITY_MODERATE as _oi_fid_mod,
+                _FIDELITY_DETAILED as _oi_fid_det,
+            )
+            _oi_detail = _oi_ctd(topic)
+            _oi_fidelity_clause = {
+                "minimal": _oi_fid_min, "moderate": _oi_fid_mod, "detailed": _oi_fid_det,
+            }.get(_oi_detail, "")
+            _oi_fidelity_block = (_oi_fidelity_clause.strip() + "\n\n") if _oi_fidelity_clause else ""
+        except Exception:  # noqa: BLE001
+            _oi_fidelity_block = ""
+        # NOTE: Dapur B suppresses its own "avoid buried-document/re-skin" anti-trope
+        # instruction at the "detailed" tier because that instruction fights
+        # _FIDELITY_DETAILED's "preserve every stated beat" directive. Dapur A's own
+        # fresh-outline prompt below has NO such anti-trope instruction anywhere to
+        # suppress (checked) — so that half of the flag does not apply here; nothing to port.
 
     # ── Beat-map (STRUCTURE layer) — flag-gated (DALANG_BEATMAP_ENABLED), romance family
     # only, fresh-outline path only. Selects a plot architecture and injects its
@@ -11009,18 +11282,24 @@ async def _narasi_outline_impl(body: dict):
             f"REVISION INSTRUCTIONS:\n{revise_instruction}\n\n"
             f"Apply the revision. Redistribute word counts so total stays {word_min}-{word_max} words, "
             f"heavier chapters get more words.\n\n"
+            f"{_oi_reveals_clause}"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array, each with: \"id\" (string), \"title\" (in {lang_label}), "
-            f"\"description\" (1-2 sentences), \"words\" (integer)\n"
-            f"  \"outline_text\": full outline as clean markdown\nNo fences, no explanation."
+            f"\"description\" (3-6 sentences, in {lang_label}, carrying the FULL substance of what "
+            f"this chapter must convey -- every plot-relevant beat, relationship development, and "
+            f"any planted twist/reveal element -- this is the text the chapter will actually be "
+            f"written from, so nothing important may be left out of it), \"words\" (integer)\n"
+            f"{_oi_reveals_schema}"
+            f"No fences, no explanation."
             + vo_note
         )
     else:
         user = (
             f"Create a detailed narrative outline for a {style} narrative titled: \"{topic}\"\n"
-            f"OUTPUT LANGUAGE: {lang_label}. ALL chapter titles, descriptions, and outline_text "
+            f"OUTPUT LANGUAGE: {lang_label}. ALL chapter titles and descriptions "
             f"MUST be written in {lang_label}.\n"
             f"Language: {lang_label} | Total words: {word_min}-{word_max} | Chapters: exactly {chap_count}\n\n"
+            f"{_oi_fidelity_block}"
             f"{_beatmap_block}"
             f"WORD WEIGHT RULES -- CRITICAL:\n"
             f"- Do NOT divide words equally across chapters\n"
@@ -11036,6 +11315,7 @@ async def _narasi_outline_impl(body: dict):
             f"or material cost, the scale number the narrative has been building toward), "
             f"with the actual figures.\n\n"
             f"{_zoom_note}"
+            f"{_oi_reveals_clause}"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array of exactly {chap_count} objects, each with:\n"
             f"    \"id\": chapter number as string\n"
@@ -11043,9 +11323,13 @@ async def _narasi_outline_impl(body: dict):
             f"chapter's content; NEVER a story-structure or craft beat-label (do NOT use 'Midpoint', "
             f"'Climax', 'Inciting Incident', 'Rising Action', 'Falling Action', 'Reversal', 'Turning Point', "
             f"'Act One/Two/Three', 'Setup', 'Payoff', 'Denouement', 'Resolution', 'Crisis')\n"
-            f"    \"description\": 1-2 sentence summary, written in {lang_label}\n"
+            f"    \"description\": 3-6 sentences, in {lang_label}, carrying the FULL substance of what "
+            f"this chapter must convey -- every plot-relevant beat (relationship development, "
+            f"plot/engine progress, and any planted twist or reveal element the story structure "
+            f"calls for here). This is the text the chapter will actually be written from -- "
+            f"nothing plot-relevant may be left out of it, and it must not merely tease what happens.\n"
             f"    \"words\": integer word count weighted by topical depth\n"
-            f"  \"outline_text\": the full outline as clean markdown\n"
+            f"{_oi_reveals_schema}"
             f"No markdown fences, no explanation. Just the JSON."
             + vo_note
         )
@@ -11104,8 +11388,10 @@ async def _narasi_outline_impl(body: dict):
             d = json.loads(_clean_json(s))
             ch = _extract_chapters(d)
             if ch:
-                ot = d.get("outline_text", "") if isinstance(d, dict) else ""
-                return {"ok": True, "chapters": ch, "outline_text": ot}
+                # outline_text is NOT read from the LLM's raw JSON anymore (Fix A) — it is
+                # derived deterministically from `chapters` below, after parsing succeeds.
+                rv = _narasi_normalize_reveals(d) if _oi_reveals_on else []
+                return {"ok": True, "chapters": ch, "reveals": rv}
         except Exception:
             pass
         return None
@@ -11120,6 +11406,11 @@ async def _narasi_outline_impl(body: dict):
     if not result:
         raise HTTPException(500, f"Tidak bisa parse outline -- raw: {raw[:400]}")
 
+    # Internal-only ledger (Flag NARASI_OUTLINE_REVEALS) — popped off `result` here so it
+    # never leaks into the API response (mirrors Dapur B's outline_from_topic, which also
+    # never returns "reveals" to its caller — it's consumed by the dedup step only).
+    _oi_reveals = result.pop("reveals", None) or []
+
     # ── ENFORCE word count — never trust AI ──
     _chs = result["chapters"]
     if _chs:
@@ -11133,8 +11424,24 @@ async def _narasi_outline_impl(body: dict):
                 max(_chs, key=lambda c: c.get("words", 0))["words"] += _diff
         result["chapters"] = _chs
 
-    # ── Fallback outline_text if AI left it empty ──
-    if not result.get("outline_text", "").strip():
+    # ── FLAG NARASI_REVEAL_DEDUP_CHECK — fix cross-chapter duplicate reveals (only
+    # meaningful when Flag NARASI_OUTLINE_REVEALS actually produced >=2 reveals; see
+    # _narasi_reveal_dedup_amend's docstring for the full step-by-step + billing contract).
+    # Runs BEFORE outline_text derivation below so a demoted chapter's rewritten
+    # description is what outline_text ends up reflecting, not the pre-amend version.
+    if _oi_dedup_on and len(_oi_reveals) >= 2:
+        result["chapters"] = await _narasi_reveal_dedup_amend(
+            result["chapters"], _oi_reveals, tenant_id=_ou_tenant, user_id=_ou_user)
+
+    # ── FIX A: outline_text is DETERMINISTICALLY DERIVED from chapters[] — never trust
+    # whatever the LLM returned for it (it isn't even requested anymore, see the prompts
+    # above), so it is structurally guaranteed to match description 100% of the time.
+    # Degrade to the pre-existing chapter-label fallback only when the derivation itself
+    # comes back empty (every chapter had both an empty title AND an empty description).
+    _derived_ot = _narasi_derive_outline_text(result["chapters"])
+    if _derived_ot:
+        result["outline_text"] = _derived_ot
+    else:
         _ot = []
         for c in result["chapters"]:
             _ot.append(f"## {_chapter_label(language, c.get('id','??'))}: {c.get('title','')}")
