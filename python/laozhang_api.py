@@ -8712,14 +8712,15 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # is deterministic PARSING, not fuzzy text search, so it needs no _occ() substring match.
         return [int(n) for n in _re.findall(r'@ch(\d+)', str(ev or ""), flags=_re.IGNORECASE)]
 
-    # 3-tuple (violation, quoted_spans, chapter_locator_numbers). chnos is only ever populated
-    # when sps is empty — a violation that already has a locatable quote keeps using the existing
-    # quote-match path unchanged, so this stays strictly additive (zero behavior change for any
-    # type whose evidence carries a real quoted span).
+    # 3-tuple (violation, quoted_spans, chapter_locator_numbers). chnos is computed unconditionally
+    # (independent of sps) so a violation whose evidence carries BOTH a real quote AND an @chN
+    # locator (e.g. numeric_arithmetic, chapter_boundary_break) still has its locator available if
+    # the quote fails to literally match any part's text (polish/whitespace-normalization drift) —
+    # see _viol_targets_part below, which OR's the two signals per-part.
     _vspans = []
     for _v in viol:
         _sps = _spans(_v.get("evidence"))
-        _chnos = _chn_locators(_v.get("evidence")) if not _sps else []
+        _chnos = _chn_locators(_v.get("evidence"))
         _vspans.append((_v, _sps, _chnos))
     # Split into [preamble?, chapter, chapter, …] on the UNION of BOTH heading styles in ONE pass
     # (lookahead, no chars consumed → ''.join(parts) reconstructs the original EXACTLY). ONE shared
@@ -8766,10 +8767,11 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     _part_chnums = [_part_chapter_num(_p) for _p in parts]
 
     def _viol_targets_part(sps, chnos, p_idx, p_text):
-        # Quoted-span match (existing behavior, unchanged) OR — only ever reachable when the
-        # violation had NO quoted span at all (chnos is empty otherwise, see _vspans build
-        # above) — a deterministic @chN chapter-locator match. Additive: a violation type that
-        # already resolves via a quoted span never even consults chnos/_part_chnums.
+        # TRUE OR, independently evaluated per part: a quoted-span match in THIS part's text, OR a
+        # deterministic @chN chapter-locator match for THIS part's chapter number. Neither signal
+        # takes priority — a violation with both a quote and an @chN locator can match via either
+        # (e.g. when the quote no longer matches verbatim after polish, the @chN locator still
+        # routes it correctly; see _chn_locators/_vspans build above).
         if any(s and _occ(s, p_text) for s in sps):
             return True
         return bool(chnos) and _part_chnums[p_idx] in chnos
