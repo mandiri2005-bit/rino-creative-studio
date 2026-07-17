@@ -11055,6 +11055,92 @@ async def _narasi_reveal_dedup_amend(chapters: list, reveals: list, *, tenant_id
         return chapters
 
 
+def _narasi_reveal_source_check(chapters: list, raw_reveals: list) -> None:
+    """FLAG NARASI_REVEAL_SOURCE_CHECK (Mandate 2, Phase 1) — deterministic, LOG-ONLY
+    validation of the "source_character" / "source_established_chapter" fields the reveal
+    ledger carries when NARASI_REVEAL_SOURCE_CHECK is on (see _oi_reveals_schema in
+    _narasi_outline_impl). `raw_reveals` is the UNFILTERED "reveals" list captured directly
+    off the parsed LLM JSON (result["reveals_raw"], popped as _oi_reveals_raw) — NOT the
+    `rv`/`_oi_reveals` list that went through _narasi_normalize_reveals, since that shared
+    Dapur A/B helper's hardcoded 5-key allowlist would have already stripped these two
+    fields.
+
+    Per raw reveal, checks:
+      1. source_character is non-empty and not an obvious placeholder ("anonymous",
+         "unknown", etc.) — a source must be a real, named character or channel.
+      2. source_established_chapter is an integer strictly EARLIER than the reveal's own
+         "chapter" (a source can't be "established" by a chapter that hasn't happened yet).
+      3. best-effort corroboration only: source_character appears as a case-insensitive
+         substring somewhere in the text of any chapter description strictly before the
+         reveal's own chapter (NOT a hard requirement in this Phase-1 check — the source
+         is only required to have "SOME earlier setup", per the prompt clause, which this
+         substring test approximates cheaply; it can both false-positive on a name that
+         is genuinely fresh and false-negative on a paraphrased mention — hence log-only).
+
+    This is a Phase 1, zero-LLM-cost, log-only telemetry check: every violation is
+    `log.warning(...)`, nothing here ever mutates `chapters`/`raw_reveals`, and nothing
+    here ever raises — malformed or missing input (non-list args, non-dict reveal entries,
+    non-int chapter fields, etc.) is skipped or logged, never crashed on. Matches the
+    fail-open convention every other side-check in this file already follows (see
+    _narasi_reveal_dedup_amend above)."""
+    import logging as _lg
+    log = _lg.getLogger("narasi")
+    try:
+        if not isinstance(chapters, list) or not isinstance(raw_reveals, list):
+            return
+        _desc_by_ch = {}
+        for c in chapters:
+            if not isinstance(c, dict):
+                continue
+            try:
+                _cid = int(str(c.get("id")).strip())
+            except (TypeError, ValueError):
+                continue
+            _desc_by_ch[_cid] = str(c.get("description") or "")
+
+        _placeholders = ("anonymous", "unknown", "n/a", "tbd", "-", "none", "???")
+        for r in raw_reveals:
+            if not isinstance(r, dict):
+                continue
+            try:
+                _chapter = int(r.get("chapter"))
+            except (TypeError, ValueError):
+                # No usable chapter number to anchor "earlier than" against — nothing to
+                # check against; skip silently (chapter-shape validation is Dedup's job).
+                continue
+            _rid = r.get("id")
+            _source = str(r.get("source_character") or "").strip()
+            if not _source or _source.lower() in _placeholders:
+                log.warning(
+                    "outline reveal-source: ch%d reveal %r has no usable source_character "
+                    "(got %r)", _chapter, _rid, r.get("source_character"))
+                continue
+            try:
+                _src_ch = int(r.get("source_established_chapter"))
+            except (TypeError, ValueError):
+                log.warning(
+                    "outline reveal-source: ch%d reveal %r has non-integer "
+                    "source_established_chapter (got %r)",
+                    _chapter, _rid, r.get("source_established_chapter"))
+                continue
+            if _src_ch >= _chapter:
+                log.warning(
+                    "outline reveal-source: ch%d reveal %r source_established_chapter=%d "
+                    "is not earlier than its own chapter=%d",
+                    _chapter, _rid, _src_ch, _chapter)
+                continue
+            _earlier_desc = " ".join(
+                d for ch_no, d in _desc_by_ch.items() if ch_no < _chapter)
+            if _source.lower() not in _earlier_desc.lower():
+                log.warning(
+                    "outline reveal-source: ch%d reveal %r source_character=%r not found "
+                    "(case-insensitive substring) in any earlier chapter description "
+                    "(best-effort corroboration only, non-fatal)",
+                    _chapter, _rid, _source)
+    except Exception as _rsc:  # noqa: BLE001 — Phase-1 check must never block the outline
+        log.warning("outline reveal-source check failed (non-fatal): %s", _rsc)
+
+
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
     # Outline + brief are structural planning served as a SYNCHRONOUS blocking request — a slow model
@@ -11101,11 +11187,44 @@ async def _narasi_outline_impl(body: dict):
         "NARASI_REVEAL_DEDUP_CHECK", "0").strip().lower() in ("1", "true", "yes", "on")
     _oi_fidelity_on = _oi_is_fic and os.environ.get(
         "NARASI_OUTLINE_FIDELITY", "0").strip().lower() in ("1", "true", "yes", "on")
+    # Mandate 1 (realism-of-consequence for law-enforcement/legal-authority characters) —
+    # same fiction-only gate + fail-CLOSED-on-import-failure convention as the 3 flags above.
+    _oi_role_on = _oi_is_fic and os.environ.get(
+        "NARASI_OUTLINE_ROLE_PLAUSIBILITY", "0").strip().lower() in ("1", "true", "yes", "on")
+    # Mandate 2 (reveal-ledger source-traceability) — nested under NARASI_OUTLINE_REVEALS
+    # itself being on, exactly like NARASI_REVEAL_DEDUP_CHECK is nested above: a reveal
+    # SOURCE is only a meaningful concept once the reveal LEDGER exists at all.
+    _oi_reveal_source_on = _oi_reveals_on and os.environ.get(
+        "NARASI_REVEAL_SOURCE_CHECK", "0").strip().lower() in ("1", "true", "yes", "on")
+
+    # FLAG NARASI_OUTLINE_ROLE_PLAUSIBILITY — Mandate 1. NOTE: this does NOT ban a
+    # law-enforcement/legal-authority character from personally committing an illegal act
+    # (a compromised-investigator arc is a legitimate premise, and banning it outright would
+    # also conflict with a user-supplied premise that already includes one) -- it targets a
+    # narrower, actual defect: the story treating evidence obtained through such an act as
+    # simply, straightforwardly usable/admissible in the eventual legal reckoning, with no
+    # on-page acknowledgment of the taint. This is about REALISM OF CONSEQUENCE, not about
+    # banning dramatic illegality itself.
+    _oi_role_clause = (
+        "REALISM OF CONSEQUENCE: if a law-enforcement or legal-authority character's case "
+        "relies on evidence obtained through an act that would itself be illegal (breaking "
+        "in, an unauthorized search, an unlawfully obtained recording, etc.), the story must "
+        "NOT treat that evidence as simply, straightforwardly admissible or usable in the "
+        "ultimate legal reckoning. Acknowledge the taint on the page: either the evidence "
+        "must be corroborated through an independent lawful channel before it can be used in "
+        "court, or its use must create a real complication -- a suppression motion, a "
+        "procedural cost, a character consciously accepting personal legal risk to use it "
+        "anyway -- rather than being waved through without consequence.\n\n"
+    ) if _oi_role_on else ""
 
     # FLAG NARASI_OUTLINE_REVEALS — schema/instruction fragments, applied to BOTH the fresh
     # and revise branches below (a revision can introduce or restage a duplicate secret just
     # as easily as a fresh generation can). Reveal-object shape is IDENTICAL to Dapur B's
     # (see _narasi_normalize_reveals), so no adaptation needed there.
+    # Mandate 2 (NARASI_REVEAL_SOURCE_CHECK) EXTENDS this same clause/schema rather than
+    # adding a parallel block -- it rides the existing reveals_clause/reveals_schema
+    # interpolation points already present in both prompt branches below, so no separate
+    # per-branch insertion is needed for it.
     _oi_reveals_clause = (
         "REVEAL LEDGER: separately from the chapter list, enumerate every "
         "PLOT-CRITICAL secret, confession, or reveal in this story -- anything a character "
@@ -11114,13 +11233,33 @@ async def _narasi_outline_impl(body: dict):
         "never let the same underlying secret be staged as a fresh revelation in more than "
         "one chapter. Describe each secret in NEUTRAL, OMNISCIENT-NARRATOR phrasing (the "
         "objective underlying fact), NOT in any character's own in-scene wording or "
-        "euphemism.\n\n"
+        "euphemism."
+        + (
+            "\n\nSOURCE TRACEABILITY (internal/planning only -- this ledger is never shown "
+            "to the reader or returned to the client): for each reveal, also identify the "
+            "character or channel that is the FIRST SOURCE of the underlying information, "
+            "and the chapter where that source is first established on the page. The source "
+            "must have SOME earlier setup in the story -- it may stay concealed from the "
+            "reader or from other characters indefinitely if that serves the story (e.g. "
+            "whodunit pacing); only a source invented with ZERO earlier setup at all is "
+            "disallowed."
+            if _oi_reveal_source_on else ""
+        )
+        + "\n\n"
     ) if _oi_reveals_on else ""
     _oi_reveals_schema = (
         "  \"reveals\": array, each with: \"id\" (string), \"secret\" (neutral "
         "omniscient-POV description of the underlying fact), \"chapter\" (integer -- the "
         "SAME chapter number as its \"id\" above -- where it is FIRST disclosed), "
-        "\"characters_involved\" (array of name strings), \"method\" (how it is revealed)\n"
+        "\"characters_involved\" (array of name strings), \"method\" (how it is revealed)"
+        + (
+            ", \"source_character\" (string -- the character or channel that is the FIRST "
+            "SOURCE of this information), \"source_established_chapter\" (integer -- the "
+            "chapter where that source is first established on the page, strictly earlier "
+            "than \"chapter\" above)"
+            if _oi_reveal_source_on else ""
+        )
+        + "\n"
     ) if _oi_reveals_on else ""
 
     # FLAG NARASI_OUTLINE_FIDELITY — fresh-generation branch only. Mirrors Dapur B: the flag
@@ -11284,6 +11423,7 @@ async def _narasi_outline_impl(body: dict):
             f"REVISION INSTRUCTIONS:\n{revise_instruction}\n\n"
             f"Apply the revision. Redistribute word counts so total stays {word_min}-{word_max} words, "
             f"heavier chapters get more words.\n\n"
+            f"{_oi_role_clause}"
             f"{_oi_reveals_clause}"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array, each with: \"id\" (string), \"title\" (in {lang_label}), "
@@ -11317,6 +11457,7 @@ async def _narasi_outline_impl(body: dict):
             f"or material cost, the scale number the narrative has been building toward), "
             f"with the actual figures.\n\n"
             f"{_zoom_note}"
+            f"{_oi_role_clause}"
             f"{_oi_reveals_clause}"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array of exactly {chap_count} objects, each with:\n"
@@ -11393,7 +11534,17 @@ async def _narasi_outline_impl(body: dict):
                 # outline_text is NOT read from the LLM's raw JSON anymore (Fix A) — it is
                 # derived deterministically from `chapters` below, after parsing succeeds.
                 rv = _narasi_normalize_reveals(d) if _oi_reveals_on else []
-                return {"ok": True, "chapters": ch, "reveals": rv}
+                # FLAG NARASI_REVEAL_SOURCE_CHECK (Mandate 2) — read d.get("reveals") RAW
+                # here, separately from the `rv = _narasi_normalize_reveals(d)` call above.
+                # _narasi_normalize_reveals delegates to orchestrator.dynamic's
+                # _normalize_reveals, a module SHARED with Dapur B that builds its output
+                # from a hardcoded 5-key allowlist (id/secret/chapter/characters_involved/
+                # method) — "source_character"/"source_established_chapter" would be
+                # silently dropped by it. Capturing the raw list here, before any such
+                # filtering, avoids touching that shared module.
+                _raw_rv = d.get("reveals") if (_oi_reveal_source_on and isinstance(d, dict)) else None
+                return {"ok": True, "chapters": ch, "reveals": rv,
+                        "reveals_raw": _raw_rv if isinstance(_raw_rv, list) else []}
         except Exception:
             pass
         return None
@@ -11412,6 +11563,9 @@ async def _narasi_outline_impl(body: dict):
     # never leaks into the API response (mirrors Dapur B's outline_from_topic, which also
     # never returns "reveals" to its caller — it's consumed by the dedup step only).
     _oi_reveals = result.pop("reveals", None) or []
+    # Internal-only, mirrors _oi_reveals above (Mandate 2 / NARASI_REVEAL_SOURCE_CHECK) —
+    # never leaks into the API response either.
+    _oi_reveals_raw = result.pop("reveals_raw", None) or []
 
     # ── ENFORCE word count — never trust AI ──
     _chs = result["chapters"]
@@ -11434,6 +11588,12 @@ async def _narasi_outline_impl(body: dict):
     if _oi_dedup_on and len(_oi_reveals) >= 2:
         result["chapters"] = await _narasi_reveal_dedup_amend(
             result["chapters"], _oi_reveals, tenant_id=_ou_tenant, user_id=_ou_user)
+
+    # ── FLAG NARASI_REVEAL_SOURCE_CHECK — Mandate 2, Phase 1: deterministic, LOG-ONLY
+    # check of the reveal ledger's source-traceability fields. Zero LLM cost, never
+    # mutates `result`/`chapters`, never raises — see _narasi_reveal_source_check.
+    if _oi_reveal_source_on and _oi_reveals_raw:
+        _narasi_reveal_source_check(result["chapters"], _oi_reveals_raw)
 
     # ── FIX A: outline_text is DETERMINISTICALLY DERIVED from chapters[] — never trust
     # whatever the LLM returned for it (it isn't even requested anymore, see the prompts
