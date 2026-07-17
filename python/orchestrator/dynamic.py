@@ -467,15 +467,27 @@ def _classify_topic_detail(topic: str) -> str:
 # sentence-fragment meant to be appended inline next to the existing anti-overlap instruction
 # in _outline_prompt (leading space, no trailing space) — NOT a restructuring of the prompt.
 _FIDELITY_MINIMAL = (
-    " The topic above is a short title or logline with no per-chapter breakdown — full "
-    "creative invention of plot, character, and subplot from this premise is expected and "
-    "appropriate."
+    " The topic above is a short title or logline with no per-chapter breakdown — invent "
+    "plot, character, and subplot freely wherever the topic is silent. The one exception: if "
+    "the topic states a specific fact about a character's backstory, motivation, or moral "
+    "standing (their name, role, or a stated action — e.g. \"fired for reporting a "
+    "violation\"), that fact stays fixed — do not invert it, and do not bolt on an unstated "
+    "trait that contradicts it in spirit (e.g. giving that same character a separate hidden "
+    "guilt or silence of his own). The same rule covers institutional figures the topic "
+    "mentions (a hospital, a company, an official) — do not invent a cover-up or concealment "
+    "motive for them either."
 )
 
 _FIDELITY_MODERATE = (
     " The topic above states some character traits, premise facts, and named entities — "
-    "preserve every one of those exactly as given, while plot and chapter structure may be "
-    "freely invented to fill in whatever the topic does not specify."
+    "preserve every one of those exactly as given, including backstory, motivation, and "
+    "moral standing, while plot and chapter structure may be freely invented to fill in "
+    "whatever the topic does not specify. Preservation covers the spirit as well as the "
+    "letter: do not bolt on an unstated guilt, hidden motive, or concealment beat that "
+    "undercuts a character's established throughline without literally contradicting a "
+    "stated line. The same rule covers institutional figures the topic mentions (a hospital, "
+    "a company, an official) — do not invent a cover-up or concealment motive for them when "
+    "the topic frames their action as an honest mistake or leaves it unstated."
 )
 
 _FIDELITY_DETAILED = (
@@ -489,7 +501,11 @@ _FIDELITY_DETAILED = (
     "alter a named character's stated backstory, motivation, or moral standing (for example, "
     "if the input states a character was fired for a specific reason, do not change this to "
     "the character having been complicit, bribed, or otherwise morally different) unless the "
-    "input itself is genuinely ambiguous or silent on that specific point."
+    "input itself is genuinely ambiguous or silent on that specific point. This also applies "
+    "to unnamed or minor institutional figures (a hospital, a company, an official) the topic "
+    "mentions — do not assign them a hidden or deliberate motive (a cover-up, bad faith, "
+    "concealment) the input does not state, even if doing so would seem dramatically "
+    "convenient."
 )
 
 
