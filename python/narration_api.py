@@ -2779,6 +2779,170 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("canon-diff gate failed (non-fatal): %s", e)
 
+    # ── (2.76) UNRESOLVED-THREAD TRACKER — catches a setup the mega-critic already missed
+    # ANYWHERE in the book (a subplot planted at, say, the 40% mark) by reading the WHOLE
+    # assembled book ONCE (Pass 1, extraction) and then checking just the ending ONCE more
+    # (Pass 2, verification, batched — not a loop) against that thread list. Two cheap-tier
+    # calls total, same _narasi_cheap_call helper canon-diff itself uses. Pass 1 is
+    # deliberately NOT capped at canon-diff's per-event [:60000] slice — it's capped at
+    # NARASI_CRITIQUE_MAX_CHARS scale instead: the whole point of this mechanism is catching
+    # what the mega-critic already missed WHILE reading the full book, so capping Pass 1's
+    # input would make it structurally blind to exactly the defect class it exists to catch
+    # (a setup planted past a 60000-char/~25%-of-book cutoff in a 40k-word book). Report-only,
+    # gated NARASI_THREAD_TRACKER (default OFF → skipped → no cost, byte-identical). Enforce
+    # is a SEPARATE opt-in (NARASI_THREAD_TRACKER_ENFORCE, default OFF), nested under this
+    # flag being on (mirrors NARASI_CANON_DIFF/NARASI_CANON_DIFF_REVISE's nesting above). Own
+    # independent block — deliberately does NOT route through _r7_actuator_violations()/_mech
+    # (that pipeline is nested inside NARASI_LEDGER_ENFORCE inside a _crit_on/_cbk/_nch
+    # co-dependency chain already self-documented as an anti-pattern, see the
+    # NARASI_BRAND_REPORT comment further down). Never raises.
+    try:
+        if str(os.environ.get("NARASI_THREAD_TRACKER", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
+            _ttbook = result.get("book") or result.get("output") or ""
+            if _ttbook:
+                _tt_max = int(os.environ.get("NARASI_CRITIQUE_MAX_CHARS", "300000"))
+                _tt_threads: list = []
+                _tt_sys1 = (
+                    "You are reading a complete manuscript once, looking ONLY for THREADS the "
+                    "story itself opens and appears to leave unresolved: a character's fate left "
+                    "hanging, a named enabler or co-conspirator whose culpability is established "
+                    "on-page but never addressed, a promised future consequence, or an open "
+                    "mystery the text frames as a specific question. Only list threads that, as "
+                    "far as this read shows, are left open; a deliberately open/ambiguous ending "
+                    "is NOT a violation — don't manufacture one. When genuinely unsure whether an "
+                    "omission is deliberate craft or an oversight, do not include it. Return ONLY "
+                    "JSON: {\"threads\":[{\"id\":\"<short slug>\",\"thread_type\":"
+                    "\"character_fate|unpunished_enabler|promised_consequence|open_mystery\","
+                    "\"description\":\"<one-line: what is left open>\",\"chapter_introduced\":<int>,"
+                    "\"quote\":\"<short excerpt from THIS chapter, copied character-for-character "
+                    "from the book text, that establishes the thread — never paraphrased>\"}]} — "
+                    "at most 8 threads; empty list if nothing qualifies.")
+                try:
+                    # 8 threads x (id+thread_type+description+chapter_introduced+verbatim quote)
+                    # is a richer per-item schema than any other _narasi_cheap_call site in this
+                    # file — the mega-critic's own sizing math (~110 tok/item, bumped 2000->5000
+                    # after a real prod truncation incident) undersells this call's real cost, so
+                    # default well above the 800-token _narasi_cheap_call floor.
+                    _tt_max_tok1 = int(os.environ.get("NARASI_THREAD_TRACKER_MAX_TOKENS", "3000"))
+                    _tt_raw1, _tt_cc1 = await _narasi_cheap_call(_tt_sys1, _ttbook[:_tt_max],
+                                                                 tenant_id=tenant_id, user_id=user_id,
+                                                                 job_uuid=job_uuid, json_mode=True,
+                                                                 max_tokens=_tt_max_tok1,
+                                                                 credit_row=False)
+                    if sink is not None and _tt_cc1:
+                        sink.credits += int(_tt_cc1)
+                    _tt_d1 = _narasi_parse_json(_tt_raw1) if isinstance(_tt_raw1, str) else (_tt_raw1 or {})
+                    if not (isinstance(_tt_d1, dict) and _tt_d1):
+                        # Mirror the register-gate's own precedent (narration_api.py ~2399-2401):
+                        # a silently empty/unparsable response reads identically to "no threads
+                        # found" unless the raw head is logged for forensics.
+                        log.warning("thread-tracker pass-1 unparsable — raw head: %r", (_tt_raw1 or "")[:200])
+                    _tt_threads = [t for t in ((_tt_d1.get("threads") or []) if isinstance(_tt_d1, dict) else [])
+                                   if isinstance(t, dict) and t.get("id")][:8]
+                except Exception as _tte1:  # noqa: BLE001
+                    log.warning("thread-tracker pass-1 extraction failed (non-fatal): %s", _tte1)
+                    _tt_threads = []
+                _tt_unresolved: list = []
+                if _tt_threads:
+                    # Pass 2 input: Pass 1's thread list + the ending ONLY (last ~12-15k chars —
+                    # big enough to guarantee full final-chapter coverage, small and doesn't grow
+                    # with thread count, which is why this is ONE batched call, not a per-item
+                    # loop like canon-diff's per-event audit).
+                    _tt_tail_n = int(os.environ.get("NARASI_THREAD_TRACKER_TAIL_CHARS", "15000"))
+                    _tt_tail = _ttbook[-_tt_tail_n:]
+                    _tt_sys2 = (
+                        "You are given a list of THREADS extracted from earlier in a manuscript, "
+                        "and the manuscript's ENDING (final chapter(s) only). For each thread, "
+                        "decide whether the ending resolves it, plausibly leaves it open on "
+                        "purpose, or simply never addresses it. Only flag a thread as unresolved "
+                        "if the ending NEITHER resolves it NOR plausibly leaves it open on purpose "
+                        "— when genuinely unsure, do NOT flag it. THREADS: "
+                        + json.dumps([{"id": t.get("id"), "thread_type": t.get("thread_type"),
+                                       "description": t.get("description")} for t in _tt_threads],
+                                     ensure_ascii=False)
+                        + ". Return ONLY JSON: {\"unresolved\":[{\"id\":\"<thread id from the list "
+                        "above>\",\"why\":\"<one-line: what the ending fails to address>\"}]} — "
+                        "empty list if the ending accounts for every thread.")
+                    try:
+                        # Lighter per-item schema than Pass 1 (id+why only, no quote/chapter/type)
+                        # but still batches up to 8 items in one response — keep a safety margin
+                        # above the 800-token _narasi_cheap_call floor rather than assuming it fits.
+                        _tt_max_tok2 = int(os.environ.get("NARASI_THREAD_TRACKER_MAX_TOKENS2", "1500"))
+                        _tt_raw2, _tt_cc2 = await _narasi_cheap_call(_tt_sys2, _tt_tail,
+                                                                     tenant_id=tenant_id, user_id=user_id,
+                                                                     job_uuid=job_uuid, json_mode=True,
+                                                                     max_tokens=_tt_max_tok2,
+                                                                     credit_row=False)
+                        if sink is not None and _tt_cc2:
+                            sink.credits += int(_tt_cc2)
+                        _tt_d2 = _narasi_parse_json(_tt_raw2) if isinstance(_tt_raw2, str) else (_tt_raw2 or {})
+                        if not (isinstance(_tt_d2, dict) and _tt_d2):
+                            log.warning("thread-tracker pass-2 unparsable — raw head: %r", (_tt_raw2 or "")[:200])
+                        _tt_unresolved = [u for u in ((_tt_d2.get("unresolved") or []) if isinstance(_tt_d2, dict) else [])
+                                          if isinstance(u, dict) and u.get("id")]
+                    except Exception as _tte2:  # noqa: BLE001
+                        log.warning("thread-tracker pass-2 verification failed (non-fatal): %s", _tte2)
+                        _tt_unresolved = []
+                _tt_by_id = {t.get("id"): t for t in _tt_threads}
+                _tt_violations = []
+                for _u in _tt_unresolved:
+                    _t = _tt_by_id.get(_u.get("id"))
+                    if not _t:
+                        continue
+                    # EVIDENCE-LOCATABILITY: quote MUST be Pass 1's verbatim excerpt (the
+                    # introduction point) — NEVER Pass 2's "why" field (a paraphrase/
+                    # explanation of what's missing, not a literal manuscript excerpt). Same
+                    # rule chapter_boundary_break's own comment states explicitly above
+                    # (_r7_actuator_violations, "head" vs "reason"). Mirrors that same
+                    # function's exact evidence-building pattern: quote-wrap, then append the
+                    # deterministic "@ch{N}" locator ONLY when the chapter number is present.
+                    _tt_ev = _wq(_t.get("quote"))
+                    _tt_chn = _t.get("chapter_introduced")
+                    if _tt_chn is not None:
+                        _tt_ev = f"{_tt_ev} @ch{_tt_chn}"
+                    _tt_ev = _tt_ev[:200]
+                    _tt_violations.append({
+                        "type": "unresolved_thread", "severity": "high",
+                        "evidence": _tt_ev,
+                        "fix": (f"Chapter {_t.get('chapter_introduced')} raises "
+                                f"{str(_t.get('thread_type') or '').replace('_', ' ')} "
+                                f"({_t.get('description')}) but the ending never addresses it — "
+                                f"{_u.get('why')}. Add a brief beat in the final chapter(s) that "
+                                f"resolves or explicitly closes this thread.")})
+                result["thread_tracker"] = {"threads_checked": len(_tt_threads), "violations": _tt_violations}
+                if _tt_violations:
+                    log.warning("thread-tracker: %d unresolved thread(s) flagged for job %s (report-only): %s",
+                                len(_tt_violations), job_id, [str(v)[:90] for v in _tt_violations[:5]])
+                    # enforce (opt-in, default OFF, nested under NARASI_THREAD_TRACKER being on):
+                    # feed the violations straight to the #53 per-chapter chunked-revise infra,
+                    # same shape as NARASI_CANON_ENFORCE_NONREVEAL above. Never blocks; keeps
+                    # the original book on any failure/no-op.
+                    if str(os.environ.get("NARASI_THREAD_TRACKER_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                        try:
+                            from laozhang_api import _narasi_revise_chunked as _ttrev
+                            _ttmodel = str(body.get("model") or "") or "claude-opus-4-6"
+                            _ttnew, _ttcr = await _ttrev(_ttbook, _tt_violations, style, language, _ttmodel,
+                                                         tenant_id=tenant_id, user_id=user_id,
+                                                         job_uuid=job_uuid, credit_row=False)
+                            if sink is not None and _ttcr:
+                                sink.credits += int(_ttcr)
+                            if (_ttnew and str(_ttnew) != _ttbook
+                                    and len(str(_ttnew).split()) >= int(len(_ttbook.split()) * 0.9)):
+                                result["book" if result.get("book") else "output"] = str(_ttnew)
+                                log.info("thread-tracker enforce: %d violation(s) sent to revise — book updated",
+                                         len(_tt_violations))
+                            else:
+                                log.info("thread-tracker enforce: %d violation(s) sent — revise landed nothing",
+                                         len(_tt_violations))
+                        except Exception as _tte3:  # noqa: BLE001
+                            log.warning("thread-tracker enforce failed (non-fatal): %s", _tte3)
+                else:
+                    log.info("thread-tracker: 0 unresolved thread(s) across %d extracted for job %s (clean run)",
+                              len(_tt_threads), job_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("thread-tracker gate failed (non-fatal): %s", e)
+
     # ── (2.7) R-FG9/R-FG10 fact scan — scan-and-report on the FINAL text (post-gates,
     # pre-header). Report-only by spec ("scan first, block second"); regime = style
     # default, job-overridable via body.factual_regime (refactor §4).
@@ -2992,6 +3156,9 @@ def _result_payload(result: dict) -> dict:
         "critique": result.get("critique"),
         # Canon-diff verdict (Phase 2b, bounded: <=20 forks). Absent unless NARASI_CANON_DIFF ran.
         "canon_diff": result.get("canon_diff"),
+        # Unresolved-thread tracker verdict (bounded: <=8 threads checked/flagged). Absent
+        # unless NARASI_THREAD_TRACKER ran.
+        "thread_tracker": result.get("thread_tracker"),
         # ID-path fixes: §1 manifest + §5 entity report + §7 rendering stats
         "gates_manifest": result.get("gates_manifest"),
         "entity_report": result.get("entity_report"),
