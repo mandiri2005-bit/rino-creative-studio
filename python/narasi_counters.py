@@ -2749,6 +2749,68 @@ def _home_lang_bleed_scan(text: str, lang: str) -> dict:
         return {"status": "PASS", "count": 0, "samples": []}
 
 
+# ── LANGUAGE-CONSISTENCY word scan (report-only; standalone SIBLING of #A3 above) ──
+# Two mechanisms already probe "wrong-language text in the manuscript" and both miss a
+# short clause built entirely out-of-seed: narasi_gate.language_consistency_scan is
+# SENTENCE-level (needs >=3 tokens with ZERO job-language function-word overlap AND >=3
+# overlap with some other seeded language — a 3-word ID clause like "Kapan mereka datang"
+# never reaches that bar), and #A3's _home_lang_bleed_scan above is WORD-level but its
+# curated list is deliberately tight (kenapa/mengapa/kamu/saya/… — see 2719) and doesn't
+# contain "kapan" or "mereka" either. This is a THIRD, independent word-level check with a
+# wider net of common Indonesian FUNCTION WORDS/particles, kept in its OWN list/regex (NOT
+# merged into _A3_HOME_WORDS) so #A3's existing NARASI_REFRAIN_SCAN-gated counter is left
+# byte-for-byte untouched by this addition. Gated by its own flag in narration_api.py
+# (NARASI_LANGUAGE_CONSISTENCY_SCAN), independent of NARASI_REFRAIN_SCAN and of the
+# sentence-level mechanism's NARASI_TERMINAL_GATE.
+#
+# Same FP discipline as #A3 (whole-word \b...\b only, curated not exhaustive). Deliberately
+# EXCLUDED for name/word collision risk with common English proper nouns/words, mirroring
+# #A3's own precedent of dropping 'aku'/'dong'/'kok' for the same reason:
+#   - "yang"  — common surname ("Yang")
+#   - "dan"   — common given name ("Dan")
+#   - "dari"  — rare EN fabric noun + high homophone/substring risk
+#   - "akan"  — plausible name/place-name fragment; not high-signal enough to risk it
+# "kami" carries a residual, lower risk (English loanword for a Shinto spirit in
+# Japanese-set fantasy prose) — kept in per investigation sign-off but flagged here for
+# any future re-tuning. Audit (round after initial ship) confirmed 3 MORE words belong on
+# the excluded list, same collision class as yang/dan/dari/akan above:
+#   - "kita"  — common Japanese surname/ward name (Kita Ikki; Kita-ku/Kita Ward)
+#   - "saya"  — common Japanese given name + recurring anime/manga character name
+#               (Blood+, Elfen Lied) + EN loanword for a katana scabbard
+#   - "bisa"  — real given name (artist Bisa Butler) + an Indonesian island name usable
+#               in nonfiction/travel copy
+_LANGCHK_ID_WORDS = ("dengan", "tidak", "adalah", "sudah", "mereka", "kami",
+                     "karena", "jika", "kalau", "kapan", "bagaimana", "mengapa",
+                     "kamu")
+_LANGCHK_ID_RX = re.compile(r"(?i)\b(" + "|".join(sorted(_LANGCHK_ID_WORDS, key=len, reverse=True)) + r")\b")
+
+
+def language_consistency_word_scan(text: str, lang: str) -> dict:
+    """Report-only: curated Indonesian function-word/particle bleed into a NON-Indonesian
+    manuscript (word-level, whole-word match) — a sibling of #A3's _home_lang_bleed_scan
+    with a wider function-word net (see module comment above for the excluded-word
+    rationale). status FLAG/PASS. Never raises. Skipped entirely for ID-family targets
+    (words are native there), reusing #A3's _A3_ID_FAMILY skip-list verbatim."""
+    out = {"status": "PASS", "count": 0, "samples": []}
+    try:
+        base = (lang or "en").split("-")[0].lower()
+        if base in _A3_ID_FAMILY:
+            return out
+        hits = []
+        for m in _LANGCHK_ID_RX.finditer(text or ""):
+            hits.append({
+                "term": m.group(0),
+                "snippet": text[max(0, m.start() - 24):m.end() + 30].strip().replace("\n", " ")[:70],
+            })
+        if hits:
+            out["status"] = "FLAG"
+            out["count"] = len(hits)
+            out["samples"] = hits[:8]
+        return out
+    except Exception:  # noqa: BLE001
+        return {"status": "PASS", "count": 0, "samples": []}
+
+
 # #HG HOMOGENIZATION-TIC INVENTORY — a cross-roll audit (fallen-angel ↔ Lumi, same lane) found the
 # generator reaching for the SAME lane-default tics across rolls: opening timestamps ending :14, the
 # 11th floor, cold-coffee-as-opening-beat, tteokbokki-as-comfort-food, the '[X] do not [Y]' villain-

@@ -522,19 +522,27 @@ class SharedContext:
                 "STORY BIBLE (canonical facts FIXED for the entire book — every chapter MUST "
                 "obey these exactly: do not rename a character, re-measure or re-identify the "
                 "central subject, move a location, or shift the timeline. You may invent NEW "
-                "concrete detail, but it must never contradict anything listed here):\n"
+                "concrete detail, but it must never contradict anything listed here. If the bible "
+                "states a fixed population count or total, QUOTE that number directly — do not "
+                "have a character perform their own on-page subtraction or addition from it; a "
+                "scene may reference the arithmetic that produced the fixed number, but must not "
+                "re-derive a different result from it):\n"
                 + self.canonical_facts.strip()
             )
         elif self.canonical_facts and self.canonical_facts.strip():
             parts.append(
-                "CANONICAL FACTS (the ONLY names/dates/numbers/quotes you may state as "
-                "fact — anything else, write \"[VERIFY: ...]\"):\n"
+                "CANONICAL FACTS (the ONLY names/dates/numbers/quotes/physical-or-documentary "
+                "evidence descriptions you may state as fact — anything else, write "
+                "\"[VERIFY: ...]\"). If a fixed population count or total is listed, QUOTE it "
+                "directly — do not perform your own on-page subtraction or addition from it; that "
+                "counts as stating a new, unlisted number, which this rule already forbids:\n"
                 + self.canonical_facts.strip()
             )
         else:
             parts.append(
                 "CANONICAL FACTS: (none retrieved for this job — state NO specific "
-                "names, dates, numbers, or quotes as fact; where you need one, write "
+                "names, dates, numbers, quotes, or physical/documentary evidence descriptions "
+                "as fact; where you need one, write "
                 "\"[VERIFY: ...]\" so an editor can fill it in.)"
             )
         return "\n\n".join(parts).strip()

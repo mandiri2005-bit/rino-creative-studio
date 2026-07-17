@@ -1695,6 +1695,36 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("introduction-order scan failed (non-fatal): %s", e)
 
+    # ── (0.77) LANGUAGE-CONSISTENCY word scan (report-only) — a job whose target language
+    # is NOT Indonesian occasionally leaks a stray Indonesian function word/particle into
+    # the prose (the "Kapan mereka datang" class: a short clause built entirely from
+    # words absent from the two existing checks' seeded sets — narasi_gate's sentence-level
+    # language_consistency_scan needs a WHOLE sentence with zero job-language overlap, and
+    # #A3's _home_lang_bleed_scan in narasi_counters.py is word-level but deliberately
+    # tight and lacks "kapan"/"mereka" too). This is a THIRD, independent word-level check
+    # (narasi_counters.language_consistency_word_scan): curated Indonesian function-word
+    # list, whole-word regex, skipped entirely for ID-family targets (native there).
+    # status FLAG/PASS only — never edits text. Gated NARASI_LANGUAGE_CONSISTENCY_SCAN
+    # (default OFF -> skipped -> byte-identical). A separate, independently-gated
+    # NARASI_LANGUAGE_CONSISTENCY_ENFORCE (default OFF, checked further below where the
+    # other mechanical violations feed the merged critic/revise pool) can additionally
+    # route hits into a rename/rewrite pass — this block is report-only. Never raises.
+    try:
+        if str(os.environ.get("NARASI_LANGUAGE_CONSISTENCY_SCAN", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            import narasi_counters as _lcc
+            _lckey = "book" if result.get("book") else "output"
+            _lcbk = result.get(_lckey) or ""
+            if _lcbk and hasattr(_lcc, "language_consistency_word_scan"):
+                _lcrep = _lcc.language_consistency_word_scan(_lcbk, language)
+                result["language_consistency_report"] = _lcrep
+                if _lcrep.get("status") == "FLAG":
+                    log.warning("language-consistency word scan: %d Indonesian function-word hit(s) "
+                                "in a %s-language manuscript (report-only): %s",
+                                _lcrep.get("count", 0), language,
+                                [h.get("term") for h in _lcrep.get("samples") or []][:8])
+    except Exception as e:  # noqa: BLE001
+        log.warning("language-consistency word scan failed (non-fatal): %s", e)
+
     # ── (0.8) TITLE INTEGRITY (round-6, deterministic, log-only): two historical rolls
     # shipped a CLIPPED chapter-4 title ("Of the Shadow", "Of the Drought") and nothing
     # noticed — assembled headers were never compared to the outline-derived records.
@@ -2109,1130 +2139,1073 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     except Exception as e:  # noqa: BLE001
         log.warning("v3 terminal gate failed (non-fatal): %s", e)
 
-    # ── (1.5) #53 whole-draft CONSISTENCY critic for the VIDEO/orchestrator path (2026-07-07).
-    # The critic lives in laozhang_api._narasi_generate_impl, but Output=video narasi run
-    # through the orchestrator and never hit that path — so wire the SAME critic here (it makes
-    # its own LLM call, so import-and-call is safe). Reads the FULL gated book (no truncation),
-    # object-provenance/timeline/causality/entity/spatial/POV checklist. Gated NARASI_CRITIQUE_
-    # ENABLED (report-only) + NARASI_CRITIQUE_REVISE (one bounded whole-book fix). OFF ⟹ inert. ──
-    try:
-        from laozhang_api import (_narasi_critique_enabled, _narasi_critique_revise_enabled,
-                                  _narasi_consistency_critique, _narasi_consistency_revise,
-                                  NARASI_CRITIQUE_MIN_CHAPTERS, NARASI_CRITIQUE_MODEL)
-        # Chapter count for the MIN_CHAPTERS guard. Count the GENERATED chapters
-        # (result["chapters"]); fall back to the request outline (body["chapters"], empty under
-        # orch_mode=auto); then — the robust backstop — count chapter headings in the delivered
-        # book, so the critic can NEVER silently skip a real multi-chapter book just because a
-        # chapter LIST didn't survive to here. Observability: this block had NO success/skip log,
-        # so "no critique line" could not distinguish ran-silently from skipped — now it always
-        # logs exactly which happened and why.
-        _ckey = "book" if result.get("book") else "output"
-        _cbk = result.get(_ckey) or ""
-        _nch = (len(result.get("chapters") or [])
-                or len(body.get("chapters") or [])
-                or _cbk.count("\n## "))
-        _crit_on = _narasi_critique_enabled()
-        if _crit_on and _cbk and _nch >= NARASI_CRITIQUE_MIN_CHAPTERS:
-            _cmodel = (body.get("model") or "")
-            # Instrument exact per-call wall-clock so NARASI_CRITIQUE_TIMEOUT / _REVISE_TIMEOUT can
-            # be calibrated from real opus latency (there is no other start-marker in the logs).
-            _t_crit0 = time.monotonic()
-            _cq, _cqc = await _narasi_consistency_critique(
-                _cbk, style, language, model=_cmodel,
-                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                canonical_facts=(result.get("canonical_facts") or ""), credit_row=False)
-            _t_crit = time.monotonic() - _t_crit0
-            _t_rev = 0.0
-            # Fold the critic's cost into the sink so _settle actually bills it (the call
-            # meters charge=False and RETURNS the credit — the classic path does the same
-            # via `_meter_actual += _cqc`). Without this the platform eats the cost and
-            # usage_logs won't reconcile against the settled amount.
-            if sink is not None and _cqc:
-                sink.credits += int(_cqc)
-            _cpay = _cq
-            # ROUND-6 observability (#14 diagnosis): the critic's finding TYPES were never
-            # logged, so "double-delivered scene survived to print" (SBF Ch5/Ch6) cannot be
-            # split into detect-failure vs repair-failure from the logs. One compact line.
-            try:
-                log.info("critic findings preview: %s",
-                         [f"{(v.get('type') or '?')}:{str(v.get('evidence') or v.get('description') or '')[:60]}"
-                          for v in (_cq.get("violations") or [])[:12]])
-            except Exception:  # noqa: BLE001
-                pass
-            # ── LEDGER/TIMELINE ENFORCEMENT (NARASI_LEDGER_ENFORCE, default OFF): the
-            # deterministic scans (lane-ledger hits, timeline arithmetic) fire WARNs that
-            # nothing acts on — Law 1 of the 5-roll audit: report-only bans are dead.
-            # When ON, feed them to the EXISTING revise as synthetic high-severity
-            # violations, mechanical-first (they are certainties; the critic's findings
-            # are probabilistic). Types are ledger_hit/timeline_arithmetic — never
-            # canon_fork — so the reveal-protection filter below is untouched. Revise
-            # still requires NARASI_CRITIQUE_REVISE=1; with it OFF this only enriches
-            # the persisted critique payload. Never raises.
-            if os.environ.get("NARASI_LEDGER_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+    # ══════════════════════════════════════════════════════════════════════════════════
+    # (1.5)-(2.76) FOUR GATE MECHANISMS — critic, register-gate, canon-diff, thread-tracker.
+    # PERF REFACTOR (round-?): each mechanism's DETECTION (scan/audit call(s) + its own
+    # reveal-protection/classify step + its own enforce-flag kill-switch, producing a final
+    # eligible-for-revise violation list that may be empty) used to run as four sequential
+    # top-to-bottom `await`s, each re-fetching result.get("book") fresh at its own point in
+    # the file — which meant each stage incidentally saw the PRECEDING stage's edit. That
+    # was an artifact of sequential file order, not a real data dependency: all four
+    # detections are pure/stateless LLM scans over a text snapshot; none reads or writes
+    # another mechanism's state (confirmed by inspection — same conclusion the three
+    # cheap-call gates fanned out via asyncio.gather at ~line 2065 above already rely on).
+    # Detection now runs CONCURRENTLY against ONE shared book snapshot taken once, below,
+    # before any of the four starts. Each mechanism's own trigger condition (env flag,
+    # chapter-count guard, style/register_spec presence, registry/thread extraction success)
+    # is still evaluated first inside its own coroutine — a mechanism whose condition is
+    # false contributes nothing, exactly like today's "if X_on: ..." skip.
+    #
+    # After all four detections (+ their own classify steps) finish, each mechanism's final
+    # eligible violations are concatenated into ONE list and fed to exactly ONE revise call
+    # against the shared snapshot — never 2+ concurrent revises against the same book text
+    # (that would be a last-write-wins race on result[key]); if every mechanism ends up with
+    # zero eligible violations (the common case), the revise call is skipped entirely, same
+    # as each mechanism already does today when ITS OWN violation list is empty. Each
+    # mechanism's enforce-flag kill-switch is evaluated BEFORE concatenation — an OFF
+    # mechanism contributes zero violations to the merged list even though its
+    # detection/scan still ran and still logs its own report-only findings exactly as today.
+    #
+    # DELIBERATE, DOCUMENTED trade-off of collapsing four call-sites into one revise call:
+    # today canon-diff's NARASI_CANON_ENFORCE_NONREVEAL path and the thread-tracker enforce
+    # path call laozhang_api._narasi_revise_chunked DIRECTLY — phase="revise" (default),
+    # model=body.model-or-"claude-opus-4-6", UNCONDITIONALLY chunked, no whole-book fallback
+    # if the chunk split itself fails — while critic, register-gate, and canon-diff's
+    # NARASI_CANON_DIFF_REVISE path all go through the _narasi_consistency_revise DISPATCHER
+    # (phase="canon_diff_revise" always; model=NARASI_CRITIQUE_MODEL-or-body.model-or-
+    # DALANG_CHEAP_MODEL; chunked only when NARASI_REVISE_CHUNKED / the auto-chunk word
+    # threshold says so, else whole-book, with a chunked-raises→whole-book fallback net).
+    # The single merged call below goes through that same dispatcher — the majority
+    # convention (3 of 4 mechanisms already use it), so THEIR routing/model-selection/
+    # fallback-safety is byte-for-byte unchanged. The two mechanisms whose revise dispatch
+    # convention changes are canon-diff's NONREVEAL path and thread-tracker: their revise
+    # now rides phase="canon_diff_revise" and NARASI_CRITIQUE_MODEL's override precedence,
+    # and is chunked only when NARASI_REVISE_CHUNKED/the auto-word threshold is configured
+    # (today they force chunked unconditionally, with no whole-book fallback net — the
+    # dispatcher's fallback is a strict robustness improvement for them). This is the one
+    # unavoidable consequence of "exactly one call" over four previously-disagreeing call-
+    # sites; if NARASI_CANON_ENFORCE_NONREVEAL / NARASI_THREAD_TRACKER_ENFORCE are used in
+    # prod, verify NARASI_REVISE_CHUNKED / NARASI_CRITIQUE_MODEL / any phase-scoped provider
+    # override (NARASI_REVISE_* vs NARASI_CANON_DIFF_REVISE_*-shaped switchboard flags) are
+    # what you expect before relying on identical canon-diff/thread-tracker behavior.
+    #
+    # Each mechanism's "did MY fix land" bookkeeping (the `revised` flag / "book updated" vs
+    # "revise landed nothing" log) can now only observe whether the ONE merged revise
+    # changed the shared book at all — there is a single before/after diff now, not four —
+    # not whether ITS OWN violations specifically were the ones addressed. Every mechanism
+    # that contributed >=1 eligible violation reports that same shared "book changed?"
+    # outcome. Credit/cost accounting: each mechanism's own DETECTION/classify LLM calls
+    # still meter into `sink` individually, exactly as today; the ONE merged revise call's
+    # cost is metered once into `sink` (the billed running total is exactly as correct as
+    # before — it is simply no longer broken out per mechanism, which was never separately
+    # itemized downstream anyway).
+    # ══════════════════════════════════════════════════════════════════════════════════
+    _gk = "book" if result.get("book") else "output"
+    _gbook0 = result.get(_gk) or ""
+
+    async def _v3g_critic_detect():
+        # ── (1.5) #53 whole-draft CONSISTENCY critic for the VIDEO/orchestrator path. The
+        # critic lives in laozhang_api._narasi_generate_impl, but Output=video narasi runs
+        # through the orchestrator and never hit that path — so wire the SAME critic here.
+        # Reads the FULL gated book (no truncation), object-provenance/timeline/causality/
+        # entity/spatial/POV checklist. Gated NARASI_CRITIQUE_ENABLED (report-only) +
+        # NARASI_CRITIQUE_REVISE (contributes to the merged revise below). OFF ⟹ inert. ──
+        _out = {"ran": False, "eligible": []}
+        try:
+            from laozhang_api import (_narasi_critique_enabled, _narasi_critique_revise_enabled,
+                                      _narasi_consistency_critique,
+                                      NARASI_CRITIQUE_MIN_CHAPTERS)
+            _cbk = _gbook0
+            _nch = (len(result.get("chapters") or [])
+                    or len(body.get("chapters") or [])
+                    or _cbk.count("\n## "))
+            _crit_on = _narasi_critique_enabled()
+            if _crit_on and _cbk and _nch >= NARASI_CRITIQUE_MIN_CHAPTERS:
+                _cmodel = (body.get("model") or "")
+                _t_crit0 = time.monotonic()
+                _cq, _cqc = await _narasi_consistency_critique(
+                    _cbk, style, language, model=_cmodel,
+                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                    canonical_facts=(result.get("canonical_facts") or ""), credit_row=False)
+                _t_crit = time.monotonic() - _t_crit0
+                if sink is not None and _cqc:
+                    sink.credits += int(_cqc)
+                _cpay = _cq
                 try:
-                    _mech: list[dict] = []
-                    _mctrs = (result.get("counter_report") or {}).get("counters") or {}
-                    # premise exemption (round-4): never ask the revise to scrub a term the
-                    # user's own premise supplies (surname Han in 'Han Seo-jin').
-                    import re as _mre
-                    _mtopic = str(body.get("topic") or body.get("goal") or body.get("brief") or "")
-                    _mvdem = os.environ.get("NARASI_LEDGER_VALUE_DEMOTE", "0").strip().lower() in ("1", "true", "yes", "on")
-                    for h in ((_mctrs.get("ledger_hits") or {}).get("hits") or [])[:8]:
-                        if h.get("where") != "manuscript":
-                            continue   # bible-level hits are handled at bible time (re-roll)
-                        if _mvdem and str(h.get("term") or "").startswith("floor:"):
-                            continue   # orbit-value policy (round-6): floors WARN-only
-                        _mterm = str(h.get("term") or "").split(":", 1)[-1]
-                        if _mterm and _premise_term_in_topic(_mterm, _mtopic):
-                            continue   # premise-supplied — not a lane tic (round-8: cross-language)
-                        _mech.append({
-                            "type": "ledger_hit", "severity": "high",
-                            "evidence": str(h.get("snippet") or _mterm)[:200],
-                            "fix": f"Replace the lane-overused item «{_mterm}» with a fresh, "
-                                   f"premise-specific choice (previous stories in this lane already "
-                                   f"used it); keep the sentence's meaning and rhythm."})
-                    # Tier 1a (2026-07-15): instruction_residue_scan / placeholder_leak_scan
-                    # (narasi_gate.py) were report-only — gate_report is computed earlier in
-                    # this fn (v3 terminal gate, above) and its hits only ever reached a WARN,
-                    # never critique/revise (Law 1, same failure ledger_hits_scan had). Same
-                    # contract as ledger_hits above: unconditional under NARASI_LEDGER_ENFORCE,
-                    # no separate sub-flag.
-                    _gflags = gate_report.get("flags") or {}
-                    for _irs in (_gflags.get("instruction_residue_samples") or [])[:6]:
-                        _mech.append({
-                            "type": "instruction_residue", "severity": "high",
-                            "evidence": str(_irs)[:200],
-                            "fix": ("This is an unresolved template slot/instruction that leaked "
-                                    "into prose (a hedge word like 'around' standing in for a value "
-                                    "the generator never filled in). Replace it with the actual, "
-                                    "specific value the story establishes; remove the hedge wording "
-                                    "entirely.")})
-                    for _pls in (_gflags.get("placeholder_leak_samples") or [])[:6]:
-                        _mech.append({
-                            "type": "placeholder_leak", "severity": "high",
-                            "evidence": str(_pls)[:200],
-                            "fix": ("This is an unresolved descriptive-slot hedge ('sekitar/kira-"
-                                    "kira' + an unfilled instruction) that leaked into prose. "
-                                    "Replace it with the actual, specific value the story "
-                                    "establishes; remove the hedge wording entirely.")})
-                    for f in ((_mctrs.get("timeline_arith") or {}).get("findings") or [])[:4]:
-                        if (f.get("kind") == "span_alternation"
-                                and _r7_env_on("NARASI_NUMERIC_LEDGER")):
-                            # ROUND-10: roll-13's 14y-vs-15y alternation was two TRUE values
-                            # (fire 15y ago, demolition/letters 14y) — injecting it nudged
-                            # CORRECT text. The referent-aware numeric gate owns value drift.
-                            continue
-                        _mech.append({
-                            "type": "timeline_arithmetic", "severity": "high",
-                            "evidence": str(f.get("context") or f.get("note") or "")[:200],
-                            "fix": (f"Unify the alternating duration — {f.get('note')}"
-                                    if f.get("kind") == "span_alternation" else
-                                    f"Correct the stated span to match the dated events — {f.get('note')}")})
-                    if _r7_env_on("NARASI_NUMERIC_MAGNITUDE"):
-                        for f in ((_mctrs.get("numeric_magnitude") or {}).get("magnitude") or [])[:2] + ((_mctrs.get("numeric_magnitude") or {}).get("year_forks") or [])[:2]:
-                            _mech.append({"type": "numeric_magnitude", "severity": "high",
-                                "evidence": str(f.get("note") or "")[:200],
-                                "fix": (f"Numeric scale/date inconsistency: {f.get('note')}. Reconcile the "
-                                        f"figures so per-item × count matches the stated total (or correct "
-                                        f"the total), and pin the referent to ONE year everywhere.")})
-                    if _r7_env_on("NARASI_AGE_LEDGER"):
-                        for f in ((_mctrs.get("age_ledger") or {}).get("findings") or [])[:4]:
-                            _mech.append({"type": "age_ledger", "severity": "high",
-                                "evidence": str(f.get("note") or "")[:200],
-                                "fix": (f"{f.get('note')}. Unify to the single value the story's dated facts "
-                                        f"support at EVERY mention; do not touch a deliberate official-vs-true contrast.")})
-                    if _r7_env_on("NARASI_ALIAS_LEDGER"):
-                        for f in ((_mctrs.get("alias_ledger") or {}).get("misfiled") or [])[:3]:
-                            _mech.append({"type": "alias_legal_lock", "severity": "high",
-                                "evidence": str(f.get("context") or f.get("note") or "")[:200],
-                                "fix": (f"{f.get('note')}. On a system-generated document (envelope, registry, "
-                                        f"court file) use the character's LEGAL/registered name «{f.get('legal')}» at "
-                                        f"EVERY such mention; reserve the alias for informal in-world speech, and never "
-                                        f"label the legal name as the 'working name'.")})
-                    # ROUND-16 ACTUATORS (S2-Th-3 postmortem): canon-anchor date fork, an
-                    # unsubstituted template placeholder, a named-entity quantity fork, and a
-                    # kinship term/label mismatch — same _mech/severity-high contract as the
-                    # round-15 siblings above. location_continuity is deliberately NOT injected
-                    # here (WARN-only — see its own docstring on why it stays report-only).
-                    if _r7_env_on("NARASI_CANON_ANCHOR"):
-                        for f in ((_mctrs.get("canon_anchor") or {}).get("findings") or [])[:3]:
-                            _mech.append({"type": "canon_anchor", "severity": "high",
-                                "evidence": str(f.get("note") or "")[:200],
-                                "fix": (f"{f.get('note')}. Anchor this event to ONE absolute date at EVERY "
-                                        f"mention" + (f" — the canonical date is {f.get('canon')}."
-                                                       if f.get("canon") else "."))})
-                    if _r7_env_on("NARASI_PLACEHOLDER_SCAN"):
-                        for h in ((_mctrs.get("placeholder") or {}).get("hits") or [])[:4]:
-                            _mech.append({"type": "placeholder_token", "severity": "high",
-                                "evidence": str(h.get("snippet") or h.get("token"))[:200],
-                                "fix": (f"Replace the unsubstituted template token «{h.get('token')}» with "
-                                        f"the actual value the story establishes (or the correct current "
-                                        f"in-story date/name).")})
-                    if _r7_env_on("NARASI_ENTITY_QTY"):
-                        for f in ((_mctrs.get("entity_qty") or {}).get("forks") or [])[:3]:
-                            _mech.append({"type": "entity_quantity", "severity": "high",
-                                "evidence": str(f.get("note") or "")[:200],
-                                "fix": (f"{f.get('note')}. Pin ONE count for this entity and use it at "
-                                        f"every mention; if a larger figure is intentional (a broader total "
-                                        f"vs a specific sub-list), name that distinction explicitly in the prose.")})
-                    if _r7_env_on("NARASI_KINSHIP_SCAN"):
-                        for f in ((_mctrs.get("kinship") or {}).get("mismatches") or [])[:3]:
-                            _mech.append({"type": "kinship_mismatch", "severity": "high",
-                                "evidence": str(f.get("context") or f.get("note") or "")[:200],
-                                "fix": (f"{f.get('note')}. Use the consistent side (maternal/paternal) "
-                                        f"established elsewhere in the manuscript for this relationship "
-                                        f"at EVERY mention.")})
-                    # ROUND-16 STYLE-COUNTER ENFORCEMENT (NARASI_STYLE_COUNTER_ENFORCE, default
-                    # OFF): epithet/anchors/aphorisms/reglossing/anchor_voice go OVER budget and
-                    # sit purely as a WARN (narasi_counters.py:3816 — prod runs
-                    # NARASI_DIET_MAX_LOOPS=0, so the separate full-book "diet loop" rewrite
-                    # mechanism these counters were built for never actually fires). This rides
-                    # the SAME already-parallelized consistency-revise path as every other r16
-                    # actuator instead — independent of the diet loop, does not touch
-                    # NARASI_DIET_MAX_LOOPS/_diet_worthy/surgical_prompt at all. Evidence is the
-                    # counter's own real quoted "sentences" (epithet/anchors/aphorisms/
-                    # anchor_voice); reglossing has no "sentences" field, so its over-cap TERMS
-                    # are used instead.
-                    if os.environ.get("NARASI_STYLE_COUNTER_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
-                        _over = set(rep.get("over_budget") or [])
-                        # AUDIT FIX: read from `rep` (the raw scan_manuscript output), NOT
-                        # `_mctrs` — `_mctrs` is result["counter_report"]["counters"], which
-                        # explicitly strips the "sentences" key a few lines above (the dict
-                        # comprehension `if kk != "sentences"`). Reading from _mctrs made this
-                        # whole block a silent no-op: over_budget correctly listed the counter,
-                        # but every `.get("sentences")` returned None, so 0 _mech entries were
-                        # ever appended for epithet/anchors/aphorisms/anchor_voice.
-                        _rawctrs = rep.get("counters") or {}
-                        for _ckey in ("epithet", "anchors", "aphorisms", "anchor_voice"):
-                            if _ckey not in _over:
+                    log.info("critic findings preview: %s",
+                             [f"{(v.get('type') or '?')}:{str(v.get('evidence') or v.get('description') or '')[:60]}"
+                              for v in (_cq.get("violations") or [])[:12]])
+                except Exception:  # noqa: BLE001
+                    pass
+                # ── LEDGER/TIMELINE ENFORCEMENT (NARASI_LEDGER_ENFORCE, default OFF) ──
+                if os.environ.get("NARASI_LEDGER_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+                    try:
+                        _mech: list[dict] = []
+                        _mctrs = (result.get("counter_report") or {}).get("counters") or {}
+                        import re as _mre
+                        _mtopic = str(body.get("topic") or body.get("goal") or body.get("brief") or "")
+                        _mvdem = os.environ.get("NARASI_LEDGER_VALUE_DEMOTE", "0").strip().lower() in ("1", "true", "yes", "on")
+                        for h in ((_mctrs.get("ledger_hits") or {}).get("hits") or [])[:8]:
+                            if h.get("where") != "manuscript":
                                 continue
-                            _cdat = _rawctrs.get(_ckey) or {}
-                            for _sent in (_cdat.get("sentences") or [])[:3]:
-                                _mech.append({"type": f"style_counter_{_ckey}", "severity": "high",
-                                    "evidence": str(_sent)[:200],
-                                    "fix": (f"This line contributes to the manuscript exceeding its "
-                                            f"'{_ckey}' budget ({_cdat.get('count')}/{_cdat.get('budget', '?')}). "
-                                            f"Rewrite it to remove the repeated device while preserving "
-                                            f"the sentence's meaning.")})
-                        if "reglossing" in _over:
-                            _rg = _rawctrs.get("reglossing") or {}
-                            for _term, _cnt in list((_rg.get("terms") or {}).items())[:3]:
-                                _mech.append({"type": "style_counter_reglossing", "severity": "high",
-                                    "evidence": f"term «{_term}» re-glossed {_cnt}× (budget {_rg.get('budget', '?')})",
-                                    "fix": (f"The term «{_term}» is re-defined with an em-dash gloss "
-                                            f"{_cnt} times. Define it ONCE on first use; every later "
-                                            f"mention should use the bare term with no re-gloss.")})
-                    # ROUND-6 BRAND ACTUATOR (NARASI_BRAND_ENFORCE, default OFF): two files
-                    # running named a REAL chaebol as the culpable entity (Doosan R8,
-                    # Hanjin SBF) — the scan caught both and nothing acted (Law 1). Only
-                    # role=="culpable" hits are injected; brands as props (a dented grey
-                    # Hyundai) stay WARN-only.
-                    if os.environ.get("NARASI_BRAND_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
-                        for h in ((_mctrs.get("real_brands") or {}).get("hits") or [])[:3]:
-                            if h.get("where") == "manuscript" and h.get("role") == "culpable":
-                                _mech.append({
+                            if _mvdem and str(h.get("term") or "").startswith("floor:"):
+                                continue
+                            _mterm = str(h.get("term") or "").split(":", 1)[-1]
+                            if _mterm and _premise_term_in_topic(_mterm, _mtopic):
+                                continue
+                            _mech.append({
+                                "type": "ledger_hit", "severity": "high",
+                                "evidence": str(h.get("snippet") or _mterm)[:200],
+                                "fix": f"Replace the lane-overused item «{_mterm}» with a fresh, "
+                                       f"premise-specific choice (previous stories in this lane already "
+                                       f"used it); keep the sentence's meaning and rhythm."})
+                        _gflags = gate_report.get("flags") or {}
+                        for _irs in (_gflags.get("instruction_residue_samples") or [])[:6]:
+                            _mech.append({
+                                "type": "instruction_residue", "severity": "high",
+                                "evidence": str(_irs)[:200],
+                                "fix": ("This is an unresolved template slot/instruction that leaked "
+                                        "into prose (a hedge word like 'around' standing in for a value "
+                                        "the generator never filled in). Replace it with the actual, "
+                                        "specific value the story establishes; remove the hedge wording "
+                                        "entirely.")})
+                        for _pls in (_gflags.get("placeholder_leak_samples") or [])[:6]:
+                            _mech.append({
+                                "type": "placeholder_leak", "severity": "high",
+                                "evidence": str(_pls)[:200],
+                                "fix": ("This is an unresolved descriptive-slot hedge ('sekitar/kira-"
+                                        "kira' + an unfilled instruction) that leaked into prose. "
+                                        "Replace it with the actual, specific value the story "
+                                        "establishes; remove the hedge wording entirely.")})
+                        for f in ((_mctrs.get("timeline_arith") or {}).get("findings") or [])[:4]:
+                            if (f.get("kind") == "span_alternation"
+                                    and _r7_env_on("NARASI_NUMERIC_LEDGER")):
+                                continue
+                            _mech.append({
+                                "type": "timeline_arithmetic", "severity": "high",
+                                "evidence": str(f.get("context") or f.get("note") or "")[:200],
+                                "fix": (f"Unify the alternating duration — {f.get('note')}"
+                                        if f.get("kind") == "span_alternation" else
+                                        f"Correct the stated span to match the dated events — {f.get('note')}")})
+                        if _r7_env_on("NARASI_NUMERIC_MAGNITUDE"):
+                            for f in ((_mctrs.get("numeric_magnitude") or {}).get("magnitude") or [])[:2] + ((_mctrs.get("numeric_magnitude") or {}).get("year_forks") or [])[:2]:
+                                _mech.append({"type": "numeric_magnitude", "severity": "high",
+                                    "evidence": str(f.get("note") or "")[:200],
+                                    "fix": (f"Numeric scale/date inconsistency: {f.get('note')}. Reconcile the "
+                                            f"figures so per-item × count matches the stated total (or correct "
+                                            f"the total), and pin the referent to ONE year everywhere.")})
+                        if _r7_env_on("NARASI_AGE_LEDGER"):
+                            for f in ((_mctrs.get("age_ledger") or {}).get("findings") or [])[:4]:
+                                _mech.append({"type": "age_ledger", "severity": "high",
+                                    "evidence": str(f.get("note") or "")[:200],
+                                    "fix": (f"{f.get('note')}. Unify to the single value the story's dated facts "
+                                            f"support at EVERY mention; do not touch a deliberate official-vs-true contrast.")})
+                        if _r7_env_on("NARASI_ALIAS_LEDGER"):
+                            for f in ((_mctrs.get("alias_ledger") or {}).get("misfiled") or [])[:3]:
+                                _mech.append({"type": "alias_legal_lock", "severity": "high",
+                                    "evidence": str(f.get("context") or f.get("note") or "")[:200],
+                                    "fix": (f"{f.get('note')}. On a system-generated document (envelope, registry, "
+                                            f"court file) use the character's LEGAL/registered name «{f.get('legal')}» at "
+                                            f"EVERY such mention; reserve the alias for informal in-world speech, and never "
+                                            f"label the legal name as the 'working name'.")})
+                        if _r7_env_on("NARASI_CANON_ANCHOR"):
+                            for f in ((_mctrs.get("canon_anchor") or {}).get("findings") or [])[:3]:
+                                _mech.append({"type": "canon_anchor", "severity": "high",
+                                    "evidence": str(f.get("note") or "")[:200],
+                                    "fix": (f"{f.get('note')}. Anchor this event to ONE absolute date at EVERY "
+                                            f"mention" + (f" — the canonical date is {f.get('canon')}."
+                                                           if f.get("canon") else "."))})
+                        if _r7_env_on("NARASI_PLACEHOLDER_SCAN"):
+                            for h in ((_mctrs.get("placeholder") or {}).get("hits") or [])[:4]:
+                                _mech.append({"type": "placeholder_token", "severity": "high",
+                                    "evidence": str(h.get("snippet") or h.get("token"))[:200],
+                                    "fix": (f"Replace the unsubstituted template token «{h.get('token')}» with "
+                                            f"the actual value the story establishes (or the correct current "
+                                            f"in-story date/name).")})
+                        if _r7_env_on("NARASI_ENTITY_QTY"):
+                            for f in ((_mctrs.get("entity_qty") or {}).get("forks") or [])[:3]:
+                                _mech.append({"type": "entity_quantity", "severity": "high",
+                                    "evidence": str(f.get("note") or "")[:200],
+                                    "fix": (f"{f.get('note')}. Pin ONE count for this entity and use it at "
+                                            f"every mention; if a larger figure is intentional (a broader total "
+                                            f"vs a specific sub-list), name that distinction explicitly in the prose.")})
+                        if _r7_env_on("NARASI_KINSHIP_SCAN"):
+                            for f in ((_mctrs.get("kinship") or {}).get("mismatches") or [])[:3]:
+                                _mech.append({"type": "kinship_mismatch", "severity": "high",
+                                    "evidence": str(f.get("context") or f.get("note") or "")[:200],
+                                    "fix": (f"{f.get('note')}. Use the consistent side (maternal/paternal) "
+                                            f"established elsewhere in the manuscript for this relationship "
+                                            f"at EVERY mention.")})
+                        if os.environ.get("NARASI_STYLE_COUNTER_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+                            _over = set(rep.get("over_budget") or [])
+                            _rawctrs = rep.get("counters") or {}
+                            for _ckey2 in ("epithet", "anchors", "aphorisms", "anchor_voice"):
+                                if _ckey2 not in _over:
+                                    continue
+                                _cdat = _rawctrs.get(_ckey2) or {}
+                                for _sent in (_cdat.get("sentences") or [])[:3]:
+                                    _mech.append({"type": f"style_counter_{_ckey2}", "severity": "high",
+                                        "evidence": str(_sent)[:200],
+                                        "fix": (f"This line contributes to the manuscript exceeding its "
+                                                f"'{_ckey2}' budget ({_cdat.get('count')}/{_cdat.get('budget', '?')}). "
+                                                f"Rewrite it to remove the repeated device while preserving "
+                                                f"the sentence's meaning.")})
+                            if "reglossing" in _over:
+                                _rg = _rawctrs.get("reglossing") or {}
+                                for _term, _cnt in list((_rg.get("terms") or {}).items())[:3]:
+                                    _mech.append({"type": "style_counter_reglossing", "severity": "high",
+                                        "evidence": f"term «{_term}» re-glossed {_cnt}× (budget {_rg.get('budget', '?')})",
+                                        "fix": (f"The term «{_term}» is re-defined with an em-dash gloss "
+                                                f"{_cnt} times. Define it ONCE on first use; every later "
+                                                f"mention should use the bare term with no re-gloss.")})
+                        if os.environ.get("NARASI_BRAND_REPORT", "0").strip().lower() in ("1", "true", "yes", "on"):
+                            try:
+                                import narasi_counters as _brc
+                                import re as _bre
+                                _brbook = result.get("book") or result.get("output") or ""
+                                _brent = []
+                                for _brand in list(_brc._REAL_BRANDS_LONG):
+                                    _brx = _bre.compile(r"\b" + _bre.escape(_brand) + r"\b")
+                                    _bm = _brx.search(_brbook)
+                                    if not _bm or _brc._brand_role(_brbook, _brx) == "culpable":
+                                        continue
+                                    if _brc._brand_entity_use(_brbook, _brx):
+                                        _brent.append(_brand)
+                                        if len(_brent) <= 6:
+                                            _snip = _bre.sub(r"\s+", " ", _brbook[max(0, _bm.start() - 40):_bm.end() + 80])
+                                            _mech.append({"type": "real_brand_entity", "severity": "low",
+                                                "evidence": (_wq(_snip) or _wq(_brand))[:200],
+                                                "fix": (f"The real company «{_brand}» is used as an in-story entity "
+                                                        f"(firm/client/employer). Consider renaming to a clearly "
+                                                        f"fictional company to avoid brand/legal risk; nominative prop use is fine.")})
+                                if _brent:
+                                    log.warning("REAL-BRAND entity-use (report-only): %d non-culpable in-story entity hit(s): %s", len(_brent), _brent[:5])
+                            except Exception:  # noqa: BLE001
+                                pass
+                        _mech.extend(_r7_actuator_violations(result))
+                        if os.environ.get("NARASI_METALEAK_SCAN", "0").strip().lower() in ("1", "true", "yes", "on"):
+                            try:
+                                import narasi_counters as _mlc
+                                _mlk = "book" if result.get("book") else "output"
+                                _mlr = _mlc.meta_reference_scan(result.get(_mlk) or "")
+                                for _h in (_mlr.get("hits") or [])[:3]:
+                                    _mech.append({
+                                        "type": "meta_leak", "severity": "high",
+                                        "evidence": _wq(_h.get("snippet"))[:200],
+                                        "fix": ("This line contains an out-of-world reference to a chapter/"
+                                                "episode number ('Ch9', 'chapter 5', 'episode 3') -- a "
+                                                "generator artifact. Rewrite the sentence to remove the "
+                                                "chapter reference entirely; a character never names the "
+                                                "story's own chapters. Keep the surrounding meaning.")})
+                                if _mlr.get("count"):
+                                    log.warning("meta-leak: %d out-of-world chapter reference(s) in prose", _mlr["count"])
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if os.environ.get("NARASI_PROVENANCE_LEAK", "0").strip().lower() in ("1", "true", "yes", "on"):
+                            try:
+                                import narasi_counters as _plc
+                                _plk = "book" if result.get("book") else "output"
+                                _plr = _plc.provenance_leak_scan(result.get(_plk) or "")
+                                for _h in (_plr.get("hits") or [])[:3]:
+                                    _mech.append({"type": "provenance_leak", "severity": "high",
+                                        "evidence": _wq(_h.get("snippet"))[:200],
+                                        "fix": ("This line cites the story's own scaffolding (story bible / "
+                                                "outline / canon / fact-sheet) — a generator artifact, not "
+                                                "in-world text. Delete the citation phrase and state the fact "
+                                                "plainly; a character never references the story bible.")})
+                                if _plr.get("count"):
+                                    log.warning("provenance-leak: %d scaffolding citation(s) in prose", _plr["count"])
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if _mech:
+                            _cq["violations"] = (_mech + list(_cq.get("violations") or []))[:20]
+                            log.info("ledger-enforce: injected %d mechanical violation(s) into critique/revise",
+                                     len(_mech))
+                    except Exception as _mie:  # noqa: BLE001
+                        log.warning("ledger-enforce injection failed (non-fatal): %s", _mie)
+                # ── REAL-BRAND ENFORCEMENT (NARASI_BRAND_ENFORCE, default OFF) — checked
+                # independently of NARASI_LEDGER_ENFORCE. Previously this lived nested inside
+                # the ledger-enforce block above, so a real-brand hit could only reach revise
+                # when NARASI_LEDGER_ENFORCE was ALSO on (a different, unrelated flag) — and
+                # even then only "culpable"-role hits qualified, silently dropping ordinary
+                # in-story-entity mentions (e.g. "Daesung employed him") that the REAL-BRAND
+                # scan's own log already calls out as the legal-risk class to police, because
+                # _brand_role()'s ±150-char proximity check often misses a brand that's clearly
+                # the story's antagonist company but not always textually adjacent to liability
+                # vocabulary. Detection (real_brands scan, role classification) is unchanged;
+                # only the enforcement gating moved. FIRST FIX ATTEMPT this round dropped the
+                # role filter entirely, which over-corrected: it started forcing renames on
+                # harmless background PROP mentions (e.g. "a dented grey Hyundai") that the
+                # original design explicitly meant to leave as WARN-only, and on FUZZY hits
+                # (edit-distance-1 near-misses to a blocklisted name, not a confirmed real
+                # brand — e.g. "Hanshin" flagged only because it's 1 edit from "Hanjin"),
+                # which would falsely instruct a rename of a name that may not even be a real
+                # brand. Restored selectivity: qualify on role=="culpable" (the original signal)
+                # OR on a high manuscript-wide mention COUNT (>=5 — a one-off background prop
+                # realistically isn't repeated that often, but a central antagonist company
+                # mentioned dozens of times, e.g. the real "Daesung 72x" defect, clearly is),
+                # and always exclude fuzzy (unconfirmed) hits from forced enforcement.
+                if os.environ.get("NARASI_BRAND_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+                    try:
+                        _brmctrs = (result.get("counter_report") or {}).get("counters") or {}
+                        _brmech: list[dict] = []
+                        for h in ((_brmctrs.get("real_brands") or {}).get("hits") or [])[:3]:
+                            if (h.get("where") == "manuscript" and not h.get("fuzzy")
+                                    and (h.get("role") == "culpable" or int(h.get("count") or 0) >= 5)):
+                                _brmech.append({
                                     "type": "real_brand", "severity": "high",
                                     "evidence": str(h.get("snippet") or h.get("brand"))[:200],
                                     "fix": (f"The real-world company «{h.get('brand')}» is used as a "
-                                            f"culpable/liable entity — legal risk. Rename it to a clearly "
-                                            f"fictional company (phonetically distinct from any real "
-                                            f"conglomerate) at EVERY occurrence, keeping scene content intact.")})
-                    if os.environ.get("NARASI_BRAND_REPORT", "0").strip().lower() in ("1", "true", "yes", "on"):
-                        try:
-                            # ROUND-15 fix: scan the real-brand list DIRECTLY so this gate is
-                            # self-sufficient — the earlier version consumed real_brand_scan's
-                            # hits, which are empty unless NARASI_BRAND_SCAN is ALSO on (a hidden
-                            # co-dependency). Culpable brands stay owned by NARASI_BRAND_ENFORCE
-                            # (skipped here); this reports only non-culpable in-story ENTITY use.
-                            import narasi_counters as _brc
-                            import re as _bre
-                            _brbook = result.get("book") or result.get("output") or ""
-                            _brent = []
-                            for _brand in list(_brc._REAL_BRANDS_LONG):
-                                _brx = _bre.compile(r"\b" + _bre.escape(_brand) + r"\b")
-                                _bm = _brx.search(_brbook)
-                                if not _bm or _brc._brand_role(_brbook, _brx) == "culpable":
-                                    continue   # absent, or culpable (BRAND_ENFORCE owns culpable)
-                                if _brc._brand_entity_use(_brbook, _brx):
-                                    _brent.append(_brand)
-                                    if len(_brent) <= 6:
-                                        # EVIDENCE-LOCATABILITY: _snip is a real character-offset
-                                        # slice of the actual book text around the confirmed brand
-                                        # match — quote-wrap so _spans() can locate it.
-                                        _snip = _bre.sub(r"\s+", " ", _brbook[max(0, _bm.start() - 40):_bm.end() + 80])
-                                        _mech.append({"type": "real_brand_entity", "severity": "low",
-                                            "evidence": (_wq(_snip) or _wq(_brand))[:200],
-                                            "fix": (f"The real company «{_brand}» is used as an in-story entity "
-                                                    f"(firm/client/employer). Consider renaming to a clearly "
-                                                    f"fictional company to avoid brand/legal risk; nominative prop use is fine.")})
-                            if _brent:
-                                log.warning("REAL-BRAND entity-use (report-only): %d non-culpable in-story entity hit(s): %s", len(_brent), _brent[:5])
-                        except Exception:  # noqa: BLE001
-                            pass
-                    # ROUND-7 ACTUATORS: teeth for the round-6 report-only gates
-                    # (abort-seam, coda-repeat, domain errors, numeric drift) — one
-                    # helper, unit-tested, same synthetic-violation contract.
-                    _mech.extend(_r7_actuator_violations(result))
-                    # ROUND-13 META-LEAK: an outline artifact ("The rest -- that belongs
-                    # to Ch9.") leaked into dialogue. Deterministic scan -> delete-directive.
-                    if os.environ.get("NARASI_METALEAK_SCAN", "0").strip().lower() in ("1", "true", "yes", "on"):
-                        try:
-                            import narasi_counters as _mlc
-                            _mlk = "book" if result.get("book") else "output"
-                            _mlr = _mlc.meta_reference_scan(result.get(_mlk) or "")
-                            for _h in (_mlr.get("hits") or [])[:3]:
-                                # EVIDENCE-LOCATABILITY: `snippet` is the raw manuscript line
-                                # (case-preserved, only .strip()'d) around the meta-ref match —
-                                # quote-wrap so _spans() can locate it.
-                                _mech.append({
-                                    "type": "meta_leak", "severity": "high",
-                                    "evidence": _wq(_h.get("snippet"))[:200],
-                                    "fix": ("This line contains an out-of-world reference to a chapter/"
-                                            "episode number ('Ch9', 'chapter 5', 'episode 3') -- a "
-                                            "generator artifact. Rewrite the sentence to remove the "
-                                            "chapter reference entirely; a character never names the "
-                                            "story's own chapters. Keep the surrounding meaning.")})
-                            if _mlr.get("count"):
-                                log.warning("meta-leak: %d out-of-world chapter reference(s) in prose", _mlr["count"])
-                        except Exception:  # noqa: BLE001
-                            pass
-                    if os.environ.get("NARASI_PROVENANCE_LEAK", "0").strip().lower() in ("1", "true", "yes", "on"):
-                        try:
-                            import narasi_counters as _plc
-                            _plk = "book" if result.get("book") else "output"
-                            _plr = _plc.provenance_leak_scan(result.get(_plk) or "")
-                            for _h in (_plr.get("hits") or [])[:3]:
-                                # EVIDENCE-LOCATABILITY: same pattern as meta_leak — `snippet` is
-                                # a raw, case-preserved manuscript line — quote-wrap it.
-                                _mech.append({"type": "provenance_leak", "severity": "high",
-                                    "evidence": _wq(_h.get("snippet"))[:200],
-                                    "fix": ("This line cites the story's own scaffolding (story bible / "
-                                            "outline / canon / fact-sheet) — a generator artifact, not "
-                                            "in-world text. Delete the citation phrase and state the fact "
-                                            "plainly; a character never references the story bible.")})
-                            if _plr.get("count"):
-                                log.warning("provenance-leak: %d scaffolding citation(s) in prose", _plr["count"])
-                        except Exception:  # noqa: BLE001
-                            pass
-                    if _mech:
-                        _cq["violations"] = (_mech + list(_cq.get("violations") or []))[:20]
-                        log.info("ledger-enforce: injected %d mechanical violation(s) into critique/revise",
-                                 len(_mech))
-                except Exception as _mie:  # noqa: BLE001
-                    log.warning("ledger-enforce injection failed (non-fatal): %s", _mie)
-            # CANON_FORK-REVISE SAFETY: a canon_fork stays REPORT-ONLY by DEFAULT (never drives a revise),
-            # for BOTH fiction and nonfiction. The critic diffs chapters against the pinned fact sheet but
-            # CANNOT tell a real fork (river pusaran victim/age swap = error) from a DESIGNED REVEAL that
-            # overturns the sheet's surface facts (kdrama 'fallen angel': the bible pinned the cover-up's
-            # 2011/142/18m as canon, the whole mystery reveals the buried 2009/>142/26m truth — the critic
-            # flagged the CLIMAX as 9 canon_forks and the revise FIRED; only the >=90%-word guard saved the
-            # plot from being "corrected" back into incoherence). Until the tier-2 bible marks the surface
-            # lie as `false_versions`, auto-revising a canon_fork can GUT a reveal — a catastrophic, plot-
-            # destroying failure — while the fork is still DETECTED+persisted either way. So report-only.
-            # Checks 1-6 (timeline/causality/entity_drift/spatial/pov) have no reveal-ambiguity and stay
-            # revisable. NARASI_CANON_FORK_REVISE=1 restores fiction canon_fork revise (CNF always report-
-            # only — its [VERIFY]/fabrication hazard is separate). OFF (default) ⟹ all canon_fork report-only.
-            try:
-                from orchestrator.static import _is_fiction_style as _isf_rev
-                _isfic_rev = bool(_isf_rev(style))
-            except Exception:  # noqa: BLE001
-                _isfic_rev = True
-            _fork_revise = os.environ.get("NARASI_CANON_FORK_REVISE", "0").strip().lower() in ("1", "true", "yes", "on")
-            # ROUND-13 CANON-FORK CLASSIFY (NARASI_CANON_FORK_CLASSIFY, default OFF):
-            # r11's critic-salvage finally SURFACED real forks, but the r4.1 reveal-
-            # protection drops ALL canon_forks from revise -- so plain continuity errors
-            # (floor 8 vs 12, envelope 16x11 vs 13, Unit 703 vs 508) are protected right
-            # alongside genuine designed reveals. One cheap call sorts each canon_fork
-            # into "reveal" (a deliberate surface-lie/buried-truth the mystery depends on
-            # -- KEEP protected) or "continuity" (the same neutral fact stated two
-            # incompatible ways with no in-story reason -- SAFE to revise). Fail-safe:
-            # any error -> the fork stays protected (current behavior). The revisable ids
-            # are consulted by both the trigger filter and the revise-input filter below.
-            #
-            # WIDENED (2026-07-17, canon-fork classifier fix part a): now routed through the
-            # shared _narasi_classify_canon_items() (also used by canon-diff's own classify
-            # below) so the reveal-vs-continuity prompt/bias can never drift between the two
-            # mechanisms. Two independent axes of change, gated differently:
-            #   - INPUT (excerpt widening): per-item input is still ONLY the critic's own
-            #     200-char evidence snippet, byte-identical to before, unless the NEW,
-            #     separately-gated NARASI_CANON_FORK_CLASSIFY_CONTEXT flag (default OFF) is
-            #     also on -- this file's convention is that an already-live flag's behavior
-            #     is never silently redefined by a deploy. When that flag IS on, each item
-            #     ALSO gets a real manuscript excerpt (the chapter containing the evidence
-            #     quote, found via chapter-in-order substring search -- mechanism-1
-            #     violations carry no chapter number) appended as extra narrative context,
-            #     per the design's "keep the short signal, append the excerpt" rule: a
-            #     single chapter's text only shows one side of a cross-chapter discrepancy,
-            #     so the short evidence quote still anchors WHAT diverges.
-            #   - SYSTEM PROMPT (bias wording): the shared classifier's instructions gained
-            #     extra conservative-bias guardrails (part d) UNCONDITIONALLY, regardless of
-            #     the flag above -- this is intentional and safe even on the already-live
-            #     path, because every added sentence only pushes MORE items toward "reveal"
-            #     (stricter grounds required for "continuity", explicit false-confidence /
-            #     asymmetric-cost framing), never the reverse; requirement (d) forbids this
-            #     fix from becoming MORE aggressive, not from becoming MORE conservative.
-            _revisable_fork_ev = set()
-            if (_isfic_rev and not _fork_revise
-                    and os.environ.get("NARASI_CANON_FORK_CLASSIFY", "0").strip().lower() in ("1", "true", "yes", "on")):
+                                            f"real conglomerate in the story — legal risk. Rename it to a "
+                                            f"clearly fictional company (phonetically distinct from any "
+                                            f"real conglomerate) at EVERY occurrence, keeping scene content intact.")})
+                        if _brmech:
+                            _cq["violations"] = (_brmech + list(_cq.get("violations") or []))[:20]
+                            log.info("brand-enforce: injected %d real-brand violation(s) into critique/revise",
+                                     len(_brmech))
+                    except Exception as _bre2:  # noqa: BLE001
+                        log.warning("brand-enforce injection failed (non-fatal): %s", _bre2)
+                # ── LANGUAGE-CONSISTENCY ENFORCEMENT (NARASI_LANGUAGE_CONSISTENCY_ENFORCE,
+                # default OFF) — checked independently, self-contained (recomputes the word
+                # scan itself, same as the metaleak/provenance-leak mechanisms below, so this
+                # works whether or not NARASI_LANGUAGE_CONSISTENCY_SCAN's report-only pass
+                # above ran). Detection is the same narasi_counters.language_consistency_
+                # word_scan used report-only above; this only adds the enforcement wiring.
+                if os.environ.get("NARASI_LANGUAGE_CONSISTENCY_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on"):
+                    try:
+                        import narasi_counters as _lce
+                        _lcekey = "book" if result.get("book") else "output"
+                        _lcebk = result.get(_lcekey) or ""
+                        _lcemech: list[dict] = []
+                        if _lcebk and hasattr(_lce, "language_consistency_word_scan"):
+                            _lcerep = _lce.language_consistency_word_scan(_lcebk, language)
+                            for h in (_lcerep.get("samples") or [])[:5]:
+                                _lcemech.append({
+                                    "type": "language_consistency", "severity": "high",
+                                    "evidence": str(h.get("snippet") or h.get("term"))[:200],
+                                    "fix": (f"The Indonesian word «{h.get('term')}» leaked into this "
+                                            f"{language}-language manuscript — a language-consistency "
+                                            f"slip. Rewrite it in {language}, keeping the sentence's "
+                                            f"meaning and rhythm intact.")})
+                        if _lcemech:
+                            _cq["violations"] = (_lcemech + list(_cq.get("violations") or []))[:20]
+                            log.info("language-consistency-enforce: injected %d violation(s) into critique/revise",
+                                     len(_lcemech))
+                    except Exception as _lcee:  # noqa: BLE001
+                        log.warning("language-consistency-enforce injection failed (non-fatal): %s", _lcee)
+                # CANON_FORK-REVISE SAFETY (see original docstring above this block, unchanged).
                 try:
-                    _cf_list = [v for v in (_cq.get("violations") or [])
-                                if str(v.get("type", "")).lower() == "canon_fork"][:12]
-                    if _cf_list:
-                        _cf_widen = os.environ.get("NARASI_CANON_FORK_CLASSIFY_CONTEXT", "0").strip().lower() in (
-                            "1", "true", "yes", "on")
-                        _cf_chapters = (result.get("chapters") or []) if _cf_widen else []
-                        _cf_items = []
-                        for _v in _cf_list:
-                            _ev = str(_v.get("evidence") or "")
-                            _exc = None
-                            if _cf_widen:
-                                _exc, _ = _canon_excerpt(_cf_chapters, quote_source=_ev)
-                            _cf_items.append({"signal": _ev[:200], "excerpt": _exc})
-                        _cf_continuity = await _narasi_classify_canon_items(
-                            _cf_items, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, sink=sink,
-                            # Reuse the SAME flag that gates excerpt widening: when it's off, the
-                            # already-live NARASI_CANON_FORK_CLASSIFY path's prompt text stays
-                            # byte-identical to pre-fix (no guardrail sentences, no excerpt
-                            # mention) -- see _narasi_classify_canon_items' widen_prompt docstring.
-                            widen_prompt=_cf_widen)
-                        for _idx in _cf_continuity:
-                            _revisable_fork_ev.add(str(_cf_list[_idx].get("evidence") or ""))
-                        if _revisable_fork_ev:
-                            log.info("canon-fork classify: %d/%d fork(s) are plain continuity errors -> revisable",
-                                     len(_revisable_fork_ev), len(_cf_list))
-                except Exception as _cfe:  # noqa: BLE001
-                    log.warning("canon-fork classify failed (non-fatal, all forks stay protected): %s", _cfe)
-
-            def _fork_protected(_v) -> bool:
-                # a canon_fork is protected UNLESS classify marked its evidence continuity
-                return (str(_v.get("type", "")).lower() == "canon_fork"
-                        and (not _fork_revise or not _isfic_rev)
-                        and str(_v.get("evidence") or "") not in _revisable_fork_ev)
-
-            _cbad = [v for v in (_cq.get("violations") or [])
-                     if str(v.get("severity", "")).lower() in ("critical", "high")
-                     and not _fork_protected(v)]
-            if _narasi_critique_revise_enabled() and _cbad:
-                _t_rev0 = time.monotonic()
-                # r4.1 — REVEAL-PROTECTION SECOND DOOR (roll-6 captured KIE payload): the
-                # _cbad filter above only stops canon_fork from TRIGGERING the revise; the
-                # revise itself received the FULL list, so once ANY other high finding
-                # fired, canon_forks rode into the directives and got "fixed" — exactly
-                # the designed-reveal-gutting the canon_fork policy note forbids. Filter
-                # the revise INPUT under the same policy. Also drop findings the critic
-                # RETRACTED mid-audit ("FIX: RETRACTED — arithmetic checks out"), seen
-                # verbatim in the same payload — noise that can provoke needless edits.
-                import re
-                _cq_rev = dict(_cq)
-                _cq_rev["violations"] = [
-                    v for v in (_cq.get("violations") or [])
-                    if not _fork_protected(v)
-                    and not any(t in str(v.get("fix", "")).lower()[:60]
-                                for t in ("retracted", "no change needed", "no fix needed"))
-                    # roll-7 routing hole: a fix that needs a NEW SCENE ("dramatize the
-                    # delivery... could fit at the opening of Ch5 or Ch6") bounces off
-                    # EVERY chapter-fixer symmetrically ("not my chapter") and can never
-                    # land in a minimal-edit revise — it is a generation-side lesson,
-                    # not a line edit. Keep it in the report, keep it out of the revise.
-                    and not re.search(r"(?i)\b(dramatiz|insert (a|the|one)? ?scene|add (a|the) scene|"
-                                      r"new scene|could fit at the opening)",
-                                      str(v.get("fix", "")))]
-                if len(_cq_rev["violations"]) != len(_cq.get("violations") or []):
-                    log.info("revise input filtered: %d → %d violation(s) (canon_fork report-only / retracted dropped)",
-                             len(_cq.get("violations") or []), len(_cq_rev["violations"]))
-                _crev, _crevc = await _narasi_consistency_revise(
-                    _cbk, _cq_rev, style, language, model=_cmodel,
-                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, credit_row=False)
-                _t_rev = time.monotonic() - _t_rev0
-                if sink is not None and _crevc:
-                    sink.credits += int(_crevc)
-                if _crev and _crev != _cbk:
-                    result[_ckey] = _crev
-                    _cpay = dict(_cq)
-                    _cpay["revised"] = True
-            result["critique"] = _cpay
-            log.info("narration job %s: consistency critic RAN — score=%s, %d violation(s)%s "
-                     "[critic=%.1fs revise=%.1fs model=%s]",
-                     job_id, _cq.get("score"), len(_cq.get("violations") or []),
-                     " -> REVISED" if _cpay.get("revised") else " (report-only)",
-                     _t_crit, _t_rev, (NARASI_CRITIQUE_MODEL or _cmodel or "cheap"))
-        else:
-            log.info("narration job %s: consistency critic SKIPPED "
-                     "(enabled=%s, chapters=%s, min=%s, book_chars=%s)",
-                     job_id, _crit_on, _nch, NARASI_CRITIQUE_MIN_CHAPTERS, len(_cbk))
-    except Exception as e:  # noqa: BLE001
-        log.warning("consistency critic (video path) failed (non-fatal): %s", e)
-
-    # ── (2) R-H10 register scorecard — entry-driven (any style with a register_spec in
-    # the pakem registry), report-only, one cheap call. Deterministic half = banned-tells
-    # substring scan; LLM half = counting the style's required moves. ──
-    try:
-        if str(os.environ.get("NARASI_REGISTER_GATE", "1")).strip().lower() not in ("0", "false", "no", "off"):
-            spec = None
-            style_key = style
-            try:
-                from pakem import resolve_style, resolve_style_key
-                entry = resolve_style(style)
-                spec = entry.get("register_spec")
-                style_key = resolve_style_key(style) or style
-            except Exception:  # noqa: BLE001
-                spec = None
-            if spec and (spec.get("required_moves") or spec.get("banned_tells")):
-                book = result.get("book") or result.get("output") or ""
-                low = book.lower()
-                banned = [t for t in (spec.get("banned_tells") or []) if t and t.lower() in low]
-                moves = list(spec.get("required_moves") or [])
-                # CLUSTER-2 fail-open knob (default OFF): empty/unparsable LLM move-counts
-                # => one bounded retry, then verdict 'inconclusive' instead of 'off_register'.
-                # Prod eky9gcge logged off_register with moves={} banned=[] — zero evidence.
-                _rg_failopen = str(os.environ.get("NARASI_REGISTER_GATE_FAILOPEN", "0")).strip().lower() in ("1", "true", "yes", "on")
-                counts: dict = {}
-                if moves and book:
+                    from orchestrator.static import _is_fiction_style as _isf_rev
+                    _isfic_rev = bool(_isf_rev(style))
+                except Exception:  # noqa: BLE001
+                    _isfic_rev = True
+                _fork_revise = os.environ.get("NARASI_CANON_FORK_REVISE", "0").strip().lower() in ("1", "true", "yes", "on")
+                _revisable_fork_ev = set()
+                if (_isfic_rev and not _fork_revise
+                        and os.environ.get("NARASI_CANON_FORK_CLASSIFY", "0").strip().lower() in ("1", "true", "yes", "on")):
                     try:
-                        from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
-                        _sys = ("You are a strict register auditor. For the declared style, count how many times "
-                                "each REQUIRED MOVE genuinely occurs in the text (a real, executed instance — not a "
-                                "faint echo). Moves: " + ", ".join(moves) + ". "
-                                "Return ONLY JSON mapping each move name to an integer count.")
-                        # _narasi_cheap_call never raises — a degraded relay returns ('', 0),
-                        # which parses to nothing. Flag ON: retry ONCE before giving up; treat a
-                        # bare '{}' as unparsable too. Flag OFF: single attempt, prior behavior.
-                        # Sampling (flag ON only): head-only [:12000] blinds the auditor to
-                        # per-book moves that land mid/late (warmth beat in Ch 3-4, finale
-                        # beats) — same 12k budget, sampled head+middle+tail instead.
-                        _rg_text = (book or "")[:12000]
-                        if _rg_failopen and len(book or "") > 12000:
-                            _rg_n = len(book)
-                            _rg_text = (book[:6000] + "\n[...]\n"
-                                        + book[_rg_n // 2 - 1500:_rg_n // 2 + 1500]
-                                        + "\n[...]\n" + book[-3000:])
-                        for _rg_attempt in (0, 1):
-                            raw, _cr = await _narasi_cheap_call(_sys, _rg_text,
-                                                                tenant_id=tenant_id, user_id=user_id,
-                                                                job_uuid=job_uuid, json_mode=True)
-                            d = _narasi_parse_json(raw) if isinstance(raw, str) else (raw or {})
-                            if not (isinstance(d, dict) and d):
-                                # 3 prod rolls: 6/6 empty with zero forensic trail. Log the raw
-                                # head so empty-upstream vs non-JSON-prose is decidable from logs.
-                                log.warning("register-gate cheap scan attempt %d unparsable — raw head: %r",
-                                            _rg_attempt, (raw or "")[:200])
-                            if isinstance(d, dict) and (d or not _rg_failopen):
-                                counts = {m: int(d.get(m) or 0) for m in moves}
-                            if counts or not _rg_failopen:
-                                break
-                            if _rg_attempt == 0:
-                                log.info("register-gate LLM scan returned empty/unparsable move-counts — retrying once")
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("register-gate LLM scan failed (non-fatal): %s", e)
-                on_register = (not banned) and all(counts.get(m, 0) >= 1 for m in moves) if counts or not moves else False
-                verdict = "on_register" if on_register else "off_register"
-                if _rg_failopen and moves and not counts and not banned:
-                    # Empty counts are ABSENT evidence, not evidence of absence. With no
-                    # deterministic banned-tell hit either, off_register would rest on
-                    # nothing — record 'inconclusive' and skip the flag (fail-open).
-                    verdict = "inconclusive"
-                    log.info("register-gate scan inconclusive for %s (empty LLM move-counts after retry) — skipping off_register flag", style_key)
-                result["register_gate"] = {
-                    "style": style_key, "moves": counts,
-                    "banned_tells": banned, "verdict": verdict,
-                }
-                if verdict == "off_register":
-                    log.warning("register-gate: manuscript flagged off_register for %s (moves=%s banned=%s)",
-                                style_key, counts, banned)
-                    # D (2026-07-07): ACT on off_register instead of only reporting. OPT-IN via
-                    # NARASI_REGISTER_GATE_ENFORCE (default OFF) because 'off_register' is often a
-                    # style-tagging mismatch (a single-POV literary piece tagged romance), NOT a
-                    # defect — enforcing would harm legit jobs. When set, feed the missing moves /
-                    # banned tells to ONE bounded whole-book revise (reuses the #53 revise infra +
-                    # its ≥90%-word guard). Never blocks; keeps the original on any failure.
-                    if str(os.environ.get("NARASI_REGISTER_GATE_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
-                        try:
-                            from laozhang_api import _narasi_consistency_revise
-                            # EVIDENCE-LOCATABILITY: "required move not executed" reports an
-                            # ABSENCE — by definition there is no manuscript text to point at, so
-                            # it is left as-is (permanently unmappable; the whole-book revise path
-                            # this default-routes through needs no per-chapter locator anyway).
-                            _rv = [{"type": "register", "severity": "high",
-                                    "evidence": f"required move not executed: {m}",
-                                    "fix": f"execute the '{m}' move at least once in the book"}
-                                   for m in moves if counts.get(m, 0) < 1]
+                        _cf_list = [v for v in (_cq.get("violations") or [])
+                                    if str(v.get("type", "")).lower() == "canon_fork"][:12]
+                        if _cf_list:
+                            _cf_widen = os.environ.get("NARASI_CANON_FORK_CLASSIFY_CONTEXT", "0").strip().lower() in (
+                                "1", "true", "yes", "on")
+                            _cf_chapters = (result.get("chapters") or []) if _cf_widen else []
+                            _cf_items = []
+                            for _v in _cf_list:
+                                _ev = str(_v.get("evidence") or "")
+                                _exc = None
+                                if _cf_widen:
+                                    _exc, _ = _canon_excerpt(_cf_chapters, quote_source=_ev)
+                                _cf_items.append({"signal": _ev[:200], "excerpt": _exc})
+                            _cf_continuity = await _narasi_classify_canon_items(
+                                _cf_items, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, sink=sink,
+                                widen_prompt=_cf_widen)
+                            for _idx in _cf_continuity:
+                                _revisable_fork_ev.add(str(_cf_list[_idx].get("evidence") or ""))
+                            if _revisable_fork_ev:
+                                log.info("canon-fork classify: %d/%d fork(s) are plain continuity errors -> revisable",
+                                         len(_revisable_fork_ev), len(_cf_list))
+                    except Exception as _cfe:  # noqa: BLE001
+                        log.warning("canon-fork classify failed (non-fatal, all forks stay protected): %s", _cfe)
 
-                            def _bp_ev(t):
-                                # "banned phrasing present": `banned` already confirmed via a
-                                # LOWERCASE substring test that `t` genuinely occurs in the book —
-                                # but `t` itself is the pakem CONFIG's own casing, not the
-                                # manuscript's actual casing/position, so echoing it verbatim
-                                # rarely _occ()-matches real prose. Recover the REAL span/casing
-                                # from the book and quote-wrap THAT; fall back to the old synthetic
-                                # string (unmappable but safe — never a false locator) if the
-                                # recovered slice doesn't case-fold back to `t` (e.g. a rare
-                                # Unicode case-folding length mismatch).
-                                _bidx = low.find(t.lower())
-                                _rc = book[_bidx:_bidx + len(t)] if _bidx >= 0 else ""
-                                return _wq(_rc) if _rc and _rc.lower() == t.lower() else f"banned phrasing present: {t}"
-                            _rv += [{"type": "register", "severity": "high",
-                                     "evidence": _bp_ev(t),
-                                     "fix": f"remove the banned phrasing '{t}'"} for t in banned]
-                            _rkey = "book" if result.get("book") else "output"
-                            _rbk = result.get(_rkey) or ""
-                            if _rv and _rbk:
-                                _rnew, _rc = await _narasi_consistency_revise(
-                                    _rbk, {"violations": _rv}, style_key, language,
-                                    model=(body.get("model") or ""),
-                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                                    credit_row=False)
-                                if sink is not None and _rc:   # bill the revise (see block A note)
-                                    sink.credits += int(_rc)
-                                if _rnew and _rnew != _rbk:
-                                    result[_rkey] = _rnew
-                                    result["register_gate"]["revised"] = True
-                        except Exception as _e:  # noqa: BLE001
-                            log.warning("register-gate enforce revise failed (non-fatal): %s", _e)
-    except Exception as e:  # noqa: BLE001
-        log.warning("register gate failed (non-fatal): %s", e)
+                def _fork_protected(_v) -> bool:
+                    return (str(_v.get("type", "")).lower() == "canon_fork"
+                            and (not _fork_revise or not _isfic_rev)
+                            and str(_v.get("evidence") or "") not in _revisable_fork_ev)
 
-    # ── (2.75) CANON DIFF (Phase 2b) — diff each load-bearing fact against the canon_registry the
-    # bible emitted (Phase 2a, NARASI_CANON_REGISTRY). Catches canon-FORKS the canon-BLIND critic
-    # misses (one pinned fact rendered two ways: river pusaran victim/age, Notebook sea/fire). Bounded
-    # to ONE cheap-call per event (<=8), report-only, gated NARASI_CANON_DIFF (default OFF → skipped →
-    # no cost, byte-identical). Enforce is a SEPARATE opt-in (NARASI_CANON_DIFF_REVISE, default OFF).
-    # Never raises. Cost folds into the umbrella hold via sink.credits, like the register-gate.
-    try:
-        if str(os.environ.get("NARASI_CANON_DIFF", "0")).strip().lower() in ("1", "true", "yes", "on"):
-            import json as _cjson, re as _cre
-            _cf = str(result.get("canonical_facts") or "")   # str-guard: a non-str value can't TypeError _cre.search
-            _reg = None
-            _reg_dbg = ""   # head of the closest-looking block that failed to parse (roll-5: silent 'parse failed')
-            if _cf:
-                # Registry extraction, three shapes (roll 5 proved two aren't enough — sonnet
-                # emitted the registry under a prose heading, unfenced and without the
-                # canon_registry key): (1) fenced ```json block, (2) canon_registry: {...},
-                # (3) any brace-BALANCED object whose head mentions "events" (string-aware
-                # brace counter, bounded). Each candidate gets a second chance with trailing
-                # commas stripped — the most common model-JSON dirt.
-                _cands = []
-                _m = _cre.search(r"```(?:json)?\s*(\{.*?\})\s*```", _cf, _cre.S)
-                if _m:
-                    _cands.append(_m.group(1))
-                _m = _cre.search(r"canon_registry\"?\s*[:=]\s*(\{.*\})", _cf, _cre.S)
-                if _m:
-                    _cands.append(_m.group(1))
-                for _bm in _cre.finditer(r"\{", _cf):
-                    if len(_cands) >= 6:
-                        break
-                    _st = _bm.start()
-                    if not _cre.search(r"\"events\"", _cf[_st:_st + 400]):
-                        continue
-                    _depth, _in_s, _esc = 0, False, False
-                    for _i in range(_st, min(len(_cf), _st + 20000)):
-                        _c = _cf[_i]
-                        if _in_s:
-                            if _esc:
-                                _esc = False
-                            elif _c == "\\":
-                                _esc = True
-                            elif _c == '"':
-                                _in_s = False
-                        elif _c == '"':
-                            _in_s = True
-                        elif _c == "{":
-                            _depth += 1
-                        elif _c == "}":
-                            _depth -= 1
-                            if _depth == 0:
-                                _cands.append(_cf[_st:_i + 1])
-                                break
-                for _cand in _cands:
-                    for _txt in (_cand, _cre.sub(r",\s*([}\]])", r"\1", _cand)):
-                        try:
-                            _p = _cjson.loads(_txt)
-                        except Exception:  # noqa: BLE001
-                            _reg_dbg = _reg_dbg or _txt[:200]
-                            continue
-                        if isinstance(_p, dict):
-                            # unwrap {"canon_registry": {...}} — both nestings are in the wild
-                            if "events" not in _p and isinstance(_p.get("canon_registry"), dict):
-                                _p = _p["canon_registry"]
-                            _reg = _p
-                            break
-                    if _reg is not None:
-                        break
-            # ── FALLBACK EXTRACTION (NARASI_CANON_REGISTRY_EXTRACT, default OFF, round-4):
-            # rolls 5-6 proved the bible model can suppress/garble the registry block even
-            # when asked (roll-6 head-dump: "no registry-shaped block found") — and the
-            # price was the 4th-vs-11th-name fork sailing through uncaught. When the prose
-            # bible exists but no registry parsed, ONE bounded cheap call re-derives it
-            # FROM the prose sheet (json_mode ⟹ rides the GENAI_JSON_MIME fix). Failure ⟹
-            # canon-diff skips exactly as before.
-            if (_reg is None and _cf
-                    and str(os.environ.get("NARASI_CANON_REGISTRY_EXTRACT", "0")).strip().lower() in ("1", "true", "yes", "on")):
-                try:
-                    from laozhang_api import _narasi_cheap_call as _xcall, _narasi_parse_json as _xparse
-                    _xsys = (
-                        "Extract the CANON REGISTRY from this story fact-sheet. Return ONLY JSON: "
-                        "{\"events\":[{\"id\":\"<slug>\",\"summary\":\"<short>\",\"when\":{\"anchor\":\"<slug>\"},"
-                        "\"participants\":{\"<role>\":\"<name>\"},\"key_action\":\"<slug>\","
-                        "\"false_versions\":[{\"claim\":\"<the official/cover version>\",\"corrected_in_chapter\":<n>}],"
-                        "\"chapters\":[<n>]}]} — ONLY load-bearing plot events (max 8). Where the sheet keeps an "
-                        "official value AND a true value for one fact, the TRUE value is canonical and the official "
-                        "one goes into false_versions. Include every named QUANTITY, list POSITION, and role-holder "
-                        "the plot turns on. No prose.")
-                    _xraw, _xcc = await _xcall(_xsys, _cf[:20000], tenant_id=tenant_id,
-                                               user_id=user_id, job_uuid=job_uuid, json_mode=True,
-                                               credit_row=False)
-                    if sink is not None and _xcc:
-                        sink.credits += int(_xcc)
-                    _xd = _xparse(_xraw) if isinstance(_xraw, str) else (_xraw or {})
-                    # r5.2: unwrap {"canon_registry": {...}} shape here too
-                    if isinstance(_xd, dict) and "events" not in _xd and isinstance(_xd.get("canon_registry"), dict):
-                        _xd = _xd["canon_registry"]
-                    if isinstance(_xd, dict) and isinstance(_xd.get("events"), list) and _xd["events"]:
-                        _reg = _xd
-                        log.info("canon-registry: fallback extraction recovered %d event(s) from prose bible",
-                                 len(_xd["events"]))
-                    else:
-                        # ROUND-6 (SBF roll): the r5.2 WARN did its job — it showed the cheap
-                        # call RETURNING a valid-looking events JSON that the plain parse still
-                        # rejected (token-cap truncation ⟹ unbalanced tail). Salvage: brace-scan
-                        # the raw string for INDIVIDUALLY balanced event objects and rebuild the
-                        # registry from the complete ones; a truncated final object is dropped,
-                        # not fatal. WARN only when even salvage finds nothing.
-                        _xs = str(_xraw or "")
-                        _sal = []
-                        import re as _xre
-                        import json as _xjson
-                        for _bm in _xre.finditer(r"\{", _xs):
-                            _st = _bm.start()
-                            if not _xre.search(r"\"(?:id|summary)\"", _xs[_st:_st + 200]):
-                                continue
-                            _depth, _in_s, _esc = 0, False, False
-                            for _i in range(_st, min(len(_xs), _st + 8000)):
-                                _c = _xs[_i]
-                                if _in_s:
-                                    if _esc:
-                                        _esc = False
-                                    elif _c == "\\":
-                                        _esc = True
-                                    elif _c == '"':
-                                        _in_s = False
-                                elif _c == '"':
-                                    _in_s = True
-                                elif _c == "{":
-                                    _depth += 1
-                                elif _c == "}":
-                                    _depth -= 1
-                                    if _depth == 0:
-                                        _cand = _xs[_st:_i + 1]
-                                        for _txt in (_cand, _xre.sub(r",\s*([}\]])", r"\1", _cand)):
-                                            try:
-                                                _obj = _xjson.loads(_txt)
-                                            except Exception:  # noqa: BLE001
-                                                continue
-                                            if isinstance(_obj, dict) and _obj.get("id") and _obj.get("summary"):
-                                                _sal.append(_obj)
-                                            break
-                                        break
-                            if len(_sal) >= 8:
-                                break
-                        if _sal:
-                            _reg = {"events": _sal}
-                            log.info("canon-registry: fallback SALVAGED %d complete event(s) from truncated response",
-                                     len(_sal))
-                        else:
-                            log.warning("canon-registry fallback returned no events — raw head: %s",
-                                        str(_xraw)[:220].replace("\n", " "))
-                except Exception as _xe:  # noqa: BLE001
-                    log.warning("canon-registry fallback extraction failed (non-fatal): %s", _xe)
-            _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None
-            if isinstance(_events, list) and _events:
-                from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
-                _cbook = result.get("book") or result.get("output") or ""
-                _forks = []
-                # COUNTERPOINT NUMBERS (bible heading 17, round-3): deliberately divergent
-                # value pairs (official 112/287 vs private 291) are DESIGN, not forks — the
-                # roll-5 critic scored 4.0 by misreading exactly this. Quote the sanction
-                # list into every event auditor. Absent/'none' ⟹ prompt unchanged.
-                _cpt = ""
-                _cpm = _cre.search(r"(?is)\bCOUNTERPOINT\s+NUMBERS?\b\s*[—:\-]?\s*"
-                                   r"(.{0,500}?)(?=\n\s*(?:\d{1,2}\.|[A-Z][A-Z &]{6,})|\Z)", _cf)
-                if _cpm and _cpm.group(1).strip().rstrip(".").strip("'\"").lower() != "none":
-                    _cpt = _cre.sub(r"\s+", " ", _cpm.group(1)).strip()[:400]
-                for _ev in _events[:8]:
-                    if not isinstance(_ev, dict) or not _cbook:
-                        continue
-                    _canon = {k: _ev.get(k) for k in ("when", "participants", "key_action", "summary") if _ev.get(k)}
-                    _fv = _ev.get("false_versions") or []
-                    _csys = (
-                        "You are a canon auditor with a fact sheet you must trust over your own reading. "
-                        "CANONICAL values for one event: " + _cjson.dumps(_canon, ensure_ascii=False) + ". "
-                        "Sanctioned FALSE versions (LEGAL only in chapters BEFORE their corrected_in_chapter): "
-                        + _cjson.dumps(_fv, ensure_ascii=False) + ". Scan the book and report EVERY chapter that "
-                        "renders this event with a value DIFFERENT from the canonical one and NOT a sanctioned "
-                        "false version before its correction — even if it reads like an intended reveal. Return "
-                        "ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<field>\",\"found\":\"<value>\","
-                        "\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt from THIS chapter, copied "
-                        "character-for-character from the book text, that shows the found value — never "
-                        "paraphrased>\"}]}. Empty list if the book is consistent with canon."
-                        + ((" SANCTIONED COUNTERPOINT PAIRS (the story keeps BOTH values alive by design "
-                            "— never report either as a fork): " + _cpt) if _cpt else ""))
-                    try:
-                        # EVIDENCE-LOCATABILITY (Task 5, 2026-07-17): raised from [:12000] to match
-                        # domain-plausibility's [:60000] cap — a manuscript beyond ~2-3 chapters was
-                        # otherwise auditing facts in chapters the model was never shown. No comment/
-                        # commit evidence the 12000 was a DELIBERATE cost choice, so raising per the
-                        # task's instruction. COST NOTE worth flagging: this call fires once PER
-                        # EVENT (<=8/job) with the SAME leading slice each time, so THIS gate's own
-                        # manuscript-token spend rises ~5x (proportional to the slice), same 8-call
-                        # ceiling as before — and, per job, it now spends up to 8x MORE manuscript
-                        # tokens than domain-plausibility's equivalent ONE call at the same [:60000]
-                        # cap (8×60000 vs domain-plausibility's 1×60000). Flagging for Rino to weigh;
-                        # not dialed back here since the task asked to match the cap unless the
-                        # smaller value was demonstrably deliberate, which it isn't.
-                        _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:60000],
-                                                             tenant_id=tenant_id, user_id=user_id,
-                                                             job_uuid=job_uuid, json_mode=True,
-                                                             credit_row=False)
-                        if sink is not None and _cc:
-                            sink.credits += int(_cc)
-                        _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
-                        for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
-                            if isinstance(_f, dict) and _f.get("found"):
-                                _forks.append({"event": _ev.get("id") or _ev.get("summary"),
-                                               "chapter": _f.get("chapter"), "field": _f.get("field"),
-                                               "found": str(_f.get("found"))[:160],
-                                               "expected": str(_f.get("expected"))[:160],
-                                               # fail-safe: absent on an older/malformed response —
-                                               # empty string, never crashes the rest of parsing.
-                                               "quote": str(_f.get("quote") or "")[:160]})
-                    except Exception as _e:  # noqa: BLE001
-                        log.warning("canon-diff event scan failed (non-fatal): %s", _e)
-                result["canon_diff"] = {"events_checked": len(_events[:8]), "forks": _forks[:20]}
-                if _forks:
-                    log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only): %s",
-                                len(_forks), job_id, [str(f)[:90] for f in _forks[:5]])
-                    # ROUND-10 (NARASI_CANON_ENFORCE_NONREVEAL, default OFF): forks on
-                    # WHEN/PARTICIPANTS fields are mechanical attribution errors (roll-13:
-                    # WHO opened the door forked across four chapters) — repairing them
-                    # spoils no reveal. false_versions/summary/key_action forks stay
-                    # report-only (r4.1 reveal protection) UNLESS the extended classifier
-                    # below (NARASI_CANON_DIFF_CLASSIFY, default OFF) clears them. ONE
-                    # bounded chunked-revise pass, cap 4, never raises.
-                    #
-                    # SUPPLEMENT, not replace (2026-07-17, canon-fork classifier fix part
-                    # b/c): the when/participants field-name filter (_fast_path below) is
-                    # UNCHANGED — same forks, same zero-LLM-dependency reliability, byte-
-                    # identical to today when NARASI_CANON_DIFF_CLASSIFY is off. Chose
-                    # supplement over replace because (i) replacing would put the currently-
-                    # live, 100%-reliable fast path behind a fallible LLM call whose own
-                    # fail-safe is "stays protected" — i.e. a flaky classify call would
-                    # silently REGRESS availability on a path with no established accuracy
-                    # problem, which requirement (d) ("not more aggressive, only more
-                    # accurate") does not ask for; (ii) it keeps this a new, independently-
-                    # rollback-able flag rather than silently redefining what the already-
-                    # live NARASI_CANON_ENFORCE_NONREVEAL=1 does the instant this deploys.
-                    # The residual pool (_other — summary/key_action forks, previously
-                    # permanently protected regardless of correctness) is what actually gets
-                    # NEW eligibility here: each is given a real semantic judgment via the
-                    # same shared classifier mechanism-1 uses (widened manuscript excerpt +
-                    # the conservative default-to-reveal bias), not just the value pairs.
-                    # Classifier is only invoked when there's spare room in the batch-of-4
-                    # (avoids a wasted call once the fast path alone already saturates it).
-                    try:
-                        if str(os.environ.get("NARASI_CANON_ENFORCE_NONREVEAL", "0")).strip().lower() in ("1", "true", "yes", "on"):
-                            _fast_path = [f for f in _forks
-                                          if str((f or {}).get("field") or "").split(".")[0] in ("when", "participants")]
-                            _fast_ids = {id(f) for f in _fast_path}
-                            _other = [f for f in _forks if id(f) not in _fast_ids]
-                            _classified = []
-                            if (_other and len(_fast_path) < 4
-                                    and str(os.environ.get("NARASI_CANON_DIFF_CLASSIFY", "0")).strip().lower() in (
-                                        "1", "true", "yes", "on")):
-                                try:
-                                    _cd_chapters = result.get("chapters") or []
-                                    _cd_items = []
-                                    for _f in _other:
-                                        _sig = (f"Field: {_f.get('field')}. Chapter {_f.get('chapter')} states "
-                                                f"this as {_f.get('found')!r}; canon registry expects "
-                                                f"{_f.get('expected')!r}.")
-                                        # _wq()-wrap: canon-diff's "quote" field is the raw
-                                        # excerpt VALUE itself (per its own extraction schema),
-                                        # not evidence-shaped free text with embedded quote
-                                        # marks like mechanism-1's "evidence" — _canon_quote_
-                                        # spans()/_canon_excerpt()'s span search only extracts
-                                        # text sitting BETWEEN literal quote characters (same
-                                        # convention as laozhang_api.py's _spans()), so an
-                                        # unwrapped raw quote would silently match nothing.
-                                        _exc, _ = _canon_excerpt(_cd_chapters, chapter_no=_f.get("chapter"),
-                                                                 quote_source=_wq(_f.get("quote")))
-                                        _cd_items.append({"signal": _sig, "excerpt": _exc})
-                                    _cd_continuity = await _narasi_classify_canon_items(
-                                        _cd_items, tenant_id=tenant_id, user_id=user_id,
-                                        job_uuid=job_uuid, sink=sink)
-                                    _classified = [_other[_i] for _i in _cd_continuity if 0 <= _i < len(_other)]
-                                    if _classified:
-                                        log.info("canon-diff classify: %d/%d residual fork(s) (non when/"
-                                                 "participants) are plain continuity errors -> eligible for "
-                                                 "enforce", len(_classified), len(_other))
-                                except Exception as _cde:  # noqa: BLE001
-                                    log.warning("canon-diff classify failed (non-fatal, residual forks stay "
-                                                "protected): %s", _cde)
-                            _nrv = (_fast_path + _classified)[:4]
-                            if _nrv:
-                                # EVIDENCE-LOCATABILITY (Task 3, extended part c): prefer the auditor's
-                                # verbatim "quote" field (quote-wrapped for _spans()) over the bare "found"
-                                # paraphrase, AND append the deterministic "@ch{N}" locator (fork["chapter"]
-                                # is a reliable int straight from the model, unlike mechanism-1's evidence)
-                                # — the same _wq()+@chN belt-and-suspenders convention thread-tracker and
-                                # chapter_boundary_break already use. This matters MORE here than elsewhere:
-                                # canon-diff's "quote" has no post-check verifying it's a literal manuscript
-                                # substring (unlike domain-plausibility's), so ordinary LLM paraphrase drift
-                                # can make _occ() fail to find it — without @chN that fork silently lands
-                                # UNMAPPED and never gets the fix it was just approved for.
-                                # NARASI_CANON_ENFORCE_NONREVEAL is already live -- gating the @chN
-                                # append behind its own new, separately-rollback-able, default-OFF
-                                # flag rather than appending it unconditionally (adversarial audit
-                                # finding, 2026-07-17: this fires on the fast-path when/participants
-                                # forks too, which have nothing to do with NARASI_CANON_DIFF_CLASSIFY
-                                # being on or off, so that flag alone can't gate it).
-                                _chn_locator_on = os.environ.get(
-                                    "NARASI_CANON_ENFORCE_CHN_LOCATOR", "0").strip().lower() in (
-                                    "1", "true", "yes", "on")
-                                _nrviol = []
-                                for f in _nrv:
-                                    _ev = _wq(f.get("quote")) or str(f.get("found") or "")[:200]
-                                    _chn = f.get("chapter")
-                                    if _chn is not None and _chn_locator_on:
-                                        _ev = f"{_ev} @ch{_chn}"
-                                    _nrviol.append({
-                                        "type": "canon_attribution", "severity": "high",
-                                        "evidence": _ev[:200],
-                                        "fix": (f"The fact sheet pins event «{f.get('event')}» {f.get('field')} "
-                                                f"differently than this chapter states — align the chapter to "
-                                                f"the fact sheet's version; change nothing else.")})
-                                from laozhang_api import _narasi_revise_chunked as _nrev
-                                _nrmodel = str(body.get("model") or "") or "claude-opus-4-6"
-                                _nrnew, _nrcr = await _nrev(_cbook, _nrviol, style, language, _nrmodel,
-                                                            tenant_id=tenant_id, user_id=user_id,
-                                                            job_uuid=job_uuid, credit_row=False)
-                                if sink is not None and _nrcr:
-                                    sink.credits += int(_nrcr)
-                                if (_nrnew and str(_nrnew) != _cbook
-                                        and len(str(_nrnew).split()) >= int(len(_cbook.split()) * 0.9)):
-                                    result["book" if result.get("book") else "output"] = str(_nrnew)
-                                    log.info("canon-enforce: %d non-reveal fork(s) sent to revise — book updated",
-                                             len(_nrviol))
-                                else:
-                                    # ROUND-11: r10 logged "book updated" even on a no-op revise
-                                    # (roll-14: evidence 'someone' mapped to no chapter).
-                                    log.info("canon-enforce: %d non-reveal fork(s) sent — revise landed nothing",
-                                             len(_nrviol))
-                    except Exception as _nre:  # noqa: BLE001
-                        log.warning("canon-enforce non-reveal failed (non-fatal): %s", _nre)
-                    # enforce (opt-in, default OFF): feed the forks to ONE bounded whole-book revise,
-                    # reusing the #53 revise infra + its >=90%-word guard. Never blocks; keeps original.
-                    if str(os.environ.get("NARASI_CANON_DIFF_REVISE", "0")).strip().lower() in ("1", "true", "yes", "on"):
-                        try:
-                            from laozhang_api import _narasi_consistency_revise
-                            _cv = [{"type": "canon_fork", "severity": "high",
-                                    "evidence": "Bab %s renders %s as '%s'; canon = '%s'" % (
-                                        _fk.get("chapter"), _fk.get("field"), _fk.get("found"), _fk.get("expected")),
-                                    "fix": "align this chapter's rendering to the canonical value"}
-                                   for _fk in _forks]
-                            _ckey = "book" if result.get("book") else "output"
-                            _cbk2 = result.get(_ckey) or ""
-                            if _cv and _cbk2:
-                                _cnew, _cc2 = await _narasi_consistency_revise(
-                                    _cbk2, {"violations": _cv}, style, language,
-                                    model=(body.get("model") or ""),
-                                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                                    credit_row=False)
-                                if sink is not None and _cc2:
-                                    sink.credits += int(_cc2)
-                                if _cnew and _cnew != _cbk2:
-                                    result[_ckey] = _cnew
-                                    result["canon_diff"]["revised"] = True
-                        except Exception as _e:  # noqa: BLE001
-                            log.warning("canon-diff enforce revise failed (non-fatal): %s", _e)
-                else:
-                    log.info("canon-diff: 0 fork(s) across %d event(s) for job %s (clean run)",
-                             len(_events[:8]), job_id)
+                _cbad = [v for v in (_cq.get("violations") or [])
+                         if str(v.get("severity", "")).lower() in ("critical", "high")
+                         and not _fork_protected(v)]
+                _eligible = []
+                if _narasi_critique_revise_enabled() and _cbad:
+                    import re
+                    _cq_rev = dict(_cq)
+                    _cq_rev["violations"] = [
+                        v for v in (_cq.get("violations") or [])
+                        if not _fork_protected(v)
+                        and not any(t in str(v.get("fix", "")).lower()[:60]
+                                    for t in ("retracted", "no change needed", "no fix needed"))
+                        and not re.search(r"(?i)\b(dramatiz|insert (a|the|one)? ?scene|add (a|the) scene|"
+                                          r"new scene|could fit at the opening)",
+                                          str(v.get("fix", "")))]
+                    if len(_cq_rev["violations"]) != len(_cq.get("violations") or []):
+                        log.info("revise input filtered: %d → %d violation(s) (canon_fork report-only / retracted dropped)",
+                                 len(_cq.get("violations") or []), len(_cq_rev["violations"]))
+                    _eligible = _cq_rev["violations"]
+                _out.update({"ran": True, "cq": _cq, "cpay": _cpay, "t_crit": _t_crit, "cmodel": _cmodel,
+                             "nch": _nch, "crit_on": _crit_on, "cbk": _cbk, "eligible": _eligible})
             else:
-                _reason = ("canonical_facts absent" if not _cf else
-                           "registry parse failed" if _reg is None else
-                           "registry has no events")
-                # self-diagnosing skip (roll 5 said only 'parse failed' — nothing to act on):
-                # quote the closest-looking block, or the bible tail when nothing looked like one.
-                if _reason == "registry parse failed" and not _reg_dbg:
-                    _reg_dbg = "no registry-shaped block found; bible tail: " + _cf[-160:]
-                result["canon_diff"] = {"events_checked": 0, "forks": [], "skipped": _reason}
-                log.info("canon-diff: skipped for job %s — %s%s", job_id, _reason,
-                         (" | " + _cre.sub(r"\s+", " ", _reg_dbg)) if _reg_dbg else "")
-    except Exception as e:  # noqa: BLE001
-        log.warning("canon-diff gate failed (non-fatal): %s", e)
+                log.info("narration job %s: consistency critic SKIPPED "
+                         "(enabled=%s, chapters=%s, min=%s, book_chars=%s)",
+                         job_id, _crit_on, _nch, NARASI_CRITIQUE_MIN_CHAPTERS, len(_cbk))
+        except Exception as e:  # noqa: BLE001
+            log.warning("consistency critic (video path) failed (non-fatal): %s", e)
+        return _out
 
-    # ── (2.76) UNRESOLVED-THREAD TRACKER — catches a setup the mega-critic already missed
-    # ANYWHERE in the book (a subplot planted at, say, the 40% mark) by reading the WHOLE
-    # assembled book ONCE (Pass 1, extraction) and then checking just the ending ONCE more
-    # (Pass 2, verification, batched — not a loop) against that thread list. Two cheap-tier
-    # calls total, same _narasi_cheap_call helper canon-diff itself uses. Pass 1 is
-    # deliberately NOT capped at canon-diff's per-event [:60000] slice — it's capped at
-    # NARASI_CRITIQUE_MAX_CHARS scale instead: the whole point of this mechanism is catching
-    # what the mega-critic already missed WHILE reading the full book, so capping Pass 1's
-    # input would make it structurally blind to exactly the defect class it exists to catch
-    # (a setup planted past a 60000-char/~25%-of-book cutoff in a 40k-word book). Report-only,
-    # gated NARASI_THREAD_TRACKER (default OFF → skipped → no cost, byte-identical). Enforce
-    # is a SEPARATE opt-in (NARASI_THREAD_TRACKER_ENFORCE, default OFF), nested under this
-    # flag being on (mirrors NARASI_CANON_DIFF/NARASI_CANON_DIFF_REVISE's nesting above). Own
-    # independent block — deliberately does NOT route through _r7_actuator_violations()/_mech
-    # (that pipeline is nested inside NARASI_LEDGER_ENFORCE inside a _crit_on/_cbk/_nch
-    # co-dependency chain already self-documented as an anti-pattern, see the
-    # NARASI_BRAND_REPORT comment further down). Never raises.
-    try:
-        if str(os.environ.get("NARASI_THREAD_TRACKER", "0")).strip().lower() in ("1", "true", "yes", "on"):
-            from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
-            _ttbook = result.get("book") or result.get("output") or ""
-            if _ttbook:
-                _tt_max = int(os.environ.get("NARASI_CRITIQUE_MAX_CHARS", "300000"))
-                _tt_threads: list = []
-                _tt_sys1 = (
-                    "You are reading a complete manuscript once, looking ONLY for THREADS the "
-                    "story itself opens and appears to leave unresolved: a character's fate left "
-                    "hanging, a named enabler or co-conspirator whose culpability is established "
-                    "on-page but never addressed, a promised future consequence, or an open "
-                    "mystery the text frames as a specific question. Only list threads that, as "
-                    "far as this read shows, are left open; a deliberately open/ambiguous ending "
-                    "is NOT a violation — don't manufacture one. When genuinely unsure whether an "
-                    "omission is deliberate craft or an oversight, do not include it. Return ONLY "
-                    "JSON: {\"threads\":[{\"id\":\"<short slug>\",\"thread_type\":"
-                    "\"character_fate|unpunished_enabler|promised_consequence|open_mystery\","
-                    "\"description\":\"<one-line: what is left open>\",\"chapter_introduced\":<int>,"
-                    "\"quote\":\"<short excerpt from THIS chapter, copied character-for-character "
-                    "from the book text, that establishes the thread — never paraphrased>\"}]} — "
-                    "at most 8 threads; empty list if nothing qualifies.")
+    def _v3g_critic_finalize(_out, _changed, _t_rev):
+        if not _out.get("ran"):
+            return
+        try:
+            from laozhang_api import NARASI_CRITIQUE_MODEL
+        except Exception:  # noqa: BLE001
+            NARASI_CRITIQUE_MODEL = ""
+        _cq = _out["cq"]
+        _cpay = _out["cpay"]
+        if _out.get("eligible") and _changed:
+            _cpay = dict(_cq)
+            _cpay["revised"] = True
+        result["critique"] = _cpay
+        log.info("narration job %s: consistency critic RAN — score=%s, %d violation(s)%s "
+                 "[critic=%.1fs revise=%.1fs model=%s]",
+                 job_id, _cq.get("score"), len(_cq.get("violations") or []),
+                 " -> REVISED" if _cpay.get("revised") else " (report-only)",
+                 _out["t_crit"], _t_rev if _out.get("eligible") else 0.0,
+                 (NARASI_CRITIQUE_MODEL or _out["cmodel"] or "cheap"))
+
+    async def _v3g_register_detect():
+        # ── (2) R-H10 register scorecard — entry-driven (any style with a register_spec in
+        # the pakem registry), report-only, one cheap call. Deterministic half = banned-
+        # tells substring scan; LLM half = counting the style's required moves. ──
+        _out = {"ran": False, "eligible": []}
+        try:
+            if str(os.environ.get("NARASI_REGISTER_GATE", "1")).strip().lower() not in ("0", "false", "no", "off"):
+                spec = None
+                style_key = style
                 try:
-                    # 8 threads x (id+thread_type+description+chapter_introduced+verbatim quote)
-                    # is a richer per-item schema than any other _narasi_cheap_call site in this
-                    # file — the mega-critic's own sizing math (~110 tok/item, bumped 2000->5000
-                    # after a real prod truncation incident) undersells this call's real cost, so
-                    # default well above the 800-token _narasi_cheap_call floor.
-                    _tt_max_tok1 = int(os.environ.get("NARASI_THREAD_TRACKER_MAX_TOKENS", "3000"))
-                    _tt_raw1, _tt_cc1 = await _narasi_cheap_call(_tt_sys1, _ttbook[:_tt_max],
+                    from pakem import resolve_style, resolve_style_key
+                    entry = resolve_style(style)
+                    spec = entry.get("register_spec")
+                    style_key = resolve_style_key(style) or style
+                except Exception:  # noqa: BLE001
+                    spec = None
+                if spec and (spec.get("required_moves") or spec.get("banned_tells")):
+                    book = _gbook0
+                    low = book.lower()
+                    banned = [t for t in (spec.get("banned_tells") or []) if t and t.lower() in low]
+                    moves = list(spec.get("required_moves") or [])
+                    _rg_failopen = str(os.environ.get("NARASI_REGISTER_GATE_FAILOPEN", "0")).strip().lower() in ("1", "true", "yes", "on")
+                    counts: dict = {}
+                    if moves and book:
+                        try:
+                            from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
+                            _sys = ("You are a strict register auditor. For the declared style, count how many times "
+                                    "each REQUIRED MOVE genuinely occurs in the text (a real, executed instance — not a "
+                                    "faint echo). Moves: " + ", ".join(moves) + ". "
+                                    "Return ONLY JSON mapping each move name to an integer count.")
+                            _rg_text = (book or "")[:12000]
+                            if _rg_failopen and len(book or "") > 12000:
+                                _rg_n = len(book)
+                                _rg_text = (book[:6000] + "\n[...]\n"
+                                            + book[_rg_n // 2 - 1500:_rg_n // 2 + 1500]
+                                            + "\n[...]\n" + book[-3000:])
+                            for _rg_attempt in (0, 1):
+                                raw, _cr = await _narasi_cheap_call(_sys, _rg_text,
+                                                                    tenant_id=tenant_id, user_id=user_id,
+                                                                    job_uuid=job_uuid, json_mode=True)
+                                d = _narasi_parse_json(raw) if isinstance(raw, str) else (raw or {})
+                                if not (isinstance(d, dict) and d):
+                                    log.warning("register-gate cheap scan attempt %d unparsable — raw head: %r",
+                                                _rg_attempt, (raw or "")[:200])
+                                if isinstance(d, dict) and (d or not _rg_failopen):
+                                    counts = {m: int(d.get(m) or 0) for m in moves}
+                                if counts or not _rg_failopen:
+                                    break
+                                if _rg_attempt == 0:
+                                    log.info("register-gate LLM scan returned empty/unparsable move-counts — retrying once")
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("register-gate LLM scan failed (non-fatal): %s", e)
+                    on_register = (not banned) and all(counts.get(m, 0) >= 1 for m in moves) if counts or not moves else False
+                    verdict = "on_register" if on_register else "off_register"
+                    if _rg_failopen and moves and not counts and not banned:
+                        verdict = "inconclusive"
+                        log.info("register-gate scan inconclusive for %s (empty LLM move-counts after retry) — skipping off_register flag", style_key)
+                    result["register_gate"] = {
+                        "style": style_key, "moves": counts,
+                        "banned_tells": banned, "verdict": verdict,
+                    }
+                    _eligible = []
+                    if verdict == "off_register":
+                        log.warning("register-gate: manuscript flagged off_register for %s (moves=%s banned=%s)",
+                                    style_key, counts, banned)
+                        if str(os.environ.get("NARASI_REGISTER_GATE_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                            try:
+                                _rv = [{"type": "register", "severity": "high",
+                                        "evidence": f"required move not executed: {m}",
+                                        "fix": f"execute the '{m}' move at least once in the book"}
+                                       for m in moves if counts.get(m, 0) < 1]
+
+                                def _bp_ev(t):
+                                    _bidx = low.find(t.lower())
+                                    _rc = book[_bidx:_bidx + len(t)] if _bidx >= 0 else ""
+                                    return _wq(_rc) if _rc and _rc.lower() == t.lower() else f"banned phrasing present: {t}"
+                                _rv += [{"type": "register", "severity": "high",
+                                         "evidence": _bp_ev(t),
+                                         "fix": f"remove the banned phrasing '{t}'"} for t in banned]
+                                if _rv and book:
+                                    _eligible = _rv
+                            except Exception as _e:  # noqa: BLE001
+                                log.warning("register-gate enforce build failed (non-fatal): %s", _e)
+                    _out.update({"ran": True, "eligible": _eligible})
+        except Exception as e:  # noqa: BLE001
+            log.warning("register gate failed (non-fatal): %s", e)
+        return _out
+
+    def _v3g_register_finalize(_out, _changed):
+        if _out.get("ran") and _out.get("eligible") and _changed:
+            try:
+                result["register_gate"]["revised"] = True
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _v3g_canon_diff_detect():
+        # ── (2.75) CANON DIFF (Phase 2b) — diff each load-bearing fact against the
+        # canon_registry the bible emitted. Catches canon-FORKS the canon-BLIND critic
+        # misses. Bounded to ONE cheap-call per event (<=8), report-only, gated
+        # NARASI_CANON_DIFF (default OFF → skipped → no cost, byte-identical). Enforce is a
+        # SEPARATE opt-in (NARASI_CANON_DIFF_REVISE / NARASI_CANON_ENFORCE_NONREVEAL, both
+        # default OFF). Never raises. ──
+        _out = {"ran": False, "eligible": [], "nonreveal_eligible": [], "diffrevise_eligible": []}
+        try:
+            if str(os.environ.get("NARASI_CANON_DIFF", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                import json as _cjson, re as _cre
+                _nrviol: list = []
+                _cv: list = []
+                _cf = str(result.get("canonical_facts") or "")
+                _reg = None
+                _reg_dbg = ""
+                if _cf:
+                    _cands = []
+                    _m = _cre.search(r"```(?:json)?\s*(\{.*?\})\s*```", _cf, _cre.S)
+                    if _m:
+                        _cands.append(_m.group(1))
+                    _m = _cre.search(r"canon_registry\"?\s*[:=]\s*(\{.*\})", _cf, _cre.S)
+                    if _m:
+                        _cands.append(_m.group(1))
+                    for _bm in _cre.finditer(r"\{", _cf):
+                        if len(_cands) >= 6:
+                            break
+                        _st = _bm.start()
+                        if not _cre.search(r"\"events\"", _cf[_st:_st + 400]):
+                            continue
+                        _depth, _in_s, _esc = 0, False, False
+                        for _i in range(_st, min(len(_cf), _st + 20000)):
+                            _c = _cf[_i]
+                            if _in_s:
+                                if _esc:
+                                    _esc = False
+                                elif _c == "\\":
+                                    _esc = True
+                                elif _c == '"':
+                                    _in_s = False
+                            elif _c == '"':
+                                _in_s = True
+                            elif _c == "{":
+                                _depth += 1
+                            elif _c == "}":
+                                _depth -= 1
+                                if _depth == 0:
+                                    _cands.append(_cf[_st:_i + 1])
+                                    break
+                    for _cand in _cands:
+                        for _txt in (_cand, _cre.sub(r",\s*([}\]])", r"\1", _cand)):
+                            try:
+                                _p = _cjson.loads(_txt)
+                            except Exception:  # noqa: BLE001
+                                _reg_dbg = _reg_dbg or _txt[:200]
+                                continue
+                            if isinstance(_p, dict):
+                                if "events" not in _p and isinstance(_p.get("canon_registry"), dict):
+                                    _p = _p["canon_registry"]
+                                _reg = _p
+                                break
+                        if _reg is not None:
+                            break
+                if (_reg is None and _cf
+                        and str(os.environ.get("NARASI_CANON_REGISTRY_EXTRACT", "0")).strip().lower() in ("1", "true", "yes", "on")):
+                    try:
+                        from laozhang_api import _narasi_cheap_call as _xcall, _narasi_parse_json as _xparse
+                        _xsys = (
+                            "Extract the CANON REGISTRY from this story fact-sheet. Return ONLY JSON: "
+                            "{\"events\":[{\"id\":\"<slug>\",\"summary\":\"<short>\",\"when\":{\"anchor\":\"<slug>\"},"
+                            "\"participants\":{\"<role>\":\"<name>\"},\"key_action\":\"<slug>\","
+                            "\"false_versions\":[{\"claim\":\"<the official/cover version>\",\"corrected_in_chapter\":<n>}],"
+                            "\"chapters\":[<n>]}]} — ONLY load-bearing plot events (max 8). Where the sheet keeps an "
+                            "official value AND a true value for one fact, the TRUE value is canonical and the official "
+                            "one goes into false_versions. Include every named QUANTITY, list POSITION, and role-holder "
+                            "the plot turns on. No prose.")
+                        _xraw, _xcc = await _xcall(_xsys, _cf[:20000], tenant_id=tenant_id,
+                                                   user_id=user_id, job_uuid=job_uuid, json_mode=True,
+                                                   credit_row=False)
+                        if sink is not None and _xcc:
+                            sink.credits += int(_xcc)
+                        _xd = _xparse(_xraw) if isinstance(_xraw, str) else (_xraw or {})
+                        if isinstance(_xd, dict) and "events" not in _xd and isinstance(_xd.get("canon_registry"), dict):
+                            _xd = _xd["canon_registry"]
+                        if isinstance(_xd, dict) and isinstance(_xd.get("events"), list) and _xd["events"]:
+                            _reg = _xd
+                            log.info("canon-registry: fallback extraction recovered %d event(s) from prose bible",
+                                     len(_xd["events"]))
+                        else:
+                            _xs = str(_xraw or "")
+                            _sal = []
+                            import re as _xre
+                            import json as _xjson
+                            for _bm in _xre.finditer(r"\{", _xs):
+                                _st = _bm.start()
+                                if not _xre.search(r"\"(?:id|summary)\"", _xs[_st:_st + 200]):
+                                    continue
+                                _depth, _in_s, _esc = 0, False, False
+                                for _i in range(_st, min(len(_xs), _st + 8000)):
+                                    _c = _xs[_i]
+                                    if _in_s:
+                                        if _esc:
+                                            _esc = False
+                                        elif _c == "\\":
+                                            _esc = True
+                                        elif _c == '"':
+                                            _in_s = False
+                                    elif _c == '"':
+                                        _in_s = True
+                                    elif _c == "{":
+                                        _depth += 1
+                                    elif _c == "}":
+                                        _depth -= 1
+                                        if _depth == 0:
+                                            _cand = _xs[_st:_i + 1]
+                                            for _txt in (_cand, _xre.sub(r",\s*([}\]])", r"\1", _cand)):
+                                                try:
+                                                    _obj = _xjson.loads(_txt)
+                                                except Exception:  # noqa: BLE001
+                                                    continue
+                                                if isinstance(_obj, dict) and _obj.get("id") and _obj.get("summary"):
+                                                    _sal.append(_obj)
+                                                break
+                                            break
+                                if len(_sal) >= 8:
+                                    break
+                            if _sal:
+                                _reg = {"events": _sal}
+                                log.info("canon-registry: fallback SALVAGED %d complete event(s) from truncated response",
+                                         len(_sal))
+                            else:
+                                log.warning("canon-registry fallback returned no events — raw head: %s",
+                                            str(_xraw)[:220].replace("\n", " "))
+                    except Exception as _xe:  # noqa: BLE001
+                        log.warning("canon-registry fallback extraction failed (non-fatal): %s", _xe)
+                _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None
+                _eligible = []
+                if isinstance(_events, list) and _events:
+                    from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
+                    _cbook = _gbook0
+                    _forks = []
+                    _cpt = ""
+                    _cpm = _cre.search(r"(?is)\bCOUNTERPOINT\s+NUMBERS?\b\s*[—:\-]?\s*"
+                                       r"(.{0,500}?)(?=\n\s*(?:\d{1,2}\.|[A-Z][A-Z &]{6,})|\Z)", _cf)
+                    if _cpm and _cpm.group(1).strip().rstrip(".").strip("'\"").lower() != "none":
+                        _cpt = _cre.sub(r"\s+", " ", _cpm.group(1)).strip()[:400]
+                    for _ev in _events[:8]:
+                        if not isinstance(_ev, dict) or not _cbook:
+                            continue
+                        _canon = {k: _ev.get(k) for k in ("when", "participants", "key_action", "summary") if _ev.get(k)}
+                        _fv = _ev.get("false_versions") or []
+                        _csys = (
+                            "You are a canon auditor with a fact sheet you must trust over your own reading. "
+                            "CANONICAL values for one event: " + _cjson.dumps(_canon, ensure_ascii=False) + ". "
+                            "Sanctioned FALSE versions (LEGAL only in chapters BEFORE their corrected_in_chapter): "
+                            + _cjson.dumps(_fv, ensure_ascii=False) + ". Scan the book and report EVERY chapter that "
+                            "renders this event with a value DIFFERENT from the canonical one and NOT a sanctioned "
+                            "false version before its correction — even if it reads like an intended reveal. Return "
+                            "ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<field>\",\"found\":\"<value>\","
+                            "\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt from THIS chapter, copied "
+                            "character-for-character from the book text, that shows the found value — never "
+                            "paraphrased>\"}]}. Empty list if the book is consistent with canon."
+                            + ((" SANCTIONED COUNTERPOINT PAIRS (the story keeps BOTH values alive by design "
+                                "— never report either as a fork): " + _cpt) if _cpt else ""))
+                        try:
+                            _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:60000],
                                                                  tenant_id=tenant_id, user_id=user_id,
                                                                  job_uuid=job_uuid, json_mode=True,
-                                                                 max_tokens=_tt_max_tok1,
                                                                  credit_row=False)
-                    if sink is not None and _tt_cc1:
-                        sink.credits += int(_tt_cc1)
-                    _tt_d1 = _narasi_parse_json(_tt_raw1) if isinstance(_tt_raw1, str) else (_tt_raw1 or {})
-                    if not (isinstance(_tt_d1, dict) and _tt_d1):
-                        # Mirror the register-gate's own precedent (narration_api.py ~2399-2401):
-                        # a silently empty/unparsable response reads identically to "no threads
-                        # found" unless the raw head is logged for forensics.
-                        log.warning("thread-tracker pass-1 unparsable — raw head: %r", (_tt_raw1 or "")[:200])
-                    _tt_threads = [t for t in ((_tt_d1.get("threads") or []) if isinstance(_tt_d1, dict) else [])
-                                   if isinstance(t, dict) and t.get("id")][:8]
-                except Exception as _tte1:  # noqa: BLE001
-                    log.warning("thread-tracker pass-1 extraction failed (non-fatal): %s", _tte1)
-                    _tt_threads = []
-                _tt_unresolved: list = []
-                if _tt_threads:
-                    # Pass 2 input: Pass 1's thread list + the ending ONLY (last ~12-15k chars —
-                    # big enough to guarantee full final-chapter coverage, small and doesn't grow
-                    # with thread count, which is why this is ONE batched call, not a per-item
-                    # loop like canon-diff's per-event audit).
-                    _tt_tail_n = int(os.environ.get("NARASI_THREAD_TRACKER_TAIL_CHARS", "15000"))
-                    _tt_tail = _ttbook[-_tt_tail_n:]
-                    _tt_sys2 = (
-                        "You are given a list of THREADS extracted from earlier in a manuscript, "
-                        "and the manuscript's ENDING (final chapter(s) only). For each thread, "
-                        "decide whether the ending resolves it, plausibly leaves it open on "
-                        "purpose, or simply never addresses it. Only flag a thread as unresolved "
-                        "if the ending NEITHER resolves it NOR plausibly leaves it open on purpose "
-                        "— when genuinely unsure, do NOT flag it. THREADS: "
-                        + json.dumps([{"id": t.get("id"), "thread_type": t.get("thread_type"),
-                                       "description": t.get("description")} for t in _tt_threads],
-                                     ensure_ascii=False)
-                        + ". Return ONLY JSON: {\"unresolved\":[{\"id\":\"<thread id from the list "
-                        "above>\",\"why\":\"<one-line: what the ending fails to address>\"}]} — "
-                        "empty list if the ending accounts for every thread.")
-                    try:
-                        # Lighter per-item schema than Pass 1 (id+why only, no quote/chapter/type)
-                        # but still batches up to 8 items in one response — keep a safety margin
-                        # above the 800-token _narasi_cheap_call floor rather than assuming it fits.
-                        _tt_max_tok2 = int(os.environ.get("NARASI_THREAD_TRACKER_MAX_TOKENS2", "1500"))
-                        _tt_raw2, _tt_cc2 = await _narasi_cheap_call(_tt_sys2, _tt_tail,
-                                                                     tenant_id=tenant_id, user_id=user_id,
-                                                                     job_uuid=job_uuid, json_mode=True,
-                                                                     max_tokens=_tt_max_tok2,
-                                                                     credit_row=False)
-                        if sink is not None and _tt_cc2:
-                            sink.credits += int(_tt_cc2)
-                        _tt_d2 = _narasi_parse_json(_tt_raw2) if isinstance(_tt_raw2, str) else (_tt_raw2 or {})
-                        if not (isinstance(_tt_d2, dict) and _tt_d2):
-                            log.warning("thread-tracker pass-2 unparsable — raw head: %r", (_tt_raw2 or "")[:200])
-                        _tt_unresolved = [u for u in ((_tt_d2.get("unresolved") or []) if isinstance(_tt_d2, dict) else [])
-                                          if isinstance(u, dict) and u.get("id")]
-                    except Exception as _tte2:  # noqa: BLE001
-                        log.warning("thread-tracker pass-2 verification failed (non-fatal): %s", _tte2)
-                        _tt_unresolved = []
-                _tt_by_id = {t.get("id"): t for t in _tt_threads}
-                _tt_violations = []
-                for _u in _tt_unresolved:
-                    _t = _tt_by_id.get(_u.get("id"))
-                    if not _t:
-                        continue
-                    # EVIDENCE-LOCATABILITY: quote MUST be Pass 1's verbatim excerpt (the
-                    # introduction point) — NEVER Pass 2's "why" field (a paraphrase/
-                    # explanation of what's missing, not a literal manuscript excerpt). Same
-                    # rule chapter_boundary_break's own comment states explicitly above
-                    # (_r7_actuator_violations, "head" vs "reason"). Mirrors that same
-                    # function's exact evidence-building pattern: quote-wrap, then append the
-                    # deterministic "@ch{N}" locator ONLY when the chapter number is present.
-                    _tt_ev = _wq(_t.get("quote"))
-                    _tt_chn = _t.get("chapter_introduced")
-                    if _tt_chn is not None:
-                        _tt_ev = f"{_tt_ev} @ch{_tt_chn}"
-                    _tt_ev = _tt_ev[:200]
-                    _tt_violations.append({
-                        "type": "unresolved_thread", "severity": "high",
-                        "evidence": _tt_ev,
-                        "fix": (f"Chapter {_t.get('chapter_introduced')} raises "
-                                f"{str(_t.get('thread_type') or '').replace('_', ' ')} "
-                                f"({_t.get('description')}) but the ending never addresses it — "
-                                f"{_u.get('why')}. Add a brief beat in the final chapter(s) that "
-                                f"resolves or explicitly closes this thread.")})
-                result["thread_tracker"] = {"threads_checked": len(_tt_threads), "violations": _tt_violations}
-                if _tt_violations:
-                    log.warning("thread-tracker: %d unresolved thread(s) flagged for job %s (report-only): %s",
-                                len(_tt_violations), job_id, [str(v)[:90] for v in _tt_violations[:5]])
-                    # enforce (opt-in, default OFF, nested under NARASI_THREAD_TRACKER being on):
-                    # feed the violations straight to the #53 per-chapter chunked-revise infra,
-                    # same shape as NARASI_CANON_ENFORCE_NONREVEAL above. Never blocks; keeps
-                    # the original book on any failure/no-op.
-                    if str(os.environ.get("NARASI_THREAD_TRACKER_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                            if sink is not None and _cc:
+                                sink.credits += int(_cc)
+                            _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                            for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                                if isinstance(_f, dict) and _f.get("found"):
+                                    _forks.append({"event": _ev.get("id") or _ev.get("summary"),
+                                                   "chapter": _f.get("chapter"), "field": _f.get("field"),
+                                                   "found": str(_f.get("found"))[:160],
+                                                   "expected": str(_f.get("expected"))[:160],
+                                                   "quote": str(_f.get("quote") or "")[:160]})
+                        except Exception as _e:  # noqa: BLE001
+                            log.warning("canon-diff event scan failed (non-fatal): %s", _e)
+                    result["canon_diff"] = {"events_checked": len(_events[:8]), "forks": _forks[:20]}
+                    if _forks:
+                        log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only): %s",
+                                    len(_forks), job_id, [str(f)[:90] for f in _forks[:5]])
+                        _nrviol = []
                         try:
-                            from laozhang_api import _narasi_revise_chunked as _ttrev
-                            _ttmodel = str(body.get("model") or "") or "claude-opus-4-6"
-                            _ttnew, _ttcr = await _ttrev(_ttbook, _tt_violations, style, language, _ttmodel,
-                                                         tenant_id=tenant_id, user_id=user_id,
-                                                         job_uuid=job_uuid, credit_row=False)
-                            if sink is not None and _ttcr:
-                                sink.credits += int(_ttcr)
-                            if (_ttnew and str(_ttnew) != _ttbook
-                                    and len(str(_ttnew).split()) >= int(len(_ttbook.split()) * 0.9)):
-                                result["book" if result.get("book") else "output"] = str(_ttnew)
-                                log.info("thread-tracker enforce: %d violation(s) sent to revise — book updated",
-                                         len(_tt_violations))
-                            else:
-                                log.info("thread-tracker enforce: %d violation(s) sent — revise landed nothing",
-                                         len(_tt_violations))
-                        except Exception as _tte3:  # noqa: BLE001
-                            log.warning("thread-tracker enforce failed (non-fatal): %s", _tte3)
+                            if str(os.environ.get("NARASI_CANON_ENFORCE_NONREVEAL", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                                _fast_path = [f for f in _forks
+                                              if str((f or {}).get("field") or "").split(".")[0] in ("when", "participants")]
+                                _fast_ids = {id(f) for f in _fast_path}
+                                _other = [f for f in _forks if id(f) not in _fast_ids]
+                                _classified = []
+                                if (_other and len(_fast_path) < 4
+                                        and str(os.environ.get("NARASI_CANON_DIFF_CLASSIFY", "0")).strip().lower() in (
+                                            "1", "true", "yes", "on")):
+                                    try:
+                                        _cd_chapters = result.get("chapters") or []
+                                        _cd_items = []
+                                        for _f in _other:
+                                            _sig = (f"Field: {_f.get('field')}. Chapter {_f.get('chapter')} states "
+                                                    f"this as {_f.get('found')!r}; canon registry expects "
+                                                    f"{_f.get('expected')!r}.")
+                                            _exc, _ = _canon_excerpt(_cd_chapters, chapter_no=_f.get("chapter"),
+                                                                     quote_source=_wq(_f.get("quote")))
+                                            _cd_items.append({"signal": _sig, "excerpt": _exc})
+                                        _cd_continuity = await _narasi_classify_canon_items(
+                                            _cd_items, tenant_id=tenant_id, user_id=user_id,
+                                            job_uuid=job_uuid, sink=sink)
+                                        _classified = [_other[_i] for _i in _cd_continuity if 0 <= _i < len(_other)]
+                                        if _classified:
+                                            log.info("canon-diff classify: %d/%d residual fork(s) (non when/"
+                                                     "participants) are plain continuity errors -> eligible for "
+                                                     "enforce", len(_classified), len(_other))
+                                    except Exception as _cde:  # noqa: BLE001
+                                        log.warning("canon-diff classify failed (non-fatal, residual forks stay "
+                                                    "protected): %s", _cde)
+                                _nrv = (_fast_path + _classified)[:4]
+                                if _nrv:
+                                    _chn_locator_on = os.environ.get(
+                                        "NARASI_CANON_ENFORCE_CHN_LOCATOR", "0").strip().lower() in (
+                                        "1", "true", "yes", "on")
+                                    for f in _nrv:
+                                        _ev = _wq(f.get("quote")) or str(f.get("found") or "")[:200]
+                                        _chn = f.get("chapter")
+                                        if _chn is not None and _chn_locator_on:
+                                            _ev = f"{_ev} @ch{_chn}"
+                                        _nrviol.append({
+                                            "type": "canon_attribution", "severity": "high",
+                                            "evidence": _ev[:200],
+                                            "fix": (f"The fact sheet pins event «{f.get('event')}» {f.get('field')} "
+                                                    f"differently than this chapter states — align the chapter to "
+                                                    f"the fact sheet's version; change nothing else.")})
+                        except Exception as _nre:  # noqa: BLE001
+                            log.warning("canon-enforce non-reveal failed (non-fatal): %s", _nre)
+                        if str(os.environ.get("NARASI_CANON_DIFF_REVISE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                            try:
+                                _cv = [{"type": "canon_fork", "severity": "high",
+                                        "evidence": "Bab %s renders %s as '%s'; canon = '%s'" % (
+                                            _fk.get("chapter"), _fk.get("field"), _fk.get("found"), _fk.get("expected")),
+                                        "fix": "align this chapter's rendering to the canonical value"}
+                                       for _fk in _forks] if _cbook else []
+                            except Exception as _e:  # noqa: BLE001
+                                log.warning("canon-diff enforce revise failed (non-fatal): %s", _e)
+                                _cv = []
+                        _eligible = list(_nrviol) + list(_cv)
+                    else:
+                        log.info("canon-diff: 0 fork(s) across %d event(s) for job %s (clean run)",
+                                 len(_events[:8]), job_id)
                 else:
-                    log.info("thread-tracker: 0 unresolved thread(s) across %d extracted for job %s (clean run)",
-                              len(_tt_threads), job_id)
-    except Exception as e:  # noqa: BLE001
-        log.warning("thread-tracker gate failed (non-fatal): %s", e)
+                    _reason = ("canonical_facts absent" if not _cf else
+                               "registry parse failed" if _reg is None else
+                               "registry has no events")
+                    if _reason == "registry parse failed" and not _reg_dbg:
+                        _reg_dbg = "no registry-shaped block found; bible tail: " + _cf[-160:]
+                    result["canon_diff"] = {"events_checked": 0, "forks": [], "skipped": _reason}
+                    log.info("canon-diff: skipped for job %s — %s%s", job_id, _reason,
+                             (" | " + _cre.sub(r"\s+", " ", _reg_dbg)) if _reg_dbg else "")
+                _out.update({"ran": True, "nonreveal_eligible": _nrviol,
+                             "diffrevise_eligible": _cv, "eligible": _eligible})
+        except Exception as e:  # noqa: BLE001
+            log.warning("canon-diff gate failed (non-fatal): %s", e)
+        return _out
+
+    def _v3g_canon_diff_finalize(_out, _changed):
+        if not _out.get("ran"):
+            return
+        try:
+            if _out.get("nonreveal_eligible") and _changed:
+                log.info("canon-enforce: %d non-reveal fork(s) sent to revise — book updated",
+                         len(_out["nonreveal_eligible"]))
+            elif _out.get("nonreveal_eligible"):
+                log.info("canon-enforce: %d non-reveal fork(s) sent — revise landed nothing",
+                         len(_out["nonreveal_eligible"]))
+            if _out.get("diffrevise_eligible") and _changed and result.get("canon_diff") is not None:
+                result["canon_diff"]["revised"] = True
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _v3g_thread_tracker_detect():
+        # ── (2.76) UNRESOLVED-THREAD TRACKER — catches a setup the mega-critic already
+        # missed anywhere in the book by reading the WHOLE assembled book once (Pass 1,
+        # extraction) and then checking just the ending once more (Pass 2, verification).
+        # Gated NARASI_THREAD_TRACKER (default OFF → skipped → no cost, byte-identical).
+        # Enforce is a separate opt-in (NARASI_THREAD_TRACKER_ENFORCE, default OFF). ──
+        _out = {"ran": False, "eligible": []}
+        try:
+            if str(os.environ.get("NARASI_THREAD_TRACKER", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
+                _ttbook = _gbook0
+                if _ttbook:
+                    _tt_max = int(os.environ.get("NARASI_CRITIQUE_MAX_CHARS", "300000"))
+                    _tt_threads: list = []
+                    # FIX (2026-07-18, thread-tracker coverage-gap root-cause): Pass 1 originally
+                    # applied conservatism TWICE (once here, again in Pass 2) -- a real production
+                    # job extracted only 1 of 6+ confirmed dropped threads, and the one it found
+                    # was the earliest/most salient (classic primacy bias on a single exhaustive-
+                    # enumeration call). Root cause: 5 of 6 misses fit the EXISTING taxonomy fine
+                    # (this was a recall problem, not a taxonomy problem) -- but 1 of 6 (a committee
+                    # explicitly grants a character the floor, then the chapter cuts away before she
+                    # speaks) had no home in the old 4-type taxonomy at all. Fix: (a) Pass 1 is now
+                    # a wide-net candidate generator -- drop its own "when unsure, omit" filter and
+                    # let Pass 2's still-conservative verification (unchanged below) be the sole
+                    # precision gate; (b) add a 5th thread_type, unfulfilled_scene, naming this exact
+                    # shape explicitly.
+                    _tt_sys1 = (
+                        "You are reading a complete manuscript once, looking for every THREAD the "
+                        "story itself opens and appears to leave unresolved. Five shapes qualify: "
+                        "character_fate (a character's fate left hanging), unpunished_enabler (a "
+                        "named enabler or co-conspirator whose culpability is established on-page "
+                        "but never addressed), promised_consequence (a promised future consequence), "
+                        "open_mystery (a mystery the text frames as a specific question), and "
+                        "unfulfilled_scene (the text explicitly sets up a scene and cuts away before "
+                        "it happens -- a character is granted the floor, the opportunity, or the "
+                        "platform to do something on-page, and the narrative moves on before they do "
+                        "it). List every candidate generously -- a later, separate pass will verify "
+                        "against the ending, so over-including a borderline case here costs nothing; "
+                        "only skip something that is unmistakably a deliberate, artful open ending, "
+                        "not a genuine omission. Return ONLY "
+                        "JSON: {\"threads\":[{\"id\":\"<short slug>\",\"thread_type\":"
+                        "\"character_fate|unpunished_enabler|promised_consequence|open_mystery|"
+                        "unfulfilled_scene\","
+                        "\"description\":\"<one-line: what is left open>\",\"chapter_introduced\":<int>,"
+                        "\"quote\":\"<short excerpt from THIS chapter, copied character-for-character "
+                        "from the book text, that establishes the thread — never paraphrased>\"}]} — "
+                        "at most 8 threads. If you find more than 8: first note every candidate "
+                        "across the WHOLE book, then choose your final list of up to 8 by taking "
+                        "roughly equal numbers from the book's first third, middle third, and final "
+                        "third of chapters -- do NOT simply keep the first 8 you noticed while "
+                        "reading front-to-back, since that silently drops threads seeded or paid off "
+                        "later in the book. Empty list if nothing qualifies.")
+                    try:
+                        _tt_max_tok1 = int(os.environ.get("NARASI_THREAD_TRACKER_MAX_TOKENS", "3000"))
+                        _tt_multipass = str(os.environ.get(
+                            "NARASI_THREAD_TRACKER_MULTIPASS", "0")).strip().lower() in ("1", "true", "yes", "on")
+                        # MULTIPASS (new flag, default OFF -- this is a genuine 3x cost increase to
+                        # Pass 1, not a free correctness fix, so it stays an explicit opt-in rather
+                        # than silently tripling an already-live mechanism's cost): the root-cause
+                        # investigation's PRIMARY finding was that a single exhaustive-enumeration
+                        # call over a 44k-word/10-chapter book has an inherent recall ceiling
+                        # (primacy bias -- it surfaces the earliest/most salient candidate and stops).
+                        # Mirrors this session's adversarial-verify pattern: 3 independent extraction
+                        # calls at different temperatures see different candidates; merge before
+                        # Pass 2 does the real precision filtering (unchanged).
+                        if _tt_multipass:
+                            _tt_passes = await asyncio.gather(*[
+                                _narasi_cheap_call(_tt_sys1, _ttbook[:_tt_max],
+                                                    tenant_id=tenant_id, user_id=user_id,
+                                                    job_uuid=job_uuid, json_mode=True,
+                                                    max_tokens=_tt_max_tok1, temperature=_t,
+                                                    credit_row=False)
+                                for _t in (0.2, 0.5, 0.8)
+                            ], return_exceptions=True)
+                            _tt_seen_keys = set()
+                            for _pi, _pass_result in enumerate(_tt_passes):
+                                if isinstance(_pass_result, Exception):
+                                    log.warning("thread-tracker pass-1 (multipass slot %d) failed "
+                                                "(non-fatal): %s", _pi, _pass_result)
+                                    continue
+                                _tt_raw1, _tt_cc1 = _pass_result
+                                if sink is not None and _tt_cc1:
+                                    sink.credits += int(_tt_cc1)
+                                _tt_d1 = _narasi_parse_json(_tt_raw1) if isinstance(_tt_raw1, str) else (_tt_raw1 or {})
+                                if not (isinstance(_tt_d1, dict) and _tt_d1):
+                                    log.warning("thread-tracker pass-1 (multipass slot %d) unparsable "
+                                                "— raw head: %r", _pi, (_tt_raw1 or "")[:200])
+                                    continue
+                                for _t in ((_tt_d1.get("threads") or []) if isinstance(_tt_d1, dict) else []):
+                                    if not (isinstance(_t, dict) and _t.get("id")):
+                                        continue
+                                    # dedupe on (chapter_introduced, thread_type, normalized
+                                    # description) -- catches literal repeats across passes without
+                                    # needing fuzzy matching; near-duplicate wording from different
+                                    # passes is accepted (Pass 2 + the per-chapter revise merge both
+                                    # tolerate redundant evidence for the same underlying thread).
+                                    _tt_dkey = (_t.get("chapter_introduced"), _t.get("thread_type"),
+                                                " ".join(str(_t.get("description") or "").lower().split()))
+                                    if _tt_dkey in _tt_seen_keys:
+                                        continue
+                                    _tt_seen_keys.add(_tt_dkey)
+                                    # FIX (audit finding): a monotonic counter (len(_tt_threads), the
+                                    # count of threads ALREADY accepted) guarantees a unique id no
+                                    # matter what slug the model returns -- the prior "p{pass}_{slug}"
+                                    # scheme only prevented CROSS-pass collisions; two distinct threads
+                                    # from the SAME pass reusing the same model-invented slug (different
+                                    # descriptions, so they survive the dedup check above) still
+                                    # collided, and the id-keyed dict below would silently drop one,
+                                    # risking misattributed evidence in the emitted violation.
+                                    _t["id"] = f"p{_pi}_{len(_tt_threads)}_{_t.get('id')}"
+                                    _tt_threads.append(_t)
+                            _tt_threads = _tt_threads[:16]
+                            log.info("thread-tracker pass-1 (multipass): %d/%d successful pass(es), "
+                                     "%d unique thread(s) after dedup",
+                                     sum(1 for r in _tt_passes if not isinstance(r, Exception)),
+                                     len(_tt_passes), len(_tt_threads))
+                        else:
+                            _tt_raw1, _tt_cc1 = await _narasi_cheap_call(_tt_sys1, _ttbook[:_tt_max],
+                                                                         tenant_id=tenant_id, user_id=user_id,
+                                                                         job_uuid=job_uuid, json_mode=True,
+                                                                         max_tokens=_tt_max_tok1,
+                                                                         credit_row=False)
+                            if sink is not None and _tt_cc1:
+                                sink.credits += int(_tt_cc1)
+                            _tt_d1 = _narasi_parse_json(_tt_raw1) if isinstance(_tt_raw1, str) else (_tt_raw1 or {})
+                            if not (isinstance(_tt_d1, dict) and _tt_d1):
+                                log.warning("thread-tracker pass-1 unparsable — raw head: %r", (_tt_raw1 or "")[:200])
+                            _tt_threads = [t for t in ((_tt_d1.get("threads") or []) if isinstance(_tt_d1, dict) else [])
+                                           if isinstance(t, dict) and t.get("id")][:8]
+                            # FIX (same id-collision class caught in the multipass path's audit): a
+                            # single Pass-1 response can itself return 2+ threads that reuse the same
+                            # model-invented slug (different descriptions, so nothing upstream
+                            # dedupes them) -- rewrite with a monotonic index so the id-keyed dict
+                            # built further down can never silently drop one.
+                            for _tti, _tt_t in enumerate(_tt_threads):
+                                _tt_t["id"] = f"s{_tti}_{_tt_t.get('id')}"
+                    except Exception as _tte1:  # noqa: BLE001
+                        log.warning("thread-tracker pass-1 extraction failed (non-fatal): %s", _tte1)
+                        _tt_threads = []
+                    _tt_unresolved: list = []
+                    if _tt_threads:
+                        _tt_tail_n = int(os.environ.get("NARASI_THREAD_TRACKER_TAIL_CHARS", "15000"))
+                        _tt_tail = _ttbook[-_tt_tail_n:]
+                        _tt_sys2 = (
+                            "You are given a list of THREADS extracted from earlier in a manuscript, "
+                            "and the manuscript's ENDING (final chapter(s) only). For each thread, "
+                            "decide whether the ending resolves it, plausibly leaves it open on "
+                            "purpose, or simply never addresses it. Only flag a thread as unresolved "
+                            "if the ending NEITHER resolves it NOR plausibly leaves it open on purpose "
+                            "— when genuinely unsure, do NOT flag it. THREADS: "
+                            + json.dumps([{"id": t.get("id"), "thread_type": t.get("thread_type"),
+                                           "description": t.get("description")} for t in _tt_threads],
+                                         ensure_ascii=False)
+                            + ". Return ONLY JSON: {\"unresolved\":[{\"id\":\"<thread id from the list "
+                            "above>\",\"why\":\"<one-line: what the ending fails to address>\"}]} — "
+                            "empty list if the ending accounts for every thread.")
+                        try:
+                            _tt_max_tok2 = int(os.environ.get("NARASI_THREAD_TRACKER_MAX_TOKENS2", "1500"))
+                            _tt_raw2, _tt_cc2 = await _narasi_cheap_call(_tt_sys2, _tt_tail,
+                                                                         tenant_id=tenant_id, user_id=user_id,
+                                                                         job_uuid=job_uuid, json_mode=True,
+                                                                         max_tokens=_tt_max_tok2,
+                                                                         credit_row=False)
+                            if sink is not None and _tt_cc2:
+                                sink.credits += int(_tt_cc2)
+                            _tt_d2 = _narasi_parse_json(_tt_raw2) if isinstance(_tt_raw2, str) else (_tt_raw2 or {})
+                            if not (isinstance(_tt_d2, dict) and _tt_d2):
+                                log.warning("thread-tracker pass-2 unparsable — raw head: %r", (_tt_raw2 or "")[:200])
+                            _tt_unresolved = [u for u in ((_tt_d2.get("unresolved") or []) if isinstance(_tt_d2, dict) else [])
+                                              if isinstance(u, dict) and u.get("id")]
+                        except Exception as _tte2:  # noqa: BLE001
+                            log.warning("thread-tracker pass-2 verification failed (non-fatal): %s", _tte2)
+                            _tt_unresolved = []
+                    _tt_by_id = {t.get("id"): t for t in _tt_threads}
+                    _tt_violations = []
+                    for _u in _tt_unresolved:
+                        _t = _tt_by_id.get(_u.get("id"))
+                        if not _t:
+                            continue
+                        _tt_ev = _wq(_t.get("quote"))
+                        _tt_chn = _t.get("chapter_introduced")
+                        if _tt_chn is not None:
+                            _tt_ev = f"{_tt_ev} @ch{_tt_chn}"
+                        _tt_ev = _tt_ev[:200]
+                        _tt_violations.append({
+                            "type": "unresolved_thread", "severity": "high",
+                            "evidence": _tt_ev,
+                            "fix": (f"Chapter {_t.get('chapter_introduced')} raises "
+                                    f"{str(_t.get('thread_type') or '').replace('_', ' ')} "
+                                    f"({_t.get('description')}) but the ending never addresses it — "
+                                    f"{_u.get('why')}. Add a brief beat in the final chapter(s) that "
+                                    f"resolves or explicitly closes this thread.")})
+                    result["thread_tracker"] = {"threads_checked": len(_tt_threads), "violations": _tt_violations}
+                    _eligible = []
+                    if _tt_violations:
+                        log.warning("thread-tracker: %d unresolved thread(s) flagged for job %s (report-only): %s",
+                                    len(_tt_violations), job_id, [str(v)[:90] for v in _tt_violations[:5]])
+                        if str(os.environ.get("NARASI_THREAD_TRACKER_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                            _eligible = _tt_violations
+                    else:
+                        log.info("thread-tracker: 0 unresolved thread(s) across %d extracted for job %s (clean run)",
+                                  len(_tt_threads), job_id)
+                    _out.update({"ran": True, "eligible": _eligible})
+        except Exception as e:  # noqa: BLE001
+            log.warning("thread-tracker gate failed (non-fatal): %s", e)
+        return _out
+
+    def _v3g_thread_tracker_finalize(_out, _changed):
+        if _out.get("ran") and _out.get("eligible"):
+            if _changed:
+                log.info("thread-tracker enforce: %d violation(s) sent to revise — book updated",
+                         len(_out["eligible"]))
+            else:
+                log.info("thread-tracker enforce: %d violation(s) sent — revise landed nothing",
+                         len(_out["eligible"]))
+
+    # ── run the four independent detections concurrently, then merge into ONE revise ──
+    _crit_out, _register_out, _canon_out, _tt_out = await asyncio.gather(
+        _v3g_critic_detect(), _v3g_register_detect(), _v3g_canon_diff_detect(), _v3g_thread_tracker_detect())
+
+    _v3g_merged = (
+        list(_crit_out.get("eligible") or [])
+        + list(_register_out.get("eligible") or [])
+        + list(_canon_out.get("eligible") or [])
+        + list(_tt_out.get("eligible") or []))
+
+    _v3g_changed = False
+    _v3g_t_rev = 0.0
+    if _v3g_merged:
+        try:
+            from laozhang_api import _narasi_consistency_revise
+            _v3g_t_rev0 = time.monotonic()
+            _v3g_new, _v3g_cr = await _narasi_consistency_revise(
+                _gbook0, {"violations": _v3g_merged}, style, language,
+                model=(body.get("model") or ""),
+                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, credit_row=False)
+            _v3g_t_rev = time.monotonic() - _v3g_t_rev0
+            if sink is not None and _v3g_cr:
+                sink.credits += int(_v3g_cr)
+            if _v3g_new and _v3g_new != _gbook0:
+                result[_gk] = _v3g_new
+                _v3g_changed = True
+        except Exception as _v3ge:  # noqa: BLE001
+            log.warning("merged gate revise failed (non-fatal): %s", _v3ge)
+
+    _v3g_critic_finalize(_crit_out, _v3g_changed, _v3g_t_rev)
+    _v3g_register_finalize(_register_out, _v3g_changed)
+    _v3g_canon_diff_finalize(_canon_out, _v3g_changed)
+    _v3g_thread_tracker_finalize(_tt_out, _v3g_changed)
+
 
     # ── (2.7) R-FG9/R-FG10 fact scan — scan-and-report on the FINAL text (post-gates,
     # pre-header). Report-only by spec ("scan first, block second"); regime = style
