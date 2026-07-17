@@ -11454,11 +11454,29 @@ async def _narasi_outline_impl(body: dict):
             # ID-path fixes §3 (R-H4 extension): for factual/historical topics the outline
             # must NOMINATE the payoff statistic up front, so its absence in the final
             # manuscript is a flagged gap, not an invisible one (the Diponegoro run
-            # shipped with the war's total-cost figures missing entirely).
-            f"ANGKA TESIS: if the topic is factual/historical, the FINAL chapter's "
-            f"description MUST name the payoff statistic(s) of the whole story (the human "
-            f"or material cost, the scale number the narrative has been building toward), "
-            f"with the actual figures.\n\n"
+            # shipped with the war's total-cost figures missing entirely). FIXED (Rino
+            # 2026-07-18): the original wording mandated "the actual figures" with no
+            # requirement they trace to the topic -- when the topic supplied no real
+            # number, the model satisfied the mandate by inventing one wholesale (a real
+            # "The Trash Project" run fabricated "120,000 tons... 142 unregistered
+            # residents, including 28 children" and attributed it to a fictitious "final
+            # judicial report"). Narrowed to only surface a REAL source-stated figure, plus
+            # an unconditional, outline-wide numeric-integrity guard (not just the final
+            # chapter) against inventing any unstated statistic.
+            f"ANGKA TESIS: if the topic is factual/historical and itself states a specific "
+            f"payoff statistic (a human or material cost, a scale number the story builds "
+            f"toward), the FINAL chapter's description MUST name that statistic with the "
+            f"actual figures from the topic -- do not let it go missing. NUMERIC INTEGRITY "
+            f"(applies everywhere in this outline, not just the final chapter): never state "
+            f"a precise quantity, casualty count, tonnage, or percentage that the topic does "
+            f"not itself state as a number, or that is not directly computable by arithmetic "
+            f"from numbers the topic itself states (e.g. \"half of the village's 400 "
+            f"residents\" computes to ~200) -- descriptive scale language (\"massive,\" \"an "
+            f"entire community,\" \"over twenty years\") never counts as implying a figure, no "
+            f"matter how severe, and must NOT be converted into one. If the topic gives no "
+            f"such number and none is computable, describe the scale qualitatively instead "
+            f"(e.g. \"an immense, still-uncounted toll\"), and never attribute an invented "
+            f"figure to a fictitious report, tribunal, or study.\n\n"
             f"{_zoom_note}"
             f"{_oi_role_clause}"
             f"{_oi_reveals_clause}"
