@@ -1251,6 +1251,7 @@ _FICTION_STYLES: frozenset = frozenset([
     "remaja_coming_of_age", "coming_of_age",
     "romance_contemporary", "romance",
     "kdrama_serial", "kdrama",
+    "kdrama_investigative_thriller", "kdrama_revenge_legal",
     "ironic_moral_fable", "moraliste",
     "storytelling", "bedtime_story", "pov_first_person_immersive",
 ])

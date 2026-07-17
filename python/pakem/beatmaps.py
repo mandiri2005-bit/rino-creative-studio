@@ -36,6 +36,18 @@ _KDRAMA_STYLES = frozenset({
     "kdrama_serial", "kdrama",
 })
 
+# kdrama_investigative_thriller / kdrama_revenge_legal are deliberately NOT added to
+# _ROMANCE_STYLES or _KDRAMA_STYLES above (belt-and-suspenders: beatmap_family_for_style()
+# returns None for either style, so the entire beatmap/twist structure layer is a complete
+# no-op for them, same as any unregistered style). This crossover set exists ONLY for
+# Family-1's subgenre picker, which lets a kdrama_serial job explicitly request one of
+# these romance-family beatmap presets as a sub-genre texture. Without this, select_beatmap()
+# below rejected the override (BEAT_MAPS[ov]["family"] == family compares "romance" against
+# "kdrama" and fails) and silently fell through to a random kdrama-family pick.
+_KDRAMA_SUBGENRE_CROSSOVER = frozenset({
+    "linear_confession", "breakup_first", "dual_pov_parallel", "slow_fade", "light_comedic",
+})
+
 
 def beatmap_family_for_style(style: Optional[str]) -> Optional[str]:
     s = (style or "").strip().lower()
@@ -1007,7 +1019,10 @@ def select_beatmap(topic, style, *, tenant_id=None, override=None, twist_overrid
     else:
         if override:
             ov = str(override).strip().lower()
-            if ov in BEAT_MAPS and BEAT_MAPS[ov]["family"] == family:
+            if ov in BEAT_MAPS and (
+                BEAT_MAPS[ov]["family"] == family
+                or (family == "kdrama" and ov in _KDRAMA_SUBGENRE_CROSSOVER)
+            ):
                 bm = _emit(ov)
         if bm is None:
             pool = compatible_beatmaps(topic, family)

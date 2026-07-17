@@ -1945,6 +1945,500 @@ FORBIDDEN:
 }
 
 
+# ── Shared anti-romance-intrusion banned_tells core for kdrama_investigative_thriller
+# and kdrama_revenge_legal (below) -- both non-romance procedural/legal K-drama styles
+# genetically closest to kdrama_serial's own romance-coded vocabulary above, and so the
+# highest-probability leak vector when a model drifts these two styles toward it.
+# Bilingual: a red-team audit this session found the English-only version is near-inert
+# against Indonesian-default generation (narration_api.py defaults language="id" and the
+# Storyboard FE defaults rc_nar_lang to "id" too) -- the R-H10 register-gate's banned_tells
+# scan (narration_api.py ~2367-2368) is a plain case-insensitive Python substring match, no
+# translation, so an English-only phrase list scores ZERO hits against ordinary Indonesian
+# prose. Every English entry below carries a natural Indonesian equivalent alongside it.
+_KDRAMA_PROCEDURAL_ROMANCE_INTRUSION_CORE = [
+    # A -- direct attraction/feelings language
+    "fell in love with", "falling in love with", "falling for him", "falling for her",
+    "jatuh cinta padanya", "mulai jatuh cinta padanya", "jatuh hati padanya",
+    "couldn't stop thinking about him", "couldn't stop thinking about her",
+    "tidak bisa berhenti memikirkannya", "tak bisa berhenti memikirkan dirinya",
+    "her heart skipped a beat", "his heart skipped a beat",
+    "hatinya berdebar", "jantungnya berdebar kencang", "dadanya berdebar melihatnya",
+    "heart raced at the sight of", "butterflies in her stomach", "butterflies in his stomach",
+    "kupu-kupu di perutnya", "perutnya seperti dikerubungi kupu-kupu",
+    "electricity coursed through", "chemistry between them",
+    "ada aliran listrik di antara mereka", "ada chemistry di antara mereka",
+    "couldn't deny the attraction", "could no longer deny her feelings",
+    "could no longer deny his feelings", "confessed his feelings", "confessed her feelings",
+    "tak bisa lagi menyangkal perasaannya", "mengakui perasaannya padanya",
+    "unspoken feelings between them", "the tension between them was undeniable",
+    "perasaan yang tak terucap di antara mereka", "ketegangan di antara mereka tak terbantahkan",
+
+    # B -- physical/romantic escalation
+    "their lips met", "he kissed her", "she kissed him", "leaned in to kiss",
+    "bibir mereka bertemu", "mereka berciuman", "mencondongkan tubuh untuk menciumnya",
+    "wanted to kiss him", "wanted to kiss her", "ingin menciumnya",
+    "pulled her into his arms", "pulled him into her arms",
+    "menariknya ke dalam pelukan", "menariknya masuk ke pelukannya",
+    "melted into his arms", "melted into her embrace", "meleleh dalam pelukannya",
+    "their fingers intertwined", "laced his fingers through hers",
+    "jari-jari mereka bertautan", "menautkan jarinya dengan jarinya",
+
+    # C -- K-drama-romance structural transplant risk (sibling kdrama_serial's own
+    # signature beats -- the exact prose this genre-adjacent register defaults to)
+    "shared one umbrella", "shared an umbrella", "under one umbrella",
+    "berbagi satu payung", "berteduh di bawah satu payung yang sama",
+    "tilted the umbrella toward", "memiringkan payung ke arahnya",
+    "carried her on his back", "gave her a piggyback", "menggendongnya di punggung",
+    "grabbed her wrist and pulled her close", "grabbed his wrist and pulled him close",
+    "menggenggam pergelangan tangannya dan menariknya mendekat",
+    "dropped the honorific", "stopped calling her sunbae", "melepas panggilan hormat",
+    "berhenti memanggilnya sunbae",
+    "called her by her first name for the first time",
+    "called him by his first name for the first time",
+    "memanggil namanya untuk pertama kali tanpa embel-embel",
+    "second lead", "second-lead syndrome", "cue the OST", "the OST swells",
+    "OST mengalun",
+
+    # E -- romance-genre packaging tells
+    "love triangle", "love confession", "romantic tension between",
+    "cinta segitiga", "pengakuan cinta", "ketegangan romantis di antara",
+    "swept off her feet", "the man of her dreams", "the woman of his dreams",
+    "tersapu jatuh cinta", "pria idamannya", "wanita idamannya",
+    "her one true love", "soulmate", "meant to be together",
+    "cinta sejatinya", "belahan jiwa", "ditakdirkan bersama",
+
+    # F -- ending-shape tells (plot RESOLVED as romance, not thriller/legal payoff)
+    "finally together", "chose love over", "gave up everything for love",
+    "akhirnya bersama", "memilih cinta di atas", "mengorbankan segalanya demi cinta",
+    "epilogue: married", "years later, they were married",
+    "epilog: menikah", "bertahun-tahun kemudian, mereka menikah",
+]
+
+_KDRAMA_INVESTIGATIVE_ROMANCE_INTRUSION_ADD = [
+    # cop/detective-partner-crossing vector
+    "not just a suspect to him", "not just a suspect to her",
+    "bukan sekadar tersangka baginya",
+    "not just a witness to him", "not just a witness to her",
+    "bukan sekadar saksi baginya",
+    "her partner and now something more", "his partner and now something more",
+    "rekannya dan kini menjadi lebih dari itu",
+    "crossed the line with her partner", "crossed the line with his partner",
+    "melewati batas dengan rekannya",
+]
+
+_KDRAMA_REVENGE_LEGAL_ROMANCE_INTRUSION_ADD = [
+    # attorney/prosecutor-crossing vector (deliberately does NOT ban bare "conflict of
+    # interest" -- a real legal term with legitimate non-romantic uses; only the
+    # compound romantic-framing tell below is banned)
+    "not just her client anymore", "not just his client anymore",
+    "bukan sekadar kliennya lagi",
+    "attorney-client attraction", "ketertarikan terlarang antara pengacara dan klien",
+    "forbidden feelings for her client", "forbidden feelings for his client",
+    "perasaan terlarang pada kliennya",
+    "opposing counsel who made her heart", "opposing counsel who made his heart",
+    "pengacara lawan yang membuat hatinya",
+    "conflict of interest that had nothing to do with the case",
+    "benturan kepentingan yang tak ada hubungannya dengan kasus",
+]
+
+
+_KDRAMA_INVESTIGATIVE_THRILLER_SPEC = {
+    "display_name": "K-Drama — Investigative/Corruption Thriller",
+    "aliases": [
+        "kdrama_investigative_thriller", "kdrama-investigative-thriller",
+        "kdrama investigative thriller", "k-drama investigative thriller",
+        "k_drama_investigative_thriller", "korean investigative thriller",
+        "korean corruption thriller", "kdrama corruption thriller",
+        "kdrama investigative", "investigative kdrama", "kdrama procedural thriller",
+        "k-drama procedural thriller",
+    ],
+    "is_fiction": True,
+    "category": "D",
+    "medium_origin": "screen",
+    "tier": "P1",
+    "tts_risk": False,
+    "output_support": "both",
+    "factual_regime": "fictional",
+    "rag": {
+        "query_instruction": (
+            "Retrieve a K-drama investigative-procedural passage in present-tense "
+            "close-third, ensemble cast pursuing institutional corruption, cold-open "
+            "on new evidence, and an end-of-chapter evidentiary cliffhanger -- "
+            "hallyu-era contemporary Korean setting, no romance subplot:"
+        ),
+        "framing": (
+            "Study how the K-drama investigative narrator treats every chapter as a "
+            "case-file escalation: the cold-open lands on a new piece of evidence (a "
+            "wiretap transcript, a body found in a place it shouldn't be, a "
+            "whistleblower's message that then goes dark), the middle unfolds the "
+            "team working that evidence against a wall of institutional resistance, "
+            "and the last frame ends on a reveal or a door closing that would make an "
+            "audience wait a week. This is an ENSEMBLE procedural, not a two-hander: "
+            "prosecutor, detective, journalist, and whistleblower each carry real "
+            "investigative agency and real interior weight. Nobody exists to be "
+            "someone else's love interest."
+        ),
+    },
+    "style_rules_core": """STYLE: K-Drama — Investigative/Corruption Thriller
+= Contemporary Korean ensemble procedural-thriller fiction. Every chapter is one hourly
+episode of a case pried open one layer at a time: cold-open on NEW EVIDENCE (1-2 pages
+that would open episode-1-scene-1 of a corruption-thriller) -> the ensemble works that
+evidence against an institution that does not want it found -> end-of-chapter EVIDENTIARY
+CLIFFHANGER (freeze on the reveal, not the reaction). Present-tense close-third, rotating
+across an ensemble cast. The engine of the book is THE CASE. Every scene either advances
+the case or costs someone something for pursuing it -- nothing else is load-bearing.
+
+EPISODE ARC (mandatory shape per chapter):
+- COLD OPEN: open on a concrete piece of NEW EVIDENCE that reframes what the team
+  thought it knew -- a wiretap transcript surfacing at 3am, a body in a place the
+  official record says is empty, a whistleblower's last message before the account goes
+  dark, a ledger page that does not match the audited version. Do NOT open on a
+  briefing-room recap. The evidence IS the opening image.
+- THE WORK: the ensemble runs that evidence against resistance -- a source who will not
+  talk on record, a superior who reroutes the case, a records office that has lost the
+  file, a witness who recants overnight. Institutional pressure is a CHARACTER: it has a
+  face, a phone call, a transfer order.
+- INSTITUTIONAL ESCALATION: each chapter, the wall the team is pushing against gets one
+  degree higher and more specific -- a warrant denied, a task force reassigned, a
+  reporter's editor spiking the story, a prosecutor's case quietly folded into another.
+  Escalation is procedural and structural, never romantic.
+- EVIDENTIARY CLIFFHANGER: end on a new document, a body, a confession half-finished, a
+  name on a list nobody expected. The chapter ends on the EVIDENCE, before anyone
+  reacts to it. Cue the freeze-frame. Roll credits.
+
+ENSEMBLE CAST DISTRIBUTION (structural rule, not stylistic preference):
+- Rotating close-third across 3-5 principals working the SAME case from different
+  seats: a detective, a prosecutor, a journalist, a whistleblower/insider, an analyst.
+  Each chapter anchors to ONE POV; POV switches happen at chapter boundaries, not
+  mid-scene.
+- There is NO "second lead" in the romantic sense. Every ensemble member is a full
+  investigative agent with their OWN stake in the case -- a debt to a dead source, a
+  career they are risking, a family member the institution can reach. Their weight in
+  the story is earned by what they RISK to move the case forward, never by romantic
+  proximity to another principal.
+- At least one interior beat per two chapters must belong to a NON-lead ensemble
+  member, minimum 3 across the book -- their doubt, their fear of retaliation, their
+  reason for staying in.
+
+INTERIOR MONOLOGUE (register-defining):
+- Question-form, case-facing, never romance-facing: "Kenapa dia berbohong soal jam itu?
+  Siapa yang menyuruhnya diam? Apa yang belum kulihat di berkas ini?"
+- Rendered in italics OR clear voice-break -- never buried inside neutral narration.
+- Memory intrudes as unmarked tense-shift when it serves the CASE (a source's earlier
+  warning resurfacing, a detail from an old file recontextualized) -- never as a
+  romantic flashback. NO sectioned FLASHBACK headers. NO "FIVE YEARS EARLIER" cards.
+
+EVIDENCE GRAMMAR (weather + light + food replaced by CASE OBJECTS, always concrete):
+- Every chapter anchors to at least one tangible evidence object handled on-page: a
+  flash drive passed under a table, a ledger with one page torn out, a recording that
+  cuts off mid-sentence, a photograph with a shadow that should not be there, a
+  body-cam timestamp that does not match the report. The object is handled, described,
+  and its chain of custody matters.
+- Institutional texture (fluorescent-lit interrogation rooms, a prosecutor's office at
+  2am, a newsroom the night before a story runs, a safehouse that is really just a
+  motel) does the same emotional work weather/food does in the sibling K-drama
+  register -- pressure made physical, never decorative.
+
+INSTITUTIONAL ESCALATION (register-defining):
+- The corruption is systemic, not one bad actor: a conglomerate, a police division, a
+  prosecutor's office, a political office -- an institution with the resources to make
+  evidence disappear and the reach to make investigators disappear from the case, not
+  from the world. Escalation runs procedural (warrants, transfers, spiked stories, dead
+  sources) and only rarely, late, and earned, physical.
+- Every institutional victory the team wins costs something specific and named -- a
+  career, a source's safety, a piece of evidence ruled inadmissible -- never a clean win.
+
+EXPLICIT NO-ROMANCE MANDATE (load-bearing -- read this section as a hard boundary, not
+a suggestion):
+- This style has NO romance subplot, NO slow-burn attraction arc, and NO
+  "will-they/won't-they" between any two ensemble members, full stop. Do not seed one
+  "for texture." A glance held a beat too long, a hand on a shoulder, a late-night
+  stakeout shared in a car -- these are ALLOWED only when they serve trust-building
+  between investigative partners, and they must NEVER be written with romantic charge
+  (no lingering, no noticing a smell/warmth/pulse, no interior monologue about
+  attraction).
+- If two ensemble members are partners, their bond is built and paid off through
+  SHARED RISK on the case -- covering for each other, trusting each other's read on a
+  witness, one taking a fall for the other's mistake -- never through romantic
+  tension. A partnership earns its weight by what it survives procedurally, not by
+  what it almost becomes romantically.
+- The story's CLIMAX and RESOLUTION must turn on the case: the institution falls, is
+  exposed, or wins and the cost is named -- never on a relationship being confirmed,
+  confessed, or consummated. If you find a scene resolving emotional tension between
+  two characters as though it were the story's payoff, that scene has drifted out of
+  this style; redirect its energy back into the case.
+- Whistleblowers and sources may be protected, mourned, or lost -- but never romanced.
+  A source's safety is a plot stake, not a love interest's introduction.
+
+FORBIDDEN:
+- Any romantic subplot, love triangle, or slow-burn attraction arc between any two
+  characters, regardless of how minor.
+- The genre-blended vocabulary of the sibling K-drama register when it reads as
+  romantic: wrist-grabs framed as a claim, umbrella-shares, honorific-drops marked as
+  an emotional threshold, "second lead" framing for any ensemble member.
+- Generic procedural clichés: the maverick-cop-who-breaks-the-rules cliche played
+  straight with no cost, the "one more day to crack the case" ultimatum, the
+  corrupt-chief-reveal as a twist with no prior seeding, evidence appearing exactly
+  when the plot needs it with no procedural cost to obtain it, the interrogation-room
+  confession that arrives because the suspect "just breaks."
+- The "lone genius who solves it alone" beat -- this is an ENSEMBLE; the case breaks
+  because multiple people risked something, not because one detective had a hunch.
+- Self-referential meta ("like a K-drama," "binge-worthy," "cue the next episode").
+- Physical-description-as-characterization ("doe-eyed," "chiseled jaw"). Describe what
+  a character DOES with the evidence, not what they look like holding it.
+- Sectioned FLASHBACK / FIVE YEARS EARLIER headers. Memory is a tense-shift, and only
+  in service of the case.
+- Any ensemble member reduced to prop status with zero interior beat across the book.
+- A clean institutional win with no cost -- the wall must exact a price even when it
+  falls.
+""",
+    "style_rules_editor": "",
+    "register_spec": {
+        "required_moves": [
+            "cold_open_new_evidence_per_chapter",
+            "end_of_chapter_evidentiary_cliffhanger",
+            "institutional_escalation_step_per_chapter",
+            "ensemble_interior_beat_min",
+            "evidence_object_anchor_per_chapter",
+            # NOT "no_romance_subplot": required_moves are counted-occurrence checks
+            # (the register-gate LLM prompt asks "how many times did this genuinely
+            # occur"), so a negatively-framed non-event here would force
+            # verdict="off_register" on every manuscript in this style (count of a
+            # thing that shouldn't happen is always 0, never >=1) and, if
+            # NARASI_REGISTER_GATE_ENFORCE is ever turned on, drive a nonsensical
+            # auto-revise directive to "execute this move at least once." The
+            # no-romance intent is already covered by banned_tells below, which is
+            # the correct (must-NOT-appear) mechanism for this.
+        ],
+        "banned_tells": (
+            _KDRAMA_PROCEDURAL_ROMANCE_INTRUSION_CORE
+            + _KDRAMA_INVESTIGATIVE_ROMANCE_INTRUSION_ADD
+        ),
+        # register_spec.counters is confirmed DEAD DATA this session (no code path
+        # reads register_spec["counters"] anywhere -- narasi_counters.py's live engine
+        # reads the separate, unrelated style_spec["counters"]). Kept here only for
+        # shape-consistency with the sibling _KDRAMA_SERIAL_SPEC above; not worth
+        # over-investing effort in tuning these values.
+        "counters": {
+            "cold_open_per_chapter": True,
+            "evidentiary_cliffhanger_min_per_chapter": 1,
+            "institutional_escalation_step_min_per_chapter": 1,
+            "ensemble_interior_beat_min_per_2_chapters": 1,
+            "ensemble_interior_beat_min_per_book": 3,
+            "evidence_object_anchor_min_per_chapter": 1,
+            "principal_pov_count_range": [3, 5],
+            "pov_switch_at_chapter_boundary_only": True,
+            "romance_subplot_max": 0,
+            "sectioned_flashback_headers_max": 0,
+            "meta_self_reference_max": 0,
+            "physical_description_as_characterization_max": 0,
+            "narrator_opening_ratio_max": 0.5,
+            "aphorism_density_target": 1,
+        },
+    },
+}
+
+
+_KDRAMA_REVENGE_LEGAL_SPEC = {
+    "display_name": "K-Drama — Revenge/Legal Drama",
+    "aliases": [
+        "kdrama_revenge_legal", "kdrama-revenge-legal", "kdrama revenge legal",
+        "k-drama revenge legal", "k_drama_revenge_legal", "korean revenge drama",
+        "korean legal thriller", "kdrama legal drama", "kdrama revenge",
+        "revenge kdrama", "kdrama courtroom drama", "k-drama legal thriller",
+    ],
+    "is_fiction": True,
+    "category": "D",
+    "medium_origin": "screen",
+    "tier": "P1",
+    "tts_risk": False,
+    "output_support": "both",
+    "factual_regime": "fictional",
+    "rag": {
+        "query_instruction": (
+            "Retrieve a K-drama revenge/legal-drama passage in present-tense "
+            "close-third, a lead pursuing a justice or courtroom arc against a known "
+            "antagonist, cold-open on a wrong or new leverage, and an end-of-chapter "
+            "reversal cliffhanger -- hallyu-era contemporary Korean setting, no "
+            "forced romance twist:"
+        ),
+        "framing": (
+            "Study how the K-drama revenge/legal narrator treats every chapter as a "
+            "JUSTICE-ARC escalation, not an investigation: the antagonist is known "
+            "early, the question is never who but how, and how much it will cost to "
+            "bring them down through legitimate or barely-legitimate means. The "
+            "cold-open lands on the original wrong revisited or a new piece of "
+            "leverage secured; the middle unfolds a courtroom, boardroom, or "
+            "backroom maneuver; the last frame ends on a reversal that would make an "
+            "audience wait a week."
+        ),
+    },
+    "style_rules_core": """STYLE: K-Drama — Revenge/Legal Drama
+= Contemporary Korean revenge/legal-drama fiction. The antagonist is KNOWN from early in
+the book -- this is not a whodunit. Every chapter is one hourly episode of the JUSTICE
+ARC: cold-open on the original wrong revisited or new LEVERAGE secured (1-2 pages that
+would open episode-1-scene-1 of a revenge/legal thriller) -> a courtroom, boardroom, or
+backroom maneuver that moves the reckoning forward -> end-of-chapter REVERSAL
+CLIFFHANGER (freeze on the turn, not the reaction). Present-tense close-third, anchored
+primarily to the lead pursuing justice, with rotation to 1-3 secondary principals. The
+engine of the book is THE RECKONING. The register may slide between raw revenge-thriller
+heat and cool legal-procedural precision from chapter to chapter -- but the ARC SHAPE is
+fixed: wrong -> leverage -> reckoning -> justice-with-cost. It never becomes a different
+story.
+
+EPISODE ARC (mandatory shape per chapter):
+- COLD OPEN: open on the original wrong revisited (a scar, a document, a name spoken
+  by the wrong voice) OR a new piece of LEVERAGE secured against the antagonist -- a
+  signed confession obtained under pressure, a witness finally willing to testify, a
+  financial record that proves the fraud. Do NOT open with courtroom throat-clearing.
+  The wrong or the leverage IS the opening image.
+- THE MANEUVER: the lead (and any legal/investigative allies) executes ONE concrete
+  move toward the reckoning -- filing a motion, cornering a witness, trading leverage
+  for testimony, staging a confrontation that is really a trap. The antagonist, being
+  KNOWN, gets real page time countering it -- they are not a faceless obstacle, they
+  fight back with their own resources and their own reasoning for why they deserve to
+  win.
+- JUSTICE ARC ESCALATION: each chapter, the stakes of the reckoning rise by one
+  concrete degree -- a case that was civil becomes criminal, an ally flips sides under
+  pressure, the antagonist moves to destroy the evidence or the witness, the lead is
+  offered a settlement that would end the fight on the antagonist's terms.
+- REVERSAL CLIFFHANGER: end on a turn -- evidence thought lost resurfaces, an ally
+  betrays the lead or reveals unexpected loyalty, the antagonist plays a card nobody
+  saw, a verdict or ultimatum lands mid-sentence. The chapter ends on the TURN, before
+  anyone reacts to it.
+
+CAST DISTRIBUTION (structural rule, not stylistic preference -- NO romantic second-lead
+concept in this style):
+- Primary close-third anchor on the lead pursuing the reckoning; rotation to 1-3
+  secondary principals (an attorney, an investigator ally, the antagonist themself) at
+  chapter boundaries, never mid-scene.
+- There is NO "second lead" in the romantic sense, and no character exists as a love
+  interest. Every secondary principal is either an ALLY earning their place through
+  what they risk for the case, or the ANTAGONIST earning their page time through the
+  strength of their opposition -- never through romantic proximity to the lead.
+- At least one interior beat per two chapters must belong to a secondary principal,
+  minimum 3 across the book -- an ally's fear of retaliation, the antagonist's own
+  private reasoning for believing they are in the right.
+
+INTERIOR MONOLOGUE (register-defining):
+- Question-form, reckoning-facing, never romance-facing: "Berapa lama lagi aku harus
+  menunggu? Apa buktinya cukup kali ini? Apa yang akan kukorbankan untuk ini?"
+- Rendered in italics OR clear voice-break -- never buried inside neutral narration.
+- Memory intrudes as unmarked tense-shift ONLY when it re-arms the original wrong
+  ("Even now, she remembers exactly which door he walked out of.") -- never as a
+  romantic flashback. NO sectioned FLASHBACK headers. NO "FIVE YEARS EARLIER" cards.
+
+LEVERAGE-EVIDENCE GRAMMAR (weather + light + food replaced by LEVERAGE OBJECTS, always
+concrete):
+- Every chapter anchors to at least one tangible piece of leverage or evidence handled
+  on-page: a signed document, a recorded confession, a financial trail printed and
+  annotated, a witness's sworn statement, a photograph that proves a lie. The object is
+  handled, described, and what it costs to obtain matters.
+- Institutional texture (a courtroom at recess, a law firm's glass-walled conference
+  room at midnight, a police interview room, a boardroom before a vote) does the same
+  emotional work weather/food does in the sibling K-drama register -- pressure made
+  physical, never decorative.
+
+JUSTICE ARC (register-defining -- the register can slide revenge<->legal-drama chapter
+to chapter, but the ARC SHAPE is fixed):
+- The reckoning must move through recognizable stages across the book: the original
+  wrong named and re-armed -> leverage gathered against real resistance -> a public or
+  institutional confrontation (a trial, a boardroom vote, a press exposure) -> justice
+  landed AT A COST. A chapter may read as raw revenge-thriller heat (a confrontation, a
+  threat delivered in a parking garage) or as cool legal-procedural precision (a
+  deposition, a filed brief) -- both are the SAME style, and either is fine chapter to
+  chapter, but the underlying arc (wrong -> leverage -> reckoning -> cost) may never be
+  abandoned for a different plot engine.
+- The antagonist is KNOWN; withholding their identity for a mystery-reveal is a
+  different style. The tension is HOW the lead brings them down and WHAT it costs, not
+  WHO did it.
+
+EXPLICIT NO-ROMANCE MANDATE (load-bearing -- read this section as a hard boundary, not
+a suggestion):
+- This style has NO forced romance twist, NO attorney-client or opposing-counsel
+  attraction arc, and NO relationship-as-reward ending, full stop. Do not seed a
+  romance "for texture" or as a mid-book pivot. If the outline calls for a "surprise"
+  romantic reveal at the midpoint, that reveal must instead be a leverage/evidence
+  reversal.
+- Professional-boundary proximity (an attorney and their client working late,
+  opposing counsel sharing a drink after a hard day in court) is ALLOWED only as
+  procedural texture and must NEVER be written with romantic charge (no lingering
+  glances, no noticing a smell/warmth/pulse, no interior monologue about attraction to
+  a client, a witness, or opposing counsel).
+- Allies earn their place through SHARED RISK on the reckoning -- covering a lie for
+  each other, trusting each other with dangerous evidence, one taking a professional
+  fall for the other -- never through romantic tension.
+- The story's CLIMAX and RESOLUTION must turn on the reckoning: the antagonist is
+  exposed, convicted, ruined, or wins and the cost is named -- never on a relationship
+  being confirmed, confessed, or consummated. If a scene resolves emotional tension
+  between two characters as though it were the story's payoff, redirect its energy
+  back into the reckoning.
+
+FORBIDDEN:
+- Any romantic subplot, love triangle, forced attorney-client or opposing-counsel
+  attraction arc, or relationship-as-reward ending, regardless of how minor.
+- The genre-blended vocabulary of the sibling K-drama register when it reads as
+  romantic: wrist-grabs framed as a claim, umbrella-shares, honorific-drops marked as
+  an emotional threshold, "second lead" framing for any secondary principal.
+- Generic legal/revenge-drama clichés: the eleventh-hour surprise witness with no
+  prior seeding, the villain monologue that hands over a confession for free, the
+  judge who rules purely on courtroom theatrics, evidence ruled admissible or
+  inadmissible purely because the plot needs it, the "I object!" courtroom-movie beat
+  played with no procedural grounding, revenge achieved with zero cost or consequence
+  to the lead.
+- Withholding the antagonist's identity as a mystery-reveal -- they are KNOWN; this is
+  not a whodunit.
+- Self-referential meta ("like a K-drama," "binge-worthy," "cue the next episode").
+- Physical-description-as-characterization ("doe-eyed," "chiseled jaw"). Describe what
+  a character DOES with the leverage, not what they look like holding it.
+- Sectioned FLASHBACK / FIVE YEARS EARLIER headers. Memory is a tense-shift, and only
+  in service of the reckoning.
+- Any secondary principal reduced to prop status with zero interior beat across the
+  book.
+- A clean reckoning with no cost -- justice must exact a price even when it lands.
+""",
+    "style_rules_editor": "",
+    "register_spec": {
+        "required_moves": [
+            "cold_open_wrong_or_leverage_per_chapter",
+            "end_of_chapter_reversal_cliffhanger",
+            "justice_arc_escalation_step_per_chapter",
+            "interior_resolve_beat_per_chapter",
+            "leverage_or_evidence_anchor_per_chapter",
+            # NOT "no_forced_romance_twist" -- same reasoning as
+            # kdrama_investigative_thriller above: required_moves is a counted-
+            # occurrence check, not a must-NOT-appear one. banned_tells (below)
+            # is the correct mechanism for this intent.
+        ],
+        "banned_tells": (
+            _KDRAMA_PROCEDURAL_ROMANCE_INTRUSION_CORE
+            + _KDRAMA_REVENGE_LEGAL_ROMANCE_INTRUSION_ADD
+        ),
+        # register_spec.counters is confirmed DEAD DATA this session (no code path
+        # reads register_spec["counters"] anywhere -- narasi_counters.py's live engine
+        # reads the separate, unrelated style_spec["counters"]). Kept here only for
+        # shape-consistency with the sibling _KDRAMA_SERIAL_SPEC above; not worth
+        # over-investing effort in tuning these values.
+        "counters": {
+            "cold_open_per_chapter": True,
+            "reversal_cliffhanger_min_per_chapter": 1,
+            "justice_arc_escalation_step_min_per_chapter": 1,
+            "interior_resolve_beat_min_per_chapter": 1,
+            "secondary_principal_interior_beat_min_per_book": 3,
+            "leverage_or_evidence_anchor_min_per_chapter": 1,
+            "principal_pov_count_range": [1, 4],
+            "pov_switch_at_chapter_boundary_only": True,
+            "forced_romance_twist_max": 0,
+            "sectioned_flashback_headers_max": 0,
+            "meta_self_reference_max": 0,
+            "physical_description_as_characterization_max": 0,
+            "narrator_opening_ratio_max": 0.5,
+            "aphorism_density_target": 1,
+        },
+    },
+}
+
+
 _ROMANCE_CONTEMPORARY_SPEC = {
     "display_name": "Contemporary Romance — Literary Register",
     "aliases": [
@@ -2411,6 +2905,8 @@ FORBIDDEN:
 P1_STYLES["babad_hikayat"] = _BABAD_HIKAYAT_SPEC
 P1_STYLES["pewayangan_dalang"] = _PEWAYANGAN_DALANG_SPEC
 P1_STYLES["kdrama_serial"] = _KDRAMA_SERIAL_SPEC
+P1_STYLES["kdrama_investigative_thriller"] = _KDRAMA_INVESTIGATIVE_THRILLER_SPEC
+P1_STYLES["kdrama_revenge_legal"] = _KDRAMA_REVENGE_LEGAL_SPEC
 P1_STYLES["romance_contemporary"] = _ROMANCE_CONTEMPORARY_SPEC
 P1_STYLES["remaja_coming_of_age"] = _REMAJA_COMING_OF_AGE_SPEC
 
