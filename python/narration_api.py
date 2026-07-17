@@ -140,6 +140,207 @@ def _wq(s, n: int = 110) -> str:
     return f'"{s}"' if s else ""
 
 
+def _canon_chapter_lookup(chapters) -> dict:
+    """CANON-FORK CLASSIFIER WIDENING (2026-07-17, part a/b): build a {1-indexed chapter
+    number -> content} map from result['chapters']. chapter_records' 'no' is 0-INDEXED
+    (orchestrator/static.py chapter_records construction) while every human/model-facing
+    chapter number elsewhere in this codebase (headings, @chN locators, canon-diff's own
+    "chapter" field) is no+1 — keying on the raw 'no' would silently point every lookup one
+    chapter early. Also registers 'id' as a secondary key when it parses as an int (outline-
+    supplied id isn't guaranteed numeric; chapter_records defaults id=str(no+1), so this is
+    usually the same key twice, harmlessly). Never raises."""
+    out = {}
+    try:
+        for rec in (chapters or []):
+            if not isinstance(rec, dict) or not rec.get("content"):
+                continue
+            _no = rec.get("no")
+            if isinstance(_no, int):
+                out.setdefault(_no + 1, rec["content"])
+            try:
+                out.setdefault(int(rec.get("id")), rec["content"])
+            except (TypeError, ValueError):
+                pass
+    except Exception:  # noqa: BLE001
+        return {}
+    return out
+
+
+def _canon_quote_spans(evidence) -> list:
+    """Pull quoted manuscript text out of a free-text evidence/quote string (straight +
+    curly quotes) — same regex idea as laozhang_api.py's _narasi_revise_chunked._spans(),
+    duplicated here rather than imported (that helper is a private closure, and this file's
+    own precedent — thread-tracker, canon-diff — already re-implements small locator logic
+    locally instead of reaching into that function). Drops bare connector words captured
+    between two unrelated quotes."""
+    import re as _cre
+    ev = str(evidence or "")
+    sp = _cre.findall(r'["“”‘’\']([^"“”‘’\']{1,120}?)'
+                       r'["“”‘’\']', ev)
+    return [s.strip() for s in sp if s.strip() and _cre.search(r'\w', s)
+            and not _cre.fullmatch(r'(?i)(vs|and|then|or|but|to|the|a|an)', s.strip())]
+
+
+def _canon_excerpt(chapters, *, chapter_no=None, quote_source=None, cap: int = 6000):
+    """CANON-FORK CLASSIFIER WIDENING (2026-07-17, part a/b): resolve a fork/violation to
+    real manuscript prose — a whole chapter's text, not a ~200-char paraphrase — so the
+    reveal-vs-continuity classifier can see narrative posture (hedge phrases, dramatic-irony
+    framing) a short clip cuts away. Fallback ladder, never regresses, never drops an item:
+      1. Direct: `chapter_no` given and present in `chapters` (canon-diff forks carry a real
+         int) -> O(1) lookup, most reliable.
+      2. Fuzzy fallback: pull the quoted span(s) out of `quote_source` (mechanism-1 critic
+         violations have no chapter field at all; canon-diff's own 'quote' can be empty on
+         an older/malformed response) and substring-search chapters in book order, first
+         match wins — same best-effort precedent _narasi_revise_chunked's own docstring
+         already accepts for this exact class of lookup.
+      3. Neither resolves -> (None, None); caller falls back to its own short-text signal.
+         Widening can only help or be neutral per item, never worse than today's behavior.
+    Once a chapter is resolved (via either path), if `quote_source` yields a span found
+    INSIDE that chapter's text, the excerpt is a `cap`-sized WINDOW CENTERED on that span —
+    not a head-only slice — so a quote sitting late in a long chapter isn't silently cut off
+    by the cap (caught in verification: a real ~20k-char chapter with its relevant quote past
+    the 6000-char mark). Only when no span is locatable inside the resolved chapter does this
+    fall back to a plain head[:cap] slice (still strictly better than no excerpt at all).
+    Never raises."""
+    try:
+        _by_no = _canon_chapter_lookup(chapters)
+        if not _by_no:
+            return None, None
+        _content, _n = None, None
+        if chapter_no is not None:
+            try:
+                _cn = int(chapter_no)
+            except (TypeError, ValueError):
+                _cn = None
+            if _cn is not None and _cn in _by_no:
+                _content, _n = _by_no[_cn], _cn
+        if _content is None and quote_source:
+            for _q in _canon_quote_spans(quote_source):
+                for _cn in sorted(_by_no.keys()):
+                    if _q in _by_no[_cn]:
+                        _content, _n = _by_no[_cn], _cn
+                        break
+                if _content is not None:
+                    break
+        if _content is None:
+            return None, None
+        if quote_source:
+            for _q in _canon_quote_spans(quote_source):
+                _pos = _content.find(_q)
+                if _pos >= 0:
+                    _half = cap // 2
+                    _start = max(0, _pos - _half)
+                    _end = min(len(_content), _pos + len(_q) + _half)
+                    return _content[_start:_end], _n
+        return str(_content)[:cap], _n
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+async def _narasi_classify_canon_items(items, *, tenant_id, user_id, job_uuid,
+                                       sink=None, cap: int = 12, widen_prompt: bool = True) -> set:
+    """CANON-FORK CLASSIFIER, shared (2026-07-17, part b/d): ONE reveal-vs-continuity triage
+    prompt/call/parse/fail-safe used by BOTH mechanism #1 (critic canon_fork violations, the
+    original ROUND-13 caller) and mechanism #2 (canon-diff registry forks, new) — so the
+    "default to reveal when unsure" bias can never drift between the two call sites; a future
+    incident-driven prompt edit only ever has one copy to fix.
+
+    `items`: list of {"signal": <short flagged-fact text, REQUIRED — what conflicts>,
+    "excerpt": <manuscript excerpt or None/absent, OPTIONAL — narrative context>}. The short
+    signal is kept even when an excerpt is attached: a single chapter's text only shows one
+    side of a cross-chapter/cross-canon discrepancy, so the explicit found/expected (or
+    quoted contradiction) is still what tells the model WHAT diverges; the excerpt adds
+    narrative posture, not a replacement for the signal.
+
+    `widen_prompt` (default True): mechanism #2 (brand new this round, no legacy byte-identity
+    constraint) always gets the fuller guardrail prompt. Mechanism #1's call site explicitly
+    passes `widen_prompt=<NARASI_CANON_FORK_CLASSIFY_CONTEXT>` so the ALREADY-LIVE
+    NARASI_CANON_FORK_CLASSIFY path's prompt text stays BYTE-IDENTICAL to its pre-fix original
+    unless that (already-established, default-OFF) flag is explicitly turned on — this file's
+    own convention is that an already-live flag's behavior is never silently redefined by a
+    deploy (adversarial audit finding, 2026-07-17: the guardrail sentences were unconditional
+    regardless of any flag, a real live-behavior-drift risk despite being strictly conservative
+    in direction).
+
+    Returns the set of LIST POSITIONS classified "continuity", **indexed into the ORIGINAL
+    `items` argument as passed by the caller** (not into any internally filtered/capped copy —
+    adversarial audit finding, 2026-07-17: an earlier version returned positions into a
+    post-filter list while callers indexed their own pre-filter lists, silently misattributing
+    evidence whenever any item had a blank/missing "signal"). Caller maps a returned position
+    back to its own violation/fork via items[pos] directly, with no additional adjustment.
+    ANY failure -> empty set: fail-safe, every item stays protected. This mirrors ROUND-13's
+    original three-layer fail-closed shape exactly — a positive opt-in set, populated only on
+    explicit positive confirmation, index-bounds guarded — just generalized across both
+    mechanisms' schemas."""
+    # (original_index, item) pairs survive the filter+cap so returned positions can be mapped
+    # back to the caller's own original list, never to this function's internal compacted one.
+    _valid = [(_oi, _it) for _oi, _it in enumerate(items or [])
+              if isinstance(_it, dict) and _it.get("signal")][:cap]
+    if not _valid:
+        return set()
+    try:
+        from laozhang_api import _narasi_cheap_call as _cfcall, _narasi_parse_json as _cfparse
+        _lines = []
+        for _pos, (_orig_i, _it) in enumerate(_valid):
+            _sig = str(_it.get("signal") or "")[:300]
+            _exc = _it.get("excerpt")
+            if _exc:
+                _lines.append(f"{_pos}. FLAGGED: {_sig}\n   EXCERPT: \"{str(_exc)[:6000]}\"")
+            else:
+                # No excerpt (widening flag off, or excerpt unlocatable): identical shape to
+                # ROUND-13's original per-item line ("{i}. {evidence}") so mechanism-1's
+                # live NARASI_CANON_FORK_CLASSIFY path gets byte-identical INPUT when its
+                # sibling NARASI_CANON_FORK_CLASSIFY_CONTEXT flag is off.
+                _lines.append(f"{_pos}. {_sig}")
+        _cf_num = "\n".join(_lines)
+        _cf_sys = (
+            "You are triaging continuity flags in a mystery manuscript. Each item is a "
+            "fact stated two different ways across chapters"
+            + (
+                "; some items include a manuscript EXCERPT for context. Classify EACH as:\n"
+                if widen_prompt else ". Classify EACH as:\n"
+            ) +
+            "- \"reveal\": the two versions are a DELIBERATE surface-lie vs buried-truth "
+            "that the mystery's twist depends on (an identity, a death, a cover-up value "
+            "the plot later corrects on purpose). Fixing it would spoil the story.\n"
+            "- \"continuity\": a neutral fact (a measurement, a floor count, an object's "
+            "dimensions, a unit number, a passing date) stated two incompatible ways with "
+            "NO in-story reason -- a plain error safe to unify.\n"
+            + (
+                "Only answer \"continuity\" when you have clear, unambiguous grounds to rule "
+                "out a deliberate reveal -- not merely because the excerpt shown to you lacks "
+                "dramatic language. A discrepancy's payoff scene often sits in a DIFFERENT "
+                "chapter than the one excerpted here, so a plain-looking excerpt is NOT proof "
+                "there is no reveal elsewhere in the book; do not let it manufacture false "
+                "confidence. Some items may already have passed an earlier automated filter -- "
+                "do not treat that as evidence of safety; apply full judgment to every item "
+                "regardless of source. Getting \"reveal\" wrong costs one report-only flag that "
+                "stays visible; getting \"continuity\" wrong can permanently gut a twist the "
+                "story depends on -- the two mistakes are not equally costly. When unsure, "
+                if widen_prompt else "When unsure, "
+            ) +
+            "answer \"reveal\". Return ONLY JSON: "
+            "{\"items\":[{\"i\":<index>,\"class\":\"reveal|continuity\"}]}")
+        _raw, _cr = await _cfcall(_cf_sys, _cf_num, tenant_id=tenant_id, user_id=user_id,
+                                  job_uuid=job_uuid, json_mode=True, credit_row=False)
+        if sink is not None and _cr:
+            sink.credits += int(_cr)
+        _d = _cfparse(_raw) if isinstance(_raw, str) else (_raw or {})
+        _out = set()
+        for _it in ((_d or {}).get("items") or []):
+            try:
+                if str(_it.get("class") or "").lower() == "continuity":
+                    _pos = int(_it.get("i"))
+                    if 0 <= _pos < len(_valid):
+                        _out.add(_valid[_pos][0])  # map the LLM's compact position -> ORIGINAL index
+            except Exception:  # noqa: BLE001
+                continue
+        return _out
+    except Exception as _e:  # noqa: BLE001
+        log.warning("canon classify failed (non-fatal, all items stay protected): %s", _e)
+        return set()
+
+
 def _r7_actuator_violations(result: dict) -> list[dict]:
     """ROUND-7: teeth for the round-6 report-only gates. Reads the already-computed
     reports off `result` and returns synthetic mechanical violations for the
@@ -2247,6 +2448,29 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             # incompatible ways with no in-story reason -- SAFE to revise). Fail-safe:
             # any error -> the fork stays protected (current behavior). The revisable ids
             # are consulted by both the trigger filter and the revise-input filter below.
+            #
+            # WIDENED (2026-07-17, canon-fork classifier fix part a): now routed through the
+            # shared _narasi_classify_canon_items() (also used by canon-diff's own classify
+            # below) so the reveal-vs-continuity prompt/bias can never drift between the two
+            # mechanisms. Two independent axes of change, gated differently:
+            #   - INPUT (excerpt widening): per-item input is still ONLY the critic's own
+            #     200-char evidence snippet, byte-identical to before, unless the NEW,
+            #     separately-gated NARASI_CANON_FORK_CLASSIFY_CONTEXT flag (default OFF) is
+            #     also on -- this file's convention is that an already-live flag's behavior
+            #     is never silently redefined by a deploy. When that flag IS on, each item
+            #     ALSO gets a real manuscript excerpt (the chapter containing the evidence
+            #     quote, found via chapter-in-order substring search -- mechanism-1
+            #     violations carry no chapter number) appended as extra narrative context,
+            #     per the design's "keep the short signal, append the excerpt" rule: a
+            #     single chapter's text only shows one side of a cross-chapter discrepancy,
+            #     so the short evidence quote still anchors WHAT diverges.
+            #   - SYSTEM PROMPT (bias wording): the shared classifier's instructions gained
+            #     extra conservative-bias guardrails (part d) UNCONDITIONALLY, regardless of
+            #     the flag above -- this is intentional and safe even on the already-live
+            #     path, because every added sentence only pushes MORE items toward "reveal"
+            #     (stricter grounds required for "continuity", explicit false-confidence /
+            #     asymmetric-cost framing), never the reverse; requirement (d) forbids this
+            #     fix from becoming MORE aggressive, not from becoming MORE conservative.
             _revisable_fork_ev = set()
             if (_isfic_rev and not _fork_revise
                     and os.environ.get("NARASI_CANON_FORK_CLASSIFY", "0").strip().lower() in ("1", "true", "yes", "on")):
@@ -2254,34 +2478,25 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _cf_list = [v for v in (_cq.get("violations") or [])
                                 if str(v.get("type", "")).lower() == "canon_fork"][:12]
                     if _cf_list:
-                        from laozhang_api import _narasi_cheap_call as _cfcall, _narasi_parse_json as _cfparse
-                        _cf_num = "\n".join(f"{i}. {str(v.get('evidence') or '')[:200]}"
-                                             for i, v in enumerate(_cf_list))
-                        _cf_sys = (
-                            "You are triaging continuity flags in a mystery manuscript. Each item is a "
-                            "fact stated two different ways across chapters. Classify EACH as:\n"
-                            "- \"reveal\": the two versions are a DELIBERATE surface-lie vs buried-truth that "
-                            "the mystery's twist depends on (an identity, a death, a cover-up value the plot "
-                            "later corrects on purpose). Fixing it would spoil the story.\n"
-                            "- \"continuity\": a neutral fact (a measurement, a floor count, an object's "
-                            "dimensions, a unit number, a passing date) stated two incompatible ways with NO "
-                            "in-story reason -- a plain error safe to unify.\n"
-                            "When unsure, answer \"reveal\". Return ONLY JSON: "
-                            "{\"items\":[{\"i\":<index>,\"class\":\"reveal|continuity\"}]}")
-                        _cf_raw, _cf_cr = await _cfcall(_cf_sys, _cf_num, tenant_id=tenant_id,
-                                                        user_id=user_id, job_uuid=job_uuid, json_mode=True,
-                                                        credit_row=False)
-                        if sink is not None and _cf_cr:
-                            sink.credits += int(_cf_cr)
-                        _cf_d = _cfparse(_cf_raw) if isinstance(_cf_raw, str) else (_cf_raw or {})
-                        for _it in ((_cf_d or {}).get("items") or []):
-                            try:
-                                if str(_it.get("class") or "").lower() == "continuity":
-                                    _idx = int(_it.get("i"))
-                                    if 0 <= _idx < len(_cf_list):
-                                        _revisable_fork_ev.add(str(_cf_list[_idx].get("evidence") or ""))
-                            except Exception:  # noqa: BLE001
-                                continue
+                        _cf_widen = os.environ.get("NARASI_CANON_FORK_CLASSIFY_CONTEXT", "0").strip().lower() in (
+                            "1", "true", "yes", "on")
+                        _cf_chapters = (result.get("chapters") or []) if _cf_widen else []
+                        _cf_items = []
+                        for _v in _cf_list:
+                            _ev = str(_v.get("evidence") or "")
+                            _exc = None
+                            if _cf_widen:
+                                _exc, _ = _canon_excerpt(_cf_chapters, quote_source=_ev)
+                            _cf_items.append({"signal": _ev[:200], "excerpt": _exc})
+                        _cf_continuity = await _narasi_classify_canon_items(
+                            _cf_items, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, sink=sink,
+                            # Reuse the SAME flag that gates excerpt widening: when it's off, the
+                            # already-live NARASI_CANON_FORK_CLASSIFY path's prompt text stays
+                            # byte-identical to pre-fix (no guardrail sentences, no excerpt
+                            # mention) -- see _narasi_classify_canon_items' widen_prompt docstring.
+                            widen_prompt=_cf_widen)
+                        for _idx in _cf_continuity:
+                            _revisable_fork_ev.add(str(_cf_list[_idx].get("evidence") or ""))
                         if _revisable_fork_ev:
                             log.info("canon-fork classify: %d/%d fork(s) are plain continuity errors -> revisable",
                                      len(_revisable_fork_ev), len(_cf_list))
@@ -2699,25 +2914,101 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     # WHEN/PARTICIPANTS fields are mechanical attribution errors (roll-13:
                     # WHO opened the door forked across four chapters) — repairing them
                     # spoils no reveal. false_versions/summary/key_action forks stay
-                    # report-only (r4.1 reveal protection). ONE bounded chunked-revise
-                    # pass, cap 4, never raises.
+                    # report-only (r4.1 reveal protection) UNLESS the extended classifier
+                    # below (NARASI_CANON_DIFF_CLASSIFY, default OFF) clears them. ONE
+                    # bounded chunked-revise pass, cap 4, never raises.
+                    #
+                    # SUPPLEMENT, not replace (2026-07-17, canon-fork classifier fix part
+                    # b/c): the when/participants field-name filter (_fast_path below) is
+                    # UNCHANGED — same forks, same zero-LLM-dependency reliability, byte-
+                    # identical to today when NARASI_CANON_DIFF_CLASSIFY is off. Chose
+                    # supplement over replace because (i) replacing would put the currently-
+                    # live, 100%-reliable fast path behind a fallible LLM call whose own
+                    # fail-safe is "stays protected" — i.e. a flaky classify call would
+                    # silently REGRESS availability on a path with no established accuracy
+                    # problem, which requirement (d) ("not more aggressive, only more
+                    # accurate") does not ask for; (ii) it keeps this a new, independently-
+                    # rollback-able flag rather than silently redefining what the already-
+                    # live NARASI_CANON_ENFORCE_NONREVEAL=1 does the instant this deploys.
+                    # The residual pool (_other — summary/key_action forks, previously
+                    # permanently protected regardless of correctness) is what actually gets
+                    # NEW eligibility here: each is given a real semantic judgment via the
+                    # same shared classifier mechanism-1 uses (widened manuscript excerpt +
+                    # the conservative default-to-reveal bias), not just the value pairs.
+                    # Classifier is only invoked when there's spare room in the batch-of-4
+                    # (avoids a wasted call once the fast path alone already saturates it).
                     try:
                         if str(os.environ.get("NARASI_CANON_ENFORCE_NONREVEAL", "0")).strip().lower() in ("1", "true", "yes", "on"):
-                            _nrv = [f for f in _forks
-                                    if str((f or {}).get("field") or "").split(".")[0] in ("when", "participants")][:4]
+                            _fast_path = [f for f in _forks
+                                          if str((f or {}).get("field") or "").split(".")[0] in ("when", "participants")]
+                            _fast_ids = {id(f) for f in _fast_path}
+                            _other = [f for f in _forks if id(f) not in _fast_ids]
+                            _classified = []
+                            if (_other and len(_fast_path) < 4
+                                    and str(os.environ.get("NARASI_CANON_DIFF_CLASSIFY", "0")).strip().lower() in (
+                                        "1", "true", "yes", "on")):
+                                try:
+                                    _cd_chapters = result.get("chapters") or []
+                                    _cd_items = []
+                                    for _f in _other:
+                                        _sig = (f"Field: {_f.get('field')}. Chapter {_f.get('chapter')} states "
+                                                f"this as {_f.get('found')!r}; canon registry expects "
+                                                f"{_f.get('expected')!r}.")
+                                        # _wq()-wrap: canon-diff's "quote" field is the raw
+                                        # excerpt VALUE itself (per its own extraction schema),
+                                        # not evidence-shaped free text with embedded quote
+                                        # marks like mechanism-1's "evidence" — _canon_quote_
+                                        # spans()/_canon_excerpt()'s span search only extracts
+                                        # text sitting BETWEEN literal quote characters (same
+                                        # convention as laozhang_api.py's _spans()), so an
+                                        # unwrapped raw quote would silently match nothing.
+                                        _exc, _ = _canon_excerpt(_cd_chapters, chapter_no=_f.get("chapter"),
+                                                                 quote_source=_wq(_f.get("quote")))
+                                        _cd_items.append({"signal": _sig, "excerpt": _exc})
+                                    _cd_continuity = await _narasi_classify_canon_items(
+                                        _cd_items, tenant_id=tenant_id, user_id=user_id,
+                                        job_uuid=job_uuid, sink=sink)
+                                    _classified = [_other[_i] for _i in _cd_continuity if 0 <= _i < len(_other)]
+                                    if _classified:
+                                        log.info("canon-diff classify: %d/%d residual fork(s) (non when/"
+                                                 "participants) are plain continuity errors -> eligible for "
+                                                 "enforce", len(_classified), len(_other))
+                                except Exception as _cde:  # noqa: BLE001
+                                    log.warning("canon-diff classify failed (non-fatal, residual forks stay "
+                                                "protected): %s", _cde)
+                            _nrv = (_fast_path + _classified)[:4]
                             if _nrv:
-                                # EVIDENCE-LOCATABILITY (Task 3): prefer the auditor's new verbatim
-                                # "quote" field (quote-wrapped for _spans()) over the bare "found"
-                                # paraphrase. Fail-safe: an older/malformed response with no "quote"
-                                # falls back to the prior behavior — bare found value, still
-                                # unmappable but never a crash.
-                                _nrviol = [{
-                                    "type": "canon_attribution", "severity": "high",
-                                    "evidence": (_wq(f.get("quote")) or str(f.get("found") or "")[:200]),
-                                    "fix": (f"The fact sheet pins event «{f.get('event')}» {f.get('field')} "
-                                            f"differently than this chapter states — align the chapter to "
-                                            f"the fact sheet's version; change nothing else.")}
-                                    for f in _nrv]
+                                # EVIDENCE-LOCATABILITY (Task 3, extended part c): prefer the auditor's
+                                # verbatim "quote" field (quote-wrapped for _spans()) over the bare "found"
+                                # paraphrase, AND append the deterministic "@ch{N}" locator (fork["chapter"]
+                                # is a reliable int straight from the model, unlike mechanism-1's evidence)
+                                # — the same _wq()+@chN belt-and-suspenders convention thread-tracker and
+                                # chapter_boundary_break already use. This matters MORE here than elsewhere:
+                                # canon-diff's "quote" has no post-check verifying it's a literal manuscript
+                                # substring (unlike domain-plausibility's), so ordinary LLM paraphrase drift
+                                # can make _occ() fail to find it — without @chN that fork silently lands
+                                # UNMAPPED and never gets the fix it was just approved for.
+                                # NARASI_CANON_ENFORCE_NONREVEAL is already live -- gating the @chN
+                                # append behind its own new, separately-rollback-able, default-OFF
+                                # flag rather than appending it unconditionally (adversarial audit
+                                # finding, 2026-07-17: this fires on the fast-path when/participants
+                                # forks too, which have nothing to do with NARASI_CANON_DIFF_CLASSIFY
+                                # being on or off, so that flag alone can't gate it).
+                                _chn_locator_on = os.environ.get(
+                                    "NARASI_CANON_ENFORCE_CHN_LOCATOR", "0").strip().lower() in (
+                                    "1", "true", "yes", "on")
+                                _nrviol = []
+                                for f in _nrv:
+                                    _ev = _wq(f.get("quote")) or str(f.get("found") or "")[:200]
+                                    _chn = f.get("chapter")
+                                    if _chn is not None and _chn_locator_on:
+                                        _ev = f"{_ev} @ch{_chn}"
+                                    _nrviol.append({
+                                        "type": "canon_attribution", "severity": "high",
+                                        "evidence": _ev[:200],
+                                        "fix": (f"The fact sheet pins event «{f.get('event')}» {f.get('field')} "
+                                                f"differently than this chapter states — align the chapter to "
+                                                f"the fact sheet's version; change nothing else.")})
                                 from laozhang_api import _narasi_revise_chunked as _nrev
                                 _nrmodel = str(body.get("model") or "") or "claude-opus-4-6"
                                 _nrnew, _nrcr = await _nrev(_cbook, _nrviol, style, language, _nrmodel,
