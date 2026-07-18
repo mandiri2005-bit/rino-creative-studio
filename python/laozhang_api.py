@@ -8730,9 +8730,16 @@ _REVISE_TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_len
 # A chapter rewrite whose last non-whitespace char isn't terminal punctuation (optionally
 # followed by a closing quote/bracket) reads as cut off mid-sentence — deterministic backstop
 # for a provider that mis-reports finish_reason (same "look at the tail" shape as _tail_meta).
-# Also accepts an em-dash/double-hyphen ending (audit-caught: a standard fiction device for
-# interrupted dialogue/thought was being misread as truncated, identically to genuine cutoff).
-_REVISE_TAIL_UNTERMINATED_RX = _re.compile(r'(?:[.!?…]|—|--)["\'’”\)\]]*\s*$')
+# Also accepts an em-dash/en-dash/double-hyphen ending (audit-caught: a standard fiction device
+# for interrupted dialogue/thought was being misread as truncated, identically to genuine cutoff).
+# » (closing guillemet) added 2026-07-18: this pipeline's own Indonesian-typographic dialogue
+# convention (narasi_gate._DIALOGUE_QUOTE_RX / _POV_DIALOGUE_STRIP_RX, narasi_counters._DN_QUOTE_RX,
+# all «…»-aware) legitimately ends a chapter on «…»-quoted dialogue; the closing-char class here
+# didn't include » so every such chapter was deterministically misflagged tail_unterminated and
+# rejected regardless of fidelity. – (en-dash) added alongside it for the same reason: narasi_
+# counters' gloss/dash handling (_GLOSS_RX et al.) already treats – as equivalent to —/-- for
+# interrupted-dialogue/thought dashes, so this check's accepted set should too.
+_REVISE_TAIL_UNTERMINATED_RX = _re.compile(r'(?:[.!?…]|—|–|--)["\'’”»\)\]]*\s*$')
 
 
 def _revise_min_severities():

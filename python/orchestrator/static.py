@@ -284,10 +284,16 @@ _TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_length")
 # Deterministic backstop for a provider that mis-reports finish_reason: a polished blob whose
 # last non-whitespace char isn't terminal punctuation (optionally a closing quote/bracket after
 # one) reads as cut off mid-sentence, same shape as laozhang_api._narasi_revise_chunked's tail
-# check on the sibling per-chapter revise pass. Also accepts an em-dash/double-hyphen ending
-# (audit-caught: a standard fiction device for interrupted dialogue/thought — "Wait, I need to
-# tell you—" — was being misread as truncated, identically to genuine mid-word cutoff).
-_TAIL_UNTERMINATED_RX = re.compile(r'(?:[.!?…]|—|--)["\'’”\)\]]*\s*$')
+# check on the sibling per-chapter revise pass. Also accepts an em-dash/en-dash/double-hyphen
+# ending (audit-caught: a standard fiction device for interrupted dialogue/thought — "Wait, I
+# need to tell you—" — was being misread as truncated, identically to genuine mid-word cutoff).
+# Round-8 audit (2026-07-18, job funym2wo): guillemet-quoted dialogue («Sudah selesai.») and
+# en-dash (–) endings — both established conventions elsewhere in this codebase (narasi_gate.py's
+# _DIALOGUE_QUOTE_RX/_POV_DIALOGUE_STRIP_RX, narasi_counters.py's _DN_QUOTE_RX/_GLOSS_RX) — were
+# missing from this regex's accepted set, causing false-positive rejections in _apply_word_gate
+# (spurious "continue your chapter" retries) and _polish_reduce (a successful polish silently
+# discarded). Mirrors the identical fix applied to laozhang_api.py's _REVISE_TAIL_UNTERMINATED_RX.
+_TAIL_UNTERMINATED_RX = re.compile(r'(?:[.!?…]|—|–|--)["\'’”»\)\]]*\s*$')
 # Ceiling companion to the 0.9x floor above: a chapter running 30%+ OVER word_target is a
 # spec-adherence regression (confirmed 2026-07-15: a book shipped at 53,655 words against a
 # ~40,000 target). Report-only — see the ceiling check inside _apply_word_gate below. Kept
