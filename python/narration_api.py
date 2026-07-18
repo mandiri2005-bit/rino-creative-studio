@@ -454,6 +454,33 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
                     "fix": ("Add a brief bridging sentence or short scene resolving what the "
                             "ending of the previous chapter left unresolved before this "
                             "chapter's opening beat.")})
+        # — entity-attribute drift: a named character's gender/title/age, or a mentioned-but-
+        # unnamed relative's relation descriptor, contradicts itself across chapters (the
+        # "Ha-neul referred to with male pronouns in most chapters, female in one chapter"
+        # class) — _r9_gate_entity (NARASI_ENTITY_ATTR_CHECK) detects this and reports it via
+        # "entity_attr_report" on `result` (same result-dict plumbing as numeric_ledger_report/
+        # chapter_boundary_report — see those comments). Was report-only with no consumer
+        # anywhere in the tree before this fix (2026-07-19) — confirmed the drift could never
+        # reach a chapter revise no matter how many were found. EVIDENCE-LOCATABILITY: the
+        # extraction prompt was tightened alongside this fix to require a literal "quote" +
+        # explicit "chapter" per drift (previously a free-text "evidence" description that
+        # _wq()-wrapping could never turn into a locatable span) — belt-and-suspenders @chN
+        # locator, same convention as every enforce block above.
+        if _r7_env_on("NARASI_ENTITY_ATTR_ENFORCE"):
+            for d in ((result.get("entity_attr_report") or {}).get("drifts") or [])[:4]:
+                _eae = _wq(d.get("quote")) or _wq(d.get("name"))
+                _each = d.get("chapter")
+                if _each is not None:
+                    _eae = f"{_eae} @ch{_each}"
+                out.append({
+                    "type": "entity_attr_drift", "severity": "high",
+                    "evidence": _eae[:200],
+                    "fix": (f"«{d.get('name')}» has a contradicting {d.get('kind')} in this "
+                            f"chapter — the story elsewhere establishes «{d.get('expected')}». "
+                            f"Correct this chapter to match that established fact EVERYWHERE it "
+                            f"appears here, unless the story gives an explicit in-world reason "
+                            f"for the change (e.g. a disguise, a promotion, an adoption) — if so, "
+                            f"leave it and do not report it as a bug.")})
     except Exception:  # noqa: BLE001
         return out
     return out
@@ -1982,6 +2009,21 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         # people mentioned-but-not-independently-tracked. Prompt now also tracks
         # relation slots (named char + relation type, e.g. "So-ra's child") as a
         # fourth drift kind. Still report-only, same flag, same never-raise contract.
+        # FIX (2026-07-19, "Love on the Wrong Pitch" review — a character's sex flipping
+        # between chapters is exactly this gate's job and it never fired): two real bugs
+        # found on independent investigation, same shape as fixes already applied to
+        # numeric-ledger/canon-diff/thread-tracker: (1) _eabk[:60000] is a flat head-slice
+        # — on any book longer than ~2-3 chapters a later-chapter drift is structurally
+        # invisible; raised to the shared NARASI_CRITIQUE_MAX_CHARS budget. (2) this gate
+        # only ever wrote result["entity_attr_report"] and logged — grepped the whole
+        # tree, "entity_attr_report" had exactly one other reference before this fix
+        # (nothing consumed it) — it could never reach a chapter revise no matter how
+        # many drifts it found. See _r7_actuator_violations below for the new
+        # NARASI_ENTITY_ATTR_ENFORCE block that fixes that. The extraction prompt is also
+        # tightened to require a literal quote + explicit chapter number per drift
+        # (matching the numeric-ledger "VERBATIM-as-written" fix precedent) since the
+        # prior "<the two contradicting usages, chapter-tagged>" wording asked for a free-
+        # text description, which _wq()-wrapping cannot turn into a locatable span.
         try:
             if _r7_env_on("NARASI_ENTITY_ATTR_CHECK"):
                 _ea_fic = False
@@ -1996,6 +2038,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _eabk = result.get(_eakey) or ""
                 if _ea_fic and _eabk:
                     from laozhang_api import _narasi_cheap_call as _eacall, _narasi_parse_json as _eaparse
+                    _ea_max_chars = int(os.environ.get("NARASI_CRITIQUE_MAX_CHARS", "300000"))
                     _easys = (
                         "You are an entity-attribute continuity checker for a multi-chapter story. For "
                         "every NAMED character, track three attributes across chapters: gender pronouns "
@@ -2010,9 +2053,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "change; a disguise explains a pronoun change; an adoption or remarriage explains "
                         "a relation change). Return ONLY JSON: {\"drifts\":[{\"name\":\"<char, or '<char>'s "
                         "<relation slot>' for a mentioned-but-unnamed relative>\",\"kind\":\"gender|title|"
-                        "age|relation\",\"evidence\":\"<the two contradicting usages, chapter-tagged>\"}]} "
+                        "age|relation\",\"chapter\":<int, the LATER chapter carrying the contradicting "
+                        "usage>,\"quote\":\"<short excerpt from THAT chapter, copied character-for-"
+                        "character from the book text, containing the contradicting usage — never "
+                        "paraphrased>\",\"expected\":\"<the earlier, canonical usage this contradicts>\"}]} "
                         "— max 6, real contradictions only.")
-                    _earaw, _eacc = await _eacall(_easys, _eabk[:60000], tenant_id=tenant_id,
+                    _earaw, _eacc = await _eacall(_easys, _eabk[:_ea_max_chars], tenant_id=tenant_id,
                                                   user_id=user_id, job_uuid=job_uuid, json_mode=True,
                                                   credit_row=False)
                     if sink is not None and _eacc:
@@ -2805,14 +2851,18 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             "\"chains\":[{\"id\":\"<slug>\",\"links\":[{\"entity\":\"<str>\",\"transferred_from\":\"<str>\","
                             "\"transferred_to\":\"<str>\",\"date\":\"<str>\"}]}],"
                             "\"quantities\":[{\"id\":\"<slug>\",\"value\":\"<str|int>\",\"unit\":\"<str>\","
-                            "\"anchor_chapter\":<n>}]} — ONLY load-bearing plot events (max " + str(_cd_event_cap) + "); "
+                            "\"anchor_chapter\":<n>,\"since_event\":<bool, optional>}]} — ONLY load-bearing plot events (max " + str(_cd_event_cap) + "); "
                             "caps: <=12 timeline anchors, <=10 kinship pairs (person-to-person family relations only), "
                             "<=6 exhibit_sets, <=6 chains, <=8 quantities. timeline = ordering anchors for events. "
                             "exhibit_sets = a LIST-TYPE document/exhibit packet, one row per set with its entry list; "
                             "near-duplicate documents (two similar memos/ledgers) each get their OWN set, never merged, "
                             "each with its own date and label. chains = a multi-entity ownership/custody transfer "
                             "sequence (never in kinship). quantities = a standalone pinned duration/count/total; "
-                            "anchor_chapter is where it is first pinned. Omit any array with no qualifying facts. "
+                            "anchor_chapter is where it is first pinned. Set since_event:true when the quantity is a "
+                            "duration/tenure/age measured forward from a fixed past point (may legitimately grow as "
+                            "story-time passes, or be smaller in a flashback chapter narrating an earlier point in "
+                            "the story's own chronology) rather than a flat count with no time dimension (a bag "
+                            "total, a headcount) — leave it unset for flat counts. Omit any array with no qualifying facts. "
                             "Where the sheet keeps an "
                             "official value AND a true value for one fact, the TRUE value is canonical and the official "
                             "one goes into false_versions. Include every named QUANTITY, list POSITION, and role-holder "
@@ -3127,14 +3177,65 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     for _qt in (_quants[:8] if _has_quants else []):
                         if not isinstance(_qt, dict) or not _cbook:
                             continue
-                        _qt_canon = {k: _qt.get(k) for k in ("value", "unit", "anchor_chapter") if _qt.get(k) is not None}
+                        _qt_canon = {k: _qt.get(k) for k in ("value", "unit", "anchor_chapter", "since_event")
+                                     if _qt.get(k) is not None}
+                        # FIX (2026-07-19, duration-since-event false-fork/false-negative): a plain
+                        # "different value = fork" check (below) cannot distinguish a real bug (Ch1/
+                        # Ch9 "ten years" -> Ch10 "eleven years" with only ~3 story-months elapsed)
+                        # from a LEGITIMATE increment (real story-time passed, so the restated
+                        # duration correctly grew) — it would also misfire on the negative-test case
+                        # where an exact tenure figure and a separately-rounded, distinct span for the
+                        # same entity are conflated as one referent just because both are "years", and
+                        # (adversarial-audit-caught, fixed before ship) it must not misfire on a
+                        # deliberate flashback chapter narrating an earlier point in the story's own
+                        # chronology, where a SMALLER value is correct, nor be a one-sided ceiling
+                        # check blind to an UNDERSHOOT (a stated precise interval implying MORE change
+                        # than what's shown is just as much a fork as an unjustified overshoot).
+                        # Gated on the bible-writer's own since_event:true flag (schema addition,
+                        # orchestrator/dynamic.py + this file's fallback extractor) so a flat count
+                        # (a bag total, a headcount) is unaffected and keeps the original flat-diff
+                        # wording. Appends to the SAME _qtsys prompt / SAME _forks list / SAME
+                        # NARASI_CANON_DIFF_REVISE+NARASI_CANON_ENFORCE_NONREVEAL enforcement wiring
+                        # as every other canon-diff check above — no new mechanism, no new revise path.
+                        _qt_since = bool(_qt_canon.get("since_event"))
                         _qtsys = (
                             "You are a canon auditor with a fact sheet you must trust over your own reading. "
                             "CANONICAL pinned quantity: " + _cjson.dumps(_qt_canon, ensure_ascii=False) + ". Scan "
                             "the book and report EVERY chapter that states a DIFFERENT value for this SAME "
                             "quantity (the same duration/count/measurement, for the same referent) than the "
                             "canonical one — including a second, contradicting value stated ELSEWHERE IN THE "
-                            "SAME chapter as the anchor_chapter, not only in a different chapter. Return ONLY "
+                            "SAME chapter as the anchor_chapter, not only in a different chapter. "
+                            + ("This quantity is marked since_event:true — a DURATION/TENURE/AGE MEASURED "
+                               "FORWARD FROM A FIXED PAST POINT, not a flat count. Its value is EXPECTED to "
+                               "change as the story's own internal clock moves — check the book's own "
+                               "internal story-time markers (an explicit interval, a stated season/month/"
+                               "year change, 'X months/years later', dated references) between the anchor "
+                               "chapter and any chapter stating a different value BEFORE judging a fork. "
+                               "Report a fork ONLY when: (1) a chapter numbered AFTER the anchor chapter "
+                               "states a SMALLER value (a duration must never shrink going forward in the "
+                               "story's chronology) — UNLESS that chapter is a deliberate flashback or "
+                               "memory sequence narrating an EARLIER point in the story's own chronology "
+                               "than the anchor chapter, in which case a smaller value there is CORRECT and "
+                               "must NOT be reported; (2) the value increases by MORE than the elapsed "
+                               "story-time the book itself establishes would justify (e.g. only a few "
+                               "story-months pass between the two mentions but the stated figure jumps a "
+                               "full year or more); or (3) the book states a SPECIFIC, PRECISE elapsed "
+                               "interval between the two mentions (not just a loose/vague sense of time "
+                               "passing) and the stated value increased by MATERIALLY LESS than that precise "
+                               "interval implies — an undershoot is just as much a fork as an overshoot when "
+                               "the book gives you an exact interval to check against; when the book's time-"
+                               "passage markers are vague or approximate, do not report a small/uncertain "
+                               "undershoot, only a clear overshoot or a decrease. Do NOT report a fork merely "
+                               "because the number changed — check the elapsed story-time first. Separately: "
+                               "do NOT treat two different-looking duration mentions for the same person/"
+                               "thing as the SAME quantity (and so do NOT report them as a fork against each "
+                               "other) when they plausibly describe DIFFERENT spans — an exact, precisely-"
+                               "dated figure (e.g. 'twenty-four years, since 2001') and a separate, "
+                               "deliberately looser or colloquial rounding of a related-but-distinct span "
+                               "(e.g. 'about twenty years of collecting') are DIFFERENT referents unless the "
+                               "book itself treats them as describing the identical measured span. "
+                               if _qt_since else "")
+                            + "Return ONLY "
                             "JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"value\",\"found\":\"<value>\","
                             "\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt from THIS chapter, "
                             "copied character-for-character from the book text, that shows the found value — "
