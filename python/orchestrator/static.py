@@ -281,6 +281,13 @@ def _placeholder(ch: dict, no: int, reason: str) -> str:
 # truncation regardless of word count. Kill switch: NARASI_WORDGATE=0 (default ON).
 _WORDGATE_RETRIES = int(os.environ.get("DALANG_MAX_CHAPTER_RETRIES", "2"))
 _TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_length")
+# Deterministic backstop for a provider that mis-reports finish_reason: a polished blob whose
+# last non-whitespace char isn't terminal punctuation (optionally a closing quote/bracket after
+# one) reads as cut off mid-sentence, same shape as laozhang_api._narasi_revise_chunked's tail
+# check on the sibling per-chapter revise pass. Also accepts an em-dash/double-hyphen ending
+# (audit-caught: a standard fiction device for interrupted dialogue/thought — "Wait, I need to
+# tell you—" — was being misread as truncated, identically to genuine mid-word cutoff).
+_TAIL_UNTERMINATED_RX = re.compile(r'(?:[.!?…]|—|--)["\'’”\)\]]*\s*$')
 # Ceiling companion to the 0.9x floor above: a chapter running 30%+ OVER word_target is a
 # spec-adherence regression (confirmed 2026-07-15: a book shipped at 53,655 words against a
 # ~40,000 target). Report-only — see the ceiling check inside _apply_word_gate below. Kept
@@ -353,10 +360,15 @@ async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
         text = str(res["output"])
         rounds = 0
         last = res  # the result whose truncation flag we track as the tail grows
-        # Continue while the chapter is UNDER the floor OR the last call was truncated by the
-        # model's output ceiling (a truncated chapter above the floor would otherwise ship
-        # mid-sentence). Bounded by _WORDGATE_RETRIES either way.
-        while (len(text.split()) < floor or _res_truncated(last)) and rounds < _WORDGATE_RETRIES:
+        # Continue while the chapter is UNDER the floor, OR the last call was truncated by the
+        # model's output ceiling, OR the text's own tail isn't terminated (deterministic
+        # backstop for a provider that mis-reports finish_reason — audit-caught: this is the
+        # ONLY completeness check on the original per-chapter generation path; the chunked-
+        # revise and polish-reduce passes downstream already had it, generation itself did not).
+        # A truncated chapter above the floor would otherwise ship mid-sentence. Bounded by
+        # _WORDGATE_RETRIES either way.
+        while (len(text.split()) < floor or _res_truncated(last)
+               or not _TAIL_UNTERMINATED_RX.search(text)) and rounds < _WORDGATE_RETRIES:
             rounds += 1
             need = max(50, floor - len(text.split()))
             cont_task = (
@@ -1486,6 +1498,18 @@ async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink
         if _out_w > int(_in_w * 1.35):
             log.warning("_polish_reduce: %s output %d words > 135%% of %d — discarding (bloat/duplication guard)",
                         task_id, _out_w, _in_w)
+            return text, False
+        # A polish pass cut off mid-sentence by the token ceiling can clear the word-band checks
+        # above (marginally short, not gutted) — catch it the same way _apply_word_gate already
+        # does for the MAP phase: the provider's own stop reason, plus a deterministic check that
+        # the blob's last non-whitespace isn't terminal punctuation.
+        if _res_truncated(res):
+            log.warning("_polish_reduce: %s finish_reason=%s — discarding (truncation guard)",
+                        task_id, (_tel.get("finish_reason") or "?"))
+            return text, False
+        if not _TAIL_UNTERMINATED_RX.search(out):
+            log.warning("_polish_reduce: %s output does not end in terminal punctuation — "
+                        "discarding (mid-sentence truncation guard)", task_id)
             return text, False
         return out, True
     log.warning("_polish_reduce: %s failed (%s) — keeping unpolished", task_id, res.get("error"))

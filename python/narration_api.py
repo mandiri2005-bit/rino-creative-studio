@@ -1893,7 +1893,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "itself establishes that one person appears in two components (a mislabeled body "
                         "counted both officially and among the hidden), NAME them in overlap — that is a "
                         "double-count the total must subtract.")
-                    _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:60000], tenant_id=tenant_id,
+                    # FIX (2026-07-18, truncation root-cause): a flat [:60000] head-slice covered
+                    # only ~chapters 1-3 of a 10-chapter/~39K-word book, silently exempting later
+                    # chapters from ever being ledgered. DALANG_CHEAP_MODEL (gemini-2.5-flash-lite)
+                    # has a multi-hundred-K-token context window — the thread-tracker Pass-1 scan
+                    # (same cheap model, same class of whole-book call) already reads up to
+                    # NARASI_CRITIQUE_MAX_CHARS (default 300000) chars; reuse that same budget here
+                    # instead of a much smaller ad-hoc cap so the ledger actually covers the book.
+                    _nl_max_chars = int(os.environ.get("NARASI_CRITIQUE_MAX_CHARS", "300000"))
+                    _nlraw, _nlcc = await _nlcall(_nlsys, _nlbk[:_nl_max_chars], tenant_id=tenant_id,
                                                   user_id=user_id, job_uuid=job_uuid, json_mode=True,
                                                   credit_row=False)
                     if sink is not None and _nlcc:
@@ -2603,7 +2611,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     low = book.lower()
                     banned = [t for t in (spec.get("banned_tells") or []) if t and t.lower() in low]
                     moves = list(spec.get("required_moves") or [])
-                    _rg_failopen = str(os.environ.get("NARASI_REGISTER_GATE_FAILOPEN", "0")).strip().lower() in ("1", "true", "yes", "on")
+                    # FIX (register-gate truncation root-cause): several required_moves are literally
+                    # named "*_per_chapter" (a multi-chapter arc/beat), but the LLM count below only
+                    # ever saw book[:12000] when this flag was off -- for a full-length manuscript
+                    # that's chapter 1 plus a sliver of chapter 2, so any move anchored later in the
+                    # book scored a false 0 (false off_register). The head+middle+tail sample a few
+                    # lines down was already built to fix exactly this and costs the SAME ~12,000
+                    # chars (just better distributed, not more expensive) -- it was just left opt-in.
+                    # Default is now ON; NARASI_REGISTER_GATE_FAILOPEN=0 restores the old head-only scan.
+                    _rg_failopen = str(os.environ.get("NARASI_REGISTER_GATE_FAILOPEN", "1")).strip().lower() in ("1", "true", "yes", "on")
                     counts: dict = {}
                     if moves and book:
                         try:
@@ -2626,9 +2642,17 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 if not (isinstance(d, dict) and d):
                                     log.warning("register-gate cheap scan attempt %d unparsable — raw head: %r",
                                                 _rg_attempt, (raw or "")[:200])
-                                if isinstance(d, dict) and (d or not _rg_failopen):
+                                # FIX (register-gate retry dead-code): the `or not _rg_failopen` on both
+                                # lines below made the retry unreachable whenever failopen was off (the
+                                # then-default) -- both conditions collapsed to unconditionally-True, so
+                                # the loop broke after attempt 0 no matter what the model returned, and an
+                                # empty/unparsable response silently became all-zero counts. Retry now
+                                # fires on ANY empty/unparsable attempt 0, regardless of _rg_failopen;
+                                # _rg_failopen still only governs the SAMPLING strategy above and the
+                                # inconclusive-vs-off_register verdict below.
+                                if isinstance(d, dict) and d:
                                     counts = {m: int(d.get(m) or 0) for m in moves}
-                                if counts or not _rg_failopen:
+                                if counts:
                                     break
                                 if _rg_attempt == 0:
                                     log.info("register-gate LLM scan returned empty/unparsable move-counts — retrying once")
@@ -2680,10 +2704,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     async def _v3g_canon_diff_detect():
         # ── (2.75) CANON DIFF (Phase 2b) — diff each load-bearing fact against the
         # canon_registry the bible emitted. Catches canon-FORKS the canon-BLIND critic
-        # misses. Bounded to ONE cheap-call per event (<=8), report-only, gated
-        # NARASI_CANON_DIFF (default OFF → skipped → no cost, byte-identical). Enforce is a
-        # SEPARATE opt-in (NARASI_CANON_DIFF_REVISE / NARASI_CANON_ENFORCE_NONREVEAL, both
-        # default OFF). Never raises. ──
+        # misses. Bounded to ONE cheap-call per registry item across FOUR array types —
+        # events (<=8, scaled up to <=14 by chapter count, priority-ranked), exhibit_sets
+        # (<=6), chains (<=6), quantities (<=8) — report-only, gated NARASI_CANON_DIFF
+        # (default OFF → skipped → no cost, byte-identical). Enforce is a SEPARATE opt-in
+        # (NARASI_CANON_DIFF_REVISE / NARASI_CANON_ENFORCE_NONREVEAL, both default OFF).
+        # Never raises. ──
         _out = {"ran": False, "eligible": [], "nonreveal_eligible": [], "diffrevise_eligible": []}
         try:
             if str(os.environ.get("NARASI_CANON_DIFF", "0")).strip().lower() in ("1", "true", "yes", "on"):
@@ -2693,6 +2719,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _cf = str(result.get("canonical_facts") or "")
                 _reg = None
                 _reg_dbg = ""
+                # FIX (2026-07-18, event-cap root-cause): computed once, up front, so BOTH the
+                # fallback-extraction prompt (below) and the main diff loop's own triage cap
+                # (further down) agree on the same scaled-by-chapter-count budget instead of two
+                # independently-drifting flat "8"s. min(8 + max(0, chapters-6), 14): a 10-chapter
+                # conspiracy plot gets more registry slots than a 4-chapter one.
+                _cd_nch0 = (len(result.get("chapters") or [])
+                            or len(body.get("chapters") or [])
+                            or _gbook0.count("\n## "))
+                _cd_event_cap = min(8 + max(0, _cd_nch0 - 6), 14)
                 if _cf:
                     _cands = []
                     _m = _cre.search(r"```(?:json)?\s*(\{.*?\})\s*```", _cf, _cre.S)
@@ -2746,10 +2781,28 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         from laozhang_api import _narasi_cheap_call as _xcall, _narasi_parse_json as _xparse
                         _xsys = (
                             "Extract the CANON REGISTRY from this story fact-sheet. Return ONLY JSON: "
-                            "{\"events\":[{\"id\":\"<slug>\",\"summary\":\"<short>\",\"when\":{\"anchor\":\"<slug>\"},"
+                            "{\"events\":[{\"id\":\"<slug>\",\"summary\":\"<short>\","
+                            "\"when\":{\"actor_age\":<int or null>,\"anchor\":\"<slug>\"},"
+                            "\"where\":\"<location slug, if the event's location is load-bearing>\","
                             "\"participants\":{\"<role>\":\"<name>\"},\"key_action\":\"<slug>\","
                             "\"false_versions\":[{\"claim\":\"<the official/cover version>\",\"corrected_in_chapter\":<n>}],"
-                            "\"chapters\":[<n>]}]} — ONLY load-bearing plot events (max 8). Where the sheet keeps an "
+                            "\"chapters\":[<n>]}],"
+                            "\"timeline\":[{\"id\":\"<slug>\",\"order\":<int>}],"
+                            "\"kinship\":[{\"a\":\"<id>\",\"b\":\"<id>\",\"relation\":\"<str>\"}],"
+                            "\"exhibit_sets\":[{\"id\":\"<slug>\",\"entries\":[{\"name\":\"<str>\",\"date\":\"<str>\","
+                            "\"holder_or_issuer\":\"<str>\",\"detail\":\"<str>\"}]}],"
+                            "\"chains\":[{\"id\":\"<slug>\",\"links\":[{\"entity\":\"<str>\",\"transferred_from\":\"<str>\","
+                            "\"transferred_to\":\"<str>\",\"date\":\"<str>\"}]}],"
+                            "\"quantities\":[{\"id\":\"<slug>\",\"value\":\"<str|int>\",\"unit\":\"<str>\","
+                            "\"anchor_chapter\":<n>}]} — ONLY load-bearing plot events (max " + str(_cd_event_cap) + "); "
+                            "caps: <=12 timeline anchors, <=10 kinship pairs (person-to-person family relations only), "
+                            "<=6 exhibit_sets, <=6 chains, <=8 quantities. timeline = ordering anchors for events. "
+                            "exhibit_sets = a LIST-TYPE document/exhibit packet, one row per set with its entry list; "
+                            "near-duplicate documents (two similar memos/ledgers) each get their OWN set, never merged, "
+                            "each with its own date and label. chains = a multi-entity ownership/custody transfer "
+                            "sequence (never in kinship). quantities = a standalone pinned duration/count/total; "
+                            "anchor_chapter is where it is first pinned. Omit any array with no qualifying facts. "
+                            "Where the sheet keeps an "
                             "official value AND a true value for one fact, the TRUE value is canonical and the official "
                             "one goes into false_versions. Include every named QUANTITY, list POSITION, and role-holder "
                             "the plot turns on. No prose.")
@@ -2813,20 +2866,67 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     except Exception as _xe:  # noqa: BLE001
                         log.warning("canon-registry fallback extraction failed (non-fatal): %s", _xe)
                 _events = (_reg or {}).get("events") if isinstance(_reg, dict) else None
+                # FIX (2026-07-18, schema-wiring root-cause): exhibit_sets/chains/quantities are
+                # NEW registry array types (bible-emission schema in orchestrator/dynamic.py) that
+                # the bible-writer can now emit, but until this fix nothing downstream ever read
+                # them — only `events` was ever consumed here (confirmed via grep, zero other
+                # hits). Read all four so a diffable registry item of ANY of these shapes actually
+                # gets scanned, not silently discarded.
+                _exsets = (_reg or {}).get("exhibit_sets") if isinstance(_reg, dict) else None
+                _chains = (_reg or {}).get("chains") if isinstance(_reg, dict) else None
+                _quants = (_reg or {}).get("quantities") if isinstance(_reg, dict) else None
+                # FIX (2026-07-18, entities/timeline/kinship investigation): `timeline` and
+                # `kinship` were the same "asked, never read" gap as exhibit_sets/chains/quantities
+                # above (confirmed via grep — zero `_reg.get("timeline"/"kinship")` hits anywhere
+                # before this fix). `entities` is deliberately NOT read here and was dropped from
+                # the bible-emission schema (orchestrator/dynamic.py) in the same change: its
+                # `name` field duplicates three already-wired deterministic gates
+                # (_name_uniqueness_scan/_name_order_scan/_name_typo_scan), its nested `kinship`
+                # dict is a second encoding of this same top-level `kinship` array, and its
+                # `knowledge` sub-array needs a structurally different revealed-before-pinned-
+                # chapter check that this per-item canonical-vs-prose diff loop doesn't fit —
+                # left for a separate, deliberately-flagged design pass rather than a silent
+                # free ride inside a field nothing consumed.
+                _timeline = (_reg or {}).get("timeline") if isinstance(_reg, dict) else None
+                _kinship = (_reg or {}).get("kinship") if isinstance(_reg, dict) else None
+                _has_events = isinstance(_events, list) and bool(_events)
+                _has_exsets = isinstance(_exsets, list) and bool(_exsets)
+                _has_chains = isinstance(_chains, list) and bool(_chains)
+                _has_quants = isinstance(_quants, list) and bool(_quants)
+                _has_timeline = isinstance(_timeline, list) and bool(_timeline)
+                _has_kinship = isinstance(_kinship, list) and bool(_kinship)
                 _eligible = []
-                if isinstance(_events, list) and _events:
+                if _has_events or _has_exsets or _has_chains or _has_quants or _has_timeline or _has_kinship:
                     from laozhang_api import _narasi_cheap_call, _narasi_parse_json  # lazy
                     _cbook = _gbook0
+                    # FIX (2026-07-18, truncation root-cause): a flat [:60000] head-slice reused
+                    # for EVERY checked event covered only ~chapters 1-3 of a longer book, so any
+                    # event/fork living later in the book could never be diffed at all (confirmed
+                    # root cause of forks A/B/D/E). Same cheap model + same budget precedent as the
+                    # numeric ledger and thread-tracker whole-book scans (NARASI_CRITIQUE_MAX_CHARS,
+                    # default 300000) — reuse it here instead of the much smaller ad-hoc cap.
+                    _cbk_max_chars = int(os.environ.get("NARASI_CRITIQUE_MAX_CHARS", "300000"))
                     _forks = []
                     _cpt = ""
                     _cpm = _cre.search(r"(?is)\bCOUNTERPOINT\s+NUMBERS?\b\s*[—:\-]?\s*"
                                        r"(.{0,500}?)(?=\n\s*(?:\d{1,2}\.|[A-Z][A-Z &]{6,})|\Z)", _cf)
                     if _cpm and _cpm.group(1).strip().rstrip(".").strip("'\"").lower() != "none":
                         _cpt = _cre.sub(r"\s+", " ", _cpm.group(1)).strip()[:400]
-                    for _ev in _events[:8]:
-                        if not isinstance(_ev, dict) or not _cbook:
+                    # FIX (2026-07-18, event-cap root-cause): a flat <=8 FIFO cap silently dropped
+                    # later-triaged events on longer books and never prioritized events with more
+                    # cross-chapter reach or a tracked false_versions (deliberate-misdirection)
+                    # entry. Rank by those two priority signals instead of taking the bible's own
+                    # emission order verbatim, then cut at the SAME chapter-scaled cap computed at
+                    # the top of this gate (_cd_event_cap).
+                    _events_ranked = sorted(
+                        [e for e in _events if isinstance(e, dict)],
+                        key=lambda e: (1 if e.get("false_versions") else 0,
+                                       len(e.get("chapters")) if isinstance(e.get("chapters"), list) else 0),
+                        reverse=True)[:_cd_event_cap] if _has_events else []
+                    for _ev in _events_ranked:
+                        if not _cbook:
                             continue
-                        _canon = {k: _ev.get(k) for k in ("when", "participants", "key_action", "summary") if _ev.get(k)}
+                        _canon = {k: _ev.get(k) for k in ("when", "where", "participants", "key_action", "summary") if _ev.get(k)}
                         _fv = _ev.get("false_versions") or []
                         _csys = (
                             "You are a canon auditor with a fact sheet you must trust over your own reading. "
@@ -2842,7 +2942,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             + ((" SANCTIONED COUNTERPOINT PAIRS (the story keeps BOTH values alive by design "
                                 "— never report either as a fork): " + _cpt) if _cpt else ""))
                         try:
-                            _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:60000],
+                            _raw, _cc = await _narasi_cheap_call(_csys, (_cbook or "")[:_cbk_max_chars],
                                                                  tenant_id=tenant_id, user_id=user_id,
                                                                  job_uuid=job_uuid, json_mode=True,
                                                                  credit_row=False)
@@ -2858,7 +2958,213 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                                    "quote": str(_f.get("quote") or "")[:160]})
                         except Exception as _e:  # noqa: BLE001
                             log.warning("canon-diff event scan failed (non-fatal): %s", _e)
-                    result["canon_diff"] = {"events_checked": len(_events[:8]), "forks": _forks[:20]}
+                    # ── FIX (2026-07-18, schema-wiring): exhibit_sets / chains / quantities
+                    # scan-and-compare, mirroring the per-event pattern above. Each bounded to
+                    # ONE cheap call per item, same order-of-magnitude caps the bible-emission
+                    # schema itself uses (<=6/<=6/<=8).
+                    for _ex in (_exsets[:6] if _has_exsets else []):
+                        if not isinstance(_ex, dict) or not _cbook:
+                            continue
+                        _ex_entries = _ex.get("entries") or []
+                        _exsys = (
+                            "You are a canon auditor with a fact sheet you must trust over your own reading. "
+                            "CANONICAL exhibit/document set — the COMPLETE, FIXED enumerated list, entry count "
+                            "included: " + _cjson.dumps(_ex_entries, ensure_ascii=False) + ". Scan the book and "
+                            "report EVERY chapter that renders this SAME set with: a DIFFERENT total entry count, "
+                            "a NEW entry not in the canonical list, a canonical entry DROPPED/missing, or any "
+                            "entry's date/holder_or_issuer/detail changed from its canonical row. Return ONLY "
+                            "JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<entry name, or 'count'>\","
+                            "\"found\":\"<value>\",\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt "
+                            "from THIS chapter, copied character-for-character from the book text, that shows the "
+                            "found value — never paraphrased>\"}]}. Empty list if the book is consistent with "
+                            "canon.")
+                        try:
+                            _raw, _cc = await _narasi_cheap_call(_exsys, (_cbook or "")[:_cbk_max_chars],
+                                                                 tenant_id=tenant_id, user_id=user_id,
+                                                                 job_uuid=job_uuid, json_mode=True,
+                                                                 credit_row=False)
+                            if sink is not None and _cc:
+                                sink.credits += int(_cc)
+                            _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                            for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                                if isinstance(_f, dict) and _f.get("found"):
+                                    _forks.append({"event": _ex.get("id") or "exhibit_set",
+                                                   "chapter": _f.get("chapter"), "field": _f.get("field"),
+                                                   "found": str(_f.get("found"))[:160],
+                                                   "expected": str(_f.get("expected"))[:160],
+                                                   "quote": str(_f.get("quote") or "")[:160]})
+                        except Exception as _e:  # noqa: BLE001
+                            log.warning("canon-diff exhibit_set scan failed (non-fatal): %s", _e)
+                    for _ch in (_chains[:6] if _has_chains else []):
+                        if not isinstance(_ch, dict) or not _cbook:
+                            continue
+                        _ch_links = _ch.get("links") or []
+                        _chsys = (
+                            "You are a canon auditor with a fact sheet you must trust over your own reading. "
+                            "CANONICAL ownership/custody TRANSFER CHAIN — the fixed sequence of named-entity "
+                            "transfers, in order: " + _cjson.dumps(_ch_links, ensure_ascii=False) + ". Scan the "
+                            "book and report EVERY chapter that renders this SAME chain with a different "
+                            "transferred_from or transferred_to entity at any link, a different transfer date, "
+                            "an inserted or dropped link, or a reordered sequence. Return ONLY JSON: "
+                            "{\"forks\":[{\"chapter\":<int>,\"field\":\"<link index or entity>\","
+                            "\"found\":\"<value>\",\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt "
+                            "from THIS chapter, copied character-for-character from the book text, that shows the "
+                            "found value — never paraphrased>\"}]}. Empty list if the book is consistent with "
+                            "canon.")
+                        try:
+                            _raw, _cc = await _narasi_cheap_call(_chsys, (_cbook or "")[:_cbk_max_chars],
+                                                                 tenant_id=tenant_id, user_id=user_id,
+                                                                 job_uuid=job_uuid, json_mode=True,
+                                                                 credit_row=False)
+                            if sink is not None and _cc:
+                                sink.credits += int(_cc)
+                            _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                            for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                                if isinstance(_f, dict) and _f.get("found"):
+                                    _forks.append({"event": _ch.get("id") or "chain",
+                                                   "chapter": _f.get("chapter"), "field": _f.get("field"),
+                                                   "found": str(_f.get("found"))[:160],
+                                                   "expected": str(_f.get("expected"))[:160],
+                                                   "quote": str(_f.get("quote") or "")[:160]})
+                        except Exception as _e:  # noqa: BLE001
+                            log.warning("canon-diff chain scan failed (non-fatal): %s", _e)
+                    for _qt in (_quants[:8] if _has_quants else []):
+                        if not isinstance(_qt, dict) or not _cbook:
+                            continue
+                        _qt_canon = {k: _qt.get(k) for k in ("value", "unit", "anchor_chapter") if _qt.get(k) is not None}
+                        _qtsys = (
+                            "You are a canon auditor with a fact sheet you must trust over your own reading. "
+                            "CANONICAL pinned quantity: " + _cjson.dumps(_qt_canon, ensure_ascii=False) + ". Scan "
+                            "the book and report EVERY chapter that states a DIFFERENT value for this SAME "
+                            "quantity (the same duration/count/measurement, for the same referent) than the "
+                            "canonical one — including a second, contradicting value stated ELSEWHERE IN THE "
+                            "SAME chapter as the anchor_chapter, not only in a different chapter. Return ONLY "
+                            "JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"value\",\"found\":\"<value>\","
+                            "\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt from THIS chapter, "
+                            "copied character-for-character from the book text, that shows the found value — "
+                            "never paraphrased>\"}]}. Empty list if the book is consistent with canon.")
+                        try:
+                            _raw, _cc = await _narasi_cheap_call(_qtsys, (_cbook or "")[:_cbk_max_chars],
+                                                                 tenant_id=tenant_id, user_id=user_id,
+                                                                 job_uuid=job_uuid, json_mode=True,
+                                                                 credit_row=False)
+                            if sink is not None and _cc:
+                                sink.credits += int(_cc)
+                            _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                            for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                                if isinstance(_f, dict) and _f.get("found"):
+                                    _forks.append({"event": _qt.get("id") or "quantity",
+                                                   "chapter": _f.get("chapter"), "field": _f.get("field"),
+                                                   "found": str(_f.get("found"))[:160],
+                                                   "expected": str(_f.get("expected"))[:160],
+                                                   "quote": str(_f.get("quote") or "")[:160]})
+                        except Exception as _e:  # noqa: BLE001
+                            log.warning("canon-diff quantity scan failed (non-fatal): %s", _e)
+                    # ── FIX (2026-07-18, entities/timeline/kinship): `kinship` is the same
+                    # shape as `chains` (entity-to-entity edges with a label) — a flat list of
+                    # relation pairs rather than chains' nested {id, links:[...]} grouping, so
+                    # each pair is its own diff item (same one-cheap-call-per-item pattern as
+                    # exhibit_sets/chains/quantities above). Cap <=10 — the bible-emission schema
+                    # (orchestrator/dynamic.py) previously stated NO cap for kinship; this is the
+                    # same edit that adds one there.
+                    for _kn in (_kinship[:10] if _has_kinship else []):
+                        if not isinstance(_kn, dict) or not _cbook:
+                            continue
+                        _kn_canon = {k: _kn.get(k) for k in ("a", "b", "relation") if _kn.get(k) is not None}
+                        if not (_kn_canon.get("a") and _kn_canon.get("b") and _kn_canon.get("relation")):
+                            continue
+                        _knsys = (
+                            "You are a canon auditor with a fact sheet you must trust over your own reading. "
+                            "CANONICAL family/kinship RELATION between two named entities: "
+                            + _cjson.dumps(_kn_canon, ensure_ascii=False) + ". Scan the book and report "
+                            "EVERY chapter that renders the relation between these SAME two entities as "
+                            "something DIFFERENT from the canonical relation — a different relation label, "
+                            "or the relation reversed/contradicted (e.g. 'husband' in one chapter and "
+                            "'brother' in another, for the same pair). Return ONLY JSON: {\"forks\":["
+                            "{\"chapter\":<int>,\"field\":\"relation\",\"found\":\"<value>\","
+                            "\"expected\":\"<canonical value>\",\"quote\":\"<short excerpt from THIS "
+                            "chapter, copied character-for-character from the book text, that shows the "
+                            "found value — never paraphrased>\"}]}. Empty list if the book is consistent "
+                            "with canon.")
+                        try:
+                            _raw, _cc = await _narasi_cheap_call(_knsys, (_cbook or "")[:_cbk_max_chars],
+                                                                 tenant_id=tenant_id, user_id=user_id,
+                                                                 job_uuid=job_uuid, json_mode=True,
+                                                                 credit_row=False)
+                            if sink is not None and _cc:
+                                sink.credits += int(_cc)
+                            _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                            for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                                if isinstance(_f, dict) and _f.get("found"):
+                                    _forks.append({"event": f"kinship:{_kn_canon['a']}-{_kn_canon['b']}",
+                                                   "chapter": _f.get("chapter"), "field": _f.get("field"),
+                                                   "found": str(_f.get("found"))[:160],
+                                                   "expected": str(_f.get("expected"))[:160],
+                                                   "quote": str(_f.get("quote") or "")[:160]})
+                        except Exception as _e:  # noqa: BLE001
+                            log.warning("canon-diff kinship scan failed (non-fatal): %s", _e)
+                    # ── FIX (2026-07-18, entities/timeline/kinship): `timeline` is a global
+                    # ORDERING constraint across its whole anchor set, not an independently
+                    # diffable single item like exhibit_sets/chains/quantities/kinship above — a
+                    # per-item loop can't check "out of order" without every other anchor's
+                    # position, so this is ONE cheap call over the full (capped) ordered list.
+                    # `timeline` entries are bare {id, order} with no summary of their own;
+                    # resolve each id to a human description by cross-referencing `events` whose
+                    # when.anchor matches that id, falling back to the bare slug when unmatched.
+                    _tl_checked = 0
+                    if _has_timeline and _cbook:
+                        _tl_items = [t for t in _timeline if isinstance(t, dict)
+                                     and t.get("id") is not None
+                                     and isinstance(t.get("order"), (int, float))]
+                        _tl_sorted = sorted(_tl_items, key=lambda t: t["order"])[:12]
+                        _events_by_anchor: dict = {}
+                        for _ev0 in (_events or []):
+                            if isinstance(_ev0, dict):
+                                _when0 = _ev0.get("when")
+                                _anc0 = _when0.get("anchor") if isinstance(_when0, dict) else None
+                                if _anc0 and _anc0 not in _events_by_anchor:
+                                    _events_by_anchor[_anc0] = _ev0.get("summary") or _ev0.get("id")
+                        _tl_ordered = [_events_by_anchor.get(t["id"], t["id"]) for t in _tl_sorted]
+                        _tl_checked = len(_tl_ordered)
+                        if len(_tl_ordered) >= 2:
+                            _tlsys = (
+                                "You are a canon auditor with a fact sheet you must trust over your own "
+                                "reading. CANONICAL chronological ORDER of these named story anchors, "
+                                "EARLIEST first: " + _cjson.dumps(_tl_ordered, ensure_ascii=False) + ". "
+                                "Scan the book and report EVERY chapter that narrates or implies TWO OR "
+                                "MORE of these anchors in an order DIFFERENT from the canonical one (e.g. "
+                                "treating a later anchor as though it happened before an earlier one). "
+                                "Return ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<the two "
+                                "anchors involved>\",\"found\":\"<the order implied in this chapter>\","
+                                "\"expected\":\"<canonical order>\",\"quote\":\"<short excerpt from THIS "
+                                "chapter, copied character-for-character from the book text, that shows "
+                                "the found order — never paraphrased>\"}]}. Empty list if the book is "
+                                "consistent with canon.")
+                            try:
+                                _raw, _cc = await _narasi_cheap_call(_tlsys, (_cbook or "")[:_cbk_max_chars],
+                                                                     tenant_id=tenant_id, user_id=user_id,
+                                                                     job_uuid=job_uuid, json_mode=True,
+                                                                     credit_row=False)
+                                if sink is not None and _cc:
+                                    sink.credits += int(_cc)
+                                _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                                for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                                    if isinstance(_f, dict) and _f.get("found"):
+                                        _forks.append({"event": "timeline",
+                                                       "chapter": _f.get("chapter"), "field": _f.get("field"),
+                                                       "found": str(_f.get("found"))[:160],
+                                                       "expected": str(_f.get("expected"))[:160],
+                                                       "quote": str(_f.get("quote") or "")[:160]})
+                            except Exception as _e:  # noqa: BLE001
+                                log.warning("canon-diff timeline scan failed (non-fatal): %s", _e)
+                    result["canon_diff"] = {
+                        "events_checked": len(_events_ranked),
+                        "exhibit_sets_checked": len(_exsets[:6]) if _has_exsets else 0,
+                        "chains_checked": len(_chains[:6]) if _has_chains else 0,
+                        "quantities_checked": len(_quants[:8]) if _has_quants else 0,
+                        "kinship_checked": len(_kinship[:10]) if _has_kinship else 0,
+                        "timeline_checked": _tl_checked,
+                        "forks": _forks[:20]}
                     if _forks:
                         log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only): %s",
                                     len(_forks), job_id, [str(f)[:90] for f in _forks[:5]])
@@ -2924,12 +3230,16 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 _cv = []
                         _eligible = list(_nrviol) + list(_cv)
                     else:
-                        log.info("canon-diff: 0 fork(s) across %d event(s) for job %s (clean run)",
-                                 len(_events[:8]), job_id)
+                        _cd_total_checked = (len(_events_ranked)
+                                              + (len(_exsets[:6]) if _has_exsets else 0)
+                                              + (len(_chains[:6]) if _has_chains else 0)
+                                              + (len(_quants[:8]) if _has_quants else 0))
+                        log.info("canon-diff: 0 fork(s) across %d item(s) for job %s (clean run)",
+                                 _cd_total_checked, job_id)
                 else:
                     _reason = ("canonical_facts absent" if not _cf else
                                "registry parse failed" if _reg is None else
-                               "registry has no events")
+                               "registry has no events/exhibit_sets/chains/quantities")
                     if _reason == "registry parse failed" and not _reg_dbg:
                         _reg_dbg = "no registry-shaped block found; bible tail: " + _cf[-160:]
                     result["canon_diff"] = {"events_checked": 0, "forks": [], "skipped": _reason}
@@ -2995,7 +3305,13 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "it). List every candidate generously -- a later, separate pass will verify "
                         "against the ending, so over-including a borderline case here costs nothing; "
                         "only skip something that is unmistakably a deliberate, artful open ending, "
-                        "not a genuine omission. Return ONLY "
+                        "not a genuine omission. Before listing a candidate, check whether the passage "
+                        "is itself closing a concern raised earlier rather than opening a new one -- a "
+                        "hedged-but-final beat late in the book (a stated prognosis, an acknowledged "
+                        "ongoing legal process, an explicitly incomplete-but-addressed physical harm) "
+                        "is a resolution, not a new thread, even when its phrasing is uncertain rather "
+                        "than triumphant. Never set chapter_introduced to the manuscript's own final "
+                        "chapter unless the concern truly has no earlier textual setup at all. Return ONLY "
                         "JSON: {\"threads\":[{\"id\":\"<short slug>\",\"thread_type\":"
                         "\"character_fate|unpunished_enabler|promised_consequence|open_mystery|"
                         "unfulfilled_scene\","
@@ -3105,7 +3421,24 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             "decide whether the ending resolves it, plausibly leaves it open on "
                             "purpose, or simply never addresses it. Only flag a thread as unresolved "
                             "if the ending NEITHER resolves it NOR plausibly leaves it open on purpose "
-                            "— when genuinely unsure, do NOT flag it. THREADS: "
+                            "— when genuinely unsure, do NOT flag it. Treat a hedged-but-stated future "
+                            "as RESOLVED, not unresolved: a stated medical prognosis even if recovery "
+                            "is slow or uncertain ('would fade over years'), a legal/institutional "
+                            "process explicitly described as underway, or a physical/environmental "
+                            "harm explicitly acknowledged as still-present-but-being-addressed ('might "
+                            "never fully lift'). ALSO treat as RESOLVED a character who was missing, "
+                            "captive, or silent and reappears on the page giving a full account/"
+                            "testimony of what happened to them, even if a further legal step (a "
+                            "charge, a trial) is still pending — the reappearance and account are the "
+                            "resolution; the pending legal step is a separate, expected open thread, "
+                            "not evidence this one is unresolved. These deliberately open-ended, "
+                            "non-triumphant closings are how real-world harms are resolved in literary "
+                            "fiction — do not flag them for lacking a definitive, tidy outcome. But do "
+                            "NOT extend this leniency to a thread the ending merely gestures at without "
+                            "actually addressing — a vague, hopeful aside naming no concrete step, no "
+                            "named outcome, and no connection to the specific harm or culpability the "
+                            "thread raised earlier is NOT a resolution and should still be flagged. "
+                            "THREADS: "
                             + json.dumps([{"id": t.get("id"), "thread_type": t.get("thread_type"),
                                            "description": t.get("description")} for t in _tt_threads],
                                          ensure_ascii=False)

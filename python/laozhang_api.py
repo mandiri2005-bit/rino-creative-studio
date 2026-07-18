@@ -8244,14 +8244,19 @@ async def _narasi_revise(client, model, resolved_model, safe_max, _msgs, text, c
 #    add up, a cross-chapter causal/knowledge break, entity/label drift. This is the ONLY stage
 #    that can catch the narasi-3 notebook-provenance hole + the silent one-week→three-week drift;
 #    no deterministic scanner reaches it. Report-only unless NARASI_CRITIQUE_REVISE=1.
-def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) -> str:
+def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
+                             epistemic_check: bool = False) -> str:
     """Whole-book critic system prompt. Checks 1-6 (pure consistency) apply to ALL narasi.
     Check 7 (DROPPED PREMISE HOOK / F10) is FICTION-ONLY and emitted here only when is_fiction:
     a nonfiction/factual piece may legitimately leave a real question open (an unsolved case, an
     ongoing debate), so flagging it — and, under NARASI_CRITIQUE_REVISE=1, letting the revise
     FABRICATE an answer — would break the never-fabricate guarantee of the nonfiction path. For
     nonfiction the check and the dropped_hook enum token are dropped entirely; check 7 also carries
-    an in-prompt nonfiction backstop for the fail-open case (is_fiction defaulting True)."""
+    an in-prompt nonfiction backstop for the fail-open case (is_fiction defaulting True). Check 17
+    (EPISTEMIC-CERTAINTY CALIBRATION, flag NARASI_EPISTEMIC_CERTAINTY_CHECK) is emitted only when
+    epistemic_check is True — the caller resolves that from factual_regime (strict/hybrid only,
+    NOT the coarser is_fiction flag above), mirroring the CLAIM_DISCIPLINE regime carve-out in
+    pakem/__init__.py that this check gives a second, critic-side chance to catch."""
     _extra = (" and one structural fault — an unpaid premise setup —" if is_fiction else "")
     _check7 = (
         "7. DROPPED PREMISE HOOK / UNPAID SETUP (fiction only) — the distinctive mystery, anomaly, "
@@ -8409,6 +8414,47 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         "that has NO earlier grounding anywhere in the text as a fabricated/misattributed quote.\n"
         if os.getenv("NARASI_QUOTE_GROUNDING_CHECK", "0").strip().lower() in ("1", "true", "yes", "on")
         else "")
+    # Round-7 (NARASI_EPISTEMIC_CERTAINTY_CHECK): downstream verification for the CLAIM_DISCIPLINE
+    # NECESSITY/PARITY and ASSERTED-AUTHENTICATION bullets (pakem/__init__.py, 2026-07-18 audit) —
+    # those bullets are generation-time-only with ZERO critic-side check today: the per-chapter
+    # critic is off by default and truncates at 8000 chars (misses a substantive chapter's closing
+    # scene, exactly where the NECESSITY/PARITY bullet says a violation can land), so a violation
+    # currently ships completely undetected. Own flag, default OFF, so it can be validated
+    # independently before being trusted — same precedent as check 16. Reuses EXISTING type tokens
+    # ('causality' for the necessity/parity half, mirroring check 3's cross-chapter causality
+    # family; 'provenance' for the authentication half, mirroring check 1's object/prop provenance
+    # family — same reuse check 16 already established) so _enum and every downstream consumer
+    # (normalize, canon_fork exclusion, chunked-revise span mapping) are UNCHANGED: a finding here
+    # flows through the SAME merged-revise path the other 16 checks already use, no new revise
+    # call site.
+    #
+    # REGIME SCOPING: gated on epistemic_check (param above), which the caller resolves from
+    # factual_regime — NOT the is_fiction flag this function already takes. is_fiction is TRUE
+    # whenever a style's registry is_fiction flag is True regardless of factual_regime (confirmed
+    # case: pewayangan_dalang carries is_fiction=True but factual_regime="mythic_narrative", not
+    # "fiction"/"fictional"); reusing is_fiction here would wrongly exclude a manuscript the
+    # CLAIM_DISCIPLINE carve-out still nominally covers (only the "fictional" regime is excluded
+    # there, mirrored via epistemic_check instead). See _narasi_consistency_critique for the
+    # resolution and its own fail-safe default.
+    _check17 = (
+        "17. EPISTEMIC-CERTAINTY CALIBRATION (report as type 'causality') — a piece of evidence "
+        "the book itself established elsewhere as corroborative or secondary (a lead, not what "
+        "\"convicts\" or decides the case on its own) is later claimed, in ANY chapter or scene "
+        "including a chapter's closing scene, to have been NECESSARY to the outcome alongside "
+        "stronger evidence — \"convicted them\", \"wouldn't have held together without it\", "
+        "\"wasn't enough on its own\", \"couldn't have won/convicted without it\", or similar "
+        "necessity/parity phrasing — contradicting the book's own earlier corroborative framing "
+        "of that evidence. ALSO flag (report as type 'provenance') a document, signature, or "
+        "exhibit whose authentication or verification is asserted as an accomplished fact "
+        "(\"authenticated\", \"verified genuine\", \"confirmed real\", or similar) with NO "
+        "verification method — an expert's comparison testimony, a described forensic/lab "
+        "process, or an on-page chain-of-custody account — shown ON-PAGE anywhere in the book "
+        "for that exhibit; this is clearest when a COMPARABLE exhibit elsewhere in the SAME "
+        "manuscript DOES get its authentication process shown on-page, leaving the unverified "
+        "one an unintentional gap rather than a deliberate authorial choice.\n"
+        if (epistemic_check
+            and os.getenv("NARASI_EPISTEMIC_CERTAINTY_CHECK", "0").strip().lower() in ("1", "true", "yes", "on"))
+        else "")
     return (
         # BELT-AND-SUSPENDERS (Rino 2026-07-17): the numbered checklist below invites a
         # step-by-step narrative walkthrough before the model ever reaches the "Output ONLY
@@ -8442,7 +8488,7 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False) 
         "and tense stay consistent across the WHOLE book. Flag a chapter that switches (a "
         "second-person book with one first-person chapter; a present-tense book with a past-tense "
         "chapter) — cite the chapter and the switched pronoun/tense.\n"
-        + _check7 + _ext + _check16 +
+        + _check7 + _ext + _check16 + _check17 +
         "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
         "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
         "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
@@ -8498,7 +8544,24 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
     _canon_on = os.getenv("NARASI_CANON_CONFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
     _canon_cnf = os.getenv("NARASI_CANON_CONFORMANCE_CNF", "0").strip().lower() in ("1", "true", "yes", "on")
     _use_canon = bool(_canon_on and (canonical_facts or "").strip() and (_is_fic or _canon_cnf))
-    _sys = _consistency_critic_sys(_is_fic, canon_aware=_use_canon)
+    # Regime-scope check 17 (EPISTEMIC-CERTAINTY CALIBRATION) the SAME way build_style_block()
+    # scopes the CLAIM_DISCIPLINE NECESSITY/PARITY and ASSERTED-AUTHENTICATION bullets it backstops:
+    # by factual_regime, NOT by the coarser is_fic flag above (is_fic is True whenever a style's
+    # registry is_fiction flag is True regardless of factual_regime — e.g. pewayangan_dalang is
+    # is_fiction=True but factual_regime="mythic_narrative" — which would wrongly exclude a
+    # manuscript CLAIM_DISCIPLINE's own carve-out still nominally covers). Mirrors
+    # build_style_block's own normalization ("fiction" alias -> "fictional") and fail-safe default
+    # (unresolved/unknown regime -> "strict", i.e. the check STAYS ON on failure, same direction
+    # build_style_block defaults to — the opposite fail-direction from is_fic's own default above,
+    # which is deliberately fiction-leaning for check 7's separate fabrication-risk reasoning).
+    try:
+        from pakem import resolve_style as _rs_regime
+        _regime_raw = (_rs_regime(style) or {}).get("factual_regime") or "strict"
+    except Exception:
+        _regime_raw = "strict"
+    _regime_norm = "fictional" if _regime_raw == "fiction" else _regime_raw
+    _epistemic_scope = _regime_norm != "fictional"
+    _sys = _consistency_critic_sys(_is_fic, canon_aware=_use_canon, epistemic_check=_epistemic_scope)
     if _use_canon:
         _cf = (canonical_facts or "").strip()[:8000]
         _u = ("[CANONICAL FACT SHEET — the single agreed truth every chapter must obey]\n"
@@ -8657,6 +8720,19 @@ def _envint(key, default):
         return max(1, int(str(os.getenv(key, str(default))).strip()))
     except Exception:
         return default
+
+
+# Truncation stop-reasons across providers (OpenAI/Anthropic/KIE) — same set orchestrator/
+# static.py's _TRUNC_REASONS uses; kept as a local copy (not imported) to avoid a module-load
+# cycle (orchestrator.core imports laozhang_api at import time).
+_REVISE_TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_length")
+
+# A chapter rewrite whose last non-whitespace char isn't terminal punctuation (optionally
+# followed by a closing quote/bracket) reads as cut off mid-sentence — deterministic backstop
+# for a provider that mis-reports finish_reason (same "look at the tail" shape as _tail_meta).
+# Also accepts an em-dash/double-hyphen ending (audit-caught: a standard fiction device for
+# interrupted dialogue/thought was being misread as truncated, identically to genuine cutoff).
+_REVISE_TAIL_UNTERMINATED_RX = _re.compile(r'(?:[.!?…]|—|--)["\'’”\)\]]*\s*$')
 
 
 def _revise_min_severities():
@@ -8827,6 +8903,12 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                 f"→ FIX: {str(v.get('fix', ''))[:420]}" for v in _vs[:8])
             _trail = _p[len(_p.rstrip()):]           # preserve inter-chapter whitespace on re-join
             _body = _p.rstrip()
+            # Acceptance band computed UP FRONT and stated to the model with CONCRETE numbers (prod job
+            # w9s2m3k4: a 3479-word chapter came back at 2271 words against the never-communicated
+            # 3131-4870 band → REJECTED, ~5 min of work discarded, violations shipped unfixed). Same
+            # 0.9/1.4 thresholds as the accept-gate below — communicated, not changed.
+            _ow = len(_body.split())
+            _floor, _ceil = int(_ow * 0.9), int(_ow * 1.4)
             _sys = ("You are fixing consistency problems in ONE chapter of a multi-chapter story. Make "
                     "the SMALLEST changes that reconcile each problem — reword only the sentences carrying "
                     "the contradiction; keep every other sentence, the chapter heading, the length, the "
@@ -8834,62 +8916,110 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                     "If a listed problem does not occur in THIS chapter's text, ignore it silently. If NO "
                     "problem applies, return the chapter EXACTLY as given. Your output must BEGIN with the "
                     "chapter's heading line and END with the chapter's last prose line — NEVER include "
-                    "notes, analysis, reasoning, or any commentary about the problems.")
+                    "notes, analysis, reasoning, or any commentary about the problems. "
+                    f"The original chapter is {_ow} words. Your corrected chapter MUST be between "
+                    f"{_floor} and {_ceil} words — do NOT shorten, summarize, or compress anything; "
+                    "every sentence not carrying a fix must be preserved verbatim. Never INVENT "
+                    "filler sentences to reach a word target either — the band is satisfied by "
+                    "preserving the original text, not by padding.")
             _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
                   f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
             _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
-                       max(1500, int(len(_body.split()) * 2) + 600))
-            try:
-                _resp = await asyncio.wait_for(asyncio.to_thread(
-                    lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model, phase=phase).chat.completions.create(
-                        model=resolved, messages=[{"role": "system", "content": _s},
-                                                  {"role": "user", "content": _b}],
-                        temperature=0.2, max_tokens=_c, stream=False, timeout=_narasi_revise_timeout(rev_model, phase))),
-                    timeout=_narasi_revise_timeout(rev_model, phase))
-            except Exception:
-                return None, 0                       # incl. TimeoutError → keep original chapter
-            if not getattr(_resp, "choices", None):
-                return None, 0
-            _new = (_resp_content(_resp) or "").strip()   # null-safe extractor
-            _cr = int(await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid,
-                                             credit_row=credit_row) or 0)
-            if not _new:
-                return None, _cr
-            _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
-            if _nl.startswith("```"):
-                _nl = _re.sub(r'^```[a-zA-Z]*\n?', '', _nl)
-                _nl = _re.sub(r'\n?```\s*$', '', _nl)
-                _new = _nl.strip()
-            _new = _new.replace("\r\n", "\n").replace("\r", "\n")
-            _ow, _nw = len(_body.split()), len(_new.split())
-            _no_wrapper = not _re.match(
-                r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated|need)|of course|'
-                r'looking at|no change|since none|re-reading|given that|the chapter)\b', _new)
-            _tail_meta = bool(_re.search(
-                r'(?im)^\s*(note:|looking at|no change|since none of|the chapter is returned|'
-                r'i need to analy|given that none|however, re-reading)', _new[-1200:]))
-            _HEADLINE_RX = r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$'
-            _bhl = _re.findall(_HEADLINE_RX, _body)
-            _heads_ok = _bhl == _re.findall(_HEADLINE_RX, _new)
-            _starts_ok = (not _bhl or not _body.lstrip().startswith(_bhl[0].strip())
-                          or _new.lstrip().startswith(_bhl[0].strip()))
-            import difflib as _difflib
-            _fid = _difflib.SequenceMatcher(None, _body.split(), _new.split()).ratio()
-            try:
-                _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
-            except Exception:
-                _min_fid = 0.55
-            if (int(_ow * 0.9) <= _nw <= int(_ow * 1.4)
-                    and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
-                    and _fid >= _min_fid):
-                return _new + _trail, _cr
-            import logging as _lg
-            _lg.getLogger("narasi").warning(
-                "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
-                "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, fidelity=%.2f (min %.2f)",
-                _ow, _nw, int(_ow * 0.9), int(_ow * 1.4), _heads_ok, _no_wrapper,
-                _starts_ok, _tail_meta, _fid, _min_fid)
-            return None, _cr
+                       max(1500, _ow * 2 + 600))
+            # ONE bounded corrective retry (a single second attempt, no loop beyond it): a 1st-attempt
+            # rejection for a CORRECTABLE reason (word count out of band / truncated or unterminated
+            # tail / meta-commentary tail) re-sends the same system+user prompt plus a corrective note
+            # naming exactly what was wrong. NOT for fidelity-below-minimum — low fidelity means the
+            # model rewrote too much; the same instruction risks the same failure. Each attempt runs
+            # under the same per-call timeout and the same max_tokens cap; the retry's result faces
+            # the SAME acceptance checks, and a second rejection falls back to the original chapter.
+            _part_cr = 0
+            _corrective = None
+            for _attempt_no in (1, 2):
+                _u_send = _u if _corrective is None else f"{_u}\n\n[CORRECTION]\n{_corrective}"
+                try:
+                    _resp = await asyncio.wait_for(asyncio.to_thread(
+                        lambda _b=_u_send, _s=_sys, _c=_cap: make_narasi_client(rev_model, phase=phase).chat.completions.create(
+                            model=resolved, messages=[{"role": "system", "content": _s},
+                                                      {"role": "user", "content": _b}],
+                            temperature=0.2, max_tokens=_c, stream=False, timeout=_narasi_revise_timeout(rev_model, phase))),
+                        timeout=_narasi_revise_timeout(rev_model, phase))
+                except Exception:
+                    return None, _part_cr            # incl. TimeoutError → keep original chapter
+                if not getattr(_resp, "choices", None):
+                    return None, _part_cr
+                try:
+                    _finish = str(getattr(_resp.choices[0], "finish_reason", "") or "").strip().lower()
+                except Exception:
+                    _finish = ""
+                _new = (_resp_content(_resp) or "").strip()   # null-safe extractor
+                _part_cr += int(await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid,
+                                                        credit_row=credit_row) or 0)
+                if not _new:
+                    return None, _part_cr
+                _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
+                if _nl.startswith("```"):
+                    _nl = _re.sub(r'^```[a-zA-Z]*\n?', '', _nl)
+                    _nl = _re.sub(r'\n?```\s*$', '', _nl)
+                    _new = _nl.strip()
+                _new = _new.replace("\r\n", "\n").replace("\r", "\n")
+                _nw = len(_new.split())
+                _no_wrapper = not _re.match(
+                    r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated|need)|of course|'
+                    r'looking at|no change|since none|re-reading|given that|the chapter)\b', _new)
+                _tail_meta = bool(_re.search(
+                    r'(?im)^\s*(note:|looking at|no change|since none of|the chapter is returned|'
+                    r'i need to analy|given that none|however, re-reading)', _new[-1200:]))
+                # A rewrite cut off mid-sentence by the token ceiling can clear every check above
+                # (in-band word count, untouched heading, no wrapper, no meta-commentary tail) —
+                # catch it two ways: the provider's own stop reason, and a deterministic check
+                # that the chapter's last non-whitespace isn't terminal punctuation.
+                _truncated = _finish in _REVISE_TRUNC_REASONS
+                _tail_unterminated = not bool(_REVISE_TAIL_UNTERMINATED_RX.search(_new))
+                _HEADLINE_RX = r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$'
+                _bhl = _re.findall(_HEADLINE_RX, _body)
+                _heads_ok = _bhl == _re.findall(_HEADLINE_RX, _new)
+                _starts_ok = (not _bhl or not _body.lstrip().startswith(_bhl[0].strip())
+                              or _new.lstrip().startswith(_bhl[0].strip()))
+                import difflib as _difflib
+                _fid = _difflib.SequenceMatcher(None, _body.split(), _new.split()).ratio()
+                try:
+                    _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+                except Exception:
+                    _min_fid = 0.55
+                if (_floor <= _nw <= _ceil
+                        and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
+                        and not _truncated and not _tail_unterminated
+                        and _fid >= _min_fid):
+                    return _new + _trail, _part_cr
+                import logging as _lg
+                _lg.getLogger("narasi").warning(
+                    "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
+                    "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, truncated=%s(finish=%s), "
+                    "tail_unterminated=%s, fidelity=%.2f (min %.2f)",
+                    _ow, _nw, _floor, _ceil, _heads_ok, _no_wrapper,
+                    _starts_ok, _tail_meta, _truncated, _finish or "?", _tail_unterminated, _fid, _min_fid)
+                _band_bad = not (_floor <= _nw <= _ceil)
+                if (_attempt_no == 1 and _fid >= _min_fid
+                        and (_band_bad or _truncated or _tail_unterminated or _tail_meta)):
+                    _reasons = []
+                    if _band_bad:
+                        _reasons.append(f"it was {_nw} words but MUST be between {_floor} and {_ceil} words")
+                    if _truncated or _tail_unterminated:
+                        _reasons.append("it was cut off before the chapter's final sentence")
+                    if _tail_meta:
+                        _reasons.append("it ended with notes/commentary instead of the chapter's last prose line")
+                    _corrective = ("Your previous attempt was rejected: " + "; ".join(_reasons) +
+                                   ". Return the FULL corrected chapter — every original sentence preserved "
+                                   "verbatim except the specific fixes, ending with the chapter's last prose "
+                                   "line, with no notes or commentary.")
+                    _lg.getLogger("narasi").warning(
+                        "chunked revise: retrying part after rejection (words %d -> band %d-%d, "
+                        "truncated=%s, tail_unterminated=%s, tail_meta=%s)",
+                        _nw, _floor, _ceil, _truncated, _tail_unterminated, _tail_meta)
+                    continue
+                return None, _part_cr
+            return None, _part_cr                    # defensive: loop exhausted without return
 
         # Plan targeted parts in ORDER (pure, same predicate as the serial loop).
         _plan = []
@@ -8908,8 +9038,11 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # Fire in up to TWO concurrent waves so the COMMON case (drafts accept) costs exactly _max_ch
         # LLM calls — the SAME as serial — instead of eagerly firing all 2*_max_ch. Wave 1 = the first
         # _max_ch targeted chapters; ONLY if fewer than _max_ch land (rejections/timeouts) does wave 2
-        # fire the headroom (next up to _max_ch), preserving serial's retry resilience while staying
-        # capped at the serial 2*_max_ch attempt budget. Acceptance stays first-_max_ch-successes in
+        # fire the headroom (next up to _max_ch), preserving serial's retry resilience. ⚠ COST BOUND
+        # (audit 2026-07-18): with the per-part corrective retry, each part can fire up to 2 calls, so
+        # the parallel worst case under MASS rejection is 4*_max_ch calls (vs serial's shared 2*_max_ch
+        # attempt budget) — strictly bounded, cost-identical to serial in the common accept case, but
+        # NOT the same worst-case invariant. Acceptance stays first-_max_ch-successes in
         # PART ORDER → the exact chapter set serial accepts; untargeted/over-budget parts keep original.
         _accepted, _p_total_cr, _p_revised = {}, 0, 0
         for _wave in (_plan[:_max_ch], _plan[_max_ch: 2 * _max_ch]):
@@ -8958,6 +9091,12 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             f"→ FIX: {str(v.get('fix', ''))[:420]}" for v in _vs[:8])
         _trail = _p[len(_p.rstrip()):]           # preserve inter-chapter whitespace on re-join
         _body = _p.rstrip()
+        # Acceptance band computed UP FRONT and stated to the model with CONCRETE numbers (prod job
+        # w9s2m3k4: a 3479-word chapter came back at 2271 words against the never-communicated
+        # 3131-4870 band → REJECTED, ~5 min of work discarded, violations shipped unfixed). Same
+        # 0.9/1.4 thresholds as the accept-gate below — communicated, not changed.
+        _ow = len(_body.split())
+        _floor, _ceil = int(_ow * 0.9), int(_ow * 1.4)
         _sys = ("You are fixing consistency problems in ONE chapter of a multi-chapter story. Make "
                 "the SMALLEST changes that reconcile each problem — reword only the sentences carrying "
                 "the contradiction; keep every other sentence, the chapter heading, the length, the "
@@ -8965,105 +9104,153 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                 "If a listed problem does not occur in THIS chapter's text, ignore it silently. If NO "
                 "problem applies, return the chapter EXACTLY as given. Your output must BEGIN with the "
                 "chapter's heading line and END with the chapter's last prose line — NEVER include "
-                "notes, analysis, reasoning, or any commentary about the problems.")
+                "notes, analysis, reasoning, or any commentary about the problems. "
+                f"The original chapter is {_ow} words. Your corrected chapter MUST be between "
+                f"{_floor} and {_ceil} words — do NOT shorten, summarize, or compress anything; "
+                "every sentence not carrying a fix must be preserved verbatim. Never INVENT "
+                "filler sentences to reach a word target either — the band is satisfied by "
+                "preserving the original text, not by padding.")
         _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
               f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
         _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
-                   max(1500, int(len(_body.split()) * 2) + 600))
-        _n_attempts += 1                         # count every LLM call (incl. timeouts) → bounds cost
-        try:
-            _resp = await asyncio.wait_for(asyncio.to_thread(
-                lambda _b=_u, _s=_sys, _c=_cap: make_narasi_client(rev_model, phase=phase).chat.completions.create(
-                    model=resolved, messages=[{"role": "system", "content": _s},
-                                              {"role": "user", "content": _b}],
-                    temperature=0.2, max_tokens=_c, stream=False, timeout=_narasi_revise_timeout(rev_model, phase))),
-                timeout=_narasi_revise_timeout(rev_model, phase))
-        except Exception:
-            out.append(_p)                       # incl. TimeoutError → keep original chapter
-            continue
-        if not getattr(_resp, "choices", None):
-            out.append(_p)
-            continue
-        _new = (_resp_content(_resp) or "").strip()   # null-safe extractor (no AttributeError escape)
-        _cr = (await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid,
-                                      credit_row=credit_row) or 0)
-        total_cr += int(_cr)
-        if not _new:
-            out.append(_p)
-            continue
-        _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
-        if _nl.startswith("```"):
-            _nl = _re.sub(r'^```[a-zA-Z]*\n?', '', _nl)
-            _nl = _re.sub(r'\n?```\s*$', '', _nl)
-            _new = _nl.strip()
-        # Normalize line endings: Python's (?m)^ anchors after \n but NOT after a bare \r, and
-        # str.split("\n") won't break on \r either — so a heading the model joins with a lone carriage
-        # return would be INVISIBLE to _head_ct and the first-line check, slipping an echoed neighbour
-        # chapter past the echo budget. Fold \r\n and \r to \n before every downstream check + ship.
-        _new = _new.replace("\r\n", "\n").replace("\r", "\n")
-        _ow, _nw = len(_body.split()), len(_new.split())
-        _no_wrapper = not _re.match(
-            r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated|need)|of course|'
-            r'looking at|no change|since none|re-reading|given that|the chapter)\b', _new)
-        # r4.1 META-LEAK guards (roll-7 jsvfbm07 shipped TWO analysis blocks into the book,
-        # L51-63 + L243-253 — "Note: Chapter 1 required no changes…", "I need to analyze…"
-        # — which also SPOILED the critic's findings to the reader). The wrapper check was
-        # start-anchored only, so (a) trailing commentary after the chapter's last line and
-        # (b) preambles not in the old alternation both passed every guard. Two new checks:
-        # the rewrite must START with the part's own first heading line (computed below,
-        # after _HEADLINE_RX), and its TAIL must not contain analysis-shaped lines.
-        # Rejection keeps the original — safe direction.
-        _tail_meta = bool(_re.search(
-            r'(?im)^\s*(note:|looking at|no change|since none of|the chapter is returned|'
-            r'i need to analy|given that none|however, re-reading)', _new[-1200:]))
-        # HEADING-LINE SEQUENCE must be byte-identical — the ONE robust heading invariant for ALL book
-        # styles (ends the strict-vs-loose count whack-a-mole). A "heading line" = a chapter opener
-        # (## / Chapter N / Bab N / Chapitre N / Capítulo N) at line start after only NON-WORD prefix junk
-        # (whitespace, "> " blockquote, "- "/"* " bullet, a non-breaking space) — which EXCLUDES a mid-line
-        # prose back-reference like "…dia teringat pada Bab 1…" (word-prefixed → not a heading). Requiring
-        # the SEQUENCE of such lines to match pins every real heading regardless of style/prefix and
-        # catches ALL heading corruption at once: an echoed/duplicated neighbour heading (extra element),
-        # a renumber/reword/re-case (changed element), or a dropped heading (missing element), while
-        # leaving prose — including a sentence that merely mentions "Bab N" — free to be reworded. (narasi
-        # emits every heading as "## <label>"; a bare imported style whose keyword is outside
-        # ##|Chapter|Bab|Chapitre|Cap[íi]tulo is the only residual, and narasi never produces it.)
-        _HEADLINE_RX = r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$'
-        _bhl = _re.findall(_HEADLINE_RX, _body)
-        _heads_ok = _bhl == _re.findall(_HEADLINE_RX, _new)
-        # r4.1: a part that begins with its chapter heading must come BACK beginning with
-        # that same heading — roll-7's "I need to analyze the problems…" preamble kept the
-        # heading sequence intact (preamble lines aren't headings) and sailed through.
-        _starts_ok = (not _bhl or not _body.lstrip().startswith(_bhl[0].strip())
-                      or _new.lstrip().startswith(_bhl[0].strip()))
-        # BODY-FIDELITY: the "smallest changes / keep every other sentence IDENTICAL" rule is only a
-        # system-prompt instruction — without an enforced check the word-window admits a WHOLESALE content
-        # swap (same-heading, in-window, 100%-different body). Require the rewrite to stay close to the
-        # original at the WORD level (difflib ratio) so only a near-minimal edit is accepted.
-        import difflib as _difflib
-        _fid = _difflib.SequenceMatcher(None, _body.split(), _new.split()).ratio()
-        try:
-            _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
-        except Exception:
-            _min_fid = 0.55
-        # Accept ONLY a clean single-chapter rewrite: word count in [90%,140%] (rejects gutted AND grossly
-        # inflated), every chapter heading line byte-identical (no renumber/reword/re-case/echo/drop), no
-        # wrapper preamble, and the body close to the original (no wholesale rewrite/swap). Else keep.
-        if (int(_ow * 0.9) <= _nw <= int(_ow * 1.4)
-                and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
-                and _fid >= _min_fid):
-            out.append(_new + _trail)
-            changed = True
-            _n_revised += 1
-        else:
+                   max(1500, _ow * 2 + 600))
+        # ONE bounded corrective retry (a single second attempt, no loop beyond it): a 1st-attempt
+        # rejection for a CORRECTABLE reason (word count out of band / truncated or unterminated
+        # tail / meta-commentary tail) re-sends the same system+user prompt plus a corrective note
+        # naming exactly what was wrong. NOT for fidelity-below-minimum — low fidelity means the
+        # model rewrote too much; the same instruction risks the same failure. Each attempt runs
+        # under the same per-call timeout and the same max_tokens cap; the retry's result faces
+        # the SAME acceptance checks, and a second rejection falls back to the original chapter.
+        _accepted_txt = None
+        _corrective = None
+        for _attempt_no in (1, 2):
+            _u_send = _u if _corrective is None else f"{_u}\n\n[CORRECTION]\n{_corrective}"
+            _n_attempts += 1                     # count every LLM call (incl. timeouts) → bounds cost
+            try:
+                _resp = await asyncio.wait_for(asyncio.to_thread(
+                    lambda _b=_u_send, _s=_sys, _c=_cap: make_narasi_client(rev_model, phase=phase).chat.completions.create(
+                        model=resolved, messages=[{"role": "system", "content": _s},
+                                                  {"role": "user", "content": _b}],
+                        temperature=0.2, max_tokens=_c, stream=False, timeout=_narasi_revise_timeout(rev_model, phase))),
+                    timeout=_narasi_revise_timeout(rev_model, phase))
+            except Exception:
+                break                            # incl. TimeoutError → keep original chapter
+            if not getattr(_resp, "choices", None):
+                break
+            try:
+                _finish = str(getattr(_resp.choices[0], "finish_reason", "") or "").strip().lower()
+            except Exception:
+                _finish = ""
+            _new = (_resp_content(_resp) or "").strip()   # null-safe extractor (no AttributeError escape)
+            _cr = (await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid,
+                                          credit_row=credit_row) or 0)
+            total_cr += int(_cr)
+            if not _new:
+                break
+            _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
+            if _nl.startswith("```"):
+                _nl = _re.sub(r'^```[a-zA-Z]*\n?', '', _nl)
+                _nl = _re.sub(r'\n?```\s*$', '', _nl)
+                _new = _nl.strip()
+            # Normalize line endings: Python's (?m)^ anchors after \n but NOT after a bare \r, and
+            # str.split("\n") won't break on \r either — so a heading the model joins with a lone carriage
+            # return would be INVISIBLE to _head_ct and the first-line check, slipping an echoed neighbour
+            # chapter past the echo budget. Fold \r\n and \r to \n before every downstream check + ship.
+            _new = _new.replace("\r\n", "\n").replace("\r", "\n")
+            _nw = len(_new.split())
+            _no_wrapper = not _re.match(
+                r'(?i)^\s*(sure|here|certainly|okay|note:|i (changed|revised|updated|need)|of course|'
+                r'looking at|no change|since none|re-reading|given that|the chapter)\b', _new)
+            # r4.1 META-LEAK guards (roll-7 jsvfbm07 shipped TWO analysis blocks into the book,
+            # L51-63 + L243-253 — "Note: Chapter 1 required no changes…", "I need to analyze…"
+            # — which also SPOILED the critic's findings to the reader). The wrapper check was
+            # start-anchored only, so (a) trailing commentary after the chapter's last line and
+            # (b) preambles not in the old alternation both passed every guard. Two new checks:
+            # the rewrite must START with the part's own first heading line (computed below,
+            # after _HEADLINE_RX), and its TAIL must not contain analysis-shaped lines.
+            # Rejection keeps the original — safe direction.
+            _tail_meta = bool(_re.search(
+                r'(?im)^\s*(note:|looking at|no change|since none of|the chapter is returned|'
+                r'i need to analy|given that none|however, re-reading)', _new[-1200:]))
+            # A rewrite cut off mid-sentence by the token ceiling can clear every check above (in-band
+            # word count, untouched heading, no wrapper, no meta-commentary tail) — catch it two ways:
+            # the provider's own stop reason, and a deterministic check that the chapter's last
+            # non-whitespace isn't terminal punctuation (mirrors _tail_meta's "look at the tail" shape).
+            _truncated = _finish in _REVISE_TRUNC_REASONS
+            _tail_unterminated = not bool(_REVISE_TAIL_UNTERMINATED_RX.search(_new))
+            # HEADING-LINE SEQUENCE must be byte-identical — the ONE robust heading invariant for ALL book
+            # styles (ends the strict-vs-loose count whack-a-mole). A "heading line" = a chapter opener
+            # (## / Chapter N / Bab N / Chapitre N / Capítulo N) at line start after only NON-WORD prefix junk
+            # (whitespace, "> " blockquote, "- "/"* " bullet, a non-breaking space) — which EXCLUDES a mid-line
+            # prose back-reference like "…dia teringat pada Bab 1…" (word-prefixed → not a heading). Requiring
+            # the SEQUENCE of such lines to match pins every real heading regardless of style/prefix and
+            # catches ALL heading corruption at once: an echoed/duplicated neighbour heading (extra element),
+            # a renumber/reword/re-case (changed element), or a dropped heading (missing element), while
+            # leaving prose — including a sentence that merely mentions "Bab N" — free to be reworded. (narasi
+            # emits every heading as "## <label>"; a bare imported style whose keyword is outside
+            # ##|Chapter|Bab|Chapitre|Cap[íi]tulo is the only residual, and narasi never produces it.)
+            _HEADLINE_RX = r'(?m)^[^\w\n]*' + _HEAD_OPENER + r'.*$'
+            _bhl = _re.findall(_HEADLINE_RX, _body)
+            _heads_ok = _bhl == _re.findall(_HEADLINE_RX, _new)
+            # r4.1: a part that begins with its chapter heading must come BACK beginning with
+            # that same heading — roll-7's "I need to analyze the problems…" preamble kept the
+            # heading sequence intact (preamble lines aren't headings) and sailed through.
+            _starts_ok = (not _bhl or not _body.lstrip().startswith(_bhl[0].strip())
+                          or _new.lstrip().startswith(_bhl[0].strip()))
+            # BODY-FIDELITY: the "smallest changes / keep every other sentence IDENTICAL" rule is only a
+            # system-prompt instruction — without an enforced check the word-window admits a WHOLESALE content
+            # swap (same-heading, in-window, 100%-different body). Require the rewrite to stay close to the
+            # original at the WORD level (difflib ratio) so only a near-minimal edit is accepted.
+            import difflib as _difflib
+            _fid = _difflib.SequenceMatcher(None, _body.split(), _new.split()).ratio()
+            try:
+                _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+            except Exception:
+                _min_fid = 0.55
+            # Accept ONLY a clean single-chapter rewrite: word count in [90%,140%] (rejects gutted AND grossly
+            # inflated), every chapter heading line byte-identical (no renumber/reword/re-case/echo/drop), no
+            # wrapper preamble, and the body close to the original (no wholesale rewrite/swap). Else keep.
+            if (_floor <= _nw <= _ceil
+                    and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
+                    and not _truncated and not _tail_unterminated
+                    and _fid >= _min_fid):
+                _accepted_txt = _new + _trail
+                break
             # 4 consecutive prod runs landed nothing with zero diagnostics — name the
             # guard that rejected each chapter rewrite so the no-op is attributable.
             import logging as _lg
             _lg.getLogger("narasi").warning(
                 "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
-                "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, fidelity=%.2f (min %.2f)",
-                _ow, _nw, int(_ow * 0.9), int(_ow * 1.4), _heads_ok, _no_wrapper,
-                _starts_ok, _tail_meta, _fid, _min_fid)
-            out.append(_p)
+                "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, truncated=%s(finish=%s), "
+                "tail_unterminated=%s, fidelity=%.2f (min %.2f)",
+                _ow, _nw, _floor, _ceil, _heads_ok, _no_wrapper,
+                _starts_ok, _tail_meta, _truncated, _finish or "?", _tail_unterminated, _fid, _min_fid)
+            _band_bad = not (_floor <= _nw <= _ceil)
+            if (_attempt_no == 1 and _fid >= _min_fid
+                    and (_band_bad or _truncated or _tail_unterminated or _tail_meta)):
+                _reasons = []
+                if _band_bad:
+                    _reasons.append(f"it was {_nw} words but MUST be between {_floor} and {_ceil} words")
+                if _truncated or _tail_unterminated:
+                    _reasons.append("it was cut off before the chapter's final sentence")
+                if _tail_meta:
+                    _reasons.append("it ended with notes/commentary instead of the chapter's last prose line")
+                _corrective = ("Your previous attempt was rejected: " + "; ".join(_reasons) +
+                               ". Return the FULL corrected chapter — every original sentence preserved "
+                               "verbatim except the specific fixes, ending with the chapter's last prose "
+                               "line, with no notes or commentary.")
+                _lg.getLogger("narasi").warning(
+                    "chunked revise: retrying part after rejection (words %d -> band %d-%d, "
+                    "truncated=%s, tail_unterminated=%s, tail_meta=%s)",
+                    _nw, _floor, _ceil, _truncated, _tail_unterminated, _tail_meta)
+                continue
+            break
+        if _accepted_txt is not None:
+            out.append(_accepted_txt)
+            changed = True
+            _n_revised += 1
+        else:
+            out.append(_p)                       # error/timeout/reject (both attempts) → keep original
     import logging as _lg
     _lg.getLogger("narasi").log(
         (20 if changed else 30),   # INFO when something landed, WARNING on a full no-op

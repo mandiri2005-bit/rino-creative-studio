@@ -690,21 +690,26 @@ def scan_span_alternation(text: str) -> list[dict]:
         n = _en_num(m.group("n_word"))
         if n is not None and n >= 5:
             pos.setdefault(n, []).append(m.start())
-    for a in sorted(pos):
-        b = a + 1
-        if b not in pos or len(pos[a]) < 2 or len(pos[b]) < 2:
-            continue
-        if max(pos[a]) < min(pos[b]) or max(pos[b]) < min(pos[a]):
-            continue     # monotonic switch = story time passing, not drift
-        dom = a if len(pos[a]) >= len(pos[b]) else b
-        findings.append({
-            "kind": "span_alternation",
-            "unit": unit,
-            "values": {str(a): len(pos[a]), str(b): len(pos[b])},
-            "note": f"'{a} {unit}s' ×{len(pos[a])} vs '{b} {unit}s' ×{len(pos[b])} "
-                    f"interleaved — pick one (dominant: {dom})",
-        })
-    return findings
+    # FIX (2026-07-18, fork-C root-cause c): this only ever compared ADJACENT values (a,
+    # a+1) — a real production fork (Eun-mi's tenure given as both 20 and 23 years) has a
+    # gap of 3 and was never caught. Extend the comparison to ALL distinct-value pairs that
+    # each recur (>=2 uses) and interleave, not just neighbors — a strict superset of the
+    # old adjacent-only check (b=a+1 is still one of the pairs compared), so nothing that
+    # fired before stops firing.
+    _vals = [v for v in sorted(pos) if len(pos[v]) >= 2]
+    for _i, a in enumerate(_vals):
+        for b in _vals[_i + 1:]:
+            if max(pos[a]) < min(pos[b]) or max(pos[b]) < min(pos[a]):
+                continue     # monotonic switch = story time passing, not drift
+            dom = a if len(pos[a]) >= len(pos[b]) else b
+            findings.append({
+                "kind": "span_alternation",
+                "unit": unit,
+                "values": {str(a): len(pos[a]), str(b): len(pos[b])},
+                "note": f"'{a} {unit}s' ×{len(pos[a])} vs '{b} {unit}s' ×{len(pos[b])} "
+                        f"interleaved — pick one (dominant: {dom})",
+            })
+    return findings[:8]
 
 
 # ── same-entity age fork + elapsed-span consistency (NARASI_AGE_LEDGER) ──────
@@ -750,6 +755,16 @@ _AGE_STOP_NAMES = {"The", "He", "She", "They", "It", "His", "Her", "Their", "But
 _SPAN_ANCHORS = ("fire", "flood", "disappearance", "vanished", "disappeared",
                  "went missing", "wait", "waiting", "silence", "collapse", "accident",
                  "death", "died", "explosion", "sank", "sinking", "divorce", "verdict")
+# FIX (2026-07-18, fork-C root-cause b): scan_elapsed_span_consistency's OWN anchor set,
+# broadened for duration-of-residence/collection claims (a character's tenure, an archive's
+# collecting/lived-on span) that share none of the disaster/crime-event words above. This is
+# a SEPARATE tuple, not a mutation of _SPAN_ANCHORS itself: that shared constant is also used
+# by scan_canon_anchor_dates for ABSOLUTE-date fork detection, where adding a near-ubiquitous
+# word like 'since' would bucket almost every dated mention in the manuscript under one
+# anchor and manufacture false canon_date_fork positives there — a cost this report-only,
+# duration-only check does not carry the same way.
+_SPAN_DURATION_ANCHORS = _SPAN_ANCHORS + (
+    "since", "arrival", "tenure", "archive", "lived on", "collecting")
 _SPAN_YEARS_RX = re.compile(
     r"(?i)\b(?P<n>\d{1,3}|"
     + "|".join(sorted(list(_AGE_WORDS["en"].keys()) + list(_EN_TENS.keys()),
@@ -791,12 +806,33 @@ def scan_same_entity_age_fork(text: str) -> list[dict]:
     return out[:6]
 
 
+# FIX (2026-07-18, dialogue-crossing gap, Part 3): a bare "Decades later," sentence-opener
+# sitting in one mention's 220-char backward window was matched by _TENURE_NAME_RX as a fake
+# proper name (it's just [A-Z][a-z]{2,}, no semantic check) — this broke the impersonal/
+# institutional case in testing, splitting a true fork into ("archive", None) vs
+# ("archive", "Decades") and silently losing it. Necessary, not optional; still a CLOSED
+# enumeration (see scan_elapsed_span_consistency's docstring for the residual risk).
+_SPAN_SUBJECT_STOP_EXTRA = frozenset({"Decades", "Decade", "Years", "Months", "Weeks", "Days",
+    "Centuries", "Meanwhile", "Eventually", "Afterward", "Elsewhere", "Later", "Soon", "Recently"})
+
+
 def scan_elapsed_span_consistency(text: str) -> list[dict]:
     """Same anchor event given >=2 distinct '<N> years' elapsed spans (fire 18y vs
-    same disappearance 15y). N>=3 (small everyday spans exempt). Report-only."""
+    same disappearance 15y). N>=3 (small everyday spans exempt). Report-only.
+
+    FIX (2026-07-18, dialogue-crossing gap, Part 3): bucketed by (anchor, subject) instead of
+    anchor alone, using the shared _resolve_subject resolver — a purely NARROWING precondition
+    layered on top of the existing anchor match (never expands what can fork, only restricts
+    merges to same-subject pairs). Two different people's spans that happen to share an anchor
+    word no longer fork against each other; a mention with no resolvable subject nearby still
+    buckets under a shared "\\0impersonal" key per anchor, reproducing today's behavior exactly
+    for the institutional/archive case. Residual: _SPAN_SUBJECT_STOP_EXTRA is a closed list —
+    an unlisted capitalized sentence-opening adverb ("Suddenly," "Nevertheless") can still be
+    misread as a proper name and wrongly split a genuinely-impersonal fork (see design doc)."""
     if not text:
         return []
-    by_anchor: dict[str, set] = {}
+    named_events = _named_speaker_events(text)
+    by_key: dict[tuple[str, str], set] = {}
     for m in _SPAN_YEARS_RX.finditer(text):
         n = _en_num(m.group("n"))
         if n is None or n < 3:
@@ -809,14 +845,21 @@ def scan_elapsed_span_consistency(text: str) -> list[dict]:
         if _tail.startswith(("before", "prior", "ahead of", "older", "younger",
                              "apart", "senior", "junior", "my senior", "my junior")):
             continue
-        for a in _SPAN_ANCHORS:
+        anchor_hit = None
+        for a in _SPAN_DURATION_ANCHORS:
             # word-boundary: "fire" must not match "firefighter" (a false anchor that
             # would attach an unrelated "three years" span to the fire event).
             if re.search(r"\b" + re.escape(a) + r"\b", ctx):
-                by_anchor.setdefault(a, set()).add(n)
+                anchor_hit = a
                 break
+        if anchor_hit is None:
+            continue
+        subject = _resolve_subject(text, m.start(), m.end(), named_events,
+                                    extra_stop=_SPAN_SUBJECT_STOP_EXTRA)
+        key = (anchor_hit, subject or "\0impersonal")
+        by_key.setdefault(key, set()).add(n)
     out = []
-    for anchor, ns in by_anchor.items():
+    for (anchor, _subj), ns in by_key.items():
         if len(ns) >= 2 and (max(ns) - min(ns)) >= 1:
             out.append({"kind": "elapsed_span_fork", "anchor": anchor,
                         "spans": sorted(ns),
@@ -907,6 +950,32 @@ def scan_canon_anchor_dates(text: str) -> list[dict]:
 # the figures were never extracted, let alone compared. t3 adds the "N years/decades of <noun>"
 # shape, reusing the SAME number-word alternation (_AGEWORD_ALT, defined above for the age
 # scanner) rather than re-deriving it a third time.
+#
+# FIX (2026-07-18, dialogue-crossing gap, Part 1): t4's "since <year>" lookahead used a
+# [^.]{0,70} char class that cannot cross a literal period — so a real fork ("Twenty years,"
+# Eun-mi said. "Since 2001...") was silently dropped: the period after "said" breaks the
+# lookahead. Widen with a SECOND lookahead alternative that only fires across a bounded,
+# structurally-recognized "closing-quote -> short attribution tag -> period -> reopening-quote"
+# shape — bounding the *shape* of the crossing, not the raw character budget, so this can't be
+# abused to bridge two unrelated sentences that merely sit within ~150 chars of each other.
+_DIALOGUE_VERB_ALT = (r"(?:said|asked|replied|answered|murmured|whispered|added|continued|"
+                       r"went\s+on|breathed|repeated|called|shouted|snapped|admitted|confessed|insisted)")
+_DIALOGUE_ADVERB_ALT = r"(?:softly|quietly|finally|slowly|at\s+last|again)"
+# whitespace-only gap (+ one optional adverb) between a speaker token and the verb — NO comma,
+# NO quote mark. That absence is load-bearing: it's what lets 2a/2b below tell a genuine speaker
+# tag ("Eun-mi said.") apart from a quoted-content mention ("the teacher said, 'Minji...'"),
+# where the comma+quote in the gap correctly blocks a match.
+_TAG_GAP = r"[ \t]{1,3}(?:" + _DIALOGUE_ADVERB_ALT + r"[ \t]{1,3})?"
+_QUOTE_CLOSE_RX = r'["”’]'
+_QUOTE_OPEN_RX = r'["“‘]'
+_DIALOGUE_TAG_BRIDGE_RX = (
+    _QUOTE_CLOSE_RX + r"\s{0,3}"
+    # (?-i:...) scopes case-sensitivity for the Name branch even though _TENURE_TOKEN_RX is
+    # compiled with re.I overall (Python 3.11+ supports this scoped form — verified; only a
+    # *bare*, unscoped `(?i)` mid-pattern errors on 3.11+).
+    r"(?:(?-i:[A-Z][\w'-]{1,20}(?:\s+[A-Z][\w'-]{1,20})?)|(?:she|he|they))"
+    + _TAG_GAP + _DIALOGUE_VERB_ALT + r"\.\s{0,3}" + _QUOTE_OPEN_RX
+)
 _TENURE_TOKEN_RX = re.compile(
     r"\b(?:spent|for)\s+(?P<t1>\d{1,3}|" + "|".join(sorted(
         list(_AGE_WORDS["en"].keys()) + [f"{t}-{u}" for t in _EN_TENS for u in
@@ -926,7 +995,29 @@ _TENURE_TOKEN_RX = re.compile(
     # adversarial pass found "years of duty-free shopping" still matched bare —
     # same ambiguity class as practice, same fix.
     r"(?:employment|service|experience|fieldwork|tenure|work|career|"
-    r"(?:practice|duty)\s+(?:as|in))\b", re.I)
+    r"(?:practice|duty)\s+(?:as|in))\b"
+    # FIX (2026-07-18, fork-C root-cause a): a BARE "<N> years" with no spent/for/of-<noun>
+    # trigger still names a tenure/duration when anchored by a nearby "since <year>" (a
+    # start-year for the same span, e.g. "twenty years... since 2001") or followed by a
+    # comma-clause naming an outcome ("in twenty years, the ledger finally balanced") —
+    # neither shape matched t1/t2/t3 at all, so the figure was never even extracted, let
+    # alone compared against another chapter's value for the same person. t4 = the
+    # since-anchored form; t5 = the "in <N> years," form. Both are written so the match
+    # STARTS at the number itself (never consuming a preceding "since <year>" as part of
+    # the match) — this keeps the existing name-lookback below (which scans the 220 chars
+    # BEFORE m.start()) working exactly as it does for t1/t2/t3: a reverse-order phrasing
+    # ("Since 2001, Eun-mi has served twenty years") would put the name INSIDE a
+    # since-YYYY-first match span, invisible to that lookback, so that ordering is
+    # deliberately NOT matched here rather than shipped with silently-broken attribution.
+    r"|\b(?P<t4>\d{1,3}|" + _AGEWORD_ALT + r")\s+years?\b"
+    # first alternative UNCHANGED (nothing that fired before stops firing); second alternative
+    # bridges exactly one dialogue-tag interruption, capped at ~40+bridge+40 chars and gated on
+    # the exact quote/tag/quote shape above — see Residual limitations: two STACKED
+    # interruptions before "since <year>" still won't match (deliberate bound).
+    r"(?=(?:[^.]{0,70}|[^.]{0,40}" + _DIALOGUE_TAG_BRIDGE_RX + r"[^.]{0,40})"
+    r"\bsince\s+(?:1[0-9]|20)\d{2}\b)"
+    r"|\bin\s+(?P<t5>\d{1,3}|" + _AGEWORD_ALT + r")\s+years?\b(?=,\s*\S)"
+    , re.I)
 # Local (not the shared _NAME_TOKEN_RX): Korean-order given names can have a ONE-consonant-
 # vowel first syllable ("Do-yoon", "Yu-jin") — _NAME_TOKEN_RX's [a-z]{2,} minimum (tuned for
 # r15's age-fork on names like "Park"/"Seo-an") misses these entirely. Widened ONLY for the
@@ -942,6 +1033,86 @@ _TENURE_STOP_NOUNS = {"Archive", "Trust", "Program", "Ledger", "Layer", "Protoco
                        "Bureau", "Foundation", "Institute", "Council", "Board", "Division",
                        "Unit", "Center", "Centre", "Program", "Shelter", "City", "Government"}
 
+# FIX (2026-07-18, dialogue-crossing gap, Part 2): the backward 220-char lookback above needs a
+# proper name; a dialogue-interior mention ("twenty-three years... she finally said") has none,
+# and was silently dropped rather than forked. (2a) narrows the existing blind forward name-grab
+# to a name adjacent to a dialogue verb with NO quote character in the gap — the load-bearing
+# detail that lets a genuine speaker tag ("...Eun-mi said.") match while quoted-content mentions
+# ("...teacher said, 'Minji...") correctly don't (the ", '" in the gap can't be crossed by
+# _TAG_GAP, which is whitespace-only). (2b) adds a pronoun+tracker path, tried only when neither
+# the lookback nor 2a found a name, and only when a pronoun IS dialogue-tag-bound nearby.
+_NAMED_SPEAKER_TAG_RX = re.compile(
+    r"\b(?P<name_a>[A-Z][a-z]+-[a-z]+|[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)?)" + _TAG_GAP + _DIALOGUE_VERB_ALT + r"\b"
+    r"|\b" + _DIALOGUE_VERB_ALT + _TAG_GAP + r"(?P<name_b>[A-Z][a-z]+-[a-z]+|[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)?)\b"
+)
+_PRONOUN_SPEAKER_TAG_RX = re.compile(
+    r"\b(?P<pron_a>she|he|they)" + _TAG_GAP + _DIALOGUE_VERB_ALT + r"\b"
+    r"|\b" + _DIALOGUE_VERB_ALT + _TAG_GAP + r"(?P<pron_b>she|he|they)\b", re.I)
+# ~one scene/exchange — beyond this, a tracked speaker is treated as too stale to trust.
+_SPEAKER_TRACKER_STALE_CHARS = 2000
+
+
+def _named_speaker_events(text: str) -> list[tuple[int, str]]:
+    """One forward O(n) pass building every (pos, name) where a name is bound to a dialogue verb
+    with no quote character in the gap (same regex 2a uses as its own fallback)."""
+    return [(m.start(), m.group("name_a") or m.group("name_b"))
+            for m in _NAMED_SPEAKER_TAG_RX.finditer(text)]
+
+
+def _resolve_pronoun_speaker(pos: int, named_events: list[tuple[int, str]],
+                              stale: int = _SPEAKER_TRACKER_STALE_CHARS) -> str | None:
+    """Look at EVERY named speaker-tag event in a bounded recent window (not just the nearest
+    one) and require exactly one distinct name in it. A naive "nearest named tag before pos"
+    check is vacuous by construction (nothing else can sit between it and pos) — re-simulated
+    and confirmed this silently jumps to a stale/unrelated speaker's handoff. This framing
+    subsumes both required skip conditions in one check: empty window => no tracked speaker or
+    too stale; 2+ distinct names in the window => another speaker's own attribution intervened,
+    ambiguous."""
+    recent = [(p, n) for p, n in named_events if pos - stale <= p < pos]
+    if not recent:
+        return None
+    distinct = {n for _, n in recent}
+    if len(distinct) != 1:
+        return None
+    return next(iter(distinct))
+
+
+def _resolve_subject(text: str, start: int, end: int, named_events: list[tuple[int, str]],
+                      extra_stop: frozenset = frozenset()) -> str | None:
+    """Shared subject-attribution resolver for a numeric-figure match spanning text[start:end]:
+    (a) backward 220-char lookback for a proper name [unchanged mechanism]; (b) narrowed forward
+    80-char search for a name bound to a dialogue verb with no quote in the gap [replaces the old
+    blind capitalized-token grab]; (c) pronoun+tracker path, tried only when (a)/(b) found nothing
+    and only when a pronoun is itself dialogue-tag-bound nearby. Used by scan_tenure_ledger and
+    scan_elapsed_span_consistency.
+
+    ⚠ KNOWN RESIDUAL LIMITATIONS (audit 2026-07-18) — NARASI_AGE_LEDGER must stay OFF until
+    addressed: (1) step (a) still accepts the nearest capitalized non-stoplisted token in the
+    backward window as a "name" — the stoplists are closed lists, so an unlisted sentence-opener
+    or non-name capital can be misattributed; (2) step (b) is quote-nesting-blind — a third
+    party's duration quoted egocentrically ("She told me she'd lived there twenty years") or a
+    quote-within-quote can bind to the wrong speaker; (3) step (c) has no coreference/gender
+    check — a pronoun is resolved to the sole recent named speaker even if the pronoun refers to
+    someone else. The production-path coverage for this defect class is the LLM-semantic
+    canon_registry `quantities` diff + NARASI_NUMERIC_LEDGER (both full-book), not this scanner."""
+    stop = _AGE_STOP_NAMES | _TENURE_STOP_NOUNS | extra_stop
+    cand = None
+    for nm in _TENURE_NAME_RX.finditer(text[max(0, start - 220):start]):
+        key = nm.group(1).split()[0].split("-")[0]
+        if key not in stop:
+            cand = nm.group(1)
+    if cand:
+        return cand
+    nm2 = _NAMED_SPEAKER_TAG_RX.search(text[end:end + 90])
+    if nm2:
+        nm_name = nm2.group("name_a") or nm2.group("name_b")
+        key = nm_name.split()[0].split("-")[0]
+        if key not in stop:
+            return nm_name
+    if _PRONOUN_SPEAKER_TAG_RX.search(text[max(0, start - 90):end + 90]):
+        return _resolve_pronoun_speaker(start, named_events)
+    return None
+
 
 def scan_tenure_ledger(text: str) -> list[dict]:
     """Same capitalized person-name given >=2 distinct tenure/years-of-experience figures
@@ -952,8 +1123,13 @@ def scan_tenure_ledger(text: str) -> list[dict]:
         return []
     tenure_by_name: dict[str, set] = {}
     givens_by_surname: dict[str, set] = {}
+    # FIX (2026-07-18, dialogue-crossing gap, Part 2): one forward O(n) pass over the whole
+    # text, built once, so the pronoun+tracker path in _resolve_subject can consult every named
+    # speaker-tag event regardless of where in the loop below the current match sits.
+    named_events = _named_speaker_events(text)
     for m in _TENURE_TOKEN_RX.finditer(text):
-        raw = m.group("t1") or m.group("t2") or m.group("t3")
+        raw = (m.group("t1") or m.group("t2") or m.group("t3")
+               or m.group("t4") or m.group("t5"))
         n = _en_num(raw) if not raw.isdigit() else int(raw)
         if n is None:
             continue
@@ -962,11 +1138,14 @@ def scan_tenure_ledger(text: str) -> list[dict]:
             n *= 10
         if not (1 <= n <= 70):
             continue
-        cand = None
-        for nm in _TENURE_NAME_RX.finditer(text[max(0, m.start() - 220):m.start()]):
-            key = nm.group(1).split()[0].split("-")[0]
-            if key not in _AGE_STOP_NAMES and key not in _TENURE_STOP_NOUNS:
-                cand = nm.group(1)
+        # FIX (2026-07-18, dialogue-crossing gap, Part 2): replaces the old backward-lookback +
+        # blind-forward-grab pair with the shared resolver (backward lookback [unchanged] ->
+        # narrowed dialogue-verb-bound forward search -> pronoun+tracker fallback). See
+        # _resolve_subject's docstring for why each step exists. extra_stop mirrors
+        # scan_elapsed_span_consistency's call (audit-caught omission: without it a capitalized
+        # sentence-opener like "Meanwhile" in the backward window is accepted as a "name").
+        cand = _resolve_subject(text, m.start(), m.end(), named_events,
+                                extra_stop=_SPAN_SUBJECT_STOP_EXTRA)
         if cand:
             parts = cand.split()
             # AUDIT FIX: only split off "-" when cand is "Surname Given[-name]" (2+ space-
