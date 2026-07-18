@@ -1659,6 +1659,31 @@ async def build_story_bible(
     # ROUND 4 adds 18 EVIDENCE CHAIN & CUSTODY (roll-6 lens#2: casualty log + bank transfer
     # appeared with zero discovery process) and 19 CONTIGUOUS SCENES (roll-6 S1: the Room-204
     # climax staged twice with contradictory seats/transport). Headings 9-19 = eleven sections.
+    # REAL-BRAND CONCRETENESS (this session — "Daesung 72x" defect, job funym2wo): heading 15's
+    # "a REAL company... may NEVER be the story's wrongdoer" sentence was already live in prod
+    # (this flag was ON) when that manuscript's bible was generated, yet the antagonist company
+    # was still named "Daesung" — a real, existing Korean chaebol (Daesung Group). The
+    # instruction is ABSTRACT; "Daesung" reads on its face as an ordinary Korean given/idol name
+    # (the SAME collision narasi_counters._REAL_BRANDS_SHORT's tail-gating exists to avoid), so
+    # the model has no obvious signal that THIS specific name is "a real company" without being
+    # told. Make it CONCRETE with named examples, pulled from the SAME blocklist the post-hoc
+    # detector uses (narasi_counters._REAL_BRANDS_LONG/_SHORT) so prompt and detector can never
+    # drift out of sync — this is the "rename at the source" fix, upstream of any post-hoc
+    # revise-time enforcement. Best-effort/lazy import (matches this file's other narasi_counters
+    # call sites): any failure falls back to a short static list rather than blocking the bible.
+    _real_brand_examples = "Daesung, SK, LG, Samsung, Hyundai, Doosan, Lotte, Hanwha, POSCO"
+    try:
+        import narasi_counters as _nbc_ex
+        # _REAL_BRANDS_SHORT FIRST, not LONG: SHORT is precisely the "collides with an ordinary
+        # given/idol name" class (Daesung's own home list — see comment there) this instruction
+        # exists to warn about, so it must survive the [:14] truncation below, not be pushed out
+        # by LONG's ~29 unrelated entries (which would silently drop Daesung from the very
+        # example list meant to prevent its recurrence).
+        _names = list(dict.fromkeys(list(_nbc_ex._REAL_BRANDS_SHORT) + list(_nbc_ex._REAL_BRANDS_LONG)))
+        if _names:
+            _real_brand_examples = ", ".join(_names[:14])
+    except Exception:  # noqa: BLE001
+        pass
     if is_fiction and os.environ.get("NARASI_CONTINUITY_PINS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
             "\n\nADDITIONAL HEADINGS — continue the numbered fact-sheet with these twelve sections:\n"
@@ -1736,7 +1761,14 @@ async def build_story_bible(
             "with invented geography. The SAME rule governs INSTITUTIONS and HISTORY: a REAL "
             "company, agency, or conglomerate may NEVER be the story's wrongdoer — invent a "
             "fictional firm 'in the manner of' one; and never present an invented historical "
-            "episode of a real institution as documented fact.\n"
+            "episode of a real institution as documented fact. This is NOT limited to obviously "
+            "brand-shaped names — several real Korean conglomerates read, on their own, as "
+            "ordinary given names or idol stage names, so 'it doesn't sound like a company' is "
+            "NOT a safe test. Real conglomerates/groups/banks/press outlets you must NOT reuse "
+            f"as an invented wrongdoer (this list is illustrative, not exhaustive): "
+            f"{_real_brand_examples}. If the antagonist company name you are about to pin matches "
+            "or closely resembles any real conglomerate, bank, or press outlet — whether or not "
+            "it is in that list — invent a different, clearly fictional name instead.\n"
             "16. AFTERMATH COMMIT — pin the consequence beats the ending must land: what happens "
             "to the antagonist, the company, and the case or investigation AFTER the climax (one "
             "line each), plus the KEY PUBLIC NUMBERS the in-world record would state (casualty "
@@ -1826,6 +1858,42 @@ async def build_story_bible(
             "corrects, record it under that event's false_versions with corrected_in_chapter, so a "
             "pre-correction rendering is treated as LEGAL, not a fork. This JSON is machine-only; it "
             "does NOT replace the prose fact-sheet above.")
+    # WORLD-STATE / IRREVERSIBLE EVENTS (Phase 2c) — extends the canon_registry events schema
+    # (immediately above) with two optional fields so the diff loop (Phase 2b,
+    # narration_api.py's _v3g_canon_diff_detect) can catch an EVENT-STATUS fork: an irreversible
+    # plot event (a demolition, a death, evidence destroyed) narrated as ALREADY DONE in a
+    # chapter that precedes its own dramatized on-page occurrence, or as NOT YET HAPPENED in a
+    # chapter that follows it. Root-caused against job funym2wo: Ch4 narrated the settlement
+    # clearance as already complete, weeks before Ch6 dramatized it happening for the first
+    # time, while Ch5 (between them) still treated it as future. The events/false_versions/
+    # timeline fields above track WHAT happened and WHEN a claim about it is corrected, but
+    # nothing tracks whether a ONE-WAY event's aftermath may legally appear yet at a given
+    # chapter — that gap is what this closes. Requires NARASI_CANON_REGISTRY (above) to already
+    # be on; separately flag-gated (NARASI_CANON_WORLDSTATE) so existing canon_registry callers
+    # are unaffected until both flags are on. FICTION-only, default OFF -> bible byte-identical.
+    if (is_fiction
+            and os.environ.get("NARASI_CANON_REGISTRY", "0").strip().lower() in ("1", "true", "yes", "on")
+            and os.environ.get("NARASI_CANON_WORLDSTATE", "0").strip().lower() in ("1", "true", "yes", "on")):
+        system = system + (
+            "\n\nADDENDUM to the canon_registry events array (above) — WORLD-STATE / IRREVERSIBLE "
+            "FLAG: for any event that is a PERMANENT, PHYSICAL, one-way change to the story world "
+            "(a structure demolished, a person killed, evidence destroyed, a document seized, a "
+            "place rendered permanently inaccessible) where MULTIPLE chapters fall on both sides of "
+            "it in the timeline, add two fields to that event's row: \"irreversible\":true and "
+            "\"occurs_chapter\":<n> — the ONE chapter where the event is dramatized as actually "
+            "happening on-page, in the story's CHRONOLOGY/telling order. Every chapter numbered "
+            "LOWER than occurs_chapter must treat the event as NOT YET HAPPENED (future tense, "
+            "still pending, still standing/alive/intact — foreshadowing or threatening it is "
+            "fine); every chapter numbered HIGHER than occurs_chapter must treat it as DONE (past "
+            "tense, gone, cleared, dead). EXCEPTION: a deliberate flash-forward, prologue, or "
+            "framed cold-open that shows the event's aftermath earlier in the book, then rewinds "
+            "to narrate the story in order, is NOT a violation of this rule — only an "
+            "unintentional, unlabeled contradiction is. Omit both "
+            "fields (or set irreversible:false) for events that are NOT a durable physical "
+            "world-state change — a belief, a reveal, a conversation, a relationship fact — those "
+            "are already covered by false_versions/timeline above. Do not add this flag just to pad "
+            "the registry: only for the load-bearing irreversible events whose before/after status "
+            "the plot actually turns on (typically 1-3 per book; hard cap <=6).")
     # ANTI-HOMOGENIZATION (flag NARASI_ANTI_HOMOGENIZATION, default OFF): a cross-roll audit (fallen-angel
     # ↔ Lumi, same kdrama lane) exposed a lane-default TIC-LEXICON + a repeated CLIMAX SKELETON colonizing
     # the bible/outline (not the prose): opening timestamps ending :14, the 11th floor, cold-coffee-as-
@@ -2031,7 +2099,36 @@ async def build_story_bible(
         if res.get("ok") and str(res.get("output") or "").strip() and not _truncated:
             if _i > 0:
                 log.info("build_story_bible: primary failed — bible via fallback model %s", _mdl)
-            return str(res["output"]).strip()
+            _bible_text = str(res["output"]).strip()
+            # DETERMINISTIC REAL-BRAND COLLISION CHECK (this session — "Daesung 72x" defect,
+            # job funym2wo): report-only, unconditional (no flag gate — pure logging, ZERO
+            # behavior change to the returned bible), runs ONCE right after generation, BEFORE
+            # any parallel chapter-writer sees it — the earliest point a real conglomerate name
+            # could be caught, upstream of narasi_counters.real_brand_scan's own "bible" hit
+            # class (which only runs later, at post-generation counter-report time — by then
+            # every chapter has already inherited the name from this same bible). Reuses the
+            # SAME blocklist + tail-gating the manuscript-level detector uses (real_brand_scan),
+            # so a hit here is the identical signal, just far earlier and before the damage
+            # fans out across chapters. Never raises, never blocks, never rewrites the bible —
+            # worst case (scan itself errors) is silently skipped, same as today. A full
+            # reject-and-regenerate loop was considered and deliberately DEFERRED: this call is
+            # already load-bearing and prone to timeouts (see the MODEL FAILOVER docstring
+            # above) — adding a regenerate branch risks new stalls on an already fragile path.
+            # This is the safe, additive half of that fix; the regenerate loop is left open.
+            try:
+                import narasi_counters as _nbc_scan
+                _bhits = [h for h in (_nbc_scan.real_brand_scan(bible=_bible_text, text="").get("hits") or [])
+                          if not h.get("fuzzy")]
+                if _bhits:
+                    log.warning(
+                        "BIBLE REAL-BRAND COLLISION: the freshly-generated story bible names a "
+                        "real conglomerate as an in-story entity BEFORE any chapter is drafted "
+                        "(%s) — every parallel chapter-writer will inherit this name from the "
+                        "pinned bible. Report-only: bible NOT modified, generation NOT blocked. %s",
+                        ", ".join(sorted({str(h.get("brand")) for h in _bhits})), _bhits[:3])
+            except Exception:  # noqa: BLE001
+                pass
+            return _bible_text
         if _truncated:
             # A bible cut off at the token cap is INCOMPLETE — every parallel chapter would inherit a
             # partial fact-sheet. Reject it and fail over (or proceed with none) rather than poison the book.

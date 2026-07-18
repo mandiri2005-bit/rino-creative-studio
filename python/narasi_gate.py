@@ -1582,7 +1582,17 @@ def duplicate_sentence_scan(text: str, ngram: int = 7) -> dict[str, Any]:
 #      (2) a WRONG-LANGUAGE chapter word ("## Bab 4" in an English book) → relabel to lang.
 #    Unlike a report-only scanner this REPAIRS, so the reader-visible defect never ships. ──
 _CH_WORDS = "Bab|Chapter|Cap[íi]tulo|Kapitel|Chapitre|Hoofdstuk|Capitolo"
-_FUSED_HEADING_RX = re.compile(r"(?<=\S)([ \t]*)(#{1,4}[ \t]*(?:" + _CH_WORDS + r")[ \t]*\d+)")
+# FIX (2026-07-19, "Love on the Wrong Pitch" job sh70huj2 postmortem): the lookbehind was
+# `(?<=\S)`, which a heading's OWN leading "#" satisfies when the heading has 2+ hashes — a
+# match starting at the SECOND "#" sees the FIRST "#" as its "preceding non-whitespace char"
+# and reads a perfectly clean "## Chapter N" as fused. Confirmed live: this corrupted every
+# double-hash heading in every book into "#\n\n# Chapter N" (repro: chapter_heading_repair()
+# on a clean 2-chapter "## Chapter N" text reports n_repairs=2, both false positives). Tightened
+# to `(?<=[^\s#])` so a heading's own hash marks can never satisfy the lookbehind — only a
+# genuine non-heading, non-whitespace character immediately before the match counts as fused.
+# Verified this still catches the original fused case ("...he said.## Chapter 2") in both
+# single- and double-hash form; a legitimate multi-hash heading is now byte-identical.
+_FUSED_HEADING_RX = re.compile(r"(?<=[^\s#])([ \t]*)(#{1,4}[ \t]*(?:" + _CH_WORDS + r")[ \t]*\d+)")
 _CH_HEADING_LINE_RX = re.compile(r"(?im)^([ \t]*#{1,4}[ \t]*)(" + _CH_WORDS + r")([ \t]*)(\d+)(.*)$")
 _LANG_CH_WORD = {"id": "Bab", "ms": "Bab", "jv": "Bab", "su": "Bab", "en": "Chapter",
                  "es": "Capítulo", "fr": "Chapitre", "de": "Kapitel", "pt": "Capítulo",

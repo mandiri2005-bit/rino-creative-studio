@@ -2779,6 +2779,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         and str(os.environ.get("NARASI_CANON_REGISTRY_EXTRACT", "0")).strip().lower() in ("1", "true", "yes", "on")):
                     try:
                         from laozhang_api import _narasi_cheap_call as _xcall, _narasi_parse_json as _xparse
+                        # FIX (2026-07-18, world-state fork): mirror the irreversible/occurs_chapter
+                        # optional event fields (orchestrator/dynamic.py's bible-prompt addendum)
+                        # here too, so a registry recovered via this prose-fallback path can still
+                        # feed the world-state diff loop below — gated with the SAME
+                        # NARASI_CANON_WORLDSTATE flag so the extraction prompt is byte-identical
+                        # when that feature is off.
+                        _xws_on = str(os.environ.get("NARASI_CANON_WORLDSTATE", "0")).strip().lower() in (
+                            "1", "true", "yes", "on")
                         _xsys = (
                             "Extract the CANON REGISTRY from this story fact-sheet. Return ONLY JSON: "
                             "{\"events\":[{\"id\":\"<slug>\",\"summary\":\"<short>\","
@@ -2786,7 +2794,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             "\"where\":\"<location slug, if the event's location is load-bearing>\","
                             "\"participants\":{\"<role>\":\"<name>\"},\"key_action\":\"<slug>\","
                             "\"false_versions\":[{\"claim\":\"<the official/cover version>\",\"corrected_in_chapter\":<n>}],"
-                            "\"chapters\":[<n>]}],"
+                            + ("\"irreversible\":<bool, true only for a permanent physical one-way "
+                               "world-state change with chapters on both sides of it>,"
+                               "\"occurs_chapter\":<n where dramatized on-page, or null>," if _xws_on else "")
+                            + "\"chapters\":[<n>]}],"
                             "\"timeline\":[{\"id\":\"<slug>\",\"order\":<int>}],"
                             "\"kinship\":[{\"a\":\"<id>\",\"b\":\"<id>\",\"relation\":\"<str>\"}],"
                             "\"exhibit_sets\":[{\"id\":\"<slug>\",\"entries\":[{\"name\":\"<str>\",\"date\":\"<str>\","
@@ -2958,6 +2969,85 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                                    "quote": str(_f.get("quote") or "")[:160]})
                         except Exception as _e:  # noqa: BLE001
                             log.warning("canon-diff event scan failed (non-fatal): %s", _e)
+                    # ── WORLD-STATE / IRREVERSIBLE EVENTS (Phase 2c) — same one-cheap-call-per-
+                    # item pattern as the loops in this function, but the CHECK is a different
+                    # KIND: not "does this chapter render a different VALUE for a fact" (the
+                    # per-event loop above) but "does this chapter narrate an irreversible event's
+                    # OCCURRENCE STATUS (has it happened yet) inconsistently with the ONE chapter
+                    # where it is dramatized as happening". Root-caused against job funym2wo (the
+                    # settlement-clearance world-state fork): Ch4 narrated the clearance as already
+                    # complete ("the flat, cleared expanse... where there had been the low roofs of
+                    # the settlement") while Ch5 still called it future ("They're going to take the
+                    # settlement apart") and Ch6 dramatized it happening for the first time ("a
+                    # first bite at... Mrs. Baek's"). The existing events/false_versions/timeline
+                    # schema tracks WHAT happened and WHEN it is referenced or corrected, but nothing
+                    # tracked whether a one-way event's aftermath may legally appear yet at a given
+                    # chapter — that is the gap this closes, via the new optional
+                    # irreversible/occurs_chapter fields on the events schema (orchestrator/
+                    # dynamic.py's bible-prompt addendum). Separately flag-gated
+                    # (NARASI_CANON_DIFF_WORLDSTATE) so existing NARASI_CANON_DIFF deployments are
+                    # unaffected until explicitly opted in on top of it. Capped at <=6 events since
+                    # irreversible plot events are rare relative to the general event registry.
+                    # Findings feed the SAME _forks list as every other check above, so they ride the
+                    # existing report/NARASI_CANON_DIFF_REVISE/NARASI_CANON_ENFORCE_NONREVEAL wiring
+                    # and the existing merged revise call — no second revise path.
+                    _ws_checked = 0
+                    if (_has_events and _cbook
+                            and str(os.environ.get("NARASI_CANON_DIFF_WORLDSTATE", "0")).strip().lower()
+                            in ("1", "true", "yes", "on")):
+                        _ws_events = [e for e in _events if isinstance(e, dict) and e.get("irreversible")
+                                      and isinstance(e.get("occurs_chapter"), (int, float))][:6]
+                        _ws_checked = len(_ws_events)
+                        for _we in _ws_events:
+                            _we_ch = int(_we.get("occurs_chapter"))
+                            _we_desc = {k: _we.get(k) for k in ("summary", "key_action", "moral_load") if _we.get(k)}
+                            _wssys = (
+                                "You are a canon auditor checking EVENT-STATUS consistency, not fact "
+                                "values. This IRREVERSIBLE, one-way plot event is dramatized as actually "
+                                "happening ON-PAGE in chapter " + str(_we_ch) + ": "
+                                + _cjson.dumps(_we_desc, ensure_ascii=False) + ". Once it happens it "
+                                "cannot un-happen. Scan the WHOLE book and report: (a) any chapter "
+                                "NUMBERED LOWER than " + str(_we_ch) + " that narrates or implies this "
+                                "event's AFTERMATH as already complete (past tense, the thing already "
+                                "gone/destroyed/dead/cleared) — BUT FIRST check whether that chapter is a "
+                                "DELIBERATE flash-forward, prologue, or framed cold-open (explicit "
+                                "retrospective narration, a labeled Prologue/cold-open, phrasing like "
+                                "'months later I'd learn' or 'looking back', a clear shift in narrative "
+                                "distance from the story's main timeline) rather than a linear-time "
+                                "rendering error — if it is, that chapter is CORRECT and must NOT be "
+                                "reported; and (b) any chapter NUMBERED HIGHER than "
+                                + str(_we_ch) + " that narrates or implies the event has NOT happened "
+                                "yet (future tense, still pending, still standing/alive/intact) after it "
+                                "was already dramatized as done. Ignore chapters that merely foreshadow, "
+                                "threaten, or plan the event as a future event — that is CORRECT before "
+                                "chapter " + str(_we_ch) + ". Only report an actual linear-time "
+                                "contradiction of occurrence status — never a deliberate flash-forward, "
+                                "prologue, or frame chapter. Return ONLY JSON: {\"forks\":[{\"chapter\":<int>,"
+                                "\"field\":\"world_state_pre\" or \"world_state_post\","
+                                "\"found\":\"<what this chapter implies about whether the event has "
+                                "happened>\",\"expected\":\"<what SHOULD be true at this chapter, given "
+                                "occurs_chapter=" + str(_we_ch) + ">\",\"quote\":\"<short excerpt from "
+                                "THIS chapter, copied character-for-character from the book text, that "
+                                "shows the contradiction — never paraphrased>\"}]}. Empty list if the "
+                                "book is consistent.")
+                            try:
+                                _raw, _cc = await _narasi_cheap_call(_wssys, (_cbook or "")[:_cbk_max_chars],
+                                                                     tenant_id=tenant_id, user_id=user_id,
+                                                                     job_uuid=job_uuid, json_mode=True,
+                                                                     credit_row=False)
+                                if sink is not None and _cc:
+                                    sink.credits += int(_cc)
+                                _d = _narasi_parse_json(_raw) if isinstance(_raw, str) else (_raw or {})
+                                for _f in ((_d.get("forks") or []) if isinstance(_d, dict) else []):
+                                    if isinstance(_f, dict) and _f.get("found"):
+                                        _forks.append({"event": _we.get("id") or _we.get("summary") or "world_state",
+                                                       "chapter": _f.get("chapter"),
+                                                       "field": _f.get("field") or "world_state",
+                                                       "found": str(_f.get("found"))[:160],
+                                                       "expected": str(_f.get("expected"))[:160],
+                                                       "quote": str(_f.get("quote") or "")[:160]})
+                            except Exception as _e:  # noqa: BLE001
+                                log.warning("canon-diff world-state scan failed (non-fatal): %s", _e)
                     # ── FIX (2026-07-18, schema-wiring): exhibit_sets / chains / quantities
                     # scan-and-compare, mirroring the per-event pattern above. Each bounded to
                     # ONE cheap call per item, same order-of-magnitude caps the bible-emission
@@ -3127,6 +3217,33 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         _tl_ordered = [_events_by_anchor.get(t["id"], t["id"]) for t in _tl_sorted]
                         _tl_checked = len(_tl_ordered)
                         if len(_tl_ordered) >= 2:
+                            # FIX (2026-07-18, report-vs-closure date-arithmetic fork): the order-only
+                            # check above missed a class of bug where a chapter states a NUMERIC
+                            # interval ("six months after my report") whose implied direction/gap
+                            # contradicts the canonical order or an absolute date the book states
+                            # elsewhere for the SAME two anchors (root-caused against job funym2wo: one
+                            # passage pins the report to "August 2015" and the closure to "March 2015"
+                            # five months earlier; another passage claims the closure came "six months
+                            # after my report", i.e. the reverse direction). narasi_arithmetic.py's
+                            # scan_interval_vs_dates_en already declines to guess this one deterministically
+                            # — it correctly self-gates (via its own len(dates)<=8 candidate-expansion cap
+                            # and its "after THE X"/"after my X" event-ref heuristic) rather than risk a
+                            # false positive across a date-dense manuscript (52 distinct date mentions
+                            # here). That gap is real but not closeable with more regex; this call already
+                            # reads the whole book, so it is asked to do the arithmetic explicitly instead.
+                            # FIX (2026-07-19, generalized beyond the report/closure pair): the paragraph
+                            # above was root-caused against, and its prompt text literally scoped to,
+                            # ONE anchor pair ("these SAME anchors" = only the two anchors in that one
+                            # bug). An independent audit found a second, equally-real fork of the exact
+                            # same defect class on a DIFFERENT pair that the canonical `_tl_ordered` list
+                            # doesn't even carry: a character's dismissal date is stated as "same week as
+                            # the [report]" (an interval — implying one month) in some chapters and as a
+                            # flatly different absolute month elsewhere, with no interval language at all
+                            # in the conflicting passage. Since this call already reads the whole book,
+                            # the instruction below no longer restricts the arithmetic check to the
+                            # pre-supplied anchor list — it asks the model to find ANY named anchor event
+                            # stated with a numeric span, or with two directly conflicting absolute dates,
+                            # whether or not that event is one of the anchors enumerated above.
                             _tlsys = (
                                 "You are a canon auditor with a fact sheet you must trust over your own "
                                 "reading. CANONICAL chronological ORDER of these named story anchors, "
@@ -3134,12 +3251,32 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 "Scan the book and report EVERY chapter that narrates or implies TWO OR "
                                 "MORE of these anchors in an order DIFFERENT from the canonical one (e.g. "
                                 "treating a later anchor as though it happened before an earlier one). "
-                                "Return ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<the two "
-                                "anchors involved>\",\"found\":\"<the order implied in this chapter>\","
-                                "\"expected\":\"<canonical order>\",\"quote\":\"<short excerpt from THIS "
-                                "chapter, copied character-for-character from the book text, that shows "
-                                "the found order — never paraphrased>\"}]}. Empty list if the book is "
-                                "consistent with canon.")
+                                "ALSO check DERIVED-DATE ARITHMETIC — and this check is NOT limited to the "
+                                "named anchors above: it applies to ANY named story event in the book (the "
+                                "anchors above, or any other event with a name, e.g. a firing, dismissal, "
+                                "filing, or arrest) that is stated with a numeric span (\"N days/weeks/"
+                                "months/years before/after/since\" that event) in one place, when the book "
+                                "elsewhere gives an absolute or month-level date for that SAME event — "
+                                "restated directly, or implied by a different span — that conflicts with "
+                                "it. Verify any such span or restatement against (a) the canonical order "
+                                "above when both ends of the span are anchors in that list, and (b) any "
+                                "absolute or month-level date the book states ELSEWHERE for that same "
+                                "event or a closely-related one (e.g. a firing/dismissal date stated "
+                                "multiple ways in different chapters). Report a fork if the stated span "
+                                "contradicts the canonical order, or if it implies or directly states a "
+                                "date/gap that does not match another date the book gives for that same "
+                                "event — even if no single sentence uses \"before\"/\"after\" incorrectly "
+                                "in isolation, even if the span's own local sentence has no date nearby to "
+                                "check it against directly, and even if the conflicting event never "
+                                "appears in the canonical anchor list above. "
+                                "Return ONLY JSON: {\"forks\":[{\"chapter\":<int>,\"field\":\"<the "
+                                "anchor(s) or named event(s) involved>\",\"found\":\"<the order, interval, "
+                                "or date implied in this chapter>\",\"expected\":\"<canonical order, or "
+                                "the date/interval implied by dates stated elsewhere for that event>\","
+                                "\"quote\":\"<short excerpt "
+                                "from THIS chapter, copied character-for-character from the book text, "
+                                "that shows the found order, interval, or date — never paraphrased>\"}]}. "
+                                "Empty list if the book is consistent with canon.")
                             try:
                                 _raw, _cc = await _narasi_cheap_call(_tlsys, (_cbook or "")[:_cbk_max_chars],
                                                                      tenant_id=tenant_id, user_id=user_id,
@@ -3164,6 +3301,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         "quantities_checked": len(_quants[:8]) if _has_quants else 0,
                         "kinship_checked": len(_kinship[:10]) if _has_kinship else 0,
                         "timeline_checked": _tl_checked,
+                        "worldstate_checked": _ws_checked,
                         "forks": _forks[:20]}
                     if _forks:
                         log.warning("canon-diff: %d canon-fork(s) flagged for job %s (report-only): %s",
