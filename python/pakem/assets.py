@@ -207,7 +207,8 @@ DRAMA_MANDATES = """DRAMATIZATION MANDATES (structural — these outrank scene-l
 # fiction or dramatized non-fiction alike).
 CRAFT_TIC_CAPS = """PROSE TIC BUDGET (structural — these are caps, not suggestions):
 - A standalone gnomic/philosophical closer ("A crack is a rumor the wall tells about itself.") is a device, not a default scene-ender. Budget roughly ONE such line per chapter, used only where it earns its place — end other scenes on action, image, or a plain line instead.
-- A run of one-to-three-word dialogue exchanges ("Yes." / "When?" / "No.") reads as tension only when it is rare. Reserve that rhythm for AT MOST one clearly-earned beat per chapter and vary dialogue length everywhere else."""
+- A run of one-to-three-word dialogue exchanges ("Yes." / "When?" / "No.") reads as tension only when it is rare. Reserve that rhythm for AT MOST one clearly-earned beat per chapter and vary dialogue length everywhere else.
+- Stock breathy-delivery clichés — "barely above a whisper", "above a whisper", "voice barely audible" and near-identical variants — are BANNED entirely (not budgeted): convey quietness through content, context, or a plain "quietly" instead."""
 
 
 __all__ = [
