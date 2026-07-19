@@ -11338,6 +11338,140 @@ def _narasi_reveal_source_check(chapters: list, raw_reveals: list) -> None:
         log.warning("outline reveal-source check failed (non-fatal): %s", _rsc)
 
 
+def _narasi_enforce_chapter_count(chapters, chap_count: int) -> None:
+    """FLAG NARASI_OUTLINE_CHAPCOUNT_ENFORCE (A-06, default OFF) — the LLM's returned
+    chapters[] length was never checked against the admitted/requested chap_count; a
+    model that returns 4 of 5 requested chapters was silently accepted and became the
+    approved generation contract downstream. When enabled, raises HTTPException(422)
+    before this outline is returned to the client. Deterministic, zero extra LLM cost.
+    No-op (never raises) when the flag is off, matching today's live behavior exactly.
+
+    CORRECTION (Codex 8.4 item 3, 2026-07-19): a length-only check accepts any
+    container whose len() happens to equal chap_count — a dict (len = key count), a
+    bare string (len = character count), or a list of plain strings (len = element
+    count) were all wrongly accepted as a valid chapters list before this fix. This
+    function validates real structure — `chapters` must be a `list`; every entry must
+    be a `dict` — before comparing length, and the call site (below, in
+    `_narasi_outline_impl`) runs this BEFORE the word-count enforcement block, not
+    after: word-count enforcement does unguarded `c.get(...)`/`c["words"] = ...` on
+    every entry, which would raise an uncaught `AttributeError`/`TypeError` (a 500) on
+    a malformed structure instead of this function's clean, documented `422`.
+
+    CORRECTION 2 (Codex 8.5 item 2, 2026-07-19): the 8.4 fix only checked `title` and
+    a loosely-typed `words` (any int/float, including negative/zero/fractional/NaN/
+    infinite, was wrongly accepted; a numeral string with a leading minus or decimal
+    point was also wrongly accepted). Independently re-confirmed exploitable: a
+    chapter dict missing `id`/`description` entirely, or carrying `words=-5`,
+    `words=0`, `words=3.7`, `words=float("nan")`, or `words=float("inf")`, all passed.
+    This function now enforces the FULL admitted outline schema per chapter:
+
+    - `id`:          non-empty string
+    - `title`:       non-empty string
+    - `description`: non-empty string
+    - `words`:       a finite POSITIVE integer — `int` (not `bool`, which is an `int`
+                     subclass in Python and is explicitly excluded), or a `float` that
+                     is finite (`math.isfinite`) and has no fractional part
+                     (`float.is_integer()`) and is `> 0`, or a numeral STRING matching
+                     `[1-9]\\d*` exactly (no leading zero, no minus sign, no decimal
+                     point) — normalized once to `int` for downstream use.
+
+    **Documented numeral-string policy** (Codex asked for one policy, chosen and
+    stated, not left ambiguous): a `words` value supplied as a clean positive-integer
+    string (e.g. `"500"`) is NORMALIZED to `int` and accepted — this matches the
+    existing word-count-enforcement block's own tolerance (`int(c.get("words", 0))`
+    already accepts a digit string). A fractional, negative, zero, or non-digit
+    string is REJECTED, not coerced — `"3.5"`, `"-5"`, `"0"`, `"five"` all fail.
+
+    Booleans, negative/zero/fractional/NaN/infinite numbers, and non-schema-shaped
+    numeral strings are rejected with `422` here — none of them can reach `int()`/
+    normalization downstream and silently become a 500 (an unhandled `ValueError`/
+    `OverflowError` converting `inf`/`nan` to `int`) or a silently-truncated value.
+
+    CORRECTION 3 (Codex 8.6 item 2, 2026-07-19): an accepted numeral string or whole
+    float `words` value was validated but never actually normalized in place — the
+    docstring's "normalized once to int for downstream use" claim was not yet true.
+    `chapter["words"]` is now overwritten with the real `int` the moment it is proven
+    valid, so every caller downstream of this function (not just the legacy
+    word-count block, which happened to re-coerce it independently) sees a real `int`.
+
+    An empty/missing chapters list is treated the same as any other count mismatch —
+    len([]) == 0 != chap_count for any chap_count > 0, so it is rejected identically,
+    not specially exempted."""
+    if str(os.environ.get("NARASI_OUTLINE_CHAPCOUNT_ENFORCE", "0")).strip().lower() not in ("1", "true", "yes", "on"):
+        return
+
+    # BUG FOUND BY A-06 BEHAVIORAL TEST (Codex 8.3.3, 2026-07-19): the reject path below
+    # used a bare `log.warning(...)`, but laozhang_api.py has no module-level `log`
+    # (confirmed via full-file AST scan — the name is bound locally in exactly two
+    # unrelated functions, neither of which is this one or its caller). A NameError here
+    # would have replaced the intended 422 with an unhandled 500 the first time a real
+    # mismatch fired with the flag on — invisible to source-text review, only caught by
+    # actually calling this function. Local lazy-import matches the file's own
+    # established pattern for a self-contained logger call (see e.g. lines 765, 772, 861).
+    import logging as _lg
+    import math as _math
+    _log = _lg.getLogger("narasi")
+
+    if not isinstance(chapters, list):
+        _log.warning("[narasi-outline] chapters is not a list (got %s) — rejecting",
+                     type(chapters).__name__)
+        raise HTTPException(422, f"Outline chapters must be a list, got {type(chapters).__name__}.")
+
+    _n_returned = len(chapters)
+    if _n_returned != chap_count:
+        _log.warning("[narasi-outline] chapter-count mismatch: requested=%d returned=%d — rejecting",
+                     chap_count, _n_returned)
+        raise HTTPException(
+            422,
+            f"Outline returned {_n_returned} chapter(s), expected {chap_count}. Please regenerate the outline.",
+        )
+
+    for _i, _ch in enumerate(chapters):
+        if not isinstance(_ch, dict):
+            _log.warning("[narasi-outline] chapter %d is not an object (got %s) — rejecting",
+                         _i + 1, type(_ch).__name__)
+            raise HTTPException(422, f"Outline chapter {_i + 1} must be an object, got {type(_ch).__name__}.")
+
+        for _field in ("id", "title", "description"):
+            _val = _ch.get(_field)
+            if not isinstance(_val, str) or not _val.strip():
+                _log.warning("[narasi-outline] chapter %d missing a non-empty '%s' — rejecting", _i + 1, _field)
+                raise HTTPException(422, f"Outline chapter {_i + 1} is missing a non-empty '{_field}' string.")
+
+        _words = _ch.get("words")
+        _words_ok = False
+        _words_norm = None
+        if isinstance(_words, bool):
+            _words_ok = False
+        elif isinstance(_words, int):
+            _words_ok = _words > 0
+            _words_norm = _words
+        elif isinstance(_words, float):
+            _words_ok = _math.isfinite(_words) and _words.is_integer() and _words > 0
+            if _words_ok:
+                _words_norm = int(_words)
+        elif isinstance(_words, str):
+            _words_ok = bool(_re.fullmatch(r"[1-9]\d*", _words.strip()))
+            if _words_ok:
+                _words_norm = int(_words.strip())
+        if not _words_ok:
+            _log.warning("[narasi-outline] chapter %d has an invalid 'words' value (%r) — rejecting",
+                         _i + 1, _words)
+            raise HTTPException(
+                422,
+                f"Outline chapter {_i + 1} 'words' must be a finite positive integer "
+                f"(or an equivalent positive-integer string), got {_words!r}.",
+            )
+        # CORRECTION 3 (Codex 8.6 item 2, 2026-07-19): validating "words" is acceptable was not
+        # enough — an accepted numeral STRING or whole FLOAT was left untouched in `_ch`, so the
+        # documented "normalized once to int for downstream use" claim (docstring above) was false;
+        # the downstream word-count block's own `int(c.get("words", 0))` happens to re-coerce it
+        # correctly today, but any future caller reading `chapter["words"]` directly before that
+        # block would see the un-normalized original type. Write the normalized int back now, at
+        # the single point that already proved every one of these values IS a clean positive int.
+        _ch["words"] = _words_norm
+
+
 async def _narasi_outline_impl(body: dict):
     action = body.get("action", "outline")
     # Outline + brief are structural planning served as a SYNCHRONOUS blocking request — a slow model
@@ -11781,6 +11915,15 @@ async def _narasi_outline_impl(body: dict):
     # Internal-only, mirrors _oi_reveals above (Mandate 2 / NARASI_REVEAL_SOURCE_CHECK) —
     # never leaks into the API response either.
     _oi_reveals_raw = result.pop("reveals_raw", None) or []
+
+    # A-06 (Codex 8.4 item 3): runs BEFORE word-count normalization below, specifically
+    # so a malformed chapters structure (wrong type, wrong length, or an entry missing
+    # required fields) is rejected with this function's clean, documented 422 before the
+    # word-count block's unguarded c.get(...)/c["words"]=... on every entry would
+    # otherwise raise an uncaught AttributeError/TypeError (a 500) on that same malformed
+    # input. No-op when the flag is off, so the word-count block's own historical
+    # behavior on odd input shapes is unchanged in that state.
+    _narasi_enforce_chapter_count(result["chapters"], chap_count)
 
     # ── ENFORCE word count — never trust AI ──
     _chs = result["chapters"]

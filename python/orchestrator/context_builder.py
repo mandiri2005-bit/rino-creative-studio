@@ -216,6 +216,14 @@ class SharedContext:
     sources: list[str] = field(default_factory=list)
     style: Optional[str] = None
     rag_used: bool = False
+    # A-03 (flag-gated NARASI_SOURCE_FACT_SPLIT, default off): RAG-retrieved source
+    # facts and the fiction Story Contract/Bible get their own dedicated slots instead
+    # of sharing canonical_facts, so a job with retrieved reference material no longer
+    # silently blocks fiction bible generation (see static.py's gating condition) or
+    # renders both under the wrong framing. canonical_facts/facts_are_bible remain the
+    # untouched legacy slot when the flag is off (default) — no existing job changes.
+    source_facts: str = ""
+    story_contract: str = ""
 
     # -- outline ----------------------------------------------------------
     def outline(self) -> str:
@@ -514,7 +522,97 @@ class SharedContext:
                         )
         except Exception:  # noqa: BLE001
             pass
-        if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
+        if str(os.environ.get("NARASI_SOURCE_FACT_SPLIT", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            # A-03: source_facts (RAG reference) and story_contract (fixed fiction canon or
+            # nonfiction continuity sheet) render as two independent, optional blocks — neither
+            # suppresses the other.
+            #
+            # FIX (2026-07-19, Codex review 8.3.2): this branch previously rendered
+            # story_contract under fiction "STORY BIBLE / invent freely" framing UNCONDITIONALLY,
+            # ignoring facts_are_bible. build_story_bible() (dynamic.py) runs for BOTH fiction and
+            # nonfiction — nonfiction gets a "continuity sheet" that must carry [VERIFY]/no-
+            # fabrication framing, never fiction's invent-permission. The legacy (flag-off) branch
+            # below already made this distinction correctly (facts_are_bible True -> STORY BIBLE,
+            # False -> CANONICAL FACTS); the split branch must honor the exact same distinction.
+            #
+            # FIX (2026-07-19, Codex review 8.4.2): the 8.3.2 fix above still labeled the
+            # non-fiction sheet "CANONICAL FACTS" and made it outrank REFERENCE SOURCE FACTS on
+            # conflict. That is backwards: build_story_bible(is_fiction=False) is generated ONLY
+            # from topic/outline (confirmed — its signature has no source_facts/RAG parameter at
+            # all) and is therefore NOT grounded in any retrieved evidence, while source_facts IS
+            # retrieved evidence. Precedence is now reversed: the non-fiction sheet is relabeled
+            # "NONFICTION CONTINUITY SHEET", explicitly denied factual authority and invention
+            # permission, and any conflict resolves to REFERENCE SOURCE FACTS (or "[VERIFY: ...]"
+            # when source facts don't cover it) — never to the sheet. Fiction's STORY BIBLE
+            # framing/precedence is unchanged: fiction canon is deliberately invented and fixed,
+            # so it is correct for it to outrank incidental real-world reference material.
+            _any_facts = False
+            _sc_is_bible = bool(self.facts_are_bible) and bool(self.story_contract and self.story_contract.strip())
+            _sc_is_nonfiction_sheet = (not self.facts_are_bible) and bool(self.story_contract and self.story_contract.strip())
+            _sc_present = bool(self.story_contract and self.story_contract.strip())
+            _has_source_facts = bool(self.source_facts and self.source_facts.strip())
+            if self.story_contract and self.story_contract.strip():
+                _any_facts = True
+                if self.facts_are_bible:
+                    parts.append(
+                        "STORY BIBLE (canonical facts FIXED for the entire book — every chapter MUST "
+                        "obey these exactly: do not rename a character, re-measure or re-identify the "
+                        "central subject, move a location, or shift the timeline. You may invent NEW "
+                        "concrete detail, but it must never contradict anything listed here. If the bible "
+                        "states a fixed population count or total, QUOTE that number directly — do not "
+                        "have a character perform their own on-page subtraction or addition from it; a "
+                        "scene may reference the arithmetic that produced the fixed number, but must not "
+                        "re-derive a different result from it):\n"
+                        + self.story_contract.strip()
+                    )
+                else:
+                    _defer_clause = (
+                        " Where this sheet conflicts with REFERENCE SOURCE FACTS below, "
+                        "REFERENCE SOURCE FACTS is correct — follow it, not this sheet."
+                        if _has_source_facts else ""
+                    )
+                    parts.append(
+                        "NONFICTION CONTINUITY SHEET (internal planning notes only — generated from "
+                        "the topic/outline alone, NOT verified against any retrieved source material, "
+                        "and NOT a factual authority. Use it only to keep names, dates, and entities "
+                        "CONSISTENT across chapters — do NOT invent or add new factual specifics beyond "
+                        "what it states." + _defer_clause + " State a name/date/number/quote as fact "
+                        "only if it is uncontroversial common knowledge" +
+                        (" or confirmed by REFERENCE SOURCE FACTS below" if _has_source_facts else "") +
+                        "; otherwise write \"[VERIFY: ...]\"):\n"
+                        + self.story_contract.strip()
+                    )
+            if self.source_facts and self.source_facts.strip():
+                _any_facts = True
+                # Reference the actual block name rendered above (if any) — a dangling
+                # "STORY BIBLE above"/"NONFICTION CONTINUITY SHEET above" reference when nothing
+                # of that name was rendered is exactly the bug this same fix round is closing
+                # elsewhere. Precedence direction differs by regime (Codex 8.4.2): fiction's
+                # Story Bible still outranks source facts; the non-fiction sheet does not.
+                if _sc_is_bible:
+                    _override_note = " but it never overrides the STORY BIBLE above where the two would conflict"
+                elif _sc_is_nonfiction_sheet:
+                    _override_note = (
+                        " and is the HIGHER factual authority — where the NONFICTION CONTINUITY "
+                        "SHEET above disagrees with this material, THIS material is correct, not the sheet"
+                    )
+                else:
+                    _override_note = ""
+                parts.append(
+                    "REFERENCE SOURCE FACTS (background material you may draw on for real-world "
+                    "grounding — geography, terminology, real institutions" + _override_note
+                    + "; where you need a specific external fact this material doesn't cover, "
+                    "write \"[VERIFY: ...]\"):\n"
+                    + self.source_facts.strip()
+                )
+            if not _any_facts:
+                parts.append(
+                    "CANONICAL FACTS: (none retrieved for this job — state NO specific "
+                    "names, dates, numbers, quotes, or physical/documentary evidence descriptions "
+                    "as fact; where you need one, write "
+                    "\"[VERIFY: ...]\" so an editor can fill it in.)"
+                )
+        elif self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
             # Fiction STORY BIBLE: the specifics are INVENTED but now FIXED. Writers must
             # obey them exactly (no renaming, no re-measuring, no relocating) yet stay free
             # to invent NEW concrete detail — the opposite of the [VERIFY] nonfiction stance.
@@ -770,7 +868,11 @@ async def build_shared_context(
                 ctx.context_text = str(rag_res.get("context_text", "") or "")
                 ctx.sources = list(rag_res.get("sources", []) or [])
                 ctx.rag_used = bool(ctx.passages)
-                ctx.canonical_facts = extract_canonical_facts(ctx.passages, ctx.sources)
+                _facts = extract_canonical_facts(ctx.passages, ctx.sources)
+                if str(os.environ.get("NARASI_SOURCE_FACT_SPLIT", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                    ctx.source_facts = _facts  # A-03: own slot, never blocks bible generation
+                else:
+                    ctx.canonical_facts = _facts
         except asyncio.TimeoutError:
             log.warning("context_builder: RAG retrieval timed out after %ss — "
                         "continuing without passages", rag_timeout)

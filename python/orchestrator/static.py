@@ -642,8 +642,15 @@ async def narrate_chapters(
     #   (facts_are_bible stays False ⟹ the [VERIFY] framing). Runs only when the facts slot is
     #   still EMPTY (RAG facts win). Never raises; on failure ctx is unchanged. Metered through
     #   the same telemetry_sink as the outline/chapters, so _settle bills it.
+    # A-03 (flag-gated NARASI_SOURCE_FACT_SPLIT): when on, the bible-gating check and
+    # every write-back below target ctx.story_contract, a dedicated slot RAG facts
+    # never populate — so retrieved reference material no longer silently blocks
+    # fiction bible generation. Flag off (default) = untouched legacy canonical_facts
+    # behavior throughout this whole block.
+    _sfs = str(os.environ.get("NARASI_SOURCE_FACT_SPLIT", "0")).strip().lower() in ("1", "true", "yes", "on")
+    _bible_slot = (ctx.story_contract if _sfs else ctx.canonical_facts) or ""
     if (str(os.environ.get("NARASI_STORY_BIBLE", "1")).strip().lower() not in ("0", "false", "no", "off")
-            and total >= 2 and not (ctx.canonical_facts or "").strip()):
+            and total >= 2 and not _bible_slot.strip()):
         _fic = _is_fiction_style(style)
         try:
             from .dynamic import build_story_bible
@@ -717,7 +724,10 @@ async def narrate_chapters(
                     manager_model=m_model, telemetry_sink=telemetry_sink,
                 )
             if _bible:
-                ctx.canonical_facts = _bible
+                if _sfs:
+                    ctx.story_contract = _bible
+                else:
+                    ctx.canonical_facts = _bible
                 ctx.facts_are_bible = _fic  # True ⟹ invent framing; False ⟹ [VERIFY] framing
                 log.info("narrate_chapters: %s pinned (%d chars, style=%s, fiction=%s)",
                          "story bible" if _fic else "continuity sheet", len(_bible), style, _fic)
@@ -1051,7 +1061,10 @@ async def narrate_chapters(
                                                 _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
                                                          if _n_patched else {})
                                                 if _n_patched and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
-                                                    ctx.canonical_facts = _bible2
+                                                    if _sfs:
+                                                        ctx.story_contract = _bible2
+                                                    else:
+                                                        ctx.canonical_facts = _bible2
                                                     log.info("ledger-enforce SURGICAL: %d line(s) patched — hits %d → %d, pinned",
                                                              _n_patched, _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
                                                 else:
@@ -1069,7 +1082,10 @@ async def narrate_chapters(
                                         _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
                                                  if _bible2 else {})
                                         if _bible2 and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
-                                            ctx.canonical_facts = _bible2
+                                            if _sfs:
+                                                ctx.story_contract = _bible2
+                                            else:
+                                                ctx.canonical_facts = _bible2
                                             log.info("ledger-enforce: bible re-rolled — hits %d → %d, re-roll pinned",
                                                      _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
                                         else:
