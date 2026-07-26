@@ -1,0 +1,144 @@
+{
+  "schema_version": "3",
+  "generated_for": "A-05a Safe Regression Fixtures (rework: 13-class authoritative defect inventory + privacy clean + source-binding hardened)",
+  "privacy_policy": "Every fixture is fully synthetic: invented character names ('Larasati', 'Bimo', 'Made', 'Sri Wulandari', 'Widodo'), invented plot beats, no production manuscript text, no job/tenant IDs, no user data. All descriptions reference only section/file/line numbers — zero production quotes. See tests/narasi_gates/test_fixture_manifest.py::TestPrivacyScan for the automated check.",
+  "inventory_sources": [
+    "Execution Plan CLEAN: Section 2 (Executive Summary), Section 3 (Verified Existing Production Flow), Section 4 (Verified Root Causes and Current Gaps — all 10 root causes), Section 9 (Correctness and Coverage Matrix), Section 10 (Test and Evidence Plan), Section 12-13 (Approval-Readiness Ledger / Final Planning Approval Record)",
+    "Permanent Continuity Solution: Section 3 (Concrete Evidence from the confirmed reference-manuscript incident), Section 5 (Why Continuity Still Breaks), Section 22.3-22.4 (Golden manuscript fixtures / Regression tests), Section 30 and 32 (approval/decision records)",
+    "PIPELINE-SPEC.md Sections 1-2, 8 (pipeline order, deployment coverage matrix, env/flag registry)",
+    "Direct source comments in narration_api.py, narasi_gate.py, narasi_arithmetic.py, orchestrator/static.py, main.jsx",
+    "Existing partial fixtures in tests/python/test_narasi_continuity_gates.py (TestA04ChapterHeadingFusionFixture, TestA05aEntityAttributeClaimShape)"
+  ],
+  "fixtures": [
+    {
+      "id": "AUDDATE-001",
+      "file": "fixtures/audition_date_contradiction.json",
+      "defect_class": "audition_date_contradiction",
+      "classification": "synthetic",
+      "source_reference": "Permanent Continuity Solution Section 3.1 (Timeline contradiction); Section 22.3 golden-fixture item 1",
+      "mechanism_id": "_narasi_classify_canon_items",
+      "expected_mechanism": "laozhang_api._narasi_cheap_call (monkeypatched) via narration_api._narasi_classify_canon_items — offline-stubbed classifier wiring, corroborated by a deterministic test-local day-count extractor independent of the mocked response",
+      "sha256": "e7ba69d2ee93e2fa2d9a71a9e6b32c9ac772e52a497ebf2ccdfdfd6d9d64548b"
+    },
+    {
+      "id": "DUPINC-001",
+      "file": "fixtures/duplicate_inciting_incident.json",
+      "defect_class": "duplicate_inciting_incident",
+      "classification": "synthetic",
+      "source_reference": "Permanent Continuity Solution Section 22.3 (golden-fixture item 3); Execution Plan CLEAN Section 3 line 49 and Section 4 root cause #1 and #10; Section 9 coverage matrix row 'Duplicate new occurrence'",
+      "mechanism_id": "SharedContext.scope_for",
+      "expected_mechanism": "NO_DETECTOR_TODAY — orchestrator.context_builder.SharedContext.scope_for() mitigation-only isolation contract, corroborated by a deterministic test-local event-signature invariant independent of scope_for()'s general behavior",
+      "sha256": "b3efa1372a73f33423d0d8e51b97d4189bed30baa843b559b1d733294e998218"
+    },
+    {
+      "id": "ENTATTR-001",
+      "file": "fixtures/entity_attribute_gender_flip.json",
+      "defect_class": "entity_attribute_gender_flip",
+      "classification": "synthetic",
+      "source_reference": "narration_api.py NARASI_ENTITY_ATTR_CHECK code comment, 2026-07-19 confirmed-miss note (gender kind)",
+      "mechanism_id": "NARASI_ENTITY_ATTR_CHECK",
+      "expected_mechanism": "narration_api.py NARASI_ENTITY_ATTR_CHECK drift-extraction schema contract (offline, source-introspection only)",
+      "sha256": "3200a8d72035d9b0158f809aa10c743252f5777fd7dab007b5aff061e2186a90"
+    },
+    {
+      "id": "ENTREL-001",
+      "file": "fixtures/entity_attribute_relation_flip.json",
+      "defect_class": "entity_attribute_relation_flip",
+      "classification": "synthetic",
+      "source_reference": "narration_api.py NARASI_ENTITY_ATTR_CHECK code comment, 2026-07-15 confirmed-miss note (relation kind)",
+      "mechanism_id": "NARASI_ENTITY_ATTR_CHECK",
+      "expected_mechanism": "narration_api.py NARASI_ENTITY_ATTR_CHECK drift-extraction schema contract (offline, source-introspection only)",
+      "sha256": "f112bc17917e187fb49f65698528c7452ee48d86a09801b5bfe37ebd6f2c3cef"
+    },
+    {
+      "id": "ENTTITLE-001",
+      "file": "fixtures/entity_attribute_title_flip.json",
+      "defect_class": "entity_attribute_title_flip",
+      "classification": "synthetic",
+      "source_reference": "narration_api.py:2280 (kind enum: gender|title|age|relation); narration_api.py:2270-2278 (title/rank drift description)",
+      "mechanism_id": "NARASI_ENTITY_ATTR_CHECK",
+      "expected_mechanism": "narration_api.py entity-attribute continuity checker, kind='title' — offline schema-contract introspection only; no live model call",
+      "sha256": "64bd91c585d6ec7eddd2a42307e0240c59a55c82dcd208dda29c48b7d2247e46"
+    },
+    {
+      "id": "AGE-001",
+      "file": "fixtures/entity_attribute_age_fork.json",
+      "defect_class": "entity_attribute_age_fork",
+      "classification": "synthetic",
+      "source_reference": "narasi_arithmetic.py:774-806 (scan_same_entity_age_fork, NARASI_AGE_LEDGER); narration_api.py:2270 (entity-attribute check: 'age' drift kind)",
+      "mechanism_id": "scan_same_entity_age_fork",
+      "expected_mechanism": "narasi_arithmetic.scan_same_entity_age_fork — deterministic, offline, no model call. Real function invoked directly.",
+      "sha256": "57226f04110ecfec8edddf1d049e46cb82b532e90bd2fcffb34a72811e212afe"
+    },
+    {
+      "id": "ELAPSE-001",
+      "file": "fixtures/elapsed_span_fork.json",
+      "defect_class": "elapsed_span_fork",
+      "classification": "synthetic",
+      "source_reference": "narasi_arithmetic.py:819-867 (scan_elapsed_span_consistency, NARASI_AGE_LEDGER)",
+      "mechanism_id": "scan_elapsed_span_consistency",
+      "expected_mechanism": "narasi_arithmetic.scan_elapsed_span_consistency — deterministic, offline, no model call. Real function invoked directly.",
+      "sha256": "26551709d821a235a398171c8fe25689a6852a914cbc5665ddb7429c4110b33b"
+    },
+    {
+      "id": "NAMEDUP-001",
+      "file": "fixtures/duplicate_full_name_collision.json",
+      "defect_class": "duplicate_full_name_collision",
+      "classification": "synthetic",
+      "source_reference": "narration_api.py _name_uniqueness_scan code comment, 2026-07-15 confirmed-miss note",
+      "mechanism_id": "_name_uniqueness_scan",
+      "expected_mechanism": "narration_api._name_uniqueness_scan — deterministic, real function call",
+      "sha256": "68ac655baf9d26512fdf49faa0f6be68b9b47bd12573bba9de023184dcfd5939"
+    },
+    {
+      "id": "HEADFUSE-001",
+      "file": "fixtures/chapter_heading_fusion.json",
+      "defect_class": "chapter_heading_fusion",
+      "classification": "synthetic",
+      "source_reference": "Permanent Continuity Solution Section 3.3 (Structural heading corruption); narasi_gate.py chapter_heading_repair, confirmed fix commit 5637e72",
+      "mechanism_id": "chapter_heading_repair",
+      "expected_mechanism": "narasi_gate.chapter_heading_repair — deterministic, real function call",
+      "sha256": "264e162707bf35aee7ca4672465b336b4ea8195dbfce44796d3de229bab5f00b"
+    },
+    {
+      "id": "PLANLEAK-001",
+      "file": "fixtures/planning_text_leak.json",
+      "defect_class": "planning_text_leak",
+      "classification": "synthetic",
+      "source_reference": "orchestrator/static.py _scrub_chapter_leaks function and SharedContext.outline()/scope_for() 'Leak fix (2026-07)' comments",
+      "mechanism_id": "_scrub_chapter_leaks",
+      "expected_mechanism": "orchestrator.static._scrub_chapter_leaks — deterministic, real function call",
+      "sha256": "0da743f9607547524fdf807d74962f076ad70261ef9fff80345878a2a846b2ff"
+    },
+    {
+      "id": "TRAILHASH-001",
+      "file": "fixtures/trailing_hash_leak.json",
+      "defect_class": "trailing_hash_leak",
+      "classification": "synthetic",
+      "source_reference": "orchestrator/static.py:417-428 (_scrub_chapter_leaks trailing-hash case, confirmed 2026-07-15)",
+      "mechanism_id": "_scrub_chapter_leaks",
+      "expected_mechanism": "orchestrator.static._scrub_chapter_leaks — deterministic, offline, no model call. Same function tested by PLANLEAK-001; this fixture exercises the trailing-hash branch separately.",
+      "sha256": "10ae03a0a292a1fe752cbf76f80e64672271ea9f3a7d383df8a9cafd84d671ad"
+    },
+    {
+      "id": "CHNMISMATCH-001",
+      "file": "fixtures/english_chapter_heading_mismatch.json",
+      "defect_class": "english_chapter_heading_mismatch",
+      "classification": "synthetic",
+      "source_reference": "Execution Plan CLEAN Section 3 line 57; main.jsx:4119 (getBabKey regex /Bab\\s+(\\d+)/i)",
+      "mechanism_id": "frontend_getBabKey_regex",
+      "expected_mechanism": "Frontend regex /Bab\\s+(\\d+)/i from main.jsx:4119 re-expressed as an equivalent Python regex property test (no JS runtime executed)",
+      "sha256": "43c64aa9af82a21c72c874e679d2bf17466e5d992815390e27be96243f88998d"
+    },
+    {
+      "id": "LANGLEAK-001",
+      "file": "fixtures/language_leak_indonesian.json",
+      "defect_class": "language_leak_indonesian",
+      "classification": "synthetic",
+      "source_reference": "Permanent Continuity Solution Section 3.2 (Target-language leakage); Execution Plan CLEAN Section 9 coverage matrix row 'Target-language leakage'",
+      "mechanism_id": "language_consistency_scan",
+      "expected_mechanism": "narasi_gate.language_consistency_scan — deterministic, real function call",
+      "sha256": "e904696df4120aa95ce739fde2ad7598afb740e0d91fcd6a80c03128b4210287"
+    }
+  ]
+}

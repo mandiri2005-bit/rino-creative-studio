@@ -1,0 +1,11 @@
+{
+  "fixture_id": "mixed_unique_headings",
+  "classification": "synthetic",
+  "manuscript_language": "mixed",
+  "report_language": "id",
+  "manuscript_text": "## Bab 3: Rahasia Tersembunyi\n\nIsi bab tiga, ditulis dalam Bahasa Indonesia.\n\n## Chapter 5: The Hidden Secret Continues\n\nIsi bab lima, ditulis dalam bahasa Inggris di manuskrip yang sama.\n",
+  "review_sections": [
+    {"title": "Bab 3: Rahasia Tersembunyi", "lines": ["Rekomendasi untuk bab tiga."]},
+    {"title": "Chapter 5: The Hidden Secret Continues", "lines": ["Recommendation for chapter five."]}
+  ]
+}

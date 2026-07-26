@@ -1,0 +1,21 @@
+{
+  "id": "ELAPSE-001",
+  "defect_class": "elapsed_span_fork",
+  "classification": "synthetic",
+  "description": "Two chapters independently reference the same anchor event (a warehouse fire) but state incompatible elapsed times — '10 years since the fire' in one, '15 years since the fire' in another, with no in-story reason for the discrepancy. Matches the confirmed elapsed-span fork defect shape handled by scan_elapsed_span_consistency in narasi_arithmetic.py (NARASI_AGE_LEDGER flag).",
+  "mechanism": "narasi_arithmetic.scan_elapsed_span_consistency — deterministic, offline, no model call. Real function invoked directly.",
+  "mechanism_id": "scan_elapsed_span_consistency",
+  "source_reference": "narasi_arithmetic.py:819-867 (scan_elapsed_span_consistency, NARASI_AGE_LEDGER)",
+  "input_text": "The warehouse fire happened ten years ago, and the neighborhood had still not fully recovered. The charred beams remained visible from the overpass, a landmark nobody spoke about.\n\nFifteen years after the fire, Bimo finally agreed to walk past the site again. His daughter had never seen it, and she asked too many questions.",
+  "expected_verdict": {
+    "status": "FLAG",
+    "count_at_least": 1,
+    "anchor": "fire",
+    "spans_min": 2
+  },
+  "negative_control_text": "The warehouse fire happened ten years ago, and the neighborhood had still not fully recovered. The charred beams remained visible from the overpass, a landmark nobody spoke about.\n\nTen years was enough to change a person, but not enough to change the view from the overpass. Bimo still crossed to the other side of the street.",
+  "negative_control_expected": {
+    "status": "PASS",
+    "count": 0
+  }
+}

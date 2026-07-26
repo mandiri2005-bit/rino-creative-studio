@@ -654,7 +654,8 @@ async def get_job(tenant_id, job_id) -> Optional[dict]:
     except Exception as e:
         log.error("get_job: %s", e); raise
 
-async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapters=0, op_id=None) -> str:
+async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapters=0, op_id=None,
+                            lifecycle=None) -> str:
     """Create a jobs row for a narasi run. The narasi 8-char id goes in
     external_job_id (cancel/stitch keep using it); the row's UUID is the PK.
 
@@ -662,9 +663,21 @@ async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapte
     checkpoint {op_id, actual:0} in the (otherwise-unused) input_payload._meter, so an
     orphan sweep (narasi_jobs_sweep_stale / 0054) can settle the hold after a crash.
     When None (crash-safety off / BYOK / no hold) input_payload stays NULL —
-    byte-identical to pre-Slice-2. Pass the dict raw: the pool's jsonb codec encodes it."""
+    byte-identical to pre-Slice-2. Pass the dict raw: the pool's jsonb codec encodes it.
+
+    B-07/B-08: when `lifecycle` (the durable job snapshot from
+    continuity.lifecycle.build_job_lifecycle()) is given, it is merged into
+    input_payload.narasi_lifecycle in this SAME insert — never patched in by a later
+    write — so the durable snapshot exists atomically with job creation and coexists
+    with _meter; neither key overwrites the other. lifecycle=None (default, flag off)
+    preserves the exact legacy input_payload shape."""
     try:
-        _meter = {"_meter": {"op_id": op_id, "actual": 0}} if op_id else None
+        _meter_payload = {"_meter": {"op_id": op_id, "actual": 0}} if op_id else None
+        if lifecycle is not None:
+            _input_payload = dict(_meter_payload or {})
+            _input_payload["narasi_lifecycle"] = lifecycle
+        else:
+            _input_payload = _meter_payload
         jid = await _q_fetchval(
             """INSERT INTO jobs
                    (tenant_id,user_id,job_type,status,progress_message,
@@ -672,11 +685,38 @@ async def create_narasi_job(tenant_id, user_id, external_id, topic, total_chapte
                VALUES ($1,$2,'narasi'::job_type_enum,'processing','Starting narration…',
                        0,$3,$4,$5,now(),$6) RETURNING id""",
             _uid(tenant_id), _uid(user_id), int(total_chapters or 0),
-            external_id, (topic or "")[:200], _meter,
+            external_id, (topic or "")[:200], _input_payload,
             tenant=str(tenant_id or ""))
         return str(jid)
     except Exception as e:
         log.error("create_narasi_job: %s", e); raise
+
+
+async def create_derived_input(tenant_id, user_id, *, operation, source_job_uuid,
+                               lineage_binding, language, content_hash, model) -> str:
+    """B-07/B-08 Rework 4 (Contract G): a tenant-scoped derived-operation input record for
+    Review/One-Shot, written BEFORE the provider call -- durably proves operation type,
+    source job binding, canonical manuscript language, exact input content hash, and model
+    were committed before any paid provider work begins. Reuses the `jobs` table exactly
+    like a narasi generation job (job_type='narasi_derived_input'); completed/failed by its
+    own UUID via the existing finish_narasi_job_by_id. Raises on any insert failure -- the
+    caller must never proceed to the provider call when this write fails."""
+    try:
+        _input_payload = {
+            "operation": operation, "source_job_uuid": source_job_uuid,
+            "lineage_binding": lineage_binding, "manuscript_language": language,
+            "content_hash": content_hash,
+        }
+        jid = await _q_fetchval(
+            """INSERT INTO jobs
+                   (tenant_id,user_id,job_type,status,model,
+                    progress_current,progress_total,input_payload,started_at)
+               VALUES ($1,$2,'narasi_derived_input'::job_type_enum,'processing',$3,
+                       0,0,$4,now()) RETURNING id""",
+            _uid(tenant_id), _uid(user_id), model, _input_payload, tenant=str(tenant_id or ""))
+        return str(jid)
+    except Exception as e:
+        log.error("create_derived_input: %s", e); raise
 
 
 async def checkpoint_narasi_meter(tenant_id, job_id, meter_actual) -> None:
@@ -692,6 +732,30 @@ async def checkpoint_narasi_meter(tenant_id, job_id, meter_actual) -> None:
             _uid(job_id), int(meter_actual), _uid(tenant_id), tenant=str(tenant_id))
     except Exception as e:
         log.warning("checkpoint_narasi_meter (non-fatal): %s", e)
+
+
+async def append_narasi_chapter_progress(tenant_id, job_uuid, chapter_id) -> None:
+    """B-07/B-08 Rework 3 (Contract D): records a v1 chapter's completion by its REAL
+    chapter_id into jobs.result_payload.chapters (a JSONB array), incrementally as each
+    chapter finishes -- so a live poller can derive completion from actual durable evidence
+    instead of inferring it from a bare progress_current count. A retried append for the
+    same chapter_id lands a harmless duplicate entry (readers check SET membership of
+    chapter_ids present, never array length). Best-effort / non-fatal: a write miss here
+    degrades a poller to the legacy running-count signal for that tick; it never blocks or
+    corrupts the real per-chapter row `save_narasi_chapter` persists separately."""
+    try:
+        await _q_exec(
+            """UPDATE jobs
+                  SET result_payload = jsonb_set(
+                          COALESCE(result_payload, '{}'::jsonb),
+                          '{chapters}',
+                          COALESCE(result_payload->'chapters', '[]'::jsonb)
+                              || jsonb_build_array(jsonb_build_object('chapter_id', $3::text)),
+                          true)
+                WHERE id=$1 AND tenant_id=$2""",
+            _uid(job_uuid), _uid(tenant_id), str(chapter_id), tenant=str(tenant_id or ""))
+    except Exception as e:
+        log.warning("append_narasi_chapter_progress (non-fatal): %s", e)
 
 
 async def get_narasi_job_status(tenant_id, job_id):
@@ -765,14 +829,54 @@ async def finish_narasi_job(tenant_id, external_id, status, result=None, error=N
     except Exception as e:
         log.error("finish_narasi_job: %s", e); raise
 
+async def finish_narasi_job_by_id(tenant_id, job_uuid, status, result=None, error=None) -> None:
+    """B-07/B-08 (Rework 2, Contract B): terminal status for a narasi job by its internal
+    jobs.id UUID -- the authority once it exists. Two rows can share the same
+    external_job_id (a client-reused pre_job_id); finishing by external id would risk
+    updating the WRONG (e.g. newest) row. Every UUID-holding caller must use this, never
+    finish_narasi_job, once job_uuid is known."""
+    try:
+        await _q_exec(
+            """UPDATE jobs SET status=$3::job_status_enum,
+               result_payload=$4, error_message=$5,
+               progress_message=CASE WHEN $3='done' THEN 'Selesai' ELSE progress_message END,
+               completed_at=now()
+               WHERE id=$2 AND tenant_id=$1""",
+            _uid(tenant_id), _uid(job_uuid), status, result, error,
+            tenant=str(tenant_id or ""))
+    except Exception as e:
+        log.error("finish_narasi_job_by_id: %s", e); raise
+
+async def update_narasi_progress_by_id(tenant_id, job_uuid, current, total, message) -> None:
+    """B-07/B-08 (Rework 2, Contract B): UUID-scoped counterpart to update_narasi_progress --
+    see finish_narasi_job_by_id for why external-id progress updates are unsafe once a
+    job_uuid is known."""
+    try:
+        await _q_exec(
+            """UPDATE jobs SET progress_current=$3, progress_total=$4,
+               progress_message=$5, status='processing',
+               logs=logs||to_jsonb($5::text)
+               WHERE id=$2 AND tenant_id=$1""",
+            _uid(tenant_id), _uid(job_uuid), int(current), int(total), message,
+            tenant=str(tenant_id or ""))
+    except Exception as e:
+        log.error("update_narasi_progress_by_id: %s", e); raise
+
 async def save_narasi_chapter(tenant_id, job_id, chapter_index, content,
                               word_count, source_prompt, retrieved_ids,
-                              version=1, approved=False, *, meter_checkpoint=None):
+                              version=1, approved=False, *, meter_checkpoint=None,
+                              chapter_id=None):
     """Upsert one chapter into narasi_chapters (durable read-back + capture).
-    job_id is the jobs.id UUID (NOT the external 8-char id). Idempotent on
-    (job_id, chapter_index): a retry of the same chapter overwrites in place and
-    bumps version. retrieved_ids is a list of Qdrant passage_id strings → stored
-    as a real jsonb array (pass the list, let the codec encode once).
+    job_id is the jobs.id UUID (NOT the external 8-char id). retrieved_ids is a list of
+    Qdrant passage_id strings → stored as a real jsonb array (pass the list, let the codec
+    encode once).
+
+    B-07/B-08: when `chapter_id` (the stable ch_[0-9a-f]{32} identity) is supplied, upsert
+    identity is (job_id, chapter_id) — the 0070 PARTIAL unique index — so reorder/retry/
+    resume can never attach a checkpoint to the wrong chapter merely because chapter_index
+    shifted; chapter_index is still stored (ordering + legacy compatibility) but is no
+    longer the upsert key in this path. chapter_id=None (default, flag off) preserves the
+    exact legacy (job_id, chapter_index) upsert byte-for-byte.
 
     Dalang v2 Slice 2 (crash-safe billing): when meter_checkpoint is given, ATOMICALLY
     bump this run's jobs.input_payload._meter.actual to it in the SAME transaction as the
@@ -784,23 +888,43 @@ async def save_narasi_chapter(tenant_id, job_id, chapter_index, content,
         async with _db().acquire() as conn, conn.transaction():
             await conn.execute("SELECT set_config('app.current_tenant_id', $1, true)",
                                str(tenant_id))   # bg task has no request ctx → set tenant
-            cid = await conn.fetchval(
-                """INSERT INTO narasi_chapters
-                       (tenant_id, job_id, chapter_index, content, word_count,
-                        version, source_prompt, retrieved_ids, approved)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                   ON CONFLICT (job_id, chapter_index) DO UPDATE SET
-                       content       = EXCLUDED.content,
-                       word_count    = EXCLUDED.word_count,
-                       version       = narasi_chapters.version + 1,
-                       source_prompt = EXCLUDED.source_prompt,
-                       retrieved_ids = EXCLUDED.retrieved_ids,
-                       approved      = EXCLUDED.approved,
-                       updated_at    = now()
-                   RETURNING id""",
-                _uid(tenant_id), _uid(job_id), int(chapter_index),
-                content or "", int(word_count or 0), int(version or 1),
-                source_prompt or "", list(retrieved_ids or []), bool(approved))
+            if chapter_id:
+                cid = await conn.fetchval(
+                    """INSERT INTO narasi_chapters
+                           (tenant_id, job_id, chapter_index, chapter_id, content, word_count,
+                            version, source_prompt, retrieved_ids, approved)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                       ON CONFLICT (job_id, chapter_id) WHERE job_id IS NOT NULL AND chapter_id IS NOT NULL DO UPDATE SET
+                           chapter_index = EXCLUDED.chapter_index,
+                           content       = EXCLUDED.content,
+                           word_count    = EXCLUDED.word_count,
+                           version       = narasi_chapters.version + 1,
+                           source_prompt = EXCLUDED.source_prompt,
+                           retrieved_ids = EXCLUDED.retrieved_ids,
+                           approved      = EXCLUDED.approved,
+                           updated_at    = now()
+                       RETURNING id""",
+                    _uid(tenant_id), _uid(job_id), int(chapter_index), chapter_id,
+                    content or "", int(word_count or 0), int(version or 1),
+                    source_prompt or "", list(retrieved_ids or []), bool(approved))
+            else:
+                cid = await conn.fetchval(
+                    """INSERT INTO narasi_chapters
+                           (tenant_id, job_id, chapter_index, content, word_count,
+                            version, source_prompt, retrieved_ids, approved)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                       ON CONFLICT (job_id, chapter_index) DO UPDATE SET
+                           content       = EXCLUDED.content,
+                           word_count    = EXCLUDED.word_count,
+                           version       = narasi_chapters.version + 1,
+                           source_prompt = EXCLUDED.source_prompt,
+                           retrieved_ids = EXCLUDED.retrieved_ids,
+                           approved      = EXCLUDED.approved,
+                           updated_at    = now()
+                       RETURNING id""",
+                    _uid(tenant_id), _uid(job_id), int(chapter_index),
+                    content or "", int(word_count or 0), int(version or 1),
+                    source_prompt or "", list(retrieved_ids or []), bool(approved))
             if meter_checkpoint is not None:
                 # Same txn, scoped to this run's jobs.id (UUID) — atomic + per-run.
                 await conn.execute(
@@ -816,10 +940,15 @@ async def save_narasi_chapter(tenant_id, job_id, chapter_index, content,
 async def get_narasi_chapters(tenant_id, job_id) -> list:
     """Read all chapters for a job (ordered by chapter_index) from narasi_chapters.
     job_id is the internal jobs.id UUID. Durable read-back path (Step 1.3): open an
-    old job → read from DB, never regenerate. Returns [] if none."""
+    old job → read from DB, never regenerate. Returns [] if none.
+
+    B-07/B-08: chapter_id is included so a v1-bound resume/readback can prove identity
+    survived (None for a legacy chapter). target_language is NOT a per-chapter column --
+    it lives once on the owning job's input_payload.narasi_lifecycle (see list_narasi_jobs
+    and narration_status/narasi_status), never duplicated per chapter."""
     try:
         rows = await _q_fetch(
-            "SELECT chapter_index, content, word_count, version "
+            "SELECT chapter_index, chapter_id, content, word_count, version "
             "FROM narasi_chapters WHERE job_id=$1 ORDER BY chapter_index ASC",
             _uid(job_id), tenant=str(tenant_id))
         return [_row(r) for r in rows]
@@ -829,11 +958,16 @@ async def get_narasi_chapters(tenant_id, job_id) -> list:
 async def list_narasi_jobs(tenant_id, limit=15) -> list:
     """Recent narasi jobs for a tenant that are reopenable from DB (Step 1.3 UI):
     those with persisted chapters OR a stored stitched markdown. Newest first.
-    topic is stored in jobs.output_prefix by create_narasi_job."""
+    topic is stored in jobs.output_prefix by create_narasi_job.
+
+    B-07/B-08: target_language surfaces the persisted input_payload.narasi_lifecycle
+    snapshot's own language (NULL for a legacy job) so the reopen list can show a job's
+    real bound language instead of re-guessing it."""
     try:
         rows = await _q_fetch(
-            """SELECT j.external_job_id, j.output_prefix AS topic, j.status,
-                      j.progress_total AS chapters, j.created_at
+            """SELECT j.id AS job_uuid, j.external_job_id, j.output_prefix AS topic, j.status,
+                      j.progress_total AS chapters, j.created_at,
+                      j.input_payload->'narasi_lifecycle'->>'target_language' AS target_language
                  FROM jobs j
                 WHERE j.job_type='narasi' AND j.tenant_id=$1
                   AND (EXISTS (SELECT 1 FROM narasi_chapters c WHERE c.job_id=j.id)
@@ -1022,11 +1156,16 @@ async def count_active_narasi_jobs(tenant_id) -> int:
 
 
 async def get_narasi_chapter_contents(tenant_id, job_uuid) -> list:
-    """BullMQ S2 resume: the checkpointed chapters of a job — [{chapter_index, content}].
-    job_uuid = jobs.id UUID. [] on any error (resume then just rewrites everything)."""
+    """BullMQ S2 resume: the checkpointed chapters of a job —
+    [{chapter_index, chapter_id, content}]. job_uuid = jobs.id UUID. [] on any error
+    (resume then just rewrites everything).
+
+    B-07/B-08: also returns chapter_id (the stable ch_[0-9a-f]{32} identity, NULL for a
+    legacy pre-v1 chapter) so resume can match by identity, not ordinal position — a
+    reorder can never attach a checkpoint to the wrong chapter."""
     try:
         rows = await _q_fetch(
-            """SELECT chapter_index, content FROM narasi_chapters
+            """SELECT chapter_index, chapter_id, content FROM narasi_chapters
                 WHERE job_id=$1 AND tenant_id=$2 ORDER BY chapter_index""",
             _uid(job_uuid), _uid(tenant_id), tenant=str(tenant_id))
         return [_row(r) for r in rows]
@@ -1110,12 +1249,20 @@ async def save_approval_all(tenant_id, user_id, job_id, rating) -> int:
         log.error("save_approval_all: %s", e); raise
 
 async def cleanup_old_jobs(tenant_id, older_than_hours=24) -> int:
-    """Delete completed/failed jobs older than N hours."""
+    """Delete completed/failed jobs older than N hours, skipping any job that still has C-03
+    continuity evidence (a narasi_continuity_contracts row bound to it) -- C-02's dormant
+    persistence layer writes such evidence once wired, but the correlated guard is harmless even
+    while nothing calls persist_contract yet. Still one _q_exec call; a protected job is simply
+    excluded from the DELETE, never a reason for the whole statement to fail."""
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
         tag = await _q_exec(
             """DELETE FROM jobs WHERE tenant_id=$1
-               AND status IN ('done','error') AND created_at<$2""",
+               AND status IN ('done','error') AND created_at<$2
+               AND NOT EXISTS (
+                   SELECT 1 FROM narasi_continuity_contracts c
+                   WHERE c.tenant_id = jobs.tenant_id AND c.job_id = jobs.id
+               )""",
             _uid(tenant_id), cutoff)
         n = int(tag.split()[-1])
         if n: log.info("Cleaned %d old jobs (tenant=%s)", n, tenant_id)
@@ -1264,33 +1411,61 @@ async def log_usage(
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def save_outline(tenant_id, user_id, topic, style, language,
-                       chap_count, outline_text, chapters, model) -> str:
+                       chap_count, outline_text, chapters, model, *, lifecycle=None) -> str:
     """Store a generated narasi outline as a moat artifact (research → outline step).
-    Best-effort: caller should treat failures as non-fatal."""
+    Legacy (no lifecycle): best-effort, caller should treat failures as non-fatal.
+
+    B-07/B-08 Rework 2 (Contract C): `lifecycle` (optional) is the admitted, fully-validated
+    outline_lifecycle envelope. The COMPLETE envelope is stored in outline_lifecycle (a real
+    JSONB column -- pass the dict raw, the pool's jsonb codec encodes it once; never
+    json.dumps it here, which would double-encode). schema_version/lifecycle_hash also persist
+    as their own indexed columns for lookups that don't need to decode the full envelope. A
+    v1 outline round-trips byte-for-byte via get_outline_lifecycle_by_id below."""
     try:
         sid = await _q_fetchval(
             """INSERT INTO narasi_outlines
                  (tenant_id,user_id,topic,style,language,chap_count,
-                  outline_text,chapters,model)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id""",
+                  outline_text,chapters,model,lifecycle_schema_version,lifecycle_hash,
+                  outline_lifecycle)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id""",
             _uid(tenant_id), _uid(user_id), topic, style, language,
             int(chap_count or 0), outline_text, json.dumps(chapters), model,
+            (lifecycle or {}).get("schema_version"), (lifecycle or {}).get("lifecycle_hash"),
+            lifecycle,
             tenant=str(tenant_id))
         return str(sid)
     except Exception as e:
         log.error("save_outline: %s", e); raise
 
 
+async def get_outline_lifecycle_by_id(tenant_id, outline_id) -> Optional[dict]:
+    """B-07/B-08 Rework 2 (Contract C): read back the complete outline_lifecycle envelope
+    saved by save_outline, proving the v1 round-trip -- None for a legacy/unbound outline
+    or a missing/foreign row."""
+    try:
+        return await _q_fetchval(
+            "SELECT outline_lifecycle FROM narasi_outlines WHERE id=$1 AND tenant_id=$2",
+            _uid(outline_id), _uid(tenant_id), tenant=str(tenant_id))
+    except Exception as e:
+        log.error("get_outline_lifecycle_by_id: %s", e); raise
+
+
 async def save_moat_session(tenant_id, user_id, topic, style, rag_result: dict,
-                            model, tokens_in, tokens_out, cost_usd) -> str:
-    """Store one generated narration + its RAG context. Returns moat_session id."""
+                            model, tokens_in, tokens_out, cost_usd, *,
+                            source_job_uuid=None, lineage_binding=None) -> str:
+    """Store one generated narration + its RAG context. Returns moat_session id.
+
+    B-07/B-08 Rework 2 (Contract F): `source_job_uuid`/`lineage_binding` (optional) durably
+    persist a derived call's (Review/One-Shot) proof of binding to its source job's exact
+    lifecycle state -- previously only carried in the transient response, never actually
+    written to a column the caller could read back."""
     try:
         sid = await _q_fetchval(
             """INSERT INTO moat_sessions
                  (tenant_id,user_id,topic,style,rag_used,sources,passages,
                   prompt_used,generated_narration,model,tokens_in,tokens_out,cost_usd,
-                  modality)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'text') RETURNING id""",
+                  modality,source_job_uuid,lineage_binding)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'text',$14,$15) RETURNING id""",
             _uid(tenant_id), _uid(user_id), topic, style,
             bool(rag_result.get("rag_used")),
             json.dumps(rag_result.get("sources")),
@@ -1298,6 +1473,7 @@ async def save_moat_session(tenant_id, user_id, topic, style, rag_result: dict,
             rag_result.get("prompt_used"),
             rag_result.get("narration"),
             model, tokens_in, tokens_out, cost_usd,
+            _uid(source_job_uuid) if source_job_uuid else None, lineage_binding,
             tenant=str(tenant_id))
         return str(sid)
     except Exception as e:
@@ -1305,8 +1481,13 @@ async def save_moat_session(tenant_id, user_id, topic, style, rag_result: dict,
 
 async def save_correction_pair(moat_session_id, tenant_id, user_id,
                                original_text, corrected_text,
-                               style_label, topic, duration_minutes, language) -> dict:
-    """Save a user edit as a training pair. Caller should treat failures as non-fatal."""
+                               style_label, topic, duration_minutes, language, *,
+                               source_job_uuid=None, lineage_binding=None) -> dict:
+    """Save a user edit as a training pair. Legacy (no lineage): caller should treat
+    failures as non-fatal.
+
+    B-07/B-08 Rework 2 (Contract F): `source_job_uuid`/`lineage_binding` (optional) durably
+    persist a save-edit's proof of binding to its source job's exact lifecycle state."""
     import difflib
     dist = sum(1 for d in difflib.ndiff(original_text or "", corrected_text or "")
                if d[0] != " ")
@@ -1319,11 +1500,12 @@ async def save_correction_pair(moat_session_id, tenant_id, user_id,
             """INSERT INTO correction_pairs
                  (moat_session_id,tenant_id,user_id,original_text,corrected_text,
                   edit_distance,edit_ratio,quality_tier,style_label,topic,
-                  duration_minutes,language,modality)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'text') RETURNING *""",
+                  duration_minutes,language,modality,source_job_uuid,lineage_binding)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'text',$13,$14) RETURNING *""",
             _uid(moat_session_id), _uid(tenant_id), _uid(user_id),
             original_text, corrected_text, dist, ratio, tier,
             style_label, topic, duration_minutes, language,
+            _uid(source_job_uuid) if source_job_uuid else None, lineage_binding,
             tenant=str(tenant_id))
         return _row(row)
     except Exception as e:

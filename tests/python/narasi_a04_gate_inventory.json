@@ -1,0 +1,325 @@
+{
+  "schema_version": "1",
+  "generated_for": "A-04 Existing-Gate Regression Tests -- source-first, machine-checkable gate inventory",
+  "inventory_sources": [
+    "Execution Plan CLEAN: Section 3 (Verified Existing Production Flow, 'Gates' paragraph), Section 4 (Verified Root Causes), Section 9 (Correctness and Coverage Matrix), Section 10 (Test and Evidence Plan), master table row A-04 (line ~3021)",
+    "Permanent Continuity Solution: Section 3 (Concrete Evidence), Section 5 (Why Continuity Still Breaks), Section 22.3-22.4 (Test Strategy)",
+    "python/PIPELINE-SPEC.md Sections 1, 2, 8 (pipeline order, deployment coverage matrix, env/flag registry)",
+    "Direct source reading of python/narration_api.py::_apply_v3_gates (~2600 lines), python/narasi_gate.py, python/narasi_counters.py, python/narasi_arithmetic.py, python/orchestrator/static.py, and tests/python/test_narasi_continuity_gates.py's existing TestA04ChapterHeadingFusionFixture/TestA05aEntityAttributeClaimShape scope-note",
+    "Accepted A-05a fixture corpus (tests/narasi_gates/) reused read-only where a fixture already exists for the same defect shape"
+  ],
+  "gates": [
+    {
+      "gate_id": "chapter_boundary",
+      "category": "mandatory_minimum",
+      "source": "orchestrator/static.py narrate_chapters() ~line 1267-1338 (detection); narration_api.py ~line 429-456 (_r7_actuator_violations enforcement conversion)",
+      "flags": {
+        "NARASI_CHAPTER_BOUNDARY_CHECK": "0",
+        "NARASI_CHAPTER_BOUNDARY_ENFORCE": "0"
+      },
+      "applicability": "total chapters >= 2; only pairs where both adjacent chapters generated ok",
+      "detection_output": "result[\"chapter_boundary_report\"][\"breaks\"]",
+      "behavior": "report-only detection; enforcement converts findings into a high-severity violation fed to the single merged critic/canon-diff/thread-tracker revise call",
+      "real_path_exercised": "orchestrator.static.narrate_chapters() called directly with _write_chapter and laozhang_api._narasi_cheap_call monkeypatched; _r7_actuator_violations() called directly for the enforcement half",
+      "test_class": "TestA04ChapterBoundaryGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "canon_diff_core",
+      "category": "mandatory_minimum",
+      "source": "narration_api.py _v3g_canon_diff_detect ~line 2975-3724 (registry extraction: events/timeline/kinship/exhibit_sets/chains/quantities, up to 6-8 categories); NARASI_CANON_DIFF_REVISE/NARASI_CANON_ENFORCE_NONREVEAL enforcement",
+      "flags": {
+        "NARASI_CANON_DIFF": "0",
+        "NARASI_CANON_REGISTRY_EXTRACT": "0",
+        "NARASI_CANON_DIFF_REVISE": "0",
+        "NARASI_CANON_ENFORCE_NONREVEAL": "0"
+      },
+      "applicability": "result[\"canonical_facts\"] non-empty; no pre-existing parseable canon_registry JSON block found in it (triggers the prose fallback-extraction path); downstream semantic diff/compare-and-flag now covered by TestA04CanonDiffSemanticDiffGate (event/worldstate/exhibit/chain/quantity/kinship/timeline forks)",
+      "detection_output": "internal _reg dict (events/timeline/kinship/exhibit_sets/chains/quantities); no single stable top-level result key -- consumed internally by the downstream diff/classify steps",
+      "behavior": "report-only unless NARASI_CANON_DIFF_REVISE or NARASI_CANON_ENFORCE_NONREVEAL is also on",
+      "real_path_exercised": "narration_api._apply_v3_gates() called directly with laozhang_api._narasi_cheap_call monkeypatched to a router keyed on the 'CANON REGISTRY' system-prompt marker; proves flag-gating (both NARASI_CANON_DIFF and NARASI_CANON_REGISTRY_EXTRACT required), empty-facts safety, and malformed-JSON safety",
+      "test_class": "TestA04CanonDiffCoreAndWorldStateExtractionGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "world_state_fork",
+      "category": "mandatory_minimum",
+      "source": "narration_api.py ~line 3057-3060 (extraction schema addendum, NARASI_CANON_WORLDSTATE) and ~line 3263-3271 (NARASI_CANON_DIFF_WORLDSTATE enforcement wiring), nested inside _v3g_canon_diff_detect",
+      "flags": {
+        "NARASI_CANON_WORLDSTATE": "0",
+        "NARASI_CANON_DIFF_WORLDSTATE": "0"
+      },
+      "applicability": "same as canon_diff_core (NARASI_CANON_DIFF + NARASI_CANON_REGISTRY_EXTRACT on, non-empty canonical_facts)",
+      "detection_output": "adds optional \"irreversible\"/\"occurs_chapter\" fields to each extracted event when NARASI_CANON_WORLDSTATE=1; absent from the schema when off",
+      "behavior": "shipped in code but confirmed OFF in production per Execution Plan CLEAN Section 3 ('World-state fork detection ... is shipped in code but both its flags are off in production')",
+      "real_path_exercised": "same _apply_v3_gates harness as canon_diff_core; asserts the REAL system-prompt text constructed at runtime contains/omits 'irreversible'/'occurs_chapter' based on the flag -- a direct, empirical proof of the flag's schema effect, not a source-text assumption. The downstream world-state fork check itself (not just the schema addendum) is covered by TestA04CanonDiffSemanticDiffGate's dedicated worldstate-positive-fork and worldstate-flag-off tests.",
+      "test_class": "TestA04CanonDiffCoreAndWorldStateExtractionGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "duration_quantity_consistency",
+      "category": "mandatory_minimum",
+      "source": "narasi_arithmetic.py: scan_same_entity_age_fork (line 774), scan_elapsed_span_consistency (line 819), scan_age_ledger (line 870, aggregate wrapper actually invoked via NARASI_AGE_LEDGER); enforcement side lives in narration_api.py's NARASI_LEDGER_ENFORCE-gated block (~line 2576, `if _r7_env_on(\"NARASI_AGE_LEDGER\")`), appending an age_ledger mechanical violation into the same _mech -> _cq[\"violations\"] merge used by every ledger_enforce_submechanisms member",
+      "flags": {
+        "NARASI_AGE_LEDGER": "0"
+      },
+      "applicability": "always runs when the flag is on; deterministic regex/heuristic over the assembled book text",
+      "detection_output": "result[\"counter_report\"][\"counters\"][\"age_ledger\"] = {status, count, findings}",
+      "behavior": "report-only for the counter itself, but a real enforcement path exists and reaches merged revise when NARASI_LEDGER_ENFORCE + NARASI_AGE_LEDGER are both on (Rework4 correction: the prior claim of 'no enforcement path exists' was false -- Codex's re-audit found killing this exact block left the accepted suite at 230/230, since neither this row's wiring test nor any other test drove it)",
+      "real_path_exercised": "narasi_arithmetic functions called directly on real (reused A-05a) fixture text, the NARASI_AGE_LEDGER wiring proven end to end via _apply_v3_gates, PLUS (Rework4) a dedicated enforcement-reaches-merged-revise test and its flag-off negative control against the narration_api.py injection block",
+      "test_class": "TestA04DurationQuantityConsistencyGate",
+      "a05a_fixture_reused": "entity_attribute_age_fork.json (AGE-001), elapsed_span_fork.json (ELAPSE-001)",
+      "known_gap": null
+    },
+    {
+      "gate_id": "numeric_ledger",
+      "category": "mandatory_minimum",
+      "source": "narration_api.py _r9_gate_numeric ~line 2103-2224 (LLM extraction + _numeric_drifts/_numeric_sum_errors deterministic post-check); NARASI_NUMERIC_LEDGER_ENFORCE in _r7_actuator_violations",
+      "flags": {
+        "NARASI_NUMERIC_LEDGER": "0",
+        "NARASI_NUMERIC_LEDGER_ENFORCE": "0"
+      },
+      "applicability": "style resolves as fiction (pakem.resolve_style is_fiction or factual_regime in {fiction, fictional}); non-empty book text",
+      "detection_output": "result[\"numeric_ledger_report\"] = {referents, drifts, sum_errors}",
+      "behavior": "report-only unless NARASI_NUMERIC_LEDGER_ENFORCE also on, in which case sum_errors reach the merged revise call",
+      "real_path_exercised": "narration_api._apply_v3_gates() called directly with laozhang_api._narasi_cheap_call monkeypatched keyed on the 'numeric-continuity extractor' system-prompt marker",
+      "test_class": "TestA04NumericLedgerGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "thread_tracker",
+      "category": "mandatory_minimum",
+      "source": "narration_api.py _v3g_thread_tracker_detect ~line 3739-3990 (Pass-1 candidate generation + NARASI_THREAD_TRACKER_MULTIPASS 3x-temperature gather + dedup; Pass-2 verification against ending); NARASI_THREAD_TRACKER_ENFORCE",
+      "flags": {
+        "NARASI_THREAD_TRACKER": "0",
+        "NARASI_THREAD_TRACKER_MULTIPASS": "0",
+        "NARASI_THREAD_TRACKER_ENFORCE": "0"
+      },
+      "applicability": "non-empty book text",
+      "detection_output": "internal _out[\"eligible\"] list feeding the merged revise call; no separate stable top-level result key observed",
+      "behavior": "report-only unless NARASI_THREAD_TRACKER_ENFORCE also on",
+      "real_path_exercised": "narration_api._apply_v3_gates() called directly; call-count assertions empirically prove multipass fires exactly 3 concurrent Pass-1 calls (temps 0.2/0.5/0.8) vs exactly 1 for single-pass, and that identical multipass candidates dedupe by (chapter_introduced, thread_type, normalized description) before Pass-2. Pass-2's own verification-against-the-ending logic now has dedicated positive (unresolved thread produces violation), negative-control (resolved thread produces none), and malformed-response-fails-safe fixtures -- the real Pass-1 thread id is dynamically extracted from Pass-2's own system prompt via regex rather than hardcoded, since narration_api.py rewrites every Pass-1 id with an `f\"s{{_tti}}_{{id}}\"` prefix even in single-pass mode.",
+      "test_class": "TestA04ThreadTrackerGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "language_consistency",
+      "category": "mandatory_minimum",
+      "source": "narasi_gate.language_consistency_scan (lexical/script-based, line 612) for the standalone scanner; narasi_counters.language_consistency_word_scan (curated Indonesian function-word list, line 2788) for the ACTUAL _apply_v3_gates wiring (NARASI_LANGUAGE_CONSISTENCY_SCAN/_ENFORCE) -- confirmed by direct source reading to be two DIFFERENT functions, not assumed the same",
+      "flags": {
+        "NARASI_LANGUAGE_CONSISTENCY_SCAN": "0",
+        "NARASI_LANGUAGE_CONSISTENCY_ENFORCE": "0"
+      },
+      "applicability": "language_consistency_word_scan is skipped entirely for ID-family targets (native there, _A3_ID_FAMILY skip-list)",
+      "detection_output": "result[\"language_consistency_report\"] = {status, count, samples}",
+      "behavior": "report-only unless NARASI_LANGUAGE_CONSISTENCY_ENFORCE also on",
+      "real_path_exercised": "narasi_gate.language_consistency_scan called directly on the reused A-05a fixture; narasi_counters.language_consistency_word_scan wiring proven end to end via _apply_v3_gates with a fresh fixture built specifically to contain curated words ('tidak', 'dengan') since the A-05a fixture's sentence does not use the curated word list",
+      "test_class": "TestA04LanguageConsistencyGate",
+      "a05a_fixture_reused": "language_leak_indonesian.json (LANGLEAK-001) for the standalone-scanner proof only",
+      "known_gap": null
+    },
+    {
+      "gate_id": "location_continuity",
+      "category": "mandatory_minimum",
+      "source": "narasi_counters.location_continuity_scan (line 3721), NARASI_LOCATION_CONTINUITY flag, deliberately WARN-only heuristic",
+      "flags": {
+        "NARASI_LOCATION_CONTINUITY": "0"
+      },
+      "applicability": "requires >=2 '## Chapter N' blocks; name-proximity + verb-presence heuristic only, not real scene/blocking tracking",
+      "detection_output": "return value of location_continuity_scan(); surfaced via result[\"counter_report\"][\"counters\"][\"location_continuity\"] when wired through scan_manuscript",
+      "behavior": "WARN-only by explicit design comment ('never injected'); confirmed no NARASI_LOCATION_CONTINUITY_ENFORCE flag exists anywhere in the tree via grep, not assumed",
+      "real_path_exercised": "narasi_counters.location_continuity_scan called directly with positive/negative synthetic text",
+      "test_class": "TestA04LocationContinuityGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "brand_scan_enforce",
+      "category": "mandatory_minimum",
+      "source": "narasi_counters.real_brand_scan (line 3086, NARASI_BRAND_SCAN) + _brand_role role classification (culpable vs prop, +-150 char proximity to culpability vocabulary); narration_api.py NARASI_BRAND_ENFORCE inline block ~line 2705-2746 (independently gated from NARASI_LEDGER_ENFORCE per its own 2026 fix comment)",
+      "flags": {
+        "NARASI_BRAND_SCAN": "0",
+        "NARASI_BRAND_ENFORCE": "0",
+        "NARASI_BRAND_REPORT": "0"
+      },
+      "applicability": "result[\"counter_report\"][\"counters\"][\"real_brands\"] is REBUILT unconditionally by a real narasi_counters.scan_manuscript() call inside _apply_v3_gates's own diet-loop -- confirmed by source (exactly one assignment site) that any pre-seeded counter_report is silently overwritten, so this gate can only be tested via real book text triggering the real scan, not via a synthetic counter_report shortcut; fuzzy-hit exclusion now covered by test_enforcement_fuzzy_hit_never_reaches_revise_even_culpable_and_high_count",
+      "detection_output": "result[\"counter_report\"][\"counters\"][\"real_brands\"] = {status, hits:[{brand, where, count, role, snippet}]}",
+      "behavior": "enforcement fires when role=='culpable' OR count>=5, excluding fuzzy (edit-distance-1) hits -- confirmed empirically against real book text landing in each bucket, not assumed from the comment alone",
+      "real_path_exercised": "narration_api._apply_v3_gates() called with real book text engineered to land in the culpable / high-count-prop / low-count-prop buckets (verified via _brand_role's real +-150-char culpability-vocabulary window), proving the actual enforcement-selectivity logic end to end including the merged-revise handoff",
+      "test_class": "TestA04BrandScanEnforceGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "entity_attribute_drift",
+      "category": "additional_discovered",
+      "source": "narration_api.py _r9_gate_entity ~line 2225-2301 (NARASI_ENTITY_ATTR_CHECK: gender/title/age/relation drift kinds); NARASI_ENTITY_ATTR_ENFORCE in _r7_actuator_violations line 469-483",
+      "flags": {
+        "NARASI_ENTITY_ATTR_CHECK": "0",
+        "NARASI_ENTITY_ATTR_ENFORCE": "0"
+      },
+      "applicability": "fiction style; non-empty book text",
+      "detection_output": "result[\"entity_attr_report\"][\"drifts\"]",
+      "behavior": "report-only unless NARASI_ENTITY_ATTR_ENFORCE also on",
+      "real_path_exercised": "narration_api._apply_v3_gates() called directly (NOT just source-introspection, going beyond A-05a's own schema-only coverage) with laozhang_api._narasi_cheap_call monkeypatched, using the accepted A-05a gender-flip and relation-flip fixtures as real input, PLUS dedicated title-drift and age-drift positive fixtures (test_positive_title_drift_reported, test_positive_age_drift_reported) proving all 4 named drift kinds (gender/title/age/relation) are each independently exercised through the real extraction+report path; enforcement proven via the merged-revise recorder",
+      "test_class": "TestA04EntityAttributeDriftGate",
+      "a05a_fixture_reused": "entity_attribute_gender_flip.json (ENTATTR-001), entity_attribute_relation_flip.json (ENTREL-001)",
+      "known_gap": null
+    },
+    {
+      "gate_id": "name_uniqueness_order_typo",
+      "category": "additional_discovered",
+      "source": "narration_api.py _name_uniqueness_scan (line 689, NARASI_NAME_UNIQUENESS_CHECK), _name_order_scan (line 749, NARASI_NAME_ORDER_CHECK), _name_typo_scan (line 815, NARASI_NAME_TYPO_CHECK) -- all deterministic, no LLM call",
+      "flags": {
+        "NARASI_NAME_UNIQUENESS_CHECK": "0",
+        "NARASI_NAME_ORDER_CHECK": "0",
+        "NARASI_NAME_TYPO_CHECK": "0"
+      },
+      "applicability": "uniqueness requires the literal 'named X Y' introduction pattern with a differing description clause in >=2 places; order requires both token orderings actually present; typo requires a canonical name repeated >=3x plus an edit-distance-1 variant appearing exactly once",
+      "detection_output": "result[\"name_uniqueness_report\"][\"collisions\"], result[\"name_order_report\"][\"inconsistencies\"], result[\"name_typo_report\"][\"typos\"]",
+      "behavior": "all three report-only, no enforcement path exists for any of them",
+      "real_path_exercised": "all three functions called directly with real positive/negative text (uniqueness reuses the accepted A-05a NAMEDUP-001 fixture); each flag's wiring into _apply_v3_gates proven via an ISOLATED single-flag book (a combined multi-fixture book was tried first and triggered an unrelated terminal-gate entity-consistency collapse that mangled the text -- documented in the test's own comment, not silently worked around)",
+      "test_class": "TestA04NameUniquenessOrderTypoGate",
+      "a05a_fixture_reused": "duplicate_full_name_collision.json (NAMEDUP-001) for the uniqueness scanner",
+      "known_gap": null
+    },
+    {
+      "gate_id": "chapter_heading_structure_repair",
+      "category": "additional_discovered",
+      "source": "narasi_gate.chapter_heading_repair (line 1604, _FUSED_HEADING_RX)",
+      "flags": {},
+      "applicability": "always runs as part of narasi_gate.gate_text's terminal deterministic gate",
+      "detection_output": "return value (repaired_text, n_repairs)",
+      "behavior": "deterministic repair, always applied where matched (not report-only)",
+      "real_path_exercised": "already covered by the EXISTING test_narasi_continuity_gates.py::TestA04ChapterHeadingFusionFixture (4 tests: clean-text byte-identical, single-hash fused split, double-hash fused split, heading's-own-leading-hash false-positive guard) -- not duplicated in this new suite to avoid redundant test bloat, per the order's 'minimized' instruction",
+      "test_class": "external:tests/python/test_narasi_continuity_gates.py::TestA04ChapterHeadingFusionFixture",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "planning_marker_leak_cleanup",
+      "category": "additional_discovered",
+      "source": "orchestrator/static._scrub_chapter_leaks (line 425, _SCENE_LEAK_RE + _TRAILING_HASH_RE)",
+      "flags": {},
+      "applicability": "always runs; deterministic, no flag",
+      "detection_output": "return value (scrubbed_text); logs a WARNING when a leak is stripped",
+      "behavior": "deterministic strip, always applied where matched (not report-only)",
+      "real_path_exercised": "_scrub_chapter_leaks called directly with the accepted A-05a PLANLEAK-001/TRAILHASH-001 fixtures (both branches of the same function) plus a combined-both-shapes-in-one-call proof",
+      "test_class": "TestA04PlanningMarkerLeakCleanupGate",
+      "a05a_fixture_reused": "planning_text_leak.json (PLANLEAK-001), trailing_hash_leak.json (TRAILHASH-001)",
+      "known_gap": null
+    },
+    {
+      "gate_id": "dedup_structural",
+      "category": "additional_discovered",
+      "source": "orchestrator/static._dedup_chapter_blocks (line 1545) -- post-gates dedup guard, r16 postmortem fix; also narration_api._name_uniqueness_scan (duplicate_full_name_collision, already inventoried under name_uniqueness_order_typo)",
+      "flags": {},
+      "applicability": "requires >=2 chapter blocks after splitting on the same boundary _split_into_chunks trusts",
+      "detection_output": "return value (deduped_book, n_dropped)",
+      "behavior": "deterministic 'keep last' UNLESS the last occurrence is drastically shorter than a best earlier occurrence (narrow truncation override) -- confirmed against the real r16 4/4-case regression per source comment, NOT the naive 'always prefer longest' hypothesis the audit initially proposed and which was wrong on real data 3 of 4 times",
+      "real_path_exercised": "_dedup_chapter_blocks called directly: positive duplicate-drop, negative byte-identical control, single-chapter no-op, empty-book no-op, and the narrow truncation-override case distinguishing it from a naive longest-wins rule",
+      "test_class": "TestA04DedupStructuralGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "domain_plausibility",
+      "category": "peripheral_discovered",
+      "source": "narration_api.py _r9_gate_domain ~line 2019-2100 (NARASI_DOMAIN_PLAUSIBILITY, hard law/medicine/engineering error detection); NARASI_DOMAIN_ENFORCE in _r7_actuator_violations",
+      "flags": {
+        "NARASI_DOMAIN_PLAUSIBILITY": "0",
+        "NARASI_DOMAIN_ENFORCE": "0"
+      },
+      "applicability": "fiction style; non-empty book text",
+      "detection_output": "result[\"domain_plausibility_report\"]",
+      "behavior": "report-only unless NARASI_DOMAIN_ENFORCE also on",
+      "real_path_exercised": "narration_api._apply_v3_gates() called directly with laozhang_api._narasi_cheap_call monkeypatched keyed on the 'domain-plausibility checker' system-prompt marker, proving flag gating, non-fiction skip, empty-book skip, the hallucinated/echoed-quote deterministic drop (a claim whose quote is not a literal substring of the manuscript sent is never surfaced), malformed-JSON safety, high-severity enforcement reaching the merged revise call, and low-severity claims staying report-only even with every enforcement flag on",
+      "test_class": "TestA04DomainPlausibilityGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "critic_consistency_gate",
+      "category": "peripheral_discovered",
+      "source": "narration_api.py _v3g_critic_detect ~line 2485-2842 (NARASI_CRITIQUE_ENABLED whole-draft consistency critic, laozhang_api._narasi_consistency_critique); NARASI_CRITIQUE_REVISE gates promotion to the merged revise's eligible list",
+      "flags": {
+        "NARASI_CRITIQUE_ENABLED": "0",
+        "NARASI_CRITIQUE_REVISE": "0"
+      },
+      "applicability": "requires NARASI_CRITIQUE_MIN_CHAPTERS (default 3) chapters",
+      "detection_output": "internal _cq[\"violations\"]; also the container for ALL the r7 mechanical-enforcement injections (chapter-boundary, entity-attr, numeric-ledger, brand, metaleak, provenance-leak) since they are nested inside this gate's own NARASI_LEDGER_ENFORCE-gated block",
+      "behavior": "report-only unless NARASI_CRITIQUE_REVISE also on",
+      "real_path_exercised": "exercised both indirectly (as a required precondition for every mechanical-enforcement test in this suite) and now DIRECTLY via a dedicated CritiqueRecorder-based fixture: laozhang_api._narasi_consistency_critique monkeypatched to return canned high/low-severity violation payloads, narration_api._apply_v3_gates() called for real, asserting the critic's own findings (not a mechanical injection) reach or are excluded from the merged revise call based on severity/flag state; plus a malformed-response test (CritiqueRecorder configured to return a bare non-JSON string in place of the well-formed dict) proving _v3g_critic_detect's enclosing try/except fails safe -- no crash, zero violations reach revise -- confirmed by source (the except immediately before this function's `return _out`)",
+      "test_class": "TestA04CriticConsistencyGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "register_gate",
+      "category": "out_of_scope_style_quality",
+      "source": "narration_api.py _v3g_register_detect ~line 2864-2967 (NARASI_REGISTER_GATE, default ON, R-H10 register scorecard)",
+      "flags": {
+        "NARASI_REGISTER_GATE": "1",
+        "NARASI_REGISTER_GATE_ENFORCE": "0"
+      },
+      "applicability": "always (default on)",
+      "detection_output": "internal register scorecard, feeds the merged revise's eligible list",
+      "behavior": "N/A -- scored writing-craft register consistency, not a continuity/language/structure defect per the Execution Plan CLEAN Section 9 coverage matrix's own field taxonomy",
+      "real_path_exercised": "none dedicated; incidentally exercised (and its own malformed-response warning logged harmlessly) by every test in this suite that calls the real _apply_v3_gates, since register-detect always runs as part of the same asyncio.gather",
+      "test_class": "n/a",
+      "a05a_fixture_reused": null,
+      "known_gap": "Deliberately classified OUT OF SCOPE for A-04: the order's objective is 'every existing continuity, language, and structure gate'; register_gate is a writing-craft/style quality mechanism, a sibling system to but distinct from the continuity Package A-F master table (Section 9's coverage matrix lists only continuity fields, not register/style scoring). Documented here for completeness of the source-first inventory, not silently omitted."
+    },
+    {
+      "gate_id": "style_register_quality_counters",
+      "category": "out_of_scope_style_quality",
+      "source": "narasi_gate.py: aphorism_density_scan, human_anchor_scan, source_note_density_scan, factual_ending_concrete_return_scan, genre_self_reference_scan, phonetic_collision_scan, glossary_definition_scan, pov_persona_drift_scan, ceramics_factcheck_scan, narrator_opening_ratio_scan, number_format_scan (the full R-FG/register 'counters' family referenced in PIPELINE-SPEC.md's deployment coverage matrix, minus the 5 scanners now tracked under deterministic_leak_scanners -- see known_gap)",
+      "flags": {},
+      "applicability": "varies per scanner, mostly always-on deterministic checks inside narasi_gate.gate_text's terminal pass",
+      "detection_output": "each scanner's own return dict, aggregated into gate_report",
+      "behavior": "writing-craft/register QUALITY scoring (repetition budgets, factual-ending checks, aphorism density, etc.), a pre-existing R-FG round system predating and distinct from the Package A-F continuity master table",
+      "real_path_exercised": "none in this pass",
+      "test_class": "n/a",
+      "a05a_fixture_reused": null,
+      "known_gap": "Deliberately classified OUT OF SCOPE for A-04 for the same reason as register_gate: these are style/register quality counters (a large, pre-existing R-FG system), not continuity/language/structure gates within the Package A-F master table's stated scope. CORRECTION (Codex re-audit round 3): 5 of these (duplicate_sentence_scan, merge_fusion_scan, instruction_residue_scan, unattributed_voice_scan, placeholder_leak_scan) are now DEDICATED, in-scope gates in their own right, tracked under the separate gate_id \"deterministic_leak_scanners\" (peripheral_discovered, TestA04DeterministicLeakScannersGate) since they are structure/leak-adjacent rather than pure writing-craft register scoring -- this row's remaining scope is only the OTHER 11 style/register scanners listed in \"source\" above (aphorism_density_scan, human_anchor_scan, source_note_density_scan, factual_ending_concrete_return_scan, genre_self_reference_scan, phonetic_collision_scan, glossary_definition_scan, pov_persona_drift_scan, ceramics_factcheck_scan, narrator_opening_ratio_scan, number_format_scan), which remain genuinely out of scope and untested in this pass."
+    },
+    {
+      "gate_id": "ledger_enforce_submechanisms",
+      "category": "peripheral_discovered",
+      "source": "narration_api.py's NARASI_LEDGER_ENFORCE mechanical-injection block (~line 2519-2703): 13 sub-mechanisms riding their own narasi_counters.py flag (NARASI_LEDGER_VALUE_DEMOTE, NARASI_NUMERIC_MAGNITUDE [numeric_magnitude_scan, line 2481], NARASI_AGE_LEDGER [narasi_arithmetic.scan_age_ledger; enforcement at narration_api.py ~line 2576, distinct from the mandatory-minimum duration_quantity_consistency gate's own counter-only coverage of this same flag], NARASI_ALIAS_LEDGER [ledger_fuzzy_names, line 3375 / alias_legal_lock_scan, line 3454], NARASI_CANON_ANCHOR [scan_canon_anchor_dates, narasi_arithmetic.py line 906], NARASI_PLACEHOLDER_SCAN [placeholder_scan, narasi_counters.py line 3513 -- a DIFFERENT function from narasi_gate.py's own placeholder_leak_scan, see below], NARASI_ENTITY_QTY [entity_quantity_scan, line 3584], NARASI_KINSHIP_SCAN [kinship_term_scan, line 3644], NARASI_STYLE_COUNTER_ENFORCE, NARASI_METALEAK_SCAN [meta_reference_scan, line 3225], NARASI_PROVENANCE_LEAK [provenance_leak_scan, line 3263], NARASI_TIMELINE_ARITH [narasi_arithmetic.scan_arithmetic via narasi_counters.py ~line 4327], NARASI_BRAND_REPORT [real-brand entity-use predicate, narration_api.py ~line 2640, distinct from the mandatory-minimum brand_scan_enforce gate's NARASI_BRAND_SCAN/NARASI_BRAND_ENFORCE pair]) PLUS 2 sub-mechanisms sourced from gate_report[\"flags\"] instead of counter_report (Rework5 addition, previously entirely missed): instruction_residue (~line 2542, reading gate_report[\"flags\"][\"instruction_residue_samples\"]) and placeholder_leak (~line 2551, reading gate_report[\"flags\"][\"placeholder_leak_samples\"]) -- both populated by narasi_gate.gate_text()'s deterministic_leak_scanners (requiring DALANG_INFRA_FIXES=1) and appended into the SAME _mech list as the 13 NARASI_XXX-flag-driven members, with no dedicated per-mechanism flag of their own beyond the shared NARASI_LEDGER_ENFORCE + DALANG_INFRA_FIXES prerequisite. 13 + 2 = 15 total.",
+      "flags": {
+        "NARASI_LEDGER_ENFORCE": "0"
+      },
+      "applicability": "each sub-mechanism independently flag-gated (or, for instruction_residue/placeholder_leak, gated only by the shared NARASI_LEDGER_ENFORCE + DALANG_INFRA_FIXES prerequisite); all nested inside the same NARASI_LEDGER_ENFORCE-gated block inside _v3g_critic_detect",
+      "detection_output": "each scanner's own dict, surfaced via result[\"counter_report\"][\"counters\"][<name>] when the underlying scan_manuscript call runs (or via gate_report[\"flags\"][<name>_samples] for instruction_residue/placeholder_leak), then optionally converted to a mechanical violation and merged into _cq[\"violations\"]",
+      "behavior": "each report-only unless its specific enforce condition is also satisfied inside the shared NARASI_LEDGER_ENFORCE block; NARASI_BRAND_REPORT specifically appends its violation at severity=low, which the downstream revise-trigger filter (~line 2816) only counts at critical/high, so it legitimately never independently forces a rewrite -- confirmed via caplog rather than assumed; instruction_residue/placeholder_leak append at severity=high, same as the other 13, so they DO reach revise on their own once triggered",
+      "real_path_exercised": "Rework4 correction: the prior claim of ALL 10 covered was both undercounted (the real_path_exercised prose below already covered 11 mechanisms including timeline_arith, and the completeness oracle never required it) and missing two mechanisms entirely (NARASI_AGE_LEDGER's enforcement path, previously miscategorized under duration_quantity_consistency as having 'no enforcement path'; NARASI_BRAND_REPORT, previously untested). Rework5 correction: Codex's re-audit found that killing ONLY the mechanical-injection loop for instruction_residue or placeholder_leak (leaving the scanner and gate_text() wiring untouched) left the accepted Rework4 suite at 247/247 -- Rework4's tests proved detection + gate_text() surfacing but never that a finding gets CONVERTED into a revise-triggering _mech entry, exactly the same class of gap as age_ledger/brand_report/provenance_leak/ledger_placeholder_scan before it. ALL 15 named sub-mechanisms now have dedicated real-path coverage: provenance_leak (direct + wiring + enforcement + flag-off), meta_reference_leak/metaleak (incl. a dedicated flag-on-injects/flag-off-excludes wiring pair), ledger_placeholder_scan (renamed from the ambiguous \"placeholder_leak\" -- direct + wiring + enforcement + flag-off, narasi_counters.placeholder_scan specifically); numeric_magnitude, entity_qty (correct flag NARASI_ENTITY_QTY -- see the invented-flag-name negative control below), kinship_scan, timeline_arith [note: timeline_arith is a genuinely separate ledger sub-mechanism from canon_diff_core's own \"timeline\" REGISTRY category; both are now independently covered AND independently required by the completeness oracle] (each with direct + real _apply_v3_gates wiring + flag-off negative control + enforcement-reaches-revise); value_demote (ledger_hits_scan real pakem/lane_ledger.json kdrama_serial lane, floor: hit reaches revise when demote off, excluded when demote on); alias_ledger (alias_legal_lock_scan real fork+misfiled detection, wiring+enforcement); canon_anchor (scan_canon_anchor_dates real date-fork detection, wiring+enforcement); style_counter_enforce (represented via the \"anchors\" sub-counter -- a real style-independent budget=3 [ANCHOR]-token counter, the simplest of the shared epithet/anchors/aphorisms/anchor_voice injection loop to drive with a real fixture; all 4 share the identical _mech.append() injection shape per source, so this is real non-simulated proof of the shared mechanism, not independent re-verification of each of the 4 counters' own elaborate trigger conditions); age_ledger (enforcement-reaches-merged-revise + flag-off negative control against narration_api.py's own injection block, closing the false 'no enforcement path exists' claim previously recorded under duration_quantity_consistency); brand_report (direct _brand_role/_brand_entity_use predicate proof with a real brand [Samsung] used non-culpably, plus a caplog-verified wiring test proving the flag correctly gates detection while confirming the severity=low finding legitimately never reaches revise.violations on its own); instruction_residue and placeholder_leak (Rework5 new: each with an enforcement-reaches-merged-revise test using the same fixture text already proven to trigger detection in deterministic_leak_scanners, plus a DALANG_INFRA_FIXES-off flag-off negative control proving no sample means no injection regardless of NARASI_LEDGER_ENFORCE).",
+      "test_class": "TestA04LedgerContinuitySubmechanismsGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    },
+    {
+      "gate_id": "cleanup_utilities_report_only",
+      "category": "peripheral_discovered",
+      "source": "narration_api.py: NARASI_FRONTMATTER_STRIP (~line 1597, front-matter strip before every scan), NARASI_PHANTOM_NAME_SCAN (~line 2019-2100 region), NARASI_INTRO_ORDER_SCAN, NARASI_HEADER_RESTAMP (~line 4139)",
+      "flags": {
+        "NARASI_FRONTMATTER_STRIP": "0",
+        "NARASI_PHANTOM_NAME_SCAN": "0",
+        "NARASI_INTRO_ORDER_SCAN": "0",
+        "NARASI_HEADER_RESTAMP": "0"
+      },
+      "applicability": "NARASI_FRONTMATTER_STRIP, NARASI_PHANTOM_NAME_SCAN, NARASI_INTRO_ORDER_SCAN, and NARASI_HEADER_RESTAMP all now have dedicated positive/negative/edge-case coverage",
+      "detection_output": "varies per mechanism; mostly WARN-only log lines, some (frontmatter-strip, header-restamp) actively edit text when on",
+      "behavior": "utility/cleanup mechanisms adjacent to continuity but not themselves continuity-defect detectors (frontmatter-strip removes leaked planning artifacts before scanning begins; header-restamp rewrites chapter-label headers)",
+      "real_path_exercised": "1 of the 4 named mechanisms now has dedicated real-path coverage: NARASI_FRONTMATTER_STRIP, exercised via narration_api._apply_v3_gates() with an engineered Sinopsis/Target preamble (>400 chars) followed by a bare 'Chapter 1:' heading -- proving flag-off leaves the preamble in place, flag-on strips it while preserving the chapter body, a too-short (<400 char) preamble never fires even with the flag on, and a long preamble lacking any brief marker (Sinopsis/Target/markdown header) never fires either, confirming all three source-verified trigger conditions (bare heading + length threshold + marker presence) empirically rather than by source reading alone",
+      "test_class": "TestA04CleanupUtilitiesGate",
+      "a05a_fixture_reused": null,
+      "known_gap": null
+    }
+  ]
+}

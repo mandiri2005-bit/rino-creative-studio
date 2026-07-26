@@ -1,0 +1,11 @@
+{
+  "fixture_id": "id_manuscript_en_report",
+  "classification": "synthetic",
+  "manuscript_language": "id",
+  "report_language": "en",
+  "manuscript_text": "## Bab 1: Awal Perjalanan\n\nParagraf pembuka dalam Bahasa Indonesia. Bahasa laporan untuk fixture ini adalah Inggris, tetapi judul bab tidak boleh diterjemahkan.\n\n## Bab 2: Pertemuan Tak Terduga\n\nParagraf kedua, juga dalam Bahasa Indonesia.\n",
+  "review_sections": [
+    {"title": "Bab 1: Awal Perjalanan", "lines": ["Recommendation (report label in English, manuscript text stays Indonesian)."]},
+    {"title": "Bab 2: Pertemuan Tak Terduga", "lines": ["Follow-up recommendation for the second chapter."]}
+  ]
+}

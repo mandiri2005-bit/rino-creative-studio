@@ -1,0 +1,14 @@
+{
+  "id": "PLANLEAK-001",
+  "defect_class": "planning_text_leak",
+  "classification": "synthetic",
+  "description": "Internal outline-planning text (a 'Scene N -- ...' line meant only for cross-chapter awareness) leaks verbatim into a chapter's generated prose. Matches the confirmed leak-fix documented in orchestrator/static.py's SharedContext.outline()/scope_for() comments ('Leak fix (2026-07): this list is INTERNAL planning context... workers sometimes echo its... phrasing... verbatim into finished prose') and the dedicated scrub function _scrub_chapter_leaks.",
+  "mechanism": "orchestrator.static._scrub_chapter_leaks(text, task_id) -- deterministic, offline, no model call.",
+  "mechanism_id": "_scrub_chapter_leaks",
+  "source_reference": "orchestrator/static.py _scrub_chapter_leaks function and SharedContext.outline()/scope_for() 'Leak fix (2026-07)' comments",
+  "input_text": "Larasati stood at the microphone, hands trembling but steady enough to begin.\nScene 2 -- she realizes the letter was never sent, and the truth unravels in front of the judges.\nThe room held its breath as she spoke the first line.",
+  "expected_verdict": {
+    "leaked_line_text": "Scene 2 -- she realizes the letter was never sent, and the truth unravels in front of the judges."
+  },
+  "negative_control_text": "Larasati stood at the microphone, hands trembling but steady enough to begin.\nThe scene around her seemed to hold its breath as she spoke the first line.\nEverything about that moment felt permanent."
+}

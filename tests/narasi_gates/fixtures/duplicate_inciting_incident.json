@@ -1,0 +1,27 @@
+{
+  "id": "DUPINC-001",
+  "defect_class": "duplicate_inciting_incident",
+  "classification": "synthetic",
+  "description": "Two adjacent chapters independently stage the SAME underlying event (an emergency phone call moving the audition date up) for two different POV characters -- the confirmed root-cause defect shape. Matches Permanent Continuity Solution Section 22.3 golden-fixture item 'duplicate journey/arrival across a boundary' and Execution Plan CLEAN Section 3/4 (root cause #1: 'the confirmed, self-documented root cause of duplicate-scene defects (e.g., the same inciting incident independently re-staged in two adjacent chapters)') -- every parallel MAP worker sees only a sibling chapter's TITLE, never its actual generated prose or full summary.",
+  "mechanism": "orchestrator.context_builder.SharedContext.scope_for() -- the shipped MITIGATION (per-chapter isolation instructions), not a post-hoc duplicate-occurrence detector. Execution Plan CLEAN Section 9 coverage matrix, row 'Duplicate new occurrence': 'absent today' -- no live gate flags this defect class yet; this fixture documents the shape for future D-05/D-06 gate work and exercises the mitigation's actual isolation contract.",
+  "source_reference": "Permanent Continuity Solution Section 22.3 (golden-fixture item 3); Execution Plan CLEAN Section 3 line 49 and Section 4 root cause #1 and #10; Section 9 coverage matrix row 'Duplicate new occurrence'",
+  "input_chapters": [
+    {"title": "Panggilan Tengah Malam", "character": "Larasati", "summary": "Larasati menerima telepon darurat bahwa audisi final dipercepat dan dia harus berangkat malam itu juga."},
+    {"title": "Jalan yang Sama", "character": "Bimo", "summary": "Bimo menerima telepon darurat bahwa audisi final dipercepat dan dia harus berangkat malam itu juga."}
+  ],
+  "negative_control_chapters": [
+    {"title": "Panggilan Tengah Malam", "character": "Larasati", "summary": "Larasati menerima telepon darurat bahwa audisi final dipercepat dan dia harus berangkat malam itu juga."},
+    {"title": "Latihan Sendirian", "character": "Bimo", "summary": "Bimo berlatih sendirian di studio kosong, mengulang gerakan yang sama sampai kakinya kram."}
+  ],
+  "expected_gate": "NO_DETECTOR_TODAY",
+  "expected_scope_behavior": {
+    "scope_for_0_excludes_chapter_2_summary": true,
+    "scope_for_1_excludes_chapter_1_summary": true,
+    "scope_for_0_lists_chapter_2_title_as_not_owned": true,
+    "scope_for_1_lists_chapter_1_title_as_not_owned": true
+  },
+  "expected_event_identity": {
+    "input_chapters_share_same_event_signature": true,
+    "negative_control_chapters_have_different_event_signatures": true
+  }
+}

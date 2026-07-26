@@ -1,0 +1,25 @@
+{
+  "id": "ENTTITLE-001",
+  "defect_class": "entity_attribute_title_flip",
+  "classification": "synthetic",
+  "description": "A supporting character's professional title/rank contradicts itself across chapters with no in-story explanation (no promotion, no demotion). Matches the 'title' drift kind in narration_api.py's NARASI_ENTITY_ATTR_CHECK gate — the kind enum explicitly lists 'gender|title|age|relation'. This fixture covers the title/rank shape that was missing from the prior inventory.",
+  "mechanism": "narration_api.py entity-attribute continuity checker, kind='title' (LLM-based, semantic; flag NARASI_ENTITY_ATTR_CHECK, default OFF). This fixture exercises the extraction SCHEMA CONTRACT offline only -- no live model call is made anywhere in this corpus.",
+  "mechanism_id": "NARASI_ENTITY_ATTR_CHECK",
+  "source_reference": "narration_api.py:2280 (kind enum: gender|title|age|relation); narration_api.py:2270-2278 (title/rank drift description)",
+  "input_chapters": {
+    "4": "Sri Wulandari, the head of marketing, had personally signed off on every banner and every press release. Nobody questioned her authority.",
+    "8": "An assistant in marketing named Sri Wulandari knocked on the glass door, carrying a stack of proofs for approval."
+  },
+  "expected_drift": {
+    "name": "Sri Wulandari",
+    "kind": "title",
+    "chapter": 8,
+    "quote": "An assistant in marketing named Sri Wulandari knocked on the glass door, carrying a stack of proofs for approval.",
+    "expected": "head of marketing"
+  },
+  "expected_gate": "result[\"entity_attr_report\"][\"drifts\"] (NARASI_ENTITY_ATTR_CHECK, report-only, title kind)",
+  "negative_control_chapters": {
+    "4": "Sri Wulandari, the head of marketing, had personally signed off on every banner and every press release. Nobody questioned her authority.",
+    "8": "Sri Wulandari, still the head of marketing, knocked on the glass door, carrying a stack of proofs for approval."
+  }
+}

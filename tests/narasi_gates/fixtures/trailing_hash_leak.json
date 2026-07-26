@@ -1,0 +1,19 @@
+{
+  "id": "TRAILHASH-001",
+  "defect_class": "trailing_hash_leak",
+  "classification": "synthetic",
+  "description": "A stray trailing '#' character — a markdown heading marker or internal metadata token — leaks into the final line of generated chapter prose. Confirmed defect documented in orchestrator/static.py (2026-07-15): 'a stray trailing \"#\" left after the real closing line'. The existing _scrub_chapter_leaks function already handles this case alongside Scene-line leaks; this fixture proves the trailing-hash path specifically.",
+  "mechanism": "orchestrator.static._scrub_chapter_leaks — deterministic, offline, no model call. Same function tested by PLANLEAK-001; this fixture exercises the trailing-hash branch (line 440-441) separately.",
+  "mechanism_id": "_scrub_chapter_leaks",
+  "source_reference": "orchestrator/static.py:417-428 (_scrub_chapter_leaks trailing-hash case, confirmed 2026-07-15)",
+  "input_text": "Larasati closed her notebook. The audition results would be posted tomorrow morning. #",
+  "expected_verdict": {
+    "trailing_hash_removed": true,
+    "substantive_text_preserved": "Larasati closed her notebook. The audition results would be posted tomorrow morning."
+  },
+  "negative_control_text": "Larasati closed her notebook. The audition results would be posted tomorrow morning.",
+  "negative_control_expected": {
+    "trailing_hash_removed": false,
+    "text_unchanged": true
+  }
+}

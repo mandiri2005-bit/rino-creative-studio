@@ -1,0 +1,17 @@
+{
+  "id": "CHNMISMATCH-001",
+  "defect_class": "english_chapter_heading_mismatch",
+  "classification": "synthetic",
+  "description": "The frontend's chapter-matching regex expects an Indonesian 'Bab N' heading and fails to key an English 'Chapter N' manuscript, producing the confirmed reproducible 'Fix Bab Ini' failure (a per-chapter action button cannot resolve which chapter it targets).",
+  "mechanism": "Frontend regex /Bab\\s+(\\d+)/i in main.jsx:4119 (getBabKey, the chapter-title matcher). This is a FRONTEND (TypeScript) defect; this fixture tests the CONFIRMED REGEX PATTERN ITSELF as a language-agnostic string/regex property (the exact same pattern, re-expressed in Python with the equivalent case-insensitive flag), not by executing any frontend/JS code.",
+  "mechanism_id": "frontend_getBabKey_regex",
+  "source_reference": "Execution Plan CLEAN Section 3 line 57; main.jsx:4119 (getBabKey regex /Bab\\s+(\\d+)/i)",
+  "frontend_regex_source": "/Bab\\s+(\\d+)/i",
+  "positive_title": "Chapter 4: The Sound That Would Not Fade",
+  "negative_control_title": "Bab 4: Suara yang Tak Pernah Pudar",
+  "expected_verdict": {
+    "positive_title_matches": false,
+    "negative_control_title_matches": true,
+    "negative_control_captured_number": "4"
+  }
+}

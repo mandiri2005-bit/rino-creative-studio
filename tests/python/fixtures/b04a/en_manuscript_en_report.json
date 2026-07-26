@@ -1,0 +1,11 @@
+{
+  "fixture_id": "en_manuscript_en_report",
+  "classification": "synthetic",
+  "manuscript_language": "en",
+  "report_language": "en",
+  "manuscript_text": "## Chapter 1: The Beginning\n\nThis is the opening paragraph of the first chapter, written entirely in English for this synthetic fixture.\n\n## Chapter 2: An Unexpected Meeting\n\nThe second paragraph describes the protagonist meeting a local resident who guards an old secret.\n",
+  "review_sections": [
+    {"title": "Chapter 1: The Beginning", "lines": ["Recommendation: strengthen the sensory description of the opening village scene."]},
+    {"title": "Chapter 2: An Unexpected Meeting", "lines": ["Recommendation: add brief dialogue introducing the local resident."]}
+  ]
+}

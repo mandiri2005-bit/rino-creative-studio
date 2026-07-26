@@ -2,10 +2,10 @@
 # Standalone entrypoint (separate Railway service, same image):
 #     python narration_worker.py
 # Consumes the `narration` queue (official `bullmq` PyPI package — queue format is
-# fully compatible with the Node BullMQ used by video/recipe) and runs the SAME
-# `_run_narration_job` the in-process path uses, so status/persist/settle/refund
-# behavior is identical. The API enqueues instead of ensure_future when
-# NARRATION_BULLMQ_ENABLED=1 (default OFF — in-process path unchanged).
+# fully compatible with the Node BullMQ used by video/recipe) and runs the same
+# narration-job entrypoint the in-process path uses (see _process below), so
+# status/persist/settle/refund behavior is identical. The API enqueues instead of
+# ensure_future when NARRATION_BULLMQ_ENABLED=1 (default OFF — in-process path unchanged).
 #
 # Durability contract:
 #   * idempotent: a retried/stalled job whose jobs-row is already terminal is ACKed
@@ -35,10 +35,10 @@ _TERMINAL = {"done", "failed", "cancelled", "error"}
 async def _process(job, token=None):  # noqa: ANN001 - bullmq job
     """One narration job. Payload = what narration_start would have run in-process."""
     import database as db
-    from narration_api import _run_narration_job  # laozhang_api already imported via main()
 
     data = dict(job.data or {})
     job_id = str(data.get("job_id") or "")
+    job_uuid = data.get("job_uuid")
     tenant_id = data.get("tenant_id")
     log.info("job %s picked up (bull id %s, attempt %s)", job_id, job.id, getattr(job, "attemptsMade", "?"))
 
@@ -55,14 +55,76 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
     except Exception as e:  # noqa: BLE001
         log.warning("tenant ctx seed failed (db calls fall back to explicit tenant=): %s", e)
 
-    # Idempotency: a stalled-retry of an already-finished job must not re-run/settle.
+    # Idempotency: a stalled-retry of an already-finished job must not re-run/settle. Uses the
+    # internal jobs.id UUID when the queue payload carries one (Contract C: UUID is durable
+    # authority) -- get_job_by_external only remains a fallback for an older enqueued item
+    # that predates job_uuid being threaded onto the payload.
     try:
-        row = await db.get_job_by_external(tenant_id, job_id)
+        if job_uuid:
+            row = await db.get_job(tenant_id, job_uuid)
+        else:
+            row = await db.get_job_by_external(tenant_id, job_id)
         if row and str(row.get("status") or "") in _TERMINAL:
             log.info("job %s already terminal (%s) — ack without work", job_id, row.get("status"))
             return {"skipped": "terminal"}
     except Exception as e:  # noqa: BLE001
         log.warning("terminal-check failed (continuing): %s", e)
+        row = None
+
+    # B-07/B-08: compare the BullMQ QUEUE payload against the durable job's own lifecycle
+    # snapshot before any work -- a stalled retry, a reused pre_job_id, or a cross-job body
+    # mismatch is terminal and bounded, never a guessed-language or ordinal-resume
+    # continuation. A missing durable row for a queue item that DECLARES a narasi_lifecycle,
+    # or a durable row that doesn't itself carry one, is a fatal persistence failure -- never
+    # silently swallowed and continued. A legacy job with no lifecycle anywhere skips this
+    # check entirely and runs exactly as before.
+    # B-07/B-08 (Rework 2, Contract B): UUID-scoped finalization whenever job_uuid is known --
+    # two rows can share the same external_job_id, and finishing by external id risks
+    # updating the wrong (e.g. newest) row.
+    async def _finish_terminal(status, *, error):
+        if job_uuid:
+            await db.finish_narasi_job_by_id(tenant_id, job_uuid, status, error=error)
+        else:
+            await db.finish_narasi_job(tenant_id, job_id, status, error=error)
+
+    _queue_declared_lifecycle = data.get("narasi_lifecycle")
+    _durable_lifecycle = ((row or {}).get("input_payload") or {}).get("narasi_lifecycle")
+    if _queue_declared_lifecycle or _durable_lifecycle:
+        from continuity.lifecycle import (
+            LifecycleValidationError, validate_job_lifecycle_request,
+            validate_durable_job_snapshot, _exact_equal,
+        )
+        if not row or not _durable_lifecycle:
+            log.error("job %s: LIFECYCLE_PERSISTENCE_FAILED -- queue declared a v1 lifecycle "
+                      "but the durable job row carries none", job_id)
+            await _finish_terminal("error", error="LIFECYCLE_PERSISTENCE_FAILED")
+            return {"skipped": "lifecycle_persistence_failed"}
+        if _queue_declared_lifecycle:
+            # B-07/B-08 Rework 4 (Contract H): a copied lifecycle_hash alone is insufficient --
+            # a job snapshot's lifecycle_hash is inherited verbatim from its OUTLINE (never
+            # recomputed over the job object's own target_language/chapters), so a queue
+            # snapshot can drift on a field OTHER than lifecycle_hash while the hash still
+            # "matches". Both snapshots are fully validated, then recursively exact-compared
+            # in full -- not just the hash field -- before any provider work.
+            try:
+                _validated_queue_snapshot = validate_durable_job_snapshot(_queue_declared_lifecycle)
+                _validated_durable_snapshot = validate_durable_job_snapshot(_durable_lifecycle)
+            except LifecycleValidationError as _queue_snap_lve:
+                log.error("job %s LIFECYCLE_QUEUE_MISMATCH: malformed queue/durable snapshot: %s",
+                         job_id, _queue_snap_lve.code)
+                await _finish_terminal("error", error=f"LIFECYCLE_QUEUE_MISMATCH: {_queue_snap_lve.code}")
+                return {"skipped": "lifecycle_mismatch"}
+            if not _exact_equal(_validated_queue_snapshot, _validated_durable_snapshot):
+                log.error("job %s LIFECYCLE_QUEUE_MISMATCH: queue snapshot does not exactly "
+                         "match the durable row", job_id)
+                await _finish_terminal("error", error="LIFECYCLE_QUEUE_MISMATCH: QUEUE_DURABLE_SNAPSHOT_MISMATCH")
+                return {"skipped": "lifecycle_mismatch"}
+        try:
+            validate_job_lifecycle_request(_durable_lifecycle, data.get("body") or {})
+        except LifecycleValidationError as _lve:
+            log.error("job %s LIFECYCLE_QUEUE_MISMATCH: %s", job_id, _lve.code)
+            await _finish_terminal("error", error=f"LIFECYCLE_QUEUE_MISMATCH: {_lve.code}")
+            return {"skipped": "lifecycle_mismatch"}
 
     # ROUND-9 EXEC LOCK (roll-12 postmortem): the terminal-check above cannot stop a
     # stalled-REDELIVERY of a job whose first run is STILL ALIVE — job 50ritcxi ran
@@ -72,8 +134,13 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
     # stops ⟹ TTL expires ⟹ the stalled retry proceeds (crash recovery unchanged).
     # attempt>0 (real bull retry after a FAILURE) steals the lock. Fail-open on redis
     # errors — never blocks a legit run.
+    # B-07/B-08 Rework 4 (Contract A/H): the exec lock is UUID-scoped -- job_id-only
+    # scoping would let two rows sharing one external id share (and falsely dedupe
+    # against) the same lock. Falls back to job_id only for a legacy pre-v1 queue
+    # item that never had a job_uuid threaded onto its payload.
+    job_uuid = job_uuid or job_id
     _hb_task = None
-    _lock_key = f"narasi:exec:{job_id}"
+    _lock_key = f"narasi:exec:{job_uuid}"
     try:
         import redis_client as _rc
         _r = _rc.client()
@@ -98,6 +165,7 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
         log.warning("exec-lock unavailable (continuing unguarded): %s", e)
 
     try:
+        from narration_api import _run_narration_job  # laozhang_api already imported via main()
         await _run_narration_job(
             body=data.get("body") or {}, job_id=job_id, job_uuid=data.get("job_uuid"),
             tenant_id=tenant_id, user_id=data.get("user_id"),

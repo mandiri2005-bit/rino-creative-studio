@@ -1,0 +1,11 @@
+{
+  "fixture_id": "id_manuscript_id_report",
+  "classification": "synthetic",
+  "manuscript_language": "id",
+  "report_language": "id",
+  "manuscript_text": "## Bab 1: Awal Perjalanan\n\nIni adalah paragraf pembuka bab pertama dalam bahasa Indonesia. Cerita dimulai di sebuah desa kecil di kaki gunung.\n\n## Bab 2: Pertemuan Tak Terduga\n\nParagraf kedua menceritakan pertemuan tokoh utama dengan seorang penduduk asli yang menyimpan rahasia lama.\n",
+  "review_sections": [
+    {"title": "Bab 1: Awal Perjalanan", "lines": ["Rekomendasi: perkuat deskripsi suasana desa di paragraf pembuka."]},
+    {"title": "Bab 2: Pertemuan Tak Terduga", "lines": ["Rekomendasi: tambahkan dialog singkat untuk memperkenalkan penduduk asli."]}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "NAMEDUP-001",
+  "defect_class": "duplicate_full_name_collision",
+  "classification": "synthetic",
+  "description": "The identical full name is used for two unrelated characters introduced in different chapters. Matches the confirmed defect shape in narration_api.py's _name_uniqueness_scan comment (2026-07-15: a production manuscript used the identical full name for two unrelated characters — a committee chair and an unrelated widow — introduced in different chapters).",
+  "mechanism": "narration_api._name_uniqueness_scan -- deterministic, offline, no model call.",
+  "mechanism_id": "_name_uniqueness_scan",
+  "source_reference": "narration_api.py _name_uniqueness_scan code comment, 2026-07-15 confirmed-miss note",
+  "input_text": "In chapter two, the judges introduced a stern woman named Sri Wulandari, the head coordinator who had run the audition circuit for a decade. Three chapters later, the story turned to a quiet street vendor named Sri Wulandari, a widow who sold rice porridge outside the theater every morning.",
+  "expected_verdict": {
+    "collision_count_at_least": 1,
+    "collision_name": "Sri Wulandari"
+  },
+  "negative_control_text": "In chapter two, the judges introduced a stern woman named Sri Wulandari, the head coordinator who had run the audition circuit for a decade. Three chapters later, the story returned to Sri Wulandari, still the same head coordinator, now announcing the final results."
+}

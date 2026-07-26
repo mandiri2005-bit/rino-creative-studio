@@ -1,0 +1,16 @@
+{
+  "id": "HEADFUSE-001",
+  "defect_class": "chapter_heading_fusion",
+  "classification": "synthetic",
+  "description": "A chapter heading is fused onto the same line as the preceding sentence's tail, with no line break -- the confirmed structural-heading-corruption defect shape. Matches Permanent Continuity Solution Section 3.3: 'Chapter 4 begins with the heading and body fused onto one line' (\"Chapter 4: The Melody Behind the Lab was never truly silent...\"). A later fix to chapter_heading_repair (commit 5637e72) addressed this class of corruption.",
+  "mechanism": "narasi_gate.chapter_heading_repair(text, lang) -- deterministic, offline, no model call.",
+  "source_reference": "Permanent Continuity Solution Section 3.3 (Structural heading corruption); narasi_gate.py chapter_heading_repair, confirmed fix commit 5637e72",
+  "input_text": "She closed the studio door behind her, breath fogging in the cold air.## Chapter 4: The Sound That Would Not Fade\n\nThe hallway was never truly silent, even after midnight.",
+  "expected_verdict": {
+    "n_repairs": 1
+  },
+  "negative_control_text": "She closed the studio door behind her, breath fogging in the cold air.\n\n## Chapter 4: The Sound That Would Not Fade\n\nThe hallway was never truly silent, even after midnight.",
+  "negative_control_expected": {
+    "n_repairs": 0
+  }
+}

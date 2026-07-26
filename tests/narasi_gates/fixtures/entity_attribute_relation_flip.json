@@ -1,0 +1,25 @@
+{
+  "id": "ENTREL-001",
+  "defect_class": "entity_attribute_relation_flip",
+  "classification": "synthetic",
+  "description": "An unnamed relative's relation descriptor (a supporting character's child) contradicts itself across chapters -- 'daughter' in one chapter, 'son' in another, same referent, no in-story explanation (no adoption/remarriage). Matches the confirmed defect shape in narration_api.py's NARASI_ENTITY_ATTR_CHECK comment (2026-07-15: a supporting character's child referenced with contradictory relation descriptors across chapters — fourth drift kind).",
+  "mechanism": "narration_api.py entity-attribute continuity checker, kind='relation' (LLM-based, semantic; flag NARASI_ENTITY_ATTR_CHECK, default OFF). This fixture exercises the extraction SCHEMA CONTRACT offline only -- no live model call is made anywhere in this corpus.",
+  "mechanism_id": "NARASI_ENTITY_ATTR_CHECK",
+  "source_reference": "narration_api.py NARASI_ENTITY_ATTR_CHECK code comment, 2026-07-15 confirmed-miss note (relation kind)",
+  "input_chapters": {
+    "3": "Bimo talked about his daughter every chance he got, how she'd started drawing horses on every scrap of paper in the house.",
+    "6": "Bimo's son was waiting outside the studio, kicking at gravel, bored out of his mind."
+  },
+  "expected_drift": {
+    "name": "Bimo's child",
+    "kind": "relation",
+    "chapter": 6,
+    "quote": "Bimo's son was waiting outside the studio, kicking at gravel, bored out of his mind.",
+    "expected": "daughter"
+  },
+  "expected_gate": "result[\"entity_attr_report\"][\"drifts\"] (NARASI_ENTITY_ATTR_CHECK, report-only, relation kind)",
+  "negative_control_chapters": {
+    "3": "Bimo talked about his daughter every chance he got, how she'd started drawing horses on every scrap of paper in the house.",
+    "6": "Bimo's daughter was waiting outside the studio, kicking at gravel, bored out of her mind."
+  }
+}

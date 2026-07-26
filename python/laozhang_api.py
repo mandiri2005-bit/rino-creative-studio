@@ -22,6 +22,8 @@ from pydantic import BaseModel, validator
 import uvicorn
 import requests as _requests
 import re as _re
+# B-04a Rework 1: narasi_review_contract is imported lazily, only inside the
+# `if _b04a_on:` blocks below -- flag-off must be import-free (Codex P2 finding #5).
 
 # ---------------------------------------------------------------------------
 # Logging — must be configured before any library import touches the root
@@ -7664,6 +7666,14 @@ def _dalang_dedup_enabled() -> bool:
     # prior chapters (+ fail-open Qdrant semantic index); a near-duplicate gets ONE rewrite.
     return _dalang_v2_enabled() and _flag_on("DALANG_EMBED_DEDUP_ENABLED", "0")
 
+def _narasi_review_language_chapter_key_v1_enabled() -> bool:
+    # B-04a master switch: separates report_language (Review/One-Shot checklist prose,
+    # report labels) from manuscript_language (unchanged B-07 authority), and appends the
+    # narasi_review_contract locale block/instruction. OFF (default) ⟹ narasi_review_contract
+    # is never imported-from-use, report_language is ignored like any other unknown legacy
+    # body key, and persona/ONESHOT_FIX_INSTRUCTION bytes/calls/response shape are unchanged.
+    return _flag_on("NARASI_REVIEW_LANGUAGE_CHAPTER_KEY_V1", "0")
+
 # Fan-out / DoS ceilings (§7 H6/H7). Generous — legit narasi jobs run 3–20 chapters of
 # ~400–4500 words. Tunable via env; only enforced when DALANG_ADMISSION_ENABLED is ON.
 DALANG_MAX_CHAPTERS          = int(os.getenv("DALANG_MAX_CHAPTERS", "20"))
@@ -11717,6 +11727,18 @@ async def _narasi_outline_impl(body: dict):
     ) if video_mode_outline else ""
 
     if action == "brief":
+        # B-07/B-08: a caller supplying outline_lifecycle gets its Brief bound to that EXACT
+        # outline/language via bind_lifecycle_artifact -- validated FIRST (a forged/stale/
+        # resealed envelope rejects before any model call is billed). A caller supplying
+        # nothing stays byte-identical legacy (no binding key at all).
+        _brief_outline_lifecycle = body.get("outline_lifecycle")
+        _brief_validated_lifecycle = None
+        if _brief_outline_lifecycle is not None:
+            from continuity.lifecycle import validate_outline_lifecycle, LifecycleValidationError
+            try:
+                _brief_validated_lifecycle = validate_outline_lifecycle(_brief_outline_lifecycle)
+            except LifecycleValidationError as _brief_lve:
+                return {"ok": False, "error": f"LIFECYCLE_INVALID: {_brief_lve.code}"}
         vo_brief_note = (
             "\n- For VO mode: describe the breath architecture — where the narrator should accelerate "
             "vs. slow down, and which chapter's emotional peak should carry the longest silence."
@@ -11745,7 +11767,14 @@ async def _narasi_outline_impl(body: dict):
             _lg.getLogger("narasi").warning("[narasi] brief LLM timed out (model=%s)", model)
             return {"ok": False, "error": "brief generation timed out — coba lagi"}
         await _log_narasi_usage(_ou_tenant, _ou_user, _um, resp, charge=True)
-        return {"ok": True, "brief": (_resp_content(resp) or "").strip()}
+        _brief_text = (_resp_content(resp) or "").strip()
+        if _brief_validated_lifecycle is not None:
+            import hashlib as _brief_hashlib
+            from continuity.lifecycle import bind_lifecycle_artifact
+            _brief_hash = _brief_hashlib.sha256(_brief_text.encode("utf-8")).hexdigest()
+            _brief_binding = bind_lifecycle_artifact(_brief_validated_lifecycle, "brief", _brief_hash)
+            return {"ok": True, "brief": _brief_text, "binding": _brief_binding}
+        return {"ok": True, "brief": _brief_text}
 
     if revise_instruction and current_outline:
         user = (
@@ -11969,21 +11998,45 @@ async def _narasi_outline_impl(body: dict):
             _ot.append(f"*Target: {c.get('words',0)} kata*\n")
         result["outline_text"] = "\n".join(_ot)
 
-    # ── Moat capture: store the outline as a creative-chain artifact ──
-    # (topic → outline draft). Best-effort, never blocks the response.
+    # B-07/B-08: fresh v1 outline admission is the ONE place the current NARASI_LIFECYCLE_V1
+    # flag actually gates NEW work (contract A) -- mints outline_id/chapter_id/lifecycle_hash
+    # via admit_outline_lifecycle and REPLACES result["chapters"] with the enriched set so
+    # every chapter the client (and later generation) sees already carries its stable
+    # chapter_id. A validation failure here is fatal to the outline response -- never a
+    # silent legacy outline with no lifecycle.
+    if str(os.environ.get("NARASI_LIFECYCLE_V1", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        from continuity.lifecycle import admit_outline_lifecycle, LifecycleValidationError
+        try:
+            _outline_lifecycle_obj = admit_outline_lifecycle(
+                str(uuid.uuid4()), language, result.get("chapters") or [])
+        except LifecycleValidationError as _admit_lve:
+            return {"ok": False, "error": f"LIFECYCLE_INVALID: {_admit_lve.code}"}
+        result["chapters"] = _outline_lifecycle_obj["chapters"]
+        result["outline_lifecycle"] = _outline_lifecycle_obj
+    else:
+        _outline_lifecycle_obj = None
+
+    # ── Persist the outline (moat capture + the v1 round-trip envelope) ──
+    # Legacy (no lifecycle): best-effort, never blocks the response. B-07/B-08 (Rework 2,
+    # Contract C): a v1-admitted outline's persistence failure is FATAL -- returning success
+    # with a lifecycle that was never durably saved would let every later round-trip read
+    # silently believe this outline doesn't exist.
+    _octx = _tenant_ctx.get()
+    _outline_user = (await _resolve_user_uuid(_octx.tenant_id, _octx.user_id)) if _octx.user_id else None
     try:
-        _octx = _tenant_ctx.get()
-        _outline_user = (await _resolve_user_uuid(_octx.tenant_id, _octx.user_id)) if _octx.user_id else None
         await db.save_outline(
             _octx.tenant_id or None,
             _outline_user,
             topic, style, language, chap_count,
             result.get("outline_text", ""),
             result.get("chapters", []),
-            model)
+            model,
+            lifecycle=_outline_lifecycle_obj)
         await _log_narasi_usage(_octx.tenant_id, _outline_user, model, resp)
     except Exception as _e:
-        import logging as _lg; _lg.getLogger("narasi").warning("save_outline/usage failed (non-fatal): %s", _e)
+        if _outline_lifecycle_obj is not None:
+            raise HTTPException(502, f"LIFECYCLE_PERSISTENCE_FAILED: could not persist outline: {_e}")
+        import logging as _lg; _lg.getLogger("narasi").warning("save_outline/usage issue, continuing: %s", _e)
 
     # Report-only telemetry (spec §8): record which beat-map + twist shaped this outline.
     if _beatmap_meta:
@@ -12041,12 +12094,97 @@ async def narasi_generate(body: dict,
         model    = (body.get("model") or os.environ.get("WORKER_MODEL") or "gemini-2.5-flash").strip()
         job_id = (body.get("pre_job_id") or str(uuid.uuid4())[:8])[:16]
 
+        # B-07/B-08: v1 admission + durable job snapshot happen BEFORE any credit hold
+        # (rework contract B) -- a caller supplying outline_lifecycle gets it validated and
+        # built into a job snapshot NOW (build_job_lifecycle itself enforces that `chapters`
+        # is the exact admitted chapter set, in the exact admitted order); a supplied Brief
+        # without a matching binding is rejected for v1. A conflicting explicit body language
+        # rejects; the admitted lifecycle's own canonical language becomes authority for the
+        # background generation task either way. Flag on + no lifecycle supplied is
+        # LIFECYCLE_REQUIRED, never a silent legacy admission.
+        _generate_job_lifecycle = None
+        _generate_outline_lifecycle = body.get("outline_lifecycle")
+        if _generate_outline_lifecycle is not None:
+            from continuity.lifecycle import (
+                validate_outline_lifecycle, build_job_lifecycle, validate_lifecycle_artifact,
+                canonicalize_target_language, LifecycleValidationError,
+            )
+            try:
+                _generate_validated_outline = validate_outline_lifecycle(_generate_outline_lifecycle)
+                _generate_brief_binding = body.get("brief_binding")
+                if body.get("brief"):
+                    if not _generate_brief_binding:
+                        raise LifecycleValidationError(
+                            "ARTIFACT_BINDING_INVALID", "a supplied brief requires a bound binding for v1 generation")
+                    import hashlib as _gen_hashlib
+                    _gen_brief_hash = _gen_hashlib.sha256((body.get("brief") or "").encode("utf-8")).hexdigest()
+                    validate_lifecycle_artifact(_generate_validated_outline, _generate_brief_binding, "brief", _gen_brief_hash)
+                _generate_body_language = body.get("language")
+                if _generate_body_language:
+                    try:
+                        _generate_canon_body_lang = canonicalize_target_language(_generate_body_language)
+                    except LifecycleValidationError:
+                        _generate_canon_body_lang = None
+                    if (_generate_canon_body_lang
+                            and _generate_canon_body_lang != _generate_validated_outline["target_language"]):
+                        raise HTTPException(409, "TARGET_LANGUAGE_MISMATCH: body.language conflicts with the admitted lifecycle")
+                body["language"] = _generate_validated_outline["target_language"]
+                # B-07/B-08 (Rework 2, Contract A): the validated Brief binding is written
+                # into the durable job snapshot's bindings map, never validated-then-discarded.
+                _generate_bindings = {"brief": _generate_brief_binding} if _generate_brief_binding else None
+                _generate_job_lifecycle = build_job_lifecycle(_generate_validated_outline, chapters, _generate_bindings)
+            except LifecycleValidationError as _generate_lve:
+                raise HTTPException(422, {"error": "LIFECYCLE_INVALID", "code": _generate_lve.code, "message": str(_generate_lve)})
+        elif str(os.environ.get("NARASI_LIFECYCLE_V1", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            raise HTTPException(422, {"error": "LIFECYCLE_REQUIRED", "message": "outline_lifecycle is required"})
+
         # ── Step 4 metering: HOLD an estimate for the whole job up front ────────
         # Raises HTTP 402 before any chapter is generated if the balance is short;
         # the background task settles the ACTUAL total (refunding the unused hold)
         # or refunds entirely on cancel/zero-output. op_id keyed to the job id.
+        #
+        # B-07/B-08 Rework 3 (Contract B): the op_id is allocated as a bare string here
+        # WITHOUT charging anything -- the durable row is inserted FIRST (below), and only
+        # once that succeeds do we place the actual hold. This way a DB insert failure
+        # never leaves an orphaned hold behind (nothing was ever held), and a hold failure
+        # after a successful insert terminalizes that row instead of leaving a "processing"
+        # row live with no hold securing it.
         _meter_op = None
         if chapters and not _byok_active():   # BYOK pays upstream directly → no hold
+            # Unique per generation RUN (not per external job_id): a client retry that
+            # reuses the same pre_job_id must get its own hold + its own durable charge,
+            # never collide with the prior run's op_id (which would skip the durable
+            # charge while still debiting the live cache).
+            _meter_op = f"narasi:{job_id}:{uuid.uuid4().hex[:8]}"
+
+        # Create the jobs-table row up front so polling can see it immediately.
+        _job_uuid = None
+        try:
+            # Slice 2 (H4): stamp the billing op_id on the row (input_payload._meter) when
+            # crash-safe billing is on, so an orphan sweep can settle the hold after a crash.
+            _job_uuid = await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters),
+                                                   op_id=(_meter_op if _dalang_crashsafe_enabled() else None),
+                                                   lifecycle=_generate_job_lifecycle)
+            if _job_uuid:
+                # clobber-fix: pin THIS run's exact jobs.id so the impl writes its checkpoint to
+                # its OWN row — not get_job_by_external's newest, which a same-pre_job_id concurrent
+                # run would share + clobber. Threaded via the body dict already passed to the task.
+                body["_job_uuid"] = _job_uuid
+                if _generate_job_lifecycle is not None:
+                    # B-07/B-08 Rework 3 (Contract D): the admitted snapshot's own canonical
+                    # chapter_id per index -- the impl uses this to write identity-bearing
+                    # progress instead of inferring identity from loop position.
+                    body["_job_lifecycle"] = _generate_job_lifecycle
+        except Exception as _e:
+            # B-07/B-08 Rework 3 (Contract B): insert failed BEFORE any hold was placed --
+            # nothing to refund. A declared-v1 job fails closed rather than continuing with
+            # no durable authority; a legacy (no lifecycle) request keeps best-effort continuing.
+            if _generate_job_lifecycle is not None:
+                raise HTTPException(502, {"error": "LIFECYCLE_PERSISTENCE_FAILED",
+                                          "message": f"could not create durable job row: {_e}"})
+            import logging as _lg; _lg.getLogger("narasi").warning("create_narasi_job issue, continuing: %s", _e)
+
+        if _meter_op:
             # F4: add a MODEST headroom to the hold when v2 is ON, so the settled actual (continuation
             # + critic side-calls) usually stays WITHIN the reservation WITHOUT inflating the hold 3-4×
             # (which dips the live balance hard during a run + strands a big hold on a mid-run crash).
@@ -12057,29 +12195,26 @@ async def narasi_generate(body: dict,
                 "tokens_in":  int(1500 * len(chapters) * _hf),
                 "tokens_out": int(sum(int(c.get("words") or 400) for c in chapters) * 2 * _hf),
             }
-            # Unique per generation RUN (not per external job_id): a client retry that
-            # reuses the same pre_job_id must get its own hold + its own durable charge,
-            # never collide with the prior run's op_id (which would skip the durable
-            # charge while still debiting the live cache).
-            _meter_op = f"narasi:{job_id}:{uuid.uuid4().hex[:8]}"
-            await metering.begin_charge(
-                tenant_id=_tenant, user_id=_user, operation="narasi",
-                model=model, estimate_units=_est_units, op_id=_meter_op)
-
-        # Create the jobs-table row up front so polling can see it immediately.
-        try:
-            # Slice 2 (H4): stamp the billing op_id on the row (input_payload._meter) when
-            # crash-safe billing is on, so an orphan sweep can settle the hold after a crash.
-            _job_uuid = await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters),
-                                                   op_id=(_meter_op if _dalang_crashsafe_enabled() else None))
-            if _job_uuid:
-                # clobber-fix: pin THIS run's exact jobs.id so the impl writes its checkpoint to
-                # its OWN row — not get_job_by_external's newest, which a same-pre_job_id concurrent
-                # run would share + clobber. Threaded via the body dict already passed to the task.
-                body["_job_uuid"] = _job_uuid
-        except Exception as _e:
-            import logging as _lg; _lg.getLogger("narasi").warning("create_narasi_job failed (non-fatal): %s", _e)
-        await rc.set_progress(job_id, "Starting narration…")
+            try:
+                await metering.begin_charge(
+                    tenant_id=_tenant, user_id=_user, operation="narasi",
+                    model=model, estimate_units=_est_units, op_id=_meter_op)
+            except Exception:
+                # B-07/B-08 Rework 4 (Contract C): the durable row already exists but the
+                # hold failed -- EVERY exception (not just HTTPException for insufficient
+                # balance; an ordinary runtime/network/timeout error from begin_charge too)
+                # terminalizes the row before any progress/spawn, so a hold failure of ANY
+                # kind never leaves a "processing" row with unpaid work about to start
+                # behind it. Re-raises the original exception unchanged either way.
+                if _job_uuid:
+                    try:
+                        await db.finish_narasi_job_by_id(_tenant, _job_uuid, "error", error="HOLD_FAILED")
+                    except Exception:
+                        pass
+                raise
+        # B-07/B-08 Rework 3 (Contract C): seed under the UUID-first key so it lines up
+        # with every live write _narasi_generate_impl makes for this same run.
+        await rc.set_progress(_job_uuid or job_id, "Starting narration…")
 
         # Spawn the actual generation on the main loop; return the id immediately.
         asyncio.create_task(_narasi_generate_impl_guarded(body, job_id, _tenant, _user, _meter_op, _reserved))
@@ -12089,7 +12224,7 @@ async def narasi_generate(body: dict,
         # create_task), release it here — the guarded task's finally only covers the spawned path.
         if _reserved and not _spawned:
             _narasi_inflight -= 1
-    return {"ok": True, "job_id": job_id, "status": "started"}
+    return {"ok": True, "job_id": job_id, "job_uuid": _job_uuid, "status": "started"}
 
 
 _PERSIST_LOG = _logging.getLogger("persist_asset")   # module-level (laozhang_api has no module `_log`)
@@ -12165,6 +12300,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     tmp_dir.mkdir(parents=True, exist_ok=True)
     client = make_narasi_client(model, phase="worker")
     errors = []
+    _narasi_identity_write_fatal = False   # B-07/B-08 Rework 4 (Contract B): v1 chapter write failed
     _meter_actual = 0   # Step 4: credits actually consumed (to settle the hold)
 
     # Cross-container cancel lives in Redis (cancel:narasi_{job_id}).
@@ -12186,6 +12322,53 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             _narasi_job_uuid = _jrow.get("id") if _jrow else None
     except Exception:
         _narasi_job_uuid = None
+    # B-07/B-08 Rework 3 (Contract C): every live Redis touchpoint below (cancel flag,
+    # progress text) uses this SAME UUID-first key -- the same key narasi_generate's seed,
+    # narasi_status, and narasi_cancel all resolve to once the durable row exists -- so a
+    # write here is never invisible to a poller/canceller reading a different key.
+    _redis_job_key = _narasi_job_uuid or job_id
+    # B-07/B-08 Rework 4 (Contract H): body["_job_lifecycle"] is a private in-process field the
+    # route stashed before spawning this task -- NOT durable authority on its own. Whenever this
+    # run IS v1 (a lifecycle was stashed), the background execution re-reads its OWN row by UUID
+    # and validates the caller's declared request (target_language/chapters) against THAT fresh
+    # durable snapshot before any provider work; a missing re-read, a durable row that carries no
+    # lifecycle, or a body/durable mismatch is fatal -- it never silently falls back to trusting
+    # the stashed private field. Zero provider/chapter work has happened yet, so the hold (if
+    # any) is refunded in full rather than settled.
+    _narasi_durable_lifecycle = None
+    if _narasi_job_uuid and body.get("_job_lifecycle") is not None:
+        from continuity.lifecycle import validate_job_lifecycle_request, LifecycleValidationError
+        _narasi_revalidate_error = None
+        try:
+            _narasi_fresh_row = await db.get_job(_narasi_tenant, _narasi_job_uuid)
+            _narasi_durable_lifecycle = ((_narasi_fresh_row or {}).get("input_payload") or {}).get("narasi_lifecycle")
+            if not _narasi_durable_lifecycle:
+                _narasi_revalidate_error = "LIFECYCLE_PERSISTENCE_FAILED: durable row carries no narasi_lifecycle"
+            else:
+                validate_job_lifecycle_request(_narasi_durable_lifecycle, body)
+        except LifecycleValidationError as _narasi_revalidate_lve:
+            _narasi_revalidate_error = f"LIFECYCLE_QUEUE_MISMATCH: {_narasi_revalidate_lve.code}"
+        except Exception as _narasi_revalidate_exc:
+            _narasi_revalidate_error = f"LIFECYCLE_PERSISTENCE_FAILED: {_narasi_revalidate_exc}"
+        if _narasi_revalidate_error:
+            if _meter_op:
+                try:
+                    await credits_lib.refund(_narasi_tenant, _meter_op)
+                except Exception as _e:
+                    import logging as _lg; _lg.getLogger("narasi").warning(
+                        "narasi metering refund failed (non-fatal): %s", _e)
+            try:
+                await db.finish_narasi_job_by_id(_narasi_tenant, _narasi_job_uuid, "error",
+                                                 error=_narasi_revalidate_error)
+            except Exception as _e:
+                import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)
+            await rc.delete_progress(_redis_job_key)
+            return
+    # B-07/B-08 Rework 3 (Contract D): the admitted snapshot's own canonical chapter_id per
+    # index, threaded from narasi_generate -- used to write identity-bearing progress instead
+    # of inferring identity from loop position. Empty for a legacy (no lifecycle) job.
+    _narasi_admitted_chapters = (_narasi_durable_lifecycle or body.get("_job_lifecycle") or {}).get("chapters") or []
+    _narasi_delivered_chapter_ids = []
     # ── Slice 3 (Series State): series.id == the narasi jobs.id; create the row (kind='book')
     # so the fact ledger / rolling summary — and later Persona/Showrunner — can attach. ──
     _narasi_series_id = _narasi_job_uuid
@@ -12201,7 +12384,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             pass
     for i, chapter in enumerate(chapters):
         # Check cancel before each chapter (local auto-cancel OR Redis flag)
-        if cancel_ev.is_set() or await rc.is_cancelled(f"narasi_{job_id}"):
+        if cancel_ev.is_set() or await rc.is_cancelled(f"narasi_{_redis_job_key}"):
             errors.append({"id": "cancelled", "error": "Job cancelled by user"})
             break
 
@@ -12336,9 +12519,16 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             _cr_first = (await _log_narasi_usage(_narasi_tenant, _narasi_user, _used_m, resp, job_id=_narasi_job_uuid) or 0)
             # Task 4 + Tingkat 4: live progress. current = chapters done so far (i+1).
             _msg = f"Menulis bab {i+1}/{len(chapters)}: {chap_title}"[:200]
-            await rc.set_progress(job_id, _msg)
+            await rc.set_progress(_redis_job_key, _msg)
             try:
-                await db.update_narasi_progress(_narasi_tenant, job_id, i+1, len(chapters), _msg)
+                # B-07/B-08 (Rework 2, Contract B): the UUID-scoped counterpart is authority once
+                # _narasi_job_uuid is known -- two rows can share the same external_job_id (a
+                # client-reused pre_job_id), and updating by external id risks updating the wrong
+                # (e.g. newest) row's progress instead of THIS run's own.
+                if _narasi_job_uuid:
+                    await db.update_narasi_progress_by_id(_narasi_tenant, _narasi_job_uuid, i+1, len(chapters), _msg)
+                else:
+                    await db.update_narasi_progress(_narasi_tenant, job_id, i+1, len(chapters), _msg)
             except Exception as _e:
                 import logging as _lg; _lg.getLogger("narasi").warning("update_narasi_progress failed (non-fatal): %s", _e)
             # Retry once if response is empty or too short
@@ -12368,11 +12558,11 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # Fires under full v2 OR the standalone anti-truncation flag (r21) — the latter
             # opts into just this safety net without the rest of v2's bundle. ──
             if _dalang_v2_enabled() or _dalang_antitrunc_enabled():
-                await rc.set_progress(job_id, f"Memeriksa bab {i+1}/{len(chapters)}…"[:200])
+                await rc.set_progress(_redis_job_key, f"Memeriksa bab {i+1}/{len(chapters)}…"[:200])
                 _verdict = _narasi_word_verdict(text, word_min, word_max, finish)
                 if _verdict["undershoot"] or _verdict["truncated"]:
                     async def _cont_prog(_v=_verdict, _i=i):
-                        await rc.set_progress(job_id,
+                        await rc.set_progress(_redis_job_key,
                             f"Memperpanjang bab {_i+1}/{len(chapters)} ({_v['words']}/{word_min} kata)…"[:200])
                     text, _extra_cr, _verdict = await _narasi_continuation(
                         client, model, resolved_model, safe_max, _msgs, text, _verdict,
@@ -12403,7 +12593,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                                 _rep = _sem
                     if _rep.get("duplicate"):
                         _of = _rep.get("of_index", -1)
-                        await rc.set_progress(job_id, f"Menulis ulang bab {i+1} (mirip bab lain)…"[:200])
+                        await rc.set_progress(_redis_job_key, f"Menulis ulang bab {i+1} (mirip bab lain)…"[:200])
                         # Own "revise" phase-tagged client (Rino 2026-07-15, audit-corrected) —
                         # was previously reusing the shared "worker" client, so NARASI_REVISE_*
                         # overrides never reached this call despite the function being named
@@ -12421,7 +12611,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 # a sub-gate score OR a coherence violation triggers ONE bounded revise, all on
                 # the FINAL text (before fact extraction, so the ledger reflects the kept version). ──
                 if _dalang_critic_enabled() and _narasi_should_critique(i, len(chapters)):
-                    await rc.set_progress(job_id, f"Menilai bab {i+1}/{len(chapters)}…"[:200])
+                    await rc.set_progress(_redis_job_key, f"Menilai bab {i+1}/{len(chapters)}…"[:200])
                     _critic, _cvc = await _narasi_critic(
                         text, style, language, tenant_id=_narasi_tenant,
                         user_id=_narasi_user, job_uuid=_narasi_job_uuid)
@@ -12430,7 +12620,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     _cviol  = _critic.get("coherence_violations") or []
                     _revised = False
                     if (_cscore is not None and _cscore < DALANG_CRITIC_GATE) or _cviol:
-                        await rc.set_progress(job_id, f"Merevisi bab {i+1}/{len(chapters)}…"[:200])
+                        await rc.set_progress(_redis_job_key, f"Merevisi bab {i+1}/{len(chapters)}…"[:200])
                         _revise_client = make_narasi_client(model, phase="revise")
                         text, _rvc = await _narasi_revise(
                             _revise_client, model, resolved_model, safe_max, _msgs, text, _critic,
@@ -12470,6 +12660,12 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             _chapter_targets.append(word_target)                 # Slice 3: job-level partial post-check
             _delivered_words.append(len(text.split()))
 
+            # B-07/B-08 Rework 4 (Contract B): the admitted chapter_id for THIS index (None for a
+            # legacy/no-lifecycle job) is resolved BEFORE the write and passed directly into it --
+            # the write's own identity, never reconstructed from loop position after the fact.
+            _chap_durable_id = (_narasi_admitted_chapters[i].get("chapter_id")
+                               if 0 <= i < len(_narasi_admitted_chapters) else None)
+
             # ── Step 1.2: persist chapter to narasi_chapters (DB = source of truth) ──
             try:
                 _retrieved_ids = []
@@ -12491,14 +12687,36 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     await db.save_narasi_chapter(
                         _narasi_tenant, _narasi_job_uuid, i, text,
                         len(text.split()), user, _retrieved_ids,
-                        version=1, approved=False, meter_checkpoint=_meter_actual)
+                        version=1, approved=False, meter_checkpoint=_meter_actual,
+                        chapter_id=_chap_durable_id)
                 else:
                     await db.save_narasi_chapter(
                         _narasi_tenant, _narasi_job_uuid, i, text,
                         len(text.split()), user, _retrieved_ids,
-                        version=1, approved=False)
+                        version=1, approved=False, chapter_id=_chap_durable_id)
             except Exception as _e:
-                _log.warning("save_narasi_chapter failed (non-fatal): %s", _e)
+                if _chap_durable_id:
+                    # B-07/B-08 Rework 4 (Contract B): a v1 job's identity-bearing chapter write
+                    # is FATAL -- the old best-effort log-and-continue let a job finish "done"
+                    # with chapters silently missing from narasi_chapters entirely. Stop taking
+                    # further (paid) chapters immediately; the end-of-function settlement below
+                    # commits only the chapters already durably delivered and refunds the rest,
+                    # then marks the row 'error' instead of a false 'done'.
+                    errors.append({"id": chap_id, "error": f"chapter persistence failed: {_e}"})
+                    _narasi_identity_write_fatal = True
+                    break
+                _log.warning("save_narasi_chapter failed (non-fatal, legacy job): %s", _e)
+
+            # B-07/B-08 Rework 3 (Contract D): record THIS chapter's completion by its real
+            # durable chapter_id (never loop position) as soon as it's delivered -- both
+            # incrementally (a live poller sees durable evidence mid-run) and in the final
+            # result payload narasi_status reads for the DONE state. Empty for a legacy
+            # (no lifecycle) job -- position-derivation stays the legacy fallback there.
+            if _chap_durable_id:
+                _narasi_delivered_chapter_ids.append({"chapter_id": _chap_durable_id})
+                if _narasi_job_uuid:
+                    await db.append_narasi_chapter_progress(
+                            _narasi_tenant, _narasi_job_uuid, _chap_durable_id)
 
             # ── Fix 5: moat capture (WS-G Task 5) — store generated narration ──
             try:
@@ -12545,7 +12763,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 encoding="utf-8")
 
     # Clean up cross-container cancel flag.
-    await rc.clear_cancel(f"narasi_{job_id}")
+    await rc.clear_cancel(f"narasi_{_redis_job_key}")
     cancelled = cancel_ev.is_set()
 
     # ── Slice 4 (§4.5, D3): whole-book critic pass at job end (books > MIN). Runs BEFORE the
@@ -12625,13 +12843,21 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             import logging as _lg; _lg.getLogger("narasi").warning("narasi metering settle failed (non-fatal): %s", _e)
 
     # ── Task 4: terminal status to jobs table (best-effort) ──
+    # B-07/B-08 Rework 3 (Contract C): finalize by the internal UUID once it exists -- two
+    # rows can share the same external_job_id (a client-reused pre_job_id); finishing by
+    # external id risks updating the wrong (e.g. newest) row. Falls back to the legacy
+    # external-id finalize only when no durable row could be resolved for this run.
+    async def _narasi_finish(status, *, result=None, error=None):
+        if _narasi_job_uuid:
+            await db.finish_narasi_job_by_id(_narasi_tenant, _narasi_job_uuid, status,
+                                             result=result, error=error)
+        else:
+            await db.finish_narasi_job(_narasi_tenant, job_id, status, result=result, error=error)
     try:
         if cancelled:
-            await db.finish_narasi_job(_narasi_tenant, job_id, "cancelled",
-                                       error="Dibatalkan oleh user")
-        elif errors and len(errors) >= len(chapters):
-            await db.finish_narasi_job(_narasi_tenant, job_id, "error",
-                                       error=str(errors[:3]))
+            await _narasi_finish("cancelled", error="Dibatalkan oleh user")
+        elif _narasi_identity_write_fatal or (errors and len(errors) >= len(chapters)):
+            await _narasi_finish("error", error=str(errors[:3]))
         else:
             # #53: a consistency-revise (opt-in) replaces the delivered combined markdown; the
             # per-chapter rows are left as-is (the combined markdown is the gated/delivered text).
@@ -12640,7 +12866,10 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                 for pc in previous_chapters
             )
             _result = {
-                "chapters": len(chapters),
+                # B-07/B-08 Rework 3 (Contract D): the real durable chapter_id per delivered
+                # chapter (never a bare count) -- narasi_status derives DONE-state per-chapter
+                # identity from this list, never from array position.
+                "chapters": _narasi_delivered_chapter_ids,
                 "errors": errors,
                 "auto_cancelled": auto_cancelled,
                 "bab1_words": bab1_words,
@@ -12670,10 +12899,10 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # #53: whole-draft consistency critic payload (score + violations [+ revised flag]).
             if _critique_payload is not None:
                 _result["critique"] = _critique_payload
-            await db.finish_narasi_job(_narasi_tenant, job_id, "done", result=_result)
+            await _narasi_finish("done", result=_result)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)
-    await rc.delete_progress(job_id)
+    await rc.delete_progress(_redis_job_key)
     return  # background task — return value unused
 
 
@@ -12690,62 +12919,172 @@ async def narasi_persist(body: dict,
     topic   = (body.get("topic") or "").strip()
     style   = (body.get("style") or "storytelling").strip()
     language = (body.get("language") or "id").strip()   # for chapter-prefix i18n (Bab/Chapter/Capítulo/…)
-    chapters = body.get("chapters") or []   # [{index, content, source_prompt, retrieved_ids, word_count, id?, title?}]
+    chapters = body.get("chapters") or []   # [{index, content, source_prompt, retrieved_ids, word_count, id?, title?, chapter_id?}]
 
-    # Idempotent: reuse the job row if one already exists for this external id.
+    # B-07/B-08: a caller MAY declare a job_lifecycle -- used below only to mint a FRESH
+    # durable row on first contact (no job_uuid yet). It is never trusted as authority once
+    # a durable row exists; see the durable-vs-caller check after the row is resolved.
+    _persist_job_lifecycle = body.get("job_lifecycle") or body.get("narasi_lifecycle")
+
+    # B-07/B-08 Rework 2 (Contract D): when the caller supplies job_uuid (the Google/Node path
+    # after calling /narasi/lifecycle/prepare-job), that durable row already exists -- RE-READ
+    # it by UUID (never by external id) and require it to actually exist. External id is only
+    # a first-contact lookup key for a legacy caller that never called prepare-job.
+    _incoming_job_uuid = body.get("job_uuid")
     _row = None
-    try:
-        _row = await db.get_job_by_external(_tenant, job_id)
-    except Exception:
-        _row = None
-    if not _row:
+    if _incoming_job_uuid:
         try:
-            await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters))
-            _row = await db.get_job_by_external(_tenant, job_id)
+            _row = await db.get_job(_tenant, _incoming_job_uuid)
         except Exception as _e:
-            import logging as _lg; _lg.getLogger("narasi").warning("persist create_narasi_job failed: %s", _e)
+            raise HTTPException(502, f"LIFECYCLE_PERSISTENCE_FAILED: could not read job_uuid's durable row: {_e}")
+        if not _row:
+            raise HTTPException(502, "LIFECYCLE_PERSISTENCE_FAILED: job_uuid does not have a durable row")
+        # B-07/B-08 Rework 4 (Contract D): an external job_id supplied ALONGSIDE job_uuid must
+        # name the SAME row -- a caller pairing an unrelated display id with a valid UUID is
+        # rejected before any read/write proceeds on that row.
+        _incoming_job_id = body.get("job_id")
+        if (_incoming_job_id and _row.get("external_job_id")
+                and str(_row.get("external_job_id")) != str(_incoming_job_id)):
+            raise HTTPException(409, "JOB_ID_UUID_MISMATCH: job_id does not match job_uuid's durable row")
+    else:
+        # Idempotent: reuse the job row if one already exists for this external id.
+        try:
+            _row = await db.get_job_by_external(_tenant, job_id)
+        except Exception:
+            _row = None
+        if not _row:
+            try:
+                await db.create_narasi_job(_tenant, _user, job_id, topic, len(chapters),
+                                           lifecycle=_persist_job_lifecycle)
+                _row = await db.get_job_by_external(_tenant, job_id)
+            except Exception as _e:
+                if _persist_job_lifecycle:
+                    raise HTTPException(502, f"LIFECYCLE_PERSISTENCE_FAILED: could not create job row: {_e}")
+                import logging as _lg; _lg.getLogger("narasi").warning("persist create_narasi_job issue, continuing: %s", _e)
     _job_uuid = (_row or {}).get("id")
 
-    saved, md_parts = 0, []
-    for ch in chapters:
+    # B-07/B-08 Rework 3 (Contract E): authority is the DURABLE row's OWN narasi_lifecycle --
+    # never the caller-supplied job_lifecycle/narasi_lifecycle body fields, which are only the
+    # incoming request to check against it (the caller's own structural validity proves
+    # nothing about whether it's the snapshot actually bound to THIS job_uuid). A caller
+    # pointing job_uuid at a real row but supplying a different -- even internally
+    # well-formed -- snapshot is rejected before any chapter write. A row with no durable
+    # lifecycle at all rejects a caller that still declares v1 fields (a genuine mismatch of
+    # intent); it is the fresh-row-just-created-above case that legitimately has none to
+    # compare against only when the caller ALSO declared none.
+    _durable_row_lifecycle = ((_row or {}).get("input_payload") or {}).get("narasi_lifecycle")
+    _admitted_idx_by_cid: dict = {}
+    if _durable_row_lifecycle:
+        from continuity.lifecycle import (
+            validate_job_lifecycle_request, validate_durable_job_snapshot, _exact_equal,
+            LifecycleValidationError,
+        )
+        _persist_request_chapters = [
+            {"chapter_id": c.get("chapter_id"), "chapter_index": c.get("chapter_index"),
+             "legacy_id": c.get("legacy_id")}
+            for c in chapters if isinstance(c, dict)
+        ]
         try:
-            _idx  = int(ch.get("index", saved))
-            _text = ch.get("content") or ""
-            _wc   = int(ch.get("word_count") or len(_text.split()))
-            _ids  = list(ch.get("retrieved_ids") or [])
+            _validated_persist_job = validate_job_lifecycle_request(_durable_row_lifecycle, {
+                "target_language": body.get("language"),
+                "chapters": _persist_request_chapters,
+                "outline_lifecycle": body.get("outline_lifecycle"),
+            })
+            # B-07/B-08 Rework 4 (Contract D): a caller-supplied FULL job snapshot (not just
+            # outline_lifecycle) must EXACTLY equal the durable one under recursive exact-type
+            # comparison -- e.g. a same-outline/same-chapters snapshot carrying a different
+            # (stale/forged) bindings map still rejects, since the durable row is the ONLY
+            # authority once it exists.
+            if _persist_job_lifecycle is not None:
+                _validated_caller_full = validate_durable_job_snapshot(_persist_job_lifecycle)
+                _validated_durable_full = validate_durable_job_snapshot(_durable_row_lifecycle)
+                if not _exact_equal(_validated_durable_full, _validated_caller_full):
+                    raise LifecycleValidationError(
+                        "LIFECYCLE_MISMATCH", "supplied job_lifecycle does not exactly match the durable job snapshot")
+        except LifecycleValidationError as _persist_lve:
+            raise HTTPException(422, f"LIFECYCLE_INVALID: {_persist_lve.code}")
+        language = _validated_persist_job["target_language"]
+        # B-07/B-08 Rework 4 (Contract D): the admitted chapter_index per chapter_id -- used
+        # for BOTH validation (above, via chapter_index) and the actual write below, so a
+        # request can never validate one index while persisting a different one.
+        _admitted_idx_by_cid = {c["chapter_id"]: c["chapter_index"] for c in _validated_persist_job["chapters"]}
+    elif _persist_job_lifecycle:
+        raise HTTPException(409, "LIFECYCLE_MISMATCH: job_lifecycle declared but this job has no durable lifecycle to bind it to")
+
+    # B-07/B-08 Rework 4 (Contract D): every v1 chapter's separate caller-supplied `index`
+    # field is checked against its OWN admitted chapter_index BEFORE any write in this
+    # request -- a mismatch rejects the whole call, never silently self-corrects after
+    # earlier chapters have already been persisted.
+    for _pch in chapters:
+        _pch_cid = _pch.get("chapter_id") if isinstance(_pch, dict) else None
+        if _pch_cid and _pch_cid in _admitted_idx_by_cid:
+            _pch_raw_idx = _pch.get("index")
+            if _pch_raw_idx is not None and int(_pch_raw_idx) != _admitted_idx_by_cid[_pch_cid]:
+                raise HTTPException(
+                    409, f"CHAPTER_INDEX_MISMATCH: supplied index does not match the admitted chapter_index for {_pch_cid}")
+
+    saved, md_parts = 0, []
+    _persist_delivered_chapter_ids = []
+    for ch in chapters:
+        _cid  = ch.get("chapter_id")
+        # B-07/B-08 Rework 4 (Contract D): the admitted chapter_index is authority for the
+        # actual WRITE whenever this chapter_id is part of the admitted set (already proven
+        # conflict-free above) -- never the separate caller-supplied `index` field.
+        _idx  = (_admitted_idx_by_cid[_cid] if _cid and _cid in _admitted_idx_by_cid
+                else int(ch.get("index", saved)))
+        _text = ch.get("content") or ""
+        _wc   = int(ch.get("word_count") or len(_text.split()))
+        _ids  = list(ch.get("retrieved_ids") or [])
+        try:
             await db.save_narasi_chapter(
                 _tenant, _job_uuid, _idx, _text, _wc,
                 ch.get("source_prompt") or "", _ids,
-                version=1, approved=False)
-            # ── moat capture + usage logging (parity with the LaoZhang path) ──
-            try:
-                _model = ch.get("model") or "gemini-2.5-flash"
-                _ti = int(ch.get("tokens_in") or 0)
-                _to = int(ch.get("tokens_out") or 0)
-                _cost = _calc_cost(_model, _ti, _to)
-                await db.save_moat_session(
-                    _tenant or None, _user, topic, style,
-                    {"rag_used": bool(ch.get("rag_used")), "sources": None,
-                     "passages": _ids, "prompt_used": ch.get("source_prompt") or "",
-                     "narration": _text},
-                    _model, _ti, _to, _cost)
-                await db.log_usage(_tenant, _user, _model, "narasi", _ti, _to, _cost,
-                                   job_id=_job_uuid, provider="gemini")
-            except Exception as _e2:
-                import logging as _lg; _lg.getLogger("narasi").warning("persist moat/usage chapter %s failed (non-fatal): %s", ch.get("index"), _e2)
-            md_parts.append(f"## {_chapter_label(language, ch.get('id', _idx))}: {ch.get('title','')}\n\n{_text}")
-            saved += 1
+                version=1, approved=False, chapter_id=_cid)
         except Exception as _e:
-            import logging as _lg; _lg.getLogger("narasi").warning("persist chapter %s failed: %s", ch.get("index"), _e)
+            if _cid:
+                raise HTTPException(502, f"LIFECYCLE_PERSISTENCE_FAILED: chapter {_cid} write failed: {_e}")
+            import logging as _lg; _lg.getLogger("narasi").warning("persist chapter %s issue, continuing: %s", ch.get("index"), _e)
+            continue
+        # ── moat capture + usage logging (parity with the LaoZhang path) ──
+        try:
+            _model = ch.get("model") or "gemini-2.5-flash"
+            _ti = int(ch.get("tokens_in") or 0)
+            _to = int(ch.get("tokens_out") or 0)
+            _cost = _calc_cost(_model, _ti, _to)
+            await db.save_moat_session(
+                _tenant or None, _user, topic, style,
+                {"rag_used": bool(ch.get("rag_used")), "sources": None,
+                 "passages": _ids, "prompt_used": ch.get("source_prompt") or "",
+                 "narration": _text},
+                _model, _ti, _to, _cost)
+            await db.log_usage(_tenant, _user, _model, "narasi", _ti, _to, _cost,
+                               job_id=_job_uuid, provider="gemini")
+        except Exception as _e2:
+            import logging as _lg; _lg.getLogger("narasi").warning("persist moat/usage chapter %s capture issue, continuing: %s", ch.get("index"), _e2)
+        md_parts.append(f"## {_chapter_label(language, ch.get('id', _idx))}: {ch.get('title','')}\n\n{_text}")
+        # B-07/B-08 Rework 3 (Contract D): the real durable chapter_id per saved chapter --
+        # narasi_status derives DONE-state identity from this list, never a bare count.
+        if _cid:
+            _persist_delivered_chapter_ids.append({"chapter_id": _cid})
+        saved += 1
 
     try:
-        await db.finish_narasi_job(_tenant, job_id, "done", result={
-            "chapters": saved, "source": "google",
+        _persist_result = {
+            "chapters": _persist_delivered_chapter_ids, "source": "google",
             "markdown": "\n\n".join(md_parts),
-        })
+        }
+        # B-07/B-08 Rework 3 (Contract C): finalize by the internal UUID once it exists --
+        # two rows can share the same external_job_id (a client-reused pre_job_id);
+        # finishing by external id risks updating the wrong (e.g. newest) row.
+        if _job_uuid:
+            await db.finish_narasi_job_by_id(_tenant, _job_uuid, "done", result=_persist_result)
+        else:
+            await db.finish_narasi_job(_tenant, job_id, "done", result=_persist_result)
     except Exception as _e:
-        import logging as _lg; _lg.getLogger("narasi").warning("persist finish failed: %s", _e)
-    return {"ok": True, "job_id": job_id, "chapters_saved": saved}
+        if _persist_job_lifecycle:
+            raise HTTPException(502, f"LIFECYCLE_PERSISTENCE_FAILED: could not finalize job: {_e}")
+        import logging as _lg; _lg.getLogger("narasi").warning("persist finish issue, continuing: %s", _e)
+    return {"ok": True, "job_id": job_id, "job_uuid": _job_uuid, "chapters_saved": saved}
 
 
 @app.post("/narasi/outline/persist")
@@ -12766,11 +13105,233 @@ async def narasi_outline_persist(body: dict,
             int(body.get("chap_count") or len(_chapters)),
             body.get("outline_text") or "",
             _chapters,
-            body.get("model") or "gemini-2.5-flash")
+            body.get("model") or "gemini-2.5-flash",
+            lifecycle=body.get("outline_lifecycle"))
         return {"ok": True, "outline_id": oid}
     except Exception as _e:
-        import logging as _lg; _lg.getLogger("narasi").warning("outline persist failed (non-fatal): %s", _e)
+        # B-07/B-08 Rework 2 (Contract C): a v1-admitted outline's persistence failure is
+        # fatal -- Node must see a non-2xx response, never a silent legacy-style 200.
+        if body.get("outline_lifecycle"):
+            raise HTTPException(502, f"LIFECYCLE_PERSISTENCE_FAILED: could not persist outline: {_e}")
+        import logging as _lg; _lg.getLogger("narasi").warning("outline persist issue, continuing: %s", _e)
         return {"ok": False, "error": str(_e)}
+
+
+@app.post("/narasi/lifecycle/admit")
+async def narasi_lifecycle_admit(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """B-07/B-08 (NARASI_LIFECYCLE_V1, default off): the ONE place any caller — Python
+    (LaoZhang/Dalang) or the Node Google path — mints an outline_lifecycle envelope. Wraps
+    continuity.lifecycle.admit_outline_lifecycle so `chapter_id`/`lifecycle_hash` are only
+    ever minted here, never independently reinvented per engine/language. Returns a bounded
+    error code/message on a v1 validation failure -- never raw exception prose."""
+    if str(os.environ.get("NARASI_LIFECYCLE_V1", "0")).strip().lower() not in ("1", "true", "yes", "on"):
+        return {"ok": False, "error": "NARASI_LIFECYCLE_V1 is not enabled", "code": "LIFECYCLE_DISABLED"}
+    try:
+        from continuity.lifecycle import admit_outline_lifecycle, LifecycleValidationError
+        outline_lifecycle = admit_outline_lifecycle(
+            body.get("outline_id") or str(uuid.uuid4()),
+            body.get("target_language"),
+            body.get("chapters") or [],
+        )
+        return {"ok": True, "outline_lifecycle": outline_lifecycle}
+    except LifecycleValidationError as _lve:
+        return {"ok": False, "error": str(_lve), "code": _lve.code}
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("lifecycle admit failed: %s", _e)
+        return {"ok": False, "error": "admission failed", "code": "LIFECYCLE_ADMIT_FAILED"}
+
+
+@app.post("/narasi/lifecycle/validate-job")
+async def narasi_lifecycle_validate_job(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """B-07/B-08: the ONE place any caller -- Python or the Node Google multi-chapter
+    generate path -- pre-flight checks a request against a job_lifecycle snapshot BEFORE
+    dispatching any provider call. Wraps continuity.lifecycle.validate_job_lifecycle_request
+    directly; never a second, JS-side reimplementation of the comparison. Returns a bounded
+    error code/message on a v1 validation failure -- never raw exception prose."""
+    try:
+        from continuity.lifecycle import validate_job_lifecycle_request, LifecycleValidationError
+        validated = validate_job_lifecycle_request(
+            body.get("job_lifecycle") or {},
+            {"target_language": body.get("target_language"),
+             "chapters": body.get("chapters") or [],
+             "outline_lifecycle": body.get("outline_lifecycle")},
+        )
+        return {"ok": True, "job_lifecycle": validated}
+    except LifecycleValidationError as _lve:
+        return {"ok": False, "error": str(_lve), "code": _lve.code}
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("narasi").warning("lifecycle validate-job failed: %s", _e)
+        return {"ok": False, "error": "validation failed", "code": "LIFECYCLE_VALIDATE_FAILED"}
+
+
+@app.post("/narasi/lifecycle/prepare-job")
+async def narasi_lifecycle_prepare_job(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """B-07/B-08 Rework 2 (Contract D): the ONE authenticated preparation path the Google/Node
+    generation handler calls BEFORE its first generateContent -- validates the outline, an
+    optional Brief binding, language, and the exact chapter set; creates the durable job row
+    (atomically carrying the built job_lifecycle snapshot); and returns job_uuid plus the
+    authoritative job_lifecycle so Node can never dispatch a provider call un-admitted. A
+    validation failure or durable-insert failure is fatal here, before any paid work."""
+    from continuity.lifecycle import (
+        validate_outline_lifecycle, build_job_lifecycle, validate_lifecycle_artifact,
+        canonicalize_target_language, LifecycleValidationError,
+    )
+    _outline_lifecycle = body.get("outline_lifecycle")
+    if _outline_lifecycle is None:
+        raise HTTPException(422, {"error": "LIFECYCLE_REQUIRED", "message": "outline_lifecycle is required"})
+    try:
+        _validated_outline = validate_outline_lifecycle(_outline_lifecycle)
+        _brief_binding = body.get("brief_binding")
+        if body.get("brief"):
+            if not _brief_binding:
+                raise LifecycleValidationError(
+                    "ARTIFACT_BINDING_INVALID", "a supplied brief requires a bound binding for v1 generation")
+            import hashlib as _prep_hashlib
+            _brief_hash = _prep_hashlib.sha256((body.get("brief") or "").encode("utf-8")).hexdigest()
+            validate_lifecycle_artifact(_validated_outline, _brief_binding, "brief", _brief_hash)
+        _body_language = body.get("language")
+        if _body_language:
+            try:
+                _canon_body_lang = canonicalize_target_language(_body_language)
+            except LifecycleValidationError:
+                _canon_body_lang = None
+            if _canon_body_lang and _canon_body_lang != _validated_outline["target_language"]:
+                raise HTTPException(409, "TARGET_LANGUAGE_MISMATCH: body.language conflicts with the admitted lifecycle")
+        _bindings = {"brief": _brief_binding} if _brief_binding else None
+        _job_lifecycle = build_job_lifecycle(_validated_outline, body.get("chapters") or [], _bindings)
+    except LifecycleValidationError as _prep_lve:
+        raise HTTPException(422, {"error": "LIFECYCLE_INVALID", "code": _prep_lve.code, "message": str(_prep_lve)})
+
+    _tenant = user.tenant_id
+    _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    job_id = (body.get("pre_job_id") or str(uuid.uuid4())[:8])[:16]
+    topic = (body.get("topic") or "").strip()
+    _chapters = body.get("chapters") or []
+    try:
+        job_uuid = await db.create_narasi_job(_tenant, _user, job_id, topic, len(_chapters), lifecycle=_job_lifecycle)
+    except Exception as _e:
+        raise HTTPException(502, {"error": "LIFECYCLE_PERSISTENCE_FAILED",
+                                  "message": f"could not create durable job row: {_e}"})
+    return {
+        "ok": True, "job_id": job_id, "job_uuid": job_uuid, "job_lifecycle": _job_lifecycle,
+        "chapter_label_format": _narasi_header_labels(_job_lifecycle["target_language"]).get("chapter", "Chapter {n}"),
+    }
+
+
+@app.post("/narasi/lifecycle/retry-chapter")
+async def narasi_lifecycle_retry_chapter(body: dict, user: CurrentUser = Depends(get_current_user)):
+    """B-07/B-08 Rework 2 (Contract E): the ONE endpoint the frontend's retry flow calls to
+    regenerate a single errored chapter -- replaces the old standalone action="chapter" call
+    (an unbound ad-hoc payload the caller invented on the spot, per Finding #5). A retry must
+    prove source_job_uuid's own durable lifecycle matches the supplied outline_lifecycle
+    EXACTLY, and that chapter_id is a real member of that admitted outline -- it can never
+    regenerate an arbitrary chapter shape the caller supplies independently of the source job's
+    admitted plan. Mirrors narasi_review's metering pattern (single bounded call, logged +
+    charged after the fact) rather than the multi-chapter job's credit-hold machinery, since a
+    retry is one ad-hoc regeneration, not a new job.
+
+    B-07/B-08 Rework 3 (Contract H): reads the source job by its internal UUID (db.get_job),
+    never by external id -- two rows can share the same external_job_id (a client-reused
+    pre_job_id), and an external-id lookup risks resolving the wrong (e.g. newest) row. The
+    frontend may still echo source_job_id for display/diagnostics; it is never used to look
+    up the source row here."""
+    from continuity.lifecycle import validate_outline_lifecycle, validate_lifecycle_artifact, LifecycleValidationError
+    source_job_uuid = body.get("source_job_uuid")
+    outline_lifecycle = body.get("outline_lifecycle")
+    chapter_id = body.get("chapter_id")
+    if not source_job_uuid:
+        raise HTTPException(422, {"error": "SOURCE_JOB_REQUIRED", "message": "source_job_uuid is required"})
+    if not chapter_id:
+        raise HTTPException(422, {"error": "CHAPTER_ID_REQUIRED", "message": "chapter_id is required"})
+    if outline_lifecycle is None:
+        raise HTTPException(422, {"error": "LIFECYCLE_REQUIRED", "message": "outline_lifecycle is required"})
+    try:
+        _validated_outline = validate_outline_lifecycle(outline_lifecycle)
+    except LifecycleValidationError as _lve:
+        raise HTTPException(422, {"error": "LIFECYCLE_INVALID", "code": _lve.code, "message": str(_lve)})
+
+    _tenant = user.tenant_id
+    try:
+        _src_row = await db.get_job(_tenant, source_job_uuid)
+    except Exception as _e:
+        raise HTTPException(502, {"error": "LIFECYCLE_PERSISTENCE_FAILED",
+                                  "message": f"could not read source_job_uuid's durable row: {_e}"})
+    if _src_row is None:
+        raise HTTPException(404, {"error": "SOURCE_JOB_NOT_FOUND", "message": "source_job_uuid does not exist for this tenant"})
+    _src_lifecycle = (_src_row.get("input_payload") or {}).get("narasi_lifecycle")
+    if not _src_lifecycle:
+        raise HTTPException(409, {"error": "SOURCE_JOB_NOT_LIFECYCLE_BOUND",
+                                  "message": "source_job_uuid has no admitted lifecycle to retry against"})
+    # The retry must target the SAME admitted outline the source job was generated from --
+    # never a different (even if superficially well-formed) outline_id/hash smuggled in via body.
+    if (_src_lifecycle.get("outline_id") != _validated_outline["outline_id"]
+            or _src_lifecycle.get("lifecycle_hash") != _validated_outline["lifecycle_hash"]):
+        raise HTTPException(409, {"error": "LIFECYCLE_MISMATCH",
+                                  "message": "outline_lifecycle does not match source_job_uuid's admitted lifecycle"})
+    _chapter = next((c for c in _validated_outline["chapters"] if c["chapter_id"] == chapter_id), None)
+    if _chapter is None:
+        raise HTTPException(404, {"error": "CHAPTER_NOT_FOUND", "message": "chapter_id is not part of the admitted outline"})
+
+    _brief_binding = body.get("brief_binding")
+    _brief = body.get("brief") or ""
+    if _brief:
+        if not _brief_binding:
+            raise HTTPException(422, {"error": "ARTIFACT_BINDING_INVALID",
+                                      "message": "a supplied brief requires a bound binding for v1 retry"})
+        try:
+            import hashlib as _retry_hashlib
+            _brief_hash = _retry_hashlib.sha256(_brief.encode("utf-8")).hexdigest()
+            validate_lifecycle_artifact(_validated_outline, _brief_binding, "brief", _brief_hash)
+        except LifecycleValidationError as _lve:
+            raise HTTPException(422, {"error": "LIFECYCLE_INVALID", "code": _lve.code, "message": str(_lve)})
+
+    model = (body.get("model") or os.environ.get("WORKER_MODEL") or "gemini-2.5-flash").strip()
+    style = (body.get("style") or "storytelling").strip()
+    video_mode = bool(body.get("video_mode", False))
+    outline_text = body.get("outline") or ""
+    word_target = int(_chapter.get("words") or 400)
+    word_min, word_max = int(word_target * 0.9), int(word_target * 1.1)
+
+    from pakem.assembler import compose as _pakem_compose
+    _composed = _pakem_compose(
+        style=style, language=_validated_outline["target_language"],
+        mode=("video" if video_mode else "text"),
+        outline=outline_text, brief=_brief,
+        chapter={"id": _chapter.get("legacy_id") or _chapter["chapter_id"],
+                 "title": _chapter.get("title", ""), "summary": _chapter.get("description", ""),
+                 "index": _chapter.get("chapter_index", 0),
+                 "total": len(_validated_outline["chapters"]),
+                 "word_target": word_target, "word_min": word_min, "word_max": word_max},
+        prev_tail="", rag_passages=None, job_id=source_job_uuid, model=model,
+    )
+    _msgs = [dict(m) for m in _composed.messages]
+    if not str(MODELS.get(model, model)).startswith("claude"):
+        for _m in _msgs:
+            _m.pop("cache_control", None)
+    resolved_model = MODELS.get(model, model)
+    safe_max = _narasi_safe_max(resolved_model, word_max)
+    try:
+        resp, _used_m = _narasi_complete(model, _msgs, safe_max, role="worker", phase="worker")
+        text = (resp.choices[0].message.content or "").strip()
+    except Exception as _e:
+        raise HTTPException(502, {"error": "RETRY_GENERATION_FAILED", "message": str(_e)})
+    if not text:
+        raise HTTPException(502, {"error": "RETRY_GENERATION_FAILED", "message": "empty response from provider"})
+
+    _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    try:
+        await _log_narasi_usage(_tenant, _user, _used_m, resp, job_id=_src_row.get("id"), charge=True)
+    except Exception:
+        pass
+    try:
+        await db.save_narasi_chapter(
+            _tenant, _src_row["id"], _chapter.get("chapter_index", 0), text,
+            len(text.split()), _composed.static_prefix + "\n\n" + _composed.dynamic_block, [],
+            chapter_id=chapter_id)
+    except Exception as _e:
+        raise HTTPException(502, {"error": "LIFECYCLE_PERSISTENCE_FAILED",
+                                  "message": f"could not persist retried chapter: {_e}"})
+    return {"ok": True, "chapter_id": chapter_id, "text": text, "word_count": len(text.split())}
 
 
 @app.get("/narasi/jobs")
@@ -12806,8 +13367,15 @@ async def narasi_rate(body: dict, user: CurrentUser = Depends(get_current_user))
 
 @app.post("/narasi/rate-all")
 async def narasi_rate_all(body: dict, user: CurrentUser = Depends(get_current_user)):
-    """Rate EVERY chapter of a job with the same 1-5 value ('beri rating narasi')."""
+    """Rate EVERY chapter of a job with the same 1-5 value ('beri rating narasi').
+
+    B-07/B-08 Rework 6 (Contract B): UUID-first, exactly like cancel/chapter-list/retry --
+    two rows can share one external_job_id; rating "job X" must rate row X's own durable
+    chapters, never whichever row newest-by-external happens to be. Once job_uuid is
+    supplied, resolution is fail-closed (propagates untouched); absent it, the shared
+    resolver's own external-only V1 rejection still applies."""
     job_id = (body.get("job_id") or "").strip()
+    job_uuid = body.get("job_uuid")
     try:
         rating = int(body.get("rating") or 0)
     except Exception:
@@ -12815,53 +13383,177 @@ async def narasi_rate_all(body: dict, user: CurrentUser = Depends(get_current_us
     if not job_id or rating < 1 or rating > 5:
         return {"ok": False, "error": "job_id + rating (1-5) required"}
     _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    if job_uuid:
+        _row = await _resolve_narasi_run(user.tenant_id, job_id, job_uuid)
+    else:
+        try:
+            _row = await _resolve_narasi_run(user.tenant_id, job_id, None)
+        except HTTPException:
+            raise
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("rate-all failed (non-fatal): %s", _e)
+            return {"ok": False, "error": str(_e)}
+    if not _row or not _row.get("id"):
+        return {"ok": False, "error": "job not found"}
     try:
-        _row = await db.get_job_by_external(user.tenant_id, job_id)
-        if not _row or not _row.get("id"):
-            return {"ok": False, "error": "job not found"}
         n = await db.save_approval_all(user.tenant_id, _user, _row["id"], rating)
-        return {"ok": True, "rated": n, "approved": rating >= 4}
+        return {"ok": True, "rated": n, "approved": rating >= 4, "job_uuid": _row["id"]}
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("rate-all failed (non-fatal): %s", _e)
         return {"ok": False, "error": str(_e)}
 
 
 @app.get("/narasi/chapters/{job_id}")
-async def narasi_chapters_list(job_id: str, user: CurrentUser = Depends(get_current_user)):
-    """Chapters of a job with their latest rating, for the rating UI (Step 1.4)."""
-    try:
-        _row = await db.get_job_by_external(user.tenant_id, job_id)
+async def narasi_chapters_list(job_id: str, user: CurrentUser = Depends(get_current_user),
+                               job_uuid: Optional[str] = None):
+    """Chapters of a job with their latest rating, for the rating UI (Step 1.4).
+
+    B-07/B-08 Rework 5 (Contract B.1/B.2): routes through the STRICT shared resolver --
+    once job_uuid is supplied, ANY resolution failure (pair mismatch or a real DB error)
+    propagates untouched, never degrading to an empty chapter list keyed by the external
+    id. Absent job_uuid, the resolver's own external-only rejection still applies (a V1
+    row found this way requires its UUID); a genuinely legacy/missing row still returns
+    an empty list, matching the endpoint's pre-existing best-effort contract."""
+    if job_uuid:
+        _row = await _resolve_narasi_run(user.tenant_id, job_id, job_uuid)
         if not _row or not _row.get("id"):
-            return {"ok": True, "chapters": []}
-        return {"ok": True, "chapters": await db.get_chapters_for_rating(user.tenant_id, _row["id"])}
+            return {"ok": True, "chapters": [], "job_uuid": (_row or {}).get("id")}
+        _chapters = await db.get_chapters_for_rating(user.tenant_id, _row["id"])
+        return {"ok": True, "chapters": _chapters, "job_uuid": _row.get("id")}
+    # B-07/B-08 Rework 6 (Contract A): the resolver's own V1_REQUIRES_UUID/pair-mismatch
+    # rejection is a REAL bounded error the caller must see -- it propagates untouched,
+    # never downgraded to a soft {"ok": False}, so a caller can distinguish lifecycle
+    # ambiguity from an ordinary (legacy/missing) empty read.
+    try:
+        _row = await _resolve_narasi_run(user.tenant_id, job_id, None)
+    except HTTPException:
+        raise
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("chapters list failed (non-fatal): %s", _e)
         return {"ok": False, "chapters": [], "error": str(_e)}
+    if not _row or not _row.get("id"):
+        return {"ok": True, "chapters": [], "job_uuid": None}
+    try:
+        return {"ok": True, "chapters": await db.get_chapters_for_rating(user.tenant_id, _row["id"]),
+                "job_uuid": _row.get("id")}
+    except Exception as _e2:
+        import logging as _lg; _lg.getLogger("narasi").warning("chapters list failed (non-fatal): %s", _e2)
+        return {"ok": False, "chapters": [], "error": str(_e2)}
+
+
+async def _resolve_narasi_run(tenant_id, job_id, job_uuid):
+    """B-07/B-08 Rework 5 (Contract A): the STRICT shared resolver for cancel/chapter-list/
+    rating/retry/recovery. UUID first -- once a caller has job_uuid, the row is read by UUID
+    and NEVER by newest-by-external-id (two rows can share one external id; resolving by
+    external once a UUID exists risks cross-cancelling/recovering the wrong run). An external
+    job_id supplied ALONGSIDE a job_uuid is verified to name the SAME row (pair-check) -- a
+    caller pairing an unrelated display id with a valid UUID is rejected outright, before any
+    read/write proceeds on that row.
+
+    B-07/B-08 Rework 5 (Contract B.4): legacy external-id lookup runs ONLY when the caller has
+    no job_uuid at all, and ONLY resolves a genuinely legacy row (no admitted V1 lifecycle) --
+    a V1 row found this way is rejected; the caller must supply its UUID instead. narasi_status
+    and narasi_stitch keep their OWN more permissive bootstrap read (a client with no UUID yet
+    must still be able to poll/stitch once to learn it) and therefore do NOT route their
+    external-only branch through this function -- see narasi_status/narasi_stitch."""
+    if job_uuid:
+        row = await db.get_job(tenant_id, job_uuid)
+        if row and job_id and row.get("external_job_id") and str(row.get("external_job_id")) != str(job_id):
+            raise HTTPException(409, "JOB_ID_UUID_MISMATCH: job_id does not match job_uuid's durable row")
+        return row
+    row = await db.get_job_by_external(tenant_id, job_id)
+    if row and ((row.get("input_payload") or {}).get("narasi_lifecycle")):
+        raise HTTPException(
+            409, "V1_REQUIRES_UUID: this job is lifecycle-bound; supply job_uuid, not external id alone")
+    return row
 
 
 @app.get("/narasi/status/{job_id}")
 async def narasi_status(job_id: str,
-                        user: CurrentUser = Depends(get_current_user)):
+                        user: CurrentUser = Depends(get_current_user),
+                        job_uuid: Optional[str] = None):
     """Merge live Redis progress (fast) with the jobs-table row (authoritative).
     Frontend polls this to drive the per-chapter checkbox table."""
     _tenant = user.tenant_id or db._DEV_TENANT_ID
+    # B-07/B-08 Rework 5 (Contract B.2): once job_uuid is supplied, resolution is fail-closed
+    # -- ANY error (not just a pair mismatch) propagates untouched, never falling through to a
+    # live-progress read keyed by the external id. Absent a job_uuid this stays the original
+    # permissive bootstrap read (a client that has never seen this job's UUID must still be
+    # able to poll once to learn it); that softer path deliberately does NOT route through
+    # _resolve_narasi_run's stricter external-only rejection, reserved for cancel/rating/retry.
     row = None
-    try:
-        row = await db.get_job_by_external(_tenant, job_id)
-    except Exception:
-        row = None
-    live = await rc.get_progress(job_id)
+    if job_uuid:
+        row = await _resolve_narasi_run(_tenant, job_id, job_uuid)
+    else:
+        # B-07/B-08 Rework 6 (Contract A): the permissive external-only bootstrap is GONE --
+        # a v1-bound row surfaced this way now rejects exactly like cancel/rating/retry
+        # (V1_REQUIRES_UUID, 409), never silently polled by newest-external guesswork. The
+        # frontend always has job_uuid from its own start/list response; a caller polling
+        # without one is either a genuinely legacy job (still resolves) or an ambiguous
+        # request that must reject rather than guess. The 409 propagates BEFORE Redis is
+        # ever touched.
+        try:
+            row = await _resolve_narasi_run(_tenant, job_id, None)
+        except HTTPException:
+            raise
+        except Exception:
+            row = None
+    # B-07/B-08 Rework 3 (Contract C): read live progress under the SAME UUID-first key
+    # _narasi_generate_impl wrote it under -- once the durable row exists, its own id is
+    # authority, never the bare external job_id.
+    _redis_job_key = (row or {}).get("id") or job_id
+    live = await rc.get_progress(_redis_job_key)
     if not row:
         return {"job_id": job_id, "status": "processing" if live else "unknown",
                 "progress": live or "", "current": 0, "total": 0, "found": False}
+    # B-07/B-08: expose the persisted v1 lifecycle identity so a poller can prove resume/
+    # readback correctness -- target_language from the durable job's own snapshot, chapter_id
+    # per chapter from the stored result (empty for a legacy/non-v1 job).
+    # B-07/B-08 Rework 4 (Contract E): the durable snapshot is fully validated (never merely
+    # spot-read) before any of its fields are trusted -- a malformed/tampered durable row is
+    # never trusted merely because it superficially resembles a valid one.
+    _narasi_status_lifecycle = ((row or {}).get("input_payload") or {}).get("narasi_lifecycle") or {}
+    if _narasi_status_lifecycle:
+        from continuity.lifecycle import validate_durable_job_snapshot, LifecycleValidationError
+        try:
+            _narasi_status_lifecycle = validate_durable_job_snapshot(_narasi_status_lifecycle)
+        except LifecycleValidationError as _status_snap_lve:
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: job {job_id} has a malformed durable "
+                f"lifecycle snapshot: {_status_snap_lve.code}")
+    _narasi_status_result = row.get("result_payload")
+    if isinstance(_narasi_status_result, str):
+        try:
+            _narasi_status_result = json.loads(_narasi_status_result)
+        except Exception:
+            _narasi_status_result = {}
+    # B-07/B-08 Rework 3 (Contract D): the classic engine writes each completed chapter's
+    # REAL durable chapter_id into result_payload.chapters as it finishes (see
+    # database.append_narasi_chapter_progress / _narasi_generate_impl) -- derive per-chapter
+    # {chapter_id,state} from SET MEMBERSHIP in that durable evidence, never from comparing
+    # progress_current against loop position (a job can commit chapters out of admitted
+    # order under retries/parallelism; position-derivation would silently misattribute).
+    _narasi_status_admitted = _narasi_status_lifecycle.get("chapters") or []
+    _narasi_status_done_ids = (
+        {c.get("chapter_id") for c in (_narasi_status_result.get("chapters") or [])
+         if isinstance(c, dict) and c.get("chapter_id")}
+        if isinstance(_narasi_status_result, dict) else set()
+    )
     return {"job_id": job_id,
+            "job_uuid": row.get("id"),
             "status": row.get("status"),
             "progress": live or row.get("progress_message") or "",
             "current": row.get("progress_current") or 0,
             "total": row.get("progress_total") or 0,
             "result": row.get("result_payload"),
             "error": row.get("error_message"),
-            "found": True}
+            "found": True,
+            "target_language": _narasi_status_lifecycle.get("target_language"),
+            "chapter_id": ([c.get("chapter_id") for c in (_narasi_status_result.get("chapters") or [])
+                           if isinstance(c, dict)] if isinstance(_narasi_status_result, dict) else []),
+            "chapters": [{"chapter_id": c.get("chapter_id"),
+                         "state": "done" if c.get("chapter_id") in _narasi_status_done_ids else "pending"}
+                        for c in _narasi_status_admitted]}
 
 
 @app.get("/narasi/outline/status/{job_id}")
@@ -12895,37 +13587,303 @@ async def narasi_outline_status(job_id: str,
 
 
 @app.post("/narasi/cancel/{job_id}")
-async def narasi_cancel(job_id: str, user: CurrentUser = Depends(get_current_user)):
+async def narasi_cancel(job_id: str, user: CurrentUser = Depends(get_current_user),
+                        job_uuid: Optional[str] = None):
     """Signal the running narasi job to stop after the current chapter finishes.
     Tenant-scoped: the job must belong to the caller's tenant (RLS)."""
-    _row = await db.get_job_by_external(user.tenant_id, job_id)
+    _row = await _resolve_narasi_run(user.tenant_id, job_id, job_uuid)
     if not _row:
         raise HTTPException(404, "job not found")
-    await rc.set_cancel(f"narasi_{job_id}")
-    return {"ok": True, "status": "cancel_requested", "job_id": job_id}
+    # B-07/B-08 Rework 3 (Contract C): the watcher checks the SAME UUID-first key
+    # _narasi_generate_impl reads for its cancel flag -- once the durable row exists.
+    _redis_job_key = _row.get("id") or job_id
+    await rc.set_cancel(f"narasi_{_redis_job_key}")
+    return {"ok": True, "status": "cancel_requested", "job_id": job_id, "job_uuid": _row.get("id")}
+
+
+async def _narasi_resolve_lineage_source(tenant_id, *, source_job_id=None, source_job_uuid=None):
+    """B-07/B-08 Rework 5 (Contract F): the ONE read backing both
+    _narasi_resolve_manuscript_lineage and _narasi_build_lineage_binding -- a named source is
+    resolved EXACTLY ONCE here, by its UUID whenever the caller has one (an optional external
+    source_job_id is pair-checked against that same row, never used to re-resolve), so
+    language and binding can never be derived from two DIFFERENT rows that happen to share
+    one external id (two rows CAN share one external_job_id -- a client-reused pre_job_id).
+
+    Mirrors _resolve_narasi_run's own bootstrap rule: a source named ONLY by external id (no
+    UUID yet) still resolves via legacy lookup, but a row found this way that turns out to be
+    lifecycle-bound (v1) is rejected -- the caller must supply source_job_uuid instead of
+    trusting a non-unique external id to keep selecting the same row across two separate
+    Review/One-Shot helper calls. A genuinely legacy (no lifecycle at all) row already 409s
+    below regardless, exactly as before Rework 5.
+
+    Returns (None, None) for a genuinely standalone (no source named at all) call; otherwise
+    (source_row, fully-validated durable snapshot)."""
+    from continuity.lifecycle import validate_durable_job_snapshot, LifecycleValidationError
+    if not source_job_uuid and not source_job_id:
+        return None, None
+    if source_job_uuid:
+        try:
+            _src_row = await db.get_job(tenant_id, source_job_uuid)
+        except Exception as _src_exc:
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: could not read source_job_uuid's durable row: {_src_exc}")
+        if _src_row is None:
+            raise HTTPException(404, "SOURCE_JOB_NOT_FOUND: source_job_uuid does not exist for this tenant")
+        if (source_job_id and _src_row.get("external_job_id")
+                and str(_src_row.get("external_job_id")) != str(source_job_id)):
+            raise HTTPException(
+                409, "SOURCE_JOB_ID_UUID_MISMATCH: source_job_id does not match source_job_uuid's durable row")
+    else:
+        try:
+            _src_row = await db.get_job_by_external(tenant_id, source_job_id)
+        except Exception as _src_exc:
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: could not read source_job_id's durable row: {_src_exc}")
+        # B-07/B-08 (Rework 2, Contract F): a supplied source that does not exist is a
+        # genuine error, never a legacy passthrough -- a caller that names a real job expects
+        # its lifecycle to actually be consulted, and a silently-missing row must surface.
+        if _src_row is None:
+            raise HTTPException(404, "SOURCE_JOB_NOT_FOUND: source_job_id does not exist for this tenant")
+    _src_lifecycle = (_src_row.get("input_payload") or {}).get("narasi_lifecycle")
+    if not _src_lifecycle:
+        raise HTTPException(409, "SOURCE_JOB_NOT_LIFECYCLE_BOUND: source job has no admitted lifecycle")
+    if not source_job_uuid:
+        raise HTTPException(
+            409, "V1_REQUIRES_UUID: source job is lifecycle-bound; supply source_job_uuid, not external id alone")
+    try:
+        _validated_src = validate_durable_job_snapshot(_src_lifecycle)
+    except LifecycleValidationError as _src_lve:
+        raise HTTPException(422, f"LIFECYCLE_INVALID: {_src_lve.code}") from _src_lve
+    return _src_row, _validated_src
+
+
+async def _narasi_resolve_lineage(tenant_id, *, source_job_id=None, source_job_uuid=None):
+    """B-07/B-08 Rework 6 (Contract C): the ONE combined source-resolution call for a
+    derived request (Review, One-Shot, save-edit) -- calls _narasi_resolve_lineage_source
+    EXACTLY ONCE per request. The returned (src_row, validated_src) pair is then reused,
+    read-free, by _narasi_lineage_language and _narasi_lineage_binding below to derive
+    BOTH the manuscript language and the artifact binding -- never two independent reads
+    that a concurrent source-job mutation could split across two different snapshot
+    epochs. _narasi_resolve_manuscript_lineage/_narasi_build_lineage_binding remain for
+    any other direct caller/test but are no longer chained together for a single request."""
+    return await _narasi_resolve_lineage_source(
+        tenant_id, source_job_id=source_job_id, source_job_uuid=source_job_uuid)
+
+
+def _narasi_lineage_language(_validated_src, manuscript_language):
+    """Pure (no DB access) -- derives/validates manuscript_language from an ALREADY-
+    fetched validated source snapshot (or None for a standalone call), mirroring
+    _narasi_resolve_manuscript_lineage's own rules exactly."""
+    if _validated_src is None:
+        if not manuscript_language and str(os.environ.get("NARASI_LIFECYCLE_V1", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            raise HTTPException(422, "manuscript_language is required for a standalone Review/One-Shot request")
+        return manuscript_language
+    _derived = _validated_src.get("target_language")
+    if manuscript_language:
+        from continuity.lifecycle import canonicalize_target_language, LifecycleValidationError
+        try:
+            _canon_explicit = canonicalize_target_language(manuscript_language)
+        except LifecycleValidationError as _lang_lve:
+            raise HTTPException(
+                422, f"TARGET_LANGUAGE_INVALID: {_lang_lve.code}") from _lang_lve
+        if _canon_explicit != _derived:
+            raise HTTPException(
+                409, "TARGET_LANGUAGE_MISMATCH: manuscript_language conflicts with source job's lifecycle")
+    return _derived
+
+
+def _narasi_lineage_binding(_src_row, _validated_src, artifact_kind, content):
+    """Pure (no DB access) -- builds a lineage binding from an ALREADY-fetched validated
+    source snapshot (or (None, None) for standalone), mirroring _narasi_build_lineage_
+    binding's own rules exactly."""
+    if _validated_src is None:
+        return None, None
+    import hashlib
+    from continuity.lifecycle import _ARTIFACT_KINDS, LIFECYCLE_SCHEMA_VERSION, LifecycleValidationError
+    if type(artifact_kind) is not str or artifact_kind not in _ARTIFACT_KINDS:
+        raise LifecycleValidationError("ARTIFACT_KIND_INVALID", "unknown artifact_kind")
+    _content_hash = hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+    return {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "outline_id": _validated_src.get("outline_id"),
+        "lifecycle_hash": _validated_src.get("lifecycle_hash"),
+        "target_language": _validated_src.get("target_language"),
+        "artifact_kind": artifact_kind,
+        "content_hash": _content_hash,
+    }, _src_row.get("id")
+
+
+async def _narasi_finish_derived_terminal(tenant_id, job_uuid, status, *, result=None, error=None,
+                                          max_attempts=2):
+    """B-07/B-08 Rework 6 (Contract F): the ONE shared bounded, idempotent terminal-write
+    helper for a Review/One-Shot derived-input row. finish_narasi_job_by_id's write is an
+    exact-state UPDATE keyed by job_uuid -- idempotent by construction, so retrying it with
+    the SAME arguments after a transient failure is always safe. Bounded (never an unbounded
+    retry loop); on exhaustion this re-raises the last error so the caller's own terminalize
+    branch fails visibly instead of silently reporting a terminal state that was never
+    durably written."""
+    _last_exc = None
+    for _attempt in range(max_attempts):
+        try:
+            await db.finish_narasi_job_by_id(tenant_id, job_uuid, status, result=result, error=error)
+            return
+        except Exception as _e:
+            _last_exc = _e
+    raise _last_exc
+
+
+async def _narasi_resolve_manuscript_lineage(tenant_id, *, source_job_id=None, source_job_uuid=None,
+                                             manuscript_language):
+    """B-07/B-08: authority is DATA-driven, not flag-driven (rework contract A). A request
+    carrying a source is ALWAYS checked against that job's own durable
+    input_payload.narasi_lifecycle, regardless of the current NARASI_LIFECYCLE_V1 value -- a
+    v1-admitted job's language can never be silently overridden just because the process flag
+    later changes. A source-job READ failure is fatal (never a silent legacy downgrade). Only
+    a genuinely STANDALONE call (no source named at all) with no explicit manuscript_language is
+    gated by the flag -- that is "new v1 admission," which the flag legitimately controls.
+
+    B-07/B-08 Rework 5 (Contract F): resolves through the shared _narasi_resolve_lineage_source
+    -- never a legacy-lookup call of its own -- so this function's language and
+    _narasi_build_lineage_binding's binding always come from the SAME selected row rather than
+    two independent (potentially different, for a duplicate external id) lookups."""
+    _src_row, _validated_src = await _narasi_resolve_lineage_source(
+        tenant_id, source_job_id=source_job_id, source_job_uuid=source_job_uuid)
+    if _validated_src is None:
+        if not manuscript_language and str(os.environ.get("NARASI_LIFECYCLE_V1", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            raise HTTPException(422, "manuscript_language is required for a standalone Review/One-Shot request")
+        return manuscript_language
+    _derived = _validated_src.get("target_language")
+    if manuscript_language:
+        # B-07/B-08 (Rework 2, Contract F): an invalid explicit language always
+        # rejects -- it must never be silently treated as "no override supplied".
+        from continuity.lifecycle import canonicalize_target_language, LifecycleValidationError
+        try:
+            _canon_explicit = canonicalize_target_language(manuscript_language)
+        except LifecycleValidationError as _lang_lve:
+            raise HTTPException(
+                422, f"TARGET_LANGUAGE_INVALID: {_lang_lve.code}") from _lang_lve
+        if _canon_explicit != _derived:
+            raise HTTPException(
+                409, "TARGET_LANGUAGE_MISMATCH: manuscript_language conflicts with source job's lifecycle")
+    return _derived
+
+
+async def _narasi_build_lineage_binding(tenant_id, source_job_id, artifact_kind, content, *,
+                                        source_job_uuid=None):
+    """B-07/B-08 Rework 2 (Contract F): derives a review_input/oneshot_input binding proving
+    a derived request (Review, One-Shot, or a saved edit) is bound to its exact source job's
+    lifecycle state, plus that source job's own durable UUID for persistence. Returns
+    (None, None) for a genuinely standalone (no source named) request only. A source-job
+    read/validation failure is FATAL (propagates), never silently swallowed into a false None
+    -- Contract F requires binding construction failures to be fatal for a source-linked v1
+    call.
+
+    B-07/B-08 Rework 5 (Contract F): resolves through the shared _narasi_resolve_lineage_source
+    -- never a legacy-lookup call of its own -- reusing the SAME selected row
+    _narasi_resolve_manuscript_lineage derived its language from, rather than a second,
+    independent (potentially different, for a duplicate external id) lookup."""
+    _src_row, _validated_src = await _narasi_resolve_lineage_source(
+        tenant_id, source_job_id=source_job_id, source_job_uuid=source_job_uuid)
+    if _validated_src is None:
+        return None, None
+    import hashlib
+    from continuity.lifecycle import _ARTIFACT_KINDS, LIFECYCLE_SCHEMA_VERSION, LifecycleValidationError
+    if type(artifact_kind) is not str or artifact_kind not in _ARTIFACT_KINDS:
+        raise LifecycleValidationError("ARTIFACT_KIND_INVALID", "unknown artifact_kind")
+    _content_hash = hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+    # The job snapshot is DURABLE, DB-sourced state -- already validated once by
+    # build_job_lifecycle at admission time, not an untrusted caller-supplied payload -- so
+    # this binds directly to its own trusted outline_id/lifecycle_hash/target_language rather
+    # than routing through bind_lifecycle_artifact, which validates a CALLER-SUPPLIED outline
+    # envelope's COMPLETE shape (status, full per-chapter creative fields, etc.) that a job's
+    # own reduced snapshot structurally does not carry and cannot satisfy.
+    return {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "outline_id": _validated_src.get("outline_id"),
+        "lifecycle_hash": _validated_src.get("lifecycle_hash"),
+        "target_language": _validated_src.get("target_language"),
+        "artifact_kind": artifact_kind,
+        "content_hash": _content_hash,
+    }, _src_row.get("id")
 
 
 @app.post("/narasi/review")
 async def narasi_review(body: dict, user: CurrentUser = Depends(get_current_user)):
     """Non-streaming editorial review — same pattern as narasi/generate. Auth'd +
     tenant-scoped so the capture (usage + moat) is isolated per tenant."""
+    # B-07/B-08: optional generation-job lineage — a request carrying source_job_id derives
+    # manuscript_language from that source job's own input_payload.narasi_lifecycle and
+    # rejects a conflicting explicit value; a standalone request requires
+    # manuscript_language explicitly (flag on only). The resolved language and a
+    # review_input binding proving this call is bound to source_job_id's exact lifecycle
+    # state are both actually used below (assigned, threaded into the captured moat
+    # session), never a discarded call made only to satisfy a source-check.
+    # B-07/B-08 Rework 6 (Contract C): ONE combined read -- language and binding both
+    # derive from this SAME resolved row, never two independent lookups that a concurrent
+    # source-job mutation could split across two different snapshot epochs.
+    _review_src_row, _review_validated_src = await _narasi_resolve_lineage(
+        user.tenant_id, source_job_id=body.get("source_job_id"),
+        source_job_uuid=body.get("source_job_uuid"))
+    _review_resolved_language = _narasi_lineage_language(
+        _review_validated_src, body.get("manuscript_language"))
+    # B-04a: report_language is validated BEFORE any provider/persistence work (same
+    # boundary as message-required below), and is entirely separate authority from
+    # manuscript_language above -- it never overrides or re-derives it.
+    _b04a_on = _narasi_review_language_chapter_key_v1_enabled()
+    _review_report_language = "id"
+    if _b04a_on:
+        # Lazy import: this local name is visible to _capture_review_moat below via
+        # normal closure scoping, since it is bound before that closure ever runs.
+        import narasi_review_contract
+        try:
+            _review_report_language = narasi_review_contract.normalize_report_language(
+                body.get("report_language"))
+        except narasi_review_contract.ReviewContractError as _rce:
+            raise HTTPException(422, f"REPORT_LANGUAGE_INVALID: {_rce.code}") from _rce
     model = (body.get("model") or "gemini-2.5-flash").strip()
     # Rules come from the SERVER persona (by style), never from the client.
     # Backward-compat: only use server persona when a style is actually sent.
     _style = (body.get("style") or "").strip()
     system = ((_review_persona_for(_style).get("system") if _style else body.get("system")) or "You are a helpful editorial assistant.").strip()
+    if _b04a_on:
+        # Appended even on the legacy client-system path (no `style` sent) -- the final
+        # contract block must not be bypassable just because `style` was omitted.
+        system = system + narasi_review_contract.build_review_language_block(
+            _review_resolved_language, _review_report_language)
     message = (body.get("message") or "").strip()
     max_tokens = int(body.get("max_tokens") or 16000)
     if not message:
         raise HTTPException(400, "message required")
+    _review_binding, _review_source_job_uuid = _narasi_lineage_binding(
+        _review_src_row, _review_validated_src, "review_input", message)
+
+    _rtenant = user.tenant_id
+    _ruser = await _resolve_user_uuid(user.tenant_id, user.user_id)
+    # B-07/B-08 Rework 4 (Contract G): a tenant-scoped derived-operation input record --
+    # operation type, source binding, canonical manuscript language, exact input content
+    # hash, and model -- is durably committed BEFORE any provider work. A write failure
+    # here raises straight out of this request, before the provider is ever called, so
+    # provider calls/usage charges/output persistence/success for this request are zero.
+    #
+    # B-07/B-08 Rework 5 (Contract G): the returned UUID is RETAINED (never discarded) and
+    # this exact row is terminalized done/error below -- see the try/except around the
+    # provider call -- so a derived-input row can never remain "processing" forever.
+    import hashlib as _review_hashlib
+    _review_derived_uuid = await db.create_derived_input(
+        _rtenant, _ruser, operation="review", source_job_uuid=_review_source_job_uuid,
+        lineage_binding=_review_binding, language=_review_resolved_language,
+        content_hash=_review_hashlib.sha256(message.encode("utf-8")).hexdigest(), model=model)
 
     # Resolve model alias
     resolved = MODELS.get(model, model)
     ceiling = MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS)
     safe_max = min(max_tokens, ceiling)
 
-    client = make_client(model)
     try:
+        # client construction (API-key validation for a BYOK model) is INSIDE this try --
+        # a client-construction failure must terminalize _review_derived_uuid as error too,
+        # exactly like a provider-call failure, never leave the row silently stuck.
+        client = make_client(model)
         resp = client.chat.completions.create(
             model=resolved,
             messages=[
@@ -12944,26 +13902,72 @@ async def narasi_review(body: dict, user: CurrentUser = Depends(get_current_user
         out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
         print(f"[review] model={resolved} finish={finish} in={in_tok} out={out_tok} max={safe_max} temp=0", flush=True)
         # Step 1.5: capture editorial review — usage + the review text as a moat artifact.
+        # (_rtenant/_ruser already resolved above, before the pre-provider derived-input write.)
+        # Usage-log failure stays non-fatal (an established, deliberate convention elsewhere
+        # in this codebase) -- it does not by itself terminalize _review_derived_uuid as error.
         try:
-            _rtenant = user.tenant_id
-            _ruser = await _resolve_user_uuid(user.tenant_id, user.user_id)
             await _log_narasi_usage(_rtenant, _ruser, model, resp, charge=True)
+        except Exception as _ue:
+            import logging as _lg; _lg.getLogger("narasi").warning("review usage log skipped: %s", _ue)
+
+        async def _capture_review_moat():
+            _moat_payload = {"rag_used": False, "sources": None, "passages": None,
+                 "prompt_used": (system + "\n\n" + message)[:8000], "narration": text,
+                 "manuscript_language": _review_resolved_language, "review_input_binding": _review_binding}
+            if _b04a_on:
+                _moat_payload.update(narasi_review_contract.response_capability_fields(
+                    _review_report_language))
             await db.save_moat_session(
                 _rtenant, _ruser, (body.get("topic") or "editorial_review"), "editorial_review",
-                {"rag_used": False, "sources": None, "passages": None,
-                 "prompt_used": (system + "\n\n" + message)[:8000], "narration": text},
-                model, in_tok, out_tok, _calc_cost(model, in_tok, out_tok))
-            # Step 2: persist the review output to R2 + assets (Media Vault → Narasi Review)
-            await _persist_asset(
-                user.tenant_id, asset_type="document", source_job_type=None,
-                filename=f"review-{uuid.uuid4().hex[:8]}.txt",
-                data=(text or "").encode("utf-8"), content_type="text/plain; charset=utf-8",
-                user_id=None, metadata={"kind": "narasi_review", "style": _style,
-                                        "topic": (body.get("topic") or "")})
-        except Exception as _ce:
-            import logging as _lg; _lg.getLogger("narasi").warning("review capture failed (non-fatal): %s", _ce)
-        return {"ok": True, "text": text, "finish_reason": finish, "usage": {"input": in_tok, "output": out_tok}}
+                _moat_payload,
+                model, in_tok, out_tok, _calc_cost(model, in_tok, out_tok),
+                source_job_uuid=_review_source_job_uuid, lineage_binding=_review_binding)
+
+        if _review_source_job_uuid:
+            # B-07/B-08 Rework 3 (Contract H): a source-linked review's lineage persistence
+            # is FATAL -- propagates to the outer handler, never swallowed -- so a caller can
+            # never believe its review was recorded against the source job when it silently
+            # wasn't.
+            await _capture_review_moat()
+        else:
+            try:
+                await _capture_review_moat()
+            except Exception as _standalone_ce:
+                import logging as _lg
+                _lg.getLogger("narasi").warning("standalone review moat capture skipped: %s", _standalone_ce)
+        # Step 2: persist the review output to R2 + assets (Media Vault → Narasi Review); this
+        # helper is internally self-contained non-fatal (returns None on error), independent
+        # of lineage.
+        await _persist_asset(
+            user.tenant_id, asset_type="document", source_job_type=None,
+            filename=f"review-{uuid.uuid4().hex[:8]}.txt",
+            data=(text or "").encode("utf-8"), content_type="text/plain; charset=utf-8",
+            user_id=None, metadata={"kind": "narasi_review", "style": _style,
+                                    "topic": (body.get("topic") or "")})
+        # B-07/B-08 Rework 6 (Contract F): the shared bounded/idempotent helper -- a
+        # transient failure here gets a real retry before this falls through to the
+        # except block below and mis-terminalizes a genuine success as "error".
+        await _narasi_finish_derived_terminal(
+            _rtenant, _review_derived_uuid, "done",
+            result={"word_count": len(text.split()) if text else 0})
+        _review_response = {"ok": True, "text": text, "finish_reason": finish, "usage": {"input": in_tok, "output": out_tok},
+                "manuscript_language": _review_resolved_language, "review_input_binding": _review_binding}
+        if _b04a_on:
+            _review_response.update(narasi_review_contract.response_capability_fields(
+                _review_report_language))
+        return _review_response
     except Exception as e:
+        # B-07/B-08 Rework 5 (Contract G): terminalize the retained derived-input row as
+        # error on EVERY failure after creation (provider, client construction, lineage
+        # persistence) -- best-effort so a terminalize failure never masks the real error.
+        # B-07/B-08 Rework 6 (Contract F): routed through the shared bounded/idempotent
+        # helper -- a transient first write failure is retried, never given up on after
+        # a single attempt.
+        try:
+            await _narasi_finish_derived_terminal(
+                _rtenant, _review_derived_uuid, "error", error=str(e)[:2000])
+        except Exception:
+            pass
         raise HTTPException(500, str(e))
 
 
@@ -12983,6 +13987,24 @@ async def narasi_save_edit(job_id: str, body: dict,
     duration_min   = body.get("duration_minutes")
     language       = body.get("language") or None
 
+    # B-07/B-08: save-edit's source job IS the path job_id -- resolve/validate the SAME way
+    # Review/One-Shot resolve an explicit source_job_id (never re-derive language from the
+    # picker once a v1 job's own persisted authority exists), and bind this saved edit to
+    # that job's exact lifecycle state.
+    #
+    # B-07/B-08 Rework 5 (Contract F): job_id here is the client-supplied EXTERNAL id, which
+    # two rows can share -- so a caller that already knows its run's durable job_uuid (the
+    # normal case once a v1 run exists) should send it, letting this resolve exactly like
+    # Review/One-Shot's own source_job_uuid rather than falling into the external-only
+    # bootstrap rule (which now rejects a lifecycle-bound row found that way).
+    _save_edit_source_job_uuid_in = body.get("job_uuid")
+    # B-07/B-08 Rework 6 (Contract C): ONE combined read, same as Review/One-Shot.
+    _save_edit_src_row, _save_edit_validated_src = await _narasi_resolve_lineage(
+        user.tenant_id, source_job_id=job_id, source_job_uuid=_save_edit_source_job_uuid_in)
+    language = _narasi_lineage_language(_save_edit_validated_src, language)
+    _save_edit_binding, _save_edit_source_job_uuid = _narasi_lineage_binding(
+        _save_edit_src_row, _save_edit_validated_src, "review_input", corrected_text)
+
     # Resolve the moat_session id written by generate (if present)
     moat_sid = body.get("moat_session_id")
     if not moat_sid and chap_id:
@@ -12995,19 +14017,35 @@ async def narasi_save_edit(job_id: str, body: dict,
     if not (original_text and corrected_text):
         return {"ok": False, "reason": "original_text and corrected_text required"}
 
-    try:
-        # Resolve the Clerk user id → users.id UUID (save_correction_pair casts
-        # user_id to UUID; passing the raw Clerk id silently failed the capture).
-        _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
-        pair = await db.save_correction_pair(
+    # Resolve the Clerk user id → users.id UUID (save_correction_pair casts
+    # user_id to UUID; passing the raw Clerk id silently failed the capture).
+    _user = await _resolve_user_uuid(user.tenant_id, user.user_id)
+
+    async def _save_edit_pair():
+        return await db.save_correction_pair(
             moat_sid, user.tenant_id or db._DEV_TENANT_ID, _user,
             original_text, corrected_text,
-            style_label, topic, duration_min, language)
-        return {"ok": True, "quality_tier": pair.get("quality_tier"),
-                "edit_ratio": pair.get("edit_ratio")}
-    except Exception as e:
-        _logging.getLogger("moat").warning("correction capture failed (non-fatal): %s", e)
-        return {"ok": False, "reason": str(e)}
+            style_label, topic, duration_min, language,
+            source_job_uuid=_save_edit_source_job_uuid, lineage_binding=_save_edit_binding)
+
+    if _save_edit_source_job_uuid:
+        # B-07/B-08 Rework 3 (Contract H): a source-linked saved edit's lineage persistence
+        # is FATAL -- never swallowed -- so a caller can never believe its edit was recorded
+        # against the source job when it silently wasn't.
+        try:
+            pair = await _save_edit_pair()
+        except Exception as e:
+            raise HTTPException(502, {"error": "LIFECYCLE_PERSISTENCE_FAILED",
+                                      "message": f"could not persist source-linked correction pair: {e}"})
+    else:
+        try:
+            pair = await _save_edit_pair()
+        except Exception as e:
+            _logging.getLogger("moat").warning("standalone save-edit capture skipped: %s", e)
+            return {"ok": False, "reason": str(e)}
+    return {"ok": True, "quality_tier": pair.get("quality_tier"),
+            "edit_ratio": pair.get("edit_ratio"),
+            "manuscript_language": language, "review_input_binding": _save_edit_binding}
 
 
 @app.post("/narasi/stitch/{job_id}")
@@ -13019,32 +14057,140 @@ async def narasi_stitch(job_id: str, body: dict,
     _tenant    = user.tenant_id
     style      = (body.get("style") or "storytelling").strip()
     language   = (body.get("language") or "id").strip()
+
+    # B-07/B-08: authority is DATA-driven (rework contract A) -- the durable row is read
+    # UNCONDITIONALLY (never gated behind the current admission flag), and a v1 job's
+    # persisted target_language in its own narasi_lifecycle snapshot is the ONLY authority
+    # once it exists, surviving a later flag toggle either way. A conflicting explicit body
+    # language rejects; a missing one is fine because the persisted authority already
+    # exists. A durable-read failure fails CLOSED (never silently falls back to trusting
+    # body/picker language for what might be a v1 job). Stored Markdown remains
+    # presentation only, never identity. The SAME row read here is reused below so stitch
+    # never queries the durable jobs row twice.
+    # B-07/B-08 Rework 4 (Contract A/E): once a caller has a UUID, stitch resolves by it --
+    # never by newest-by-external -- and a paired external id is verified against that
+    # SAME row (_resolve_narasi_run raises 409 on mismatch, which propagates untouched).
+    # B-07/B-08 Rework 5 (Contract B.2/B.4): a UUID-present resolution failure fails closed
+    # (propagates, never falls back). Absent a UUID, stitch keeps its own permissive
+    # bootstrap read (a client with no UUID yet must still be able to stitch once to learn
+    # it) and does NOT route through _resolve_narasi_run's external-only V1 rejection.
+    _stitch_job_uuid_in = body.get("job_uuid")
+    if _stitch_job_uuid_in:
+        try:
+            _row = await _resolve_narasi_run(_tenant, job_id, _stitch_job_uuid_in)
+        except HTTPException:
+            raise
+        except Exception as _stitch_read_exc:
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: could not read job {job_id}: {_stitch_read_exc}")
+    else:
+        # B-07/B-08 Rework 6 (Contract A): routed through the strict shared resolver -- a
+        # lifecycle-bound row found by external id alone now rejects (409) before any
+        # chapter read, rather than being silently stitched by guesswork.
+        try:
+            _row = await _resolve_narasi_run(_tenant, job_id, None)
+        except HTTPException:
+            raise
+        except Exception as _stitch_read_exc:
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: could not read job {job_id}: {_stitch_read_exc}")
+    _stitch_job_uuid = _row.get("id") if _row else None
+    _stitch_lifecycle = ((_row or {}).get("input_payload") or {}).get("narasi_lifecycle")
+    # B-07/B-08 Rework 4 (Contract E): the durable snapshot is fully validated (never merely
+    # spot-read for target_language/chapters) the moment it's read -- a malformed/tampered
+    # durable row (e.g. a forged bindings shape) is never trusted merely because it
+    # superficially resembles a valid one, and every field stitch reads below comes from
+    # this validated copy.
+    if _stitch_lifecycle:
+        from continuity.lifecycle import validate_durable_job_snapshot, LifecycleValidationError
+        try:
+            _stitch_lifecycle = validate_durable_job_snapshot(_stitch_lifecycle)
+        except LifecycleValidationError as _stitch_snap_lve:
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: job {job_id} has a malformed durable "
+                f"lifecycle snapshot: {_stitch_snap_lve.code}")
+    if _stitch_lifecycle and _stitch_lifecycle.get("target_language"):
+        _persisted_language = _stitch_lifecycle["target_language"]
+        _body_language = body.get("language")
+        if _body_language:
+            from continuity.lifecycle import canonicalize_target_language, LifecycleValidationError
+            try:
+                _canon_body_language = canonicalize_target_language(_body_language)
+            except LifecycleValidationError:
+                _canon_body_language = None
+            if _canon_body_language and _canon_body_language != _persisted_language:
+                raise HTTPException(
+                    409, "TARGET_LANGUAGE_MISMATCH: stitch language does not match the persisted job language")
+        language = _persisted_language
+
     lang_label = _resolve_narasi_lang(language)
 
     body_text = ""
     _partial = False          # Slice 3 (U2): surface the job-level undershoot verdict to the FE
     _report = None
-    # ── 1. DB = source of truth: stored stitched markdown, else narasi_chapters ──
-    try:
-        _row = await db.get_job_by_external(_tenant, job_id)
-        if _row:
-            _payload = _row.get("result_payload") or {}
-            if isinstance(_payload, str):
-                try: _payload = json.loads(_payload)
-                except Exception: _payload = {}
-            _partial = bool((_payload or {}).get("partial"))
-            _report  = (_payload or {}).get("undershoot_report")
-            _stored_md = ((_payload or {}).get("markdown") or "")
-            if _stored_md.strip():
-                body_text = _stored_md
-            elif _row.get("id"):
-                _chs = await db.get_narasi_chapters(_tenant, _row["id"])
+    # B-07/B-08 Rework 2 (Contract E): structured per-chapter records built directly from
+    # narasi_chapters (never from splitting body_text) so the frontend can render/retry by
+    # chapter_id -- empty for a legacy job with no durable chapter rows.
+    _stitch_chapters = []
+    if _stitch_lifecycle:
+        # B-07/B-08 Rework 3 (Contract F): for a v1-bound job, structured readback is
+        # AUTHORITATIVE -- a chapters read failure or an incomplete/duplicate/foreign row
+        # set is FATAL (never a silent degrade to possibly-stale result_payload.markdown),
+        # and the rendered markdown comes from these fresh rows, in admitted order. Cached
+        # markdown stays a legacy fallback only, for a job with no lifecycle at all.
+        _payload = (_row or {}).get("result_payload") or {}
+        if isinstance(_payload, str):
+            try: _payload = json.loads(_payload)
+            except Exception: _payload = {}
+        _partial = bool((_payload or {}).get("partial"))
+        _report  = (_payload or {}).get("undershoot_report")
+        try:
+            _chs = await db.get_narasi_chapters(_tenant, _row["id"]) if _row and _row.get("id") else []
+        except Exception as _stitch_chs_exc:
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: could not read chapters for job {job_id}: {_stitch_chs_exc}")
+        # B-07/B-08 Rework 4 (Contract E): verify each row's (chapter_id, chapter_index) PAIR
+        # against the admitted mapping -- not just the ID SET -- so two rows can never ship
+        # with their indexes silently swapped between two otherwise-admitted chapter_ids.
+        _stitch_admitted_by_id = {c["chapter_id"]: c["chapter_index"] for c in _stitch_lifecycle["chapters"]}
+        _stitch_db_ids = {c.get("chapter_id") for c in _chs if isinstance(c, dict) and c.get("chapter_id")}
+        if (len(_chs) != len(_stitch_admitted_by_id) or _stitch_db_ids != set(_stitch_admitted_by_id)
+                or any(_stitch_admitted_by_id.get(c.get("chapter_id")) != int(c.get("chapter_index") or 0)
+                       for c in _chs)):
+            raise HTTPException(
+                502, f"LIFECYCLE_PERSISTENCE_FAILED: job {job_id} has incomplete structured chapter rows")
+        _stitch_chapters = sorted((
+            {"chapter_id": c.get("chapter_id"), "chapter_index": int(c.get("chapter_index") or 0),
+             "heading": f"## {_chapter_label(language, int(c.get('chapter_index') or 0) + 1)}",
+             "content": c.get("content") or ""}
+            for c in _chs
+        ), key=lambda c: c["chapter_index"])
+        body_text = "\n\n".join(f"{c['heading']}\n\n{c['content']}" for c in _stitch_chapters)
+    else:
+        # ── 1. DB = source of truth: stored stitched markdown, else narasi_chapters (legacy) ──
+        try:
+            if _row:
+                _payload = _row.get("result_payload") or {}
+                if isinstance(_payload, str):
+                    try: _payload = json.loads(_payload)
+                    except Exception: _payload = {}
+                _partial = bool((_payload or {}).get("partial"))
+                _report  = (_payload or {}).get("undershoot_report")
+                _stored_md = ((_payload or {}).get("markdown") or "")
+                _chs = await db.get_narasi_chapters(_tenant, _row["id"]) if _row.get("id") else []
                 if _chs:
-                    body_text = "\n\n".join(
-                        f"## {_chapter_label(language, int(c['chapter_index']) + 1)}\n\n{c.get('content', '')}"
-                        for c in _chs)
-    except Exception as _e:
-        import logging as _lg; _lg.getLogger("narasi").warning("stitch DB read failed (non-fatal): %s", _e)
+                    _stitch_chapters = [
+                        {"chapter_id": c.get("chapter_id"), "chapter_index": int(c.get("chapter_index") or 0),
+                         "heading": f"## {_chapter_label(language, int(c.get('chapter_index') or 0) + 1)}",
+                         "content": c.get("content") or ""}
+                        for c in _chs
+                    ]
+                if _stored_md.strip():
+                    body_text = _stored_md
+                elif _chs:
+                    body_text = "\n\n".join(f"{c['heading']}\n\n{c['content']}" for c in _stitch_chapters)
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("narasi").warning("stitch DB read failed (non-fatal): %s", _e)
 
     # ── 2. fallback: temp-dir cache (fast; gone after redeploy) ──
     if not body_text.strip():
@@ -13069,7 +14215,8 @@ async def narasi_stitch(job_id: str, body: dict,
     _header_prefixes = tuple(f"> **{_v['style']}:**" for _v in _NARASI_HEADER_LABELS.values())
     if body_text.lstrip().startswith(_header_prefixes):
         return {"ok": True, "markdown": body_text, "total_words": total_words,
-                "partial": _partial, "undershoot_report": _report}
+                "partial": _partial, "undershoot_report": _report, "chapters": _stitch_chapters,
+                "job_uuid": _stitch_job_uuid}
     # Gaya shows the DISPLAY name ("Big History"), never the raw registry key ("harari").
     _style_label = style
     try:
@@ -13084,7 +14231,8 @@ async def narasi_stitch(job_id: str, body: dict,
                 f"**{total_words} {_lbl['words']}**\n\n---\n\n"
                 + body_text)
     return {"ok": True, "markdown": markdown, "total_words": total_words,
-            "partial": _partial, "undershoot_report": _report}
+            "partial": _partial, "undershoot_report": _report, "chapters": _stitch_chapters,
+            "job_uuid": _stitch_job_uuid}
 
 
 
@@ -13685,6 +14833,34 @@ OUTPUT MUST FOLLOW THIS EXACT FORMAT (delimiters are mandatory):
 async def oneshot_fix_submit(body: dict,
                              user: CurrentUser = Depends(get_current_user)):
     """Submit a one-shot fix job. Returns job_id immediately, processes in background."""
+    # B-07/B-08: optional generation-job lineage — a request carrying source_job_id derives
+    # manuscript_language from that source job's own input_payload.narasi_lifecycle and
+    # rejects a conflicting explicit value; a standalone request requires
+    # manuscript_language explicitly (flag on only). Both the resolved language and an
+    # oneshot_input binding proving this call is bound to source_job_id's exact lifecycle
+    # state are threaded into the persisted job result below, never discarded.
+    # B-07/B-08 Rework 6 (Contract C): ONE combined read -- language and binding both
+    # derive from this SAME resolved row, never two independent lookups that a concurrent
+    # source-job mutation could split across two different snapshot epochs.
+    _oneshot_src_row, _oneshot_validated_src = await _narasi_resolve_lineage(
+        user.tenant_id, source_job_id=body.get("source_job_id"),
+        source_job_uuid=body.get("source_job_uuid"))
+    _oneshot_resolved_language = _narasi_lineage_language(
+        _oneshot_validated_src, body.get("manuscript_language"))
+    # B-04a: validated before job creation, task scheduling, provider calls, usage, or
+    # correction persistence. VO Optimize never sends report_language, so this defaults
+    # harmlessly to "id" for VO and is never applied to VO's system/instruction below.
+    _b04a_on = _narasi_review_language_chapter_key_v1_enabled()
+    _oneshot_report_language = "id"
+    if _b04a_on:
+        # Lazy import: this local name is visible to the nested run_job() closure below
+        # via normal closure scoping, since it is bound before run_job is ever invoked.
+        import narasi_review_contract
+        try:
+            _oneshot_report_language = narasi_review_contract.normalize_report_language(
+                body.get("report_language"))
+        except narasi_review_contract.ReviewContractError as _rce:
+            raise HTTPException(422, f"REPORT_LANGUAGE_INVALID: {_rce.code}") from _rce
     model     = (body.get("model")     or "gemini-2.5-pro").strip()
     # One-Shot Fix sends persona_style → rules from SERVER persona (not client).
     # VO Optimize sends its own `system` (VO_OPTIMIZE_SYSTEM, not editorial rules).
@@ -13694,6 +14870,8 @@ async def oneshot_fix_submit(body: dict,
     file_name = (body.get("file_name") or "narasi").strip()
     if not content: raise HTTPException(400, "content required")
     if not system:  raise HTTPException(400, "system required")
+    _oneshot_binding, _oneshot_source_job_uuid = _narasi_lineage_binding(
+        _oneshot_src_row, _oneshot_validated_src, "oneshot_input", content)
 
     temperature = float(body.get("temperature") if body.get("temperature") is not None else 0)
     temperature = max(0.0, min(1.0, temperature))  # clamp 0-1
@@ -13701,22 +14879,53 @@ async def oneshot_fix_submit(body: dict,
     # Phase 1 WS3: tenant_id from JWT, user UUID resolved from DB
     _TENANT_ID = user.tenant_id
     _USER_ID   = await _resolve_user_uuid(user.tenant_id, user.user_id)
-    job_id = await db.create_job(_TENANT_ID, _USER_ID, "oneshot_fix", file_name)
-    await rc.set_progress(job_id, "Memulai analisis...")   # seed live progress in Redis
+    # B-07/B-08 Rework 4 (Contract G): a tenant-scoped derived-operation input record --
+    # operation type, source binding, canonical manuscript language, exact input content
+    # hash, and model -- is durably committed BEFORE any provider work is even scheduled. A
+    # write failure here raises straight out of this request, before asyncio.create_task
+    # ever runs below, so provider calls/usage/output/success for this submission are zero.
+    #
+    # B-07/B-08 Rework 5 (Contract G): the returned UUID is RETAINED (never discarded) and
+    # terminalized done/error on every branch below -- job creation, API-key validation,
+    # task scheduling (this function's own try/except), and every branch inside run_job's
+    # own try/except (provider, lineage persistence, background execution) -- so this row
+    # can never remain "processing" forever.
+    import hashlib as _oneshot_hashlib
+    _oneshot_derived_uuid = await db.create_derived_input(
+        _TENANT_ID, _USER_ID, operation="oneshot_fix", source_job_uuid=_oneshot_source_job_uuid,
+        lineage_binding=_oneshot_binding, language=_oneshot_resolved_language,
+        content_hash=_oneshot_hashlib.sha256(content.encode("utf-8")).hexdigest(), model=model)
 
-    # Capture API key before thread spawn (ContextVar not accessible in threads).
-    # DeepSeek direct models use DEEPSEEK_API_KEY; everything else uses LaoZhang key.
-    _resolved_for_key = MODELS.get(model, model)
-    _route_for_thread = _deepseek_route.get()  # capture before thread spawn
-    if _resolved_for_key in DEEPSEEK_DIRECT_MODELS or model in DEEPSEEK_DIRECT_MODELS:
-        if _route_for_thread == "laozhang":
-            api_key = _req_key.get() or API_KEY
+    try:
+        job_id = await db.create_job(_TENANT_ID, _USER_ID, "oneshot_fix", file_name)
+        await rc.set_progress(job_id, "Memulai analisis...")   # seed live progress in Redis
+
+        # Capture API key before thread spawn (ContextVar not accessible in threads).
+        # DeepSeek direct models use DEEPSEEK_API_KEY; everything else uses LaoZhang key.
+        _resolved_for_key = MODELS.get(model, model)
+        _route_for_thread = _deepseek_route.get()  # capture before thread spawn
+        if _resolved_for_key in DEEPSEEK_DIRECT_MODELS or model in DEEPSEEK_DIRECT_MODELS:
+            if _route_for_thread == "laozhang":
+                api_key = _req_key.get() or API_KEY
+            else:
+                api_key = DEEPSEEK_API_KEY
+                if not api_key:
+                    raise HTTPException(400, "DEEPSEEK_API_KEY is not set in environment.")
         else:
-            api_key = DEEPSEEK_API_KEY
-            if not api_key:
-                raise HTTPException(400, "DEEPSEEK_API_KEY is not set in environment.")
-    else:
-        api_key = _req_key.get() or API_KEY  # capture before thread spawn
+            api_key = _req_key.get() or API_KEY  # capture before thread spawn
+    except Exception as _oneshot_pre_exc:
+        # B-07/B-08 Rework 5 (Contract G): job creation / API-key validation failing
+        # AFTER the derived-input row was created must still terminalize it as error --
+        # never leave it stuck at "processing" just because no background task ever ran.
+        # B-07/B-08 Rework 6 (Contract F): routed through the shared bounded/idempotent
+        # helper -- a transient first write failure is retried, never given up on after
+        # a single attempt.
+        try:
+            await _narasi_finish_derived_terminal(
+                _TENANT_ID, _oneshot_derived_uuid, "error", error=str(_oneshot_pre_exc)[:2000])
+        except Exception:
+            pass
+        raise
 
     async def run_job():
         loop = asyncio.get_event_loop()
@@ -13731,9 +14940,14 @@ async def oneshot_fix_submit(body: dict,
             client   = OpenAI(api_key=api_key, base_url=BASE_URL, timeout=600.0)
             is_vo_mode = "VO Script Editor" in system or "ANCHOR" in system
             if is_vo_mode:
+                # C07: VO Optimize stays byte-identical -- no B-04a checklist localization.
                 user_msg = "NARASI:\n" + content
             else:
-                user_msg = ONESHOT_FIX_INSTRUCTION + "\n\nNARASI:\n" + content
+                _oneshot_instruction = ONESHOT_FIX_INSTRUCTION
+                if _b04a_on:
+                    _oneshot_instruction = _oneshot_instruction + narasi_review_contract.build_oneshot_language_instruction(
+                        _oneshot_resolved_language, _oneshot_report_language)
+                user_msg = _oneshot_instruction + "\n\nNARASI:\n" + content
 
             # Blocking OpenAI call → run in a worker thread so the event loop
             # stays free. The result comes back to THIS loop; no cross-loop DB.
@@ -13766,12 +14980,27 @@ async def oneshot_fix_submit(body: dict,
             await _log_narasi_usage(_TENANT_ID, _USER_ID, model, resp, job_id=job_id, charge=True)
             # Step 1.5: capture the AI fix (One-Shot Fix / VO Optimize) as a
             # correction pair (input -> fixed) — same moat signal as a human edit.
-            try:
+            # B-07/B-08 (Rework 2, Contract F): the RESOLVED lineage language, not the raw
+            # unvalidated body field -- and the source job's UUID + exact binding persist
+            # alongside the correction pair, not just in the transient job result below.
+            async def _capture_oneshot_pair():
                 await db.save_correction_pair(
                     None, _TENANT_ID, _USER_ID, content, fixed_book,
-                    body.get("style"), body.get("topic"), None, body.get("language"))
-            except Exception as _ce:
-                import logging as _lg; _lg.getLogger("narasi").warning("oneshot correction capture failed (non-fatal): %s", _ce)
+                    body.get("style"), body.get("topic"), None, _oneshot_resolved_language,
+                    source_job_uuid=_oneshot_source_job_uuid, lineage_binding=_oneshot_binding)
+
+            if _oneshot_source_job_uuid:
+                # B-07/B-08 Rework 3 (Contract H): a source-linked one-shot fix's lineage
+                # persistence is FATAL -- propagates to the outer handler (which fails the
+                # job), never swallowed -- so a caller can never believe its fix was recorded
+                # against the source job when it silently wasn't.
+                await _capture_oneshot_pair()
+            else:
+                try:
+                    await _capture_oneshot_pair()
+                except Exception as _standalone_ce:
+                    import logging as _lg
+                    _lg.getLogger("narasi").warning("standalone oneshot capture skipped: %s", _standalone_ce)
 
             # Live-capture: fixed manuscript → R2 + assets (Media Vault → Narasi Review)
             try:
@@ -13786,12 +15015,27 @@ async def oneshot_fix_submit(body: dict,
                 import logging as _lg; _lg.getLogger("narasi").warning("oneshot R2 persist failed (non-fatal): %s", _pe)
 
             # Persist on the MAIN loop → uses the normal pool, no cross-loop error.
-            await db.complete_job(job_id, {
+            _oneshot_result_payload = {
                 "checklist_before": checklist_before,
                 "fixed_book": fixed_book,
                 "checklist_after": checklist_after,
                 "file_name": file_name,
-            })
+                "manuscript_language": _oneshot_resolved_language,
+                "oneshot_input_binding": _oneshot_binding,
+            }
+            if _b04a_on and not is_vo_mode:
+                # C07: VO Optimize never gains report_language/review_contract_version.
+                _oneshot_result_payload.update(narasi_review_contract.response_capability_fields(
+                    _oneshot_report_language))
+            await db.complete_job(job_id, _oneshot_result_payload)
+            # B-07/B-08 Rework 5 (Contract G): terminalize the retained derived-input row as
+            # done alongside the oneshot job's own completion -- never left processing.
+            # B-07/B-08 Rework 6 (Contract F): the shared bounded/idempotent helper -- a
+            # transient failure here gets a real retry before this falls through to the
+            # except block below and mis-terminalizes a genuine success as "error".
+            await _narasi_finish_derived_terminal(
+                _TENANT_ID, _oneshot_derived_uuid, "done",
+                result={"word_count": len(fixed_book.split()) if fixed_book else 0})
             await rc.delete_progress(job_id)
         except Exception as e:
             print(f"[oneshot-fix] job {job_id} failed: {e}", flush=True)
@@ -13799,12 +15043,36 @@ async def oneshot_fix_submit(body: dict,
                 await db.fail_job(job_id, str(e))
             except Exception as e2:
                 print(f"[oneshot-fix] fail_job also failed: {e2}", flush=True)
+            # B-07/B-08 Rework 5 (Contract G): terminalize the derived-input row as error on
+            # EVERY background-task failure (provider, lineage persistence, R2/db writes) --
+            # best-effort so a terminalize failure never masks the real error.
+            # B-07/B-08 Rework 6 (Contract F): routed through the shared bounded/idempotent
+            # helper -- a transient first write failure is retried, never given up on after
+            # a single attempt.
+            try:
+                await _narasi_finish_derived_terminal(
+                    _TENANT_ID, _oneshot_derived_uuid, "error", error=str(e)[:2000])
+            except Exception as e3:
+                print(f"[oneshot-fix] derived-input terminalize also failed: {e3}", flush=True)
             try:
                 await rc.set_progress(job_id, f"Gagal: {e}", ttl=300)
             except Exception:
                 pass
 
-    asyncio.create_task(run_job())
+    try:
+        asyncio.create_task(run_job())
+    except Exception as _oneshot_schedule_exc:
+        # B-07/B-08 Rework 5 (Contract G): task-scheduling failure must also terminalize
+        # the derived-input row -- run_job() never got a chance to do it itself.
+        # B-07/B-08 Rework 6 (Contract F): routed through the shared bounded/idempotent
+        # helper -- a transient first write failure is retried, never given up on after
+        # a single attempt.
+        try:
+            await _narasi_finish_derived_terminal(
+                _TENANT_ID, _oneshot_derived_uuid, "error", error=str(_oneshot_schedule_exc)[:2000])
+        except Exception:
+            pass
+        raise
     return {"ok": True, "job_id": job_id}
 
 
@@ -13831,10 +15099,17 @@ async def oneshot_fix_result(job_id: str,
     if not job:                      raise HTTPException(404, f"Job {job_id} not found")
     if job["status"] != "done":      raise HTTPException(400, f"Job not done: {job['status']}")
     result = job.get("result_payload") or {}
-    return {"ok": True, "file_name": result.get("file_name", "narasi"),
+    _oneshot_result_response = {"ok": True, "file_name": result.get("file_name", "narasi"),
             "checklist_before": result.get("checklist_before", ""),
             "fixed_book":       result.get("fixed_book", ""),
             "checklist_after":  result.get("checklist_after", "")}
+    # B-04a: forwarded only when the stored result actually carries them (i.e. the
+    # backend flag was on and the run was not VO Optimize at completion time) -- this
+    # endpoint has no flag context of its own beyond what was persisted.
+    if "review_contract_version" in result:
+        _oneshot_result_response["report_language"] = result.get("report_language")
+        _oneshot_result_response["review_contract_version"] = result.get("review_contract_version")
+    return _oneshot_result_response
 
 
 # ---------------------------------------------------------------------------

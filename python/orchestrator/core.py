@@ -297,6 +297,12 @@ class CallTelemetry:
     # failover client handled the call — stamped by _NarasiFailoverClient. Empty when
     # the plain client served. Lets usage_logs.provider tell the truth per rung.
     provider: str = ""
+    # B-07/B-08 Rework 4 (Contract B): the admitted chapter_id straight from the work
+    # item/result, when the caller has one -- so a reader never has to reconstruct
+    # identity from task_id/"chN"/position (which silently mis-attributes the moment
+    # dispatch order diverges from admitted array order). None for a legacy (no
+    # lifecycle) run, or any non-chapter call (outline/critic/gates side-calls).
+    chapter_id: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -310,6 +316,7 @@ class CallTelemetry:
             # now exposed so callers (e.g. _polish_reduce timing log) can print
             # which rung served + surface failover overhead (Rino 2026-07-06).
             "provider": self.provider,
+            "chapter_id": self.chapter_id,
         }
 
 

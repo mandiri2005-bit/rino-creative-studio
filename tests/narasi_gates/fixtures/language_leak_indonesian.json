@@ -1,0 +1,20 @@
+{
+  "id": "LANGLEAK-001",
+  "defect_class": "language_leak_indonesian",
+  "classification": "synthetic",
+  "description": "English-target chapter prose with one stray Indonesian sentence leaking in mid-paragraph. Matches the confirmed 'target-language leakage' defect shape (execution-plan Section 9 coverage matrix, row 'Target-language leakage': deterministic lexical/script scan, body scan live).",
+  "mechanism": "narasi_gate.language_consistency_scan(text, lang) -- deterministic, offline, no model call.",
+  "source_reference": "Permanent Continuity Solution Section 3.2 (Target-language leakage); Execution Plan CLEAN Section 9 coverage matrix row 'Target-language leakage'",
+  "target_language": "en",
+  "input_text": "Larasati walked into the audition hall with her hands trembling. She had rehearsed this moment for months, running the lines until they lost their meaning. Perasaan itu datang lagi, seperti yang selalu terjadi setiap kali dia gugup menghadapi juri. The judges looked up from their notes as she took her place at the microphone, and for a moment the whole room went still.",
+  "expected_verdict": {
+    "applies": true,
+    "hits_at_least": 1,
+    "other_langs_contains": "id"
+  },
+  "negative_control_text": "Larasati walked into the audition hall with her hands trembling. She had rehearsed this moment for months, running the lines until they lost their meaning. The nervousness always came back the same way whenever she faced the judges. The judges looked up from their notes as she took her place at the microphone, and for a moment the whole room went still.",
+  "negative_control_expected": {
+    "applies": true,
+    "hits": 0
+  }
+}

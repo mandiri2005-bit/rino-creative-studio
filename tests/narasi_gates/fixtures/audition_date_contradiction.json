@@ -1,0 +1,21 @@
+{
+  "id": "AUDDATE-001",
+  "defect_class": "audition_date_contradiction",
+  "classification": "synthetic",
+  "description": "A plain scheduling fact (how many days until the audition) is stated two incompatible ways across chapters with no in-story reason -- a 'continuity' case per the canon-fork classifier's own documented rule ('a neutral fact ... stated two incompatible ways with NO in-story reason -- a plain error safe to unify'), not a deliberate reveal/twist. Matches Permanent Continuity Solution Section 3.1 ('Timeline contradiction'): Chapter 8 states the audition is 'tomorrow morning at 09:00'; Chapter 9 later states it 'was only five days away' -- the same real-manuscript shape reproduced here with synthetic wording.",
+  "mechanism": "narration_api.py _narasi_classify_canon_items (LLM-based canon-fork classifier). This fixture exercises the offline WIRING (input-shape -> stubbed model response -> position mapping) with the network-calling helper monkeypatched; no live model call is made anywhere in this corpus. The classifier-wiring test is INDEPENDENTLY corroborated by a deterministic, test-local day-count extractor (see test_fixture_manifest.py) that inspects the two chapter excerpts directly and does not depend on any mocked model response.",
+  "source_reference": "Permanent Continuity Solution Section 3.1 (Timeline contradiction); Section 22.3 golden-fixture item 1 ('Chapter 8 \"tomorrow at 09:00\" vs Chapter 9 \"five days away\"')",
+  "chapter_a_excerpt": "Larasati checked her phone one more time before bed. Audisi final akan berlangsung besok pagi, dan dia belum benar-benar siap.",
+  "chapter_b_excerpt": "By the time the letter finally arrived, everything had already shifted. Audisi final itu masih lima hari lagi, jauh lebih lambat dari yang dia kira.",
+  "negative_control_chapter_a_excerpt": "Larasati checked her phone one more time before bed. Audisi final akan berlangsung besok pagi, dan dia belum benar-benar siap.",
+  "negative_control_chapter_b_excerpt": "By the time the letter finally arrived, nothing had changed. Audisi final itu tinggal besok, seperti yang sudah dia duga sejak awal.",
+  "input_items": [
+    {"signal": "Audisi final disebut berlangsung besok pagi di satu bagian cerita, tetapi bagian lain menyebutkan audisi itu masih lima hari lagi, tanpa penjelasan cerita.", "excerpt": null}
+  ],
+  "expected_classification": "continuity",
+  "expected_gate": "_narasi_classify_canon_items returns the set of item positions classified 'continuity'",
+  "expected_day_count_invariant": {
+    "chapter_a_and_chapter_b_days_until_differ": true,
+    "negative_control_days_until_are_equal": true
+  }
+}

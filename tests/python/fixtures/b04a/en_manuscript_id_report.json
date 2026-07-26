@@ -1,0 +1,11 @@
+{
+  "fixture_id": "en_manuscript_id_report",
+  "classification": "synthetic",
+  "manuscript_language": "en",
+  "report_language": "id",
+  "manuscript_text": "## Chapter 1: The Beginning\n\nThis is the opening paragraph, written in English. The report language for this fixture is Indonesian, but headings must never be translated.\n\n## Chapter 2: An Unexpected Meeting\n\nThe second paragraph, also in English.\n",
+  "review_sections": [
+    {"title": "Chapter 1: The Beginning", "lines": ["Rekomendasi (label laporan dalam Bahasa Indonesia, teks manuskrip tetap Inggris)."]},
+    {"title": "Chapter 2: An Unexpected Meeting", "lines": ["Rekomendasi lanjutan untuk bab kedua."]}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "id": "AGE-001",
+  "defect_class": "entity_attribute_age_fork",
+  "classification": "synthetic",
+  "description": "The same named character is given two incompatible stated ages (38 and 28) in different chapters with no in-story time jump or explanation. Matches the confirmed same-entity-age-fork defect shape handled by scan_same_entity_age_fork in narasi_arithmetic.py (NARASI_AGE_LEDGER flag). The entity-attribute check (narration_api.py NARASI_ENTITY_ATTR_CHECK) also documents 'age' as a drift kind alongside gender, title, and relation — this fixture exercises the deterministic arithmetic path specifically.",
+  "mechanism": "narasi_arithmetic.scan_same_entity_age_fork — deterministic, offline, no model call. Real function invoked directly.",
+  "mechanism_id": "scan_same_entity_age_fork",
+  "source_reference": "narasi_arithmetic.py:774-806 (scan_same_entity_age_fork, NARASI_AGE_LEDGER); narration_api.py:2270 (entity-attribute check: 'age' drift kind)",
+  "input_text": "Widodo was thirty-eight years old and had been running the audition circuit for over a decade. He knew every judge by name and every pianist by ear.\n\nWidodo was only twenty-eight years old when the final round started. Experience counted more than birth year, he always said.",
+  "expected_verdict": {
+    "status": "FLAG",
+    "count_at_least": 1,
+    "kind": "same_entity_age_fork",
+    "subject": "Widodo"
+  },
+  "negative_control_text": "Widodo was thirty-eight years old and had been running the audition circuit for over a decade. He knew every judge by name and every pianist by ear.\n\nAt thirty-eight, Widodo had no patience for excuses. The contestants learned that quickly.",
+  "negative_control_expected": {
+    "status": "PASS",
+    "count": 0
+  }
+}

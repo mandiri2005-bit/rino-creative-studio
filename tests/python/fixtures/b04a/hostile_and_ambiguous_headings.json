@@ -1,0 +1,14 @@
+{
+  "fixture_id": "hostile_and_ambiguous_headings",
+  "classification": "synthetic",
+  "manuscript_language": "id",
+  "report_language": "id",
+  "manuscript_text": "## Bab 7: Chapter Tujuh\n\nParagraf tujuh yang normal, sebelum duplikasi ordinal.\n\n```\n## Bab 7: Should Be Ignored (Fenced)\nTeks ini di dalam blok kode dan tidak boleh dianggap heading.\n```\n\n## Bab 7: Duplikat Ordinal\n\nDuplikat ordinal 7, sehingga ambigu -- tidak boleh last-write-wins.\n\n## Bab 15: Bab Unik\n\nIni bab lima belas yang unik dan tidak ambigu.\n\n## Bab 20 NBSP Setelah Ordinal\n\nBaris ini memiliki NBSP (bukan spasi ASCII biasa) tepat setelah angka, sehingga TIDAK boleh dikenali sebagai heading bab.\n\n## Bab 25: Judul Sangat Panjang Sangat Panjang Sangat Panjang Sangat Panjang Sangat Panjang Sangat Panjang Sangat Panjang Sangat Panjang Sangat Panjang Sangat Panjang\n\nIni menguji heading dengan judul yang sangat panjang, harus tetap terparsing secara deterministik dan tanpa error.\n\n## Chapter 12: Unreferenced Chapter\n\nBab ini ada di manuskrip tapi tidak direview siapa pun.\n",
+  "review_sections": [
+    {"title": "Bab 7: Chapter Tujuh", "lines": ["Rekomendasi A -- target ordinal 7, yang ambigu di sisi manuskrip."]},
+    {"title": "Bab 15: Bab Unik", "lines": ["Rekomendasi B -- seksi PERTAMA yang menargetkan ordinal 15."]},
+    {"title": "Bab 15: Bab Unik", "lines": ["Rekomendasi C -- seksi KEDUA (duplikat) yang menargetkan ordinal 15 juga."]},
+    {"title": "Bab 99: Tidak Ada Di Manuskrip", "lines": ["Rekomendasi D -- ordinal valid tapi tidak ada di manuskrip."]},
+    {"title": "🔥 Ringkasan\u0000 Umum Tanpa Angka Bab", "lines": ["Rekomendasi E -- judul tidak cocok pola Bab/Chapter sama sekali, mengandung emoji dan NUL."]}
+  ]
+}
