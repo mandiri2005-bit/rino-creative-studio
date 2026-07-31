@@ -906,7 +906,32 @@ def test_writer_health_rides_in_the_same_transaction_as_its_event(fake):
 # ---------------------------------------------------------------------------
 # Operator CLI — bounded static codes, never an echo of the input
 # ---------------------------------------------------------------------------
-def test_cli_never_echoes_its_input_in_a_diagnostic(monkeypatch, capsys):
+@pytest.fixture
+def no_cli_connect(monkeypatch):
+    """Neutralise the CLI's own client lifecycle for the reader tests below.
+
+    Those tests inject a client at `obs._client`, so what they exercise is the reader.
+    Without this the CLI's real `init_redis()` would run and dial `REDIS_URL` — which
+    defaults to `redis://localhost:6379` — opening a real socket in a suite whose stated
+    contract is that it opens none, and making the result depend on whatever happens to be
+    listening on the machine. The lifecycle itself is bound directly, against the
+    production wiring, in the section that follows.
+    """
+    import redis_client as rc
+    calls = {"init": 0, "close": 0}
+
+    async def _init():
+        calls["init"] += 1
+
+    async def _close():
+        calls["close"] += 1
+
+    monkeypatch.setattr(rc, "init_redis", _init)
+    monkeypatch.setattr(rc, "close_redis", _close)
+    return calls
+
+
+def test_cli_never_echoes_its_input_in_a_diagnostic(monkeypatch, capsys, no_cli_connect):
     monkeypatch.setattr(obs, "_client", lambda: FakeRedis())
     hostile = "2026-13-45T99:99:99Z tenant-9f3c redis://user:pa55@h"
     rc = obs._main(["narasi_observability", "snapshot", "--from", hostile,
@@ -925,13 +950,14 @@ def test_cli_never_echoes_its_input_in_a_diagnostic(monkeypatch, capsys):
     ("2026-01-01T00:00:00Z", "2026-06-01T00:00:00Z", "P0A_WINDOW_TOO_LONG"),
     ("2026-06-01T00:00:00+07:00", "2026-06-02T00:00:00Z", "P0A_WINDOW_NOT_UTC"),
 ])
-def test_cli_window_errors_are_exact_static_codes(monkeypatch, capsys, frm, to, code):
+def test_cli_window_errors_are_exact_static_codes(monkeypatch, capsys, frm, to, code,
+                                                  no_cli_connect):
     monkeypatch.setattr(obs, "_client", lambda: FakeRedis())
     assert obs._main(["narasi_observability", "snapshot", "--from", frm, "--to", to]) == 2
     assert capsys.readouterr().err.strip() == code
 
 
-def test_cli_reports_redis_unavailable_without_the_url(monkeypatch, capsys):
+def test_cli_reports_redis_unavailable_without_the_url(monkeypatch, capsys, no_cli_connect):
     def boom():
         raise RuntimeError("redis://user:pa55@prod-redis:6379 connection refused")
     monkeypatch.setattr(obs, "_client", boom)
@@ -945,7 +971,8 @@ def test_cli_reports_redis_unavailable_without_the_url(monkeypatch, capsys):
     assert "redis://" not in err and "pa55" not in err
 
 
-def test_cli_degrades_an_unrecognised_read_failure_to_a_generic_code(monkeypatch, capsys):
+def test_cli_degrades_an_unrecognised_read_failure_to_a_generic_code(monkeypatch, capsys,
+                                                                    no_cli_connect):
     class Exploding(FakeRedis):
         async def hgetall(self, key):
             raise RuntimeError("AUTH failed for redis://user:pa55@prod-redis:6379")
@@ -961,7 +988,8 @@ def test_cli_degrades_an_unrecognised_read_failure_to_a_generic_code(monkeypatch
     assert "pa55" not in err and "redis://" not in err
 
 
-def test_cli_emits_canonical_json_and_a_bounded_service_label(monkeypatch, capsys):
+def test_cli_emits_canonical_json_and_a_bounded_service_label(monkeypatch, capsys,
+                                                              no_cli_connect):
     r = FakeRedis()
     monkeypatch.setattr(obs, "_client", lambda: r)
     past = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
@@ -974,6 +1002,270 @@ def test_cli_emits_canonical_json_and_a_bounded_service_label(monkeypatch, capsy
     assert obs.canonical_json(payload) == out.strip()
     assert payload["metadata"]["service"] == "operator_cli"
     assert payload["coverage"] == "INSUFFICIENT_SAMPLE"
+
+
+# ---------------------------------------------------------------------------
+# Operator CLI — the PRODUCTION client lifecycle
+#
+# Everything above hands the reader a client at `obs._client`. That proves the reader and
+# says nothing about how a standalone `python -m narasi_observability snapshot` process
+# gets one: it has no service startup, so `redis_client.client()` stayed None for its whole
+# life and EVERY window failed with `P0A_REDIS_UNAVAILABLE` — forever, on any input. 191
+# green tests missed it because the suite stubbed `_client` fifteen times and called the
+# real one zero times.
+#
+# So these tests do NOT patch `obs._client`. They stub exactly one thing — the
+# `aioredis.from_url` constructor — so `redis_client.init_redis()` runs its own real body,
+# installs the client where production installs it, and the real `_client()` is what the
+# real `read_snapshot` resolves. What binds that is not a shape check: it is that the
+# client instance handed to `from_url` is the one that receives the reader's `hgetall`.
+# ---------------------------------------------------------------------------
+class LifecycleRedis(FakeRedis):
+    """FakeRedis plus the two methods the client lifecycle itself calls."""
+
+    def __init__(self, *, ping_error=None, read_error=None, **kw):
+        super().__init__(**kw)
+        self.ping_calls = 0
+        self.close_calls = 0
+        self._ping_error, self._read_error = ping_error, read_error
+
+    async def ping(self):
+        self.ping_calls += 1
+        if self._ping_error is not None:
+            raise self._ping_error
+        return True
+
+    async def aclose(self):
+        self.close_calls += 1
+
+    async def hgetall(self, key):
+        if self._read_error is not None:
+            raise self._read_error
+        return await super().hgetall(key)
+
+
+@pytest.fixture
+def wire_production_redis(monkeypatch):
+    """Wire the production lifecycle. `from_url` is the ONLY thing stubbed."""
+    import redis_client as rc
+
+    def _wire(client):
+        monkeypatch.setattr(rc, "_redis", None)
+        monkeypatch.setattr(rc.aioredis, "from_url", lambda url, **kw: client)
+        return rc
+
+    return _wire
+
+
+def _past_hour(back=3):
+    return (datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+            - timedelta(hours=back))
+
+
+def _snapshot_argv(start, hours=1):
+    return ["narasi_observability", "snapshot",
+            "--from", start.strftime("%Y-%m-%dT%H:00:00Z"),
+            "--to", (start + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:00:00Z")]
+
+
+def test_the_cli_establishes_its_own_client_and_reaches_the_real_reader(
+        wire_production_redis, capsys):
+    import redis_client as rc
+    client = LifecycleRedis()
+    wire_production_redis(client)
+    start = _past_hour()
+
+    code = obs._main(_snapshot_argv(start))
+    captured = capsys.readouterr()
+
+    # The lifecycle ran for real, and exactly once each way. `ping` lives inside
+    # `init_redis`'s body and `aclose` inside `close_redis`'s, so these count the real
+    # functions rather than a wrapper's idea of them.
+    assert client.ping_calls == 1
+    assert client.close_calls == 1
+    # THE binding: the reader's read landed on the very instance the constructor returned,
+    # so the unpatched `_client()` is what resolved it — and on exactly the one enumerated
+    # hour key, never KEYS or SCAN.
+    assert client.log == [("hgetall", obs.agg_key(obs.hour_key(start)))]
+    assert obs._client() is client
+
+    assert code == 4                                 # empty window is not a success
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert obs.canonical_json(payload) == captured.out.strip()
+    assert payload["coverage"] == "INSUFFICIENT_SAMPLE"
+    assert payload["window"] == {"from": start.strftime("%Y-%m-%dT%H:00:00Z"),
+                                 "to": (start + timedelta(hours=1)).strftime(
+                                     "%Y-%m-%dT%H:00:00Z"),
+                                 "hours_requested": 1, "hours_with_data": 0}
+    # Absence stays UNKNOWN. A denominator of 0 here would read as "we measured none"
+    # when the truth is "we measured nothing".
+    assert all(v is None for v in payload["denominators"].values())
+    assert rc.client() is client
+
+
+def test_two_reads_of_one_window_are_byte_identical(wire_production_redis, capsys):
+    """§7 requires running the CLI twice and comparing bytes, so the snapshot must carry
+    no clock, no ordering nondeterminism and no run-scoped value."""
+    client = LifecycleRedis()
+    wire_production_redis(client)
+    argv = _snapshot_argv(_past_hour())
+
+    first_code = obs._main(argv)
+    first = capsys.readouterr().out
+    second_code = obs._main(argv)
+    second = capsys.readouterr().out
+
+    assert first == second
+    assert (first_code, second_code) == (4, 4)
+    # Two runs, two full lifecycles — the CLI does not leak a client between invocations.
+    assert client.ping_calls == 2
+    assert client.close_calls == 2
+
+
+def test_the_cli_closes_its_client_even_when_the_read_fails(wire_production_redis, capsys):
+    secret = "AUTH failed for rediss://user:pa55@prod-redis:6379"
+    client = LifecycleRedis(read_error=RuntimeError(secret))
+    wire_production_redis(client)
+
+    code = obs._main(_snapshot_argv(_past_hour()))
+    captured = capsys.readouterr()
+
+    assert code == 3
+    assert captured.out == ""
+    assert captured.err.strip() == "P0A_SNAPSHOT_FAILED"
+    for leak in ("pa55", "rediss://", "prod-redis", "AUTH failed"):
+        assert leak not in captured.err
+    assert client.ping_calls == 1
+    # The close is in a `finally`, so it happens on the failure path too — otherwise the
+    # run an operator repeats after an error is the run that leaves a socket behind.
+    assert client.close_calls == 1
+
+
+def test_a_failing_client_construction_is_a_static_code_and_still_closes(monkeypatch,
+                                                                        capsys):
+    """The one way `init_redis()` itself raises: the constructor rejects the URL. The
+    exception text quotes that URL, so it must not reach stderr either."""
+    import redis_client as rc
+    secret = "invalid connection string rediss://user:pa55@prod-redis:6379"
+    monkeypatch.setattr(rc, "_redis", None)
+
+    def _boom(url, **kw):
+        raise ValueError(secret)
+
+    monkeypatch.setattr(rc.aioredis, "from_url", _boom)
+    closes = []
+    real_close = rc.close_redis
+
+    async def _counted_close():
+        closes.append(1)
+        await real_close()
+
+    monkeypatch.setattr(rc, "close_redis", _counted_close)
+
+    code = obs._main(_snapshot_argv(_past_hour()))
+    captured = capsys.readouterr()
+
+    assert code == 3
+    assert captured.out == ""
+    assert captured.err.strip() == "P0A_SNAPSHOT_FAILED"
+    for leak in ("pa55", "rediss://", "prod-redis", "invalid connection string"):
+        assert leak not in captured.err
+    assert closes == [1]                             # once, even though init raised
+    assert rc.client() is None
+
+
+def test_a_ping_failure_never_reaches_stderr_and_the_logger_is_restored(
+        wire_production_redis, capsys):
+    """`init_redis()` SWALLOWS a ping failure and logs the raw exception. With no handler
+    configured, logging's last resort writes WARNING+ straight to stderr — which is where
+    this CLI publishes its closed code set. None of that prose may get out."""
+    import logging
+
+    class Recorder(logging.Handler):
+        def __init__(self):
+            super().__init__(level=0)
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    secret = "Error connecting to rediss://user:pa55@prod-redis:6379"
+    client = LifecycleRedis(ping_error=RuntimeError(secret))
+    wire_production_redis(client)
+
+    rlog = logging.getLogger("redis_client")
+    recorder = Recorder()
+    rlog.addHandler(recorder)
+    before_handlers, before_propagate = rlog.handlers[:], rlog.propagate
+    try:
+        code = obs._main(_snapshot_argv(_past_hour()))
+        captured = capsys.readouterr()
+
+        assert recorder.records == []
+        assert captured.err == ""
+        assert code == 4                             # the read still succeeds; only noise
+        assert secret not in captured.out
+
+        # The containment is given back, not left clamped on a shared logger.
+        assert rlog.handlers == before_handlers
+        assert rlog.propagate is before_propagate
+
+        # ...and the recorder was genuinely live, so its emptiness above is evidence
+        # rather than a vacuous pass on a handler that could never have fired.
+        rlog.error("probe %s", "value")
+        assert len(recorder.records) == 1
+    finally:
+        rlog.removeHandler(recorder)
+
+
+def test_the_disabled_writer_path_never_even_imports_the_redis_client():
+    """Process-level, because that is the only place "no connection" is a real claim.
+
+    In-process a stub can always be made to report zero. What cannot be faked is that a
+    disabled deployment finishes a record call without `redis_client` ever entering
+    `sys.modules` — the lazy import lives behind the flag guard, so its absence afterwards
+    means no client was resolved and no socket could have been opened.
+    """
+    import subprocess
+    code = ("import sys; sys.path.insert(0, %r)\n"
+            "import asyncio, narasi_observability as obs\n"
+            "print('IMPORTED', 'redis_client' in sys.modules, 'redis' in sys.modules)\n"
+            "r = asyncio.run(obs.record_job_start(route='bullmq_worker', chapter_count=3,\n"
+            "                                     total_words=1000, job_id='j-1'))\n"
+            "print('RECORD', r)\n"
+            "print('AFTER', 'redis_client' in sys.modules, 'redis' in sys.modules)\n"
+            % os.path.join(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))), "python"))
+    env = dict(os.environ)
+    env.pop(obs.FLAG, None)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         timeout=120, env=env)
+    assert "IMPORTED False False" in out.stdout, out.stdout + out.stderr
+    assert "RECORD False" in out.stdout, out.stdout + out.stderr
+    assert "AFTER False False" in out.stdout, out.stdout + out.stderr
+
+
+def test_importing_the_module_opens_no_socket_and_pulls_in_no_redis_library():
+    """Adding a client lifecycle to the CLI must not drag the redis library up to import
+    time. The import lives inside `_cli_snapshot`, exactly as it does inside `_client`, so
+    a process that only imports this module still constructs no socket at all."""
+    import subprocess
+    code = ("import sys, socket; sys.path.insert(0, %r)\n"
+            "_real = socket.socket\n"
+            "def _poisoned(*a, **k):\n"
+            "    raise AssertionError('P0A_IMPORT_OPENED_A_SOCKET')\n"
+            "socket.socket = _poisoned\n"
+            "import narasi_observability as obs\n"
+            "socket.socket = _real\n"
+            "print('MODS', 'redis_client' in sys.modules, 'redis' in sys.modules)\n"
+            "print('CLI', callable(obs._cli_snapshot))\n"
+            % os.path.join(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))), "python"))
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         timeout=120)
+    assert "MODS False False" in out.stdout, out.stdout + out.stderr
+    assert "CLI True" in out.stdout, out.stdout + out.stderr
 
 
 # ===========================================================================

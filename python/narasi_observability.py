@@ -1015,6 +1015,46 @@ def _emit_code(exc: BaseException, allowed: frozenset, fallback: str) -> None:
     sys.stderr.write("%s\n" % (code if code in allowed else fallback))
 
 
+async def _cli_snapshot(start: datetime, end: datetime, meta: dict) -> dict:
+    """Own the Redis client for the duration of ONE CLI read, then give it back.
+
+    The writers get their client from service startup; a standalone CLI process has no
+    startup, so `redis_client.client()` is `None` for its whole life and every read used to
+    fail with `P0A_REDIS_UNAVAILABLE` on any window, forever. This establishes the client
+    the reader needs and closes it again — and nothing else: the reader still resolves its
+    client through the production `_client()`, so what runs here is the same read path the
+    evidence package is claiming about, not a CLI-only copy of it.
+
+    Scope is deliberately the `snapshot` subcommand only. Writer lifecycle, service
+    startup, the flag guard and the snapshot schema are untouched.
+    """
+    # Lazy, exactly as `_client()` is: a disabled deployment — and a bare import of this
+    # module — must still pull in neither `redis_client` nor the redis library.
+    import logging
+    import redis_client as _rc
+
+    # This CLI's stderr is a CLOSED code set (`_emit_code`). `redis_client` logs the raw
+    # exception on a ping or close failure, and with no handler configured logging's
+    # last-resort writes WARNING+ straight to stderr — so a refused connection quoting the
+    # Redis URL would land in the operator's terminal and in the evidence. `redis_client`
+    # is out of scope to change, so contain its logger for the call and restore it after.
+    rlog = logging.getLogger("redis_client")
+    saved_handlers, saved_propagate = rlog.handlers[:], rlog.propagate
+    rlog.handlers = [logging.NullHandler()]
+    rlog.propagate = False
+    try:
+        try:
+            await _rc.init_redis()
+            return await read_snapshot(start, end, metadata=meta)
+        finally:
+            # Always — including when init itself raised, where `_redis` was never
+            # assigned and this is a no-op. A CLI that leaves a connection open on the
+            # failure path is the one that gets run twice for the same window.
+            await _rc.close_redis()
+    finally:
+        rlog.handlers, rlog.propagate = saved_handlers, saved_propagate
+
+
 def _main(argv: list) -> int:
     import asyncio
     if len(argv) < 2 or argv[1] != "snapshot":
@@ -1048,8 +1088,12 @@ def _main(argv: list) -> int:
         _emit_code(exc, _CLI_WINDOW_CODES, "P0A_WINDOW_INVALID")
         return 2
     try:
-        snapshot = asyncio.run(read_snapshot(start, end, metadata=meta))
+        snapshot = asyncio.run(_cli_snapshot(start, end, meta))
     except Exception as exc:  # noqa: BLE001 - never surface prose that may carry a secret
+        # An init failure lands here too, and degrades to the same closed code set. No new
+        # code is introduced: a client that could not be established IS
+        # `P0A_REDIS_UNAVAILABLE` when the reader says so, and anything else stays the
+        # generic `P0A_SNAPSHOT_FAILED` rather than becoming a channel for library prose.
         _emit_code(exc, _CLI_READ_CODES, "P0A_SNAPSHOT_FAILED")
         return 3
     sys.stdout.write(canonical_json(snapshot) + "\n")
