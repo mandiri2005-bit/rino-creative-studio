@@ -64,7 +64,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import BackgroundTasks, Depends, HTTPException
 
 # Reuse the ONE app + the real production primitives. These imports are the whole
 # point of WS-8 convergence — import, never reinvent.
@@ -1090,6 +1090,46 @@ class _UsageSink:
                 await db.checkpoint_narasi_meter(self.tenant_id, self.job_uuid, self.credits)
         except Exception as e:  # noqa: BLE001
             log.debug("usage sink meter checkpoint failed (non-fatal): %s", e)
+        # P0A: bounded provider/phase/token/latency/attempts only. `model`, raw `role`,
+        # raw `task_id`, `finish_reason`, `error` and response data are never forwarded.
+        # This piggybacks on the task __call__ ALREADY owns for this telemetry row rather
+        # than scheduling a second one: __call__ runs on the generation path (and from
+        # worker threads, where create_task is not even safe), while _log_one is already
+        # off it. Placed last, after every existing statement, so it cannot reorder or
+        # delay the usage row, the credit accumulation or the crash-safe checkpoint — and
+        # reached whether or not db.log_usage() above succeeded, since that failure is
+        # swallowed by its own handler.
+        #
+        # `attempts` is forwarded as its OWN dimension: it is the run_worker-level retry
+        # count folded into this one telemetry, not a second logical call and not the
+        # physical per-rung HTTP attempts, which are not visible from here at all.
+        #
+        # Nothing is logged on failure. A log line carrying `%s` of the exception is a
+        # channel for whatever that exception happens to quote — a URL, a credential, a
+        # provider error body — so the failure is swallowed silently and shows up where it
+        # belongs, as a writer:fail counter and a coverage gap.
+        try:
+            import narasi_observability as _obs
+            if _obs.enabled():
+                await _obs.record_provider_call(
+                    provider=getattr(t, "provider", ""),
+                    phase=_obs.normalize_phase(getattr(t, "task_id", ""),
+                                               getattr(t, "role", "")),
+                    ok=bool(getattr(t, "ok", False)),
+                    tokens_in=int(getattr(t, "tokens_in", 0) or 0),
+                    tokens_out=int(getattr(t, "tokens_out", 0) or 0),
+                    latency_ms=int(getattr(t, "latency_ms", 0) or 0),
+                    attempts=int(getattr(t, "attempts", 0) or 0),
+                    # A fresh HARD TIMEOUT for this write alone — never a deadline shared
+                    # across the sink's lifetime. A lifetime budget starts ticking at the
+                    # first provider call, so on a book that runs for an hour every later
+                    # call would be discarded even against a perfectly healthy Redis, and
+                    # the metric would stop measuring exactly the long jobs it is for.
+                    # Bounding each write individually is free here: nothing awaits this
+                    # task, so the timeout costs the product nothing.
+                    budget=_obs.Budget(_obs.PROVIDER_WRITE_TIMEOUT_MS))
+        except Exception:  # noqa: BLE001 - telemetry never escapes into generation
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1174,10 +1214,103 @@ async def _cancel_watcher(job_id: str, poll: float = 1.5) -> None:
 # ---------------------------------------------------------------------------
 # The background runtime — drives generate_narration with the production envelope.
 # ---------------------------------------------------------------------------
+
+# ── P0A aggregate observability (NARASI_P0A_OBSERVABILITY_ENABLED, default OFF) ──
+# Every helper is flag-gated, lazily imported and swallows everything: a metric must
+# never fail, delay materially, cancel, retry, refund, settle or alter a narration job.
+# Only bounded enum labels and bucketed integers are passed; no body text, no identifier.
+async def _p0a(event: str, **kw) -> None:
+    try:
+        import narasi_observability as _obs
+        if not _obs.enabled():
+            return
+        await getattr(_obs, event)(**kw)
+    except Exception:  # noqa: BLE001 - telemetry never escapes into generation
+        return
+
+
+def _p0a_on() -> bool:
+    """The flag, read without importing anything into the product path when it is off."""
+    try:
+        import narasi_observability as _obs
+        return bool(_obs.enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _p0a_route(background, route: str, body: dict, total: int, job_id: str) -> None:
+    """Queue the DISPATCH event on the framework's own background-task list.
+
+    Starlette runs these after the response has been sent, so the caller's 202 is never
+    behind a Redis round-trip — and the task is owned and awaited by the framework, not
+    detached with create_task, so nothing is left orphaned if it fails. Nothing at all is
+    queued while P0A is off, which is what keeps the disabled path free of any new task.
+
+    Recording the dispatch HERE (rather than from the job) is what keeps `route` a
+    dispatch census: a job that is enqueued successfully and never executed still counts
+    as bullmq_worker, and the gap against `executions:total` stays visible."""
+    if not _p0a_on():
+        return
+    background.add_task(_p0a, "record_job_start", route=route, chapter_count=total,
+                        total_words=_p0a_size_words(body), job_id=job_id,
+                        budget=_p0a_new_budget(early=True))
+
+
+def _p0a_new_budget(early: bool = False):
+    """ONE telemetry allowance for this job, covering every P0A await it will make.
+
+    A per-event timeout multiplies — eight events at a second each is eight seconds of
+    latency handed to the user by a metrics package. A single budget means a hung Redis
+    costs the job this much in total, and the events it can no longer afford are simply
+    not written. Returns None when P0A is off, so the disabled path allocates nothing."""
+    try:
+        import narasi_observability as _obs
+        if not _obs.enabled():
+            return None
+        return _obs.Budget(_obs.EARLY_WRITE_BUDGET_MS if early
+                           else _obs.TELEMETRY_BUDGET_MS)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _p0a_size_words(body: dict) -> object:
+    """Server-resolved requested word TARGET only — never manuscript bytes or prose.
+
+    The request carries the target PER CHAPTER, so this mirrors the shape production
+    already uses at the counters site (`word_target` → `words`, dict entries only,
+    non-numeric tolerated, negatives clamped) with the same per-chapter default of 800
+    that admission validation and the credit hold both resolve. Reading top-level keys
+    instead was simply wrong — nearly every real job would have bucketed `unknown` — and
+    defaulting a chapter to 0 would be wrong in the other direction, since the server
+    itself validates and charges that chapter at 800.
+
+    Returns None, never 0, when no chapter target can be resolved: the metrics module then
+    records `unknown` instead of the smallest real band. The value is bucketed immediately
+    and the exact count is never persisted."""
+    try:
+        chapters = (body or {}).get("chapters")
+        if not isinstance(chapters, list):
+            return None
+        total = 0
+        seen = 0
+        for c in chapters:
+            if not isinstance(c, dict):
+                continue
+            seen += 1
+            try:
+                w = int(c.get("word_target") or c.get("words") or 800)
+            except (TypeError, ValueError):
+                w = 800
+            total += max(0, w)
+        return total if seen else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _run_narration_job(
     *, body: dict, job_id: str, job_uuid: Optional[str],
     tenant_id: str, user_id: Optional[str], total: int,
-    meter_op: Optional[str], model: str,
+    meter_op: Optional[str], model: str, executor: str = "unknown",
 ) -> None:
     """Background task: hold → generate → settle/refund, with per-chapter Redis
     checkboxes, a status machine, durable persistence, and cancel handling.
@@ -1186,6 +1319,38 @@ async def _run_narration_job(
     sink = _UsageSink(tenant_id, user_id, job_uuid)
     started = time.monotonic()
     charge_settled = False
+    # ── P0A telemetry, one allowance for the whole job ──────────────────────────────
+    # Only ONE P0A write happens before user work: the EXECUTION event, under a hard cap
+    # of its own. It stays here on purpose — a job that dies mid-flight would otherwise be
+    # invisible, and terminals/executions would then reconcile to 1.0 by construction.
+    # The dispatch event is a separate counter recorded by the API after its response.
+    # Everything else (gate, phase wall times, terminal) is buffered and flushed at the
+    # very end, after persistence and after settle/refund. The executor label never enters
+    # the request body, job row, result payload, logs or billing.
+    _p0a_budget = _p0a_new_budget()
+    await _p0a("record_execution", executor=executor, job_id=job_id,
+               budget=_p0a_new_budget(early=True))
+    _p0a_gate_ms: Optional[int] = None
+    _p0a_timings: Optional[dict] = {} if _p0a_budget is not None else None
+
+    async def _p0a_flush(terminal: str) -> None:
+        """Every remaining P0A write, issued only once this job has persisted its result
+        and settled or refunded.
+
+        Telemetry must never sit between a user's manuscript and their money, nor between
+        a failure and its refund: a metrics call that hangs there delays a settlement.
+        All three writes share the job's ONE budget, so the whole tail is bounded no
+        matter how many of them there are."""
+        if _p0a_gate_ms is not None:
+            await _p0a("record_gate_total", elapsed_ms=_p0a_gate_ms, job_id=job_id,
+                       budget=_p0a_budget)
+        for _phase, _elapsed in sorted((_p0a_timings or {}).items()):
+            await _p0a("record_phase_timing", phase=_phase,
+                       elapsed_ms=int(max(0.0, float(_elapsed)) * 1000),
+                       job_id=job_id, budget=_p0a_budget)
+        await _p0a("record_terminal", terminal=terminal,
+                   duration_ms=int(max(0.0, time.monotonic() - started) * 1000),
+                   job_id=job_id, budget=_p0a_budget)
 
     # CC v3 R-FG4: refresh the known-bad-claims registry (global reference data) into the
     # gate's in-process cache — best-effort; the gate carries a seed fallback regardless.
@@ -1291,6 +1456,7 @@ async def _run_narration_job(
             await _settle(meter_op, tenant_id, user_id, model, job_uuid, sink)
         else:
             await _refund(meter_op, tenant_id, job_id)
+        await _p0a_flush("cancelled")
         return
 
     result = dict(result or {})
@@ -1305,6 +1471,7 @@ async def _run_narration_job(
             job_id, job_uuid, tenant_id, status=_STATUS_FAILED,
             result=_result_payload(result), error=str(result.get("error") or "generation_failed"))
         await _refund(meter_op, tenant_id, job_id)
+        await _p0a_flush("failed")
         return
 
     # Success: persist chapters + the assembled script, settle the hold at ACTUAL.
@@ -1316,9 +1483,17 @@ async def _run_narration_job(
     # whose result carries "output" not "book"), the harari register scorecard (R-H10,
     # report-only), and the "> **Gaya:** ..." metadata header. Never raises.
     _t_gates = time.monotonic()  # timing: GATES phase (Rino 2026-07-06)
+    # P0A: `_p0a_timings` collects the critic/revise WALL-TIME timers the gate phase
+    # already keeps. It is None unless P0A is on, so with the flag off the gates run
+    # byte-identically. Those two phases build their provider client directly
+    # (make_narasi_client + _log_narasi_usage) and never reach _UsageSink, so their
+    # provider latency is unobservable; phase wall time is a different quantity and is
+    # recorded under its own name. Nothing is written here — the elapsed values are only
+    # captured, and every write waits for the flush after settlement.
     await _apply_v3_gates(result, body, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                          sink=sink, job_id=job_id)
+                          sink=sink, job_id=job_id, p0a_timings=_p0a_timings)
     log.info("narration job %s: GATES done in %.1fs", job_id, time.monotonic() - _t_gates)
+    _p0a_gate_ms = int(max(0.0, time.monotonic() - _t_gates) * 1000)
     # POST-GATES DEDUP GUARD (narasi round-16 postmortem, second layer — orchestrator.static's
     # narrate_chapters already runs this BEFORE polish/critique/revise; this is the LAST point
     # before the manuscript is persisted/returned, after _apply_v3_gates' critique-revise and
@@ -1340,7 +1515,6 @@ async def _run_narration_job(
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
         result=_result_payload(result), error=None)
-
     # Settle the credit hold at the real token total the sink accumulated.
     await _settle(meter_op, tenant_id, user_id, model, job_uuid, sink)
     charge_settled = True
@@ -1349,13 +1523,15 @@ async def _run_narration_job(
     # Defensive: if we somehow reached here without settling, refund.
     if not charge_settled:
         await _refund(meter_op, tenant_id, job_id)
+    await _p0a_flush("done")
 
 
 # ---------------------------------------------------------------------------
 # CC v3 (Stop the Pendulum) — terminal gates for the ⚡ engine. All best-effort.
 # ---------------------------------------------------------------------------
 async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=None, job_uuid=None,
-                          sink: "Optional[_UsageSink]" = None, job_id: Optional[str] = None) -> None:
+                          sink: "Optional[_UsageSink]" = None, job_id: Optional[str] = None,
+                          p0a_timings: Optional[dict] = None) -> None:
     """Mutates `result` in place: (1) R-FG4/5/6 deterministic gate on the final book +
     every chapter record (the per-chapter gate in static.py covers scenario A/B workers;
     this terminal pass also covers C/D/E outputs and anything the polish reintroduced);
@@ -2282,6 +2458,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
                     canonical_facts=(result.get("canonical_facts") or ""), credit_row=False)
                 _t_crit = time.monotonic() - _t_crit0
+                # P0A: hand the ALREADY-elapsed critic timer to the caller. A plain dict
+                # store — no await, no I/O, no new timer inside the gate phase, and the
+                # dict is None entirely when the flag is off.
+                if p0a_timings is not None:
+                    p0a_timings["critic"] = _t_crit
                 if sink is not None and _cqc:
                     sink.credits += int(_cqc)
                 _cpay = _cq
@@ -3771,6 +3952,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 model=(body.get("model") or ""),
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, credit_row=False)
             _v3g_t_rev = time.monotonic() - _v3g_t_rev0
+            # P0A: recorded HERE, inside the branch that actually ran a revise — reading
+            # the variable after the block would report the 0.0 initialiser as a
+            # measured zero on every job whose gates found nothing to revise.
+            if p0a_timings is not None:
+                p0a_timings["revise"] = _v3g_t_rev
             if sink is not None and _v3g_cr:
                 sink.credits += int(_v3g_cr)
             if _v3g_new and _v3g_new != _gbook0:
@@ -4307,7 +4493,8 @@ def _count_chapters(body: dict) -> int:
 
 
 @app.post("/narration", status_code=202)
-async def narration_start(body: dict, user: CurrentUser = Depends(get_current_user)):
+async def narration_start(body: dict, background: BackgroundTasks,
+                          user: CurrentUser = Depends(get_current_user)):
     """Start a unified narration job. Returns 202 immediately with the job id.
 
     Body is the orchestrator request (topic / chapters / brief / goal / style /
@@ -4448,6 +4635,7 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
     # the PLATFORM key while meter_op=None means _settle never runs — platform pays the full
     # upstream cost and recovers nothing. BYOK always runs in-process.
     _bullmq_on = str(os.environ.get("NARRATION_BULLMQ_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+    _p0a_tried_bullmq = bool(_bullmq_on and not is_byok)
     if _bullmq_on and not is_byok:
         _enq_ok = False
         try:
@@ -4472,13 +4660,19 @@ async def narration_start(body: dict, user: CurrentUser = Depends(get_current_us
         # in-process = the same job_id runs twice (doubled COGS, duplicate usage_logs,
         # racing Redis/gate state) even though customer credits stay op_id-idempotent.
         if _enq_ok:
+            # Enqueued IS the dispatch outcome — a Queue.close() failure after a
+            # successful add stays bullmq_worker, matching production behaviour. Handed
+            # to the framework, so it runs after the response is sent.
+            _p0a_route(background, "bullmq_worker", body, total, job_id)
             return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING,
                     "total": total, "queued": True}
 
+    _p0a_route(background, "api_fallback" if _p0a_tried_bullmq else "api_direct",
+               body, total, job_id)
     asyncio.create_task(_run_narration_job(
         body=body, job_id=job_id, job_uuid=job_uuid,
         tenant_id=tenant_id, user_id=user_uuid, total=total,
-        meter_op=meter_op, model=model,
+        meter_op=meter_op, model=model, executor="python_api",
     ))
     return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING, "total": total}
 

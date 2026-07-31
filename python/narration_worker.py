@@ -103,6 +103,7 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
             tenant_id=tenant_id, user_id=data.get("user_id"),
             total=int(data.get("total") or 1), meter_op=data.get("meter_op"),
             model=str(data.get("model") or "claude-opus-4-6"),
+            executor="narration_worker",
         )
         return {"ok": True}
     finally:
