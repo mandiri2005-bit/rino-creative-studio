@@ -90,12 +90,12 @@ def test_snapshot_carries_the_section_9_tuple():
     assert cl._SHA256_RE.match(s["snapshot_sha256"])
 
 
-def test_layers_that_do_not_exist_yet_say_so_explicitly():
-    """Not UNKNOWN ("we don't know") — NOT_APPLICABLE_L1 ("this layer is not built")."""
+def test_l2_versions_are_explicitly_bound_into_parity():
     s = _snap()
-    assert s["extractor_version"] == cl.NOT_APPLICABLE_L1
-    assert s["predicate_set_version"] == cl.NOT_APPLICABLE_L1
-    assert cl.NOT_APPLICABLE_L1 != cl.UNKNOWN
+    assert s["extractor_version"] == cl.L2_EXTRACTOR_VERSION
+    assert s["predicate_set_version"] == cl.L2_PREDICATE_SET_VERSION
+    assert cl.L2_EXTRACTOR_VERSION != cl.UNKNOWN
+    assert cl.L2_PREDICATE_SET_VERSION != cl.UNKNOWN
 
 
 def test_snapshot_is_json_primitives_only_and_survives_the_wire():
@@ -146,8 +146,8 @@ def test_config_digest_is_wider_than_the_mode_alone():
         "parity_schema_version": cl.PARITY_SCHEMA_VERSION,
         "canon_schema_version": "canon_lite_v99",
         "job_config_schema_version": cl.JOB_CONFIG_SCHEMA_VERSION,
-        "extractor_version": cl.NOT_APPLICABLE_L1,
-        "predicate_set_version": cl.NOT_APPLICABLE_L1,
+        "extractor_version": cl.L2_EXTRACTOR_VERSION,
+        "predicate_set_version": cl.L2_PREDICATE_SET_VERSION,
         "runtime_build_sha": cl._runtime_build_sha(),
         "effective_mode": "shadow",
     })

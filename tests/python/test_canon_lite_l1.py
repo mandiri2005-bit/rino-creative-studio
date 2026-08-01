@@ -1008,9 +1008,15 @@ def test_shadow_output_is_identical_to_flag_off(monkeypatch):
     def comparable(r):
         d = dict(r)
         d.pop("context", None)          # carries timing/telemetry, not user output
+        d.pop("_canon_lite_canon", None)        # L2a in-process transit only
+        d.pop("_canon_lite_canon_status", None)
         return d
 
     assert comparable(off) == comparable(shadow)
+    assert "_canon_lite_canon" not in off
+    assert "_canon_lite_canon_status" not in off
+    assert isinstance(shadow["_canon_lite_canon"], cl.CanonLiteV1)
+    assert shadow["_canon_lite_canon_status"] == "present"
     assert off["book"] == shadow["book"]
     assert [c["content"] for c in off["chapters"]] == \
            [c["content"] for c in shadow["chapters"]]

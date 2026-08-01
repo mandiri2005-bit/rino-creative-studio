@@ -1534,6 +1534,13 @@ async def narrate_chapters(
         "model": w_model,
         "manager_model": m_model,
         "strategy": "narrate_chapters",
+        # L2a in-process transit only. This key exists only while shadow genuinely ran;
+        # flag-off returns the byte/shape-identical legacy dict (C11). narration_api
+        # consumes and removes it after every text mutation and before persistence or the
+        # bounded result payload. It is never serialized, logged, or sent to the user.
+        **({"_canon_lite_canon": _cl_canon,
+            "_canon_lite_canon_status": _cl_status}
+           if _cl_mode == "shadow" else {}),
         # In-memory transit only (NOT persisted into the bounded _result_payload): the pinned
         # story bible, so the downstream consistency critic can diff each chapter against the
         # committed canon when NARASI_CANON_CONFORMANCE is on. as_dict() exposes only the char

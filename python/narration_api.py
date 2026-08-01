@@ -1307,6 +1307,33 @@ def _p0a_size_words(body: dict) -> object:
         return None
 
 
+def _canon_lite_l2_shadow_projection(
+    result: dict,
+    *,
+    mode: str,
+    canon,
+) -> "Optional[dict]":
+    """Build the pure L2a final-byte report at the terminal seam.
+
+    This helper is deliberately a no-op before its literal mode gate: C11 requires flag
+    off to import no Canon Lite module. L2a has no production provider here. The separate
+    L2B-METER package must supply and account for extraction before any provider call is
+    wired into this seam.
+    """
+    if mode != "shadow":
+        return None
+    import canon_lite_l2 as _cl2
+
+    snapshot = _cl2.materialize_final_snapshot(result, canon=canon)
+    if snapshot is None:
+        return _cl2.report_telemetry(
+            None, l2_status="absent", mode="shadow")
+    report = _cl2.build_report(
+        snapshot, canon, mode="shadow", result=result, claims_by_index=None)
+    return _cl2.report_telemetry(
+        report, l2_status="present", mode="shadow")
+
+
 async def _run_narration_job(
     *, body: dict, job_id: str, job_uuid: Optional[str],
     tenant_id: str, user_id: Optional[str], total: int,
@@ -1595,6 +1622,27 @@ async def _run_narration_job_after_parity(
                             "chapter-heading block(s)", job_id, _dg_dropped)
     except Exception as _dge:  # noqa: BLE001 - a dedup bug must never break generation
         log.debug("narration job %s: post-gates dedup guard skipped (%s)", job_id, _dge)
+    # ── CANON LITE L2a — exact final-byte report, after EVERY text mutation ──────────
+    # `static.narrate_chapters` may carry the validated canon here as a private
+    # in-process object. Consume and remove it before persistence/default payload. The
+    # mode gate precedes the L2 import, so flag-off still performs zero L2 imports/calls.
+    _cl_l2_canon = result.pop("_canon_lite_canon", None)
+    result.pop("_canon_lite_canon_status", None)
+    _cl_l2_mode = str(
+        os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
+    if _cl_l2_mode not in ("shadow", "assist", "enforce"):
+        _cl_l2_mode = "off"
+    if _cl_l2_mode == "shadow":
+        try:
+            _cl_l2_telemetry = _canon_lite_l2_shadow_projection(
+                result, mode=_cl_l2_mode, canon=_cl_l2_canon)
+            log.info("canon lite l2: %s", _cl_l2_telemetry)
+        except Exception:  # noqa: BLE001 - shadow cannot change legacy delivery
+            # Fixed code only. No provider exception, manuscript, prompt, response,
+            # tenant/job identifier, or dynamic exception name is emitted.
+            log.warning(
+                "canon lite l2: report unavailable "
+                "(error_code=l2_report_error)")
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,

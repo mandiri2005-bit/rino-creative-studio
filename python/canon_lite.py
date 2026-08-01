@@ -43,6 +43,8 @@ from typing import Any, Mapping, Optional, Sequence
 
 __all__ = [
     "SCHEMA_VERSION",
+    "L2_EXTRACTOR_VERSION",
+    "L2_PREDICATE_SET_VERSION",
     "UNKNOWN",
     "UNKNOWN_ORDER",
     "MODE_OFF",
@@ -90,6 +92,8 @@ __all__ = [
 
 SCHEMA_VERSION = "canon_lite_v1"
 JOB_CONFIG_SCHEMA_VERSION = "job_config_snapshot_v1"
+L2_EXTRACTOR_VERSION = "cl_l2_extractor_v1"
+L2_PREDICATE_SET_VERSION = "cl_l2_predicates_v1"
 
 #: Explicit "this fact is not known" marker for STRING fields. §6 requires unknown to
 #: be represented explicitly; an empty string or a missing key is NOT acceptable.
@@ -1082,8 +1086,8 @@ def _config_digest(mode: str) -> str:
         "parity_schema_version": PARITY_SCHEMA_VERSION,
         "canon_schema_version": SCHEMA_VERSION,
         "job_config_schema_version": JOB_CONFIG_SCHEMA_VERSION,
-        "extractor_version": NOT_APPLICABLE_L1,
-        "predicate_set_version": NOT_APPLICABLE_L1,
+        "extractor_version": L2_EXTRACTOR_VERSION,
+        "predicate_set_version": L2_PREDICATE_SET_VERSION,
         # Hash-only build binding. Railway supplies this non-secret commit SHA to both
         # services; different deploys must not read as the same configuration merely
         # because their schema constants and mode happen to agree.
@@ -1131,9 +1135,8 @@ def build_parity_snapshot(
         "effective_mode": mode,
         "config_digest": _config_digest(mode),
         "canon_version": SCHEMA_VERSION,
-        # L2 builds the extractor; L2/L3 version the predicate set. Stated, not guessed.
-        "extractor_version": NOT_APPLICABLE_L1,
-        "predicate_set_version": NOT_APPLICABLE_L1,
+        "extractor_version": L2_EXTRACTOR_VERSION,
+        "predicate_set_version": L2_PREDICATE_SET_VERSION,
         "route": _req_enum(route, "route", ROUTES),
         # This is the actual non-secret worker model alias resolved for the job, not the
         # execution route above. §9 requires both concepts not to be conflated.
@@ -1195,9 +1198,9 @@ def check_parity(
         codes.append("config_digest_differs")
     if snapshot["canon_version"] != SCHEMA_VERSION:
         codes.append("canon_version_differs")
-    if snapshot["extractor_version"] != NOT_APPLICABLE_L1:
+    if snapshot["extractor_version"] != L2_EXTRACTOR_VERSION:
         codes.append("extractor_version_differs")
-    if snapshot["predicate_set_version"] != NOT_APPLICABLE_L1:
+    if snapshot["predicate_set_version"] != L2_PREDICATE_SET_VERSION:
         codes.append("predicate_set_version_differs")
     if snapshot["route"] != route:
         codes.append("route_differs")
