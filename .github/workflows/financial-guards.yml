@@ -55,13 +55,13 @@ jobs:
           --health-retries 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -70,7 +70,12 @@ jobs:
         working-directory: backend
 
       - name: Install python test deps
-        run: pip install --quiet pytest asyncpg
+        # fastapi and httpx are NOT optional here, even though this job makes no HTTP call:
+        # tests/python/conftest.py imports fastapi.testclient at MODULE scope, so pytest
+        # cannot even COLLECT test_accounting_privileges.py without them and the step died
+        # with ModuleNotFoundError before running a single guard. httpx is what TestClient is
+        # built on. This matches the set known-gaps already installs.
+        run: pip install --quiet pytest asyncpg fastapi httpx
 
       - name: Create the roles the migrations grant to
         # 0016 grants to app_user; the accounting migrations assume an owner role exists.
@@ -85,6 +90,14 @@ jobs:
         # A migration that cannot apply to an empty database fails the build here.
         env:
           DATABASE_URL_DEV: ${{ env.PGURL }}
+          # migrate.js is CJS and does require('pg'), but it lives in database/ while pg is
+          # only ever installed into backend/node_modules — and there is NO package.json at
+          # the repo root, so Node's upward resolution walks to / and finds no node_modules
+          # at all. The step died with MODULE_NOT_FOUND before one migration ran, which is
+          # why nothing downstream of it has ever executed in CI. NODE_PATH points the CJS
+          # resolver at the one directory pg actually lives in. dotenv is deliberately NOT
+          # installed there; migrate.js already treats it as optional and says so.
+          NODE_PATH: ${{ github.workspace }}/backend/node_modules
         run: node database/migrate.js
 
       - name: Node — payment, credit and reversal suites
@@ -119,8 +132,8 @@ jobs:
     continue-on-error: true
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
