@@ -9,14 +9,19 @@
 >
 > 1. the migrations **are** committed to a ref, and were when this was written — see
 >    **Provenance**;
-> 2. the V4 pack **cannot be re-run**, and no amount of additional anchoring could have made
->    it runnable — see **What is NOT archived**.
+> 2. the V4 pack **cannot be re-run from what is anchored**. Anchoring *more migrations* was
+>    never going to change that — but anchoring the exact dirty diff would have closed the
+>    preflight, so this is a statement about what was archived, not about anchoring as such —
+>    see **What is NOT archived**.
 >
 > What this ref does guarantee: the bytes it holds are the bytes that were found. It does not
 > certify them as the bytes that were accepted, and it cannot reproduce the acceptance run.
 >
-> Pre-amendment state preserved at `ccb26ad95537793157e68679e282bd28eb6ffc26`, which is this
-> commit's parent and remains the ref `codex/c03-schema-frozen`.
+> Pre-amendment state preserved at `ccb26ad95537793157e68679e282bd28eb6ffc26` — the **root** of
+> this ref's history, reachable from every later tip. **`codex/c03-schema-frozen` no longer
+> points there**; the canonical ref carries the corrected text. Cite the tip you actually read,
+> not a fixed degree of ancestry: "this commit's parent" was true for one amendment and stale by
+> the next.
 
 **This branch is an ORPHAN and must never be merged.** It exists so that an accepted-but-
 undeployed artefact stops living only in an untracked directory. It carries no history from
@@ -110,7 +115,7 @@ executing a single assertion, and one of those gates cannot be satisfied from an
 | `backend_branch` | `perf/narasi-revise-fast` | — |
 | `required_files` (11 entries) | 11 hashes | **11 of 11**, all verified in `codex/b04b-phase0-recovered` (2 of 11 on this ref alone) |
 | `status_without_candidate_sha256` | `180c5865502615f7…` | binds porcelain status **lines** — codes and paths, not file bytes — and `preexisting_status_paths` records that path set: **fragile, not lost** |
-| `tracked_diff_sha256` | `24720f091ce58dd0…` | 🔴 **the one hard blocker** — exact bytes of `git diff --binary`, held nowhere |
+| `tracked_diff_sha256` | `24720f091ce58dd0…` | 🔴 **the one hard blocker** — exact bytes of `git diff --binary`, **not present in any artefact anchored here** |
 
 **Amended 2026-08-01 (Amendment 2).** This table previously read "2 of 11" and claimed the status
 gate needed untracked *bytes*. Both were wrong. The `required_files` figure was scoped to this
