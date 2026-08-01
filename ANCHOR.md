@@ -1,5 +1,21 @@
 # C-03 schema/RLS pack — durability anchor
 
+> ### ⚠ AMENDED 2026-08-01 — this ref is a BYTE ARCHIVE, not a runnable acceptance pack
+>
+> Amended under `L2B-METER-PREREQUISITES-RECORD-002`. Two claims written below were already
+> false when this ref was created, and are corrected in place:
+>
+> 1. the migrations **are** committed to a ref, and were when this was written — see
+>    **Provenance**;
+> 2. the V4 pack **cannot be re-run**, and no amount of additional anchoring could have made
+>    it runnable — see **What is NOT archived**.
+>
+> What this ref does guarantee: the bytes it holds are the bytes that were found. It does not
+> certify them as the bytes that were accepted, and it cannot reproduce the acceptance run.
+>
+> Pre-amendment state preserved at `ccb26ad95537793157e68679e282bd28eb6ffc26`, which is this
+> commit's parent and remains the ref `codex/c03-schema-frozen`.
+
 **This branch is an ORPHAN and must never be merged.** It exists so that an accepted-but-
 undeployed artefact stops living only in an untracked directory. It carries no history from
 `main` or `feat/subscription-global`, and its `database/migrations/` files are **not** eligible
@@ -10,9 +26,11 @@ to be applied, pushed, deployed, or renumbered.
 
 ## What was anchored, and why more than `0072`
 
-The token names `0072`. Anchoring it alone would have preserved an **unrunnable** pack: the
-acceptance runner verifies `required_files`, which includes C-03's own `0070` and `0071`. All
-three are therefore anchored together.
+The token names `0072`. Anchoring it alone would have preserved even less: the acceptance runner
+verifies `required_files`, which includes C-03's own `0070` and `0071`. All three are therefore
+anchored together.
+
+**This did not make the pack runnable, and could not have.** See *What is NOT archived*.
 
 | File | sha256 |
 |---|---|
@@ -25,10 +43,35 @@ Plus the V4 acceptance pack under `acceptance-v4/`, self-verified by its own `SH
 ## Provenance, stated exactly — including what is NOT proven
 
 Origin: worktree `/tmp/wt-narasi-perf` (now gone), backend HEAD
-`76b287c18b58b84c792432ff5fb326e5aa6f2008`, branch `perf/narasi-revise-fast`. **The migrations
-were never committed to any ref**; a repo scan legitimately reported them absent, which is why
-`0072` was twice reported free. Recovered from
+`76b287c18b58b84c792432ff5fb326e5aa6f2008`, branch `perf/narasi-revise-fast`. Recovered from
 `Documents/wt-narasi-perf-recovered/database/migrations/`.
+
+### 🔴 Corrected 2026-08-01 — "never committed to any ref" was false
+
+This section previously read: *"**The migrations were never committed to any ref**; a repo scan
+legitimately reported them absent, which is why `0072` was twice reported free."* True at C-03's
+acceptance on 2026-07-22. **Already false when written on 2026-08-01.**
+
+All three files are tracked in commit `dd4a823c40147605507d502ed6c67ef924a7bceb` — *"Recovery
+baseline: B-04b Phase 0 backend state on 76b287c"* — whose parent is `76b287c18b58b84c…`, the
+C-03 baseline HEAD itself. Byte-identical to this ref's copies, verified:
+
+| File | This ref | `dd4a823c` |
+|---|---|---|
+| `0070_narasi_lifecycle.sql` | `cb495e18…` | `cb495e18…` ✔ |
+| `0071_narasi_derived_input.sql` | `93df3050…` | `93df3050…` ✔ |
+| `0072_narasi_continuity_schema.sql` | `2d4ef119…` | `2d4ef119…` ✔ |
+
+**Why every scan missed it:** `dd4a823c` lived in a *separate clone* at
+`~/Documents/wt-narasi-perf-recovered`, with its own object store and an `origin` pointing at a
+local filesystem path. `git ls-tree` over every branch of the main repository was correct and
+complete — and blind, because the commit was never in that repository. It is now anchored there
+as `codex/b04b-phase0-recovered` (local ref, not pushed).
+
+The old sentence was not careless: three independent checks agreed. All three were scoped to one
+repository, and none said so. **"Absent from every ref" is only ever a claim about the refs you
+thought to ask.** That is the same failure that reported `0072` free twice, arriving a third time
+by a different route.
 
 **Binding chain, verified before anchoring:**
 
@@ -48,9 +91,63 @@ refused and never what was accepted. All that can be said for `2d4ef119…` is:
 - that is **elimination, not identification**. This anchor preserves the bytes that were found;
   it does not certify them as the bytes that were accepted.
 
-Anyone reviving C-03 must re-run `acceptance-v4/run_c03_acceptance.py` against these files rather
-than trusting the ledger's "ACHIEVED". The ledger's claim of 153 assertions is about a file whose
-identity the pack cannot confirm.
+Anyone reviving C-03 must therefore establish acceptance **afresh** rather than trusting the
+ledger's "ACHIEVED" — its claim of 153 assertions is about a file whose identity this pack cannot
+confirm. That cannot be done by re-running `acceptance-v4/run_c03_acceptance.py`; see the next
+section for why.
+
+## 🔴 What is NOT archived — the pack cannot be re-run
+
+`acceptance-v4/` is on this ref in full and self-verifies against its own `SHA256SUMS`. That
+makes it **readable**, not **runnable**. `run_c03_acceptance.py` gates on a worktree state that
+no longer exists anywhere, and it checks that state *before* executing a single assertion:
+
+| Preflight gate (`run_c03_acceptance.py`, ll. 135–152) | Demanded | Archived here |
+|---|---|---|
+| `backend_head` | `76b287c18b58b84c…` | — (commit reachable, worktree state not) |
+| `backend_branch` | `perf/narasi-revise-fast` | — |
+| `required_files` (11 entries) | 11 hashes | **2 of 11** (`0070`, `0071`) |
+| `tracked_diff_sha256` | `24720f091ce58dd0…` | **the diff bytes are nowhere** |
+| `status_without_candidate_sha256` | `180c5865502615f7…` | **the untracked bytes are nowhere** |
+
+Two further dependencies are outside the ref entirely:
+
+- **`C01_RUNNER`** is hard-coded to the absolute path
+  `/Users/rino/docs/IMPORTANT-wimba-narasi-c01-story-contract-closure-acceptance-v2/run_c01_closure_acceptance.py`.
+  Verified 2026-08-01: **that file still exists** (6,379 bytes) — and is on no ref in this
+  repository and in no pack. It survives by accident of one directory on one laptop, and nothing
+  before this amendment recorded that the pack depends on it.
+- **`preexisting_status_paths` includes `python/.pytest_cache/`.** The baseline is gated on the
+  contents of a cache directory, so it was never reproducible — not on another machine, and not
+  reliably on the original one.
+
+**Measured 2026-08-01** against the surviving recovery directory, the nearest thing to the
+baseline that still exists:
+
+| | Baseline demands | `~/Documents/wt-narasi-perf-recovered` |
+|---|---|---|
+| HEAD | `76b287c1…` | `dd4a823c…` |
+| branch | `perf/narasi-revise-fast` | `recovery/b04b-phase0-76b287c` |
+| tracked diff | `24720f09…` | `9b7bcbbe…` |
+| status | `180c5865…` | `b258511e…` |
+
+Four gates, four mismatches. And `dd4a823c` is not a damaged copy of the baseline — it is a
+**later, larger** state: it commits 50 files and +26,987 lines of A-04 / B-01 / B-03 / B-04a
+suites that postdate C-03 entirely.
+
+The decisive evidence is in that commit's own message, which says what was never rebuilt:
+
+> Missing from this baseline: `backend/server.js`, `orchestrator/router.py`,
+> `orchestrator/static.py` (3 of 8 modified files, not reconstructed …)
+
+Those three are C-03's own modified tracked files. **3 of the 8 inputs to `24720f09…` do not
+exist in any surviving artefact.** The diff cannot be recomputed, so the preflight cannot pass,
+so the suite cannot run — and a suite that cannot run cannot be made to run by anchoring more
+migrations. Anchoring was never the missing piece.
+
+**What a C-03 revival must therefore do:** build a *new* baseline and run a *new* acceptance
+round. Its result will be a new acceptance, not a recovery of "153 assertions" — that number is
+not recoverable and should not be cited as if a re-run could restore it.
 
 ## 🔴 The numbering collision is triple, not single
 
@@ -85,6 +182,14 @@ cd <path>/acceptance-v4 && shasum -c SHA256SUMS
 shasum -a 256 ../database/migrations/007*.sql      # compare against the table above
 ```
 
-**Durability bound:** this is a **local** ref. Git objects survive directory deletion, which an
-untracked recovery folder does not — but a single laptop is not an off-site anchor. Pushing this
-branch is the real fix and was **not** authorised by the token that created it.
+**Both checks are byte-integrity only.** A green `shasum -c` means the archive is intact. It does
+not mean the pack is runnable — it is not — and it does not mean `2d4ef119…` is the accepted V4.
+
+**Sibling ref.** `codex/b04b-phase0-recovered` (`dd4a823c…`) holds the same three migrations,
+byte-identical, inside a full backend tree. It is the *only* copy of the B-04b Phase 0 recovery
+baseline and is likewise local-only. Do not merge it either.
+
+**Durability bound:** this is a **local** ref, and so is its sibling. Git objects survive
+directory deletion, which an untracked recovery folder does not — but a single laptop is not an
+off-site anchor. Pushing is the real fix and remains **unauthorised** by the tokens that created
+these refs.
