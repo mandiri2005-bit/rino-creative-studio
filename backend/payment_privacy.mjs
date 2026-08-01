@@ -56,6 +56,14 @@ const KEEP = new Set([
   // ── containers that are walked, not kept wholesale ──
   "customer", "billing", "product_cart", "discounts", "refunds", "disputes", "items",
 
+  // `metadata` is where WE echo our own linkage back through the gateway. Denying it
+  // outright — as an earlier version of this file did — silently threw away tenant_id,
+  // user_id and plan_key, i.e. the payload-side proof of which tenant a payment belonged
+  // to. That only showed up when this was dry-run against the real production row. It is
+  // walked instead: our own keys survive, and anything else a caller or provider stuffs in
+  // there still drops, because the same allowlist applies one level down.
+  "metadata", "tenant_id", "user_id",
+
   // ── instrument: category only, never anything that identifies the holder ──
   "payment_method", "payment_method_type", "payment_provider", "payment_type",
   "card_network", "card_type", "card_issuing_country", "bank",
@@ -79,7 +87,9 @@ const KEEP = new Set([
  * - invoice_url / payment_link / receipt_url: tokenised URLs — a bearer capability, and the
  *   audit calls them out by name.
  * - email / name / phone / address parts: plain identity data.
- * - metadata / custom_field_responses: free-form, so their contents cannot be reasoned about.
+ * - custom_field_responses: free-form buyer input, so its contents cannot be reasoned about.
+ *   (`metadata` is NOT denied — it is walked, because we put our own tenant/user/plan
+ *   linkage in it. Unknown keys inside it still drop.)
  * - error_message: provider error text is echoed into the payload, and a separate finding
  *   in this codebase records that upstream error strings can carry secrets.
  */
@@ -89,7 +99,7 @@ const DENY = new Set([
   "email", "email_address", "name", "full_name", "first_name", "last_name",
   "phone", "phone_number", "street", "address", "address_line1", "address_line2",
   "city", "state", "zipcode", "zip", "postal_code",
-  "metadata", "custom_field_responses", "error_message", "ip_address", "user_agent",
+  "custom_field_responses", "error_message", "ip_address", "user_agent",
 ]);
 
 function extraKeep() {

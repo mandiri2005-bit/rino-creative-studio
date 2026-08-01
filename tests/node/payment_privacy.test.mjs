@@ -53,14 +53,27 @@ function productionShapedPayload() {
       custom_field_responses: [{ answer: "free text" }],
       customer: { customer_id: "cus_x", email: "someone@example.test", name: "Rino Yufahri" },
       billing: { country: "ID", city: "Jakarta", street: "Jl. Example 1", zipcode: "12345" },
+
+      // Our own linkage, echoed back by the gateway. The production dry-run showed an
+      // earlier version of the allowlist threw all three away by denying `metadata`
+      // wholesale — losing the payload-side proof of which tenant a payment belonged to.
+      metadata: {
+        tenant_id: "11111111-1111-4111-8111-111111111111",
+        user_id: "22222222-2222-4222-8222-222222222222",
+        plan_key: "ultra",
+        buyer_note: "free text nobody validated",
+      },
     },
   };
 }
 
 const MUST_NOT_SURVIVE = [
   "card_holder_name", "card_last_four", "payment_method_id", "invoice_url", "payment_link",
-  "error_message", "metadata", "custom_field_responses", "email", "name",
+  "error_message", "custom_field_responses", "email", "name",
   "city", "street", "zipcode", "is_update_payment_method",
+  // Free text nested inside `metadata`. The container itself is deliberately kept and
+  // walked (see the dedicated test); what must not survive is the unvalidated content.
+  "buyer_note",
 ];
 
 // Financial and tax evidence. Dropping any of these would trade a privacy problem for an
@@ -113,6 +126,17 @@ test("records what it dropped, by name only, never by value", () => {
   for (const v of ["RINO YUFAHRI", "4242", "someone@example.test", "sk_live_abcdef", "Jl. Example 1"]) {
     assert.equal(serialised.includes(v), false, `redacted payload still contains ${v}`);
   }
+});
+
+test("metadata is walked, not denied: our linkage survives, free text does not", () => {
+  // Regression guard for a defect found only by dry-running against the real production
+  // row: denying `metadata` outright also destroyed tenant_id / user_id / plan_key.
+  const out = redactGatewayPayload(productionShapedPayload(), { mode: "redacted" });
+  assert.equal(out.data.metadata.tenant_id, "11111111-1111-4111-8111-111111111111");
+  assert.equal(out.data.metadata.user_id, "22222222-2222-4222-8222-222222222222");
+  assert.equal(out.data.metadata.plan_key, "ultra");
+  assert.equal(out.data.metadata.buyer_note, undefined,
+    "unvalidated free text inside metadata must still be dropped");
 });
 
 test("nested identity data is dropped wherever it appears, not only at the top", () => {
