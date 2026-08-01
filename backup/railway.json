@@ -1,0 +1,7 @@
+{
+  "build": { "builder": "dockerfile" },
+  "deploy": {
+    "startCommand": "/app/run-backup.sh",
+    "restartPolicyType": "NEVER"
+  }
+}
