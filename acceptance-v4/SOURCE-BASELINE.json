@@ -1,0 +1,40 @@
+{
+  "schema_version": "c03-source-baseline-v4",
+  "backend_worktree": "/tmp/wt-narasi-perf",
+  "backend_head": "76b287c18b58b84c792432ff5fb326e5aa6f2008",
+  "backend_branch": "perf/narasi-revise-fast",
+  "tracked_diff_sha256": "24720f091ce58dd0dbf547f8882ef00884b78d1d4844470ff9a6a4ca298e7f27",
+  "status_without_candidate_sha256": "180c5865502615f78d19b9376fad4310c16f0962414e4d8927f146852ffcf1a4",
+  "candidate_path": "database/migrations/0072_narasi_continuity_schema.sql",
+  "rejected_v1_candidate_sha256": "6df1bee7ee851ba59493e7c330515632fc07195dc0fedf857a7ad7afdb7ccd9f",
+  "rejected_v2_candidate_sha256": "591246a386fc6788750229452e2124701ac961cc30e378c2d0f960d94a59604e",
+  "rejected_v3_candidate_sha256": "068291d5f9e5f60a64f1ba9a45fb26b52748d402fc07b0a7ec0f678683de056b",
+  "required_files": {
+    "database/migrate.js": "19d8fc9f88b4b9aa378fcf2b25ae9977b151a07d538c528d8c59ff3f9f887cc1",
+    "database/migrations/0001_create_tenants.sql": "399d15d5ad39de0b910b43d0cef7569f55a4e26bfcf6b1c7d89c093bff779659",
+    "database/migrations/0006_create_jobs.sql": "a79a6bf94232c4162d2483b5cc2cfed05217cadab787504c046466e5e6896f14",
+    "database/migrations/0011_fix_rls_force_and_check.sql": "8befaa1358c19d43ba114c65de3a0ef137e855635dddc2261119bbe8910e2be4",
+    "database/migrations/0013_moat_rls.sql": "0c681965d778b257a491d28cee15aafaebb535316b8fb4c2953a37235f3db3a5",
+    "database/migrations/0016_app_role.sql": "a2e0a16978d4414c033bf2f402cd9f77434e1f438c7a1ed4f05f49909b888915",
+    "database/migrations/0017_narasi_capture.sql": "940954660035387e1154c845966f68ecb37c9ca36d3d6f15ee6d012729fe5ae0",
+    "database/migrations/0051_create_projects.sql": "e150b74785810128eee9708b0595f870f73fb118e424e211478959fe48ddf977",
+    "database/migrations/0069_create_narasi_outlines.sql": "0f574390457661e444d5ec4206d50957b0f25ca7cdfe0c053ef29bbb0064b1de",
+    "database/migrations/0070_narasi_lifecycle.sql": "cb495e187bc4178f42b84614e7de1abcd0b71dca96dacc1adc42e0ed1751c9fa",
+    "database/migrations/0071_narasi_derived_input.sql": "93df3050a57e51c67b9ea3e352ebb7291b6be1a4cd4dc8db0494deb1b5ab47b2"
+  },
+  "preexisting_status_paths": [
+    "backend/server.js",
+    "python/database.py",
+    "python/laozhang_api.py",
+    "python/narration_api.py",
+    "python/narration_worker.py",
+    "python/orchestrator/core.py",
+    "python/orchestrator/router.py",
+    "python/orchestrator/static.py",
+    "database/migrations/0070_narasi_lifecycle.sql",
+    "database/migrations/0071_narasi_derived_input.sql",
+    "python/.pytest_cache/",
+    "python/continuity/",
+    "tests/python/test_narasi_lifecycle_repository.py"
+  ]
+}
