@@ -52,13 +52,18 @@ So `0072` is the only number C-03 can keep. Its `0070` and `0071` **must be renu
 revival**, and the acceptance pack's `SOURCE-BASELINE.json` names them by path, so it has to be
 regenerated at the same time or the runner will verify files that no longer exist.
 
-**Renumbering is not the hard part.** The V4 pack is a byte archive, not a runnable suite: its
-preflight demands a worktree HEAD, branch, dirty-diff hash and status hash that no surviving
-artefact reproduces, and 3 of the 8 modified files feeding that diff were never reconstructed —
-stated as much in `dd4a823c`'s own commit message. A C-03 revival is therefore a **new**
-acceptance round, not a replay. The ledger's "153 assertions" is not recoverable; do not plan
-around restoring it. Full detail in `ANCHOR.md` on `codex/c03-schema-frozen` and in
-`L2B-METER-PREREQUISITES-RECORD-002`.
+**Renumbering is not the hard part.** The V4 pack is a byte archive, not a runnable suite, and it
+has exactly **one** hard blocker: `tracked_diff_sha256` (`24720f09…`), the exact bytes of the
+pre-existing dirty diff. Those bytes are in no anchored artefact, because 3 of the 8 modified
+files feeding them were not reconstructed — stated in `dd4a823c`'s own commit message. The other
+preflight gates are either satisfiable (`required_files` is **11 of 11** in
+`codex/b04b-phase0-recovered`) or merely environment-fragile (the status gate binds porcelain
+lines, not file bytes).
+
+A C-03 revival is therefore a **new** acceptance round, not a replay. Treat the ledger's "153
+assertions" as **unverifiable** — not as something a successful re-run would restore, since it is
+a claim about a candidate the pack cannot identify. Full detail in `ANCHOR.md` on
+`codex/c03-schema-frozen` and in `L2B-METER-PREREQUISITES-RECORD-002` / `-003`.
 
 ## How to allocate a new number
 
