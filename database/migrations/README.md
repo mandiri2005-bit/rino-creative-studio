@@ -32,9 +32,16 @@ Why the cross-checks are not redundant:
 - **The production `migrations` table** catches numbers applied from a branch you are not
   looking at. It records by *filename*, so two different files sharing a number are two
   different rows — the collision surfaces as disorder, not as an error.
-- **`RESERVED.md`** catches numbers claimed by accepted work that was never committed to
-  any ref. Neither of the first two checks can see those, and this has already caused
-  `0072` to be reported free twice.
+- **`RESERVED.md`** catches numbers claimed by accepted work that is not on the deploy
+  branch and not on the remote — work committed to a local-only ref, to a *separate clone*,
+  or to no ref at all. Neither of the first two checks can see those, and this has already
+  caused `0072` to be reported free **three** times, by three different mechanisms.
+
+> **Amended 2026-08-01.** This list previously said `RESERVED.md` catches work "never
+> committed to any ref". That framing hid the actual failure: the C-03 migrations *were*
+> committed, to a branch in a separate clone whose `origin` was a local filesystem path. A
+> `git ls-tree` over every branch **here** was complete, correct, and blind. A scan's scope
+> is part of its result — state it, or the next reader inherits your assumption as a fact.
 
 Historical precedent this rule exists for: `0031` was claimed independently by **two**
 branches (`feat/accounting-foundation` → `0031_accounting_foundation.sql` and an early
