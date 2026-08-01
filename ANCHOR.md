@@ -2,8 +2,10 @@
 
 > ### ⚠ AMENDED 2026-08-01 — this ref is a BYTE ARCHIVE, not a runnable acceptance pack
 >
-> Amended under `L2B-METER-PREREQUISITES-RECORD-002`. Two claims written below were already
-> false when this ref was created, and are corrected in place:
+> Amended under `L2B-METER-PREREQUISITES-RECORD-002`, then corrected again under
+> `-RECORD-003` (Amendment 2), which narrowed three overstatements in the first amendment —
+> see *What is NOT archived*. Two claims written below were already false when this ref was
+> created, and are corrected in place:
 >
 > 1. the migrations **are** committed to a ref, and were when this was written — see
 >    **Provenance**;
@@ -99,16 +101,22 @@ section for why.
 ## 🔴 What is NOT archived — the pack cannot be re-run
 
 `acceptance-v4/` is on this ref in full and self-verifies against its own `SHA256SUMS`. That
-makes it **readable**, not **runnable**. `run_c03_acceptance.py` gates on a worktree state that
-no longer exists anywhere, and it checks that state *before* executing a single assertion:
+makes it **readable**, not **runnable**. `run_c03_acceptance.py` gates on worktree state *before*
+executing a single assertion, and one of those gates cannot be satisfied from anything anchored:
 
-| Preflight gate (`run_c03_acceptance.py`, ll. 135–152) | Demanded | Archived here |
+| Preflight gate (`run_c03_acceptance.py`, ll. 135–153) | Demanded | Available |
 |---|---|---|
-| `backend_head` | `76b287c18b58b84c…` | — (commit reachable, worktree state not) |
+| `backend_head` | `76b287c18b58b84c…` | commit reachable; the **worktree state** it names is not |
 | `backend_branch` | `perf/narasi-revise-fast` | — |
-| `required_files` (11 entries) | 11 hashes | **2 of 11** (`0070`, `0071`) |
-| `tracked_diff_sha256` | `24720f091ce58dd0…` | **the diff bytes are nowhere** |
-| `status_without_candidate_sha256` | `180c5865502615f7…` | **the untracked bytes are nowhere** |
+| `required_files` (11 entries) | 11 hashes | **11 of 11**, all verified in `codex/b04b-phase0-recovered` (2 of 11 on this ref alone) |
+| `status_without_candidate_sha256` | `180c5865502615f7…` | binds porcelain status **lines** — codes and paths, not file bytes — and `preexisting_status_paths` records that path set: **fragile, not lost** |
+| `tracked_diff_sha256` | `24720f091ce58dd0…` | 🔴 **the one hard blocker** — exact bytes of `git diff --binary`, held nowhere |
+
+**Amended 2026-08-01 (Amendment 2).** This table previously read "2 of 11" and claimed the status
+gate needed untracked *bytes*. Both were wrong. The `required_files` figure was scoped to this
+orphan and was stale the moment `dd4a823c` was fetched — in the very record that documented the
+fetch. The status gate hashes `git status --porcelain=v1 -z` output (ll. 121–130), so it binds
+paths and status codes only. Neither is the blocker. **`tracked_diff_sha256` is.**
 
 Two further dependencies are outside the ref entirely:
 
@@ -117,9 +125,11 @@ Two further dependencies are outside the ref entirely:
   Verified 2026-08-01: **that file still exists** (6,379 bytes) — and is on no ref in this
   repository and in no pack. It survives by accident of one directory on one laptop, and nothing
   before this amendment recorded that the pack depends on it.
-- **`preexisting_status_paths` includes `python/.pytest_cache/`.** The baseline is gated on the
-  contents of a cache directory, so it was never reproducible — not on another machine, and not
-  reliably on the original one.
+- **`preexisting_status_paths` includes `python/.pytest_cache/`.** Because the status gate binds
+  paths and status codes rather than contents, this does **not** make the baseline impossible to
+  reproduce. It does couple acceptance to a cache directory that must exist, untracked, with a
+  matching porcelain entry — environment-fragile, and nothing anyone would think to preserve on
+  purpose.
 
 **Measured 2026-08-01** against the surviving recovery directory, the nearest thing to the
 baseline that still exists:
@@ -140,14 +150,22 @@ The decisive evidence is in that commit's own message, which says what was never
 > Missing from this baseline: `backend/server.js`, `orchestrator/router.py`,
 > `orchestrator/static.py` (3 of 8 modified files, not reconstructed …)
 
-Those three are C-03's own modified tracked files. **3 of the 8 inputs to `24720f09…` do not
-exist in any surviving artefact.** The diff cannot be recomputed, so the preflight cannot pass,
-so the suite cannot run — and a suite that cannot run cannot be made to run by anchoring more
-migrations. Anchoring was never the missing piece.
+Those three are C-03's own modified tracked files. **3 of the 8 inputs to `24720f09…` are not
+present in any artefact anchored here.**
+
+Stated precisely, because the distinction matters: that commit message records the three files as
+**not reconstructed in that round**. It does not prove their bytes exist nowhere — session
+captures, other unarchived directories, or a later reconstruction attempt could still produce
+them. What can be said today is that nothing anchored contains them, so the diff cannot be
+recomputed → the preflight cannot pass → the suite cannot run. And a suite that cannot run could
+never have been made runnable by anchoring more migrations. **Anchoring was not the missing
+piece.**
 
 **What a C-03 revival must therefore do:** build a *new* baseline and run a *new* acceptance
-round. Its result will be a new acceptance, not a recovery of "153 assertions" — that number is
-not recoverable and should not be cited as if a re-run could restore it.
+round. From what is anchored today the historical run cannot be reproduced. And even if the three
+files were later recovered, the ledger's "153 assertions" would still not be trustworthy — it is
+a claim about a candidate this pack cannot identify (see *Provenance*). Treat that number as
+unverifiable, not as something a successful re-run would restore.
 
 ## 🔴 The numbering collision is triple, not single
 
