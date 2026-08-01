@@ -54,7 +54,12 @@ function _poolUrl() {
 
 // ── Singleton pool + drizzle instance ────────────────────────────────────────
 
-const pool = new Pool({ connectionString: _poolUrl(), ssl: { rejectUnauthorized: false } });
+// PGSSLMODE=disable is honoured so the payment/credit suites can run against a plain
+// local or CI PostgreSQL, which serves no TLS and otherwise rejects the connection with
+// "The server does not support SSL connections". Opt-in only — production does not set it,
+// so behaviour there is byte-for-byte what it was.
+const _poolSsl = process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false };
+const pool = new Pool({ connectionString: _poolUrl(), ssl: _poolSsl });
 const db   = drizzle(pool);
 
 // ── Tenant ID resolution ─────────────────────────────────────────────────────

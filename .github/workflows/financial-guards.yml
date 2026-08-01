@@ -1,0 +1,145 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# financial-guards — the money path, gated on every deploy-branch push and PR.
+#
+# WHY THIS EXISTS
+#   The accounting audit (F-07) found the financial suites were not merely ungated but
+#   unreachable: both existing workflows are workflow_dispatch-only, `npm test` runs two
+#   helper files, and nothing in package.json / Procfile / railway.json invokes pytest or
+#   the payment tests at all. A regression in credits, refunds or ledger privileges could
+#   land fully green. This workflow closes that.
+#
+#   The other two workflows stay manual on purpose — this one does not touch them.
+#
+# DESIGN RULE: THIS JOB MUST BE GREEN ON DAY ONE.
+#   A gate that is red from the start gets ignored, which is exactly how gl_accounts kept a
+#   writable grant from migration 0029 until 0070. So `guards` runs only what is proven to
+#   pass (verified locally against a plain TCP PostgreSQL before this file was written:
+#   29 node assertions, 13 python guards, 0 failures), and everything known to be broken
+#   lives in `known-gaps`, which reports but never blocks. Move items UP as they are fixed;
+#   never silence one to keep this green.
+# ─────────────────────────────────────────────────────────────────────────────
+name: financial-guards
+
+on:
+  push:
+    # feat/subscription-global is the branch Railway actually deploys to app.wimba.ai.
+    branches: [feat/subscription-global, main]
+  pull_request:
+  workflow_dispatch: {}
+
+env:
+  # Plain PostgreSQL serves no TLS. backend/db.js and database/migrate.js default to
+  # ssl:{rejectUnauthorized:false}, which still ATTEMPTS TLS and dies with "The server does
+  # not support SSL connections"; both honour PGSSLMODE=disable so they can be tested at
+  # all. Production never sets this, so production behaviour is unchanged.
+  PGSSLMODE: disable
+  PGURL: postgresql://postgres:postgres@localhost:5432/wimba
+
+jobs:
+  guards:
+    name: money path (must stay green)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Matches production (Neon reports 18.4).
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wimba
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install backend deps
+        run: npm ci --no-audit --no-fund
+        working-directory: backend
+
+      - name: Install python test deps
+        run: pip install --quiet pytest asyncpg
+
+      - name: Create the roles the migrations grant to
+        # 0016 grants to app_user; the accounting migrations assume an owner role exists.
+        # app_user is NOBYPASSRLS so FORCE ROW LEVEL SECURITY is actually exercised.
+        run: |
+          psql "$PGURL" -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE neondb_owner LOGIN;" \
+            -c "CREATE ROLE app_user LOGIN NOBYPASSRLS;"
+
+      - name: Apply every migration with the real runner
+        # Uses database/migrate.js rather than a psql loop so the runner itself is covered.
+        # A migration that cannot apply to an empty database fails the build here.
+        env:
+          DATABASE_URL_DEV: ${{ env.PGURL }}
+        run: node database/migrate.js
+
+      - name: Node — payment, credit and reversal suites
+        env:
+          DATABASE_POOL_URL_DEV: ${{ env.PGURL }}
+          NODE_ENV: development
+        run: |
+          node --test \
+            tests/node/payment_privacy.test.mjs \
+            tests/node/payments_core.test.mjs \
+            tests/node/dodo.test.mjs \
+            tests/node/dodo_subscriptions.test.mjs \
+            tests/node/midtrans.test.mjs \
+            tests/node/payments_flags.test.mjs \
+            tests/node/reverse_entitlement.test.mjs
+
+      - name: Python — ledger privilege and deferred-revenue guards
+        # TEST_DATABASE_URL switches on the live half of the suite (audit §17.2), which
+        # asserts no table is app-writable without row-level protection.
+        env:
+          TEST_DATABASE_URL: ${{ env.PGURL }}
+        run: pytest tests/python/test_accounting_privileges.py -q
+
+      - name: Privilege detector (report)
+        # Informational: the assertion itself is in the pytest step above. Printed so a
+        # reviewer can see the whole grant/RLS map without reproducing the environment.
+        run: psql "$PGURL" -f database/checks/app_user_privilege_audit.sql
+
+  known-gaps:
+    name: known gaps (reports, never blocks)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install python test deps
+        run: pip install --quiet pytest pytest-asyncio httpx fastapi
+
+      - name: test_credits_metering — expected to fail
+        # test_catalog_costs_are_sane asserts credit_cost(video, veo-3.1, 8s) == 400.
+        # The code returns 1000: config/pricing.json prices veo-3.1 at $0.5/sec, so 8s is
+        # $4.00 = 400 credits before markup, and a 2.5x markup is applied on top. The audit
+        # (F-07) classified this as a stale expectation rather than a live pricing bug, and
+        # that was independently re-verified. It is NOT patched to 1000 here, because
+        # whether 2.5x is the intended charge is a pricing-owner decision — the same owner
+        # who still has to supply the missing plus/ultra prices (audit §18.2 B1). Editing
+        # the number to go green would launder that question away.
+        run: pytest tests/python/test_credits_metering.py -q || true
+
+      - name: reverse_entitlement DB integration — cannot run yet
+        # The DB half of this test builds its own pg Pool with SSL hardcoded, so unlike the
+        # suites above it cannot be redirected with PGSSLMODE and fails against a plain
+        # PostgreSQL. Making it runnable is a test-fixture change, tracked separately.
+        run: echo "Blocked on a test-fixture change; see audit F-07."

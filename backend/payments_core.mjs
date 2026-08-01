@@ -18,6 +18,12 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { query, pool } from "./db.js";
 import { redis } from "./redis.js";
+// Field-level allowlist for stored gateway payloads (audit F-06). Every write of a
+// provider body to payment_events.raw_event, payment_events.reversal_events or
+// orphan_reversals.raw_event goes through stringifyRedacted instead of JSON.stringify.
+// Our OWN constructed metadata objects still use JSON.stringify directly — they contain
+// no provider data, so redacting them would only strip fields we wrote on purpose.
+import { stringifyRedacted } from "./payment_privacy.mjs";
 
 // ── Plan → credits map (single source, same as billing.mjs / python) ──────────
 const _DEFAULT_TIER_CREDITS = { free: 100, starter: 2500, pro: 9000, enterprise: 31200 };
@@ -94,7 +100,7 @@ export async function grant_entitlement({
        ON CONFLICT (provider, idempotency_key) DO NOTHING
        RETURNING id, credited`,
       [tenantId, userId, provider, idempotencyKey, providerPaymentId,
-       planKey, amount, currency, JSON.stringify(rawEvent)],
+       planKey, amount, currency, stringifyRedacted(rawEvent)],
     );
     let rowId, alreadyCredited;
     if (ins.rows.length) {
@@ -186,7 +192,7 @@ export async function recordPaymentEvent({
             updated_at = now()
       WHERE payment_events.credited = FALSE`,
     [tenantId, userId, provider, idempotencyKey, providerPaymentId,
-     planKey, amount, currency, status, JSON.stringify(rawEvent)],
+     planKey, amount, currency, status, stringifyRedacted(rawEvent)],
     tenantId,
   );
 }
@@ -212,7 +218,7 @@ export async function recordCreditedPaymentEvent({
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'succeeded',TRUE,$9,$10,$11::jsonb)
      ON CONFLICT (provider, idempotency_key) DO NOTHING`,
     [tenantId, userId, provider, idempotencyKey, providerPaymentId,
-     planKey, amount, currency, credits, bucket === "topup" ? "topup" : "sub", JSON.stringify(rawEvent)],
+     planKey, amount, currency, credits, bucket === "topup" ? "topup" : "sub", stringifyRedacted(rawEvent)],
     tenantId,
   );
   // Out-of-order recovery: if a refund/chargeback for this payment arrived BEFORE this
@@ -267,7 +273,7 @@ export async function reverse_entitlement({
       await query(
         `INSERT INTO orphan_reversals (provider, provider_payment_id, refund_op_id, kind, refund_amount, raw_event)
          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (provider, refund_op_id) DO NOTHING`,
-        [provider, providerPaymentId, refundOpId, kind, Number(refundAmount) || null, JSON.stringify(rawEvent || {})],
+        [provider, providerPaymentId, refundOpId, kind, Number(refundAmount) || null, stringifyRedacted(rawEvent || {})],
       ).catch((e) => console.warn("[reverse] orphan queue failed:", e.message));
       console.warn(`[reverse] orphan queued — no anchor yet for ${provider} ${providerPaymentId} op=${refundOpId}`);
       return { reversed: false, reason: "orphan_queued" };
@@ -332,7 +338,7 @@ export async function reverse_entitlement({
                 reversed_at = CASE WHEN $4 THEN now() ELSE reversed_at END,
                 reversal_events = reversal_events || $5::jsonb, updated_at=now()
           WHERE id=$1`,
-        [row.id, newReversed, newStatus, fully, JSON.stringify(rawEvent || {})],
+        [row.id, newReversed, newStatus, fully, stringifyRedacted(rawEvent || {})],
       );
     }
     await client.query("COMMIT");
