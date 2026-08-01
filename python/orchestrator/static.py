@@ -567,6 +567,74 @@ def _is_fiction_style(style: Optional[str]) -> bool:
         return False
 
 
+# ===========================================================================
+# C10 — no orphan chapter task may outlive the MAP.
+# ===========================================================================
+# Canon Lite P0 measured TWO child tasks surviving an outer cancellation: the
+# `as_completed` loop below re-raised CancelledError and the remaining futures kept
+# running, free to call a provider and write evidence after the job had already
+# terminalized. C10 ("all tasks are awaited or drained before terminalization; no
+# orphan provider work may mutate evidence later") forbids exactly that.
+_MAP_DRAIN_TIMEOUT_S = 30.0
+
+
+async def _drain_chapter_tasks(tasks: Sequence["asyncio.Future"], *, why: str) -> int:
+    """Cancel every still-running chapter task and AWAIT it before leaving the MAP.
+
+    The drain must survive OUR OWN cancellation. Once a cancel has been delivered to
+    this coroutine, the next `await` can raise immediately — so a single
+    `await asyncio.wait(...)` would abandon the very children it had just cancelled,
+    which is the leak this closes. We therefore retry cancel + join until the children
+    are genuinely finished. `_MAP_DRAIN_TIMEOUT_S` is a REPORTING/RE-CANCEL interval,
+    never permission to return while a physical child remains alive.
+
+    Returns the number of tasks that were in flight and are now finished. On the normal
+    path nothing is pending and this is a no-op.
+    """
+    def _retrieve(done_tasks) -> None:
+        for task in done_tasks:
+            if task.cancelled():
+                continue
+            try:
+                task.exception()
+            except Exception:  # noqa: BLE001 - retrieval only
+                pass
+
+    # A child may have completed between the last `as_completed` yield and the outer
+    # cancellation. It is no longer "pending", but its exception must still be
+    # retrieved for C10's all-awaited-or-drained guarantee.
+    _retrieve(t for t in tasks if t.done())
+    original = {t for t in tasks if not t.done()}
+    if not original:
+        return 0
+    pending = set(original)
+    drain_was_cancelled = False
+    while pending:
+        for task in pending:
+            task.cancel()
+        try:
+            done, pending = await asyncio.wait(
+                pending, timeout=max(0.01, float(_MAP_DRAIN_TIMEOUT_S)))
+        except asyncio.CancelledError:
+            # Preserve our caller's cancellation, but only re-raise after every physical
+            # child is gone. A repeated cancel merely causes another cancel+join round.
+            drain_was_cancelled = True
+            continue
+        # Retrieve each finished child's exception so a chapter that died on its way
+        # out doesn't surface later as an "exception was never retrieved" warning.
+        _retrieve(done)
+        if pending:
+            log.error(
+                "narrate_chapters: %d chapter task(s) still alive after %.0fs; "
+                "continuing mandatory drain (%s)",
+                len(pending), _MAP_DRAIN_TIMEOUT_S, why)
+    log.info("narrate_chapters: drained %d in-flight chapter task(s) (%s)",
+             len(original), why)
+    if drain_was_cancelled:
+        raise asyncio.CancelledError
+    return len(original)
+
+
 async def narrate_chapters(
     topic: str,
     chapters: Sequence[dict],
@@ -614,6 +682,24 @@ async def narrate_chapters(
             "ok": False, "chapters": [], "book": "", "polished": False,
             "rag_used": False, "context": {}, "strategy": "narrate_chapters",
             "error": "no_chapters",
+        }
+
+    # Resolve the mode before routing, RAG, Story Bible, or any other physical work.
+    # C11 requires the flag-off path to import/call nothing from Canon Lite, hence this
+    # literal closed gate rather than `canon_lite.resolve_mode()`.
+    _cl_mode = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
+    if _cl_mode not in ("shadow", "assist", "enforce"):
+        _cl_mode = "off"
+    if _cl_mode in ("assist", "enforce"):
+        # L1 implements shadow only. Silently degrading an explicitly configured mode
+        # to legacy generation spends money under guarantees that do not exist. Refuse
+        # this job before all provider/RAG work and return an explicit non-success.
+        log.error("canon lite: mode=%s is unavailable in L1; job refused before work",
+                  _cl_mode)
+        return {
+            "ok": False, "chapters": [], "book": "", "polished": False,
+            "rag_used": False, "context": {}, "strategy": "narrate_chapters",
+            "error": "canon_lite_mode_unavailable_l1",
         }
 
     w_model = worker_model or route_model(role="worker", style=style)
@@ -1083,6 +1169,69 @@ async def narrate_chapters(
         except Exception as _be:  # noqa: BLE001
             log.warning("narrate_chapters: story bible generation failed (non-fatal): %s", _be)
 
+    # ── CANON LITE L1 — shadow only (NARASI_CANON_LITE_MODE, default off) ───────────
+    # Placed AFTER the Story Bible slot and BEFORE fan-out, which is the one point where
+    # the accepted outline and the resolved configuration are both final (§5). It adds
+    # NO provider call: the L1 canon is a deterministic projection of the outline plus
+    # the resolved config, and the prose bible is advisory (hash only). That is how the
+    # §11 "one steady-state canon call" ceiling is met — by spending zero — and how the
+    # I09 constraint "do not stack a second serial planner" is satisfied.
+    #
+    # C11 is why the mode is compared as a literal string here instead of calling
+    # canon_lite.resolve_mode(): flag-off must perform NO Canon Lite import at all. The
+    # two gates are held equivalent by an explicit test over a shared input matrix, so
+    # this duplication cannot drift unnoticed.
+    _cl_freeze = None
+    if _cl_mode == "shadow":
+        try:
+            import canon_lite as _cl
+            _cl_outline = list(ctx.chapters or chapters)
+            _cl_cfg = _cl.build_job_config_snapshot(
+                outline_chapters=_cl_outline,
+                target_language=language,
+                narration_style=style,
+                # genre / subgenre / twist_variant_id are NOT resolvable on this path:
+                # select_beatmap() runs only in the separate outline endpoint and its
+                # twist_id is never read back here. They stay explicitly UNKNOWN rather
+                # than being guessed (§6.1).
+            )
+            # Derived from real context state, never from a style guess.
+            if getattr(ctx, "facts_are_bible", False):
+                _cl_policy = "fiction_generated"
+            elif getattr(ctx, "rag_used", False):
+                _cl_policy = "source_grounded"
+            else:
+                _cl_policy = "unknown"
+            _cl_canon = _cl.build_canon_lite_v1(
+                outline_chapters=_cl_outline,
+                job_config=_cl_cfg,
+                fact_source_policy=_cl_policy,
+                advisory_bible_text=(getattr(ctx, "canonical_facts", "") or None),
+            )
+            _cl_status = "present"
+        except Exception as _cle:  # noqa: BLE001 - shadow must never break a job
+            _cl_canon, _cl_status = None, "invalid"
+            # Fixed code only: even a dynamically named exception class can carry
+            # attacker-controlled prose, so neither message nor type name is telemetry.
+            log.warning(
+                "canon lite: canon construction failed "
+                "(error_code=canon_construction_error) — recorded as invalid, "
+                "never as clean")
+        try:
+            # C7/§8.1: absent or invalid canon is REPORTED as such. The digest is
+            # hashes, counts and bounded labels only — no name, title, literal or prose.
+            log.info("canon lite: %s",
+                     _cl.telemetry_digest(_cl_canon, canon_status=_cl_status))
+            # I08/C2: freeze the shared context for the whole fan-out. Soft in shadow —
+            # a mutation is reported, not raised, because shadow may not change
+            # user-visible behaviour. L3 turns prevention on (hard=True).
+            _cl_freeze = _cl.SharedContextFreeze(ctx, hard=False)
+        except Exception as _cle2:  # noqa: BLE001
+            log.warning(
+                "canon lite: shadow instrumentation skipped "
+                "(error_code=shadow_instrumentation_error)")
+            _cl_freeze = None
+
     # 2) MAP — bounded parallel fan-out. Semaphore caps concurrency at max_parallel
     #    so a 40-chapter book doesn't open 40 sockets at once.
     sem = asyncio.Semaphore(max(1, int(max_parallel or 1)))
@@ -1150,16 +1299,40 @@ async def narrate_chapters(
     # Consume as_completed (so a slow chapter doesn't block logging of fast ones),
     # then SORT BY CHAPTER NUMBER to restore book order — the map-reduce invariant.
     raw: list[dict[str, Any]] = []
-    for fut in asyncio.as_completed(tasks):
+    try:
         try:
-            raw.append(await fut)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - _write_chapter is never-raise, but belt+braces
-            log.warning("narrate_chapters: a chapter task raised unexpectedly: %s", exc)
-            raw.append({"ok": False, "output": None, "error": str(exc), "no": -1})
-    log.info("narrate_chapters: MAP done — %d chapters in %.1fs (max_parallel=%s)",
-             len(tasks), time.monotonic() - _t_map, max_parallel)
+            for fut in asyncio.as_completed(tasks):
+                try:
+                    raw.append(await fut)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    # _write_chapter is never-raise, but preserve the legacy belt+braces.
+                    log.warning(
+                        "narrate_chapters: a chapter task raised unexpectedly: %s", exc)
+                    raw.append(
+                        {"ok": False, "output": None, "error": str(exc), "no": -1})
+        finally:
+            # C10: on ANY exit that still has work in flight — outer cancellation, a
+            # deadline, an unexpected raise — cancel and JOIN the survivors before
+            # unwinding. On the normal path this is a zero-await no-op.
+            await _drain_chapter_tasks(tasks, why="map exit")
+        log.info("narrate_chapters: MAP done — %d chapters in %.1fs (max_parallel=%s)",
+                 len(tasks), time.monotonic() - _t_map, max_parallel)
+        if _cl_freeze is not None:
+            # I08: the context handed to every worker must be the same object it was at
+            # fan-out. Report-only in shadow (§9: shadow makes no user-visible change).
+            _cl_ok, _cl_codes = _cl_freeze.verify()
+            if not _cl_ok:
+                log.warning(
+                    "canon lite: shared-context freeze violation %s", list(_cl_codes))
+            else:
+                log.info("canon lite: shared-context freeze intact across MAP")
+    finally:
+        # Cancellation/error must not leave the context frozen for a retry or caller.
+        if _cl_freeze is not None:
+            _cl_freeze.release()
+            _cl_freeze = None
 
     raw.sort(key=lambda r: r.get("no", 0))
 
