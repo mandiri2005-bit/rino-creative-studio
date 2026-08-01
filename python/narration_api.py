@@ -1311,11 +1311,95 @@ async def _run_narration_job(
     *, body: dict, job_id: str, job_uuid: Optional[str],
     tenant_id: str, user_id: Optional[str], total: int,
     meter_op: Optional[str], model: str, executor: str = "unknown",
+    canon_parity: Optional[dict],
+    canon_route: str,
+    canon_model_route: str,
 ) -> None:
-    """Background task: hold → generate → settle/refund, with per-chapter Redis
-    checkboxes, a status machine, durable persistence, and cancel handling.
-    NEVER raises (it's a fire-and-forget create_task; an escaping exception would
-    be an unhandled-task warning and a stranded hold)."""
+    """Validate Canon parity, scope its verdict to this job, then run the legacy job.
+
+    The three `canon_*` arguments deliberately have no defaults. The AST acceptance test
+    requires every product call site to state all of them; discovering an omission
+    through BullMQ's production retry path would be far too late.
+    """
+    # ── CANON LITE L1.1 — §9 parity, checked BEFORE any physical work ───────────────
+    # C11 governs the shape of this block: on the flag-off path with no snapshot it must
+    # import nothing and emit nothing, so the `off` branches are handled inline with the
+    # same literal gate used elsewhere, and canon_lite is imported only when this
+    # executor is actually running a mode.
+    _clp = None
+    _cl_token = None
+    _cl_local = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
+    if _cl_local not in ("shadow", "assist", "enforce"):
+        _cl_local = "off"
+    if _cl_local == "off":
+        if canon_parity is not None:
+            # Dispatcher was running a mode, this executor is not — the rollback-skew
+            # direction. Recorded, never acted on: an `off` executor must behave exactly
+            # like legacy (C11), so the job proceeds untouched.
+            log.error("canon lite: parity MISMATCH "
+                      "codes=['snapshot_present_while_executor_off']; running legacy")
+    else:
+        try:
+            import canon_lite as _clp
+            _cl_verdict, _cl_codes = _clp.check_parity(
+                canon_parity, local_mode=_cl_local, local_route=canon_route,
+                local_model_route=canon_model_route)
+        except Exception:  # noqa: BLE001 - bounded fail-safe verdict, never raw details
+            _cl_verdict, _cl_codes = "MISMATCH", ("parity_check_error",)
+        if _cl_verdict != "MATCH":
+            # Bounded codes only — no job/tenant ID, transported value, or dynamic
+            # exception name reaches Canon telemetry (C12).
+            log.error("canon lite: parity MISMATCH codes=%s", list(_cl_codes))
+            if _clp is not None:
+                _cl_token = _clp.mark_job_canon_ineligible()
+            if _cl_local in ("assist", "enforce"):
+                # Fail closed before physical work: these modes carry guarantees that
+                # a mismatched configuration cannot honour.
+                try:
+                    await _set_status(job_id, _STATUS_FAILED)
+                    await _refund(meter_op, tenant_id, job_id)
+                    log.error("canon lite: configured mode refused on parity mismatch")
+                finally:
+                    if _cl_token is not None:
+                        _clp.reset_job_canon_eligibility(_cl_token)
+                return
+            # shadow: measurement is ineligible, the job runs legacy. No canon is built,
+            # no provider call is added, and the job must NOT fail — a failure here would
+            # be retried by the queue and turn one skewed job into two.
+        else:
+            log.info("canon lite: parity MATCH")
+
+    try:
+        _job_body = body
+        if _cl_local != "off" and isinstance(body, dict) and "canon_parity" in body:
+            # `body` is user-controlled. The authoritative snapshot is the sibling
+            # parameter above; a lookalike body field must never reach downstream code
+            # that might later learn the same name.
+            _job_body = dict(body)
+            _job_body.pop("canon_parity", None)
+        await _run_narration_job_after_parity(
+            body=_job_body, job_id=job_id, job_uuid=job_uuid,
+            tenant_id=tenant_id, user_id=user_id, total=total,
+            meter_op=meter_op, model=model, executor=executor,
+        )
+    finally:
+        # BullMQ is allowed to reuse an asyncio task for multiple callbacks. A mismatch
+        # verdict must never suppress Canon Lite for the next job handled by that task.
+        if _cl_token is not None:
+            _clp.reset_job_canon_eligibility(_cl_token)
+
+
+async def _run_narration_job_after_parity(
+    *, body: dict, job_id: str, job_uuid: Optional[str],
+    tenant_id: str, user_id: Optional[str], total: int,
+    meter_op: Optional[str], model: str, executor: str = "unknown",
+) -> None:
+    """Legacy job body: hold → generate → settle/refund and durable finalization.
+
+    Called only by `_run_narration_job`, after §9 parity has been resolved. It never
+    raises by contract: an escaping exception from this fire-and-forget path would strand
+    the hold and surface only as a failed/retried production job.
+    """
     sink = _UsageSink(tenant_id, user_id, job_uuid)
     started = time.monotonic()
     charge_settled = False
@@ -4636,6 +4720,38 @@ async def narration_start(body: dict, background: BackgroundTasks,
     # upstream cost and recovers nothing. BYOK always runs in-process.
     _bullmq_on = str(os.environ.get("NARRATION_BULLMQ_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
     _p0a_tried_bullmq = bool(_bullmq_on and not is_byok)
+
+    # ── CANON LITE L1.1 — §9 mode/config snapshot, taken at JOB START ───────────────
+    # Built here, server-side, from this process's own configuration. It is never read
+    # from the request: `body` is user-supplied and is forwarded verbatim into the queue
+    # payload, so a snapshot placed inside it would be forgeable. It travels as a SIBLING
+    # of `body`.
+    # C11 is why the mode is compared as a literal here rather than via
+    # canon_lite.resolve_mode(): flag-off must perform NO Canon Lite import. When off,
+    # `_cl_snap` stays None and the payload keeps its exact legacy shape — no extra key.
+    _cl_snap: Optional[dict] = None
+    _cl_model_route = "__unresolved__"
+    _cl_mode_disp = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
+    if _cl_mode_disp not in ("shadow", "assist", "enforce"):
+        _cl_mode_disp = "off"
+    if _cl_mode_disp != "off":
+        try:
+            import canon_lite as _cl_disp
+            from orchestrator.core import route_model as _cl_route_model
+            _cl_model_route = _cl_route_model(
+                role="worker", style=str(body.get("style") or ""),
+                override=body.get("worker_model"))
+            _cl_snap = _cl_disp.build_parity_snapshot(
+                effective_mode=_cl_mode_disp,
+                route=("bullmq_worker" if (_bullmq_on and not is_byok)
+                       else "api_direct"),
+                model_route=_cl_model_route,
+            )
+        except Exception:  # noqa: BLE001 - never break dispatch over telemetry
+            _cl_snap = None
+            log.warning("canon lite: parity snapshot unavailable "
+                        "code=snapshot_build_error; executor will record mismatch")
+
     if _bullmq_on and not is_byok:
         _enq_ok = False
         try:
@@ -4643,11 +4759,18 @@ async def narration_start(body: dict, background: BackgroundTasks,
             _q = _BullQueue(os.environ.get("NARRATION_QUEUE", "narration"),
                             {"connection": os.environ.get("REDIS_URL", "redis://localhost:6379")})
             try:
-                await _q.add("narration", {
+                _payload = {
                     "job_id": job_id, "job_uuid": job_uuid, "tenant_id": tenant_id,
                     "user_id": user_uuid, "total": total, "meter_op": meter_op,
                     "model": model, "body": body,
-                }, {"jobId": job_id, "removeOnComplete": True, "attempts": 2})
+                }
+                if _cl_snap is not None:
+                    # SIBLING of `body`, never inside it: `body` is the user's own
+                    # payload and is forwarded verbatim. Flag-off adds no key at all,
+                    # so the legacy payload keeps its exact shape (C11).
+                    _payload["canon_parity"] = _cl_snap
+                await _q.add("narration", _payload,
+                             {"jobId": job_id, "removeOnComplete": True, "attempts": 2})
                 _enq_ok = True   # the job is durably enqueued the instant add() returns
             finally:
                 try:
@@ -4667,12 +4790,29 @@ async def narration_start(body: dict, background: BackgroundTasks,
             return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING,
                     "total": total, "queued": True}
 
-    _p0a_route(background, "api_fallback" if _p0a_tried_bullmq else "api_direct",
-               body, total, job_id)
+    _inproc_route = "api_fallback" if _p0a_tried_bullmq else "api_direct"
+    _p0a_route(background, _inproc_route, body, total, job_id)
+    if _cl_snap is not None and _cl_snap.get("route") != _inproc_route:
+        # The enqueue was attempted and failed, so the DISPATCH OUTCOME is api_fallback,
+        # not the bullmq_worker this snapshot was built for. Rebuild rather than patch:
+        # editing a field would leave the self-binding hash stale, which check_parity
+        # correctly reads as a forgery.
+        try:
+            import canon_lite as _cl_disp2
+            _cl_snap = _cl_disp2.build_parity_snapshot(
+                effective_mode=_cl_mode_disp, route=_inproc_route,
+                model_route=_cl_model_route)
+        except Exception:  # noqa: BLE001
+            _cl_snap = None
+            log.warning("canon lite: fallback parity snapshot unavailable "
+                        "code=snapshot_build_error")
     asyncio.create_task(_run_narration_job(
         body=body, job_id=job_id, job_uuid=job_uuid,
         tenant_id=tenant_id, user_id=user_uuid, total=total,
         meter_op=meter_op, model=model, executor="python_api",
+        canon_parity=_cl_snap,
+        canon_route=_inproc_route,
+        canon_model_route=_cl_model_route,
     ))
     return {"ok": True, "job_id": job_id, "status": _STATUS_RUNNING, "total": total}
 

@@ -1183,6 +1183,25 @@ async def narrate_chapters(
     # this duplication cannot drift unnoticed.
     _cl_freeze = None
     if _cl_mode == "shadow":
+        # L1.1: honour a §9 parity mismatch recorded for this job upstream. Shadow still
+        # runs the job unchanged, but the MEASUREMENT is ineligible — building a canon
+        # here would drop a reading into the denominator that was taken under a
+        # configuration already known to be inconsistent.
+        #
+        # Implemented by downgrading the local mode, so the existing guard below skips
+        # the whole block: no canon, no provider call, no freeze. Raising instead would
+        # land in the construction handler and be mislabelled `invalid` — ineligible is
+        # not invalid, and the difference is the whole point of the status.
+        try:
+            import canon_lite as _cl_elig
+            if _cl_elig.job_is_canon_ineligible():
+                log.info("canon lite: %s",
+                         _cl_elig.telemetry_digest(None, canon_status="skipped"))
+                _cl_mode = "off"
+        except Exception:  # noqa: BLE001
+            log.warning("canon lite: eligibility check unavailable "
+                        "code=eligibility_check_error")
+    if _cl_mode == "shadow":
         try:
             import canon_lite as _cl
             _cl_outline = list(ctx.chapters or chapters)

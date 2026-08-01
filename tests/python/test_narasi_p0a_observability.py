@@ -1542,7 +1542,14 @@ def _run_job(job_id="j-1", executor="narration_worker", body=None, total=1, drai
         await na._run_narration_job(
             body=body if body is not None else {"chapters": [{"word_target": 500}]},
             job_id=job_id, job_uuid=None, tenant_id="t", user_id="u", total=total,
-            meter_op=None, model="m", executor=executor)
+            meter_op=None, model="m", executor=executor,
+            # L1.1 §9 parity: the parameter is deliberately required with no default, so
+            # every caller must state a verdict rather than inherit one. None means "no
+            # snapshot transported", which with the mode flag off is the exact legacy
+            # path these P0A tests exercise — parity then does nothing and imports
+            # nothing, so their assertions are unchanged.
+            canon_parity=None, canon_route="api_direct",
+            canon_model_route="m")
         survivors = (set(asyncio.all_tasks()) - before) - {asyncio.current_task()}
         outcome["survivors"] = survivors
         if drain and survivors:

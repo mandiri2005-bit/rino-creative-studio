@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import contextvars
 import re
 import unicodedata
 from dataclasses import dataclass, fields as _dc_fields
@@ -62,6 +63,18 @@ __all__ = [
     "CanonLiteV1",
     "SharedContextFreeze",
     "resolve_mode",
+    "PARITY_SCHEMA_VERSION",
+    "NOT_APPLICABLE_L1",
+    "PARITY_MATCH",
+    "PARITY_MISMATCH",
+    "PARITY_NOT_APPLICABLE",
+    "PARITY_SNAPSHOT_FIELDS",
+    "ROUTES",
+    "build_parity_snapshot",
+    "check_parity",
+    "mark_job_canon_ineligible",
+    "job_is_canon_ineligible",
+    "reset_job_canon_eligibility",
     "canonical_bytes",
     "sha256_hex",
     "build_job_config_snapshot",
@@ -1011,6 +1024,218 @@ def resolve_mode(env: Optional[Mapping[str, str]] = None) -> str:
     src = os.environ if env is None else env
     raw = str(src.get(MODE_ENV_VAR, "") or "").strip().lower()
     return raw if raw in _MODES else MODE_OFF
+
+
+# ===========================================================================
+# L1.1 — §9 mode/config parity between the dispatcher and the executor
+# ===========================================================================
+#
+# §9: "Effective mode, config digest, canon/extractor versions, predicate-set version,
+# and model route are snapshotted at job start and transported to the worker. The worker
+# must detect configuration mismatch; startup logging alone is not parity proof."
+# §13 makes that check part of what activation IS, not an optional extra.
+#
+# Three design constraints shaped this, each one a way it could have failed silently:
+#
+#   1. **An ABSENT snapshot is the mismatch, not a neutral case.** C11 forbids flag-off
+#      from changing the payload, so a dispatcher on `off` adds nothing — which is
+#      exactly what an executor on `shadow` sees during activation skew. Treating a
+#      missing key as "nothing to check" would wave through the one condition this
+#      mechanism exists to catch, on every single activation.
+#   2. **The snapshot is server-side and rides as a SIBLING of the request body.** The
+#      body is user-supplied and is forwarded verbatim into the queue payload, so a
+#      snapshot placed inside it would be forgeable. `check_parity` is never given the
+#      body.
+#   3. **JSON primitives only, closed schema.** The real transport is Redis, i.e. a JSON
+#      round-trip. A value that survives an in-process stub but not `json.dumps` would
+#      pass every offline test and fail in production.
+
+PARITY_SCHEMA_VERSION = "canon_lite_parity_v1"
+
+#: Explicit "this versioned input does not exist yet at L1" marker. Distinct from
+#: UNKNOWN: not "we don't know", but "this layer is not built".
+NOT_APPLICABLE_L1 = "__not_applicable_l1__"
+
+PARITY_MATCH = "MATCH"
+PARITY_MISMATCH = "MISMATCH"
+PARITY_NOT_APPLICABLE = "NOT_APPLICABLE"
+
+ROUTES = ("bullmq_worker", "api_direct", "api_fallback")
+
+PARITY_SNAPSHOT_FIELDS = (
+    "schema_version", "effective_mode", "config_digest", "canon_version",
+    "extractor_version", "predicate_set_version", "route", "model_route",
+    "snapshot_sha256",
+)
+
+_PARITY_HASHED_FIELDS = tuple(f for f in PARITY_SNAPSHOT_FIELDS if f != "snapshot_sha256")
+
+
+def _config_digest(mode: str) -> str:
+    """Digest of the contract both services must agree on.
+
+    Deliberately wider than the mode alone: it also binds the artifact schema versions,
+    so two services running DIFFERENT BUILDS are caught even when their flags agree.
+    A flag-only comparison would call that pair a match.
+    """
+    return _digest("canon_lite.parity_config.v1", {
+        "parity_schema_version": PARITY_SCHEMA_VERSION,
+        "canon_schema_version": SCHEMA_VERSION,
+        "job_config_schema_version": JOB_CONFIG_SCHEMA_VERSION,
+        "extractor_version": NOT_APPLICABLE_L1,
+        "predicate_set_version": NOT_APPLICABLE_L1,
+        # Hash-only build binding. Railway supplies this non-secret commit SHA to both
+        # services; different deploys must not read as the same configuration merely
+        # because their schema constants and mode happen to agree.
+        "runtime_build_sha": _runtime_build_sha(),
+        "effective_mode": mode,
+    })
+
+
+def _runtime_build_sha(env: Optional[Mapping[str, str]] = None) -> str:
+    """Return a bounded build marker for the config digest, never for diagnostics."""
+    src = os.environ if env is None else env
+    raw = str(src.get("RAILWAY_GIT_COMMIT_SHA", "") or "").strip().lower()
+    if not raw:
+        return "__unset__"
+    if re.fullmatch(r"[0-9a-f]{40}", raw):
+        return raw
+    return "__invalid__"
+
+
+def build_parity_snapshot(
+    *,
+    effective_mode: str,
+    route: str,
+    model_route: str,
+) -> dict[str, str]:
+    """Build the job-start snapshot. Server-side only; never accepts user input.
+
+    Returns a flat dict of JSON strings — no nested objects, no numbers, no None — so it
+    survives the Redis JSON round-trip byte-for-byte.
+    """
+    mode = _req_enum(effective_mode, "effective_mode", _MODES)
+    if mode == MODE_OFF:
+        # C11: an `off` dispatcher must add nothing to the payload. Refusing here means
+        # the caller cannot accidentally serialise an "off" snapshot and change the
+        # flag-off payload shape.
+        raise CanonSchemaError("build_parity_snapshot: refused for mode=off (C11)")
+    if not re.fullmatch(r"[0-9a-f]{40}", _runtime_build_sha()):
+        # P0's config-parity rule: inaccessible/invalid safe metadata is a blocker,
+        # never assumed parity. Returning two equal "__unset__" digests would turn
+        # shared ignorance into a false MATCH.
+        raise CanonSchemaError(
+            "build_parity_snapshot: runtime build SHA unavailable")
+    payload = {
+        "schema_version": PARITY_SCHEMA_VERSION,
+        "effective_mode": mode,
+        "config_digest": _config_digest(mode),
+        "canon_version": SCHEMA_VERSION,
+        # L2 builds the extractor; L2/L3 version the predicate set. Stated, not guessed.
+        "extractor_version": NOT_APPLICABLE_L1,
+        "predicate_set_version": NOT_APPLICABLE_L1,
+        "route": _req_enum(route, "route", ROUTES),
+        # This is the actual non-secret worker model alias resolved for the job, not the
+        # execution route above. §9 requires both concepts not to be conflated.
+        "model_route": _req_str(model_route, "model_route", max_len=128),
+    }
+    payload["snapshot_sha256"] = _digest(
+        "canon_lite.parity_snapshot.v1", {k: payload[k] for k in _PARITY_HASHED_FIELDS})
+    return payload
+
+
+def check_parity(
+    snapshot: Any,
+    *,
+    local_mode: str,
+    local_route: str,
+    local_model_route: str,
+) -> tuple[str, tuple[str, ...]]:
+    """Compare a transported snapshot against this process's own configuration.
+
+    Returns `(verdict, codes)`. Codes are bounded labels — never a transported value,
+    never a digest from the snapshot, never anything a caller could echo into a log to
+    leak what was sent.
+
+    Fails closed: anything it cannot fully validate is `MISMATCH`, never `MATCH`.
+    """
+    mode = _req_enum(local_mode, "local_mode", _MODES)
+    route = _req_enum(local_route, "local_route", ROUTES)
+    model_route = _req_str(
+        local_model_route, "local_model_route", max_len=128)
+    if (mode != MODE_OFF
+            and not re.fullmatch(r"[0-9a-f]{40}", _runtime_build_sha())):
+        return PARITY_MISMATCH, ("local_build_unavailable",)
+
+    if snapshot is None:
+        # The activation-skew case. Only genuinely fine when this process is also off.
+        if mode == MODE_OFF:
+            return PARITY_NOT_APPLICABLE, ()
+        return PARITY_MISMATCH, ("snapshot_absent",)
+
+    if not isinstance(snapshot, Mapping):
+        return PARITY_MISMATCH, ("snapshot_malformed",)
+    if sorted(map(str, snapshot)) != sorted(PARITY_SNAPSHOT_FIELDS):
+        # Closed schema: an extra key is as disqualifying as a missing one.
+        return PARITY_MISMATCH, ("snapshot_schema_invalid",)
+    if any(not isinstance(snapshot[k], str) for k in PARITY_SNAPSHOT_FIELDS):
+        return PARITY_MISMATCH, ("snapshot_type_invalid",)
+    if snapshot["schema_version"] != PARITY_SCHEMA_VERSION:
+        return PARITY_MISMATCH, ("parity_schema_version_differs",)
+
+    expected_hash = _digest("canon_lite.parity_snapshot.v1",
+                            {k: snapshot[k] for k in _PARITY_HASHED_FIELDS})
+    if snapshot["snapshot_sha256"] != expected_hash:
+        return PARITY_MISMATCH, ("snapshot_unbound",)
+
+    codes: list[str] = []
+    if snapshot["effective_mode"] != mode:
+        codes.append("mode_differs")
+    if snapshot["config_digest"] != _config_digest(mode):
+        codes.append("config_digest_differs")
+    if snapshot["canon_version"] != SCHEMA_VERSION:
+        codes.append("canon_version_differs")
+    if snapshot["extractor_version"] != NOT_APPLICABLE_L1:
+        codes.append("extractor_version_differs")
+    if snapshot["predicate_set_version"] != NOT_APPLICABLE_L1:
+        codes.append("predicate_set_version_differs")
+    if snapshot["route"] != route:
+        codes.append("route_differs")
+    if snapshot["model_route"] != model_route:
+        codes.append("model_route_differs")
+    if codes:
+        return PARITY_MISMATCH, tuple(codes)
+    return PARITY_MATCH, ()
+
+
+# -- per-job eligibility -----------------------------------------------------
+# A contextvar, not a parameter, because the verdict is computed in the job runner and
+# consumed deep inside `narrate_chapters`, across the router. Contextvars are inherited
+# by every task the job spawns (the same mechanism `narasi_gate.set_alt_history` uses),
+# so concurrent jobs in one worker process cannot read each other's verdict.
+_JOB_CANON_INELIGIBLE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "canon_lite_job_ineligible", default=False)
+
+
+def mark_job_canon_ineligible() -> contextvars.Token:
+    """Bar Canon Lite from this job and return the token needed to restore its context."""
+    return _JOB_CANON_INELIGIBLE.set(True)
+
+
+def job_is_canon_ineligible() -> bool:
+    return bool(_JOB_CANON_INELIGIBLE.get())
+
+
+def reset_job_canon_eligibility(token: Optional[contextvars.Token] = None) -> None:
+    """Restore eligibility.
+
+    Production passes the exact token returned by `mark_job_canon_ineligible` from a
+    `finally` block. Tests may omit it to establish a clean fixture context.
+    """
+    if token is None:
+        _JOB_CANON_INELIGIBLE.set(False)
+    else:
+        _JOB_CANON_INELIGIBLE.reset(token)
 
 
 # ===========================================================================

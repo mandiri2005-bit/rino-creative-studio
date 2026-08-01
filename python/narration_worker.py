@@ -97,13 +97,30 @@ async def _process(job, token=None):  # noqa: ANN001 - bullmq job
     except Exception as e:  # noqa: BLE001
         log.warning("exec-lock unavailable (continuing unguarded): %s", e)
 
+    _body = data.get("body") or {}
+    try:
+        from orchestrator.core import route_model as _canon_route_model
+        _local_model_route = _canon_route_model(
+            role="worker", style=str(_body.get("style") or ""),
+            override=_body.get("worker_model"))
+    except Exception:  # noqa: BLE001 - parity must degrade to a mismatch, not lose a job
+        _local_model_route = "__unresolved__"
+
     try:
         await _run_narration_job(
-            body=data.get("body") or {}, job_id=job_id, job_uuid=data.get("job_uuid"),
+            body=_body, job_id=job_id, job_uuid=data.get("job_uuid"),
             tenant_id=tenant_id, user_id=data.get("user_id"),
             total=int(data.get("total") or 1), meter_op=data.get("meter_op"),
             model=str(data.get("model") or "claude-opus-4-6"),
             executor="narration_worker",
+            # L1.1 §9 parity: read from the payload SIBLING of `body`, never from `body`
+            # itself — that is the user's own request, forwarded verbatim, so a snapshot
+            # placed inside it would be forgeable. An absent snapshot is a real verdict
+            # (the dispatcher was `off`), so it travels as None rather than being
+            # defaulted away.
+            canon_parity=data.get("canon_parity"),
+            canon_route="bullmq_worker",
+            canon_model_route=_local_model_route,
         )
         return {"ok": True}
     finally:
