@@ -26,6 +26,7 @@ MIGRATIONS = REPO / "database" / "migrations"
 
 M0070 = MIGRATIONS / "0070_gl_privilege_hardening.sql"
 M0071 = MIGRATIONS / "0071_deferred_revenue_no_silent_fallback.sql"
+M0074 = MIGRATIONS / "0074_platform_qc_metering.sql"
 
 
 def _sql(path: Path) -> str:
@@ -250,6 +251,88 @@ def test_detector_script_ships():
         head = statement.strip().split(None, 1)
         if head and head[0].upper() in mutating:
             pytest.fail(f"detector contains a mutating statement: {statement.strip()[:80]}")
+
+
+# =====================================================================
+# L2B platform-QC privilege surface (0074)
+# =====================================================================
+
+def test_platform_qc_tables_undo_0016_default_dml_grants():
+    body = _strip_sql_comments(_sql(M0074))
+    for relation in ("platform_qc_usage", "platform_qc_kill"):
+        assert re.search(
+            rf"REVOKE\s+ALL\s+ON\s+public\.{relation}\s+FROM\s+app_user",
+            body, re.I), relation
+    assert not re.search(
+        r"GRANT\s+(SELECT|INSERT|UPDATE|DELETE|TRUNCATE).*?"
+        r"ON\s+public\.platform_qc_(usage|kill)\s+TO\s+app_user",
+        body, re.I | re.S)
+
+
+def test_platform_qc_function_default_grants_are_closed():
+    body = _strip_sql_comments(_sql(M0074))
+    application = (
+        "platform_qc_begin_attempt",
+        "platform_qc_finish_attempt",
+        "platform_qc_resolve_cost",
+        "platform_qc_arm_kill",
+        "platform_qc_kill_is_armed",
+    )
+    reaper = ("platform_qc_reap", "platform_qc_kill_sync")
+
+    for name in application + reaper:
+        assert re.search(
+            rf"REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+public\.{name}\s*\(",
+            body, re.I), name
+    for name in application:
+        assert re.search(
+            rf"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.{name}\s*\(.*?"
+            rf"\)\s+TO\s+app_user",
+            body, re.I | re.S), name
+    for name in reaper:
+        assert re.search(
+            rf"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.{name}\s*\(.*?"
+            rf"\)\s+TO\s+platform_qc_reaper",
+            body, re.I | re.S), name
+
+    # 0016 also auto-grants new trigger functions and identity sequences.
+    assert re.search(
+        r"REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+"
+        r"public\.platform_qc_kill_append_only\(\)\s+FROM\s+PUBLIC", body, re.I)
+    assert re.search(
+        r"REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+"
+        r"public\.platform_qc_kill_append_only\(\)\s+FROM\s+app_user", body, re.I)
+
+
+def test_platform_qc_reaper_role_is_least_privilege():
+    body = _strip_sql_comments(_sql(M0074))
+    assert "CREATE ROLE platform_qc_reaper LOGIN NOBYPASSRLS" in body
+    assert re.search(
+        r"GRANT\s+USAGE\s+ON\s+SCHEMA\s+public\s+TO\s+platform_qc_reaper",
+        body, re.I)
+    assert re.search(
+        r"REVOKE\s+ALL\s+ON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+public\s+"
+        r"FROM\s+platform_qc_reaper", body, re.I)
+    assert re.search(
+        r"REVOKE\s+ALL\s+ON\s+ALL\s+SEQUENCES\s+IN\s+SCHEMA\s+public\s+"
+        r"FROM\s+platform_qc_reaper", body, re.I)
+
+
+def test_platform_qc_audit_covers_tables_functions_sequences_role_and_rls():
+    audit = _strip_sql_comments(
+        _sql(REPO / "database" / "checks" / "app_user_privilege_audit.sql"))
+    for marker in (
+        "platform_qc_usage",
+        "platform_qc_kill",
+        "v_platform_qc_cost",
+        "platform_qc_reaper",
+        "rolbypassrls",
+        "has_schema_privilege",
+        "relforcerowsecurity",
+    ):
+        assert marker in audit
+    assert "app_user must read 5, platform_qc_reaper 2, PUBLIC 0" in _sql(
+        REPO / "database" / "checks" / "app_user_privilege_audit.sql")
 
 
 # =====================================================================

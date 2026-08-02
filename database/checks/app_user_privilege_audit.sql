@@ -137,4 +137,99 @@ SELECT c.relname AS table_name,
 \echo '    false means credits exist on a plan with no IDR price; the figure is unusable.'
 SELECT * FROM v_deferred_revenue;
 
+-- =====================================================================
+-- E–H. L2B-METER platform-QC surface (0074)
+--
+-- The 0016 default-privileges trap has THREE halves, and 0074 hit all three on its first
+-- executed run. Sections E–G detect each independently; a comment in the migration does not.
+--   0016:27  GRANT EXECUTE ON ALL FUNCTIONS ... TO app_user
+--   0016:31  ALTER DEFAULT PRIVILEGES ... GRANT ... ON TABLES    TO app_user
+--   0016:34  ALTER DEFAULT PRIVILEGES ... GRANT ... ON SEQUENCES TO app_user
+--   0016:36  ALTER DEFAULT PRIVILEGES ... GRANT EXECUTE ON FUNCTIONS TO app_user
+-- Measured on the first run of 0074 before the fix: app_user held EXECUTE on SIX QC
+-- functions (including the append-only trigger function) instead of five, and the trigger
+-- function still carried its default PUBLIC grant.
+-- =====================================================================
+
+\echo ''
+\echo '=== E. MUST BE EMPTY — app_user holds ANY privilege on a platform-QC table ==='
+\echo '    app_user must hold NOTHING on these, not even SELECT: reading is owner-only'
+\echo '    (D-METER-17) and writing goes through SECURITY DEFINER functions.'
+SELECT c.relname AS table_name,
+       string_agg(a.privilege_type, ',' ORDER BY a.privilege_type) AS app_user_privs
+  FROM pg_class c, aclexplode(c.relacl) a
+ WHERE c.relnamespace = 'public'::regnamespace
+   AND c.relname IN ('platform_qc_usage','platform_qc_kill','v_platform_qc_cost')
+   AND a.grantee = 'app_user'::regrole
+ GROUP BY 1 ORDER BY 1;
+
+\echo ''
+\echo '=== F. MUST BE EMPTY — unexpected EXECUTE grant on a platform_qc% function ==='
+\echo '    Expected exactly: app_user -> begin_attempt, finish_attempt, resolve_cost,'
+\echo '    arm_kill, kill_is_armed (5). platform_qc_reaper -> reap, kill_sync (2).'
+\echo '    PUBLIC -> none. The append-only TRIGGER function must hold no non-owner grant.'
+\echo '    Owner/superuser execution is NOT a finding (D-METER-28).'
+SELECT p.proname AS function_name,
+       COALESCE(pg_get_userbyid(NULLIF(a.grantee, 0)), 'PUBLIC') AS grantee
+  FROM pg_proc p, aclexplode(p.proacl) a
+ WHERE p.pronamespace = 'public'::regnamespace
+   AND p.proname LIKE 'platform\_qc%'
+   AND a.privilege_type = 'EXECUTE'
+   AND a.grantee <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
+   AND a.grantee IS DISTINCT FROM (SELECT relowner FROM pg_class WHERE relname = 'platform_qc_usage')
+   AND NOT (
+        (a.grantee = 'app_user'::regrole AND p.proname IN
+            ('platform_qc_begin_attempt','platform_qc_finish_attempt',
+             'platform_qc_resolve_cost','platform_qc_arm_kill','platform_qc_kill_is_armed'))
+     OR (a.grantee = 'platform_qc_reaper'::regrole AND p.proname IN
+            ('platform_qc_reap','platform_qc_kill_sync'))
+   )
+ ORDER BY 1,2;
+
+\echo ''
+\echo '=== F2. REVIEW — the QC function grant surface, counted ==='
+\echo '    app_user must read 5, platform_qc_reaper 2, PUBLIC 0.'
+SELECT COALESCE(pg_get_userbyid(NULLIF(a.grantee, 0)), 'PUBLIC') AS grantee,
+       count(*) AS execute_grants,
+       string_agg(p.proname, ', ' ORDER BY p.proname) AS functions
+  FROM pg_proc p, aclexplode(p.proacl) a
+ WHERE p.pronamespace = 'public'::regnamespace
+   AND p.proname LIKE 'platform\_qc%'
+   AND a.privilege_type = 'EXECUTE'
+   AND a.grantee IS DISTINCT FROM (SELECT relowner FROM pg_class WHERE relname = 'platform_qc_usage')
+ GROUP BY 1 ORDER BY 1;
+
+\echo ''
+\echo '=== G. MUST BE EMPTY — app_user holds a grant on the QC identity sequence ==='
+SELECT c.relname AS sequence_name,
+       string_agg(a.privilege_type, ',' ORDER BY a.privilege_type) AS app_user_privs
+  FROM pg_class c, aclexplode(c.relacl) a
+ WHERE c.relnamespace = 'public'::regnamespace
+   AND c.relkind = 'S'
+   AND c.relname LIKE 'platform\_qc%'
+   AND a.grantee = 'app_user'::regrole
+ GROUP BY 1 ORDER BY 1;
+
+\echo ''
+\echo '=== H. reaper role — NOBYPASSRLS, schema USAGE required, zero table privileges ==='
+\echo '    rolbypassrls MUST be false: neondb_owner carries it, so FORCE RLS is not a'
+\echo '    protection against the owner and a scheduled unattended job must not inherit it.'
+\echo '    has_schema_usage MUST be true — without it the two EXECUTE grants are unreachable.'
+SELECT r.rolname, r.rolsuper, r.rolbypassrls, r.rolcanlogin,
+       has_schema_privilege(r.rolname, 'public', 'USAGE') AS has_schema_usage,
+       (SELECT count(*) FROM pg_class c, aclexplode(c.relacl) a
+         WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
+           AND a.grantee = r.oid)                        AS table_grants_must_be_0
+  FROM pg_roles r WHERE r.rolname = 'platform_qc_reaper';
+
+\echo ''
+\echo '=== I. REVIEW — QC tables must be RLS-enabled AND forced ==='
+SELECT c.relname, c.relrowsecurity AS rls, c.relforcerowsecurity AS forced,
+       (SELECT count(*) FROM pg_policies p
+         WHERE p.schemaname='public' AND p.tablename=c.relname) AS policies
+  FROM pg_class c
+ WHERE c.relnamespace='public'::regnamespace
+   AND c.relname IN ('platform_qc_usage','platform_qc_kill')
+ ORDER BY 1;
+
 COMMIT;

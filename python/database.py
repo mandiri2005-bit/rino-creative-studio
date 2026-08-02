@@ -1383,3 +1383,61 @@ async def get_tenant_context(tenant_id, user_id=None) -> dict:
         log.warning("get_tenant_context: %s", e)
     return {"tier": "free", "credits": 100,
             "laozhang_key": "", "deepseek_key": "", "gemini_key": ""}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PLATFORM QC METER — function-only surface (0074)
+#
+# These helpers deliberately use no customer tenant, no table DML and no log_usage path.
+# app_user has EXECUTE on the five functions below and zero privilege on the underlying
+# platform tables. The SQL functions pin platform attribution server-side.
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def platform_qc_begin_attempt(
+    run_id, job_uuid, job_external_id, phase, unit_index, attempt_ordinal,
+    provider, model_upstream, pricing_version,
+    rate_in_usd_per_m, rate_out_usd_per_m, attempt_timeout_s,
+) -> dict:
+    row = await _db().fetchrow(
+        """SELECT attempt_id, outcome
+             FROM public.platform_qc_begin_attempt(
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
+        run_id, _uid(job_uuid), job_external_id, phase,
+        int(unit_index), int(attempt_ordinal),
+        provider, model_upstream, pricing_version,
+        rate_in_usd_per_m, rate_out_usd_per_m, attempt_timeout_s)
+    return _row(row)
+
+
+async def platform_qc_finish_attempt(attempt_id, attempt_state) -> dict:
+    row = await _db().fetchrow(
+        """SELECT lifecycle_applied, current_state
+             FROM public.platform_qc_finish_attempt($1,$2)""",
+        _uid(attempt_id), attempt_state)
+    return _row(row)
+
+
+async def platform_qc_resolve_cost(
+    attempt_id, tokens_in, tokens_out, provider_reported_cost_usd,
+) -> dict:
+    # provider_reported_cost_usd intentionally has no default. Every caller must state NULL
+    # or a Decimal value; SQL computes authoritative cost from the frozen row rates.
+    row = await _db().fetchrow(
+        """SELECT outcome, cost_usd
+             FROM public.platform_qc_resolve_cost($1,$2,$3,$4)""",
+        _uid(attempt_id), int(tokens_in), int(tokens_out),
+        provider_reported_cost_usd)
+    return _row(row)
+
+
+async def platform_qc_arm_kill(reason_code) -> dict:
+    row = await _db().fetchrow(
+        """SELECT armed, was_already_armed
+             FROM public.platform_qc_arm_kill($1)""",
+        reason_code)
+    return _row(row)
+
+
+async def platform_qc_kill_is_armed() -> bool:
+    return bool(await _db().fetchval(
+        "SELECT public.platform_qc_kill_is_armed()"))

@@ -169,3 +169,40 @@ def test_catalog_costs_are_sane():
     assert catalog.usd_to_credits(0.0) == 0           # free op
     assert catalog.credit_cost("tts", "tts-1", {"chars": 5000}) == 50
     assert catalog.credit_cost("video", "veo-3.1", {"seconds": 8}) == 400
+
+
+# ── L2B platform-QC isolation (D-METER-5 / H1 / H2) ─────────────────────────
+
+def test_platform_qc_has_no_customer_gl_pair():
+    assert catalog.PLATFORM_QC_GL_OPEX_CODE == "6740"
+    with pytest.raises(ValueError, match="no revenue/COGS pair"):
+        catalog.gl_codes("platform_qc")
+
+
+def test_platform_qc_source_has_no_customer_metering_or_freecogs_path():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    meter_source = (repo / "python" / "canon_lite_qc_meter.py").read_text("utf-8")
+    database_source = (repo / "python" / "database.py").read_text("utf-8")
+
+    assert "note_free_cost" not in meter_source
+    assert "freecogs:" not in meter_source
+    assert "log_usage(" not in meter_source
+    assert "PLATFORM_QC_GL_OPEX_CODE" not in meter_source
+
+    qc_helpers = database_source[database_source.index(
+        "# PLATFORM QC METER — function-only surface"):]
+    assert "log_usage(" not in qc_helpers
+    assert "INSERT INTO usage_logs" not in qc_helpers
+
+
+def test_platform_plan_is_an_independent_freecogs_guard():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    migration = (repo / "database" / "migrations" /
+                 "0074_platform_qc_metering.sql").read_text("utf-8")
+    database_source = (repo / "python" / "database.py").read_text("utf-8")
+
+    assert "'platform'," in migration
+    assert "_paid = bool(_plan) and _plan != \"free\"" in database_source
+    assert "if _paid is False" in database_source

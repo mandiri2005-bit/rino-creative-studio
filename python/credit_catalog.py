@@ -120,11 +120,15 @@ CONCURRENCY_CAPS = dict(_DEFAULT_CONCURRENCY_CAPS)   # pricing.json override mer
 # endpoint (base, before any '-VI' suffix) → GL account code. Default 4500/5500 (other).
 _GL_REVENUE_CODE = {"image": "4100", "video": "4200", "chat": "4300", "tts": "4400"}
 _GL_COGS_CODE    = {"image": "5100", "video": "5200", "chat": "5300", "tts": "5400"}
+PLATFORM_QC_GL_OPEX_CODE = "6740"
 
 def gl_codes(endpoint: str) -> tuple:
     """(revenue_code, cogs_code) for an endpoint. Strips the Video-Instant '-VI' suffix
     so 'image' and 'image-VI' both map to the Image accounts."""
     base = (endpoint or "other").split("-")[0]
+    if base == "platform_qc":
+        raise ValueError(
+            "platform_qc has no revenue/COGS pair; use PLATFORM_QC_GL_OPEX_CODE")
     return _GL_REVENUE_CODE.get(base, "4500"), _GL_COGS_CODE.get(base, "5500")
 
 
