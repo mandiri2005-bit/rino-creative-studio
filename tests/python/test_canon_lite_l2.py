@@ -1032,7 +1032,7 @@ def test_real_narration_helper_materializes_and_reports_without_mutating_result(
     # the runner's gates refuse (no host sentinel), so claims_by_index stays None and
     # the projection is byte-identical to the pre-DG-4 behaviour.
     telemetry = asyncio.run(na._canon_lite_l2_shadow_projection(
-        result, mode="shadow", canon=canon))
+        result, mode="shadow", canon=canon, wave_token=ext.ExtractionWaveToken()))
     assert result == before
     assert telemetry["l2_status"] == "present"
     assert telemetry["mode"] == "shadow"
@@ -1054,7 +1054,7 @@ def test_flag_off_helper_returns_before_any_l2_import(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", guarded)
     assert asyncio.run(na._canon_lite_l2_shadow_projection(
-        {"book": NO_PREFIX}, mode="off", canon=None)) is None
+        {"book": NO_PREFIX}, mode="off", canon=None, wave_token=None)) is None
 
 
 def test_l2_final_seam_is_after_post_gates_dedup_and_before_persistence():

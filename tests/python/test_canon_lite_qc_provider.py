@@ -1208,7 +1208,7 @@ def test_runner_refusal_reads_no_config_and_imports_no_adapter():
         "env = {'NARASI_CANON_LITE_MODE': 'shadow'}\n"
         "assert r.metered_wave_permitted(env) is False\n"
         "out = asyncio.run(r.maybe_run_metered_wave(None, None, run_id='r',"
-        " job_uuid=None, job_external_id=None, environ=env))\n"
+        " job_uuid=None, job_external_id=None, environ=env, wave_token=None))\n"
         "assert out is None, out\n"
         "assert 'canon_lite_qc_provider' not in sys.modules\n"
         "print('clean')\n"
@@ -1296,6 +1296,7 @@ def test_runner_runs_exactly_one_reconciled_wave():
             _snapshot(), _authoritative_canon(),
             run_id="run-1", job_uuid="00000000-0000-4000-8000-000000000001",
             job_external_id="job-1", environ=ENV_ON,
+            wave_token=ext.ExtractionWaveToken(),
             sink=FakeSink(), adapter_factory=lambda: adapter,
             redis_getter=_FakeRedis))
     finally:
@@ -1319,7 +1320,9 @@ def test_runner_runs_exactly_one_reconciled_wave():
 def _wave(**over):
     """Run one metered wave with the standard fakes. Returns claims_by_index."""
     kw = dict(run_id="r", job_uuid="00000000-0000-4000-8000-000000000001",
-              job_external_id="j", environ=ENV_ON, redis_getter=_FakeRedis)
+              job_external_id="j", environ=ENV_ON, redis_getter=_FakeRedis,
+              # mandatory now: the runner mints nothing
+              wave_token=ext.ExtractionWaveToken())
     kw.update(over)
     if "sink" not in kw:
         class S:
@@ -1405,6 +1408,143 @@ def test_runner_refuses_more_rows_than_attempts():
         meter.reset_host_role_for_tests()
 
 
+def test_production_path_refuses_a_duplicate_wave_for_one_job():
+    """THE production path, end to end: job-scoped token -> seam -> runner.
+
+    The earlier revision passed this test's shape only because the runner minted its own
+    token. It did not, and could not, catch the real defect: the production caller omitted
+    the token entirely, so every wave got a fresh one and a duplicate wave was impossible
+    to detect. This drives `narration_api`'s own helpers, not the runner directly, so a
+    regression in the wiring — not just in the runner — fails here.
+    """
+    import narration_api as na
+    meter.reset_host_role_for_tests()
+    meter._process_killed = False
+    _FAKE_REDIS.store.clear()
+
+    class S:
+        def __init__(self):
+            self.n = 0
+
+        async def begin(self, c, *, unit_index, attempt_ordinal):
+            self.n += 1
+            return {"attempt_id": f"a{self.n}", "outcome": "inserted"}
+
+        async def finish(self, a, s):
+            return {"attempt_id": a}
+
+        async def resolve(self, a, u):
+            return {"attempt_id": a, "outcome": "applied"}
+
+        async def arm(self, r):
+            return {}
+
+        async def is_armed(self):
+            return False
+
+    real_runner = runner.maybe_run_metered_wave
+    adapter, client = _adapter()
+
+    async def metered(snapshot, canon, **kw):
+        kw.setdefault("environ", ENV_ON)
+        kw["sink"] = S()
+        kw["adapter_factory"] = lambda: adapter
+        kw["redis_getter"] = _FakeRedis
+        return await real_runner(snapshot, canon, **kw)
+
+    result = {"book": BOOK, "chapters": [{"content": "x"}]}
+    try:
+        meter.declare_host_role("narration_worker")
+        runner.maybe_run_metered_wave = metered
+
+        # the job mints ONE token, exactly as _run_narration_job_after_parity does
+        import canon_lite_extractor as _ext
+        token = _ext.ExtractionWaveToken()
+
+        first = _run(na._canon_lite_l2_shadow_projection(
+            result, mode="shadow", canon=_authoritative_canon(), wave_token=token,
+            run_id="job-abc", job_uuid="00000000-0000-4000-8000-000000000001",
+            job_external_id="job-abc"))
+        assert first["l2_status"] == "present"
+        assert token.claimed
+        calls_after_first = len(client.calls)
+        assert calls_after_first > 0          # the first wave really ran
+
+        # A SECOND wave under the SAME job token must not reach the provider. The seam
+        # contains the failure and still delivers a claims-free report, because a
+        # metering fault may never change legacy narration delivery.
+        second = _run(na._canon_lite_l2_shadow_projection(
+            result, mode="shadow", canon=_authoritative_canon(), wave_token=token,
+            run_id="job-abc", job_uuid="00000000-0000-4000-8000-000000000001",
+            job_external_id="job-abc"))
+        assert second["l2_status"] == "present"
+        assert len(client.calls) == calls_after_first    # zero extra provider calls
+    finally:
+        runner.maybe_run_metered_wave = real_runner
+        meter.reset_host_role_for_tests()
+
+
+def test_wave_token_is_minted_once_at_job_scope_and_never_below_it():
+    """Mandatory all the way down: no default at the seam, no mint in the runner."""
+    import inspect
+
+    import narration_api as na
+    assert inspect.signature(
+        runner.maybe_run_metered_wave).parameters["wave_token"].default \
+        is inspect.Parameter.empty
+    assert inspect.signature(
+        na._canon_lite_l2_shadow_projection).parameters["wave_token"].default \
+        is inspect.Parameter.empty
+
+    runner_src = Path(runner.__file__).read_text(encoding="utf-8")
+    assert "ExtractionWaveToken()" not in runner_src        # never minted below job scope
+
+    api_src = Path(na.__file__).read_text(encoding="utf-8")
+    assert api_src.count("ExtractionWaveToken()") == 1      # exactly one mint site
+    # and it is inside the job-scope helper, called from the job body
+    assert "_cl_l2_wave_token = _canon_lite_wave_token()" in api_src
+    assert "wave_token=_cl_l2_wave_token" in api_src
+
+    # the runner refuses a missing or wrong-typed token rather than defaulting
+    meter.reset_host_role_for_tests()
+    try:
+        meter.declare_host_role("narration_worker")
+        for bad in (None, object(), "token"):
+            with pytest.raises(RuntimeError) as e:
+                _run(runner.maybe_run_metered_wave(
+                    _snapshot(), _authoritative_canon(), run_id="r", job_uuid=None,
+                    job_external_id=None, environ=ENV_ON, wave_token=bad))
+            assert "wave_token_required" in str(e.value)
+        # an empty run_id must name itself, not fail deep inside AttemptContext where
+        # the seam's blanket handler would turn it into "metering silently never ran"
+        for bad_run in ("", "   ", None):
+            with pytest.raises(RuntimeError) as e:
+                _run(runner.maybe_run_metered_wave(
+                    _snapshot(), _authoritative_canon(), run_id=bad_run, job_uuid=None,
+                    job_external_id=None, environ=ENV_ON,
+                    wave_token=ext.ExtractionWaveToken()))
+            assert "run_id_required" in str(e.value)
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_flag_off_job_scope_mints_no_token_and_imports_nothing():
+    """C11: flag off must import no Canon Lite module, so the mint is mode-gated."""
+    code = (
+        "import sys, os\n"
+        "sys.path.insert(0, %r)\n"
+        "os.environ.pop('NARASI_CANON_LITE_MODE', None)\n"
+        "import narration_api as na\n"
+        "assert na._canon_lite_wave_token() is None\n"
+        "assert 'canon_lite_extractor' not in sys.modules\n"
+        "print('clean')\n"
+    ) % str(Path(qc.__file__).parent)
+    import subprocess
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert "clean" in res.stdout
+
+
 def test_runner_missing_credential_raises_rather_than_skipping():
     """Skipping would produce a report that looks measured but called nothing."""
     meter.reset_host_role_for_tests()
@@ -1415,7 +1555,8 @@ def test_runner_missing_credential_raises_rather_than_skipping():
         with pytest.raises(RuntimeError) as e:
             _run(runner.maybe_run_metered_wave(
                 _snapshot(), _authoritative_canon(), run_id="r", job_uuid=None,
-                job_external_id=None, environ=env))
+                job_external_id=None, environ=env,
+                wave_token=ext.ExtractionWaveToken()))
         assert "api_key_missing" in str(e.value)
     finally:
         meter.reset_host_role_for_tests()

@@ -60,7 +60,7 @@ async def maybe_run_metered_wave(
     job_uuid: Any,
     job_external_id: Optional[str],
     environ: Optional[Mapping[str, str]] = None,
-    wave_token: Any = None,
+    wave_token: Any,
     sink: Any = None,
     adapter_factory: Any = None,
     redis_getter: Any = None,
@@ -76,6 +76,20 @@ async def maybe_run_metered_wave(
     """
     if not metered_wave_permitted(environ):
         return None
+
+    if not isinstance(run_id, str) or not run_id.strip():
+        # Checked HERE, by name, rather than left to AttemptContext's generic
+        # run_id_invalid several frames down. The seam swallows every exception to protect
+        # narration delivery, so a deep failure would present as "metering silently never
+        # happened" — the same failure mode the missing-credential check exists to prevent.
+        raise RuntimeError("qc_run_id_required")
+
+    import canon_lite_extractor as _ext_guard
+    if not isinstance(wave_token, _ext_guard.ExtractionWaveToken):
+        # Refused rather than defaulted: a caller that cannot produce a job-scoped token
+        # has no job scope to enforce, and silently continuing is exactly how the guard
+        # became decorative before.
+        raise RuntimeError("qc_wave_token_required")
 
     # ---- gate 3: config, then the adapter import. Not one line earlier. ----
     from canon_lite_qc_meter import (AttemptContext, MeteredProvider, QcUsageSink,
@@ -126,13 +140,12 @@ async def maybe_run_metered_wave(
     # keeps at most one wave open; a second concurrent wave would double the real
     # in-flight count while the derived ceiling stayed put.
     #
-    # ⚠ The token must be JOB-SCOPED, which is why it is a parameter. Minting a fresh
-    # token here would guard nothing at all: every call would get its own, so two waves
-    # for one job would both "claim" successfully and the invariant would be decorative.
-    # A caller that runs one wave per job may omit it; a caller that could run more must
-    # thread the same token through, and the second wave then raises.
-    if wave_token is None:
-        wave_token = _ext.ExtractionWaveToken()
+    # 🔴 The token is MANDATORY and is NEVER minted here. An earlier revision accepted
+    # None and minted a fresh token as a convenience — and the production caller then
+    # omitted it, so every job silently got a brand-new token and the guard protected
+    # nothing at all. A fallback that the real caller relies on is not a fallback; it is
+    # the default path with the safety removed. The token must be created ONCE at job
+    # scope and threaded down, so a second wave for the same job raises.
     run = await _ext.extract_all(
         snapshot,
         canon,

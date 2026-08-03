@@ -1307,11 +1307,31 @@ def _p0a_size_words(body: dict) -> object:
         return None
 
 
+def _canon_lite_wave_token():
+    """Mint the job's ONE extraction-wave token, or None when Canon Lite is off.
+
+    C11 requires flag-off to import no Canon Lite module, so the mode is read from the
+    environment BEFORE the extractor import. When off there is no wave to guard, the seam
+    never runs, and nothing is imported.
+
+    This is the only place a token is created. The runner refuses to mint one, and the
+    seam does not default it — otherwise each wave would carry its own token and the
+    one-wave-per-job invariant would be unenforceable in production, which is precisely
+    the defect this replaces.
+    """
+    mode = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
+    if mode not in ("shadow", "assist", "enforce"):
+        return None
+    import canon_lite_extractor as _ext
+    return _ext.ExtractionWaveToken()
+
+
 async def _canon_lite_l2_shadow_projection(
     result: dict,
     *,
     mode: str,
     canon,
+    wave_token,
     run_id: str = "",
     job_uuid=None,
     job_external_id: "Optional[str]" = None,
@@ -1326,6 +1346,10 @@ async def _canon_lite_l2_shadow_projection(
     On the `python` service — api_direct and api_fallback — the runner refuses before
     importing the adapter, so this seam behaves exactly as it did before DG-4 and
     `claims_by_index` stays None.
+
+    `wave_token` is MANDATORY and is created once at job scope by the caller. It is not
+    defaulted here and never minted here: the one-wave-per-job invariant that the
+    max_inflight formula depends on is only real if the SAME token spans the job.
     """
     if mode != "shadow":
         return None
@@ -1340,8 +1364,8 @@ async def _canon_lite_l2_shadow_projection(
     try:
         import canon_lite_qc_runner as _qcr          # imports no adapter by itself
         claims_by_index = await _qcr.maybe_run_metered_wave(
-            snapshot, canon, run_id=run_id, job_uuid=job_uuid,
-            job_external_id=job_external_id)
+            snapshot, canon, wave_token=wave_token, run_id=run_id,
+            job_uuid=job_uuid, job_external_id=job_external_id)
     except Exception:  # noqa: BLE001
         # A metering fault must never change legacy narration delivery, and must never
         # fabricate coverage: the report falls back to claims-free rather than to
@@ -1454,6 +1478,14 @@ async def _run_narration_job_after_parity(
     sink = _UsageSink(tenant_id, user_id, job_uuid)
     started = time.monotonic()
     charge_settled = False
+    # ── DG-4: ONE extraction-wave token for the whole job ───────────────────────────
+    # Created here, at job scope, and threaded to the terminal seam. The max_inflight
+    # bound is replicas × jobs-per-worker × extractor_concurrency, which holds only while
+    # a job keeps at most one wave open; a second wave under the same job would double the
+    # real in-flight count while the derived ceiling stayed put. Minting it at the seam —
+    # or letting the runner mint it — would hand every wave its own token and make the
+    # guard decorative, which is exactly the defect this replaces.
+    _cl_l2_wave_token = _canon_lite_wave_token()
     # ── P0A telemetry, one allowance for the whole job ──────────────────────────────
     # Only ONE P0A write happens before user work: the EXECUTION event, under a hard cap
     # of its own. It stays here on purpose — a job that dies mid-flight would otherwise be
@@ -1660,6 +1692,7 @@ async def _run_narration_job_after_parity(
         try:
             _cl_l2_telemetry = await _canon_lite_l2_shadow_projection(
                 result, mode=_cl_l2_mode, canon=_cl_l2_canon,
+                wave_token=_cl_l2_wave_token,
                 run_id=str(job_id or ""), job_uuid=job_uuid,
                 job_external_id=str(job_id or "") or None)
             log.info("canon lite l2: %s", _cl_l2_telemetry)
