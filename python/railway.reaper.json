@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE"
+  },
+  "deploy": {
+    "startCommand": "python -c \"import hashlib,logging,os; from urllib.parse import urlsplit; u=urlsplit(os.environ['REDIS_URL']); endpoint='|'.join((u.scheme.lower(),(u.hostname or '').lower(),str(u.port or 6379),u.path or '/')); logging.basicConfig(level=logging.INFO); logging.getLogger('redis_client').setLevel(logging.WARNING); logging.getLogger('canon_lite_qc_meter').info('redis_endpoint_sha256=%s',hashlib.sha256(endpoint.encode()).hexdigest()); import canon_lite_qc_meter as m; raise SystemExit(m.main())\"",
+    "cronSchedule": "*/5 * * * *",
+    "restartPolicyType": "NEVER"
+  }
+}
