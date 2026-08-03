@@ -172,6 +172,27 @@ async def main() -> None:
     except Exception as e:  # noqa: BLE001
         log.warning("narasi sweep loop failed to start (non-fatal): %s", e)
 
+    # ── DG-4 host sentinel (Topology Amendment 001 §1.1). narration-worker is the SOLE
+    # metered host: the `python` service runs the same _run_narration_job via
+    # api_direct/api_fallback with NO concurrency bound, so its term in
+    # `replicas × jobs-per-worker × extractor_concurrency` is undefined and a sum
+    # containing it would be undefined too. The role is established HERE, by this
+    # process's own boot code, before Worker(...) can accept a single job — never from a
+    # job payload, which would be forgeable by any caller wanting to opt itself in.
+    #
+    # Failing boot is deliberate. A worker that silently came up without its role would
+    # look healthy while every metered path stayed dark, which is far harder to notice
+    # than a crash.
+    try:
+        from canon_lite_qc_meter import declare_host_role, metered_host_ok
+        declare_host_role("narration_worker")
+        if not metered_host_ok():
+            raise RuntimeError("host_role_not_established")
+        log.info("DG-4 host sentinel established: narration_worker")
+    except Exception as e:  # noqa: BLE001
+        log.error("host_role_not_established — refusing to start: %s", e)
+        raise
+
     from bullmq import Worker  # official package; add `bullmq` to requirements
 
     stop_event = asyncio.Event()

@@ -22,15 +22,20 @@ import canon_lite_l2 as _l2
 
 
 EXTRACTOR_VERSION = _cl.L2_EXTRACTOR_VERSION
-PROMPT_SHA256 = _cl._digest(
-    "canon_lite_l2.extractor_prompt",
-    {
-        "version": "v1",
-        "output_fields": ("coverage", "claims"),
-        "evidence_unit": "utf8_byte_offset",
-        "authority_rule": "accepted_canon_ids_only",
-    },
-)
+
+# DG-4: `prompt_sha256` is now an INJECTED parameter of extract_all, not a module
+# constant. The old constant digested a four-key descriptor, so the actual prompt text
+# could change completely without moving the hash — every claim artefact's provenance
+# attested to a descriptor, not to what was sent. The ratified replacement hashes the
+# derived static request contract, which lives in canon_lite_qc_provider.
+#
+# It is injected rather than imported because §4.5 forbids this module importing the QC
+# adapter: the extractor ships to hosts where the provider module must never be imported
+# at all (§6.0a), and importing it here would invert that. Injection also keeps L2a
+# provider-agnostic, which is the whole point of this layer.
+#
+# There is deliberately NO default. A default is exactly how the wrong hash would ship
+# silently into provenance that no downstream check could detect.
 MAX_CONCURRENCY = 8
 MAX_LOGICAL_ATTEMPTS = 3
 DEFAULT_TIMEOUT_S = 30.0
@@ -73,6 +78,32 @@ class ExtractionRequestV1:
 
 
 ProviderCall = Callable[[ExtractionRequestV1], Awaitable[Mapping[str, Any]]]
+
+
+class ExtractionWaveToken:
+    """One-wave-per-job guard. A job creates one token and hands it to extract_all.
+
+    The max_inflight bound is `replicas × jobs-per-worker × extractor_concurrency`, which
+    holds only if a job runs ONE extraction wave at a time. A second concurrent wave under
+    the same job would double the real in-flight count while the derived ceiling stayed
+    put — the meter would then be bounded by a number that no longer describes reality.
+    Claiming is one-shot and not reusable, so a second wave raises rather than silently
+    over-subscribing.
+    """
+
+    __slots__ = ("_claimed",)
+
+    def __init__(self) -> None:
+        self._claimed = False
+
+    @property
+    def claimed(self) -> bool:
+        return self._claimed
+
+    def claim(self) -> None:
+        if self._claimed:
+            raise _schema_error("extractor_wave_already_claimed")
+        self._claimed = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +158,8 @@ def _failure_artifact(
     *,
     state: str,
     model_version: str,
+    prompt_sha256: str,
+    canon_sha256: str,
 ) -> _l2.ChapterClaimsV1:
     block = snapshot.blocks[index]
     return _l2.ChapterClaimsV1(
@@ -134,9 +167,12 @@ def _failure_artifact(
         chapter_index=index,
         chapter_id=block.chapter_id,
         content_sha256=block.content_sha256,
+        # Failure artefacts name the canon too, not only success payloads — a failed
+        # extraction must still say which canon it failed against.
+        canon_sha256=canon_sha256,
         extractor_version=EXTRACTOR_VERSION,
         model_version=model_version,
-        prompt_sha256=PROMPT_SHA256,
+        prompt_sha256=prompt_sha256,
         predicate_set_version=_l2.PREDICATE_SET_VERSION,
         coverage=_coverage(state),
         claims=(),
@@ -149,6 +185,8 @@ def _provider_payload(
     snapshot: _l2.FinalChapterSnapshotV1,
     index: int,
     model_version: str,
+    prompt_sha256: str,
+    canon_sha256: str,
 ) -> dict[str, Any]:
     _cl._reject_unknown_fields(raw, ("coverage", "claims"), "provider_output")
     block = snapshot.blocks[index]
@@ -157,13 +195,58 @@ def _provider_payload(
         "chapter_index": index,
         "chapter_id": block.chapter_id,
         "content_sha256": block.content_sha256,
+        "canon_sha256": canon_sha256,
         "extractor_version": EXTRACTOR_VERSION,
         "model_version": model_version,
-        "prompt_sha256": PROMPT_SHA256,
+        "prompt_sha256": prompt_sha256,
         "predicate_set_version": _l2.PREDICATE_SET_VERSION,
         "coverage": raw["coverage"],
         "claims": raw["claims"],
     }
+
+
+def _preflight_request(
+    request: ExtractionRequestV1,
+    *,
+    snapshot: _l2.FinalChapterSnapshotV1,
+    index: int,
+    canon: _cl.CanonLiteV1,
+) -> None:
+    """Step 4 of the frozen order: content, identity and request-canon parity.
+
+    Runs with `snapshot` and `block` in scope, and therefore BEFORE MeteredProvider —
+    before sink.begin(), before any meter row exists, and before any HTTP request. This
+    is the ONLY layer that can promise zero meter rows: MeteredProvider calls
+    sink.begin() before invoking the adapter, so an adapter-level rejection already has a
+    row open. The adapter keeps the same canon checks as defence in depth, not as the
+    primary guard.
+
+    These raise through the module's existing path (_schema_error -> CanonSchemaError).
+    No new exception class is introduced, and QcProviderError is never raised here —
+    importing it would invert the dependency direction.
+    """
+    block = snapshot.blocks[index]
+    if _cl.sha256_hex(request.chapter_bytes) != request.content_sha256:
+        raise _schema_error("extractor_request_content_hash_mismatch")
+    if request.chapter_index != index or request.chapter_id != block.chapter_id:
+        raise _schema_error("extractor_request_identity_mismatch")
+    # Request-canon parity — three conjuncts, all required. Content and identity bind the
+    # CHAPTER; without these the request's CANON is unchecked at the only layer that can
+    # promise zero meter rows.
+    #   1. the request names the same canon it was given;
+    #   2. request.canon is itself self-consistent — NOT redundant with the step-2 check,
+    #      which verified the `canon` ARGUMENT: request.canon is a separate reference that
+    #      construction could have replaced, re-bound or mutated, and assuming they are
+    #      the same object is exactly the assumption a parity check exists to refuse;
+    #   3. the projection actually serialized carries the hash the request advertises, so
+    #      the bytes sent and the provenance recorded cannot describe different canons.
+    if request.canon_sha256 != canon.canon_sha256:
+        raise _schema_error("extractor_request_canon_mismatch")
+    if not request.canon.verify_sha256():
+        raise _schema_error("extractor_request_canon_mismatch")
+    if request.canon.to_canonical_obj(include_hash=True).get("canon_sha256") \
+            != request.canon_sha256:
+        raise _schema_error("extractor_request_canon_mismatch")
 
 
 async def extract_all(
@@ -172,9 +255,11 @@ async def extract_all(
     *,
     provider: ProviderCall,
     model_version: str,
+    prompt_sha256: str,
     max_concurrency: int,
     max_attempts: int = MAX_LOGICAL_ATTEMPTS,
     timeout_s: float = DEFAULT_TIMEOUT_S,
+    wave_token: Optional["ExtractionWaveToken"] = None,
 ) -> ExtractionRunV1:
     """Extract every exact chapter version, bounded and fully drained.
 
@@ -184,9 +269,21 @@ async def extract_all(
     """
     if not isinstance(snapshot, _l2.FinalChapterSnapshotV1):
         raise _schema_error("snapshot: expected FinalChapterSnapshotV1")
+    # ---- FROZEN ORDER, step 1: canon TYPE -----------------------------------
     if canon is not None and not isinstance(canon, _cl.CanonLiteV1):
         raise _schema_error("canon: expected CanonLiteV1 or None")
+    # ---- step 2: canon SELF-CONSISTENCY, before semantic authority ----------
+    # An invalid canon fails LOUDLY; it is never downgraded to a no-authority result.
+    # This cannot live after request construction: the NO_CANON_AUTHORITY branch returns
+    # before any ExtractionRequestV1 exists, so a check placed later would never run on
+    # that path and an invalid canon would be silently turned into a no-authority
+    # artefact.
+    if canon is not None and not canon.verify_sha256():
+        raise _schema_error("extractor_canon_hash_invalid")
     _cl._req_str(model_version, "model_version", max_len=_l2.MAX_LABEL_LEN)
+    _cl._req_sha256(prompt_sha256, "prompt_sha256")
+    if wave_token is not None and not isinstance(wave_token, ExtractionWaveToken):
+        raise _schema_error("wave_token: expected ExtractionWaveToken or None")
     if not callable(provider):
         raise _schema_error("provider: expected an async callable")
     if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) \
@@ -202,11 +299,25 @@ async def extract_all(
         raise _schema_error(
             f"timeout_s: expected a finite number in (0, {MAX_TIMEOUT_S}]")
 
+    # One extraction WAVE per job, or the max_inflight formula undercounts: the bound is
+    # replicas × jobs-per-worker × extractor_concurrency, which assumes a job holds at
+    # most one wave open at a time. A second concurrent wave would double the real
+    # in-flight count while the ceiling stayed put.
+    if wave_token is not None:
+        wave_token.claim()
+
+    # ---- step 3: the None / no-authority short-circuit ----------------------
+    # Now running on a canon already known to be self-consistent. The two cases differ in
+    # PROVENANCE, not outcome: canon=None has genuinely no canon to name, while a valid
+    # canon lacking semantic authority exists and is nameable — only its AUTHORITY is
+    # absent, so it carries its real hash rather than UNKNOWN.
     if canon is None or not _l2.has_semantic_authority(canon):
+        short_circuit_canon_sha = _cl.UNKNOWN if canon is None else canon.canon_sha256
         artifacts = tuple(
             _failure_artifact(
                 snapshot, index, state=_l2.COVERAGE_NO_CANON_AUTHORITY,
-                model_version="not_called")
+                model_version="not_called", prompt_sha256=prompt_sha256,
+                canon_sha256=short_circuit_canon_sha)
             for index in range(snapshot.chapter_count)
         )
         return ExtractionRunV1(
@@ -225,10 +336,12 @@ async def extract_all(
         terminal_state = _l2.COVERAGE_PROVIDER_FAILURE
         block = snapshot.blocks[index]
         for attempt in range(1, max_attempts + 1):
+            # ---- step 4: construct, then parity-check BEFORE MeteredProvider ----
             request = ExtractionRequestV1(
                 chapter_index=index, chapter_id=block.chapter_id,
                 content_sha256=block.content_sha256, canon_sha256=canon.canon_sha256,
                 attempt=attempt, chapter_bytes=snapshot.block_bytes(index), canon=canon)
+            _preflight_request(request, snapshot=snapshot, index=index, canon=canon)
             try:
                 async with semaphore:
                     async with counter_lock:
@@ -252,13 +365,15 @@ async def extract_all(
                 try:
                     payload = _provider_payload(
                         raw, snapshot=snapshot, index=index,
-                        model_version=model_version)
+                        model_version=model_version, prompt_sha256=prompt_sha256,
+                        canon_sha256=canon.canon_sha256)
                     return _l2.parse_chapter_claims(
                         payload, snapshot=snapshot, canon=canon)
                 except Exception:
                     terminal_state = _l2.COVERAGE_INVALID_EXTRACTOR_OUTPUT
         return _failure_artifact(
-            snapshot, index, state=terminal_state, model_version=model_version)
+            snapshot, index, state=terminal_state, model_version=model_version,
+            prompt_sha256=prompt_sha256, canon_sha256=canon.canon_sha256)
 
     tasks = [
         asyncio.create_task(one(index), name=f"canon-l2-extract-{index}")

@@ -234,11 +234,42 @@ def test_module_is_dark_and_imports_no_provider_client():
         "anthropic", "google", "laozhang_api", "openai", "requests", "httpx",
     }
 
+    # DG-4 narrows this invariant rather than dropping it. The meter was previously
+    # referenced by NOTHING, which proved L2B was dark. The ratified DG-4 path
+    # deliberately wires ONE thing into production: the host sentinel, established by
+    # narration_worker's own boot code so the metered-host role can never be claimed by a
+    # job payload. Everything else must stay unreferenced — importing the sentinel must
+    # not become a doorway for the metering machinery.
+    # Exactly two permitted referrers, each with its OWN allowed name set. Anything else
+    # in python/ must still not mention the meter at all.
+    PERMITTED = {
+        # The host sentinel, established by the worker's own boot code so the metered-host
+        # role can never be claimed by a job payload.
+        "narration_worker.py": {"declare_host_role", "metered_host_ok"},
+        # The adapter, which raises the ratified configuration error and returns the
+        # ratified usage type. No cycle: the meter does not import the provider.
+        "canon_lite_qc_provider.py": {"MeterConfigurationError", "ProviderUsage"},
+    }
     for path in (REPO / "python").rglob("*.py"):
         if path.name == "canon_lite_qc_meter.py":
             continue
         text = path.read_text("utf-8")
-        assert "canon_lite_qc_meter" not in text
+        allowed = PERMITTED.get(path.name)
+        if allowed is None:
+            assert "canon_lite_qc_meter" not in text, path.name
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.ImportFrom) and node.module == "canon_lite_qc_meter":
+                assert {a.name for a in node.names} <= allowed, path.name
+            elif isinstance(node, ast.Import):
+                assert not any(a.name.startswith("canon_lite_qc_meter")
+                               for a in node.names), path.name
+    # The metering machinery itself stays out of the worker: importing the sentinel must
+    # not become a doorway for the meter's execution path.
+    worker = (REPO / "python" / "narration_worker.py").read_text("utf-8")
+    for forbidden in ("MeteredProvider", "QcUsageSink", "AttemptContext",
+                      "load_max_inflight"):
+        assert forbidden not in worker, f"narration_worker reaches past the sentinel"
         assert "run_reaper_once" not in text
 
 

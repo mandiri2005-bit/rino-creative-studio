@@ -188,6 +188,82 @@ def load_max_inflight(environ: Optional[Mapping[str, str]] = None) -> int:
     return value
 
 
+# ===========================================================================
+# DG-4 §1.1 — host sentinel. SERVER-SET, never payload-derived.
+# ===========================================================================
+#
+# narration-worker is the SOLE metered host. The `python` service runs the same
+# `_run_narration_job` via api_direct/api_fallback and has NO concurrency bound, so its
+# term in `replicas × jobs-per-worker × extractor_concurrency` is undefined — a sum
+# containing it would be undefined too. The role is therefore established by the worker's
+# own boot code and can never be asserted by a job payload: a forgeable host claim would
+# let any caller opt itself into metering.
+
+HOST_ROLE_NARRATION_WORKER = "narration_worker"
+_HOST_ROLES = frozenset({HOST_ROLE_NARRATION_WORKER})
+_host_role: Optional[str] = None
+
+
+def declare_host_role(role: str) -> None:
+    """Establish this PROCESS's metered-host role. Called once, from worker boot only."""
+    global _host_role
+    if role not in _HOST_ROLES:
+        raise MeterConfigurationError("host_role_invalid")
+    if _host_role is not None and _host_role != role:
+        # Re-declaring a different role would mean one process claiming two hosts; the
+        # concurrency term is per-process, so that arithmetic could never be sound.
+        raise MeterConfigurationError("host_role_conflict")
+    _host_role = role
+
+
+def metered_host_ok() -> bool:
+    """True only in a process whose own boot code declared the metered host role."""
+    return _host_role == HOST_ROLE_NARRATION_WORKER
+
+
+def reset_host_role_for_tests() -> None:
+    """Test-only. Production never clears an established role."""
+    global _host_role
+    _host_role = None
+
+
+# ===========================================================================
+# DG-4 — extractor concurrency. Required, no default, narration-worker only.
+# ===========================================================================
+#
+# `max_concurrency` is a REQUIRED parameter of extract_all(); MAX_CONCURRENCY = 8 is a
+# validation ceiling, not a value. Shipping a default here would invent the third factor
+# of the max_inflight formula, so the loader refuses rather than guesses. Three distinct
+# codes, because "missing", "malformed" and "out of range" are three different operator
+# mistakes and collapsing them hides which one was made.
+
+EXTRACTOR_CONCURRENCY_ENV = "CANON_LITE_EXTRACTOR_CONCURRENCY"
+
+
+def load_extractor_concurrency(
+    environ: Optional[Mapping[str, str]] = None,
+    *,
+    max_concurrency: int = 8,
+) -> int:
+    """Load the required per-process extractor concurrency. Worker-only, no default."""
+    if not metered_host_ok():
+        # The module ships to `python` too, where this variable is intentionally absent.
+        # Evaluation order is mode -> host sentinel -> config, so reaching a config load
+        # off-host means the caller skipped a gate.
+        raise MeterConfigurationError("extractor_concurrency_host_not_permitted")
+    raw = (os.environ if environ is None else environ).get(EXTRACTOR_CONCURRENCY_ENV)
+    if raw is None or not isinstance(raw, str) or not raw.strip():
+        raise MeterConfigurationError("extractor_concurrency_missing")
+    if not _canonical_magnitude(raw):
+        raise MeterConfigurationError("extractor_concurrency_invalid")
+    if len(raw) > 3:
+        raise MeterConfigurationError("extractor_concurrency_out_of_range")
+    value = int(raw)
+    if not (1 <= value <= max_concurrency):
+        raise MeterConfigurationError("extractor_concurrency_out_of_range")
+    return value
+
+
 def phase_a_ready(
     *,
     l2b_enabled: bool,

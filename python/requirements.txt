@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-openai
+openai==2.41.0
 requests
 numpy
 Pillow
@@ -15,7 +15,7 @@ google-auth
 asyncpg
 python-dotenv
 python-jose[cryptography]
-httpx
+httpx==0.28.1
 redis
 boto3
 sentry-sdk

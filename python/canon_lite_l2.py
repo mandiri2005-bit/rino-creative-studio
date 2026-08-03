@@ -59,7 +59,13 @@ def _bounds_error(msg: str) -> Exception:
     return _cl.CanonBoundsError(msg)
 
 SNAPSHOT_SCHEMA_VERSION = "final_chapter_snapshot_v1"
-CLAIMS_SCHEMA_VERSION = "chapter_claims_v1"
+# v2 adds `canon_sha256` to ChapterClaimsV1. The provider's output depends on the exact
+# canon supplied, so a claim that does not name its canon cannot be safely cached or
+# reused. A v1 payload FAILS CLOSED — it is never silently upgraded, because a v1 claim
+# genuinely does not know which canon produced it and inferring one would fabricate
+# provenance. REPORT_SCHEMA_VERSION deliberately stays v1: ContinuityReportV1 already
+# carries canon_sha256, so bumping it would force re-acceptance of an unchanged schema.
+CLAIMS_SCHEMA_VERSION = "chapter_claims_v2"
 REPORT_SCHEMA_VERSION = "continuity_report_v1"
 
 #: Bumped whenever the split/offset algorithm changes. A snapshot is only comparable to
@@ -454,7 +460,7 @@ def materialize_final_snapshot(
 _CLAIM_FIELDS = ("claim_type", "canon_ref", "evidence_start", "evidence_end",
                  "evidence_sha256")
 _CLAIMS_PAYLOAD_FIELDS = (
-    "schema_version", "chapter_index", "chapter_id", "content_sha256",
+    "schema_version", "chapter_index", "chapter_id", "content_sha256", "canon_sha256",
     "extractor_version", "model_version", "prompt_sha256", "predicate_set_version",
     "coverage", "claims",
 )
@@ -521,6 +527,7 @@ class ChapterClaimsV1:
     chapter_index: int
     chapter_id: str
     content_sha256: str
+    canon_sha256: str
     extractor_version: str
     model_version: str
     prompt_sha256: str
@@ -537,6 +544,14 @@ class ChapterClaimsV1:
         if self.chapter_id != UNKNOWN:
             _req_id(self.chapter_id, "chapter_id")
         _req_sha256(self.content_sha256, "content_sha256")
+        # `canon_sha256` mirrors the existing chapter_id treatment: UNKNOWN by explicit
+        # exemption rather than by weakening _req_sha256. A dataclass cannot see the
+        # caller's argument, so it can only enforce the STRUCTURAL half — UNKNOWN implies
+        # a no-authority artefact. The stronger contextual rule (UNKNOWN is permitted
+        # only when the caller supplied canon=None) lives in parse_chapter_claims, which
+        # does receive the canon.
+        if self.canon_sha256 != UNKNOWN:
+            _req_sha256(self.canon_sha256, "canon_sha256")
         _req_str(self.extractor_version, "extractor_version", max_len=MAX_LABEL_LEN,
                  allow_unknown=False)
         _req_str(self.model_version, "model_version", max_len=MAX_LABEL_LEN,
@@ -572,6 +587,13 @@ class ChapterClaimsV1:
             if not rows and cov.state == COVERAGE_CHECKED:
                 raise _schema_error(
                     f"coverage[{cov.predicate}]: zero claims requires NO_CLAIMS_FOUND")
+        # Structural half of the UNKNOWN invariant, checked after coverage and claims are
+        # known to be well-formed so the failure names the real defect.
+        if self.canon_sha256 == UNKNOWN and (
+                self.claims
+                or any(c.state != COVERAGE_NO_CANON_AUTHORITY for c in self.coverage)):
+            raise _schema_error(
+                "canon_sha256: UNKNOWN requires NO_CANON_AUTHORITY coverage and no claims")
 
     @property
     def measured(self) -> bool:
@@ -598,6 +620,7 @@ class ChapterClaimsV1:
             "chapter_index": self.chapter_index,
             "chapter_id": self.chapter_id,
             "content_sha256": self.content_sha256,
+            "canon_sha256": self.canon_sha256,
             "extractor_version": self.extractor_version,
             "model_version": self.model_version,
             "prompt_sha256": self.prompt_sha256,
@@ -636,6 +659,27 @@ def parse_chapter_claims(
     content_sha = _req_sha256(payload.get("content_sha256"), "content_sha256")
     if content_sha != block_meta.content_sha256:
         raise _schema_error("content_sha256: does not bind the snapshot block")
+
+    # ---- canon binding, BOTH directions -----------------------------------
+    # Rejecting UNKNOWN when a canon was supplied is necessary but NOT sufficient: a
+    # payload naming a DIFFERENT real SHA-256 must also be refused. Both checks run here,
+    # before artifact construction and before any cache access, so a mis-bound payload
+    # never becomes an object and never reaches a cache key.
+    canon_sha = payload.get("canon_sha256")
+    if canon is None:
+        if canon_sha != UNKNOWN:
+            raise _schema_error("canon_sha256: expected UNKNOWN when no canon was supplied")
+    else:
+        # The two conjuncts are INDEPENDENT, and agreement between payload and canon does
+        # not satisfy the first. A canon whose verify_sha256() is False is rejected even
+        # when the payload equals its tampered canon_sha256 — the two agree, but on a hash
+        # that does not describe the canon's own content. Consistency with a corrupted
+        # canon is not provenance; it is two copies of the same wrong fact.
+        if not canon.verify_sha256():
+            raise _schema_error("canon_sha256: supplied canon is not self-consistent")
+        _req_sha256(canon_sha, "canon_sha256")
+        if canon_sha != canon.canon_sha256:
+            raise _schema_error("canon_sha256: does not bind the supplied canon")
     version = _req_str(payload.get("extractor_version"), "extractor_version",
                        max_len=MAX_LABEL_LEN)
     model_version = _req_str(
@@ -693,11 +737,43 @@ def parse_chapter_claims(
 
     return ChapterClaimsV1(
         schema_version=CLAIMS_SCHEMA_VERSION, chapter_index=index,
-        chapter_id=chapter_id, content_sha256=content_sha,
+        chapter_id=chapter_id, content_sha256=content_sha, canon_sha256=canon_sha,
         extractor_version=version, model_version=model_version,
         prompt_sha256=prompt_sha256, predicate_set_version=PREDICATE_SET_VERSION,
         coverage=coverage, claims=tuple(parsed),
     )
+
+
+#: §4.4 — the claim cache key, frozen. Nine elements, this exact order, no omissions, no
+#: reordering, no implementer-selected additions. Every element changes the MEANING of the
+#: cached claim: the schema it obeys, WHICH CHAPTER it is, the bytes it read, the canon it
+#: was judged against, the extractor and model that produced it, the request contract it
+#: was asked under, and the predicate vocabulary it may use.
+CLAIM_CACHE_KEY_FIELDS = (
+    "schema_version", "chapter_index", "chapter_id", "content_sha256", "canon_sha256",
+    "extractor_version", "model_version", "prompt_sha256", "predicate_set_version",
+)
+
+
+def claim_cache_key(artifact: ChapterClaimsV1) -> tuple:
+    """The frozen nine-element cache identity for one claim artefact.
+
+    `chapter_index` and `chapter_id` are part of the key because both are sent to the
+    provider and both are carried on the artefact: without them two chapters with
+    IDENTICAL bytes at different identities collide, and a duplicated passage would serve
+    one chapter's claims for another, at a different index.
+    """
+    if not isinstance(artifact, ChapterClaimsV1):
+        raise _schema_error("claim_cache_key: expected ChapterClaimsV1")
+    if artifact.canon_sha256 == UNKNOWN:
+        # UNKNOWN is never cacheable. Not because it could collide — canon_sha256 is
+        # itself an element of the key, so UNKNOWN and a real hash produce different keys.
+        # It is refused because it identifies NO authoritative input, so the entry names
+        # nothing that could be matched against; and because the no-canon result is
+        # locally reproducible with zero provider work, so caching it buys nothing and
+        # only creates an entry whose meaning depends on an argument the key never records.
+        raise _schema_error("claim_cache_key: UNKNOWN canon is not cacheable")
+    return tuple(getattr(artifact, name) for name in CLAIM_CACHE_KEY_FIELDS)
 
 
 def _accepted_canon_ids(canon: Optional[CanonLiteV1]) -> frozenset[str]:

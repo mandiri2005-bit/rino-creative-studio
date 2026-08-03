@@ -272,7 +272,10 @@ def test_semantic_predicate_with_authority_reports_incomplete_when_coverage_is_p
 # ChapterClaimsV1 — untrusted input
 # ===========================================================================
 
-def _claim_payload(snap, idx=0, **over):
+def _claim_payload(snap, idx=0, canon=None, **over):
+    """DG-4: v2 payloads must name their canon. `canon` is threaded through rather than
+    defaulted to a constant, because the parser now checks BOTH directions — a payload
+    naming the wrong real hash is refused just as firmly as one naming UNKNOWN."""
     block = snap.block_bytes(idx)
     start, end = 0, min(8, len(block))
     coverage = {
@@ -285,6 +288,7 @@ def _claim_payload(snap, idx=0, **over):
         "chapter_index": idx,
         "chapter_id": snap.blocks[idx].chapter_id,
         "content_sha256": snap.blocks[idx].content_sha256,
+        "canon_sha256": canon.canon_sha256 if canon is not None else cl.UNKNOWN,
         "extractor_version": "test_v1",
         "model_version": "model_v1",
         "prompt_sha256": "d" * 64,
@@ -302,7 +306,7 @@ def _claim_payload(snap, idx=0, **over):
     return base
 
 
-def _payload_for_span(snap, *, idx, claim_type, canon_ref, evidence):
+def _payload_for_span(snap, *, idx, claim_type, canon_ref, evidence, canon=None):
     block = snap.block_bytes(idx)
     needle = evidence.encode("utf-8")
     start = block.index(needle)
@@ -311,7 +315,7 @@ def _payload_for_span(snap, *, idx, claim_type, canon_ref, evidence):
         p: l2.COVERAGE_NO_CLAIMS_FOUND for p in l2.SEMANTIC_PREDICATES}
     coverage[predicate] = l2.COVERAGE_CHECKED
     return _claim_payload(
-        snap, idx=idx, coverage=coverage,
+        snap, idx=idx, canon=canon, coverage=coverage,
         claims=[{
             "claim_type": claim_type,
             "canon_ref": canon_ref,
@@ -327,7 +331,7 @@ def test_a_well_formed_claim_parses(monkeypatch):
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    parsed = l2.parse_chapter_claims(_claim_payload(snap), snapshot=snap,
+    parsed = l2.parse_chapter_claims(_claim_payload(snap, canon=canon), snapshot=snap,
                                      canon=canon)
     assert parsed.coverage_state == l2.COVERAGE_CHECKED
     assert parsed.measured is True
@@ -339,7 +343,7 @@ def test_extractor_invented_canon_id_is_rejected():
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    payload = _claim_payload(snap)
+    payload = _claim_payload(snap, canon=canon)
     payload["claims"][0]["canon_ref"] = "e_invented"
     with pytest.raises(cl.CanonSchemaError):
         l2.parse_chapter_claims(payload, snapshot=snap,
@@ -351,7 +355,7 @@ def test_evidence_hash_that_does_not_bind_the_span_is_rejected():
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    payload = _claim_payload(snap)
+    payload = _claim_payload(snap, canon=canon)
     payload["claims"][0]["evidence_sha256"] = "c" * 64
     with pytest.raises(cl.CanonSchemaError):
         l2.parse_chapter_claims(payload, snapshot=snap,
@@ -372,7 +376,7 @@ def test_evidence_range_outside_the_chapter_is_rejected():
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
     block_len = len(snap.block_bytes(0))
     assert block_len + 8 < l2.MAX_EVIDENCE_BYTES        # the branch is genuinely reachable
-    payload = _claim_payload(snap)
+    payload = _claim_payload(snap, canon=canon)
     payload["claims"][0]["evidence_end"] = block_len + 8
     with pytest.raises(cl.CanonSchemaError, match="outside the chapter"):
         l2.parse_chapter_claims(payload, snapshot=snap,
@@ -385,7 +389,7 @@ def test_evidence_span_over_the_size_bound_is_rejected():
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    payload = _claim_payload(snap)
+    payload = _claim_payload(snap, canon=canon)
     payload["claims"][0]["evidence_end"] = l2.MAX_EVIDENCE_BYTES + 1
     with pytest.raises(cl.CanonBoundsError):
         l2.parse_chapter_claims(payload, snapshot=snap,
@@ -401,7 +405,7 @@ def test_evidence_range_must_follow_utf8_codepoint_boundaries():
     block = snap.block_bytes(0)
     lead = block.index("é".encode("utf-8"))
     payload = _claim_payload(
-        snap,
+        snap, canon=canon,
         claims=[{
             "claim_type": l2.CLAIM_ENTITY_MENTION,
             "canon_ref": "e1",
@@ -416,7 +420,7 @@ def test_evidence_range_must_follow_utf8_codepoint_boundaries():
 
 def test_unknown_field_in_extractor_output_is_rejected():
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX})
-    payload = _claim_payload(snap)
+    payload = _claim_payload(snap, canon=_canon(2))
     payload["surprise"] = 1
     with pytest.raises(cl.CanonSchemaError):
         l2.parse_chapter_claims(payload, snapshot=snap, canon=_canon(2))
@@ -425,7 +429,7 @@ def test_unknown_field_in_extractor_output_is_rejected():
 def test_chapter_index_outside_the_snapshot_is_rejected():
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX})
     with pytest.raises(cl.CanonSchemaError):
-        l2.parse_chapter_claims(_claim_payload(snap, idx=0) | {"chapter_index": 99},
+        l2.parse_chapter_claims(_claim_payload(snap, canon=_canon(2), idx=0) | {"chapter_index": 99},
                                 snapshot=snap, canon=_canon(2))
 
 
@@ -438,10 +442,10 @@ def test_a_failed_extraction_is_never_measured_and_may_not_carry_claims(state):
     failed_coverage = {predicate: state for predicate in l2.SEMANTIC_PREDICATES}
     with pytest.raises(cl.CanonSchemaError):
         l2.parse_chapter_claims(
-            _claim_payload(snap) | {"coverage": failed_coverage},
+            _claim_payload(snap, canon=_canon(2)) | {"coverage": failed_coverage},
                                 snapshot=snap, canon=_canon(2))
     empty = l2.parse_chapter_claims(
-        _claim_payload(snap) | {"coverage": failed_coverage, "claims": []},
+        _claim_payload(snap, canon=_canon(2)) | {"coverage": failed_coverage, "claims": []},
         snapshot=snap, canon=_canon(2))
     assert empty.measured is False
 
@@ -454,7 +458,7 @@ def test_checked_with_no_claims_becomes_no_claims_found():
         for predicate in l2.SEMANTIC_PREDICATES
     }
     parsed = l2.parse_chapter_claims(
-        _claim_payload(snap) | {"coverage": coverage, "claims": []},
+        _claim_payload(snap, canon=_canon(2)) | {"coverage": coverage, "claims": []},
         snapshot=snap, canon=_canon(2))
     assert parsed.coverage_state == l2.COVERAGE_NO_CLAIMS_FOUND
     assert parsed.measured is True
@@ -465,7 +469,7 @@ def test_claims_bind_to_the_exact_chapter_bytes_so_a_mutation_invalidates_them()
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    parsed = l2.parse_chapter_claims(_claim_payload(snap), snapshot=snap,
+    parsed = l2.parse_chapter_claims(_claim_payload(snap, canon=canon), snapshot=snap,
                                      canon=canon)
     mutated = l2.materialize_final_snapshot(
         {"book": NO_PREFIX.replace("isi\n", "ISI\n")}, canon=canon)
@@ -490,12 +494,12 @@ def test_entity_predicate_compares_evidence_against_authoritative_names():
     snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
     good = l2.parse_chapter_claims(
         _payload_for_span(
-            snap, idx=0, claim_type=l2.CLAIM_ENTITY_MENTION,
+            snap, canon=canon, idx=0, claim_type=l2.CLAIM_ENTITY_MENTION,
             canon_ref="e1", evidence="Rina"),
         snapshot=snap, canon=canon)
     bad = l2.parse_chapter_claims(
         _payload_for_span(
-            snap, idx=1, claim_type=l2.CLAIM_ENTITY_MENTION,
+            snap, canon=canon, idx=1, claim_type=l2.CLAIM_ENTITY_MENTION,
             canon_ref="e1", evidence="Budi"),
         snapshot=snap, canon=canon)
     result = l2.evaluate_semantic(
@@ -513,7 +517,7 @@ def test_fixed_literal_predicate_is_deterministic():
     rows = {}
     for index, literal in enumerate(("10:00", "11:00")):
         payload = _payload_for_span(
-            snap, idx=index, claim_type=l2.CLAIM_FIXED_LITERAL,
+            snap, canon=canon, idx=index, claim_type=l2.CLAIM_FIXED_LITERAL,
             canon_ref="a1", evidence=literal)
         rows[index] = l2.parse_chapter_claims(
             payload, snapshot=snap, canon=canon)
@@ -532,7 +536,7 @@ def test_one_time_event_predicate_flags_only_repeated_occurrences():
     for index, evidence in enumerate(("pintu pecah", "pintu pecah")):
         rows[index] = l2.parse_chapter_claims(
             _payload_for_span(
-                snap, idx=index, claim_type=l2.CLAIM_ONE_TIME_EVENT,
+                snap, canon=canon, idx=index, claim_type=l2.CLAIM_ONE_TIME_EVENT,
                 canon_ref="ev1", evidence=evidence),
             snapshot=snap, canon=canon)
     result = l2.evaluate_semantic(
@@ -545,7 +549,7 @@ def test_claim_type_cannot_reference_an_id_from_another_authority_class():
     event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1)
     canon = _canon(2, events=(event,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    payload = _claim_payload(snap)
+    payload = _claim_payload(snap, canon=canon)
     payload["claims"][0]["canon_ref"] = "ev1"
     with pytest.raises(cl.CanonSchemaError, match="not accepted"):
         l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
@@ -556,7 +560,7 @@ def test_untrusted_claims_require_the_exact_json_array_type():
         entity_id="e1", canonical_name="Rina", aliases=(), alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    payload = _claim_payload(snap)
+    payload = _claim_payload(snap, canon=canon)
     payload["claims"] = tuple(payload["claims"])
     with pytest.raises(cl.CanonSchemaError, match="expected a list"):
         l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
@@ -603,7 +607,7 @@ def test_no_semantic_authority_makes_zero_provider_calls():
         canon = _canon(2)
         snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
         run = await ext.extract_all(
-            snap, canon, provider=provider, model_version="test-model",
+            snap, canon, provider=provider, model_version="test-model", prompt_sha256="d" * 64,
             max_concurrency=2)
         assert called == 0
         assert run.logical_extractions == 0
@@ -628,7 +632,7 @@ def test_extractor_is_bounded_and_results_stay_in_chapter_order():
             return _provider_output()
 
         run = await ext.extract_all(
-            snap, canon, provider=provider, model_version="test-model",
+            snap, canon, provider=provider, model_version="test-model", prompt_sha256="d" * 64,
             max_concurrency=2)
         assert [row.chapter_index for row in run.claims] == [0, 1, 2, 3]
         assert run.max_concurrency_observed == 2
@@ -657,7 +661,7 @@ def test_provider_failure_retries_only_to_the_absolute_ceiling():
             raise RuntimeError("provider-secret-prose")
 
         run = await ext.extract_all(
-            snap, canon, provider=provider, model_version="test-model",
+            snap, canon, provider=provider, model_version="test-model", prompt_sha256="d" * 64,
             max_concurrency=1, max_attempts=3)
         assert calls == run.logical_attempts == 3
         assert run.claims[0].coverage_state == l2.COVERAGE_PROVIDER_FAILURE
@@ -681,7 +685,7 @@ def test_extractor_timeout_must_remain_finite_and_bounded(timeout_s):
 
         with pytest.raises(cl.CanonSchemaError, match="finite number"):
             await ext.extract_all(
-                snap, canon, provider=provider, model_version="test-model",
+                snap, canon, provider=provider, model_version="test-model", prompt_sha256="d" * 64,
                 max_concurrency=1, timeout_s=timeout_s)
 
     asyncio.run(scenario())
@@ -700,7 +704,7 @@ def test_invalid_output_and_timeout_are_incomplete_never_clean():
             return {"coverage": {}, "claims": [], "raw_prose": "must not survive"}
 
         run = await ext.extract_all(
-            snap, canon, provider=malformed, model_version="test-model",
+            snap, canon, provider=malformed, model_version="test-model", prompt_sha256="d" * 64,
             max_concurrency=1, max_attempts=1)
         report = l2.build_report(
             snap, canon, mode="shadow", result={"book": "## Bab 1\nRina"},
@@ -714,7 +718,7 @@ def test_invalid_output_and_timeout_are_incomplete_never_clean():
             return _provider_output()
 
         timed = await ext.extract_all(
-            snap, canon, provider=slow, model_version="test-model",
+            snap, canon, provider=slow, model_version="test-model", prompt_sha256="d" * 64,
             max_concurrency=1, max_attempts=1, timeout_s=0.001)
         assert timed.claims[0].coverage_state == l2.COVERAGE_TIMEOUT
         assert timed.tasks_started == timed.tasks_drained == 1
@@ -745,7 +749,7 @@ def test_cancellation_waits_until_cancellation_hostile_provider_is_physically_de
                 raise
 
         task = asyncio.create_task(ext.extract_all(
-            snap, canon, provider=stubborn, model_version="test-model",
+            snap, canon, provider=stubborn, model_version="test-model", prompt_sha256="d" * 64,
             max_concurrency=1))
         await started.wait()
         task.cancel()
@@ -793,7 +797,7 @@ def test_sibling_failure_drains_a_cancellation_hostile_provider_before_raising()
                 raise
 
         task = asyncio.create_task(ext.extract_all(
-            snap, canon, provider=provider, model_version="test-model",
+            snap, canon, provider=provider, model_version="test-model", prompt_sha256="d" * 64,
             max_concurrency=2))
         await cancellation_seen.wait()
         await asyncio.sleep(0)
