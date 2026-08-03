@@ -1316,6 +1316,95 @@ def test_runner_runs_exactly_one_reconciled_wave():
         assert ordinal == 1                              # no hidden retries
 
 
+def _wave(**over):
+    """Run one metered wave with the standard fakes. Returns claims_by_index."""
+    kw = dict(run_id="r", job_uuid="00000000-0000-4000-8000-000000000001",
+              job_external_id="j", environ=ENV_ON, redis_getter=_FakeRedis)
+    kw.update(over)
+    if "sink" not in kw:
+        class S:
+            def __init__(self):
+                self.n = 0
+
+            async def begin(self, c, *, unit_index, attempt_ordinal):
+                self.n += 1
+                return {"attempt_id": f"a{self.n}", "outcome": "inserted"}
+
+            async def finish(self, a, s):
+                return {"attempt_id": a}
+
+            async def resolve(self, a, u):
+                return {"attempt_id": a, "outcome": "applied"}
+
+            async def arm(self, r):
+                return {}
+
+            async def is_armed(self):
+                return False
+        kw["sink"] = S()
+    if "adapter_factory" not in kw:
+        adapter, _ = _adapter()
+        kw["adapter_factory"] = lambda: adapter
+    return _run(runner.maybe_run_metered_wave(
+        _snapshot(), _authoritative_canon(), **kw))
+
+
+def test_runner_wave_token_is_job_scoped_not_minted_internally():
+    """A token minted INSIDE the runner would guard nothing — every call would get its
+    own, so two waves for one job would both claim successfully and the one-wave
+    invariant would be decorative. It must be threadable by the caller."""
+    import inspect
+    assert "wave_token" in inspect.signature(runner.maybe_run_metered_wave).parameters
+    meter.reset_host_role_for_tests()
+    meter._process_killed = False
+    _FAKE_REDIS.store.clear()
+    try:
+        meter.declare_host_role("narration_worker")
+        token = ext.ExtractionWaveToken()
+        assert _wave(wave_token=token) is not None
+        assert token.claimed
+        # the SAME job token cannot open a second wave
+        with pytest.raises(cl.CanonSchemaError) as e:
+            _wave(wave_token=token)
+        assert "wave_already_claimed" in str(e.value)
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_runner_refuses_more_rows_than_attempts():
+    """A row can never exist without an attempt that produced it. True reconciliation
+    against DURABLE rows is the reaper's job (DG-5); this is the local invariant."""
+    meter.reset_host_role_for_tests()
+    meter._process_killed = False
+    _FAKE_REDIS.store.clear()
+
+    class InflatedProvider:
+        """Reports more emitted rows than the extractor ever attempted."""
+        emitted_attempts = 10_000
+
+        def __init__(self, *a, **k):
+            pass
+
+        async def __call__(self, request):
+            return {"coverage": {p: "NO_CLAIMS_FOUND"
+                                 for p in l2.SEMANTIC_PREDICATES}, "claims": []}
+
+        def assert_reconciled(self, n):
+            pass
+
+    import canon_lite_qc_meter as m
+    real = m.MeteredProvider
+    try:
+        meter.declare_host_role("narration_worker")
+        m.MeteredProvider = InflatedProvider
+        with pytest.raises(RuntimeError) as e:
+            _wave()
+        assert "exceed_logical" in str(e.value)
+    finally:
+        m.MeteredProvider = real
+        meter.reset_host_role_for_tests()
+
+
 def test_runner_missing_credential_raises_rather_than_skipping():
     """Skipping would produce a report that looks measured but called nothing."""
     meter.reset_host_role_for_tests()

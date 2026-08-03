@@ -60,6 +60,7 @@ async def maybe_run_metered_wave(
     job_uuid: Any,
     job_external_id: Optional[str],
     environ: Optional[Mapping[str, str]] = None,
+    wave_token: Any = None,
     sink: Any = None,
     adapter_factory: Any = None,
     redis_getter: Any = None,
@@ -124,6 +125,14 @@ async def maybe_run_metered_wave(
     # replicas × jobs-per-worker × extractor_concurrency, which holds only while a job
     # keeps at most one wave open; a second concurrent wave would double the real
     # in-flight count while the derived ceiling stayed put.
+    #
+    # ⚠ The token must be JOB-SCOPED, which is why it is a parameter. Minting a fresh
+    # token here would guard nothing at all: every call would get its own, so two waves
+    # for one job would both "claim" successfully and the invariant would be decorative.
+    # A caller that runs one wave per job may omit it; a caller that could run more must
+    # thread the same token through, and the second wave then raises.
+    if wave_token is None:
+        wave_token = _ext.ExtractionWaveToken()
     run = await _ext.extract_all(
         snapshot,
         canon,
@@ -131,7 +140,7 @@ async def maybe_run_metered_wave(
         model_version=_qc.QC_MODEL_UPSTREAM,
         prompt_sha256=_qc.PROMPT_SHA256,
         max_concurrency=extractor_concurrency,
-        wave_token=_ext.ExtractionWaveToken(),
+        wave_token=wave_token,
     )
 
     # ⚠ `assert_reconciled` is deliberately NOT called with run.logical_attempts. Those
