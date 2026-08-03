@@ -206,52 +206,114 @@ QC_TEMPERATURE = float(QC_TEMPERATURE_DECIMAL)                  # the value SENT
 # PROMPT_SHA256 last, so no rejected value ever reaches the contract and no hash ever
 # exists for constants that failed a gate.
 
-if not QC_TEMPERATURE_DECIMAL.is_finite() or not math.isfinite(QC_TEMPERATURE):
-    raise MeterConfigurationError("qc_temperature_not_canonical")
-if QC_TEMPERATURE_TEXT != repr(QC_TEMPERATURE):
-    # repr() of a CPython float is the shortest string that round-trips, so it is unique
-    # per float. Requiring equality makes the accepted text the ONLY spelling that can
-    # ship for a given runtime value: "0.10" is refused because repr(0.1) is "0.1", and
-    # "0" because repr(0.0) is "0.0". Without this, two contract byte sequences — two
-    # PROMPT_SHA256 values — could attest to one physical generation policy.
-    # REFUSAL, never normalization: silently rewriting the owner's entry would mean the
-    # ratified byte no longer matches what the owner submitted.
-    raise MeterConfigurationError("qc_temperature_not_canonical")
+_UNSET = object()   # NOT None: None is itself a value the gates must be able to refuse.
 
-if type(QC_CAP_MAX_OUTPUT_TOKENS) is not int or QC_CAP_MAX_OUTPUT_TOKENS < 1:
-    raise MeterConfigurationError("qc_max_tokens_invalid")
-if type(QC_MAX_TOKENS) is not int:
-    # bool is an int subclass, so isinstance() would accept max_tokens=True and send 1 —
-    # a one-token ceiling that truncates every extraction while looking configured.
-    raise MeterConfigurationError("qc_max_tokens_invalid")
-if not (1 <= QC_MAX_TOKENS <= QC_CAP_MAX_OUTPUT_TOKENS):
-    raise MeterConfigurationError("qc_max_tokens_invalid")
-if not (Decimal(QC_CAP_TEMPERATURE_MIN_TEXT)
-        <= QC_TEMPERATURE_DECIMAL
-        <= Decimal(QC_CAP_TEMPERATURE_MAX_TEXT)):
-    # Canonicality is not validity: "-3.0" and "999.0" are canonical repr() texts of
-    # finite floats. A merely well-formed constant still fails INSIDE a metered attempt,
-    # so the row is billed for a request the constants could have refused at import.
-    raise MeterConfigurationError("qc_temperature_out_of_range")
-if not _PRICING_VERSION_RE.fullmatch(QC_PRICING.pricing_version):
-    raise MeterConfigurationError("qc_pricing_version_invalid")
-try:
-    # A semantic placeholder, not a syntactic one: "qc-rates-YYYY-MM-DD" contains no
-    # ____ sentinel, so it would ship looking valid. It must parse as a real date.
-    _date.fromisoformat(QC_PRICING.pricing_version[len("qc-rates-"):])
-except ValueError:
-    raise MeterConfigurationError("qc_pricing_version_invalid") from None
-for _name, _value in (("cap_source", QC_CAP_SOURCE), ("cap_revision", QC_CAP_REVISION),
-                      ("rate_source", QC_PRICING.source),
-                      ("rate_revision", QC_PRICING.revision)):
-    if not isinstance(_value, str) or not _value.strip() or "____" in _value:
-        raise MeterConfigurationError("qc_attestation_source_invalid")
 
-if QC_CAP_STRUCTURED_OUTPUT_SUPPORTED is not True:
-    # Attempt 1 is pinned to schema-based structured output. If the pinned route and
-    # model do not support it the retry schedule is unsatisfiable — a ratification
-    # defect, not a runtime fallback: §3 forbids dropping to plain mode in-adapter.
-    raise MeterConfigurationError("qc_structured_output_unsupported")
+def validate_constants(
+    *,
+    temperature_text: Any = _UNSET,
+    max_tokens: Any = _UNSET,
+    cap_min_text: Any = _UNSET,
+    cap_max_text: Any = _UNSET,
+    cap_max_output_tokens: Any = _UNSET,
+    structured_output_supported: Any = _UNSET,
+    pricing_version: Any = _UNSET,
+    attestations: Any = _UNSET,
+) -> None:
+    """Every import-time constant gate, callable.
+
+    Extracted from inline `if ...: raise` so the gates can be EXERCISED with bad values.
+    Mutation control found that inline gates are unfalsifiable in a green tree: with the
+    ratified constants they never fire, so deleting one changed nothing and no test
+    noticed. A gate nothing can trigger is not a gate.
+
+    Called with no arguments at import, where it reads the module constants.
+    """
+    def _or(value, ratified):
+        return ratified if value is _UNSET else value
+
+    temperature_text = _or(temperature_text, QC_TEMPERATURE_TEXT)
+    max_tokens = _or(max_tokens, QC_MAX_TOKENS)
+    cap_min_text = _or(cap_min_text, QC_CAP_TEMPERATURE_MIN_TEXT)
+    cap_max_text = _or(cap_max_text, QC_CAP_TEMPERATURE_MAX_TEXT)
+    cap_max_output_tokens = _or(cap_max_output_tokens, QC_CAP_MAX_OUTPUT_TOKENS)
+    structured_output_supported = _or(structured_output_supported,
+                                      QC_CAP_STRUCTURED_OUTPUT_SUPPORTED)
+    pricing_version = _or(pricing_version, QC_PRICING.pricing_version)
+    attestations = _or(attestations, (QC_CAP_SOURCE, QC_CAP_REVISION,
+                                      QC_PRICING.source, QC_PRICING.revision))
+
+    if not isinstance(temperature_text, str):
+        raise MeterConfigurationError("qc_temperature_not_canonical")
+    try:
+        temperature_decimal = Decimal(temperature_text)
+    except Exception:                                      # noqa: BLE001
+        raise MeterConfigurationError("qc_temperature_not_canonical") from None
+    try:
+        temperature = float(temperature_decimal)
+    except Exception:                                      # noqa: BLE001
+        raise MeterConfigurationError("qc_temperature_not_canonical") from None
+
+    if not temperature_decimal.is_finite() or not math.isfinite(temperature):
+        raise MeterConfigurationError("qc_temperature_not_canonical")
+    if temperature_text != repr(temperature):
+        # repr() of a CPython float is the shortest string that round-trips, so it is
+        # unique per float. Requiring equality makes the accepted text the ONLY spelling
+        # that can ship for a given runtime value: "0.10" is refused because repr(0.1) is
+        # "0.1", and "0" because repr(0.0) is "0.0". Without this, two contract byte
+        # sequences — two PROMPT_SHA256 values — could attest to one generation policy.
+        # REFUSAL, never normalization: silently rewriting the owner's entry would mean
+        # the ratified byte no longer matches what the owner submitted.
+        raise MeterConfigurationError("qc_temperature_not_canonical")
+
+    if type(cap_max_output_tokens) is not int or cap_max_output_tokens < 1:
+        raise MeterConfigurationError("qc_max_tokens_invalid")
+    if type(max_tokens) is not int:
+        # bool is an int subclass, so isinstance() would accept max_tokens=True and send
+        # 1 — a one-token ceiling that truncates every extraction while looking
+        # configured.
+        raise MeterConfigurationError("qc_max_tokens_invalid")
+    if not (1 <= max_tokens <= cap_max_output_tokens):
+        raise MeterConfigurationError("qc_max_tokens_invalid")
+
+    if not (Decimal(cap_min_text) <= temperature_decimal <= Decimal(cap_max_text)):
+        # Canonicality is not validity: "-3.0" and "999.0" are canonical repr() texts of
+        # finite floats. A merely well-formed constant still fails INSIDE a metered
+        # attempt, so the row is billed for a request the constants could have refused.
+        raise MeterConfigurationError("qc_temperature_out_of_range")
+
+    if not isinstance(pricing_version, str) \
+            or not _PRICING_VERSION_RE.fullmatch(pricing_version):
+        raise MeterConfigurationError("qc_pricing_version_invalid")
+    try:
+        # A semantic placeholder, not a syntactic one: "qc-rates-YYYY-MM-DD" contains no
+        # ____ sentinel, so it would ship looking valid. It must parse as a real date.
+        _date.fromisoformat(pricing_version[len("qc-rates-"):])
+    except ValueError:
+        raise MeterConfigurationError("qc_pricing_version_invalid") from None
+
+    for value in attestations:
+        if not isinstance(value, str) or not value.strip() or "____" in value:
+            raise MeterConfigurationError("qc_attestation_source_invalid")
+
+    if structured_output_supported is not True:
+        # Attempt 1 is pinned to schema-based structured output. If the pinned route and
+        # model do not support it the retry schedule is unsatisfiable — a ratification
+        # defect, not a runtime fallback: §3 forbids dropping to plain mode in-adapter.
+        raise MeterConfigurationError("qc_structured_output_unsupported")
+
+
+def validate_template_round_trip(contract_text: str, template_bytes: bytes) -> None:
+    """Round-trip, not containment: JSON escapes `"` and `\\`, so the template's bytes do
+    not appear as a contiguous run in the contract bytes. Parse, read, UTF-8 encode,
+    compare — that is what a hash over an escaped encoding can honestly promise. Strict
+    errors mean an unpaired surrogate raises here rather than shipping a replacement
+    character into a ratified hash."""
+    if json.loads(contract_text)["system_template"].encode("utf-8") != template_bytes:
+        raise MeterConfigurationError("qc_system_template_not_round_trippable")
+
+
+validate_constants()
 
 
 # ===========================================================================
@@ -282,14 +344,7 @@ _QC_REQUEST_CONTRACT_TEXT = json.dumps(
 )
 QC_REQUEST_CONTRACT_BYTES = _QC_REQUEST_CONTRACT_TEXT.encode("utf-8")
 
-if json.loads(_QC_REQUEST_CONTRACT_TEXT)["system_template"].encode("utf-8") \
-        != QC_SYSTEM_TEMPLATE_BYTES:
-    # The claimed property is ROUND-TRIP, not containment: JSON escapes " and \, so the
-    # template's bytes do not appear as a contiguous run in the contract bytes. Parse,
-    # read, UTF-8 encode, compare — that is what a hash over an escaped encoding can
-    # honestly promise. Strict errors also mean an unpaired surrogate raises here rather
-    # than shipping a replacement character into a ratified hash.
-    raise MeterConfigurationError("qc_system_template_not_round_trippable")
+validate_template_round_trip(_QC_REQUEST_CONTRACT_TEXT, QC_SYSTEM_TEMPLATE_BYTES)
 
 PROMPT_SHA256 = hashlib.sha256(QC_REQUEST_CONTRACT_BYTES).hexdigest()
 

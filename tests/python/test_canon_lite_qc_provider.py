@@ -967,7 +967,12 @@ def test_8_43_temperature_range_gate():
         assert not (lo <= d <= hi)                     # the gate refuses it
     # comparison runs in Decimal, never float
     src = Path(qc.__file__).read_text(encoding="utf-8")
-    assert "QC_TEMPERATURE_DECIMAL\n        <= Decimal(QC_CAP_TEMPERATURE_MAX_TEXT)" in src
+    assert "Decimal(cap_min_text) <= temperature_decimal <= Decimal(cap_max_text)" in src
+    # and the gate genuinely refuses each of them
+    for out_of_range in ("-3.0", "999.0", "2.5"):
+        with pytest.raises(meter.MeterConfigurationError) as e:
+            qc.validate_constants(temperature_text=out_of_range)
+        assert str(e.value) == "qc_temperature_out_of_range"
 
 
 def test_8_43a_max_tokens_type_and_bounds():
@@ -992,6 +997,80 @@ def test_8_43b_structured_output_support_is_required():
     assert qc.response_format_for(1)["type"] == "json_schema"
     assert qc.response_format_for(2) is None
     assert qc.response_format_for(3) is None
+
+
+def _gate(**over):
+    """Run the real import-time gate with one constant replaced, and return its code."""
+    with pytest.raises(meter.MeterConfigurationError) as e:
+        qc.validate_constants(**over)
+    return str(e.value)
+
+
+def test_gates_actually_reject_bad_constants():
+    """Mutation control found every import-time gate UNFALSIFIABLE: with the ratified
+    constants a gate never fires, so deleting one changed nothing and no test noticed.
+    These exercise each gate with a value it must refuse."""
+    qc.validate_constants()                                   # ratified values pass
+
+    # temperature canonicality — non-canonical spellings that collapse to the same float
+    for bad in ("0.10", "0.100", "1e-1", "0", "0.00", "00.0"):
+        assert _gate(temperature_text=bad) == "qc_temperature_not_canonical"
+    for bad in ("NaN", "Infinity", "-Infinity", "1e400", "not-a-number"):
+        assert _gate(temperature_text=bad) == "qc_temperature_not_canonical"
+
+    # temperature range — canonical but outside the attested capability
+    for bad in ("-3.0", "999.0", "2.5"):
+        assert _gate(temperature_text=bad) == "qc_temperature_out_of_range"
+
+    # max_tokens type and bounds; True is the case isinstance() would wave through.
+    # None is INCLUDED: validate_constants uses a private _UNSET sentinel rather than
+    # None precisely so that None — a plausible unset-constant defect — stays testable.
+    for bad in (True, False, 0, -1, 1.0, "16384", None,
+                qc.QC_CAP_MAX_OUTPUT_TOKENS + 1):
+        assert _gate(max_tokens=bad) == "qc_max_tokens_invalid"
+    for bad in (0, -1, True, "65536"):
+        assert _gate(cap_max_output_tokens=bad) == "qc_max_tokens_invalid"
+
+    # structured output must be exactly True — not truthy
+    for bad in (False, None, 1, "yes"):
+        assert _gate(structured_output_supported=bad) == "qc_structured_output_unsupported"
+
+    # pricing_version: syntactic AND semantic
+    for bad in ("qc-rates-YYYY-MM-DD", "qc-rates-2026-13-45", "2026-07-30", "", None):
+        assert _gate(pricing_version=bad) == "qc_pricing_version_invalid"
+
+    # attestation strings must be real
+    for bad in (("", "x", "y", "z"), ("   ", "x", "y", "z"),
+                ("has ____ sentinel", "x", "y", "z"), (None, "x", "y", "z")):
+        assert _gate(attestations=bad) == "qc_attestation_source_invalid"
+
+
+def test_template_round_trip_gate_actually_rejects():
+    """The gate must fire when the contract text and the template bytes disagree."""
+    qc.validate_template_round_trip(qc._QC_REQUEST_CONTRACT_TEXT,
+                                    qc.QC_SYSTEM_TEMPLATE_BYTES)
+    skewed = json.dumps({"system_template": "something else entirely"},
+                        ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with pytest.raises(meter.MeterConfigurationError) as e:
+        qc.validate_template_round_trip(skewed, qc.QC_SYSTEM_TEMPLATE_BYTES)
+    assert str(e.value) == "qc_system_template_not_round_trippable"
+    # and it passes for a template full of the characters JSON must escape
+    tricky = 'a"b\\c\x01d\U0001F600e'
+    ok = json.dumps({"system_template": tricky}, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"))
+    qc.validate_template_round_trip(ok, tricky.encode("utf-8"))
+
+
+def test_empty_string_content_is_a_failure_not_a_success():
+    """An empty 200 RAISES. Distinct from a missing choices list, which an earlier
+    version of this suite was the only case it actually covered."""
+    for blank in ("", "   ", "\n\t "):
+        adapter, client = _adapter()
+        client.content = blank                 # choices present, content blank
+        with pytest.raises(qc.QcProviderError) as e:
+            _run(adapter(_request()))
+        assert str(e.value) == "qc_provider_empty_response"
+        assert len(client.calls) == 1          # and no retry was hidden inside the row
 
 
 def test_8_43c_capability_constants_are_outside_the_contract():
