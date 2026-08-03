@@ -1307,18 +1307,25 @@ def _p0a_size_words(body: dict) -> object:
         return None
 
 
-def _canon_lite_l2_shadow_projection(
+async def _canon_lite_l2_shadow_projection(
     result: dict,
     *,
     mode: str,
     canon,
+    run_id: str = "",
+    job_uuid=None,
+    job_external_id: "Optional[str]" = None,
 ) -> "Optional[dict]":
-    """Build the pure L2a final-byte report at the terminal seam.
+    """Build the L2a final-byte report at the terminal seam, with claims when metered.
 
     This helper is deliberately a no-op before its literal mode gate: C11 requires flag
-    off to import no Canon Lite module. L2a has no production provider here. The separate
-    L2B-METER package must supply and account for extraction before any provider call is
-    wired into this seam.
+    off to import no Canon Lite module.
+
+    DG-4 wires the metered extractor here. The wave runs ONLY on the sole metered host
+    and only behind the runner's own frozen gate order (mode -> host sentinel -> config).
+    On the `python` service — api_direct and api_fallback — the runner refuses before
+    importing the adapter, so this seam behaves exactly as it did before DG-4 and
+    `claims_by_index` stays None.
     """
     if mode != "shadow":
         return None
@@ -1328,8 +1335,25 @@ def _canon_lite_l2_shadow_projection(
     if snapshot is None:
         return _cl2.report_telemetry(
             None, l2_status="absent", mode="shadow")
+
+    claims_by_index = None
+    try:
+        import canon_lite_qc_runner as _qcr          # imports no adapter by itself
+        claims_by_index = await _qcr.maybe_run_metered_wave(
+            snapshot, canon, run_id=run_id, job_uuid=job_uuid,
+            job_external_id=job_external_id)
+    except Exception:  # noqa: BLE001
+        # A metering fault must never change legacy narration delivery, and must never
+        # fabricate coverage: the report falls back to claims-free rather than to
+        # partial claims. Fixed code only — no provider exception, manuscript, prompt,
+        # response, tenant or job identifier is emitted.
+        claims_by_index = None
+        log.warning("canon lite l2: metered wave unavailable "
+                    "(error_code=l2_metered_wave_error)")
+
     report = _cl2.build_report(
-        snapshot, canon, mode="shadow", result=result, claims_by_index=None)
+        snapshot, canon, mode="shadow", result=result,
+        claims_by_index=claims_by_index)
     return _cl2.report_telemetry(
         report, l2_status="present", mode="shadow")
 
@@ -1634,8 +1658,10 @@ async def _run_narration_job_after_parity(
         _cl_l2_mode = "off"
     if _cl_l2_mode == "shadow":
         try:
-            _cl_l2_telemetry = _canon_lite_l2_shadow_projection(
-                result, mode=_cl_l2_mode, canon=_cl_l2_canon)
+            _cl_l2_telemetry = await _canon_lite_l2_shadow_projection(
+                result, mode=_cl_l2_mode, canon=_cl_l2_canon,
+                run_id=str(job_id or ""), job_uuid=job_uuid,
+                job_external_id=str(job_id or "") or None)
             log.info("canon lite l2: %s", _cl_l2_telemetry)
         except Exception:  # noqa: BLE001 - shadow cannot change legacy delivery
             # Fixed code only. No provider exception, manuscript, prompt, response,

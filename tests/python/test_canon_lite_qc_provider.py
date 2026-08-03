@@ -1160,6 +1160,192 @@ def test_approved_pins_are_what_the_suite_actually_ran_against():
     assert "httpx==0.28.1" in reqs
 
 
+# ===========================================================================
+# DG-4 caller wiring — the runner's frozen gate order
+# ===========================================================================
+
+import canon_lite_qc_runner as runner       # noqa: E402  (imports no adapter)
+
+ENV_ON = {"NARASI_CANON_LITE_MODE": "shadow",
+          "CANON_LITE_EXTRACTOR_CONCURRENCY": "2",
+          "L2B_MAX_INFLIGHT": "8",
+          qc.QC_API_KEY_ENV: "dummy-not-a-real-credential"}
+
+
+def test_runner_gate1_mode_off_refuses_before_anything():
+    meter.reset_host_role_for_tests()
+    try:
+        assert runner.metered_wave_permitted({"NARASI_CANON_LITE_MODE": "off"}) is False
+        assert runner.metered_wave_permitted({}) is False
+        # even with the host declared, mode off still refuses — gate 1 precedes gate 2
+        meter.declare_host_role("narration_worker")
+        assert runner.metered_wave_permitted({"NARASI_CANON_LITE_MODE": "off"}) is False
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_runner_gate2_refuses_off_host_even_with_mode_on():
+    """The `python` service runs the same job code via api_direct/api_fallback and has no
+    concurrency bound, so its term in the max_inflight formula is undefined."""
+    meter.reset_host_role_for_tests()
+    try:
+        assert runner.metered_wave_permitted(ENV_ON) is False
+        meter.declare_host_role("narration_worker")
+        assert runner.metered_wave_permitted(ENV_ON) is True
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_runner_refusal_reads_no_config_and_imports_no_adapter():
+    """Gate order is mode -> host -> config, and the order is load-bearing: the module
+    ships to `python` where CANON_LITE_EXTRACTOR_CONCURRENCY is intentionally absent, so
+    reading config before the host check would crash a host that never meters."""
+    code = (
+        "import sys, asyncio\n"
+        "sys.path.insert(0, %r)\n"
+        "import canon_lite_qc_runner as r\n"
+        # mode ON but no host sentinel, and NO concurrency var present at all
+        "env = {'NARASI_CANON_LITE_MODE': 'shadow'}\n"
+        "assert r.metered_wave_permitted(env) is False\n"
+        "out = asyncio.run(r.maybe_run_metered_wave(None, None, run_id='r',"
+        " job_uuid=None, job_external_id=None, environ=env))\n"
+        "assert out is None, out\n"
+        "assert 'canon_lite_qc_provider' not in sys.modules\n"
+        "print('clean')\n"
+    ) % str(Path(qc.__file__).parent)
+    import subprocess
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert "clean" in res.stdout
+
+
+class _FakeRedisClient:
+    """In-memory stand-in for the in-flight counter. Opens no socket.
+
+    Without one, MeteredProvider fails SAFE — no redis means it cannot bound in-flight
+    calls, so it arms the kill and blocks every attempt. That is correct production
+    behaviour and is why this fake is required to exercise the success path at all.
+    """
+
+    def __init__(self):
+        self.store = {}
+
+    async def get(self, key):
+        return self.store.get(key)
+
+    async def set(self, key, value, **kw):
+        self.store[key] = value
+        return True
+
+    async def incr(self, key):
+        self.store[key] = int(self.store.get(key, 0)) + 1
+        return self.store[key]
+
+    async def decr(self, key):
+        self.store[key] = int(self.store.get(key, 0)) - 1
+        return self.store[key]
+
+    async def delete(self, key):
+        self.store.pop(key, None)
+        return 1
+
+
+_FAKE_REDIS = _FakeRedisClient()
+
+
+def _FakeRedis():
+    return _FAKE_REDIS
+
+
+def test_runner_runs_exactly_one_reconciled_wave():
+    """Both gates pass: one wave, metered, with the ratified provenance."""
+    meter.reset_host_role_for_tests()
+    _FAKE_REDIS.store.clear()
+    begins = []
+
+    class FakeSink:
+        async def begin(self, context, *, unit_index, attempt_ordinal):
+            begins.append((context.phase, context.provider, context.model_upstream,
+                           str(context.pricing_version), unit_index, attempt_ordinal))
+            # `outcome` is REQUIRED: without it MeteredProvider treats the row as
+            # begin_write_failed and arms the kill, which then blocks every later
+            # attempt process-wide.
+            return {"attempt_id": f"a{len(begins)}", "outcome": "inserted"}
+
+        async def finish(self, attempt_id, state):
+            return {"attempt_id": attempt_id, "state": state}
+
+        async def resolve(self, attempt_id, usage):
+            # `outcome` must be applied/already_same; anything else arms the kill and
+            # every subsequent attempt in the process is blocked.
+            return {"attempt_id": attempt_id, "outcome": "applied"}
+
+        async def arm(self, reason_code):
+            return {}
+
+        async def is_armed(self):
+            return False
+
+    # _process_killed is a MODULE GLOBAL. One armed kill in an earlier test would block
+    # every attempt here and the failure would look like a wiring bug.
+    meter._process_killed = False
+    try:
+        meter.declare_host_role("narration_worker")
+        adapter, client = _adapter()
+        claims = _run(runner.maybe_run_metered_wave(
+            _snapshot(), _authoritative_canon(),
+            run_id="run-1", job_uuid="00000000-0000-4000-8000-000000000001",
+            job_external_id="job-1", environ=ENV_ON,
+            sink=FakeSink(), adapter_factory=lambda: adapter,
+            redis_getter=_FakeRedis))
+    finally:
+        meter.reset_host_role_for_tests()
+
+    assert claims is not None and len(claims) == 2       # one artefact per chapter
+    for artifact in claims.values():
+        assert artifact.prompt_sha256 == RATIFIED_PROMPT_SHA256
+        assert artifact.model_version == qc.QC_MODEL_UPSTREAM
+        assert artifact.canon_sha256 != cl.UNKNOWN
+    # exactly one metered row per physical attempt, on the only catalogued phase
+    assert len(begins) == len(client.calls) == 2
+    for phase, provider, model, pricing, _idx, ordinal in begins:
+        assert phase == "canon_lite_l2_extract"
+        assert provider == qc.QC_PROVIDER_NAME
+        assert model == qc.QC_MODEL_UPSTREAM
+        assert pricing == qc.QC_PRICING.pricing_version
+        assert ordinal == 1                              # no hidden retries
+
+
+def test_runner_missing_credential_raises_rather_than_skipping():
+    """Skipping would produce a report that looks measured but called nothing."""
+    meter.reset_host_role_for_tests()
+    env = dict(ENV_ON)
+    env.pop(qc.QC_API_KEY_ENV)
+    try:
+        meter.declare_host_role("narration_worker")
+        with pytest.raises(RuntimeError) as e:
+            _run(runner.maybe_run_metered_wave(
+                _snapshot(), _authoritative_canon(), run_id="r", job_uuid=None,
+                job_external_id=None, environ=env))
+        assert "api_key_missing" in str(e.value)
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_narration_seam_contains_the_metered_wave_and_survives_its_failure():
+    """The seam must call the runner, and a metering fault must not change delivery."""
+    seam = (Path(qc.__file__).parent / "narration_api.py").read_text(encoding="utf-8")
+    assert "canon_lite_qc_runner" in seam
+    assert "maybe_run_metered_wave" in seam
+    # the import is function-local, never module-level, on this always-loaded module
+    for line in seam.splitlines():
+        assert not line.startswith(("import canon_lite_qc_runner",
+                                    "from canon_lite_qc_runner")), line
+    # and a failure inside the wave falls back to claims-free, not partial claims
+    assert "claims_by_index = None" in seam
+    assert "l2_metered_wave_error" in seam
+
+
 # ---------------------------------------------------------------------------
 # helpers used above
 # ---------------------------------------------------------------------------

@@ -249,6 +249,12 @@ def test_module_is_dark_and_imports_no_provider_client():
         # The adapter, which raises the ratified configuration error and returns the
         # ratified usage type. No cycle: the meter does not import the provider.
         "canon_lite_qc_provider.py": {"MeterConfigurationError", "ProviderUsage"},
+        # The runner — the ONLY sanctioned caller. It assembles the metered chain, so it
+        # legitimately touches the machinery the worker must not. Its own gate order is
+        # asserted separately in the DG-4 suite.
+        "canon_lite_qc_runner.py": {
+            "metered_host_ok", "AttemptContext", "MeteredProvider", "QcUsageSink",
+            "load_extractor_concurrency", "load_max_inflight"},
     }
     for path in (REPO / "python").rglob("*.py"):
         if path.name == "canon_lite_qc_meter.py":

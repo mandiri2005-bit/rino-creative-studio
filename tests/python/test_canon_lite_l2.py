@@ -1028,8 +1028,11 @@ def test_real_narration_helper_materializes_and_reports_without_mutating_result(
         "book": result["book"],
         "chapters": [dict(result["chapters"][0])],
     }
-    telemetry = na._canon_lite_l2_shadow_projection(
-        result, mode="shadow", canon=canon)
+    # DG-4 made this helper async: the metered wave is awaited inside it. On this host
+    # the runner's gates refuse (no host sentinel), so claims_by_index stays None and
+    # the projection is byte-identical to the pre-DG-4 behaviour.
+    telemetry = asyncio.run(na._canon_lite_l2_shadow_projection(
+        result, mode="shadow", canon=canon))
     assert result == before
     assert telemetry["l2_status"] == "present"
     assert telemetry["mode"] == "shadow"
@@ -1050,8 +1053,8 @@ def test_flag_off_helper_returns_before_any_l2_import(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded)
-    assert na._canon_lite_l2_shadow_projection(
-        {"book": NO_PREFIX}, mode="off", canon=None) is None
+    assert asyncio.run(na._canon_lite_l2_shadow_projection(
+        {"book": NO_PREFIX}, mode="off", canon=None)) is None
 
 
 def test_l2_final_seam_is_after_post_gates_dedup_and_before_persistence():
@@ -1066,6 +1069,9 @@ def test_l2_final_seam_is_after_post_gates_dedup_and_before_persistence():
     )
 
     def called_name(call):
+        # DG-4 wraps the projection call in `await`; ast.Call is still the node we
+        # count, so ordering is unaffected — but the helper is resolved through the
+        # Await node's value, not the statement.
         return call.func.id if isinstance(call.func, ast.Name) else None
 
     calls = [node for node in ast.walk(job_body) if isinstance(node, ast.Call)]
@@ -1142,7 +1148,7 @@ def test_shared_real_job_body_consumes_private_canon_before_persist_and_finalize
     monkeypatch.setattr(na.db, "get_known_bad_claims", noop)
     monkeypatch.setattr(na.db, "get_known_good_claims", noop)
     if projection_fails:
-        def fail_projection(*_args, **_kwargs):
+        async def fail_projection(*_args, **_kwargs):
             raise RuntimeError("provider-or-tenant-prose-must-not-leak")
         monkeypatch.setattr(
             na, "_canon_lite_l2_shadow_projection", fail_projection)
