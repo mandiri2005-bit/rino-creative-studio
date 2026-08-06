@@ -224,22 +224,29 @@ export async function recordCreditedPaymentEvent({
   // Out-of-order recovery: if a refund/chargeback for this payment arrived BEFORE this
   // anchor existed, it was queued in orphan_reversals — apply each now that we can resolve it.
   if (providerPaymentId) {
-    try {
-      const orph = await query(
-        `SELECT id, refund_op_id, kind, refund_amount, raw_event FROM orphan_reversals
-          WHERE provider=$1 AND provider_payment_id=$2 AND applied_at IS NULL`,
-        [provider, providerPaymentId],
-      );
-      for (const o of orph.rows) {
-        const r = await reverse_entitlement({
-          provider, providerPaymentId, refundOpId: o.refund_op_id, kind: o.kind,
-          refundAmount: o.refund_amount, rawEvent: o.raw_event || {},
-        });
-        if (r.reversed || ["already_reversed", "not_credited"].includes(r.reason)) {
-          await query(`UPDATE orphan_reversals SET applied_at=now() WHERE id=$1`, [o.id]);
-        }
+    // Do NOT swallow. This function is the ONLY committed consumer of unapplied
+    // orphan_reversals rows, so a swallowed failure strands the clawback permanently while the
+    // route still acks 200. THROW → webhook 500s → Dodo retries. Both steps are idempotent
+    // (reverse_entitlement is idempotent on refundOpId; the applied_at UPDATE is a no-op on
+    // replay), so the retry is safe.
+    const orph = await query(
+      `SELECT id, refund_op_id, kind, refund_amount, raw_event FROM orphan_reversals
+        WHERE provider=$1 AND provider_payment_id=$2 AND applied_at IS NULL`,
+      [provider, providerPaymentId],
+    );
+    for (const o of orph.rows) {
+      const r = await reverse_entitlement({
+        provider, providerPaymentId, refundOpId: o.refund_op_id, kind: o.kind,
+        refundAmount: o.refund_amount, rawEvent: o.raw_event || {},
+      });
+      if (r.reversed || ["already_reversed", "not_credited"].includes(r.reason)) {
+        await query(`UPDATE orphan_reversals SET applied_at=now() WHERE id=$1`, [o.id]);
+      } else {
+        // Unrecognised outcome (incl. a re-queued orphan_queued): leaving the row pending
+        // behind a 200 would strand it, since nothing else scans unapplied orphans.
+        throw new Error(`orphan_apply_unresolved op=${o.refund_op_id} reason=${r.reason || "unknown"}`);
       }
-    } catch (e) { console.warn(`[record] orphan-reversal apply failed for ${providerPaymentId}: ${e.message}`); }
+    }
   }
 }
 
@@ -266,15 +273,19 @@ export async function reverse_entitlement({
   if (!row) {
     // OUT-OF-ORDER: the charge's payment_events row isn't recorded yet (refund delivered
     // before payment.succeeded). QUEUE the reversal intent — recordCreditedPaymentEvent
-    // applies it when the anchor lands. (Throwing-to-retry was bounded to ~5min by the
-    // webhook timestamp freshness check — retries reuse the original timestamp — so the
-    // clawback could be permanently lost.)
+    // applies it when the anchor lands. NOTE: Dodo follows the Standard Webhooks spec, so a
+    // retry carries a FRESH attempt timestamp and is re-signed; the ±5min freshness check does
+    // NOT bound retries. This queue exists for genuine out-of-order delivery, which Dodo
+    // documents explicitly ("events may arrive out of order"), not as a timestamp workaround.
     if (providerPaymentId) {
+      // Do NOT swallow the INSERT. If the intent cannot be durably queued there is no reversal
+      // record at all, and returning "orphan_queued" would be a false claim of durability.
+      // THROW → webhook 500s → Dodo retries; ON CONFLICT DO NOTHING keeps replay safe.
       await query(
         `INSERT INTO orphan_reversals (provider, provider_payment_id, refund_op_id, kind, refund_amount, raw_event)
          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (provider, refund_op_id) DO NOTHING`,
         [provider, providerPaymentId, refundOpId, kind, Number(refundAmount) || null, stringifyRedacted(rawEvent || {})],
-      ).catch((e) => console.warn("[reverse] orphan queue failed:", e.message));
+      );
       console.warn(`[reverse] orphan queued — no anchor yet for ${provider} ${providerPaymentId} op=${refundOpId}`);
       return { reversed: false, reason: "orphan_queued" };
     }
@@ -303,7 +314,12 @@ export async function reverse_entitlement({
     const remaining = granted - already;
     if (remaining <= 0) {                                  // already fully reversed → idempotent no-op
       await client.query("COMMIT");
-      return { reversed: false, reason: "already_reversed", credits: 0 };
+      // L2C: the established idempotent-replay contract and its integration test
+      // require an explicit `applied: false` on this terminal no-op. The amount-aware
+      // rewrite introduced this early return without that field, producing
+      // `applied: undefined`. Financial behaviour is unchanged. (Other early returns —
+      // orphan_queued, not_found, not_credited — do not carry `applied`; unchanged here.)
+      return { reversed: false, applied: false, reason: "already_reversed", credits: 0 };
     }
     // AMOUNT-AWARE: a PARTIAL refund reverses only its proportion of the grant. A CHARGEBACK
     // (lost dispute) returns the ENTIRE payment → always reverse the remaining (ignore the

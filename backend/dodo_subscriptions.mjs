@@ -346,21 +346,19 @@ async function _setTenantPlan(tenantId, plan) {
     const r = await query(`UPDATE tenants SET plan=$2 WHERE id=$1`, [tenantId, plan], tenantId);
     if (r.rowCount === 0) console.error(`[dodo_sub] tenants.plan NOT updated (no row) t=${tenantId} plan=${plan}`);
   } catch (e) {
-    // PERMANENT vs TRANSIENT. A CHECK violation (code 23514 — a plan name not in
-    // tenants_plan_check) can NEVER succeed on retry, so re-throwing would make the
-    // webhook 500 forever (infinite retry storm) and never credit the customer. Swallow
-    // it LOUDLY (tier left stale until the plan is added to the constraint — see
-    // assertGlobalConfigLoaded). Any OTHER error (deadlock, pool exhaustion) is transient
-    // → re-throw so the webhook 500s and Dodo retries the (idempotent) event.
+    // FAIL CLOSED. A CHECK violation (23514 — a plan name not in tenants_plan_check) cannot
+    // succeed on retry, but swallowing it was worse than the retry storm it avoided: _upsertSub
+    // had already committed, and the caller then ran reset_entitlement, so credits MOVED while
+    // tenants.plan stayed stale — an entitlement/plan divergence acknowledged with a 200 and no
+    // automatic repair. Credits must never commit against a plan tier we could not durably set.
+    // Throwing aborts the handler BEFORE the reset, so the event is bounded by Dodo's documented
+    // 8-attempt retry horizon and then surfaces as a failed delivery, not as silent divergence.
+    // Remediation is unchanged: add the plan_key to tenants_plan_check, then replay.
     if (e.code === "23514") {
-      // F39 CRITICAL: non-retryable CHECK violation leaves the tenant on a stale plan tier.
-      // Emit a structured, greppable line so ops can alert on it and ship a migration
-      // adding the unknown plan_key to tenants_plan_check. Swallow is intentional but LOUD.
       console.error(
-        `[dodo_sub][CRITICAL] tenants_plan_check violation plan_key='${plan}' tenant_id='${tenantId}' code=23514 constraint=tenants_plan_check action=SWALLOW impact=tier_stale remediation=add_plan_key_migration`,
+        `[dodo_sub][CRITICAL] tenants_plan_check violation plan_key='${plan}' tenant_id='${tenantId}' code=23514 constraint=tenants_plan_check action=FAIL_CLOSED impact=no_credit_mutation remediation=add_plan_key_migration_then_replay`,
         { event: "dodo_sub.plan_check_violation", severity: "critical", plan_key: plan, tenant_id: tenantId, pg_code: "23514", constraint: "tenants_plan_check", detail: e?.detail || null, message: e?.message || null }
       );
-      return;
     }
     throw e;
   }
@@ -688,27 +686,36 @@ export async function handleTopupPayment({ payload, webhookId, rawEvent }) {
   const amount = topupPackCredits(packKey);
   if (!(amount > 0)) return { handled: false, reason: "zero_credits", packKey };
   const expiresAt = await _computeTopupExpiry(tenantId);
-  // Idempotency keyed on the IMMUTABLE payment_id (not the per-delivery webhook-id):
-  // a redelivery of the same payment under a new webhook-id can no longer double-credit.
-  const payId = data.payment_id || webhookId;
+  // ANCHOR IDENTITY: the payment anchor is (provider, provider_payment_id) and NOTHING else.
+  // webhook_id is RECEIPT identity (per-delivery) and must never stand in for an anchor — the
+  // old `data.payment_id || webhookId` fallback minted a different op_id per delivery, so two
+  // deliveries of one payment could double-credit. Missing anchor ⇒ FAIL CLOSED: no credit
+  // mutation at all. Throw so the webhook 500s and Dodo retries; a payment.succeeded that never
+  // carries a payment_id surfaces as an exhausted retry rather than an unanchored grant.
+  const payId = data.payment_id;
+  if (!payId) {
+    throw new Error(`topup_missing_payment_anchor id=${webhookId} tenant=${tenantId} pack=${packKey}`);
+  }
   const res = await topup_grant({
     userId: md.user_id || null, tenantId, amount,
     opId: `dodo_topup:${payId}`, expiresAt,
-    meta: { provider: "dodo", pack_key: packKey, payment_id: data.payment_id || null, webhook_id: webhookId },
+    meta: { provider: "dodo", pack_key: packKey, payment_id: payId, webhook_id: webhookId },
   });
-  // Record a credited payment_events row so a later refund/chargeback on this top-up
-  // can be resolved (by provider_payment_id) and clawed back. Does NOT move credits.
-  if (res.applied !== false && data.payment_id) {
-    // Do NOT swallow — a record failure must THROW so the webhook 500s and Dodo retries
-    // (topup_grant + record are both idempotent → replay-safe). Swallowing left the topup
-    // with no anchor → its later refund/chargeback would claw back ZERO.
-    await recordCreditedPaymentEvent({
-      userId: md.user_id || null, tenantId, provider: "dodo", idempotencyKey: `topup:${payId}`,
-      providerPaymentId: data.payment_id, planKey: packKey,
-      amount: data.total_amount ?? null, currency: data.currency ?? null,
-      creditsGranted: amount, bucket: "topup", rawEvent: payload,
-    });
-  }
+  // Record the credited payment_events anchor so a later refund/chargeback on this top-up can
+  // be resolved by provider_payment_id and clawed back. Does NOT move credits.
+  //
+  // UNCONDITIONAL on the grant result. `res.applied === false` means topup_grant was an
+  // idempotent no-op — which is exactly the retry case after a failed anchor write — so gating
+  // the anchor on `applied !== false` disabled recovery on the only delivery that could repair
+  // it, leaving a credited top-up whose later refund would claw back ZERO. recordCreditedPaymentEvent
+  // is ON CONFLICT DO NOTHING, so repeating it is safe. Do NOT swallow: a record failure must
+  // THROW so the webhook 500s and Dodo retries.
+  await recordCreditedPaymentEvent({
+    userId: md.user_id || null, tenantId, provider: "dodo", idempotencyKey: `topup:${payId}`,
+    providerPaymentId: payId, planKey: packKey,
+    amount: data.total_amount ?? null, currency: data.currency ?? null,
+    creditsGranted: amount, bucket: "topup", rawEvent: payload,
+  });
   return { handled: true, action: "topup", packKey, amount, expiresAt, ...res };
 }
 
