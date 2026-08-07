@@ -157,8 +157,14 @@ test("REALDB-3 tenants_plan_check 23514 fails closed with zero entitlement mutat
 
     assert.deepEqual(await bal(T), before, "balance and bucket balances unchanged");
     assert.equal(await ledgerAll(T), ledgerBefore, "zero entitlement/reset ledger operations");
-    // NOTE: the dodo_subscriptions row may already have committed via _upsertSub.
-    // That atomicity defect is TRANCHE 2 and is deliberately NOT asserted here.
+    // TRANCHE 2 CLOSED THIS GAP. This assertion did not exist at tranche 1, where the note
+    // here read "the dodo_subscriptions row may already have committed via _upsertSub" —
+    // true then, because the upsert and the tenants.plan mirror were two auto-commit
+    // statements. _applySubTransition now commits them together, so a 23514 must leave NO
+    // subscription row behind either. Fail-closed is now fail-closed AND whole.
+    const subRows = Number((await q(
+      "SELECT count(*) c FROM dodo_subscriptions WHERE dodo_subscription_id=$1", [SUBID])).rows[0].c);
+    assert.equal(subRows, 0, "subscription upsert must be ROLLED BACK with the failed plan set");
   } finally {
     await q("DROP TRIGGER IF EXISTS _t_plan_check ON tenants").catch(() => {});
     await q("DROP FUNCTION IF EXISTS _t_plan_check()").catch(() => {});

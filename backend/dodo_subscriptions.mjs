@@ -31,7 +31,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "url";
 import { dodo, isConfigured, railEnabled, verifyEvent } from "./dodo.mjs";
 import { reset_entitlement, topup_grant, mirrorCreditDelta, recordCreditedPaymentEvent } from "./payments_core.mjs";
-import { query } from "./db.js";
+import { query, pool, setTenantContext } from "./db.js";
 
 // ── Billing mode (deployment switch) ──────────────────────────────────────────
 // Subscription logic is INERT unless explicitly enabled. Default = one_time so a
@@ -314,10 +314,34 @@ async function _resolveTenant(data) {
     : { tenantId: null, userId: null, planKey: null };
 }
 
-// Idempotent upsert of the subscription row (RLS-FORCE → query() sets tenant ctx).
-async function _upsertSub({ tenantId, userId, planKey, subId, customerId, status, periodStart, periodEnd, cancelAtEnd }) {
-  await query(
-    `INSERT INTO dodo_subscriptions
+// Idempotent upsert of the subscription row, plus — when the caller has a plan opinion —
+// the tenants.plan mirror, COMMITTED TOGETHER IN ONE TRANSACTION.
+//
+// ATOMICITY (L2C tranche 2). These were two independent auto-commit statements. Tranche 1
+// made the tenants.plan failure fail closed, which correctly stopped the credit reset that
+// followed — but the subscription upsert had ALREADY COMMITTED by then, so a 23514 left
+// dodo_subscriptions carrying the new plan_key while tenants.plan stayed on the old tier.
+// Credits no longer moved, which was the dangerous half; the divergence itself survived, and
+// it was still acked to Dodo as a retryable failure. One transaction means the transition
+// lands whole or not at all. Everything the caller does AFTER this returns — reset_entitlement
+// above all — remains outside it on purpose: credits move through their own idempotent,
+// separately-keyed path and must not be bound to this txn's lifetime.
+//
+// `tenantPlan === null` means "do not touch tenants.plan", and that is a real distinction,
+// not an omission: on_hold and cancelled deliberately leave the tier alone (access persists
+// through dunning / until period end), and the catch-all sync paths have no plan opinion.
+//
+// RLS-FORCE: the tenant context is set ONCE for the transaction, covering both statements.
+async function _applySubTransition({
+  tenantId, userId, planKey, subId, customerId, status,
+  periodStart, periodEnd, cancelAtEnd, tenantPlan = null,
+}) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await setTenantContext(client, tenantId);
+    await client.query(
+      `INSERT INTO dodo_subscriptions
        (tenant_id, user_id, plan_key, dodo_subscription_id, dodo_customer_id, status,
         current_period_start, current_period_end, cancel_at_period_end)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -330,38 +354,48 @@ async function _upsertSub({ tenantId, userId, planKey, subId, customerId, status
         current_period_end   = COALESCE(EXCLUDED.current_period_end, dodo_subscriptions.current_period_end),
         cancel_at_period_end = EXCLUDED.cancel_at_period_end,
         updated_at           = now()`,
-    [tenantId, userId, planKey, subId, customerId, status, periodStart, periodEnd, !!cancelAtEnd],
-    tenantId,
-  );
-}
+      [tenantId, userId, planKey, subId, customerId, status, periodStart, periodEnd, !!cancelAtEnd],
+    );
 
-// Mirror the active plan onto tenants.plan — the tier source the spend-gate reads
-// (python _tier_for → ensure_tier → tier_at_least). Active/renewed/plan_changed set
-// the paid tier so the user can reach that tier's models; expiry sets 'free'. on_hold
-// and cancelled intentionally leave the plan untouched (access persists during dunning
-// / until period end). With config-driven TIER_RANK, the plan name IS the tier name.
-async function _setTenantPlan(tenantId, plan) {
-  if (!tenantId || !plan) return;
-  try {
-    const r = await query(`UPDATE tenants SET plan=$2 WHERE id=$1`, [tenantId, plan], tenantId);
-    if (r.rowCount === 0) console.error(`[dodo_sub] tenants.plan NOT updated (no row) t=${tenantId} plan=${plan}`);
+    // Mirror the active plan onto tenants.plan — the tier source the spend-gate reads
+    // (python _tier_for → ensure_tier → tier_at_least). Active/renewed/plan_changed set the
+    // paid tier so the user can reach that tier's models; expiry sets 'free'. on_hold and
+    // cancelled pass tenantPlan=null and are skipped here. With config-driven TIER_RANK, the
+    // plan name IS the tier name.
+    if (tenantId && tenantPlan) {
+      const r = await client.query(`UPDATE tenants SET plan=$2 WHERE id=$1`, [tenantId, tenantPlan]);
+      if (r.rowCount === 0) console.error(`[dodo_sub] tenants.plan NOT updated (no row) t=${tenantId} plan=${tenantPlan}`);
+    }
+
+    await client.query("COMMIT");
   } catch (e) {
-    // FAIL CLOSED. A CHECK violation (23514 — a plan name not in tenants_plan_check) cannot
-    // succeed on retry, but swallowing it was worse than the retry storm it avoided: _upsertSub
-    // had already committed, and the caller then ran reset_entitlement, so credits MOVED while
-    // tenants.plan stayed stale — an entitlement/plan divergence acknowledged with a 200 and no
-    // automatic repair. Credits must never commit against a plan tier we could not durably set.
-    // Throwing aborts the handler BEFORE the reset, so the event is bounded by Dodo's documented
-    // 8-attempt retry horizon and then surfaces as a failed delivery, not as silent divergence.
-    // Remediation is unchanged: add the plan_key to tenants_plan_check, then replay.
+    // FAIL CLOSED, and now WHOLE. A CHECK violation (23514 — a plan name not in
+    // tenants_plan_check) cannot succeed on retry. Tranche 1 stopped swallowing it, which
+    // kept credits from moving against a tier we could not durably set. Tranche 2 rolls the
+    // subscription upsert back with it, so the event leaves NO partial state at all: the
+    // handler aborts before reset_entitlement, the transaction discards the dodo_subscriptions
+    // write, and Dodo's documented 8-attempt retry horizon surfaces it as a failed delivery
+    // rather than silent divergence. Remediation is unchanged: add the plan_key to
+    // tenants_plan_check, then replay.
+    // ROLLBACK is guarded so a dead connection cannot mask the original error.
+    await client.query("ROLLBACK").catch(() => {});
     if (e.code === "23514") {
       console.error(
-        `[dodo_sub][CRITICAL] tenants_plan_check violation plan_key='${plan}' tenant_id='${tenantId}' code=23514 constraint=tenants_plan_check action=FAIL_CLOSED impact=no_credit_mutation remediation=add_plan_key_migration_then_replay`,
-        { event: "dodo_sub.plan_check_violation", severity: "critical", plan_key: plan, tenant_id: tenantId, pg_code: "23514", constraint: "tenants_plan_check", detail: e?.detail || null, message: e?.message || null }
+        `[dodo_sub][CRITICAL] tenants_plan_check violation plan_key='${tenantPlan}' tenant_id='${tenantId}' code=23514 constraint=tenants_plan_check action=FAIL_CLOSED impact=no_credit_mutation,subscription_upsert_rolled_back remediation=add_plan_key_migration_then_replay`,
+        { event: "dodo_sub.plan_check_violation", severity: "critical", plan_key: tenantPlan, tenant_id: tenantId, pg_code: "23514", constraint: "tenants_plan_check", detail: e?.detail || null, message: e?.message || null }
       );
     }
     throw e;
+  } finally {
+    client.release();
   }
+}
+
+// The subscription upsert on its own, for the transitions that deliberately hold no opinion
+// about tenants.plan (on_hold, cancelled, failed, the catch-all sync). Same transaction
+// machinery, tenantPlan omitted.
+async function _upsertSub(args) {
+  return _applySubTransition({ ...args, tenantPlan: null });
 }
 
 // ── TASK 4: handle a verified subscription event (the INTI) ───────────────────
@@ -411,9 +445,8 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
     case "subscription.active": {
       // First successful charge → record + grant the first period's credits (RESET).
       const plan = eventPlan || metaPlan;
-      await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
-                         status: status || "active", periodStart, periodEnd, cancelAtEnd });
-      await _setTenantPlan(tenantId, plan);
+      await _applySubTransition({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
+                                  status: status || "active", periodStart, periodEnd, cancelAtEnd, tenantPlan: plan });
       let reset = null;
       // Do NOT silently skip the credit grant when periodKey is null (Dodo payload
       // missing both billing dates): that left a paying customer on the paid tier with
@@ -429,9 +462,8 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
     case "subscription.renewed": {
       // New billing cycle → refresh credits to the plan amount (use-it-or-lose-it).
       const plan = eventPlan || metaPlan;
-      await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
-                         status: status || "active", periodStart, periodEnd, cancelAtEnd });
-      await _setTenantPlan(tenantId, plan);
+      await _applySubTransition({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
+                                  status: status || "active", periodStart, periodEnd, cancelAtEnd, tenantPlan: plan });
       let reset = null;
       if (plan && !periodKey) console.error(`[dodo_sub] renewed sub=${subId} MISSING billing dates → crediting under :noperiod:${webhookId}, investigate`);
       if (unknownProduct) console.error(`[dodo_sub] renewed sub=${subId} UNKNOWN product_id=${data?.product_id} → NOT crediting (map the product in DODO_PRODUCT_*); keeping current credits`);
@@ -462,9 +494,8 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
           _f3OldPlan = _op.rows[0]?.plan_key || null;
         } catch (e) { console.error(`[dodo_sub] F3 old-plan lookup failed sub=${subId}: ${e?.message || e}`); }
       }
-      await _upsertSub({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
-                         status: status || "active", periodStart, periodEnd, cancelAtEnd });
-      await _setTenantPlan(tenantId, plan);
+      await _applySubTransition({ tenantId, userId, planKey: plan, subId, customerId: data?.customer?.customer_id || null,
+                                  status: status || "active", periodStart, periodEnd, cancelAtEnd, tenantPlan: plan });
       let reset = null;
       if (unknownProduct) {
         // Unknown new product → can't know its credit allowance. Log loudly + DON'T grant
@@ -512,9 +543,9 @@ export async function handleSubscriptionEvent({ payload, webhookId, rawEvent }) 
     case "subscription.expired": {
       // TERMINAL → downgrade to Free: plan=free, credits → 0 (Free 500 is signup-only,
       // never re-granted). Access falls back to the Free tier (cheap models) elsewhere.
-      await _upsertSub({ tenantId, userId, planKey: "free", subId, customerId: data?.customer?.customer_id || null,
-                         status: "expired", periodStart, periodEnd, cancelAtEnd });
-      await _setTenantPlan(tenantId, "free");                  // downgrade tier source → Free models only
+      // Downgrade tier source → Free models only, in the SAME transaction as the upsert.
+      await _applySubTransition({ tenantId, userId, planKey: "free", subId, customerId: data?.customer?.customer_id || null,
+                                  status: "expired", periodStart, periodEnd, cancelAtEnd, tenantPlan: "free" });
       const reset = await reset_entitlement({
         userId, tenantId, targetCredits: 0, opId: `dodo_sub:${subId}:expired`, reason: "lapse",
         meta: { provider: "dodo_sub", subscription_id: subId, plan_key: "free", webhook_id: webhookId, event: type },
@@ -622,12 +653,11 @@ export async function reconcileStuckSubscriptions({ graceDays = 3, limit = 200 }
       // may have re-activated it since the unlocked cross-tenant scan. Skip if no longer dead.
       const cur = await query(`SELECT status FROM dodo_subscriptions WHERE dodo_subscription_id=$1 AND tenant_id=$2`, [row.dodo_subscription_id, row.tenant_id], row.tenant_id);
       if (cur.rows[0]?.status === "active" || cur.rows[0]?.status === "pending") continue;
-      await _upsertSub({
+      await _applySubTransition({
         tenantId: row.tenant_id, userId: row.user_id, planKey: "free",
         subId: row.dodo_subscription_id, customerId: null, status: "expired",
-        periodStart: null, periodEnd: null, cancelAtEnd: true,
+        periodStart: null, periodEnd: null, cancelAtEnd: true, tenantPlan: "free",
       });
-      await _setTenantPlan(row.tenant_id, "free");
       await reset_entitlement({
         userId: row.user_id, tenantId: row.tenant_id, targetCredits: 0,
         // SAME op_id as the webhook subscription.expired path so a webhook+cron race for

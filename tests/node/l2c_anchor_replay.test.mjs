@@ -52,7 +52,27 @@ mock.module("../../backend/db.js", {
       if (behave.query) return behave.query(sql, params);
       return { rows: [], rowCount: 1 };
     },
-    pool: { connect: async () => { throw new Error("pool.connect must not be reached in unit tests"); }, end: async () => {} },
+    // TRANCHE 2: the subscription transition (_applySubTransition) now commits the
+    // dodo_subscriptions upsert and the tenants.plan mirror in ONE transaction, so it checks
+    // out a client instead of calling query(). This fake routes client statements through the
+    // SAME calls/behave hooks, so existing expectations still hold and the transaction verbs
+    // (BEGIN/COMMIT/ROLLBACK) become assertable. It used to throw on purpose; that guard's
+    // premise — "no pooled client in unit tests" — is what tranche 2 deliberately changed.
+    pool: {
+      connect: async () => ({
+        query: async (sql, params) => {
+          const s = String(sql).replace(/\s+/g, " ").trim();
+          calls.query.push({ sql: s, params });
+          if (/^(BEGIN|COMMIT|ROLLBACK)$/i.test(s)) return { rows: [], rowCount: 0 };
+          if (/set_config/.test(s)) return { rows: [], rowCount: 1 };
+          if (behave.query) return behave.query(sql, params);
+          return { rows: [], rowCount: 1 };
+        },
+        release() {},
+      }),
+      end: async () => {},
+    },
+    setTenantContext: async () => {},
     withTenant: async (_t, fn) => fn(),
   },
 });

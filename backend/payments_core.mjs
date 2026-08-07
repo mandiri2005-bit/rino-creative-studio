@@ -211,16 +211,63 @@ export async function recordCreditedPaymentEvent({
 }) {
   if (!tenantId || !provider || !idempotencyKey) throw new Error("missing_record_fields");
   const credits = Math.trunc(Number(creditsGranted) || 0);
-  await query(
-    `INSERT INTO payment_events
-       (tenant_id, user_id, provider, idempotency_key, provider_payment_id,
-        plan_key, amount, currency, status, credited, credits_granted, bucket, raw_event)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'succeeded',TRUE,$9,$10,$11::jsonb)
-     ON CONFLICT (provider, idempotency_key) DO NOTHING`,
-    [tenantId, userId, provider, idempotencyKey, providerPaymentId,
-     planKey, amount, currency, credits, bucket === "topup" ? "topup" : "sub", stringifyRedacted(rawEvent)],
-    tenantId,
-  );
+  try {
+    await query(
+      `INSERT INTO payment_events
+         (tenant_id, user_id, provider, idempotency_key, provider_payment_id,
+          plan_key, amount, currency, status, credited, credits_granted, bucket, raw_event)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'succeeded',TRUE,$9,$10,$11::jsonb)
+       ON CONFLICT (provider, idempotency_key) DO NOTHING`,
+      [tenantId, userId, provider, idempotencyKey, providerPaymentId,
+       planKey, amount, currency, credits, bucket === "topup" ? "topup" : "sub", stringifyRedacted(rawEvent)],
+      tenantId,
+    );
+  } catch (e) {
+    // L2C tranche 2. The ON CONFLICT clause above names ONE arbiter — RECEIPT identity
+    // (provider, idempotency_key). Migration 0084 added a second, independent rule for ANCHOR
+    // identity: at most one CREDITED row per (provider, provider_payment_id). A conflict on a
+    // NON-arbiter index is not absorbed by ON CONFLICT, so it surfaces here as 23505.
+    //
+    // TWO DIFFERENT SITUATIONS ARRIVE THROUGH THAT ONE ERROR, and collapsing them is exactly
+    // the mistake this workstream keeps warning about:
+    //
+    //   (a) SAME receipt, concurrent redelivery. Two deliveries of the SAME payment race; the
+    //       anchor key is derived from payment_id (tranche 1), so both carry the SAME
+    //       idempotency_key. Whichever loses the race can hit the anchor index BEFORE the
+    //       receipt arbiter and raise 23505 even though nothing is wrong — the row it wanted
+    //       now exists, written by the winner. This is BENIGN and must stay idempotent, which
+    //       is the contract REALDB-1 pins. Postgres only raises here after the winning
+    //       transaction COMMITS (an uncommitted conflicting tuple blocks instead), so the
+    //       lookup below always sees the committed winner.
+    //
+    //   (b) DIFFERENT receipts claiming one payment. Two distinct idempotency_keys both
+    //       asserting a credit against the same provider payment — the actual tranche-2
+    //       defect. payment_event_for_reversal (ORDER BY created_at DESC LIMIT 1) would then
+    //       silently under-reverse on refund. Fail loud; never "pick a winner".
+    //
+    // The discriminator is the idempotency_key already holding the anchor — not the error.
+    if (e.code === "23505" && String(e.constraint || "").includes("credited_anchor") && providerPaymentId) {
+      const holder = (await query(
+        `SELECT idempotency_key FROM payment_events
+          WHERE provider=$1 AND provider_payment_id=$2 AND credited LIMIT 1`,
+        [provider, providerPaymentId], tenantId,
+      )).rows[0]?.idempotency_key ?? null;
+
+      if (holder !== null && holder === idempotencyKey) {
+        // (a) benign — the anchor this call wanted is present. Postcondition met; fall through
+        // to the orphan drain below exactly as a first-writer would.
+      } else {
+        // (b) the defect.
+        console.error(
+          `[payments][CRITICAL] duplicate CREDITED anchor rejected provider='${provider}' provider_payment_id='${providerPaymentId}' idempotency_key='${idempotencyKey}' anchor_held_by='${holder}' tenant_id='${tenantId}' code=23505 constraint=payment_events_credited_anchor_uniq action=FAIL_CLOSED impact=no_second_anchor remediation=reconcile_the_two_deliveries_against_provider_records`,
+          { event: "payments.duplicate_credited_anchor", severity: "critical", provider, provider_payment_id: providerPaymentId, idempotency_key: idempotencyKey, anchor_held_by: holder, tenant_id: tenantId, pg_code: "23505", constraint: e.constraint || null, detail: e?.detail || null, message: e?.message || null }
+        );
+        throw e;
+      }
+    } else {
+      throw e;
+    }
+  }
   // Out-of-order recovery: if a refund/chargeback for this payment arrived BEFORE this
   // anchor existed, it was queued in orphan_reversals — apply each now that we can resolve it.
   if (providerPaymentId) {
