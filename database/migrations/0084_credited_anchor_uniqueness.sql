@@ -69,16 +69,29 @@
 --   here invents a policy for either. This migration constrains identity only.
 -- =====================================================================
 
+-- ── Bounded lock acquisition ────────────────────────────────────────────────
+-- CREATE INDEX takes a SHARE lock on payment_events, which conflicts with any concurrent
+-- write. On a live billing table an unbounded wait is the wrong failure mode: it would queue
+-- webhook writes behind the migration for as long as the lock is contended. Fail fast and let
+-- the operator re-run in a quieter moment instead. SET LOCAL — scoped to migrate.js's own
+-- transaction, reverted on COMMIT/ROLLBACK, never leaked to a pooled session.
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+
 -- ── Guard: refuse to proceed if the defect already has victims ──────────────
+-- DELIBERATELY IDENTIFIER-FREE. An aborting migration's message lands in deploy logs,
+-- shipped log sinks and terminal scrollback, none of which are the right home for provider
+-- payment identifiers. The counts prove the condition; the HINT gives the operator the exact
+-- query to enumerate offenders themselves, inside the database, under their own privilege.
 DO $$
 DECLARE
   v_pairs INT;
   v_rows  INT;
-  v_list  TEXT;
+  v_provs TEXT;
 BEGIN
-  SELECT count(*), COALESCE(sum(n), 0), COALESCE(string_agg(
-           format('(%s, %s) x%s', provider, provider_payment_id, n), '; ' ORDER BY n DESC), '')
-    INTO v_pairs, v_rows, v_list
+  SELECT count(*), COALESCE(sum(n), 0),
+         COALESCE(string_agg(DISTINCT provider, ', ' ORDER BY provider), '')
+    INTO v_pairs, v_rows, v_provs
     FROM (
       SELECT provider, provider_payment_id, count(*) AS n
         FROM public.payment_events
@@ -90,16 +103,25 @@ BEGIN
 
   IF v_pairs > 0 THEN
     RAISE EXCEPTION
-      'L2C 0084 ABORT: % provider payment(s) already carry more than one CREDITED payment_events row (% rows total). This migration will not choose a winner between credited financial rows. Resolve each pair against the provider''s own records first, then re-run. Offenders: %',
-      v_pairs, v_rows, v_list
+      'L2C 0084 ABORT: % provider payment(s) already carry more than one CREDITED payment_events row (% rows total, provider(s): %). This migration will not choose a winner between credited financial rows. Resolve each against the provider''s own records first, then re-run.',
+      v_pairs, v_rows, v_provs
       USING ERRCODE = 'raise_exception',
-            HINT = 'Inspect with: SELECT provider, provider_payment_id, count(*), array_agg(id ORDER BY created_at) FROM payment_events WHERE credited AND provider_payment_id IS NOT NULL GROUP BY 1,2 HAVING count(*) > 1;';
+            HINT = 'Enumerate them yourself (identifiers are deliberately not logged): SELECT provider, provider_payment_id, count(*), array_agg(id ORDER BY created_at) FROM payment_events WHERE credited AND provider_payment_id IS NOT NULL GROUP BY 1,2 HAVING count(*) > 1;';
   END IF;
 END $$;
 
 -- ── The constraint ──────────────────────────────────────────────────────────
 -- Plain CREATE INDEX, not CONCURRENTLY: migrate.js runs every file inside one
--- transaction and CONCURRENTLY cannot run there. The table is small and the lock is brief.
+-- transaction and CONCURRENTLY cannot run there. The table is small and, with the
+-- lock_timeout above, the wait is bounded.
+--
+-- DEPLOY ORDER IS SOURCE FIRST, THEN THIS MIGRATION — the reverse of the usual rule, on
+-- purpose. The index is a constraint only the NEW code handles gracefully: tranche-1 code
+-- calls recordCreditedPaymentEvent with ON CONFLICT on the RECEIPT arbiter only, so a benign
+-- concurrent redelivery that reaches this non-arbiter index first would surface as a raw
+-- 23505 and 500 the webhook. Applying the index while old code is still serving is therefore
+-- an old-code/new-index race. New code is compatible with BOTH schemas — without the index
+-- its 23505 branch is simply never reached — so source-then-schema has no window at all.
 CREATE UNIQUE INDEX IF NOT EXISTS payment_events_credited_anchor_uniq
     ON public.payment_events (provider, provider_payment_id)
     WHERE credited AND provider_payment_id IS NOT NULL;

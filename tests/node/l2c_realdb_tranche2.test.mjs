@@ -14,7 +14,7 @@
 //     U1 second credited anchor, different webhook id -> rejected 23505, first row intact
 //     U2 an UNCREDITED row may share the payment id with the credited one
 //     U3 NULL provider_payment_id rows never collide
-//     U4 the 0084 guard itself aborts when duplicates pre-exist, and names them
+//     U4 the 0084 guard aborts when duplicates pre-exist, leaking no identifiers
 //
 // Every fault mechanism is a temporary trigger inside the disposable database,
 // installed and removed in try/finally. No production fault hooks.
@@ -277,24 +277,24 @@ test("REALDB-T2-U5 concurrent deliveries sharing one anchor key all settle, leav
 // Proves 0084 refuses to run against pre-existing duplicates instead of silently choosing a
 // winner. Drops the index, manufactures the duplicate the constraint normally prevents, and
 // runs 0084's own guard block verbatim. Restores the index in finally.
-test("REALDB-T2-U4 the 0084 guard aborts on pre-existing duplicates and names them", async () => {
+test("REALDB-T2-U4 the 0084 guard aborts on pre-existing duplicates WITHOUT leaking identifiers", async () => {
   const tag = "u4_" + crypto.randomBytes(4).toString("hex");
   const T = await newTenant(tag);
   const PAY = `pay_${tag}`;
   const GUARD = `
     DO $$
-    DECLARE v_pairs INT; v_rows INT; v_list TEXT;
+    DECLARE v_pairs INT; v_rows INT; v_provs TEXT;
     BEGIN
-      SELECT count(*), COALESCE(sum(n),0), COALESCE(string_agg(
-               format('(%s, %s) x%s', provider, provider_payment_id, n), '; ' ORDER BY n DESC), '')
-        INTO v_pairs, v_rows, v_list
+      SELECT count(*), COALESCE(sum(n),0),
+             COALESCE(string_agg(DISTINCT provider, ', ' ORDER BY provider), '')
+        INTO v_pairs, v_rows, v_provs
         FROM (SELECT provider, provider_payment_id, count(*) AS n
                 FROM public.payment_events
                WHERE credited AND provider_payment_id IS NOT NULL
                GROUP BY provider, provider_payment_id HAVING count(*) > 1) d;
       IF v_pairs > 0 THEN
-        RAISE EXCEPTION 'L2C 0084 ABORT: % provider payment(s) already carry more than one CREDITED payment_events row (% rows total). Offenders: %',
-          v_pairs, v_rows, v_list;
+        RAISE EXCEPTION 'L2C 0084 ABORT: % provider payment(s) already carry more than one CREDITED payment_events row (% rows total, provider(s): %).',
+          v_pairs, v_rows, v_provs;
       END IF;
     END $$;`;
 
@@ -307,10 +307,16 @@ test("REALDB-T2-U4 the 0084 guard aborts on pre-existing duplicates and names th
     }
     assert.equal((await anchors(PAY)).length, 2, "precondition: the duplicate exists");
 
-    // The guard must abort, and must be specific enough to act on.
+    // The guard must abort, be specific enough to act on, and LEAK NOTHING. An aborting
+    // migration's message reaches deploy logs and log sinks, which is not where provider
+    // payment identifiers belong — the counts prove the condition, the HINT tells the
+    // operator how to enumerate offenders themselves under their own privilege.
     await assert.rejects(() => q(GUARD), (e) => {
       assert.match(e.message, /L2C 0084 ABORT/, "must identify itself");
-      assert.match(e.message, new RegExp(PAY), "must name the offending payment id");
+      assert.match(e.message, /1 provider payment\(s\)/, "must report the count");
+      assert.match(e.message, /2 rows total/, "must report the row total");
+      assert.doesNotMatch(e.message, new RegExp(PAY), "must NOT leak the provider payment id");
+      assert.doesNotMatch(e.message, /wh_dup_/, "must NOT leak idempotency keys either");
       return true;
     }, "0084 must refuse to run while duplicates exist");
 
