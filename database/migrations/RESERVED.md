@@ -8,6 +8,8 @@ hypothetical: it has already caused `0072` to be reported free twice.
 | Number | Claimed by | State | Where it actually lives |
 |---|---|---|---|
 | `0072` | Narasi **C-03** — schema/RLS for the five continuity stores | accepted 2026-07-22 after a V1→V4 rejection chain; **frozen, offline, never applied** | local refs `codex/c03-schema-frozen` (orphan, byte archive) and `codex/b04b-phase0-recovered` (`dd4a823c…`, full tree) — **neither is on the remote** |
+| `0075`–`0083` | **L2C `PLAN-044`** — the `S1`…`S9` slice sequence (`0075` = `S1` identity columns incl. `llm_call_action`; `0076` = `S6` settlement; `0078` = `S9` `credit_ledger`; the rest allocated within the same plan) | **allocated on paper only — `PLAN-044` + `MATRIX-044` are still `DRAFT FOR RATIFICATION`, so none of it is authorised to be implemented**; no file written, nothing applied | `WIMBA_CONT_PROJECT/L2C-BILLING-INTEGRITY-PLAN-044.md` — a **document outside this repository**, so no `git` scan here will ever show it |
+| `0084` | **L2C tranche 2** — `UNIQUE` constraint enforcing one credited payment anchor per `(provider, provider_payment_id)` | reserved 2026-08-07 by owner decision; **not yet written, not applied**. Deliberately skips the `PLAN-044` block above rather than taking the apparent next number | branch `fix/l2c-tranche2-anchor-uniqueness` **in this repository** (anchored per step 4 below) |
 
 ## Why `0072` is not simply free
 
@@ -64,6 +66,35 @@ A C-03 revival is therefore a **new** acceptance round, not a replay. Treat the 
 assertions" as **unverifiable** — not as something a successful re-run would restore, since it is
 a claim about a candidate the pack cannot identify. Full detail in `ANCHOR.md` on
 `codex/c03-schema-frozen` and in `L2B-METER-PREREQUISITES-RECORD-002` / `-003`.
+
+## Why L2C tranche 2 is `0084` and not `0075`
+
+Every mechanical check says `0075` is free. All of them are correct, and all of them are
+misleading in the same way `0072` was — the block `0075`–`0083` is claimed by `PLAN-044`, a
+document that lives in `WIMBA_CONT_PROJECT/`, **outside this repository**, so it is invisible to
+`ls`, to `git`, and to the production `migrations` table alike. Taking "the next number after the
+highest one on the deploy branch" lands squarely on `S1`'s `0075`.
+
+`PLAN-044`'s block is held rather than reclaimed even though **none of it is ratified**, precisely
+because a draft that is later ratified must not find its numbers taken. Tranche 2 therefore skips
+the whole block and starts after it.
+
+**Where this was looked for, on 2026-08-07** — stating the scope, per the rule at the end of this
+file:
+
+- deploy branch `feat/subscription-global` at `104d238c`: 67 migrations, highest
+  `0074_platform_qc_metering.sql`;
+- production `migrations` table, read-only transaction: 67 rows, highest
+  `0074_platform_qc_metering.sql`;
+- **every** remote head under `refs/remotes/origin/` (17 branches, enumerated — not sampled): no
+  file matching `00(7[5-9]|8[0-4])` on any of them; the highest anywhere is `0074`, except
+  `c03-schema-frozen` / `b04b-phase0-recovered` which top out at their own `0072`;
+- this file: the only *number* reservation before today was `0072` (the `0070`/`0071` table below
+  records a past collision, not a reservation);
+- `PLAN-044`: allocates `0075`–`0083`.
+
+No migration and no reservation was found for `0084` in any of those places. That is a claim about
+those scopes, and they are listed so the next person can widen them rather than repeat them.
 
 ## How to allocate a new number
 
