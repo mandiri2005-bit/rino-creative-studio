@@ -246,22 +246,90 @@ export async function changeSubscriptionPlan({ tenantId, planKey, subId }) {
 // ── TASK 3b: create a ONE-TIME top-up checkout (NOT a subscription) ───────────
 // Hosted one-time checkout for a boost pack. metadata.kind='topup' so the
 // payment.succeeded webhook routes to handleTopupPayment (not a package grant).
-export async function createTopup({ tenantId, userId, packKey }) {
-  if (!dodo) throw new Error("dodo_not_configured");
+// ── CR-29 / Item 6 TEMPORARY CONTAINMENT ─────────────────────────────────────
+// The SDK default is maxRetries=2 and create-checkout carries no idempotency key
+// (none is documented in the sources we checked), so one timeout could silently
+// leave two or three payable sessions behind. Retries are disabled FOR THIS CALL
+// ONLY — the shared client in dodo.mjs keeps its defaults everywhere else — and
+// any failure after dispatch is treated as UNKNOWN instead of guessed at.
+//
+// This is CONTAINMENT, NOT IDEMPOTENCY. It lowers how often we end up unsure; it
+// resolves no individual unsure case, because nothing local can prove whether a
+// remote session was created. Contract: PLAN §S10.G3.1-h. Tests: MATRIX-045 T80.
+export const TOPUP_CHECKOUT_ERRORS = Object.freeze({
+  UNKNOWN: "checkout_status_unknown",           // threw after dispatch — may or may not exist
+  NO_URL:  "created_without_checkout_url",      // 2xx, real session_id, no URL to send them to
+  ANOMALY: "checkout_protocol_anomaly",         // 2xx but no session_id / malformed
+});
+
+// Single-line structured alert. Provider identifiers are NEVER logged raw — b6900cf
+// hardened exactly this ("stop it logging payment identifiers"), because these lines
+// land in deploy logs, shipped log sinks and terminal scrollback. Ops still needs to
+// match an orphaned session, so the handle goes out as a SHA-256 digest: comparable
+// against a session id they already hold, useless to anyone who does not.
+// Never logged in any form: raw session_id, checkout_url, payment_id.
+export function _sessionIdDigest(sessionId) {
+  return crypto.createHash("sha256").update(String(sessionId), "utf8").digest("hex");
+}
+
+function _alertTopupCheckout(evt, fields) {
+  try { console.error(JSON.stringify({ evt, component: "topup_checkout", ...fields })); }
+  catch { console.error(`[topup_checkout] ${evt}`); }
+}
+
+// Seam for tests: same body, injectable client. createTopup() is the production
+// binding of this to the shared `dodo` client.
+export async function _createTopupWithClient({ client, tenantId, userId, packKey }) {
+  // ── Pre-dispatch validation stays DEFINITIVE: no session can exist yet. ──
+  if (!client) throw new Error("dodo_not_configured");
   if (!VALID_TOPUP_PACKS.includes(packKey)) throw new Error("unknown_pack");
   const productId = topupProductId(packKey);
   if (!productId) throw new Error("unknown_pack");                  // product env not set
-  const session = await dodo.checkoutSessions.create({
-    product_cart: [{ product_id: productId, quantity: 1 }],
-    return_url: SUB_RETURN_URL,
-    metadata: {
-      tenant_id: String(tenantId),
-      user_id: userId ? String(userId) : "",
-      pack_key: String(packKey),
-      kind: "topup",                                               // ← webhook discriminator
-    },
-  });
-  return { checkoutUrl: session.checkout_url || session.payment_link || null };
+
+  const requestedAt = new Date().toISOString();
+  const alertFields = { tenant_id: String(tenantId), pack_key: String(packKey), requested_at: requestedAt };
+
+  let session;
+  try {
+    session = await client.checkoutSessions.create({
+      product_cart: [{ product_id: productId, quantity: 1 }],
+      return_url: SUB_RETURN_URL,
+      metadata: {
+        tenant_id: String(tenantId),
+        user_id: userId ? String(userId) : "",
+        pack_key: String(packKey),
+        kind: "topup",                                             // ← webhook discriminator
+      },
+    }, { maxRetries: 0 });                                         // ← per-request; global client untouched
+  } catch (e) {
+    // UNKNOWN. Never retry, never create a second session, never guess.
+    _alertTopupCheckout("topup_checkout_status_unknown", { ...alertFields, error_name: e?.name || null });
+    throw new Error(TOPUP_CHECKOUT_ERRORS.UNKNOWN);
+  }
+
+  // `session_id` is REQUIRED on CheckoutSessionResponse; its absence is a protocol
+  // anomaly, not a business outcome.
+  const sessionId  = typeof session?.session_id  === "string" ? session.session_id.trim()  : "";
+  const checkoutUrl = typeof session?.checkout_url === "string" ? session.checkout_url.trim() : "";
+  if (!sessionId) {
+    _alertTopupCheckout("topup_checkout_protocol_anomaly", alertFields);
+    throw new Error(TOPUP_CHECKOUT_ERRORS.ANOMALY);
+  }
+  if (!checkoutUrl) {
+    // A real, payable session exists that the customer cannot reach. Fail closed and
+    // hand ops the one identifier that lets them find it.
+    _alertTopupCheckout("topup_created_without_checkout_url",
+      { ...alertFields, session_id_sha256: _sessionIdDigest(sessionId) });
+    throw new Error(TOPUP_CHECKOUT_ERRORS.NO_URL);
+  }
+  // The old second fallback was removed: CheckoutSessionResponse carries only
+  // session_id, checkout_url, client_secret, payment_id and publishable_key, so that
+  // branch was dead code and could never fire.
+  return { checkoutUrl };
+}
+
+export async function createTopup({ tenantId, userId, packKey }) {
+  return _createTopupWithClient({ client: dodo, tenantId, userId, packKey });
 }
 
 // Top-up expiry = the renewal AFTER the imminent one (current_period_end + 1 cadence

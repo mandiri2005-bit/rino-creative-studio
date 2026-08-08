@@ -816,6 +816,23 @@ app.post("/topup/create", requireAuth, async (req, res) => {
   } catch (e) {
     if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
     if (e.message === "unknown_pack") return res.status(400).json({ error: "unknown_pack" });
+    // ── CR-29 / Item 6 containment (PLAN §S10.G3.1-h, MATRIX-045 T80) ────────
+    // Retrying is what we are trying to prevent, so the copy says so explicitly.
+    if (e.message === "checkout_status_unknown") {
+      return res.status(502).json({
+        error: "checkout_status_unknown",
+        message: "We could not confirm whether checkout was created. Please do not try again and contact support.",
+      });
+    }
+    // A session may exist but is unreachable, or the response was malformed. Both are
+    // one customer-facing outcome. The provider handle stays out of this response by
+    // design — it is internal, and the structured alert already carries it for ops.
+    if (e.message === "created_without_checkout_url" || e.message === "checkout_protocol_anomaly") {
+      return res.status(502).json({
+        error: "checkout_unavailable",
+        message: "Checkout is unavailable right now. Please do not try again and contact support.",
+      });
+    }
     console.error("[topup/create] unexpected:", e);
     return res.status(500).json({ error: "internal_error" });
   }
