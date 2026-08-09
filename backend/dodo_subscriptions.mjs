@@ -279,7 +279,28 @@ function _alertTopupCheckout(evt, fields) {
 
 // Seam for tests: same body, injectable client. createTopup() is the production
 // binding of this to the shared `dodo` client.
-export async function _createTopupWithClient({ client, tenantId, userId, packKey }) {
+// ── CR-27's authorised assent metadata: EXACTLY these two, never more ────────
+// `CR-27` (OWNER-DECISION-CR27) permits `tos_version` and `acceptance_event_id` as
+// INERT metadata on the top-up checkout, carried unmodified through the frozen
+// webhook → anchor → ledger path so the purchase's governing version stays pinned.
+// 🔴 `acceptance_event_seq` is LOCAL ORDERING and must NEVER leave the database:
+// adding it would be a third metadata field, which CR-27 does not authorise.
+export const ASSENT_METADATA_KEYS = Object.freeze(["tos_version", "acceptance_event_id"]);
+
+/** Project an intent row onto the two authorised keys. Absent pins send nothing. */
+export function _assentMetadata(assentPins) {
+  const out = {};
+  if (!assentPins) return out;
+  for (const k of ASSENT_METADATA_KEYS) {
+    const v = assentPins[k];
+    // Shadow-mode intents carry no pins; omit rather than send "" — an empty
+    // string would read as evidence that a version was pinned when none was.
+    if (v !== null && v !== undefined && String(v).length) out[k] = String(v);
+  }
+  return out;
+}
+
+export async function _createTopupWithClient({ client, tenantId, userId, packKey, assentPins }) {
   // ── Pre-dispatch validation stays DEFINITIVE: no session can exist yet. ──
   if (!client) throw new Error("dodo_not_configured");
   if (!VALID_TOPUP_PACKS.includes(packKey)) throw new Error("unknown_pack");
@@ -299,6 +320,7 @@ export async function _createTopupWithClient({ client, tenantId, userId, packKey
         user_id: userId ? String(userId) : "",
         pack_key: String(packKey),
         kind: "topup",                                             // ← webhook discriminator
+        ..._assentMetadata(assentPins),                            // ← CR-27: exactly two, never event_seq
       },
     }, { maxRetries: 0 });                                         // ← per-request; global client untouched
   } catch (e) {
@@ -328,8 +350,8 @@ export async function _createTopupWithClient({ client, tenantId, userId, packKey
   return { checkoutUrl };
 }
 
-export async function createTopup({ tenantId, userId, packKey }) {
-  return _createTopupWithClient({ client: dodo, tenantId, userId, packKey });
+export async function createTopup({ tenantId, userId, packKey, assentPins }) {
+  return _createTopupWithClient({ client: dodo, tenantId, userId, packKey, assentPins });
 }
 
 // Top-up expiry = the renewal AFTER the imminent one (current_period_end + 1 cadence

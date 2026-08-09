@@ -905,9 +905,19 @@ app.post("/topup/create", requireAuth, async (req, res) => {
     // active or historical payment, and nothing here may treat it as such.
     // The whole gate transaction COMMITS before any provider call is made.
     // Shadow mode records and returns; it never refuses, so this cannot gate the rail.
-    await tosAssent.createGatedIntent({ tenantId, actorId: userId, packKey });
+    const intent = await tosAssent.createGatedIntent({ tenantId, actorId: userId, packKey });
 
-    const out = await subscriptions.createTopup({ tenantId, userId, packKey });
+    // CR-27 pins the governing version onto the checkout as INERT metadata, so it
+    // survives webhook → anchor → ledger unmodified. Exactly two fields; the
+    // acceptance event_seq is local ordering and never leaves the database.
+    // In shadow mode the intent carries no pins and nothing extra is sent.
+    const out = await subscriptions.createTopup({
+      tenantId, userId, packKey,
+      assentPins: {
+        tos_version: intent?.tos_version ?? null,
+        acceptance_event_id: intent?.acceptance_event_id ?? null,
+      },
+    });
     res.json({ payment_link: out.checkoutUrl });
   } catch (e) {
     if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
