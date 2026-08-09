@@ -510,9 +510,17 @@ describe("CR-29 item 4 — source-level non-vacuity guards", () => {
       "exactly one fetch may omit credentials — the public cross-origin artifact");
     assert.equal((code.match(/credentials:\s*"include"/g) || []).length, 2,
       "both same-origin API calls must still send credentials");
-    // and the page still sends no identity of its own in the assent body
-    assert.doesNotMatch(code, /tenant_id|actor_id/,
-      "tenant and actor stay server-derived; the page must not send them");
+    // The page still selects no identity. Since the identity-safety pass it DOES send
+    // expected_tenant_id / expected_actor_id — an assertion the server merely compares
+    // against the session, never a selection — so the guard is now on the POST body's
+    // exact key set rather than on the absence of the words.
+    const body = code.match(/body: JSON\.stringify\(\{[\s\S]*?\}\),/)?.[0] || "";
+    assert.ok(body, "the assent POST body must be found");
+    assert.match(body, /expected_tenant_id: art\.tenant_id, expected_actor_id: art\.actor_id/,
+      "identity may only travel as an expectation");
+    assert.doesNotMatch(body, /(^|[^_])\btenant_id:/, "no bare tenant_id may be sent");
+    assert.doesNotMatch(body, /(^|[^_])\bactor_id:/, "no bare actor_id may be sent");
+    assert.doesNotMatch(body, /user_id|userId/, "no user identifier of any other shape");
 
     // the stripper must not be doing the work for us
     assert.match(stripComments('const u = "https://wimba.ai/terms/";'), /https:\/\/wimba\.ai/,
@@ -576,17 +584,17 @@ describe("CR-29 item 4 — source-level non-vacuity guards", () => {
     // — fail closed: disabled in the MARKUP, not merely by script —
     assert.match(code, /<button id="accept" disabled>/, "Accept must ship disabled");
     assert.match(code, /<button id="reject" disabled>/, "Reject must ship disabled");
-    // There are two enable sites and that is correct: the gated one in load(), and the
-    // re-enable at the end of send() — which is what lets a reader Reject and then Accept.
-    // The property that matters is that NO enable site sits before the hash comparison, so
+    // ONE enable site, in load(), after the awaited render. send()'s re-enable was removed
+    // by the identity-safety pass: re-enabling after a POST is what let two rows land
+    // 0.83 s apart, and a second decision must now cost a deliberate reload. The property
+    // that still matters here is that no enable site sits before the hash comparison, so
     // no path can offer a decision on unverified bytes.
     const enableRe = /\$\("accept"\)\.disabled = \$\("reject"\)\.disabled = false/g;
     const enableSites = [...code.matchAll(enableRe)].map((m) => m.index);
-    assert.equal(enableSites.length, 2, "expected exactly the load() and send() enable sites");
+    assert.equal(enableSites.length, 1, "expected exactly the gated load() enable site");
     for (const at of enableSites) {
       assert.ok(at > cmpAt, `an enable site at ${at} precedes the hash comparison at ${cmpAt}`);
     }
-    // and send() is only reachable once load() has already enabled them
     assert.ok(enableSites[0] > awaitAt, "load()'s enable must follow the awaited render");
 
     // — download still comes from the original verified bytes —

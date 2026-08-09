@@ -26,6 +26,8 @@
   body{font:15px/1.6 system-ui,sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem}
   /* styles the FRAME on this page — nothing is injected into the sandboxed document */
   #agreement{border:1px solid #ccc;width:100%;height:340px;display:block;background:#fff}
+  .identity{font-size:14px;margin:.75rem 0;padding:.6rem .8rem;border:1px solid #999;background:#fafafa}
+  .identity code{background:#eee;padding:.1rem .3rem}
   .meta{font-size:13px;color:#555;margin:.75rem 0}
   .meta code{background:#f4f4f4;padding:.1rem .3rem}
   .row{display:flex;gap:.75rem;align-items:center;margin:.75rem 0;flex-wrap:wrap}
@@ -52,6 +54,16 @@
        bytes the row pins. Relative URLs inside it therefore do not resolve and it renders
        unstyled; that is the deliberate cost of "displayed == hashed". -->
   <iframe id="agreement" sandbox="" title="The agreement, rendered from the verified bytes"></iframe>
+
+  <!-- WHOSE decision this will be. Shown before any button is usable, because the
+       reader cannot otherwise tell which session the browser is carrying — four rows
+       were recorded against the wrong account for exactly that reason. Both values are
+       server-derived; the page never chooses them. -->
+  <div class="identity">
+    This decision will be recorded for:<br>
+    actor <code id="m-actor"></code><br>
+    tenant <code id="m-tenant"></code>
+  </div>
 
   <div class="meta">
     Version <code id="m-version"></code> · locale <code id="m-locale"></code><br>
@@ -116,10 +128,18 @@ async function load() {
   // fail() returns immediately, so on this path the artifact is never fetched, the frame
   // is never populated, the buttons stay disabled and no assent is ever POSTed.
   if (r.status === 401) return fail("You are not signed in. Sign in and reopen this page.");
+  if (r.status === 403) return fail("Your account is signed in but could not be identified, so no decision can be recorded for it.");
   if (r.status === 404) return fail("No published agreement is available.");
   if (!r.ok) return fail("Terms review is unavailable.");
 
   art = await r.json();
+  // Identity must be present before anything is offered. It is server-derived; if the
+  // server did not state it, this page has nothing trustworthy to show and refuses.
+  if (!art.tenant_id || !art.actor_id) {
+    return fail("The server did not identify who this decision would be recorded for.");
+  }
+  $("m-actor").textContent  = art.actor_id;
+  $("m-tenant").textContent = art.tenant_id;
   $("m-version").textContent = art.tos_version;
   $("m-locale").textContent  = art.locale;
   $("m-hash").textContent    = art.artifact_sha256;
@@ -172,23 +192,51 @@ async function load() {
   $("accept").disabled = $("reject").disabled = false;
 }
 
+// ONE decision per page load. The latch is set the moment a decision is CONFIRMED and is
+// never cleared — not on success, not on failure. Two rows were once written 0.83 s
+// apart because the buttons came back after a POST; each click here is permanent,
+// irreversible evidence, so a second attempt must be a deliberate reload.
+let decisionLocked = false;
+
 async function send(event) {
+  if (decisionLocked) return;            // belt: nothing can fire a second POST
+  const confirmed = window.confirm(
+    `Record "${event}" for:\n\n` +
+    `  actor  ${art.actor_id}\n` +
+    `  tenant ${art.tenant_id}\n\n` +
+    `agreement ${art.tos_version} (${art.locale}), SHA-256 ${art.artifact_sha256}\n\n` +
+    `This is recorded permanently and cannot be edited or deleted. ` +
+    `This page allows ONE decision — to make another you must reload it.`
+  );
+  if (!confirmed) return;                // cancelled: nothing sent, buttons stay usable
+  decisionLocked = true;                 // braces: confirmed is the point of no return
   $("accept").disabled = $("reject").disabled = true;
+
   const r = await fetch("/tos/assent", {
     method: "POST", credentials: "include",
     headers: { "content-type": "application/json" },
-    // tenant/actor are NOT sent: the server derives both from the authenticated
-    // session and the database re-checks them.
+    // expected_* are an ASSERTION, not a selection: the server derives tenant and actor
+    // from the session itself and only compares these against them. A wrong pair can
+    // produce a 409 and nothing else — it can never write under another identity.
     body: JSON.stringify({
       tos_version: art.tos_version, locale: art.locale,
       artifact_sha256: art.artifact_sha256, event,
+      expected_tenant_id: art.tenant_id, expected_actor_id: art.actor_id,
     }),
   });
   const b = await r.json().catch(() => ({}));
-  $("status").textContent = r.ok
-    ? `Recorded: ${b.event}.`
-    : `Not recorded (${b.error || r.status}).`;
-  $("accept").disabled = $("reject").disabled = false;
+  if (r.ok) {
+    // repeat the identity the SERVER used, not the one this page expected
+    $("status").textContent =
+      `Recorded: ${b.event} — actor ${b.actor_id}, tenant ${b.tenant_id}. Reload to make another decision.`;
+  } else if (b.error === "assent_identity_changed") {
+    $("status").textContent =
+      `Not recorded: the signed-in identity changed. The server sees actor ${b.actor_id}, ` +
+      `tenant ${b.tenant_id}. Nothing was written. Reload before deciding.`;
+  } else {
+    $("status").textContent = `Not recorded (${b.error || r.status}). Reload to try again.`;
+  }
+  // Deliberately NO re-enable. The latch and the disabled buttons both stand.
 }
 
 $("accept").onclick = () => send("accepted");

@@ -807,6 +807,12 @@ app.get("/tos/applicable", requireAuth, async (req, res) => {
       });
     }
     const tenantId = resolveTenantId(req);
+    // Resolve the actor HERE, on the read, so the reader can see WHO the server thinks
+    // they are before deciding anything. Four assent rows have already been recorded
+    // against the wrong account because the page could not show whose session it was
+    // using. If identity cannot be established there is nothing safe to present.
+    const userId = await resolveUserId(req, tenantId);
+    if (!userId) return res.status(403).json({ error: "assent_identity_unavailable" });
     const locale = String(req.query.locale || "").trim();
     const art = await tosAssent.applicableArtifact(tenantId, locale);
     if (!art) return res.status(404).json({ error: "no_published_agreement" });
@@ -815,6 +821,9 @@ app.get("/tos/applicable", requireAuth, async (req, res) => {
       artifact_sha256: art.artifact_sha256, public_route: art.public_route,
       byte_size: art.byte_size, content_type: art.content_type,
       effective_at: art.effective_at, determination_rule: art.determination_rule,
+      // server-derived identity, echoed so the UI can display it. It is NOT a token:
+      // the POST re-derives both from the session and only COMPARES against these.
+      tenant_id: tenantId, actor_id: userId,
     });
   } catch (e) {
     if (String(e.message).startsWith("tos_")) return res.status(503).json({ error: e.message });
@@ -836,6 +845,26 @@ app.post("/tos/assent", requireAuth, async (req, res) => {
     if (!["accepted", "rejected"].includes(event)) {
       return res.status(400).json({ error: "event must be accepted|rejected" });
     }
+    // IDENTITY EXPECTATION CHECK — before any write, and before the artifact is even
+    // re-resolved. The client declares WHICH identity it displayed to the reader; the
+    // server has already derived the real one from the session above and only ever
+    // COMPARES. These fields cannot select an actor: `userId` is not read from the body
+    // and is never assigned from it, so a forged pair can only cause a 409, never a
+    // write under someone else's name. This exists because four rows were recorded
+    // against an account the reader did not realise they were signed in as.
+    const expTenant = String(b.expected_tenant_id || "").trim();
+    const expActor  = String(b.expected_actor_id  || "").trim();
+    if (!expTenant || !expActor) {
+      return res.status(400).json({ error: "assent_identity_expectation_required" });
+    }
+    if (expTenant !== String(tenantId) || expActor !== String(userId)) {
+      // 409, and NOTHING is written. The server-determined identity is returned so the
+      // reader is told who they actually are rather than left guessing.
+      return res.status(409).json({
+        error: "assent_identity_changed", reload: true,
+        tenant_id: tenantId, actor_id: userId,
+      });
+    }
     // Re-resolve the applicable artifact server-side. The client may echo what it
     // displayed, but it cannot choose or rewrite the evidence pins. A version
     // change between GET and POST forces a reload instead of silently recording
@@ -856,8 +885,13 @@ app.post("/tos/assent", requireAuth, async (req, res) => {
       event,
       surface: "tos_review_page",
     });
-    // Reject is recorded and has NO destructive effect here.
-    res.json({ acceptance_event_id: row.acceptance_event_id, event: row.event, event_at: row.event_at });
+    // Reject is recorded and has NO destructive effect here. The response repeats the
+    // SERVER-determined identity — not the client's expectation — so the confirmation the
+    // reader sees names the account the row was actually written against.
+    res.json({
+      acceptance_event_id: row.acceptance_event_id, event: row.event, event_at: row.event_at,
+      tenant_id: tenantId, actor_id: userId,
+    });
   } catch (e) {
     if (e.message === "tos_determination_rule_unset" ||
         e.message === "tos_serving_deployment_id_unset" ||
