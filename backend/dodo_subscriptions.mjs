@@ -32,6 +32,7 @@ import { fileURLToPath } from "url";
 import { dodo, isConfigured, railEnabled, verifyEvent } from "./dodo.mjs";
 import { reset_entitlement, topup_grant, mirrorCreditDelta, recordCreditedPaymentEvent } from "./payments_core.mjs";
 import { query, pool, setTenantContext } from "./db.js";
+import { recordTopupLot } from "./g3_lots.mjs";
 
 // ── Billing mode (deployment switch) ──────────────────────────────────────────
 // Subscription logic is INERT unless explicitly enabled. Default = one_time so a
@@ -844,7 +845,23 @@ export async function handleTopupPayment({ payload, webhookId, rawEvent }) {
     amount: data.total_amount ?? null, currency: data.currency ?? null,
     creditsGranted: amount, bucket: "topup", rawEvent: payload,
   });
-  return { handled: true, action: "topup", packKey, amount, expiresAt, ...res };
+
+  // L2C CR-29 items 1+2+5. STRICTLY ADDITIVE and DEFAULT OFF
+  // (G3_LOT_WRITER_ENABLED=1 arms it): pin the business timestamp, record the
+  // payment's commercial terms, write the credit lot and post cash-in at the
+  // SUPPLIER FEE.
+  //
+  // Placed AFTER the credited anchor, and recordTopupLot NEVER THROWS. PLAN-045
+  // G3.1-c freezes this sequence — grant commits, anchor persists, webhook
+  // responds — and forbids EXTENDING it; a lot write that could 500 the webhook
+  // would do exactly that. A lot is derivable from the ledger row, so a missing
+  // one is repairable; a 500 on an already-credited payment is not free.
+  const lot = await recordTopupLot({
+    tenantId, provider: "dodo", payload, webhookId,
+    credits: amount, ledgerOpId: `dodo_topup:${payId}`,
+  });
+
+  return { handled: true, action: "topup", packKey, amount, expiresAt, ...res, lot };
 }
 
 // Record (audit-only) the settling charge behind a subscription so a later refund /
