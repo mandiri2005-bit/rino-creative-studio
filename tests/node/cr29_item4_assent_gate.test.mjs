@@ -442,7 +442,9 @@ describe("CR-29 item 4 — source-level non-vacuity guards", () => {
   const moduleSource = readFileSync(new URL("../../backend/tos_assent.mjs", import.meta.url), "utf8");
   const migration = readFileSync(
     new URL("../../database/migrations/0085_tos_assent_and_topup_gate.sql", import.meta.url), "utf8");
-  const nginx = readFileSync(new URL("../../nginx/nginx.conf", import.meta.url), "utf8");
+  const nginxLocal = readFileSync(new URL("../../nginx/nginx.conf", import.meta.url), "utf8");
+  const nginxRuntime = readFileSync(
+    new URL("../../nginx/nginx.conf.template", import.meta.url), "utf8");
 
   test("provider dispatch remains textually after the awaited, committed intent call", () => {
     const gateAt = server.indexOf("await tosAssent.createGatedIntent");
@@ -476,12 +478,20 @@ describe("CR-29 item 4 — source-level non-vacuity guards", () => {
     }
   });
 
-  test("nginx proxies /tos/ to Express instead of the SPA fallback", () => {
-    const route = nginx.match(/location \/tos\/ \{[\s\S]*?\n\s*\}/)?.[0] || "";
-    assert.match(route, /proxy_pass http:\/\/backend;/);
-    assert.match(route, /proxy_set_header Host \$host;/);
-    assert.match(route, /proxy_set_header X-Real-IP \$remote_addr;/);
-    assert.ok(nginx.indexOf("location /tos/") > nginx.indexOf("location / { try_files"),
-      "the explicit prefix route must override the SPA fallback");
+  test("local and runtime nginx configs proxy /tos/ to Express instead of the SPA fallback", () => {
+    const localRoute = nginxLocal.match(/location \/tos\/ \{[\s\S]*?\n\s*\}/)?.[0] || "";
+    const runtimeRoute = nginxRuntime.match(/location \/tos\/ \{[\s\S]*?\n\s*\}/)?.[0] || "";
+
+    assert.match(localRoute, /proxy_pass http:\/\/backend;/);
+    assert.match(runtimeRoute, /set \$backend_upstream "\$\{BACKEND_URL\}";/);
+    assert.match(runtimeRoute, /proxy_pass \$backend_upstream;/);
+    for (const route of [localRoute, runtimeRoute]) {
+      assert.match(route, /proxy_set_header Host \$host;/);
+      assert.match(route, /proxy_set_header X-Real-IP \$remote_addr;/);
+    }
+    assert.ok(nginxLocal.indexOf("location /tos/") > nginxLocal.indexOf("location / { try_files"),
+      "the local explicit prefix route must override the SPA fallback");
+    assert.ok(nginxRuntime.indexOf("location /tos/") > nginxRuntime.indexOf("location / { try_files"),
+      "the runtime explicit prefix route must override the SPA fallback");
   });
 });
