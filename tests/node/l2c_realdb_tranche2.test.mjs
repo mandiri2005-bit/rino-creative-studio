@@ -21,15 +21,24 @@
 //
 // Run from backend/:
 //   NODE_ENV=development PGSSLMODE=disable \
-//   DATABASE_POOL_URL_DEV=postgres://postgres@127.0.0.1:55432/l2ctest \
+//   REALDB_ADMIN_URL=postgres://postgres@127.0.0.1:55432/postgres \
 //   node --test ../tests/node/l2c_realdb_tranche2.test.mjs
+//
+// This file provisions and migrates its OWN database (see _realdb.mjs). Its own
+// 'injected tenants_plan_check' trigger is name-identical to tranche1's, and A4
+// asserts that tenants.plan is left UNTOUCHED — sharing a database with tranche1
+// made A4 fail on tranche1's injected 23514 instead.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { useOwnDatabase } from "./_realdb.mjs";
 
-process.env.REDIS_URL ??= "redis://localhost:6379";
+// Never inherit an ambient REDIS_URL: a developer shell may point at production.
+// A non-local test Redis must be opted into through the test-specific variable.
+process.env.REDIS_URL = process.env.REALDB_TEST_REDIS_URL || "redis://127.0.0.1:6379";
 process.env.BILLING_MODE = "subscription";
 process.env.DODO_PRODUCT_STARTER ??= "prod_starter";
+await useOwnDatabase("tranche2");
 
 const { pool } = await import("../../backend/db.js");
 const sub = await import("../../backend/dodo_subscriptions.mjs");

@@ -18,16 +18,23 @@
 // reversal requires refund_amount === amount. Partial/cumulative-refund cap tests
 // are out of scope for this step.
 //
-// Run from backend/ with the disposable DSN:
+// Run from backend/ with any database on the disposable cluster:
 //   NODE_ENV=development PGSSLMODE=disable \
-//   DATABASE_POOL_URL_DEV=postgres://postgres@127.0.0.1:55432/l2ctest \
+//   REALDB_ADMIN_URL=postgres://postgres@127.0.0.1:55432/postgres \
 //   node --test ../tests/node/l2c_realdb_orphan.test.mjs
+//
+// This file provisions and migrates its OWN database (see _realdb.mjs). It is
+// never the database the DSN names, so these tests cannot collide with another
+// realdb file's fault-injection triggers when node:test runs files in parallel.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { useOwnDatabase } from "./_realdb.mjs";
 
-const DSN = process.env.DATABASE_POOL_URL_DEV;
-process.env.REDIS_URL ??= "redis://localhost:6379";
+// Never inherit an ambient REDIS_URL: a developer shell may point at production.
+// A non-local test Redis must be opted into through the test-specific variable.
+process.env.REDIS_URL = process.env.REALDB_TEST_REDIS_URL || "redis://127.0.0.1:6379";
+const DSN = await useOwnDatabase("orphan");
 
 const { pool } = await import("../../backend/db.js");
 const { recordCreditedPaymentEvent, topup_grant } = await import("../../backend/payments_core.mjs");
