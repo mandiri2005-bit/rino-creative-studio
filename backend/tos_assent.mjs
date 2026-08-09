@@ -16,11 +16,16 @@
 //     that is expected. Never read the intent table as an inventory of checkouts.
 //
 // UNRESOLVED POLICY IS BLOCKING, NEVER SILENTLY DEFAULTED
-//   Which signal determines an "Indonesian user" (P5 A2) is an OPEN owner/legal
-//   decision. This module refuses to serve an artifact until TOS_DETERMINATION_RULE
-//   names one. It does NOT guess from Accept-Language, IP, tenant default, billing
-//   country or self-declaration. That refusal affects the assent surface ONLY —
-//   the gate stays shadow and top-up is untouched.
+//   This module refuses to serve an artifact until TOS_DETERMINATION_RULE names a
+//   rule it actually implements. It does NOT guess from Accept-Language, IP, tenant
+//   default, billing country or self-declaration. That refusal affects the assent
+//   surface ONLY — the gate stays shadow and top-up is untouched.
+//
+//   The CURRENT release is global and English-only (owner decision 2026-08-09), so
+//   the selected rule is `global_default_en` and the locale is a constant of the
+//   release. Which signal would determine an "Indonesian user" (P5 A2) is STILL an
+//   open owner/legal question — it is simply not asked while one locale exists.
+//   Future-Indonesian-release steps: ~/docs/IMPORTANT-wimba-frontend-deploy-runbook.md.
 // ─────────────────────────────────────────────────────────────────────────────
 import { query, queryWithActor } from "./db.js";
 
@@ -31,13 +36,23 @@ export function determinationRule() {
   return r.length ? r : null;
 }
 
-// Identity of the deployment that served the bytes — memo §8.4's "identifier rilis".
-// Distinct from tos_version, which is the LEGAL release identity.
+// Identity of the deployment that served the BYTES the user read — memo §8.4's
+// "identifier rilis". Distinct from tos_version, which is the LEGAL release identity.
+//
+// 🔴 This is the CLOUDFLARE PAGES deployment that publishes the ToS artifact, NOT the
+// Railway deployment running this API. The two are different systems on different
+// release cycles: Railway can redeploy a hundred times while the served bytes never
+// change, and the artifact can be republished while this API stays put. Recording a
+// Railway id here would make every assent row cite provenance for a system that did
+// not serve the document.
+//
+// There is deliberately NO FALLBACK CHAIN. A fallback cannot fail loudly, so an
+// unset variable would silently degrade the evidence to whatever happened to be in
+// the environment — which is the failure mode 0085's placeholder CHECK on
+// serving_deployment_id exists to prevent. Unset means the assent surface refuses;
+// it never means "guess".
 export function servingDeploymentId() {
-  const id = String(
-    process.env.RAILWAY_DEPLOYMENT_ID || process.env.SERVING_DEPLOYMENT_ID ||
-    process.env.RAILWAY_GIT_COMMIT_SHA || ""
-  ).trim();
+  const id = String(process.env.TOS_ARTIFACT_DEPLOYMENT_ID || "").trim();
   if (!id) throw new Error("tos_serving_deployment_id_unset");
   return id;
 }
@@ -65,10 +80,18 @@ export async function applicableArtifact(tenantId, localeHint) {
   if (!v.rows.length) return null;
   const version = v.rows[0].tos_version;
 
-  // Locale choice is the SELECTED rule's output. `explicit_user_locale` is the only
-  // rule implemented; any other configured value is refused rather than approximated.
+  // Locale choice is the SELECTED rule's output. Any rule that is not implemented
+  // here is refused rather than approximated.
   let locale;
-  if (rule === "explicit_user_locale") {
+  if (rule === "global_default_en") {
+    // Wimba ships ONE global English-only agreement. The locale is a constant of the
+    // release, never a function of the request: `localeHint` is accepted by the
+    // signature and DELIBERATELY IGNORED, and no IP address, Accept-Language header,
+    // geolocation, billing country or tenant default is consulted anywhere on this
+    // path. A user who asks for `id` gets the `en` artifact or nothing — never a
+    // silent fallback to some other locale's bytes.
+    locale = "en";
+  } else if (rule === "explicit_user_locale") {
     locale = String(localeHint || "").trim();
     if (!locale) throw new Error("tos_locale_required_by_rule");
   } else {
