@@ -289,15 +289,20 @@ export const ASSENT_METADATA_KEYS = Object.freeze(["tos_version", "acceptance_ev
 
 /** Project an intent row onto the two authorised keys. Absent pins send nothing. */
 export function _assentMetadata(assentPins) {
-  const out = {};
-  if (!assentPins) return out;
-  for (const k of ASSENT_METADATA_KEYS) {
-    const v = assentPins[k];
-    // Shadow-mode intents carry no pins; omit rather than send "" — an empty
-    // string would read as evidence that a version was pinned when none was.
-    if (v !== null && v !== undefined && String(v).length) out[k] = String(v);
+  if (!assentPins) return {};
+  const values = ASSENT_METADATA_KEYS.map((key) => assentPins[key]);
+  const present = values.map((value) =>
+    value !== null && value !== undefined && String(value).trim().length > 0);
+
+  // The evidence pin is one tuple. Sending only one member would manufacture a
+  // provider record that looks partially pinned but cannot identify the accepted
+  // evidence. Shadow mode has neither; active mode must have both.
+  if (present.some(Boolean) && !present.every(Boolean)) {
+    throw new Error("topup_assent_pin_incomplete");
   }
-  return out;
+  if (!present.some(Boolean)) return {};
+
+  return Object.fromEntries(ASSENT_METADATA_KEYS.map((key, i) => [key, String(values[i])]));
 }
 
 export async function _createTopupWithClient({ client, tenantId, userId, packKey, assentPins }) {
@@ -306,6 +311,9 @@ export async function _createTopupWithClient({ client, tenantId, userId, packKey
   if (!VALID_TOPUP_PACKS.includes(packKey)) throw new Error("unknown_pack");
   const productId = topupProductId(packKey);
   if (!productId) throw new Error("unknown_pack");                  // product env not set
+  // Validate the tuple before entering the dispatch try/catch. A partial pin is a
+  // definitive local invariant failure, not an ambiguous provider outcome.
+  const assentMetadata = _assentMetadata(assentPins);
 
   const requestedAt = new Date().toISOString();
   const alertFields = { tenant_id: String(tenantId), pack_key: String(packKey), requested_at: requestedAt };
@@ -320,7 +328,7 @@ export async function _createTopupWithClient({ client, tenantId, userId, packKey
         user_id: userId ? String(userId) : "",
         pack_key: String(packKey),
         kind: "topup",                                             // ← webhook discriminator
-        ..._assentMetadata(assentPins),                            // ← CR-27: exactly two, never event_seq
+        ...assentMetadata,                                         // ← CR-27: exactly two, never event_seq
       },
     }, { maxRetries: 0 });                                         // ← per-request; global client untouched
   } catch (e) {

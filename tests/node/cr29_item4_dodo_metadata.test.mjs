@@ -122,6 +122,18 @@ test("an empty-string pin is omitted, not sent as evidence of a pin", async () =
   assert.equal(md.acceptance_event_id, undefined);
 });
 
+test("a partial assent tuple fails definitively before provider dispatch", async () => {
+  for (const pins of [
+    { tos_version: VERSION },
+    { acceptance_event_id: EVENT_ID },
+    { tos_version: "   ", acceptance_event_id: EVENT_ID },
+  ]) {
+    const h = capture();
+    await assert.rejects(run(h, pins), /topup_assent_pin_incomplete/);
+    assert.equal(h.calls.length, 0, "an incomplete evidence tuple must never reach Dodo");
+  }
+});
+
 // ── item 6's containment is untouched by this change ─────────────────────────
 test("item-6 containment survives: per-request maxRetries stays 0", async () => {
   const h = capture();
