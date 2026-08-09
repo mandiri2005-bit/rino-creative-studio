@@ -604,6 +604,55 @@ describe("CR-29 item 4 — source-level non-vacuity guards", () => {
       "a URL must survive comment stripping");
   });
 
+  // A 401 on /tos/applicable means "no session", not "the agreement is unavailable".
+  // Folding it into the generic string made three separate diagnoses go to the nginx log.
+  test("a 401 says so, and stops before fetching, rendering or recording anything", () => {
+    const stripComments = (s) => s
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|\s)\/\/[^\n]*/g, "$1");
+    const code = stripComments(page);
+
+    const branch = code.match(/if \(r\.status === 401\) return fail\([^;]*\);/)?.[0] || "";
+    assert.ok(branch, "there must be an explicit 401 branch");
+    assert.match(branch, /"You are not signed in\. Sign in and reopen this page\."/,
+      "the 401 message must be the exact authorised wording");
+    assert.match(branch, /return fail\(/, "the 401 branch must return, not fall through");
+
+    // it must be reached BEFORE anything is fetched, decoded, rendered or posted
+    const at401     = code.indexOf("r.status === 401");
+    const artFetch  = code.indexOf("fetch(art.public_route");
+    const srcdocAt  = code.indexOf("frame.srcdoc =");
+    const assentAt  = code.indexOf('fetch("/tos/assent"');
+    const parseAt   = code.indexOf("art = await r.json()");
+    assert.ok(at401 >= 0, "the 401 check must exist");
+    assert.ok(at401 < parseAt,  "401 must short-circuit before the response body is used");
+    assert.ok(at401 < artFetch, "401 must short-circuit before the artifact is fetched");
+    assert.ok(at401 < srcdocAt, "401 must short-circuit before anything is rendered");
+    assert.ok(at401 < assentAt, "401 must short-circuit before any assent POST exists");
+
+    // non-401 failures keep the generic wording, unchanged
+    assert.match(code, /if \(r\.status === 404\) return fail\("No published agreement is available\."\);/);
+    assert.match(code, /if \(!r\.ok\) return fail\("Terms review is unavailable\."\);/,
+      "the generic branch must stay exactly as it was");
+    assert.equal((code.match(/"Terms review is unavailable\."/g) || []).length, 3,
+      "the generic string still covers 503-other, non-ok, and the catch-all");
+
+    // fail() is what guarantees nothing is offered: it hides the UI outright
+    const failFn = code.match(/function fail\(msg\) \{[\s\S]*?\n\}/)?.[0] || "";
+    assert.match(failFn, /\$\("ui"\)\.hidden = true/, "fail() must hide the decision UI");
+    assert.doesNotMatch(failFn, /disabled = (false|!1)/, "fail() must never enable a button");
+
+    // no redirect, and authentication is untouched
+    assert.doesNotMatch(code, /location\.(href|assign|replace)\s*=?\s*\(?["'`]/,
+      "no auto-redirect may be introduced");
+    assert.doesNotMatch(code, /signIn|sign_in|clerk|Clerk/,
+      "this page must not touch authentication itself");
+
+    // the stripper is not doing the work
+    assert.match(page, /You are not signed in/, "the wording is present in the file");
+  });
+
   test("deployment identity has no unknown fallback and definer search_path excludes public", () => {
     assert.doesNotMatch(moduleSource, /unknown-deployment/);
     const definerDeclarations = migration.match(/SECURITY DEFINER SET search_path = [^\n]+/g) || [];

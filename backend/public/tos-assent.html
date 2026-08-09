@@ -108,6 +108,14 @@ async function load() {
       ? "The applicable-agreement rule has not been selected yet, so no agreement can be presented. This is an open owner/legal decision, not an error."
       : "Terms review is unavailable.");
   }
+  // 401 gets its own message. It is by far the most common way this page fails, and
+  // folding it into the generic string cost three diagnosis round-trips: the screen said
+  // "unavailable" while the only real problem was an absent session, which is neither a
+  // fault of the agreement nor of this page. Say what it is. No auto-redirect — the reader
+  // signs in and comes back deliberately, and nothing here touches authentication.
+  // fail() returns immediately, so on this path the artifact is never fetched, the frame
+  // is never populated, the buttons stay disabled and no assent is ever POSTed.
+  if (r.status === 401) return fail("You are not signed in. Sign in and reopen this page.");
   if (r.status === 404) return fail("No published agreement is available.");
   if (!r.ok) return fail("Terms review is unavailable.");
 
