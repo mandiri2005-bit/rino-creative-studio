@@ -1,0 +1,128 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Terms review</title>
+<!--
+  CR-29 item 4 — technical assent surface (PLAN §S10.G3.1-i, migration 0085).
+
+  THIS IS A TECHNICAL SURFACE, NOT A PRODUCT RELEASE.
+  It is built to prove the capture path works end to end. It deliberately does NOT
+  ship legal copy: the agreement text is fetched from the published artifact route,
+  and if nothing is published it says so rather than showing a draft.
+
+  DELIBERATELY NOT DECIDED HERE (open owner/legal items — see decision packet 002):
+    * which signal determines an "Indonesian user"  (IT4-D1)
+    * age / parental consent treatment              (IT4-D2)
+    * what happens when a PAYING user rejects       (IT4-D3)
+    * the re-prompt rule                            (IT4-D4)
+    * blocking granularity after Reject             (IT4-D5)
+  Reject here records an event and does nothing else. It destroys nothing, blocks
+  nothing, and must not be wired to any product gate until IT4-D3/D5 are decided.
+
+  Privacy consent is a SEPARATE control with a SEPARATE evidence stream (P5 A1).
+  It is intentionally NOT submitted with the ToS assent below, and this page does
+  not implement its storage — that is a different workstream.
+-->
+<style>
+  body{font:15px/1.6 system-ui,sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem}
+  #agreement{border:1px solid #ccc;padding:1rem;height:340px;overflow:auto;white-space:pre-wrap}
+  .meta{font-size:13px;color:#555;margin:.75rem 0}
+  .meta code{background:#f4f4f4;padding:.1rem .3rem}
+  .row{display:flex;gap:.75rem;align-items:center;margin:.75rem 0;flex-wrap:wrap}
+  button{padding:.55rem 1.1rem;font-size:15px;cursor:pointer}
+  #reject{background:#fff}
+  .sep{border-top:1px dashed #bbb;margin:1.25rem 0;padding-top:.75rem}
+  .note{font-size:13px;color:#666}
+  #status{margin-top:1rem;font-weight:600}
+</style>
+
+<h1>Terms review</h1>
+<p class="note" id="unavailable" hidden></p>
+
+<div id="ui" hidden>
+  <!-- (a) the COMPLETE agreement is present before any decision, not behind a link -->
+  <div id="agreement">Loading…</div>
+
+  <div class="meta">
+    Version <code id="m-version"></code> · locale <code id="m-locale"></code><br>
+    Artifact SHA-256 <code id="m-hash"></code><br>
+    Selected by rule <code id="m-rule"></code> · served by deployment <code id="m-deploy">(server-side)</code>
+  </div>
+
+  <!-- (b) the exact artifact is saveable/downloadable, byte-identical to the hashed one -->
+  <div class="row"><a id="download" download>Download this agreement</a></div>
+
+  <!-- (d) privacy consent: a DISTINCT control, deliberately not bundled -->
+  <div class="sep">
+    <label><input type="checkbox" id="privacy"> I separately consent to the Privacy Policy</label>
+    <p class="note">Separate on purpose. A single combined “Terms and Privacy” control would make the
+    consent clause void under UU PDP Ps. 23. This checkbox is <strong>not</strong> submitted with the
+    decision below and its evidence stream is not implemented on this page.</p>
+  </div>
+
+  <!-- (c) BOTH outcomes are recorded -->
+  <div class="row">
+    <button id="accept">Accept</button>
+    <button id="reject">Reject</button>
+  </div>
+  <p class="note">Reject records your decision. It does not delete anything and does not
+  remove access to existing work.</p>
+</div>
+
+<div id="status"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let art = null;
+
+function fail(msg) { $("unavailable").textContent = msg; $("unavailable").hidden = false; }
+
+async function load() {
+  const locale = new URLSearchParams(location.search).get("locale") || "";
+  const r = await fetch(`/tos/applicable?locale=${encodeURIComponent(locale)}`, { credentials: "include" });
+  if (r.status === 503) {
+    const b = await r.json().catch(() => ({}));
+    return fail(b.error === "tos_determination_rule_unset"
+      ? "The applicable-agreement rule has not been selected yet, so no agreement can be presented. This is an open owner/legal decision, not an error."
+      : "Terms review is unavailable.");
+  }
+  if (r.status === 404) return fail("No published agreement is available.");
+  if (!r.ok) return fail("Terms review is unavailable.");
+
+  art = await r.json();
+  $("m-version").textContent = art.tos_version;
+  $("m-locale").textContent  = art.locale;
+  $("m-hash").textContent    = art.artifact_sha256;
+  $("m-rule").textContent    = art.determination_rule;
+  $("download").href = art.public_route;
+  $("download").setAttribute("download", `terms-${art.tos_version}-${art.locale}`);
+
+  const doc = await fetch(art.public_route, { credentials: "include" });
+  $("agreement").textContent = doc.ok
+    ? await doc.text()
+    : "The agreement could not be loaded from its published route.";
+  $("ui").hidden = false;
+}
+
+async function send(event) {
+  $("accept").disabled = $("reject").disabled = true;
+  const r = await fetch("/tos/assent", {
+    method: "POST", credentials: "include",
+    headers: { "content-type": "application/json" },
+    // tenant/actor are NOT sent: the server derives both from the authenticated
+    // session and the database re-checks them.
+    body: JSON.stringify({
+      tos_version: art.tos_version, locale: art.locale,
+      artifact_sha256: art.artifact_sha256, event, surface: "tos_review_page",
+    }),
+  });
+  const b = await r.json().catch(() => ({}));
+  $("status").textContent = r.ok
+    ? `Recorded: ${b.event}.`
+    : `Not recorded (${b.error || r.status}).`;
+  $("accept").disabled = $("reject").disabled = false;
+}
+
+$("accept").onclick = () => send("accepted");
+$("reject").onclick = () => send("rejected");
+load();
+</script>

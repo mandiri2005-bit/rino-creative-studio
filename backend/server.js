@@ -29,6 +29,7 @@ import { pool } from "./db.js";
 import * as billing from "./billing.mjs";
 import * as dodo from "./dodo.mjs";
 import * as subscriptions from "./dodo_subscriptions.mjs";
+import * as tosAssent from "./tos_assent.mjs";
 import * as midtrans from "./midtrans.mjs";
 import { setLiveJob, getLiveJob, updateLiveJob, pushLiveLog, delLiveJob, rateLimitOk, acquireLock, releaseLock } from "./redis.js";
 import * as storage from "./storage.mjs";
@@ -791,6 +792,72 @@ app.get("/subscription/portal", requireAuth, async (req, res) => {
 // ── Top-up (one-time credit purchase, PAID plans only) ────────────────────────
 // Adds credits to the topup bucket (does NOT change tier). Free is rejected — a Free
 // user who wants more credits must subscribe first. Credits granted by the webhook.
+// ── CR-29 item 4: ToS assent capture (PLAN §S10.G3.1-i, migration 0085) ──────
+// Tenant and actor are derived from the authenticated request ONLY. Any tenant_id
+// or actor_id in the body is ignored; the database re-checks both and raises.
+// These endpoints do NOT gate anything: the gate lives in /topup/create and ships
+// in shadow mode. Serving refuses while the determination rule is unselected —
+// that is an assent-surface blocker, never a rail blocker.
+app.get("/tos/applicable", requireAuth, async (req, res) => {
+  try {
+    if (!tosAssent.determinationRule()) {
+      return res.status(503).json({
+        error: "tos_determination_rule_unset",
+        message: "The applicable-agreement rule has not been selected yet.",
+      });
+    }
+    const tenantId = resolveTenantId(req);
+    const locale = String(req.query.locale || "").trim();
+    const art = await tosAssent.applicableArtifact(tenantId, locale);
+    if (!art) return res.status(404).json({ error: "no_published_agreement" });
+    res.json({
+      tos_version: art.tos_version, locale: art.locale,
+      artifact_sha256: art.artifact_sha256, public_route: art.public_route,
+      byte_size: art.byte_size, content_type: art.content_type,
+      effective_at: art.effective_at, determination_rule: art.determination_rule,
+    });
+  } catch (e) {
+    if (String(e.message).startsWith("tos_")) return res.status(503).json({ error: e.message });
+    console.error("[tos/applicable]", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+app.post("/tos/assent", requireAuth, async (req, res) => {
+  try {
+    if (!tosAssent.determinationRule()) {
+      return res.status(503).json({ error: "tos_determination_rule_unset" });
+    }
+    const tenantId = resolveTenantId(req);
+    const userId = await resolveUserId(req, tenantId);   // server-derived, never from the body
+    const b = req.body || {};
+    const event = String(b.event || "").trim();
+    if (!["accepted", "rejected"].includes(event)) {
+      return res.status(400).json({ error: "event must be accepted|rejected" });
+    }
+    // Accept and Reject are recorded with IDENTICAL evidence pins.
+    const row = await tosAssent.recordAssent({
+      tenantId, actorId: userId,
+      tosVersion: String(b.tos_version || "").trim(),
+      locale: String(b.locale || "").trim(),
+      artifactSha256: String(b.artifact_sha256 || "").trim(),
+      event,
+      surface: String(b.surface || "").trim() || "unspecified",
+    });
+    // Reject is recorded and has NO destructive effect here.
+    res.json({ acceptance_event_id: row.acceptance_event_id, event: row.event, event_at: row.event_at });
+  } catch (e) {
+    if (String(e.message).startsWith("tos_") || e.message === "invalid_assent_event") {
+      return res.status(400).json({ error: e.message });
+    }
+    if (e.code === "42501" || /insufficient_privilege|tenant mismatch|not an active user/.test(e.message)) {
+      return res.status(403).json({ error: "assent_identity_rejected" });
+    }
+    console.error("[tos/assent]", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
 app.post("/topup/create", requireAuth, async (req, res) => {
   try {
     if (!subscriptions.subscriptionMode()) return res.status(503).json({ error: "not_subscription_mode" });
@@ -811,11 +878,33 @@ app.post("/topup/create", requireAuth, async (req, res) => {
     if (!subscriptions.VALID_TOPUP_PACKS.includes(packKey)) {
       return res.status(400).json({ error: `pack_key must be one of ${subscriptions.VALID_TOPUP_PACKS.join("|")}` });
     }
+    // ── CR-29 / Item 4 assent gate (PLAN §S10.G3.1-i, migration 0085) ────────
+    // Placed AFTER the non-free-plan eligibility check by design: only tenants that
+    // already passed it reach the gate. If the gate is ever moved before that check
+    // the population it can refuse changes, and the reasoning recorded for IT4-D3
+    // no longer holds.
+    // NOTE: plan !== "free" proves plan eligibility ONLY. It is not evidence of an
+    // active or historical payment, and nothing here may treat it as such.
+    // The whole gate transaction COMMITS before any provider call is made.
+    // Shadow mode records and returns; it never refuses, so this cannot gate the rail.
+    await tosAssent.createGatedIntent({ tenantId, actorId: userId, packKey });
+
     const out = await subscriptions.createTopup({ tenantId, userId, packKey });
     res.json({ payment_link: out.checkoutUrl });
   } catch (e) {
     if (e.message === "dodo_not_configured") return res.status(503).json({ error: "dodo_not_configured" });
     if (e.message === "unknown_pack") return res.status(400).json({ error: "unknown_pack" });
+    // ── CR-29 / Item 4 gate refusal (only reachable once the gate is ACTIVE) ──
+    // In shadow mode this branch is unreachable: the gate never refuses.
+    if (/latest assent for the effective version is not accepted/.test(e.message)) {
+      return res.status(403).json({
+        error: "tos_assent_required",
+        message: "Please review and accept the current Terms before adding credits.",
+      });
+    }
+    if (/no published, effective ToS version|no gate activation state|currently-served artifact/.test(e.message)) {
+      return res.status(503).json({ error: "tos_gate_misconfigured" });
+    }
     // ── CR-29 / Item 6 containment (PLAN §S10.G3.1-h, MATRIX-045 T80) ────────
     // Retrying is what we are trying to prevent, so the copy says so explicitly.
     if (e.message === "checkout_status_unknown") {
