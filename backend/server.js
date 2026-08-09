@@ -830,23 +830,40 @@ app.post("/tos/assent", requireAuth, async (req, res) => {
     }
     const tenantId = resolveTenantId(req);
     const userId = await resolveUserId(req, tenantId);   // server-derived, never from the body
+    if (!userId) return res.status(403).json({ error: "assent_identity_rejected" });
     const b = req.body || {};
     const event = String(b.event || "").trim();
     if (!["accepted", "rejected"].includes(event)) {
       return res.status(400).json({ error: "event must be accepted|rejected" });
     }
-    // Accept and Reject are recorded with IDENTICAL evidence pins.
+    // Re-resolve the applicable artifact server-side. The client may echo what it
+    // displayed, but it cannot choose or rewrite the evidence pins. A version
+    // change between GET and POST forces a reload instead of silently recording
+    // assent to bytes the user was not shown.
+    const locale = String(b.locale || "").trim();
+    const art = await tosAssent.applicableArtifact(tenantId, locale);
+    if (!art) return res.status(409).json({ error: "tos_artifact_not_current" });
+    if (String(b.tos_version || "").trim() !== art.tos_version ||
+        String(b.artifact_sha256 || "").trim() !== art.artifact_sha256) {
+      return res.status(409).json({ error: "tos_artifact_changed", reload: true });
+    }
+    // Accept and Reject are recorded with IDENTICAL, server-verified evidence pins.
     const row = await tosAssent.recordAssent({
       tenantId, actorId: userId,
-      tosVersion: String(b.tos_version || "").trim(),
-      locale: String(b.locale || "").trim(),
-      artifactSha256: String(b.artifact_sha256 || "").trim(),
+      tosVersion: art.tos_version,
+      locale: art.locale,
+      artifactSha256: art.artifact_sha256,
       event,
-      surface: String(b.surface || "").trim() || "unspecified",
+      surface: "tos_review_page",
     });
     // Reject is recorded and has NO destructive effect here.
     res.json({ acceptance_event_id: row.acceptance_event_id, event: row.event, event_at: row.event_at });
   } catch (e) {
+    if (e.message === "tos_determination_rule_unset" ||
+        e.message === "tos_serving_deployment_id_unset" ||
+        String(e.message).startsWith("tos_determination_rule_not_implemented:")) {
+      return res.status(503).json({ error: e.message });
+    }
     if (String(e.message).startsWith("tos_") || e.message === "invalid_assent_event") {
       return res.status(400).json({ error: e.message });
     }
@@ -865,6 +882,7 @@ app.post("/topup/create", requireAuth, async (req, res) => {
     const tenantId = resolveTenantId(req);
     if (!(await rateLimitOk(`checkout:${tenantId}`, 10, 60))) return res.status(429).json({ error: "rate_limited", message: "Terlalu banyak percobaan, coba lagi sebentar." });   // M5
     const userId = await resolveUserId(req, tenantId);
+    if (!userId) return res.status(403).json({ error: "assent_identity_rejected" });
     // Top-up is for paid plans only — reject Free (gate by the tenant's current plan).
     let plan = "free";
     try {

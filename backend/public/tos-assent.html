@@ -53,10 +53,9 @@
 
   <!-- (d) privacy consent: a DISTINCT control, deliberately not bundled -->
   <div class="sep">
-    <label><input type="checkbox" id="privacy"> I separately consent to the Privacy Policy</label>
-    <p class="note">Separate on purpose. A single combined “Terms and Privacy” control would make the
-    consent clause void under UU PDP Ps. 23. This checkbox is <strong>not</strong> submitted with the
-    decision below and its evidence stream is not implemented on this page.</p>
+    <label><input type="checkbox" id="privacy" disabled> Privacy consent is a separate, unavailable flow</label>
+    <p class="note">This disabled control is shown only to make the separation explicit. It records
+    nothing and cannot be presented as consent. The real privacy flow requires its own evidence stream.</p>
   </div>
 
   <!-- (c) BOTH outcomes are recorded -->
@@ -73,8 +72,19 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let art = null;
+let downloadUrl = null;
 
-function fail(msg) { $("unavailable").textContent = msg; $("unavailable").hidden = false; }
+function fail(msg) {
+  $("ui").hidden = true;
+  $("unavailable").textContent = msg;
+  $("unavailable").hidden = false;
+}
+
+async function sha256Hex(bytes) {
+  if (!globalThis.crypto?.subtle) throw new Error("SHA-256 verification unavailable");
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 async function load() {
   const locale = new URLSearchParams(location.search).get("locale") || "";
@@ -93,13 +103,24 @@ async function load() {
   $("m-locale").textContent  = art.locale;
   $("m-hash").textContent    = art.artifact_sha256;
   $("m-rule").textContent    = art.determination_rule;
-  $("download").href = art.public_route;
-  $("download").setAttribute("download", `terms-${art.tos_version}-${art.locale}`);
-
   const doc = await fetch(art.public_route, { credentials: "include" });
-  $("agreement").textContent = doc.ok
-    ? await doc.text()
-    : "The agreement could not be loaded from its published route.";
+  if (!doc.ok) return fail("The agreement could not be loaded from its published route.");
+  const bytes = await doc.arrayBuffer();
+  if (Number(art.byte_size) !== bytes.byteLength) {
+    return fail("The served agreement size does not match its evidence record.");
+  }
+  const actualHash = await sha256Hex(bytes).catch(() => null);
+  if (!actualHash || actualHash !== art.artifact_sha256) {
+    return fail("The served agreement does not match its recorded SHA-256.");
+  }
+
+  // Display and download are derived from the SAME verified byte buffer. A later
+  // route mutation cannot make the download differ from what was reviewed.
+  $("agreement").textContent = new TextDecoder().decode(bytes);
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = URL.createObjectURL(new Blob([bytes], { type: art.content_type || "text/plain" }));
+  $("download").href = downloadUrl;
+  $("download").setAttribute("download", `terms-${art.tos_version}-${art.locale}`);
   $("ui").hidden = false;
 }
 
@@ -112,7 +133,7 @@ async function send(event) {
     // session and the database re-checks them.
     body: JSON.stringify({
       tos_version: art.tos_version, locale: art.locale,
-      artifact_sha256: art.artifact_sha256, event, surface: "tos_review_page",
+      artifact_sha256: art.artifact_sha256, event,
     }),
   });
   const b = await r.json().catch(() => ({}));
@@ -124,5 +145,5 @@ async function send(event) {
 
 $("accept").onclick = () => send("accepted");
 $("reject").onclick = () => send("rejected");
-load();
+load().catch(() => fail("Terms review is unavailable."));
 </script>

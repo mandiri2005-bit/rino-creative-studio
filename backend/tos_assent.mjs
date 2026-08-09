@@ -22,7 +22,7 @@
 //   country or self-declaration. That refusal affects the assent surface ONLY —
 //   the gate stays shadow and top-up is untouched.
 // ─────────────────────────────────────────────────────────────────────────────
-import { query } from "./db.js";
+import { query, queryWithActor } from "./db.js";
 
 // The owner/legal decision (IT4-D1). No default: an unset value is a blocker,
 // not an invitation to pick one.
@@ -34,10 +34,12 @@ export function determinationRule() {
 // Identity of the deployment that served the bytes — memo §8.4's "identifier rilis".
 // Distinct from tos_version, which is the LEGAL release identity.
 export function servingDeploymentId() {
-  return String(
+  const id = String(
     process.env.RAILWAY_DEPLOYMENT_ID || process.env.SERVING_DEPLOYMENT_ID ||
-    process.env.RAILWAY_GIT_COMMIT_SHA || "unknown-deployment"
+    process.env.RAILWAY_GIT_COMMIT_SHA || ""
   ).trim();
+  if (!id) throw new Error("tos_serving_deployment_id_unset");
+  return id;
 }
 
 /**
@@ -57,7 +59,7 @@ export async function applicableArtifact(tenantId, localeHint) {
   const v = await query(
     `SELECT tos_version, effective_at
        FROM tos_versions
-      WHERE effective_at <= now() AND superseded_by IS NULL
+      WHERE published_at <= now() AND effective_at <= now() AND superseded_by IS NULL
       ORDER BY effective_at DESC, tos_version DESC
       LIMIT 1`, [], tenantId);
   if (!v.rows.length) return null;
@@ -81,6 +83,7 @@ export async function applicableArtifact(tenantId, localeHint) {
          ON s.tos_version = a.tos_version AND s.locale = a.locale
         AND s.artifact_sha256 = a.artifact_sha256
       WHERE a.tos_version = $1 AND a.locale = $2 AND s.served_until IS NULL
+      ORDER BY s.served_from DESC, s.public_route
       LIMIT 1`, [version, locale], tenantId);
   if (!a.rows.length) return null;
 
@@ -97,11 +100,11 @@ export async function recordAssent({ tenantId, actorId, tosVersion, locale, arti
   const rule = determinationRule();
   if (!rule) throw new Error("tos_determination_rule_unset");
 
-  const r = await query(
+  const r = await queryWithActor(
     `SELECT acceptance_event_id, event_seq, event, event_at
        FROM tos_record_assent($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
     [tenantId, actorId, tosVersion, locale, artifactSha256, event, surface, rule, servingDeploymentId()],
-    tenantId);
+    tenantId, actorId);
   return r.rows[0];
 }
 
@@ -114,10 +117,10 @@ export async function recordAssent({ tenantId, actorId, tosVersion, locale, arti
  * Active mode:  fails closed; the thrown error is surfaced, never swallowed.
  */
 export async function createGatedIntent({ tenantId, actorId, packKey }) {
-  const r = await query(
+  const r = await queryWithActor(
     `SELECT checkout_intent_id, gate_active_at_create, tos_version, acceptance_event_id
        FROM topup_gate_create_intent($1,$2,$3)`,
-    [tenantId, actorId, packKey], tenantId);
+    [tenantId, actorId, packKey], tenantId, actorId);
   return r.rows[0];
 }
 

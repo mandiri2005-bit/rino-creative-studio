@@ -34,7 +34,7 @@
 --   behind it, which is why every writer AND the gate take the same advisory lock as
 --   their first statement.
 --
--- FORWARD-ONLY. Corrections are new migrations, never edits to this file.
+-- FORWARD-ONLY ONCE APPLIED. Corrections after deployment are new migrations.
 -- =====================================================================
 
 BEGIN;
@@ -50,17 +50,12 @@ CREATE TABLE IF NOT EXISTS tos_versions (
     published_at         TIMESTAMPTZ NOT NULL,
     effective_at         TIMESTAMPTZ NOT NULL,
     superseded_by        TEXT        REFERENCES tos_versions(tos_version),
-    -- Release-bundle hash. DELIBERATELY DISTINCT from artifact_sha256 and never
-    -- interchangeable with it. Optional: a release may have no bundle artifact.
-    bundle_sha256        TEXT        CHECK (bundle_sha256 ~ '^[0-9a-f]{64}$'),
     is_lifecycle_cutover BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT tos_versions_version_nonblank CHECK (length(btrim(tos_version)) > 0)
 );
 COMMENT ON TABLE  tos_versions IS
     'Legal/policy release identity. NOT the bytes shown to a user - see tos_version_artifacts.';
-COMMENT ON COLUMN tos_versions.bundle_sha256 IS
-    'Release-bundle hash. NEVER substitute for tos_version_artifacts.artifact_sha256.';
 
 -- At most one lifecycle-cutover row, ever (G3.1-e).
 CREATE UNIQUE INDEX IF NOT EXISTS tos_versions_single_cutover
@@ -121,6 +116,7 @@ SELECT  p.tos_version,
           WHERE w.tos_version     = p.tos_version
             AND w.locale          = p.locale
             AND w.artifact_sha256 = p.artifact_sha256
+            AND w.public_route    = p.public_route
             AND w.event           = 'withdrawn'
             AND w.event_seq       > p.event_seq) AS served_until
   FROM tos_artifact_publication_events p
@@ -146,7 +142,9 @@ CREATE TABLE IF NOT EXISTS tos_acceptances (
     determination_rule    TEXT        NOT NULL CHECK (length(btrim(determination_rule)) > 0),
     -- Memo 8.4 "identifier rilis": the DEPLOY that served the document, not the
     -- legal release id (that is tos_version).
-    serving_deployment_id TEXT        NOT NULL CHECK (length(btrim(serving_deployment_id)) > 0),
+    serving_deployment_id TEXT        NOT NULL
+        CHECK (length(btrim(serving_deployment_id)) > 0
+               AND serving_deployment_id <> 'unknown-deployment'),
     -- tuple-addressable key: the FK target for an intent's assent pin
     CONSTRAINT tos_acceptances_pin_tuple
         UNIQUE (tenant_id, actor_id, tos_version, acceptance_event_id, event_seq),
@@ -192,14 +190,27 @@ CREATE TABLE IF NOT EXISTS g3_gate_release_attestations (
     ui_verified           BOOLEAN     NOT NULL,
     privacy_flow_verified BOOLEAN     NOT NULL,
     patches_reconciled    BOOLEAN     NOT NULL,
+    legal_artifacts_verified BOOLEAN  NOT NULL,
+    tos_version           TEXT        NOT NULL REFERENCES tos_versions(tos_version),
+    policy_decisions      JSONB       NOT NULL,
     acceptance_run_ref    TEXT        NOT NULL CHECK (length(btrim(acceptance_run_ref)) > 0),
     attested_by           TEXT        NOT NULL CHECK (length(btrim(attested_by)) > 0),
     attested_at           TIMESTAMPTZ NOT NULL,
     CONSTRAINT g3_gate_attestation_artifacts_nonempty
-        CHECK (jsonb_typeof(artifact_hashes) = 'object' AND artifact_hashes <> '{}'::jsonb)
+        CHECK (jsonb_typeof(artifact_hashes) = 'object' AND artifact_hashes <> '{}'::jsonb),
+    CONSTRAINT g3_gate_attestation_policy_decisions_object
+        CHECK (jsonb_typeof(policy_decisions) = 'object')
 );
 COMMENT ON TABLE g3_gate_release_attestations IS
     'Proves WHAT WAS ATTESTED, not that the assertion is true. No cross-system fence exists.';
+
+-- An activation names the exact attestation it relied on. A stale, unrelated
+-- attestation must never unlock a later deployment merely because it exists.
+ALTER TABLE g3_topup_gate_activation
+    ADD COLUMN release_attestation_id BIGINT
+        REFERENCES g3_gate_release_attestations(attestation_id),
+    ADD CONSTRAINT g3_topup_gate_active_requires_attestation
+        CHECK (state <> 'activated' OR release_attestation_id IS NOT NULL);
 
 -- ---------------------------------------------------------------------
 -- 7. TOP-UP CHECKOUT INTENT (assent evidence at checkout-creation time)
@@ -245,7 +256,7 @@ CREATE INDEX IF NOT EXISTS topup_checkout_intents_tenant
 --    Row-level for UPDATE/DELETE, statement-level for TRUNCATE. The one narrow
 --    exception is tos_versions.superseded_by, NULL -> value, on an older row.
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION l2c_reject_mutation() RETURNS TRIGGER
+CREATE OR REPLACE FUNCTION public.l2c_reject_mutation() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     RAISE EXCEPTION 'append-only: % on %.% is not permitted',
@@ -253,7 +264,7 @@ BEGIN
         USING ERRCODE = 'restrict_violation';
 END $$;
 
-CREATE OR REPLACE FUNCTION l2c_tos_versions_guard() RETURNS TRIGGER
+CREATE OR REPLACE FUNCTION public.l2c_tos_versions_guard() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
@@ -265,10 +276,10 @@ BEGIN
         RAISE EXCEPTION 'append-only: tos_versions is immutable except superseded_by NULL->value'
             USING ERRCODE = 'restrict_violation';
     END IF;
-    IF (NEW.tos_version, NEW.published_at, NEW.effective_at, NEW.bundle_sha256,
+    IF (NEW.tos_version, NEW.published_at, NEW.effective_at,
         NEW.is_lifecycle_cutover, NEW.created_at)
        IS DISTINCT FROM
-       (OLD.tos_version, OLD.published_at, OLD.effective_at, OLD.bundle_sha256,
+       (OLD.tos_version, OLD.published_at, OLD.effective_at,
         OLD.is_lifecycle_cutover, OLD.created_at) THEN
         RAISE EXCEPTION 'append-only: only superseded_by may change on tos_versions'
             USING ERRCODE = 'restrict_violation';
@@ -284,15 +295,15 @@ BEGIN
                              'g3_gate_release_attestations','topup_checkout_intents'] LOOP
         EXECUTE format(
             'CREATE TRIGGER %I_no_mutation BEFORE UPDATE OR DELETE ON public.%I
-               FOR EACH ROW EXECUTE FUNCTION l2c_reject_mutation()', t, t);
+               FOR EACH ROW EXECUTE FUNCTION public.l2c_reject_mutation()', t, t);
         EXECUTE format(
             'CREATE TRIGGER %I_no_truncate BEFORE TRUNCATE ON public.%I
-               FOR EACH STATEMENT EXECUTE FUNCTION l2c_reject_mutation()', t, t);
+               FOR EACH STATEMENT EXECUTE FUNCTION public.l2c_reject_mutation()', t, t);
     END LOOP;
     EXECUTE 'CREATE TRIGGER tos_versions_guard BEFORE UPDATE OR DELETE ON public.tos_versions
-               FOR EACH ROW EXECUTE FUNCTION l2c_tos_versions_guard()';
+               FOR EACH ROW EXECUTE FUNCTION public.l2c_tos_versions_guard()';
     EXECUTE 'CREATE TRIGGER tos_versions_no_truncate BEFORE TRUNCATE ON public.tos_versions
-               FOR EACH STATEMENT EXECUTE FUNCTION l2c_reject_mutation()';
+               FOR EACH STATEMENT EXECUTE FUNCTION public.l2c_reject_mutation()';
 END $$;
 
 -- ---------------------------------------------------------------------
@@ -301,7 +312,7 @@ END $$;
 --    against each other: it degrades to OVER-serialization, never under. The
 --    failure mode is latency, never a missed exclusion.
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION assent_lock_key(p_tenant UUID, p_actor UUID)
+CREATE OR REPLACE FUNCTION public.assent_lock_key(p_tenant UUID, p_actor UUID)
 RETURNS BIGINT LANGUAGE sql IMMUTABLE SET search_path = pg_catalog, pg_temp AS $$
     SELECT pg_catalog.hashtextextended(p_tenant::text || ':' || p_actor::text, 0)
 $$;
@@ -312,7 +323,7 @@ $$;
 --     be a real, active user OF THAT TENANT. Caller-supplied identity is not
 --     trusted: p_tenant must equal the GUC or the call fails closed.
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION tos_record_assent(
+CREATE OR REPLACE FUNCTION public.tos_record_assent(
     p_tenant                UUID,
     p_actor                 UUID,
     p_tos_version           TEXT,
@@ -322,10 +333,12 @@ CREATE OR REPLACE FUNCTION tos_record_assent(
     p_surface               TEXT,
     p_determination_rule    TEXT,
     p_serving_deployment_id TEXT
-) RETURNS tos_acceptances
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_catalog, pg_temp AS $$
+) RETURNS public.tos_acceptances
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_guc UUID;
+    v_actor_guc UUID;
+    v_current_version TEXT;
     v_row public.tos_acceptances;
 BEGIN
     -- FIRST STATEMENT: the shared boundary.
@@ -343,11 +356,43 @@ BEGIN
             USING ERRCODE = 'insufficient_privilege';
     END IF;
 
+    v_actor_guc := pg_catalog.current_setting('app.current_actor_id', TRUE)::uuid;
+    IF v_actor_guc IS NULL THEN
+        RAISE EXCEPTION 'tos_record_assent: app.current_actor_id is not set'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF v_actor_guc <> p_actor THEN
+        RAISE EXCEPTION 'tos_record_assent: actor mismatch with authenticated session context'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
     -- Actor authority: must be an active user OF THIS TENANT.
     IF NOT EXISTS (SELECT 1 FROM public.users u
                     WHERE u.id = p_actor AND u.tenant_id = p_tenant AND u.is_active) THEN
         RAISE EXCEPTION 'tos_record_assent: actor is not an active user of this tenant'
             USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    SELECT v.tos_version INTO v_current_version
+      FROM public.tos_versions v
+     WHERE v.published_at <= pg_catalog.now()
+       AND v.effective_at <= pg_catalog.now()
+       AND v.superseded_by IS NULL
+     ORDER BY v.effective_at DESC, v.tos_version DESC
+     LIMIT 1;
+    IF v_current_version IS NULL OR v_current_version <> p_tos_version THEN
+        RAISE EXCEPTION 'tos_record_assent: artifact is not for the current published/effective version'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM public.tos_artifact_served_intervals s
+         WHERE s.tos_version = p_tos_version
+           AND s.locale = p_locale
+           AND s.artifact_sha256 = p_artifact_sha256
+           AND s.served_until IS NULL
+    ) THEN
+        RAISE EXCEPTION 'tos_record_assent: artifact is not currently served'
+            USING ERRCODE = 'restrict_violation';
     END IF;
 
     INSERT INTO public.tos_acceptances (
@@ -367,14 +412,15 @@ END $$;
 --     SHADOW MODE RECORDS AND OBSERVES BUT NEVER REFUSES.
 --     ACTIVE MODE FAILS CLOSED.
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION topup_gate_create_intent(
+CREATE OR REPLACE FUNCTION public.topup_gate_create_intent(
     p_tenant   UUID,
     p_actor    UUID,
     p_pack_key TEXT
-) RETURNS topup_checkout_intents
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_catalog, pg_temp AS $$
+) RETURNS public.topup_checkout_intents
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_guc        UUID;
+    v_actor_guc  UUID;
     v_gate       public.g3_topup_gate_activation;
     v_ver        TEXT;
     v_evt        public.tos_acceptances;
@@ -390,6 +436,15 @@ BEGIN
     END IF;
     IF v_guc <> p_tenant THEN
         RAISE EXCEPTION 'topup_gate_create_intent: tenant mismatch with session context'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    v_actor_guc := pg_catalog.current_setting('app.current_actor_id', TRUE)::uuid;
+    IF v_actor_guc IS NULL THEN
+        RAISE EXCEPTION 'topup_gate_create_intent: app.current_actor_id is not set'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF v_actor_guc <> p_actor THEN
+        RAISE EXCEPTION 'topup_gate_create_intent: actor mismatch with authenticated session context'
             USING ERRCODE = 'insufficient_privilege';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM public.users u
@@ -420,7 +475,8 @@ BEGIN
     -- Currently published AND effective. A future effective_at never satisfies it.
     SELECT tos_version INTO v_ver
       FROM public.tos_versions
-     WHERE effective_at <= pg_catalog.now() AND superseded_by IS NULL
+     WHERE published_at <= pg_catalog.now()
+       AND effective_at <= pg_catalog.now() AND superseded_by IS NULL
      ORDER BY effective_at DESC, tos_version DESC
      LIMIT 1;
     IF v_ver IS NULL THEN
@@ -453,11 +509,11 @@ END $$;
 -- ---------------------------------------------------------------------
 -- 12. ACTIVATION GUARD: fail closed unless the evidence exists
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION g3_topup_gate_activation_guard() RETURNS TRIGGER
-LANGUAGE plpgsql SET search_path = public, pg_catalog, pg_temp AS $$
+CREATE OR REPLACE FUNCTION public.g3_topup_gate_activation_guard() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     v_prev  public.g3_topup_gate_activation;
-    v_att   BIGINT;
+    v_att   public.g3_gate_release_attestations;
     v_ver   TEXT;
 BEGIN
     SELECT * INTO v_prev FROM public.g3_topup_gate_activation
@@ -482,7 +538,9 @@ BEGIN
         END IF;
         -- a published, effective version must exist
         SELECT tos_version INTO v_ver FROM public.tos_versions
-         WHERE effective_at <= pg_catalog.now() AND superseded_by IS NULL LIMIT 1;
+         WHERE published_at <= pg_catalog.now()
+           AND effective_at <= pg_catalog.now() AND superseded_by IS NULL
+         ORDER BY effective_at DESC, tos_version DESC LIMIT 1;
         IF v_ver IS NULL THEN
             RAISE EXCEPTION 'gate: cannot activate without a published, effective ToS version'
                 USING ERRCODE = 'restrict_violation';
@@ -494,11 +552,38 @@ BEGIN
                 USING ERRCODE = 'restrict_violation';
         END IF;
         -- a complete release attestation must exist
-        SELECT attestation_id INTO v_att FROM public.g3_gate_release_attestations
-         WHERE route_verified AND ui_verified AND privacy_flow_verified AND patches_reconciled
-         ORDER BY attestation_id DESC LIMIT 1;
+        SELECT * INTO v_att FROM public.g3_gate_release_attestations
+         WHERE attestation_id = NEW.release_attestation_id;
         IF v_att IS NULL THEN
-            RAISE EXCEPTION 'gate: cannot activate without a complete release attestation'
+            RAISE EXCEPTION 'gate: cannot activate without the named release attestation'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF NOT (v_att.route_verified AND v_att.ui_verified
+                AND v_att.privacy_flow_verified AND v_att.patches_reconciled
+                AND v_att.legal_artifacts_verified) THEN
+            RAISE EXCEPTION 'gate: named release attestation is incomplete'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF v_att.tos_version <> v_ver THEN
+            RAISE EXCEPTION 'gate: release attestation names a different ToS version'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+              FROM pg_catalog.unnest(ARRAY['IT4-D1','IT4-D2','IT4-D3','IT4-D4','IT4-D5']) AS d(decision_key)
+             WHERE pg_catalog.jsonb_typeof(v_att.policy_decisions -> d.decision_key) IS DISTINCT FROM 'string'
+                OR pg_catalog.length(pg_catalog.btrim(
+                       COALESCE(v_att.policy_decisions ->> d.decision_key, ''))) = 0
+        ) THEN
+            RAISE EXCEPTION 'gate: release attestation lacks a nonblank required policy decision'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM public.tos_artifact_served_intervals s
+             WHERE s.tos_version = v_ver AND s.served_until IS NULL
+               AND COALESCE(v_att.artifact_hashes ->> s.locale, '') <> s.artifact_sha256
+        ) THEN
+            RAISE EXCEPTION 'gate: release attestation artifact hashes do not match served artifacts'
                 USING ERRCODE = 'restrict_violation';
         END IF;
         RETURN NEW;
@@ -516,7 +601,7 @@ END $$;
 
 CREATE TRIGGER g3_topup_gate_activation_guard_trg
     BEFORE INSERT ON g3_topup_gate_activation
-    FOR EACH ROW EXECUTE FUNCTION g3_topup_gate_activation_guard();
+    FOR EACH ROW EXECUTE FUNCTION public.g3_topup_gate_activation_guard();
 
 -- ---------------------------------------------------------------------
 -- 13. PRIVILEGES

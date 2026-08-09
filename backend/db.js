@@ -157,6 +157,29 @@ async function query(text, params = [], tenantId = null) {
   }
 }
 
+// Assent writes need two independently checked pieces of authenticated context.
+// Keep both transaction-local so pooled connections cannot leak either identity.
+// This is deliberately separate from query(): callers that do not have an
+// authenticated actor must not accidentally manufacture one.
+async function queryWithActor(text, params = [], tenantId, actorId) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.current_tenant_id', $1, true), set_config('app.current_actor_id', $2, true)",
+      [tenantId || "", actorId || ""]
+    );
+    const res = await client.query(text, params);
+    await client.query("COMMIT");
+    return res;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // ── RLS helper: set app.current_tenant_id for the current transaction ────────
 // Usage: check out client from pool, call setTenantContext, run queries, release.
 //   const client = await pool.connect();
@@ -794,6 +817,7 @@ export {
   resolveUserId,
   setTenantContext,
   query,
+  queryWithActor,
 
   // config
   getConfig,
