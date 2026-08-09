@@ -103,7 +103,14 @@ async function load() {
   $("m-locale").textContent  = art.locale;
   $("m-hash").textContent    = art.artifact_sha256;
   $("m-rule").textContent    = art.determination_rule;
-  const doc = await fetch(art.public_route, { credentials: "include" });
+  // credentials: "omit" — NOT "include", and NOT the default. public_route is the
+  // PUBLIC artifact on a DIFFERENT origin (Cloudflare Pages serves wimba.ai; this page
+  // is app.wimba.ai), and that host answers with `Access-Control-Allow-Origin: *`. A
+  // wildcard is illegal for a credentialed cross-origin request, so "include" makes the
+  // browser block the response outright — the fetch throws and the page reports only
+  // "Terms review is unavailable." The document needs no session: it is the same bytes
+  // for everyone, which is the whole point of hashing it.
+  const doc = await fetch(art.public_route, { credentials: "omit" });
   if (!doc.ok) return fail("The agreement could not be loaded from its published route.");
   const bytes = await doc.arrayBuffer();
   if (Number(art.byte_size) !== bytes.byteLength) {

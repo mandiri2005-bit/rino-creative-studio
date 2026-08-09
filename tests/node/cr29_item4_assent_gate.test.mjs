@@ -469,6 +469,58 @@ describe("CR-29 item 4 — source-level non-vacuity guards", () => {
       "the download must be made from the same verified bytes");
   });
 
+  // The public artifact lives on ANOTHER origin (Cloudflare Pages serves wimba.ai; this
+  // page is app.wimba.ai) and that host answers `Access-Control-Allow-Origin: *`. A
+  // wildcard is illegal for a credentialed cross-origin request, so `credentials:
+  // "include"` on that fetch made the browser block the response, the fetch throw, and
+  // the page fall into its generic "Terms review is unavailable." — verified live from
+  // https://app.wimba.ai: credentialed threw `TypeError: Failed to fetch` with the
+  // wildcard-vs-credentials CORS error in the console, while the same fetch without
+  // credentials returned 200 / 68079 bytes. The two same-origin API calls are the exact
+  // opposite: they carry the Clerk session and MUST keep "include".
+  test("the public artifact fetch omits credentials while both API calls keep them", () => {
+    // Count against CODE, never the prose. The comments here deliberately quote both
+    // credentials modes to explain the rule, and matching those makes the test fail on
+    // its own documentation. `//` must be preceded by whitespace or line start so that
+    // the `https://` inside a URL survives.
+    const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/[^\n]*/g, "$1");
+    const code = stripComments(page);
+
+    const artifactFetch = code.match(/const doc = await fetch\(art\.public_route[^;]*\)/)?.[0] || "";
+    assert.ok(artifactFetch, "the public-artifact fetch must exist");
+    assert.match(artifactFetch, /credentials:\s*"omit"/,
+      'the cross-origin artifact fetch must be explicitly credentials: "omit"');
+    assert.doesNotMatch(artifactFetch, /credentials:\s*"include"/,
+      'credentials: "include" here is blocked by CORS against a wildcard ACAO');
+
+    const applicableFetch = code.match(/await fetch\(`\/tos\/applicable[^;]*\)/)?.[0] || "";
+    assert.ok(applicableFetch, "the /tos/applicable fetch must exist");
+    assert.match(applicableFetch, /credentials:\s*"include"/,
+      "/tos/applicable is same-origin and needs the session");
+
+    const assentFetch = code.match(/await fetch\("\/tos\/assent",\s*\{[\s\S]*?\n  \}\)/)?.[0] || "";
+    assert.ok(assentFetch, "the /tos/assent fetch must exist");
+    assert.match(assentFetch, /credentials:\s*"include"/,
+      "/tos/assent is same-origin and needs the session");
+
+    // Nothing else changed: still exactly three fetches, and exactly one omits credentials.
+    assert.equal((code.match(/fetch\(/g) || []).length, 3,
+      "the page must still make exactly three fetches");
+    assert.equal((code.match(/credentials:\s*"omit"/g) || []).length, 1,
+      "exactly one fetch may omit credentials — the public cross-origin artifact");
+    assert.equal((code.match(/credentials:\s*"include"/g) || []).length, 2,
+      "both same-origin API calls must still send credentials");
+    // and the page still sends no identity of its own in the assent body
+    assert.doesNotMatch(code, /tenant_id|actor_id/,
+      "tenant and actor stay server-derived; the page must not send them");
+
+    // the stripper must not be doing the work for us
+    assert.match(stripComments('const u = "https://wimba.ai/terms/";'), /https:\/\/wimba\.ai/,
+      "a URL must survive comment stripping");
+    assert.doesNotMatch(stripComments('a(); // credentials: "omit"\n'), /credentials/,
+      "a trailing comment must not be counted as code");
+  });
+
   test("deployment identity has no unknown fallback and definer search_path excludes public", () => {
     assert.doesNotMatch(moduleSource, /unknown-deployment/);
     const definerDeclarations = migration.match(/SECURITY DEFINER SET search_path = [^\n]+/g) || [];
