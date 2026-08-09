@@ -27,6 +27,7 @@ MIGRATIONS = REPO / "database" / "migrations"
 M0070 = MIGRATIONS / "0070_gl_privilege_hardening.sql"
 M0071 = MIGRATIONS / "0071_deferred_revenue_no_silent_fallback.sql"
 M0074 = MIGRATIONS / "0074_platform_qc_metering.sql"
+M0087 = MIGRATIONS / "0087_cr29_g3_privilege_and_rls_hardening.sql"
 
 
 def _sql(path: Path) -> str:
@@ -350,7 +351,23 @@ ACCEPTED_UNPROTECTED_WRITABLE = {
     "narasi_known_bad_claims",   # factgate reference; python/database.py:969
     "narasi_known_good_claims",  # factgate reference; python/database.py:999
     "migrations",                # database/migrate.js:115
+    # --- CR-29, added by 0087. KNOWN, NOT SAFE. Both are provider-global: keyed by
+    # payment identity, which exists before and independently of any tenant, so
+    # neither can carry tenant RLS. A permissive USING (true) policy would turn
+    # this guard green while protecting nothing, so none was added.
+    "g3_provider_payments",      # provider-global payment aggregate; SELECT/INSERT/UPDATE for the
+                                 # SECURITY INVOKER functions g3_pin_payment_at, g3_record_payment_terms,
+                                 # g3_write_lot, g3_post_cash_in (0086), reached from
+                                 # backend/g3_lots.mjs:69,88. DELETE/TRUNCATE revoked by 0087.
+    "g3_payment_at_divergence_alerts",  # provider-global append-only audit; INSERT only, written by
+                                 # g3_pin_payment_at (0086). No runtime reader exists, so 0087 revoked
+                                 # SELECT too. UPDATE/DELETE/TRUNCATE revoked; append-only trigger kept.
 }
+
+# g3_topup_quarantine is deliberately NOT here. It carries tenant_id, so the sweep
+# above never saw it — which is precisely why its missing RLS was the quietest of
+# the four holes 0086 opened. 0087 gives it real FORCED tenant RLS, and
+# test_g3_topup_quarantine_rls_is_enabled_and_forced below stops it regressing.
 
 
 def test_detector_exception_list_matches_this_module():
@@ -413,3 +430,129 @@ def test_live_no_writable_unprotected_table():
     )
     # The gl_accounts hole this migration closed must never come back.
     assert "gl_accounts" not in rows
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CR-29 / 0087 — the four tables 0086 created
+#
+# Three were caught by the sweep above and are now on the accepted list with their
+# callers. The fourth, g3_topup_quarantine, was NOT caught: it carries tenant_id,
+# so the sweep skipped it, and it had no RLS at all — app_user could read and write
+# every tenant's quarantine rows. These guards exist so that hole cannot reopen
+# quietly, which is exactly how it opened in the first place.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_g3_topup_quarantine_rls_is_enabled_and_forced():
+    body = _strip_sql_comments(_sql(M0087))
+    assert re.search(r"ALTER\s+TABLE\s+g3_topup_quarantine\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY",
+                     body, re.I)
+    assert re.search(r"ALTER\s+TABLE\s+g3_topup_quarantine\s+FORCE\s+ROW\s+LEVEL\s+SECURITY",
+                     body, re.I), "ENABLE alone is a no-op for the table owner; FORCE is required"
+    policy = re.search(
+        r"CREATE\s+POLICY\s+tenant_isolation\s+ON\s+g3_topup_quarantine(.*?);", body, re.I | re.S)
+    assert policy, "g3_topup_quarantine tenant_isolation policy not found"
+    clause = policy.group(1)
+    # Both halves matter: USING alone filters reads while leaving cross-tenant
+    # INSERT/UPDATE wide open.
+    assert re.search(r"USING\s*\(", clause, re.I), "policy must constrain reads"
+    assert re.search(r"WITH\s+CHECK\s*\(", clause, re.I), "policy must constrain writes too"
+    assert clause.upper().count("APP.CURRENT_TENANT_ID") >= 2, \
+        "both USING and WITH CHECK must key on app.current_tenant_id"
+
+
+def test_g3_new_tables_lose_the_privileges_they_inherited():
+    """0016's ALTER DEFAULT PRIVILEGES grants app_user full DML on every new table.
+    0087 must claw back what each of 0086's four tables does not need."""
+    body = _strip_sql_comments(_sql(M0087))
+    expected = {
+        "g3_cr29_workaround_window":        r"REVOKE\s+INSERT,\s*UPDATE,\s*DELETE,\s*TRUNCATE\s+ON\s+g3_cr29_workaround_window\s+FROM\s+app_user",
+        "g3_provider_payments":             r"REVOKE\s+DELETE,\s*TRUNCATE\s+ON\s+g3_provider_payments\s+FROM\s+app_user",
+        "g3_payment_at_divergence_alerts":  r"REVOKE\s+SELECT,\s*UPDATE,\s*DELETE,\s*TRUNCATE\s+ON\s+g3_payment_at_divergence_alerts\s+FROM\s+app_user",
+        "g3_topup_quarantine":              r"REVOKE\s+DELETE,\s*TRUNCATE\s+ON\s+g3_topup_quarantine\s+FROM\s+app_user",
+    }
+    for table, pattern in expected.items():
+        assert re.search(pattern, body, re.I), f"0087 must narrow app_user on {table}"
+
+
+def test_g3_trigger_only_functions_are_not_app_executable():
+    body = _strip_sql_comments(_sql(M0087))
+    for fn in ("g3_pp_payment_at_immutable", "g3_cr29_window_guard"):
+        assert re.search(rf"REVOKE\s+ALL\s+ON\s+FUNCTION\s+public\.{fn}\(\)\s+FROM\s+PUBLIC,\s*app_user",
+                         body, re.I), f"{fn} is a trigger body; app_user must not hold EXECUTE"
+
+
+# The two exception lists are kept synchronized by the PRE-EXISTING
+# test_detector_exception_list_matches_this_module above, which already compares the
+# detector's section-A exclusion set against ACCEPTED_UNPROTECTED_WRITABLE and documents
+# the comment-stripping trap that makes that comparison reliable. Adding a second copy
+# here would be one more thing to drift, so the two CR-29 entries simply join the set and
+# that existing guard proves the audit SQL matches.
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"),
+                    reason="TEST_DATABASE_URL not set — static guards above still ran")
+def test_live_g3_topup_quarantine_rejects_cross_tenant_access():
+    """Non-vacuous proof, as app_user, that the policy actually isolates.
+
+    Runs under SET ROLE app_user: the owner role in CI carries BYPASSRLS, so a test
+    that stayed as the owner would pass against a table with no policy at all —
+    exactly the vacuity this guard exists to avoid. The assertions below are
+    written so that DROPPING the policy makes them fail.
+    """
+    asyncpg = pytest.importorskip("asyncpg")
+    import uuid
+    a, b = uuid.uuid4(), uuid.uuid4()
+    pay_a, pay_b = f"pay_iso_{a.hex[:8]}", f"pay_iso_{b.hex[:8]}"
+
+    async def _run():
+        conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
+        try:
+            for t in (a, b):
+                await conn.execute(
+                    "INSERT INTO tenants (id,name,slug,email) VALUES ($1,$2,$3,$4)",
+                    t, f"iso_{t.hex[:6]}", f"iso-{t.hex[:6]}", f"iso-{t.hex[:6]}@example.test")
+            for p in (pay_a, pay_b):
+                await conn.execute(
+                    "INSERT INTO g3_provider_payments (provider, provider_payment_id) VALUES ('dodo',$1)", p)
+            for t, p in ((a, pay_a), (b, pay_b)):
+                await conn.execute(
+                    "INSERT INTO g3_topup_quarantine (provider, provider_payment_id, tenant_id, reason)"
+                    " VALUES ('dodo',$1,$2,'iso_fixture')", p, t)
+
+            # Sanity: as the BYPASSRLS owner, both rows are visible. Without this the
+            # "tenant A sees 1" assertion below could pass on an empty table.
+            both = await conn.fetchval(
+                "SELECT count(*) FROM g3_topup_quarantine WHERE reason='iso_fixture'")
+            assert both == 2, f"fixture precondition failed: owner sees {both} rows, expected 2"
+
+            await conn.execute("SET ROLE app_user")
+            await conn.execute("SELECT set_config('app.current_tenant_id', $1, false)", str(a))
+
+            seen = await conn.fetch(
+                "SELECT tenant_id FROM g3_topup_quarantine WHERE reason='iso_fixture'")
+            assert [r["tenant_id"] for r in seen] == [a], \
+                f"cross-tenant SELECT leaked: tenant A saw {[str(r['tenant_id']) for r in seen]}"
+
+            with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+                await conn.execute(
+                    "INSERT INTO g3_topup_quarantine (provider, provider_payment_id, tenant_id, reason)"
+                    " VALUES ('dodo',$1,$2,'iso_crosswrite')", pay_b, b)
+
+            # UPDATE cannot raise — a row the policy hides is simply not matched — so
+            # the proof is that B's row is untouched, checked back as the owner.
+            await conn.execute(
+                "UPDATE g3_topup_quarantine SET reason='iso_tampered' WHERE reason='iso_fixture'")
+            await conn.execute("RESET ROLE")
+            tampered = await conn.fetchval(
+                "SELECT count(*) FROM g3_topup_quarantine WHERE tenant_id=$1 AND reason='iso_tampered'", b)
+            assert tampered == 0, "cross-tenant UPDATE modified another tenant's quarantine row"
+        finally:
+            try:
+                await conn.execute("RESET ROLE")
+                await conn.execute("DELETE FROM g3_topup_quarantine WHERE provider='dodo' AND provider_payment_id = ANY($1::text[])", [pay_a, pay_b])
+                await conn.execute("DELETE FROM g3_provider_payments WHERE provider='dodo' AND provider_payment_id = ANY($1::text[])", [pay_a, pay_b])
+                await conn.execute("DELETE FROM tenants WHERE id = ANY($1::uuid[])", [a, b])
+            finally:
+                await conn.close()
+
+    asyncio.run(_run())

@@ -59,7 +59,14 @@ SELECT c.relname AS table_name,
         'processed_stripe_events',   -- Stripe webhook idempotency marker; billing.mjs:222 needs INSERT
         'narasi_known_bad_claims',   -- factgate reference; python/database.py:969 needs INSERT
         'narasi_known_good_claims',  -- factgate reference; python/database.py:999 needs INSERT
-        'migrations'                 -- written by database/migrate.js:115
+        'migrations',                -- written by database/migrate.js:115
+        -- CR-29, added by 0087. KNOWN, NOT SAFE. Both provider-global (keyed by payment
+        -- identity, which predates any tenant), so neither can carry tenant RLS.
+        'g3_provider_payments',      -- SELECT/INSERT/UPDATE for g3_pin_payment_at, g3_record_payment_terms,
+                                     -- g3_write_lot, g3_post_cash_in (0086); backend/g3_lots.mjs:69,88.
+                                     -- DELETE/TRUNCATE revoked by 0087.
+        'g3_payment_at_divergence_alerts'  -- INSERT only, written by g3_pin_payment_at (0086). No runtime
+                                     -- reader, so 0087 revoked SELECT as well. Append-only trigger kept.
    )
  ORDER BY 1;
 
@@ -74,6 +81,11 @@ SELECT c.relname AS table_name,
 \echo '      migrations               app role can rewrite migration history.'
 \echo '      orphan_reversals         genuinely cannot use RLS (no tenant context by design);'
 \echo '                               DELETE/TRUNCATE already revoked in 0070.'
+\echo '      g3_provider_payments     provider-global payment aggregate (CR-29). No tenant_id exists'
+\echo '                               to key a policy on, so tenant RLS is impossible rather than'
+\echo '                               merely absent. 0087 narrowed it to SELECT/INSERT/UPDATE.'
+\echo '      g3_payment_at_divergence_alerts  provider-global append-only audit (CR-29). 0087 left'
+\echo '                               app_user with INSERT only; no runtime reader exists.'
 \echo '    None is in the scope of audit 17.2 (the GL surface). Narrowing them is separate work.'
 SELECT c.relname AS table_name,
        (SELECT string_agg(g.privilege_type, ',' ORDER BY g.privilege_type)
@@ -84,7 +96,8 @@ SELECT c.relname AS table_name,
  WHERE c.relnamespace = 'public'::regnamespace
    AND c.relkind = 'r'
    AND c.relname IN ('orphan_reversals','processed_stripe_events','narasi_known_bad_claims',
-                     'narasi_known_good_claims','migrations')
+                     'narasi_known_good_claims','migrations',
+                     'g3_provider_payments','g3_payment_at_divergence_alerts')
  ORDER BY 1;
 
 \echo ''

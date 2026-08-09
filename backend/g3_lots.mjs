@@ -186,11 +186,29 @@ export async function recordTopupLot({
 export async function quarantineTopup({
   provider = "dodo", providerPaymentId, tenantId, reason, metadataAsReceived = {},
 }) {
+  // 0087 put tenant RLS on this table, FORCED, with the tenant check on both
+  // USING and WITH CHECK. Two consequences, and neither is optional:
+  //
+  //   * tenantId must be passed to query() so the tenant GUC is set for the
+  //     statement — without it current_setting() is NULL, the WITH CHECK is
+  //     never true, and the INSERT is refused.
+  //   * a missing tenantId must be REJECTED here rather than written as NULL.
+  //     A NULL-tenant row cannot satisfy the policy, so it could only be
+  //     inserted by a privileged role and would then be invisible to every
+  //     tenant — a quarantine nobody can see is worse than a loud failure,
+  //     because the whole point is that the gap stays visible until resolved.
+  if (!tenantId) {
+    throw new Error(
+      `g3_quarantine_missing_tenant provider='${provider}' provider_payment_id='${providerPaymentId}' ` +
+      `reason='${reason}' — refusing to write a quarantine row no tenant can see`,
+    );
+  }
   await query(
     `INSERT INTO g3_topup_quarantine (provider, provider_payment_id, tenant_id, reason, metadata_as_received)
      VALUES ($1,$2,$3,$4,$5::jsonb)
      ON CONFLICT (provider, provider_payment_id) WHERE released_at IS NULL DO NOTHING`,
-    [provider, providerPaymentId, tenantId ?? null, reason, JSON.stringify(metadataAsReceived || {})],
+    [provider, providerPaymentId, tenantId, reason, JSON.stringify(metadataAsReceived || {})],
+    tenantId,
   );
   console.warn(
     `[g3][quarantine] provider_payment_id='${providerPaymentId}' reason='${reason}' ` +
