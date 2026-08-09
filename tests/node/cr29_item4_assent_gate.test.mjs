@@ -521,6 +521,89 @@ describe("CR-29 item 4 — source-level non-vacuity guards", () => {
       "a trailing comment must not be counted as code");
   });
 
+  // The agreement is RENDERED, not dumped as source — but rendered from the same verified
+  // buffer, whole and unmodified, inside a fully-restricted sandbox. The evidence row pins
+  // the SHA-256 of the ENTIRE file, so extracting a subset or injecting a <base>/stylesheet
+  // would mean the reader saw something other than the bytes the row claims they saw.
+  test("the agreement renders from the verified bytes in a fully-restricted sandbox", () => {
+    // HTML file: strip BOTH comment kinds. The comments here deliberately name innerHTML,
+    // <base>, allow-scripts and allow-same-origin in order to say they are NOT used.
+    const stripComments = (s) => s
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|\s)\/\/[^\n]*/g, "$1");
+    const code = stripComments(page);
+
+    // — the frame itself —
+    const iframe = code.match(/<iframe[^>]*id="agreement"[^>]*>/)?.[0] || "";
+    assert.ok(iframe, "the agreement must be an iframe");
+    assert.match(iframe, /sandbox=""/, 'sandbox must be the empty attribute — every restriction on');
+    assert.doesNotMatch(code, /allow-scripts/, "the artifact's own scripts must never run");
+    assert.doesNotMatch(code, /allow-same-origin/, "the frame must have an opaque origin");
+
+    // — whole document, unmodified —
+    const assign = code.match(/frame\.srcdoc = [^;]+;/)?.[0] || "";
+    assert.ok(assign, "the document must be handed over via srcdoc");
+    assert.equal(assign, 'frame.srcdoc = new TextDecoder("utf-8").decode(bytes);',
+      "srcdoc must be exactly the decoded verified buffer — no concatenation, no wrapper");
+    assert.doesNotMatch(code, /innerHTML/, "innerHTML must never touch fetched bytes");
+    assert.doesNotMatch(code, /<base/i, "no <base> may be injected into the document");
+    assert.doesNotMatch(code, /insertAdjacentHTML|document\.write|createContextualFragment/,
+      "no other HTML-injection sink either");
+    // nothing may narrow or edit the document on its way to the frame
+    assert.doesNotMatch(code, /querySelector\((["'`])[^"'`]*(legal|main)/i,
+      "the document must not be sub-selected — the hash covers the whole file");
+    assert.doesNotMatch(code, /DOMParser|parseFromString/,
+      "the document must not be re-parsed and rebuilt");
+
+    // — order: size, then hash, then render, then enable —
+    const sizeAt   = code.indexOf("art.byte_size) !== bytes.byteLength");
+    const hashAt   = code.indexOf("await sha256Hex(bytes)");
+    const cmpAt    = code.indexOf("actualHash !== art.artifact_sha256");
+    const srcdocAt = code.indexOf("frame.srcdoc =");
+    const awaitAt  = code.indexOf("await rendered");
+    const enableAt = code.indexOf('$("accept").disabled = $("reject").disabled = false');
+    assert.ok(sizeAt >= 0 && hashAt > sizeAt, "byte_size must be checked before hashing");
+    assert.ok(cmpAt > hashAt, "the hash must be compared before anything is displayed");
+    assert.ok(srcdocAt > cmpAt, "nothing may be rendered before the hash matches");
+    assert.ok(awaitAt > srcdocAt, "the load must be awaited after srcdoc is set");
+    assert.ok(enableAt > awaitAt, "the buttons may only be enabled after the frame loaded");
+
+    // the load listener must be attached BEFORE srcdoc is set, or the event can be missed
+    assert.ok(code.indexOf('addEventListener("load"') < srcdocAt,
+      "attach the load listener before assigning srcdoc");
+
+    // — fail closed: disabled in the MARKUP, not merely by script —
+    assert.match(code, /<button id="accept" disabled>/, "Accept must ship disabled");
+    assert.match(code, /<button id="reject" disabled>/, "Reject must ship disabled");
+    // There are two enable sites and that is correct: the gated one in load(), and the
+    // re-enable at the end of send() — which is what lets a reader Reject and then Accept.
+    // The property that matters is that NO enable site sits before the hash comparison, so
+    // no path can offer a decision on unverified bytes.
+    const enableRe = /\$\("accept"\)\.disabled = \$\("reject"\)\.disabled = false/g;
+    const enableSites = [...code.matchAll(enableRe)].map((m) => m.index);
+    assert.equal(enableSites.length, 2, "expected exactly the load() and send() enable sites");
+    for (const at of enableSites) {
+      assert.ok(at > cmpAt, `an enable site at ${at} precedes the hash comparison at ${cmpAt}`);
+    }
+    // and send() is only reachable once load() has already enabled them
+    assert.ok(enableSites[0] > awaitAt, "load()'s enable must follow the awaited render");
+
+    // — download still comes from the original verified bytes —
+    assert.match(code, /URL\.createObjectURL\(new Blob\(\[bytes\]/,
+      "the download must be built from the same verified buffer");
+
+    // — credentials contract unchanged by this pass —
+    assert.equal((code.match(/credentials:\s*"omit"/g) || []).length, 1);
+    assert.equal((code.match(/credentials:\s*"include"/g) || []).length, 2);
+
+    // the stripper must not be doing the work for us
+    assert.match(page, /innerHTML/, "the prose does mention innerHTML…");
+    assert.doesNotMatch(code, /innerHTML/, "…and stripping is what removes it");
+    assert.match(stripComments('const u = "https://x/y";'), /https:\/\/x/,
+      "a URL must survive comment stripping");
+  });
+
   test("deployment identity has no unknown fallback and definer search_path excludes public", () => {
     assert.doesNotMatch(moduleSource, /unknown-deployment/);
     const definerDeclarations = migration.match(/SECURITY DEFINER SET search_path = [^\n]+/g) || [];
