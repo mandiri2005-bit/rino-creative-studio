@@ -4354,7 +4354,7 @@ def _result_payload(result: dict) -> dict:
     don't bloat the row with megabytes — the full chapters live in
     narasi_chapters; here we keep the assembled markdown + run metadata."""
     book = result.get("book") or result.get("output") or ""
-    return {
+    payload = {
         "markdown": book,
         "scenario": result.get("scenario"),
         "strategy": result.get("strategy"),
@@ -4385,6 +4385,16 @@ def _result_payload(result: dict) -> dict:
         # phantom-name scan (0.75) — bounded: <=8 names, one short snippet each
         "phantom_name_report": result.get("phantom_name_report"),
     }
+    # 🔴 L3-ASSIST: ADDED ONLY WHEN THERE IS ONE. Listing it beside the keys above
+    #    would put `canon_lite_binding: null` on every off/shadow job's persisted
+    #    payload — a shape change to jobs that never ran assist, which is exactly
+    #    what flag-off is supposed to be free of. It is three hashes and a count,
+    #    and it is durable here so the binding survives for jobs that keep no
+    #    chapter checkpoints at all.
+    _cl_binding = result.get("canon_lite_binding")
+    if _cl_binding:
+        payload["canon_lite_binding"] = _cl_binding
+    return payload
 
 
 async def _safe_progress(job_id: str, msg: str) -> None:

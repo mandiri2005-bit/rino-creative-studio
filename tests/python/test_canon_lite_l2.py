@@ -1090,14 +1090,23 @@ def test_flag_off_static_return_has_no_private_l2_transit_key_by_construction():
         Path(__file__).resolve().parents[2] / "python" /
         "orchestrator" / "static.py").read_text()
     tree = ast.parse(source)
-    returns = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Return)
-        and getattr(node, "lineno", 0) > 1400
-        and getattr(node, "lineno", 0) < 1600
-    ]
-    assert returns, "narrate_chapters terminal return not found"
-    terminal = ast.get_source_segment(source, returns[0].value)
+    # 🔴 LOCATED STRUCTURALLY, NOT BY LINE NUMBER. This used to select "the first
+    #    `return` between lines 1400 and 1600", which is a proxy for the terminal
+    #    return that stops being one the moment anything above it grows or a
+    #    nested helper acquires a `return` inside the window — the control then
+    #    quietly starts asserting about some other statement. Taking the last
+    #    top-level statement of `narrate_chapters` itself names the thing the test
+    #    is actually about, and cannot drift.
+    fn = next(
+        (node for node in ast.walk(tree)
+         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+         and node.name == "narrate_chapters"), None)
+    assert fn is not None, "narrate_chapters not found"
+    terminal_node = fn.body[-1]
+    assert isinstance(terminal_node, ast.Return), (
+        "the last statement of narrate_chapters is not its terminal return "
+        f"(got {type(terminal_node).__name__})")
+    terminal = ast.get_source_segment(source, terminal_node.value)
     assert '_cl_mode == "shadow"' in terminal
     assert '"_canon_lite_canon"' in terminal
 

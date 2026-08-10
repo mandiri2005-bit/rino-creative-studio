@@ -84,6 +84,7 @@ __all__ = [
     "parse_canon_lite_v1",
     "render_canon",
     "telemetry_digest",
+    "context_digest",
 ]
 
 # ===========================================================================
@@ -1280,6 +1281,17 @@ def _freezable_projection(ctx: Any) -> Any:
     return {attr: _walk(getattr(ctx, attr, None)) for attr in _FROZEN_CONTEXT_ATTRS}
 
 
+def context_digest(ctx: Any) -> str:
+    """The deep digest of a shared context's load-bearing state.
+
+    Public because a chapter worker has to be able to compute it on the context it
+    was ACTUALLY handed. Comparing that against the freeze baseline is the only
+    check that sees a mutation which happened during the MAP and was undone before
+    the post-MAP `verify()` ran.
+    """
+    return _digest("canon_lite.context.v1", _freezable_projection(ctx))
+
+
 class _HardFrozenMixin:
     """Blocks attribute rebinding. Installed by swapping `__class__` (hard mode only)."""
 
@@ -1294,6 +1306,87 @@ class _HardFrozenMixin:
             f"refused to delete {name!r}")
 
 
+# ---------------------------------------------------------------------------
+# Deep immutability for the frozen containers (hard mode)
+# ---------------------------------------------------------------------------
+#
+# 🔴 `__setattr__` GUARDS ONLY THE ATTRIBUTE, NEVER WHAT IT POINTS AT.
+#    `ctx.chapters = []` raises; `ctx.chapters[0]["title"] = "x"` and
+#    `ctx.chapters.append(...)` do not touch `ctx` at all, so no attribute guard
+#    can see them. Left at detection-only they change the input of every worker
+#    that has not started yet, and the post-MAP digest reports it after the whole
+#    book has been written and paid for. Under `assist` the nested containers are
+#    therefore REPLACED with types that refuse to mutate, so the write fails at
+#    the moment it is attempted and the sibling workers never see it.
+#
+# `list`/`dict` are subclassed rather than wrapped in a proxy so that
+# `isinstance(x, list)`, json encoding, and every read path keep working
+# unchanged — only the mutating half of the API is removed.
+
+_FROZEN_CONTAINER_MSG = (
+    "shared context is frozen before chapter MAP (C2/I08); "
+    "refused to mutate a nested {kind} in place")
+
+
+class _FrozenList(list):
+    """A list that refuses every in-place mutation. Reads are untouched."""
+
+    __slots__ = ()
+
+    def _refuse(self, *_a: Any, **_k: Any) -> Any:
+        raise CanonFrozenError(_FROZEN_CONTAINER_MSG.format(kind="list"))
+
+    __setitem__ = _refuse
+    __delitem__ = _refuse
+    __iadd__ = _refuse
+    __imul__ = _refuse
+    append = _refuse
+    extend = _refuse
+    insert = _refuse
+    pop = _refuse
+    remove = _refuse
+    clear = _refuse
+    sort = _refuse
+    reverse = _refuse
+
+
+class _FrozenDict(dict):
+    """A dict that refuses every in-place mutation. Reads are untouched."""
+
+    __slots__ = ()
+
+    def _refuse(self, *_a: Any, **_k: Any) -> Any:
+        raise CanonFrozenError(_FROZEN_CONTAINER_MSG.format(kind="dict"))
+
+    __setitem__ = _refuse
+    __delitem__ = _refuse
+    __ior__ = _refuse
+    pop = _refuse
+    popitem = _refuse
+    clear = _refuse
+    update = _refuse
+    setdefault = _refuse
+
+
+def _deep_frozen(value: Any, depth: int = 0) -> Any:
+    """Rebuild `value` with every nested list/dict replaced by a refusing one.
+
+    Depth-bounded exactly like `_freezable_projection`, so what is prevented and
+    what is detected cover the same ground: a structure deeper than the limit is
+    left alone by both rather than being silently half-guarded.
+    """
+    if depth > 12:
+        return value
+    if isinstance(value, Mapping):
+        return _FrozenDict(
+            (k, _deep_frozen(v, depth + 1)) for k, v in value.items())
+    if isinstance(value, list):
+        return _FrozenList(_deep_frozen(v, depth + 1) for v in value)
+    if isinstance(value, tuple):
+        return tuple(_deep_frozen(v, depth + 1) for v in value)
+    return value
+
+
 class SharedContextFreeze:
     """Freeze the shared context immediately before chapter fan-out (C2, I08).
 
@@ -1301,10 +1394,15 @@ class SharedContextFreeze:
 
       * PREVENT (`hard=True`) — rebinding an attribute raises `CanonFrozenError`.
         Implemented by swapping the instance's `__class__` to a subclass, so it costs
-        nothing per read and cannot be bypassed by ordinary assignment.
+        nothing per read and cannot be bypassed by ordinary assignment. The nested
+        containers are ALSO replaced with refusing ones (`_deep_frozen`), because an
+        attribute guard cannot see `ctx.chapters[0]["title"] = ...` — that write
+        never touches `ctx`. Without it, "frozen" would mean only that the label
+        cannot be repointed while the thing it points at stays public and writable.
       * DETECT (always) — a deep digest is taken at freeze time and re-checked at
-        `verify()`. This catches IN-PLACE mutation of nested containers
-        (`ctx.chapters[0]["title"] = ...`), which no `__setattr__` guard can see.
+        `verify()`. Retained even under hard mode: it is the backstop for anything
+        prevention cannot reach (a container past the depth limit, a type neither
+        list nor dict), and it is the only layer `shadow` is allowed to use.
 
     In `shadow`, hard mode is OFF: shadow must not change user-visible behavior, so a
     mutation is REPORTED, not raised. `assist`/`enforce` (L3) turn hard mode on. The
@@ -1312,13 +1410,25 @@ class SharedContextFreeze:
     shipped as dead code.
     """
 
-    __slots__ = ("_ctx", "_hard", "_baseline", "_original_class", "_released")
+    __slots__ = ("_ctx", "_hard", "_baseline", "_original_class", "_released",
+                 "_original_containers")
 
     def __init__(self, ctx: Any, *, hard: bool = False) -> None:
         self._ctx = ctx
         self._hard = bool(hard)
         self._released = False
         self._original_class = type(ctx)
+        self._original_containers: dict[str, Any] = {}
+        if self._hard:
+            # Deep-freeze the containers BEFORE the class swap and before the
+            # baseline: `object.__setattr__` would bypass the guard anyway, but
+            # doing it first keeps the ordering obvious. Reads are unaffected, so
+            # the baseline is the same digest either way.
+            for attr in _FROZEN_CONTEXT_ATTRS:
+                current = getattr(ctx, attr, None)
+                if isinstance(current, (list, dict, Mapping)):
+                    self._original_containers[attr] = current
+                    object.__setattr__(ctx, attr, _deep_frozen(current))
         self._baseline = self.digest()
         if self._hard:
             frozen_cls = type(
@@ -1329,7 +1439,7 @@ class SharedContextFreeze:
 
     # -- observation ------------------------------------------------------
     def digest(self) -> str:
-        return _digest("canon_lite.context.v1", _freezable_projection(self._ctx))
+        return context_digest(self._ctx)
 
     @property
     def baseline_digest(self) -> str:
@@ -1355,12 +1465,19 @@ class SharedContextFreeze:
 
     # -- lifecycle --------------------------------------------------------
     def release(self) -> None:
-        """Restore the original class. Idempotent; safe to call from a `finally`."""
+        """Restore the original class and containers. Idempotent; safe in a `finally`.
+
+        The caller must get its own mutable objects back: a retry, or any code that
+        runs after the fan-out, is entitled to a context that behaves normally.
+        """
         if self._released:
             return
         self._released = True
         if self._hard:
             object.__setattr__(self._ctx, "__class__", self._original_class)
+            for attr, original in self._original_containers.items():
+                object.__setattr__(self._ctx, attr, original)
+            self._original_containers = {}
 
     def __enter__(self) -> "SharedContextFreeze":
         return self

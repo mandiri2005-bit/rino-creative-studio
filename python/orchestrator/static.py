@@ -453,6 +453,10 @@ async def _write_chapter(
     worker_model: str,
     timeout: float,
     telemetry_sink: Optional[Any],
+    canon_text: Optional[str] = None,
+    canon_prompt_sha: Optional[str] = None,
+    canon_sha256: Optional[str] = None,
+    context_sha256: Optional[str] = None,
 ) -> dict[str, Any]:
     """Generate ONE chapter via the required pipeline:
 
@@ -522,13 +526,24 @@ async def _write_chapter(
         model=worker_model,
     )
 
+    # 🔴 THE CANON GOES ON THE CACHE-STABLE SYSTEM PREFIX, NOT THE USER TURN.
+    #    Every chapter's system message then begins with the SAME bytes, which is
+    #    both the contract ("one byte-identical mini-canon into every chapter
+    #    worker") and what keeps prompt caching intact — a per-chapter prefix
+    #    would defeat the cache and quietly multiply cost. The block is prepended
+    #    verbatim: rendered once upstream, never rebuilt here, so no worker can
+    #    produce a variant of it.
+    _system = composed.messages[0]["content"]
+    if canon_text:
+        _system = f"{canon_text}\n{_system}"
+
     worker = Worker(
         name=f"ch{no + 1}",
         role="worker",
         phase="worker",
         model=worker_model,
         style=style,
-        system=composed.messages[0]["content"],
+        system=_system,
         telemetry_sink=telemetry_sink,
     )
     res = await run_worker(
@@ -543,6 +558,27 @@ async def _write_chapter(
         res["output"] = _scrub_chapter_leaks(res["output"], task_id=f"ch{no + 1}")
     res["no"] = no
     res["cache_key"] = composed.cache_key
+    if canon_text:
+        import canon_lite as _cl_h
+        # 🔴 THE TWO MEASURED VALUES — recomputed here from what this worker was
+        #    ACTUALLY handed, never copied from a parameter. Copying would make
+        #    the downstream census a tautology: it would compare the dispatch
+        #    value with itself and pass however badly the prefix had been mangled
+        #    or the context moved.
+        res["canon_prompt_sha256"] = _cl_h.sha256_hex(
+            _system[:len(canon_text)].encode("utf-8"))
+        # The context digest AS THIS WORKER SAW IT. The post-MAP freeze verify()
+        # compares start against end and so cannot see a mutation that was made
+        # and undone while the fan-out was in flight; this can, because it is
+        # sampled inside the window, once per chapter.
+        res["context_sha256_seen"] = _cl_h.context_digest(ctx)
+        # The three DISPATCHED values, carried so the census can prove the whole
+        # binding was complete and identical for every chapter, and so a
+        # checkpoint can be written against the binding it was really produced
+        # under. These are echoes, not evidence — the two above are the evidence.
+        res["canon_prompt_expected"] = canon_prompt_sha
+        res["canon_sha256"] = canon_sha256
+        res["context_sha256"] = context_sha256
     return res
 
 
@@ -690,16 +726,16 @@ async def narrate_chapters(
     _cl_mode = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
     if _cl_mode not in ("shadow", "assist", "enforce"):
         _cl_mode = "off"
-    if _cl_mode in ("assist", "enforce"):
-        # L1 implements shadow only. Silently degrading an explicitly configured mode
-        # to legacy generation spends money under guarantees that do not exist. Refuse
-        # this job before all provider/RAG work and return an explicit non-success.
-        log.error("canon lite: mode=%s is unavailable in L1; job refused before work",
-                  _cl_mode)
+    if _cl_mode == "enforce":
+        # L3-ASSIST implements `assist`. `enforce` is a SEPARATE project, deferred
+        # until L1/L2/L3 are live — so it keeps L1's refusal rather than silently
+        # degrading to assist. Quietly running a weaker mode than the operator
+        # configured spends money under guarantees that do not exist.
+        log.error("canon lite: mode=enforce is unavailable in L3-ASSIST; job refused before work")
         return {
             "ok": False, "chapters": [], "book": "", "polished": False,
             "rag_used": False, "context": {}, "strategy": "narrate_chapters",
-            "error": "canon_lite_mode_unavailable_l1",
+            "error": "canon_lite_mode_unavailable_enforce",
         }
 
     w_model = worker_model or route_model(role="worker", style=style)
@@ -1201,7 +1237,67 @@ async def narrate_chapters(
         except Exception:  # noqa: BLE001
             log.warning("canon lite: eligibility check unavailable "
                         "code=eligibility_check_error")
-    if _cl_mode == "shadow":
+    # 🔴 SHADOW AND ASSIST BUILD THE SAME CANON; ONLY WHAT THEY DO WITH IT DIFFERS.
+    #    Shadow hashes and logs it. Assist additionally RENDERS it, injects the
+    #    rendering into every chapter worker, and freezes the shared context HARD
+    #    before fan-out. Sharing the construction is what makes the assist canon
+    #    the same artifact shadow has been observing in production.
+    #
+    # 🔴 AND THEY FAIL DIFFERENTLY, WHICH IS THE WHOLE DIFFERENCE BETWEEN AN
+    #    OBSERVER AND A GUARANTEE. Shadow degrades: it may never change what the
+    #    user gets, so a failed build is logged and the job runs on. Assist may
+    #    NOT degrade — a job that advertises "every chapter saw the same canon"
+    #    and then quietly writes an uncanonical book has sold something it did not
+    #    deliver, and has charged for it. Every arming failure below therefore
+    #    returns a bounded non-success BEFORE the first chapter task exists, which
+    #    is the last moment at which refusing is still free.
+    _cl_canon = None
+    _cl_status = "absent"
+    _cl_canon_text: Optional[str] = None
+    _cl_prompt_sha: Optional[str] = None
+    _cl_canon_sha: Optional[str] = None
+    _cl_ctx_sha: Optional[str] = None
+    _cl_assist = (_cl_mode == "assist")
+
+    def _assist_refuse(code: str) -> dict[str, Any]:
+        """Bounded non-success for assist, before any physical work. Never raises."""
+        nonlocal _cl_freeze
+        if _cl_freeze is not None:
+            try:
+                _cl_freeze.release()
+            except Exception:  # noqa: BLE001 - a release bug must not mask the refusal
+                log.warning("canon lite: freeze release failed during assist refusal")
+            _cl_freeze = None
+        log.error("canon lite: assist could not be armed (%s); job refused before work",
+                  code)
+        return {
+            "ok": False, "chapters": [], "book": "", "polished": False,
+            "rag_used": False, "context": {}, "strategy": "narrate_chapters",
+            "error": code,
+        }
+
+    # 🔴 THE COMPOSER IS A PRECONDITION OF ASSIST, NOT A DEGRADATION OF IT.
+    #    `_write_chapter` has a fallback for an unavailable assembler: it builds a
+    #    minimal direct prompt and runs the worker anyway, so the strategy still
+    #    functions. That fallback constructs its Worker with no `system=` at all, so
+    #    there is no cache-stable prefix to prepend the canon to — every chapter
+    #    would be written with no canon and report no hash, and the census would
+    #    refuse the job only after the whole book had been generated.
+    #
+    #    Refusing here is NOT free, and the comment that used to say so was wrong:
+    #    `build_shared_context` (one RAG retrieval) and the Story Bible manager call
+    #    both run above this line and are already paid for. What it does save is the
+    #    MAP itself — one provider call per chapter, the dominant cost of the job.
+    #
+    #    `_COMPOSE_OK` is decided at MODULE IMPORT, so unlike every other assist
+    #    precondition this one could be checked at the top of the function, before
+    #    any spend at all. It is left here so that Stage 1 changes no behaviour
+    #    outside the canon path; hoisting it is a real improvement and a separate
+    #    decision.
+    if _cl_assist and (not _COMPOSE_OK or compose is None):
+        return _assist_refuse("canon_lite_assist_composer_unavailable")
+
+    if _cl_mode in ("shadow", "assist"):
         try:
             import canon_lite as _cl
             _cl_outline = list(ctx.chapters or chapters)
@@ -1236,20 +1332,76 @@ async def narrate_chapters(
                 "canon lite: canon construction failed "
                 "(error_code=canon_construction_error) — recorded as invalid, "
                 "never as clean")
+        # There is no assist without a canon. Shadow records `invalid` and carries
+        # on; assist has nothing to inject and must not pretend otherwise.
+        if _cl_assist and _cl_canon is None:
+            return _assist_refuse("canon_lite_assist_canon_unavailable")
         try:
             # C7/§8.1: absent or invalid canon is REPORTED as such. The digest is
             # hashes, counts and bounded labels only — no name, title, literal or prose.
             log.info("canon lite: %s",
                      _cl.telemetry_digest(_cl_canon, canon_status=_cl_status))
-            # I08/C2: freeze the shared context for the whole fan-out. Soft in shadow —
-            # a mutation is reported, not raised, because shadow may not change
-            # user-visible behaviour. L3 turns prevention on (hard=True).
-            _cl_freeze = _cl.SharedContextFreeze(ctx, hard=False)
+            # I08/C2: freeze the shared context for the whole fan-out. Soft in
+            # shadow — a mutation is reported, not raised, because shadow may not
+            # change user-visible behaviour. ASSIST turns prevention on: a worker
+            # may READ the frozen snapshot and may not mutate shared context.
+            _cl_freeze = _cl.SharedContextFreeze(ctx, hard=_cl_assist)
+
+            # ASSIST: render ONCE, hash the rendering, and hand the whole binding
+            # to every worker. `render_canon` is byte-stable — two canons with the
+            # same `canon_sha256` render identically — which is what makes the hash
+            # of the RENDERING a sound identity for the injected prefix. All of it
+            # is computed here, before any task exists, so there is exactly one
+            # value of each and no worker can produce its own.
+            if _cl_assist:
+                _cl_canon_text = _cl.render_canon(_cl_canon)
+                _cl_prompt_sha = _cl.sha256_hex(_cl_canon_text.encode("utf-8"))
+                _cl_canon_sha = _cl_canon.canon_sha256
+                # The freeze baseline IS the context identity: the digest of the
+                # state every worker is about to read, taken at the instant it
+                # stopped being able to change.
+                _cl_ctx_sha = _cl_freeze.baseline_digest
+                if not _cl_canon_text.strip():
+                    # An empty rendering hashes and compares perfectly while
+                    # injecting nothing — the one failure that would pass every
+                    # downstream check by being consistently absent.
+                    raise ValueError("assist canon rendering is empty")
+                log.info("canon lite: assist injection armed canon_sha256=%s "
+                         "prompt_sha256=%s context_sha256=%s",
+                         _cl_canon_sha, _cl_prompt_sha, _cl_ctx_sha)
         except Exception as _cle2:  # noqa: BLE001
             log.warning(
                 "canon lite: shadow instrumentation skipped "
                 "(error_code=shadow_instrumentation_error)")
+            if _cl_assist:
+                # Includes a failed freeze install: assist without a frozen context
+                # is assist without its central claim.
+                return _assist_refuse("canon_lite_assist_arming_failed")
             _cl_freeze = None
+
+    # ── ASSIST: THE MAP READS THE FROZEN SNAPSHOT, NOT THE ORIGINAL ALIAS ────
+    #
+    # 🔴 FREEZING `ctx.chapters` IS NOT ENOUGH ON ITS OWN. The freeze replaces
+    #    `ctx.chapters` with deep-frozen copies, but the fan-out below iterates the
+    #    LOCAL `chapters` list, whose dicts are still the caller's original objects.
+    #    Anyone holding that alias — the caller, or an earlier stage of this
+    #    function — can mutate a chapter dict after the freeze and change the `ch`
+    #    a worker is handed, with the frozen context showing nothing at all. The
+    #    two have to be the same objects, so the MAP and the assembly below both
+    #    switch to the frozen snapshot.
+    #
+    #    A length divergence means the canon was hashed over one outline while the
+    #    book would be written from another — the binding would be a statement
+    #    about a different book. There is no safe way to guess which is right, so
+    #    it refuses.
+    if _cl_assist:
+        _frozen_chapters = list(ctx.chapters or ())
+        if len(_frozen_chapters) != total:
+            log.error("canon lite: outline diverged between the canon (%d chapters) "
+                      "and the fan-out (%d) — the binding would describe a different "
+                      "book", len(_frozen_chapters), total)
+            return _assist_refuse("canon_lite_assist_outline_divergence")
+        chapters = _frozen_chapters
 
     # 2) MAP — bounded parallel fan-out. Semaphore caps concurrency at max_parallel
     #    so a 40-chapter book doesn't open 40 sockets at once.
@@ -1273,6 +1425,30 @@ async def narrate_chapters(
                         if r.get("content")}
                 if _pre:
                     log.info("narrate_chapters: resuming — %d/%d chapters checkpointed", len(_pre), total)
+
+                # ── ASSIST: NEVER REUSE A CHECKPOINT ─────────────────────────
+                #
+                # 🔴 RESUMED TEXT IS TEXT SOME EARLIER RUN WROTE, under some canon
+                #    and some context. Splicing it in yields a book that is
+                #    canonical in the chapters that happened to be regenerated and
+                #    not in the ones that were not — the exact defect assist exists
+                #    to remove, and invisible afterwards because the output looks
+                #    complete.
+                #
+                #    Stage 1 settles this the blunt way: regenerate everything.
+                #    Deciding per chapter would need each checkpoint to carry its
+                #    own durable binding, and there is nowhere to put one without a
+                #    schema of its own — narration's chapter rows have no field for
+                #    it, and borrowing an unrelated column would be overwritten at
+                #    finalisation anyway. Regenerating costs money; the alternative
+                #    costs the claim. A per-chapter binding is Stage 2's problem,
+                #    alongside the chapter-text byte binding it already owns.
+                if _cl_assist and _pre:
+                    log.warning(
+                        "canon lite: assist ignores %d checkpointed chapter(s) — a "
+                        "checkpoint carries no canon binding, so it cannot be shown "
+                        "to belong to this run; regenerating all of them", len(_pre))
+                    _pre = {}
         except Exception as _re:  # noqa: BLE001
             log.warning("resume preload failed (non-fatal): %s", _re)
             _ckpt_uuid, _pre = None, {}
@@ -1283,14 +1459,19 @@ async def narrate_chapters(
             # leak scrub freshly-generated chapters get below — otherwise a checkpoint
             # captured before the scrub existed (or containing a leak some other way)
             # would ship un-scrubbed forever.
+            # Under assist `_pre` is empty, so this branch is unreachable there and
+            # no delivered chapter can escape the census by being "resumed".
             _resumed_output = _scrub_chapter_leaks(_pre[no], task_id=f"ch{no + 1}")
-            return {"ok": True, "output": _resumed_output, "no": no, "model": w_model, "resumed": True}
+            return {"ok": True, "output": _resumed_output, "no": no,
+                    "model": w_model, "resumed": True}
         async with sem:
             res = await _write_chapter(
                 ctx=ctx, ch=ch, no=no, total=total,
                 style=style, language=language, mode=mode, job_id=job_id,
                 worker_model=w_model, timeout=worker_timeout,
                 telemetry_sink=telemetry_sink,
+                canon_text=_cl_canon_text, canon_prompt_sha=_cl_prompt_sha,
+                canon_sha256=_cl_canon_sha, context_sha256=_cl_ctx_sha,
             )
         if _resume_on and _ckpt_uuid and res.get("ok") and res.get("output"):
             try:
@@ -1313,6 +1494,8 @@ async def narrate_chapters(
         return res
 
     _t_map = time.monotonic()  # timing: chapter MAP phase (Rino 2026-07-06)
+    _cl_fail_code: Optional[str] = None   # set by the assist census below
+    _cl_bound_n = 0                       # chapters the census actually vouched for
     tasks = [asyncio.ensure_future(_bounded(i, ch)) for i, ch in enumerate(chapters)]
 
     # Consume as_completed (so a slow chapter doesn't block logging of fast ones),
@@ -1338,20 +1521,96 @@ async def narrate_chapters(
             await _drain_chapter_tasks(tasks, why="map exit")
         log.info("narrate_chapters: MAP done — %d chapters in %.1fs (max_parallel=%s)",
                  len(tasks), time.monotonic() - _t_map, max_parallel)
+        _cl_freeze_ok = True
         if _cl_freeze is not None:
             # I08: the context handed to every worker must be the same object it was at
-            # fan-out. Report-only in shadow (§9: shadow makes no user-visible change).
+            # fan-out. Report-only in shadow (§9: shadow makes no user-visible change);
+            # under assist it is one of the four conditions that fail the job.
             _cl_ok, _cl_codes = _cl_freeze.verify()
             if not _cl_ok:
-                log.warning(
+                _cl_freeze_ok = False
+                (log.error if _cl_assist else log.warning)(
                     "canon lite: shared-context freeze violation %s", list(_cl_codes))
             else:
                 log.info("canon lite: shared-context freeze intact across MAP")
+
+        # ── ASSIST: the post-MAP census. NOTHING HERE IS ADVISORY ────────────
+        #
+        # 🔴 THE HASHES ARE COLLECTED FROM THE WORKERS, NOT ASSERTED AT DISPATCH.
+        #    Checking the value we sent proves only that we computed it once;
+        #    each worker re-hashes the prefix it actually received and re-digests
+        #    the context it actually read, so a prefix that was truncated,
+        #    re-encoded or rebuilt per chapter — or a context that moved and moved
+        #    back — shows up here.
+        #
+        # 🔴 AND A VIOLATION FAILS THE JOB. Logging it and returning success ships
+        #    the defect: the book assembles, the credits settle, and the only trace
+        #    that the guarantee did not hold is a line in a log nobody reads until
+        #    a reader complains about continuity. Assist held for every delivered
+        #    chapter, or this is not a successful job. There is no third outcome.
+        #
+        #    "Delivered" is the right denominator, not "attempted": a chapter that
+        #    failed generation contributes no text to the book, and failing the
+        #    whole job over it would change legacy partial-success behaviour for a
+        #    reason that has nothing to do with the canon.
+        if _cl_assist:
+            _used = [r for r in raw if r.get("ok") and r.get("output")]
+            _n_missing = sum(
+                1 for r in _used
+                if not r.get("canon_prompt_sha256") or not r.get("canon_sha256")
+                or not r.get("context_sha256_seen"))
+            _p_seen = {r.get("canon_prompt_sha256") for r in _used}
+            _c_seen = {r.get("canon_sha256") for r in _used}
+            _x_seen = {r.get("context_sha256_seen") for r in _used}
+            for _s in (_p_seen, _c_seen, _x_seen):
+                _s.discard(None)
+
+            if not _cl_freeze_ok:
+                _cl_fail_code = "canon_lite_assist_freeze_violation"
+            elif _n_missing:
+                # A chapter with no hash is not a chapter that passed — it is a
+                # chapter nothing was measured on. Silence is not evidence.
+                log.error("canon lite: %d of %d delivered chapter(s) carry NO canon "
+                          "binding — assist cannot account for them",
+                          _n_missing, len(_used))
+                _cl_fail_code = "canon_lite_assist_binding_missing"
+            elif (_p_seen - {_cl_prompt_sha}) or (_c_seen - {_cl_canon_sha}):
+                # Exact, and against the DISPATCHED value: "all workers agree with
+                # each other" is satisfied by every worker being wrong the same way.
+                log.error("canon lite: delivered chapters do not all carry the "
+                          "dispatched canon (distinct prompt=%d canon=%d) — "
+                          "assist guarantees do not hold", len(_p_seen), len(_c_seen))
+                _cl_fail_code = "canon_lite_assist_binding_mismatch"
+            elif _x_seen - {_cl_ctx_sha}:
+                log.error("canon lite: a delivered chapter observed a shared context "
+                          "that is not the frozen baseline (distinct=%d) — "
+                          "assist guarantees do not hold", len(_x_seen))
+                _cl_fail_code = "canon_lite_assist_context_mismatch"
+            else:
+                _cl_bound_n = len(_used)
+                log.info("canon lite: assist census PASS — %d delivered chapter(s) "
+                         "canon_sha256=%s prompt_sha256=%s context_sha256=%s",
+                         _cl_bound_n, _cl_canon_sha, _cl_prompt_sha, _cl_ctx_sha)
     finally:
         # Cancellation/error must not leave the context frozen for a retry or caller.
         if _cl_freeze is not None:
             _cl_freeze.release()
             _cl_freeze = None
+
+    # The census verdict, acted on after the freeze is released so the caller gets a
+    # normal context back either way. The chapters are already written and paid for —
+    # that is unavoidable, the evidence only exists once the workers have reported —
+    # but the job does not get to call itself successful on text whose canon binding
+    # it cannot vouch for.
+    if _cl_fail_code:
+        log.error("canon lite: assist guarantees do not hold (%s); "
+                  "job returns non-success rather than delivering unverified text",
+                  _cl_fail_code)
+        return {
+            "ok": False, "chapters": [], "book": "", "polished": False,
+            "rag_used": False, "context": {}, "strategy": "narrate_chapters",
+            "error": _cl_fail_code,
+        }
 
     raw.sort(key=lambda r: r.get("no", 0))
 
@@ -1541,6 +1800,19 @@ async def narrate_chapters(
         **({"_canon_lite_canon": _cl_canon,
             "_canon_lite_canon_status": _cl_status}
            if _cl_mode == "shadow" else {}),
+        # ASSIST ONLY — the durable canon binding of this job. Persisted through
+        # `_result_payload`, so the binding survives even when chapter checkpoints
+        # are off (NARRATION_RESUME_ENABLED=0) and nothing else would record what
+        # this book was written against. Present only under assist: flag-off must
+        # keep returning the shape-identical legacy dict (C11).
+        # Hashes and one count — no name, title, literal or prose (C12/§10).
+        **({"canon_lite_binding": {
+            "mode": "assist",
+            "canon_sha256": _cl_canon_sha,
+            "canon_prompt_sha256": _cl_prompt_sha,
+            "context_sha256": _cl_ctx_sha,
+            "chapters_bound": _cl_bound_n,
+        }} if _cl_assist else {}),
         # In-memory transit only (NOT persisted into the bounded _result_payload): the pinned
         # story bible, so the downstream consistency critic can diff each chapter against the
         # committed canon when NARASI_CANON_CONFORMANCE is on. as_dict() exposes only the char

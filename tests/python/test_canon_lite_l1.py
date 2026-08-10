@@ -613,11 +613,19 @@ def test_flag_off_imports_no_canon_lite_module():
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout
 
 
-def test_assist_and_enforce_fail_closed_before_any_physical_work(
-        monkeypatch, caplog):
-    """L1 ships the foundation only. Half-enabling a mode whose guarantees do not
-    exist yet is worse than refusing it loudly."""
-    for mode in ("assist", "enforce"):
+def test_enforce_fails_closed_before_any_physical_work(monkeypatch, caplog):
+    """A mode whose guarantees do not exist yet is refused, loudly, before any spend.
+
+    🔴 THIS USED TO COVER `assist` TOO, AND NARROWING IT IS A SCOPE CHANGE, NOT A
+       WEAKENING. L3-ASSIST implements `assist`, so refusing it would now be the
+       bug; its wiring has its own controls in
+       `test_canon_lite_l3_assist_stage1.py`. `enforce` is a SEPARATE project,
+       deferred until L1/L2/L3 are live, so it keeps the refusal — including the
+       part that matters most here: nothing physical runs first. Half-enabling a
+       mode is worse than refusing it, because the job still costs money and the
+       guarantees it implies are absent.
+    """
+    for mode in ("enforce",):
         monkeypatch.setenv("NARASI_CANON_LITE_MODE", mode)
         caplog.clear()
         stub = _Stub()
@@ -629,7 +637,7 @@ def test_assist_and_enforce_fail_closed_before_any_physical_work(
         with caplog.at_level("ERROR"):
             res = asyncio.run(_run_map(3, stub=stub))
         assert not res["ok"]
-        assert res["error"] == "canon_lite_mode_unavailable_l1"
+        assert res["error"] == "canon_lite_mode_unavailable_enforce"
         assert stub.started == 0
         assert any("refused before work" in r.getMessage() for r in caplog.records)
         assert any(mode in r.getMessage() for r in caplog.records)
