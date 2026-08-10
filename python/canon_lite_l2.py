@@ -79,6 +79,12 @@ PREDICATE_SET_VERSION = _cl.L2_PREDICATE_SET_VERSION
 # ---------------------------------------------------------------------------
 # Bounds. Rejecting is always correct; truncating a manuscript never is.
 # ---------------------------------------------------------------------------
+#: L3-ASSIST Stage 2: **max two internal repair iterations per chapter**. Defined
+#: HERE, next to the report field it bounds, and imported by the repair engine — two
+#: copies of a ceiling are two ceilings, and the one that drifts is always the one
+#: nobody is looking at.
+MAX_REPAIR_ROUNDS = 2
+
 MAX_MANUSCRIPT_BYTES = 8 * 1024 * 1024
 MAX_CLAIMS_PER_CHAPTER = 200
 MAX_VIOLATIONS = 400
@@ -1221,8 +1227,24 @@ class ContinuityReportV1:
         if expected_ordered != self.ordered_blocks_sha256:
             raise _schema_error(
                 "ordered_blocks_sha256 does not bind chapter ids and hashes")
-        if self.repair_rounds != 0:
-            raise _schema_error("repair_rounds: L2 report-only requires exactly 0")
+        if isinstance(self.repair_rounds, bool) \
+                or not isinstance(self.repair_rounds, int) \
+                or not (0 <= self.repair_rounds <= MAX_REPAIR_ROUNDS):
+            raise _schema_error(
+                f"repair_rounds: expected int in 0..{MAX_REPAIR_ROUNDS}")
+        # 🔴 ONLY ASSIST MAY REPAIR — NOT "ANY MODE THAT IS NOT SHADOW".
+        #    The field was locked to 0 for every mode while only L2 existed.
+        #    L3-ASSIST needs it above 0, and the first narrowing let shadow out
+        #    only, which quietly left `mode="enforce", repair_rounds=1` a valid
+        #    report: a schema-level claim that a project which does not exist had
+        #    performed repairs. An engine that refuses enforce is not enough —
+        #    a report is written, read and audited far from the engine, and the
+        #    schema is the last place that can say the claim is impossible.
+        #    Allow-list, not deny-list: when L3-ENFORCE is eventually built, this
+        #    line is where it has to be admitted deliberately.
+        if self.repair_rounds != 0 and self.mode != "assist":
+            raise _schema_error(
+                f"repair_rounds: only assist may repair; {self.mode!r} may not")
         if not isinstance(self.affected_chapter_ids, tuple) \
                 or not isinstance(self.edit_ratios_ppm, tuple):
             raise _schema_error("repair fields: expected tuples")
@@ -1230,7 +1252,7 @@ class ContinuityReportV1:
             raise _schema_error("repair fields: chapter ids and edit ratios must align")
         if self.repair_rounds == 0 and (
                 self.affected_chapter_ids or self.edit_ratios_ppm):
-            raise _schema_error("repair fields: L2 report-only rounds=0 must be empty")
+            raise _schema_error("repair fields: rounds=0 means nothing was repaired")
         for i, chapter_id in enumerate(self.affected_chapter_ids):
             _req_id(chapter_id, f"affected_chapter_ids[{i}]")
         for i, ratio in enumerate(self.edit_ratios_ppm):
@@ -1310,6 +1332,9 @@ def build_report(
     mode: str,
     result: Mapping[str, Any],
     claims_by_index: Optional[Mapping[int, ChapterClaimsV1]] = None,
+    repair_rounds: int = 0,
+    affected_chapter_ids: tuple[str, ...] = (),
+    edit_ratios_ppm: tuple[int, ...] = (),
 ) -> ContinuityReportV1:
     if not isinstance(snapshot, FinalChapterSnapshotV1):
         raise _schema_error("snapshot: expected FinalChapterSnapshotV1")
@@ -1335,9 +1360,9 @@ def build_report(
         ordered_chapter_hashes=tuple(b.content_sha256 for b in snapshot.blocks),
         chapter_ids=tuple(b.chapter_id for b in snapshot.blocks),
         chapter_count=snapshot.chapter_count,
-        repair_rounds=0,
-        affected_chapter_ids=(),
-        edit_ratios_ppm=(),
+        repair_rounds=repair_rounds,
+        affected_chapter_ids=affected_chapter_ids,
+        edit_ratios_ppm=edit_ratios_ppm,
         delivery_binding=delivery,
         persistence_binding=persistence,
         continuity_status=decide_continuity_status(
