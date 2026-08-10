@@ -132,30 +132,73 @@ export async function recordTopupLot({
       return { written: false, reason: "fail_closed_no_payment_at" };
     }
 
-    // 4. Write the lot through the ONE writer both paths use.
-    const r = await query(
-      `SELECT lot_id, acquired_at, rate_date, is_priced, grandfathered, reason
-         FROM g3_write_lot($1,'topup',$2,$3,'grant',$4,$5,NULL)`,
-      [tenantId, credits, ledgerOpId, provider, providerPaymentId],
-      tenantId,
-    );
-    const lot = r.rows[0] || {};
+    // 4. Write the lot through the ONE door, AS THE POSTING ENGINE.
+    //
+    // 🔴 THE ROLE CHANGE IS THE POINT, NOT THE PLUMBING. `0091` made
+    //    `g3_birth_lots` the only executable entrypoint and gave EXECUTE to
+    //    `g3_posting_engine` alone — the pool principal cannot birth a lot as
+    //    itself. `SET LOCAL ROLE` is transaction-scoped, so the identity cannot
+    //    leak onto the next borrower of this pooled connection.
+    //
+    //    The runtime no longer calls `g3_write_lot`: it was a pure delegation,
+    //    and leaving it in the call path would mean the runtime holding a second
+    //    executable name for the same write.
+    const client = await pool.connect();
+    let lot = {};
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(tenantId)]);
+      await client.query("SET LOCAL ROLE g3_posting_engine");
+      const r = await client.query(
+        `SELECT lot_id, acquired_at, fx_rate_date, is_priced, grandfathered, reason
+           FROM public.g3_birth_lots($1::jsonb)`,
+        [JSON.stringify([{
+          tenant: tenantId, source: "topup", credits, ledger_op_id: ledgerOpId,
+          provenance_kind: "grant", provider, provider_payment_id: providerPaymentId,
+          attested_at: null,
+        }])],
+      );
+      lot = r.rows[0] || {};
 
-    // 5. Item 5 — cash-in posting, at the SUPPLIER FEE. Only when the lot is
-    //    priced; an unpriced lot has no established amount to post and posting
-    //    a guessed one is the failure Decision 3 B2 exists to prevent.
-    if (lot.is_priced) {
-      try {
-        await query(`SELECT g3_post_cash_in($1,$2,$3,$4)`,
-          [tenantId, provider, providerPaymentId, `g3_cashin:${providerPaymentId}`], tenantId);
-      } catch (e) {
-        console.error(
-          `[g3][CRITICAL] cash-in posting failed provider_payment_id='${providerPaymentId}' ` +
-          `lot='${lot.lot_id}' err='${e.message}' action=LOT_WRITTEN_POSTING_MISSING`,
-          { event: "g3.cash_in_post_failed", severity: "critical" },
-        );
+      // 5. Item 5 — cash-in posting, at the SUPPLIER FEE. Only when the lot is
+      //    priced; an unpriced lot has no established amount to post and posting
+      //    a guessed one is the failure Decision 3 B2 exists to prevent.
+      //
+      //    🔴 BEHIND A SAVEPOINT ON PURPOSE. The lot used to be committed on its
+      //    own statement, so a failed posting left the lot standing and logged
+      //    loudly. Now that both share a transaction, an unguarded failure would
+      //    roll the LOT back too — silently converting a posting defect into a
+      //    lost grant. The savepoint keeps the original outcome.
+      // 🔴 THE ROLE IS HELD UNTIL THE POSTING IS DONE. `0093` put the Item-5
+      //    journals behind their own definer boundary, executable only by
+      //    g3_posting_engine — so RESET ROLE before the cash-in would drop the
+      //    identity that is allowed to write the books. Note the savepoint is
+      //    taken while elevated: ROLLBACK TO SAVEPOINT does not restore a role,
+      //    so the RESET below still runs on the way out either way.
+      if (lot.is_priced) {
+        await client.query("SAVEPOINT g3_cashin");
+        try {
+          await client.query(`SELECT public.g3_post_cash_in($1,$2,$3,$4)`,
+            [tenantId, provider, providerPaymentId, `g3_cashin:${providerPaymentId}`]);
+          await client.query("RELEASE SAVEPOINT g3_cashin");
+        } catch (e) {
+          await client.query("ROLLBACK TO SAVEPOINT g3_cashin");
+          console.error(
+            `[g3][CRITICAL] cash-in posting failed provider_payment_id='${providerPaymentId}' ` +
+            `lot='${lot.lot_id}' err='${e.message}' action=LOT_WRITTEN_POSTING_MISSING`,
+            { event: "g3.cash_in_post_failed", severity: "critical" },
+          );
+        }
       }
-    } else {
+      await client.query("RESET ROLE");
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+    if (!lot.is_priced) {
       console.warn(
         `[g3] lot written UNPRICED provider_payment_id='${providerPaymentId}' lot='${lot.lot_id}' ` +
         `— no cash-in posted; supplier fee was not established (customer gross is not a substitute)`,
@@ -164,7 +207,7 @@ export async function recordTopupLot({
     }
 
     return {
-      written: true, lotId: lot.lot_id, acquiredAt: lot.acquired_at, rateDate: lot.rate_date,
+      written: true, lotId: lot.lot_id, acquiredAt: lot.acquired_at, rateDate: lot.fx_rate_date,
       isPriced: lot.is_priced, grandfathered: lot.grandfathered, reason: lot.reason,
     };
   } catch (e) {
@@ -218,7 +261,7 @@ export async function quarantineTopup({
 }
 
 // Precondition A lives in SQL: this calls the SAME g3_write_lot against the SAME
-// stored payment_at, so acquired_at and rate_date cannot diverge from what the
+// stored payment_at, so acquired_at and fx_rate_date cannot diverge from what the
 // ordinary path produced. It does not re-read the webhook and does not get its
 // own provenance class — the released lot inherits the class its payment fixed.
 export async function releaseQuarantinedTopup({
@@ -226,21 +269,67 @@ export async function releaseQuarantinedTopup({
 }) {
   const client = await pool.connect();
   try {
+    if (!releasedBy?.trim() || !disposition?.trim()) {
+      throw new Error("releaseQuarantinedTopup: an attributed disposition is required");
+    }
     await client.query("BEGIN");
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(tenantId)]);
+
+    // 1. Hold the quarantine row for the rest of the transaction. Same order and
+    //    same predicate g3_release_quarantined_topup used: the lock comes BEFORE
+    //    the birth, so two releases of one payment serialise.
+    const q = await client.query(
+      `SELECT id FROM g3_topup_quarantine
+        WHERE provider = $1 AND provider_payment_id = $2 AND released_at IS NULL
+        FOR UPDATE`,
+      [provider, providerPaymentId],
+    );
+    if (q.rowCount === 0) {
+      throw new Error(`releaseQuarantinedTopup: no open quarantine for ${provider}/${providerPaymentId}`);
+    }
+
+    // 2. The birth, as the posting engine, through the SAME single door the
+    //    ordinary path uses — which is what makes precondition A hold: identical
+    //    writer, identical stored payment_at, so acquired_at and fx_rate_date
+    //    cannot diverge between the two paths.
+    await client.query("SET LOCAL ROLE g3_posting_engine");
     const r = await client.query(
-      `SELECT lot_id, acquired_at, rate_date, is_priced, grandfathered, reason
-         FROM g3_release_quarantined_topup($1,$2,$3,$4,$5,$6,$7)`,
-      [provider, providerPaymentId, tenantId, credits, ledgerOpId, releasedBy, disposition],
+      `SELECT lot_id, acquired_at, fx_rate_date, is_priced, grandfathered, reason
+         FROM public.g3_birth_lots($1::jsonb)`,
+      [JSON.stringify([{
+        tenant: tenantId, source: "topup", credits, ledger_op_id: ledgerOpId,
+        provenance_kind: "grant", provider, provider_payment_id: providerPaymentId,
+        attested_at: null,
+      }])],
     );
     const lot = r.rows[0] || {};
+
+    // 3. The Item-5 posting, still as the engine — 0093 made these reachable
+    //    only through g3_posting_engine.
     if (lot.is_priced) {
-      await client.query(`SELECT g3_post_cash_in($1,$2,$3,$4)`,
+      await client.query(`SELECT public.g3_post_cash_in($1,$2,$3,$4)`,
         [tenantId, provider, providerPaymentId, `g3_cashin:${providerPaymentId}`]);
     }
+
+    // 4. Only NOW hand the identity back, and close the quarantine as the pool
+    //    principal.
+    //
+    // 🔴 THE QUARANTINE WRITE BELONGS TO app_user, NOT THE ENGINE. `0087` grants
+    //    app_user SELECT/INSERT/UPDATE on g3_topup_quarantine; the engine holds
+    //    no table privilege at all, by design. Doing this update while still
+    //    elevated fails with permission denied — which is the privilege split
+    //    working, not an obstacle to route around by widening the engine.
+    await client.query("RESET ROLE");
+    await client.query(
+      `UPDATE public.g3_topup_quarantine
+          SET released_at = clock_timestamp(), released_by = $2,
+              release_disposition = $3, released_lot_id = $4
+        WHERE id = $1`,
+      [q.rows[0].id, releasedBy, disposition, lot.lot_id],
+    );
     await client.query("COMMIT");
     return {
-      released: true, lotId: lot.lot_id, acquiredAt: lot.acquired_at, rateDate: lot.rate_date,
+      released: true, lotId: lot.lot_id, acquiredAt: lot.acquired_at, rateDate: lot.fx_rate_date,
       isPriced: lot.is_priced, grandfathered: lot.grandfathered, reason: lot.reason,
     };
   } catch (e) {
@@ -255,11 +344,33 @@ export async function releaseQuarantinedTopup({
 export async function postConsumption({
   tenantId, lotId, credits, revenueAccount, opId, occurredAt,
 }) {
-  const r = await query(
-    `SELECT g3_post_consumption($1,$2,$3,$4,$5,$6) AS entry_id`,
-    [tenantId, lotId, credits, revenueAccount, opId, occurredAt], tenantId,
-  );
-  return r.rows[0]?.entry_id ?? null;
+  // 🔴 THREE THINGS MUST HOLD IN ONE TRANSACTION, AND THE ORDER IS NOT FREE.
+  //    The tenant GUC has to be set BEFORE the role is assumed, because `0093`'s
+  //    boundary refuses a `p_tenant` that disagrees with the transaction context
+  //    — and inside a SECURITY DEFINER that context is the only thing RLS is
+  //    actually evaluating. Setting it afterwards would leave the function
+  //    comparing against an empty string and failing for a confusing reason.
+  //
+  //    `SET LOCAL` on both means neither the tenant nor the elevated identity
+  //    can survive onto the next borrower of this pooled connection.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [String(tenantId)]);
+    await client.query("SET LOCAL ROLE g3_posting_engine");
+    const r = await client.query(
+      `SELECT public.g3_post_consumption($1,$2,$3,$4,$5,$6) AS entry_id`,
+      [tenantId, lotId, credits, revenueAccount, opId, occurredAt],
+    );
+    await client.query("RESET ROLE");
+    await client.query("COMMIT");
+    return r.rows[0]?.entry_id ?? null;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // Decision 3 A2/A3: HELD and RELEASED post NOTHING to the general ledger. These

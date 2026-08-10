@@ -34,14 +34,25 @@ import { useOwnDatabase } from "./_realdb.mjs";
 // Never inherit an ambient REDIS_URL: a developer shell may point at production.
 // A non-local test Redis must be opted into through the test-specific variable.
 process.env.REDIS_URL = process.env.REALDB_TEST_REDIS_URL || "redis://127.0.0.1:6379";
-const DSN = await useOwnDatabase("orphan");
+const { runtimeDsn: DSN, adminDsn } = await useOwnDatabase("orphan");
 
 const { pool } = await import("../../backend/db.js");
 const { recordCreditedPaymentEvent, topup_grant } = await import("../../backend/payments_core.mjs");
 const { redis } = await import("../../backend/redis.js");
 after(async () => { try { redis.disconnect(); } catch {} try { await pool.end(); } catch {} });
 
-const q = (s, p = []) => pool.query(s, p);
+// 🔴 FIXTURES ON THE ADMIN CONNECTION, PRODUCT ON THE RUNTIME POOL.
+//    `pool` is `app_user`, exactly what production's DATABASE_POOL_URL connects
+//    as, and every call that exercises the product goes through it — so a
+//    privilege or RLS refusal here is a real one. Arranging a precondition is
+//    not the behaviour under test, and doing it through the restricted role
+//    would only mean writing fixtures around RLS instead of testing it.
+const pgmod = (await import("pg")).default;
+const adminClient = new pgmod.Client({ connectionString: adminDsn, ssl: false });
+await adminClient.connect();
+after(async () => { try { await adminClient.end(); } catch {} });
+const q = (s, p = []) => adminClient.query(s, p);
+const qr = (s, p = []) => pool.query(s, p);   // runtime: app_user
 const uniq = crypto.randomBytes(5).toString("hex");
 const TENANT = crypto.randomUUID();
 const PAY = `pay_real_${uniq}`;
