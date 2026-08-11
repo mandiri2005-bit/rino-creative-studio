@@ -33,7 +33,19 @@ env:
   # not support SSL connections"; both honour PGSSLMODE=disable so they can be tested at
   # all. Production never sets this, so production behaviour is unchanged.
   PGSSLMODE: disable
+  # The CI ADMIN/fixture connection: an ephemeral superuser used by the node
+  # suites, the pytest guard and the privilege audit, all of which only read or
+  # exercise app_user. It exists in this job's service container and nowhere else.
+  #
+  # ⛔ THIS IS NOT A RUNTIME IDENTITY. Production's runtime principal is
+  #    `app_user`; migrations run as `neondb_owner`. Nothing in production
+  #    connects as a superuser. Conflating the CI convenience identity with the
+  #    runtime one is precisely the identity error this workflow was red for, so
+  #    do not let the variable name suggest otherwise.
   PGURL: postgresql://postgres:postgres@localhost:5432/wimba
+  # The MIGRATION connection. Migrations must NOT run as a superuser — see the
+  # role-setup step below.
+  PGURL_OWNER: postgresql://neondb_owner:neondb_owner@localhost:5432/wimba
 
 jobs:
   guards:
@@ -77,19 +89,78 @@ jobs:
         # built on. This matches the set known-gaps already installs.
         run: pip install --quiet pytest asyncpg fastapi httpx
 
-      - name: Create the roles the migrations grant to
-        # 0016 grants to app_user; the accounting migrations assume an owner role exists.
-        # app_user is NOBYPASSRLS so FORCE ROW LEVEL SECURITY is actually exercised.
+      - name: Create the production-equivalent migration owner
+        # 🔴 THE ROLE SHAPE IS PART OF WHAT THE MIGRATIONS ASSERT, so CI has to build
+        #    the production one rather than the convenient one. This job used to
+        #    create both roles as `postgres` and then migrate as `postgres`, and
+        #    0088 aborted the whole run on purpose:
+        #
+        #      ABORT 0088: the migration is running as SUPERUSER postgres, which
+        #      implicitly holds every role, so the fx_rates_writer SET-ROLE gate
+        #      would be fictional.
+        #
+        #    A superuser satisfies every role predicate by definition, so a database
+        #    migrated by one reports that contract as enforced while enforcing none
+        #    of it.
+        #
+        #    ONE role is created here, and its attributes are copied verbatim from
+        #    tests/t72/provision.sh:29 — the authority on what production-equivalent
+        #    means for this repo:
+        #
+        #        CREATE ROLE neondb_owner LOGIN CREATEROLE CREATEDB BYPASSRLS;
+        #
+        #    Which attribute earns its place:
+        #      · NOSUPERUSER  — spelled out, not left to the default. The whole point
+        #        of this role is that it is NOT a superuser; that property should be
+        #        readable where it is defined, not inferred from an omission.
+        #      · BYPASSRLS    — load-bearing: 0016 sets app_user's BYPASSRLS
+        #        attribute, and only a role that holds it may change it.
+        #      · CREATEROLE   — load-bearing: 0016, 0074 and 0088 all CREATE ROLE.
+        #      · CREATEDB     — NOT required by any migration. It is here for shape
+        #        parity with T72, so the two production-equivalent environments
+        #        cannot drift apart unnoticed. Do not "clean it up".
+        #
+        #    The database and the public schema are handed to neondb_owner so the
+        #    migration role can actually create objects in them.
+        #
+        # ⛔ `app_user` IS DELIBERATELY NOT CREATED HERE — see the next step.
         run: |
           psql "$PGURL" -v ON_ERROR_STOP=1 \
-            -c "CREATE ROLE neondb_owner LOGIN;" \
-            -c "CREATE ROLE app_user LOGIN NOBYPASSRLS;"
+            -c "CREATE ROLE neondb_owner LOGIN PASSWORD 'neondb_owner' NOSUPERUSER CREATEROLE CREATEDB BYPASSRLS;" \
+            -c "ALTER DATABASE wimba OWNER TO neondb_owner;" \
+            -c "ALTER SCHEMA public OWNER TO neondb_owner;"
+
+      - name: Pre-condition — app_user must NOT exist yet
+        # Migration 0016 creates app_user inside
+        #   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_user')
+        # so anything that pre-creates the role turns that branch into DEAD CODE in
+        # CI. The guard would then report green while never once executing the
+        # statement it exists to protect — a false green of exactly the kind this
+        # workflow was written to stop. T72 requires app_user to be created BY 0016
+        # (tests/t72/provision.sh:6, and its ROLES list drops app_user before every
+        # provision for this same reason).
+        #
+        # Roles are CLUSTER-WIDE, not per-database, so this is also the check that
+        # catches a runner or service container that arrives with the role already
+        # present. Fail loudly rather than silently skip.
+        run: |
+          psql "$PGURL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_user') THEN
+              RAISE EXCEPTION
+                'PRECONDITION FAILED: app_user already exists before migrate.js has run. Migration 0016 creates it under IF NOT EXISTS, so its CREATE ROLE branch would be skipped and this gate would pass without ever exercising it. Nothing may create app_user ahead of the migration chain.';
+            END IF;
+          END $$;
+          SQL
 
       - name: Apply every migration with the real runner
         # Uses database/migrate.js rather than a psql loop so the runner itself is covered.
         # A migration that cannot apply to an empty database fails the build here.
         env:
-          DATABASE_URL_DEV: ${{ env.PGURL }}
+          # NOT $PGURL. Migrations run as the production-equivalent NON-superuser
+          # owner; see the role-setup step above for why 0088 refuses otherwise.
+          DATABASE_URL_DEV: ${{ env.PGURL_OWNER }}
           # migrate.js is CJS and does require('pg'), but it lives in database/ while pg is
           # only ever installed into backend/node_modules — and there is NO package.json at
           # the repo root, so Node's upward resolution walks to / and finds no node_modules
@@ -99,6 +170,76 @@ jobs:
           # installed there; migrate.js already treats it as optional and says so.
           NODE_PATH: ${{ github.workspace }}/backend/node_modules
         run: node database/migrate.js
+
+      - name: Post-condition — 0016 built app_user, and the role shapes are production-equivalent
+        # Paired with the pre-condition above, this is the proof: app_user did not
+        # exist before migrate.js and does exist after, so migration 0016's
+        # CREATE ROLE branch really executed. Without the pair, either check alone
+        # proves nothing.
+        #
+        # The membership shape is the second half. When a non-superuser CREATEROLE
+        # role creates another role, PostgreSQL 16+ grants it ADMIN OPTION on the
+        # new role, and PG18 produces exactly admin=t / inherit=f / set=f (measured,
+        # not assumed). That triple is therefore a FINGERPRINT of who created
+        # app_user: had `postgres` created it, no such membership row would exist,
+        # and 0016's `ALTER ROLE app_user NOBYPASSRLS` would have failed with
+        # "Only roles with the CREATEROLE attribute and the ADMIN option on role
+        # app_user may alter this role".
+        #
+        # inherit=f / set=f are asserted, not tolerated: tests/t72/postmigrate.sh
+        # has to GRANT app_user TO current_user WITH INHERIT FALSE, SET TRUE before
+        # anything can SET ROLE app_user. That step is only necessary because the
+        # creation grant does NOT confer SET. If a future PostgreSQL changes the
+        # default, this assertion is where it should surface — postmigrate.sh would
+        # silently become a no-op otherwise.
+        run: |
+          psql "$PGURL" -v ON_ERROR_STOP=1 <<'SQL'
+          \echo '── role attributes ──────────────────────────────────────────────'
+          SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolbypassrls, rolcanlogin
+            FROM pg_roles
+           WHERE rolname IN ('neondb_owner', 'app_user')
+           ORDER BY rolname;
+          \echo '── membership on app_user (who created it) ──────────────────────'
+          SELECT m.rolname AS member, g.rolname AS grantor,
+                 a.admin_option, a.inherit_option, a.set_option
+            FROM pg_auth_members a
+            JOIN pg_roles r ON r.oid = a.roleid
+            JOIN pg_roles m ON m.oid = a.member
+            JOIN pg_roles g ON g.oid = a.grantor
+           WHERE r.rolname = 'app_user'
+           ORDER BY m.rolname;
+          DO $$
+          DECLARE r record;
+          BEGIN
+            SELECT * INTO r FROM pg_roles WHERE rolname = 'app_user';
+            IF NOT FOUND THEN
+              RAISE EXCEPTION 'POSTCONDITION FAILED: app_user does not exist after the migration chain. Migration 0016 did not create it.';
+            END IF;
+            IF r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb THEN
+              RAISE EXCEPTION 'POSTCONDITION FAILED: app_user is privileged (super=% bypassrls=% createrole=% createdb=%). It must be an unprivileged DML role, or FORCE ROW LEVEL SECURITY is not actually exercised by anything downstream.',
+                r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb;
+            END IF;
+            IF NOT r.rolcanlogin THEN
+              RAISE EXCEPTION 'POSTCONDITION FAILED: app_user cannot log in; 0016 creates it WITH LOGIN.';
+            END IF;
+
+            SELECT * INTO r FROM pg_roles WHERE rolname = 'neondb_owner';
+            IF r.rolsuper OR NOT r.rolcreaterole OR NOT r.rolcreatedb OR NOT r.rolbypassrls OR NOT r.rolcanlogin THEN
+              RAISE EXCEPTION 'POSTCONDITION FAILED: neondb_owner is not production-equivalent (super=% createrole=% createdb=% bypassrls=% login=%). Expected LOGIN CREATEROLE CREATEDB BYPASSRLS, NOSUPERUSER — see tests/t72/provision.sh.',
+                r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolbypassrls, r.rolcanlogin;
+            END IF;
+
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_auth_members a
+                JOIN pg_roles ro ON ro.oid = a.roleid
+                JOIN pg_roles me ON me.oid = a.member
+               WHERE ro.rolname = 'app_user' AND me.rolname = 'neondb_owner'
+                 AND a.admin_option AND NOT a.inherit_option AND NOT a.set_option
+            ) THEN
+              RAISE EXCEPTION 'POSTCONDITION FAILED: neondb_owner does not hold the expected admin=t/inherit=f/set=f membership on app_user. Either app_user was created by someone other than neondb_owner, or PostgreSQL changed what a CREATEROLE creation grants — in which case tests/t72/postmigrate.sh needs revisiting too.';
+            END IF;
+          END $$;
+          SQL
 
       - name: Node — payment, credit and reversal suites
         env:
