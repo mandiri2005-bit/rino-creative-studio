@@ -1382,6 +1382,309 @@ async def _canon_lite_l2_shadow_projection(
         report, l2_status="present", mode="shadow")
 
 
+#: L3-ASSIST Stage 2 test seams. Production leaves both None and the job builds its
+#: own `L3AssistSession` from the metered provider the extraction wave already
+#: created. They exist so the wiring can be exercised without a provider, and so a
+#: test never has to reach inside the session to fake one.
+_L3_REPAIR_PROVIDER = None
+_L3_CHAPTER_EXTRACTOR = None
+
+
+#: Assist's outcome vocabulary, normalised to three values. L2's own status set
+#: has a fourth (`violations_found`), and carrying it through would make "the book
+#: still contradicts itself" and "we could not tell" two different words for a
+#: reader who only needs to know whether assist settled the book. From assist's
+#: side a surviving violation IS unresolved.
+L3_OUTCOME_CLEAN = "clean"
+L3_OUTCOME_UNRESOLVED = "unresolved"
+L3_OUTCOME_UNCHECKED = "unchecked"
+L3_OUTCOMES = (L3_OUTCOME_CLEAN, L3_OUTCOME_UNRESOLVED, L3_OUTCOME_UNCHECKED)
+
+
+def _l3_normalise_outcome(status) -> str:
+    """L2 continuity status -> assist outcome. Unknown values fail to `unchecked`.
+
+    The default matters: an unrecognised status is one this mapping has never seen,
+    and calling that `clean` would turn every future L2 status addition into a
+    silent all-clear.
+    """
+    import canon_lite_l2 as _cl2
+    if status == _cl2.STATUS_CLEAN:
+        return L3_OUTCOME_CLEAN
+    if status in (_cl2.STATUS_VIOLATIONS, _cl2.STATUS_UNRESOLVED):
+        return L3_OUTCOME_UNRESOLVED
+    return L3_OUTCOME_UNCHECKED
+
+
+def _l3_record_outcome(result: dict, *, outcome: str, stage: str,
+                       run=None, delivery_binding=None) -> dict:
+    """Attach the bounded assist outcome and return it. EVERY path lands here.
+
+    🔴 A PATH THAT RETURNS WITHOUT RECORDING IS A JOB THAT RAN ASSIST AND CANNOT
+       SAY SO. The interesting exits are the unhappy ones — no manuscript, an
+       unsyncable book, a repairer that raised — and those are exactly the ones an
+       early `return None` used to leave invisible, indistinguishable afterwards
+       from assist never having been switched on.
+    """
+    if outcome not in L3_OUTCOMES:
+        outcome = L3_OUTCOME_UNCHECKED
+    bounded = {
+        "mode": "assist",
+        "outcome": outcome,
+        "stage": stage,
+        "rounds": (run.rounds if run is not None else 0),
+        "chapters_targeted": (len(run.chapters) if run is not None else 0),
+        "chapters_repaired": (sum(1 for c in run.chapters if c.accepted)
+                              if run is not None else 0),
+        "manuscript_changed": bool(run.changed) if run is not None else False,
+        "delivery_binding": delivery_binding,
+        "manuscript_sha256": (run.manuscript_sha256_after
+                              if run is not None else None),
+    }
+    result["canon_lite_l3"] = bounded
+    return bounded
+
+
+def _l3_ws_runs(text: str) -> tuple:
+    """`(leading, trailing)` whitespace runs. Compared, never assumed away."""
+    return (text[:len(text) - len(text.lstrip())], text[len(text.rstrip()):])
+
+
+def _l3_sync_chapter_records(result: dict, run, before_snap, after_snap) -> bool:
+    """Rewrite the chapter records to match the repaired manuscript. All or nothing.
+
+    The record's `content` is the chapter BODY; the snapshot's block is that body
+    plus whatever the assembler wrapped around it (the `## ` heading, blank lines).
+    The wrapper is MEASURED, never assumed — and then CHECKED, which is the part
+    that was missing:
+
+    🔴 REAPPLYING OFFSETS IS NOT THE SAME AS REAPPLYING BYTES. Slicing the new
+       block at the old block's prefix/suffix LENGTHS produces a string for any
+       input at all. If the candidate changed a single byte of the wrapper — one
+       trailing newline is enough — the slice silently takes the wrong characters
+       and a corrupted body is written to a durable row that nothing downstream
+       re-checks. So the prefix and suffix must be present in the new block as
+       BYTES, and prefix + body + suffix must reconstruct it exactly.
+
+    🔴 AND IT IS A CENSUS OVER EVERY CHAPTER, not only the repaired ones. A record
+       that no longer corresponds to its block — the default `polish` pass rewrites
+       the assembled book without touching the records, so this is the common case,
+       not an exotic one — means the rows and the manuscript are already two
+       different books. Substituting into one of them would leave the reader with
+       repaired prose in the book and unrepaired prose in the rows, both live.
+       Refusing is the only honest answer, and it has to be decided by looking at
+       all of them.
+    """
+    records = result.get("chapters")
+    if not isinstance(records, list):
+        return False
+    n = before_snap.chapter_count
+    if after_snap.chapter_count != n or n == 0:
+        return False
+
+    by_index: dict = {}
+    for rec in records:
+        if not isinstance(rec, dict) or not isinstance(rec.get("no"), int) \
+                or isinstance(rec.get("no"), bool):
+            return False
+        if rec["no"] in by_index:
+            return False                     # two records claiming one chapter
+        by_index[rec["no"]] = rec
+    if set(by_index) != set(range(n)):
+        return False                         # census: every chapter, exactly once
+
+    staged: list = []
+    for i in range(n):
+        rec = by_index[i]
+        content = rec.get("content")
+        if not isinstance(content, str) or not content:
+            return False
+        old_text = before_snap.block_bytes(i).decode("utf-8")
+        new_text = after_snap.block_bytes(i).decode("utf-8")
+        at = old_text.find(content)
+        if at < 0:
+            return False
+        prefix, suffix = old_text[:at], old_text[at + len(content):]
+        # Exact wrapper bytes at BOTH ends of the new block, and an exact
+        # reconstruction — which also rules out a prefix and suffix that overlap
+        # in a block the candidate shortened.
+        if not new_text.startswith(prefix) or not new_text.endswith(suffix):
+            return False
+        if len(new_text) < len(prefix) + len(suffix):
+            return False
+        body = new_text[len(prefix):len(new_text) - len(suffix)]
+        if prefix + body + suffix != new_text:
+            return False
+        # 🔴 BOTH WHITESPACE RUNS, ALWAYS, WITH NO CONDITION IN FRONT.
+        #    `endswith`/`startswith` cannot see framing move: insert a blank line
+        #    after the heading or append a newline at the end, and the block still
+        #    matches the old wrapper at both ends while the extra byte is quietly
+        #    absorbed into the BODY. The durable row then differs from the record
+        #    it replaces by whitespace nobody authorised.
+        #
+        #    An earlier version gated this on `content == content.strip()`, which
+        #    switched the whole guard OFF for any chapter whose body already ended
+        #    in a space — and that is a real shape. The two halves were each green
+        #    on their own while the combination walked straight through: trailing
+        #    space in the old body, leading blank line in the candidate, accepted,
+        #    durable content silently re-framed. A guard with a precondition is a
+        #    guard that is absent exactly when some input satisfies it.
+        if _l3_ws_runs(content) != _l3_ws_runs(body):
+            return False
+        staged.append((rec, body))
+
+    for rec, body in staged:
+        rec["content"] = body
+    return True
+
+
+async def _canon_lite_l3_assist_repair(
+    result: dict,
+    *,
+    mode: str,
+    canon,
+    wave_token,
+    run_id: str = "",
+    job_uuid=None,
+    job_external_id: "Optional[str]" = None,
+    worker_model: str = "",
+    telemetry_sink=None,
+) -> "Optional[dict]":
+    """Run Stage-2 repair at the terminal seam and substitute the repaired bytes.
+
+    Placed here, after every text mutation and BEFORE `_persist_chapters` and
+    `_result_payload`, because those two are what the reader and the durable row
+    get. Repairing after them would produce a book that was validated in one shape
+    and delivered in another.
+
+    🔴 ASSIST ONLY, AND NEVER A REFUSAL. `continuity_unresolved` is reported, never
+       used to fail the job — blocking on it is L3-ENFORCE. `shadow` and `off`
+       return before importing anything, so their behaviour is byte-identical.
+    """
+    # 🔴 THE MODE GATE IS THE FIRST STATEMENT, ABOVE EVERY IMPORT. Off, shadow and
+    #    enforce leave here having loaded no Canon Lite module, built no provider
+    #    session and touched no paid path — C11's rule, and the reason it is a bare
+    #    string comparison rather than anything that needs a module to evaluate.
+    if mode != "assist":
+        return None
+
+    import canon_lite_l2 as _cl2
+    import canon_lite_l3_repair as _cl3
+
+    snapshot = _cl2.materialize_final_snapshot(result, canon=canon)
+    if snapshot is None:
+        return _l3_record_outcome(result, outcome=L3_OUTCOME_UNCHECKED,
+                                  stage="no_manuscript")
+
+    # ── ONE metered session for the whole job ────────────────────────────────
+    # The wave runs exactly once and hands its provider out; the repair session
+    # then rides that same object. Nothing here calls the wave a second time.
+    session_holder: dict = {}
+    claims_by_index = None
+    try:
+        import canon_lite_qc_runner as _qcr
+        claims_by_index = await _qcr.maybe_run_metered_wave(
+            snapshot, canon, wave_token=wave_token, run_id=run_id,
+            job_uuid=job_uuid, job_external_id=job_external_id,
+            on_session=lambda m: session_holder.__setitem__("metered", m))
+    except Exception:  # noqa: BLE001
+        claims_by_index = None
+        log.warning("canon lite l3: metered wave unavailable "
+                    "(error_code=l3_metered_wave_error)")
+
+    provider, extractor = _L3_REPAIR_PROVIDER, _L3_CHAPTER_EXTRACTOR
+    if provider is None or extractor is None:
+        metered = session_holder.get("metered")
+        if metered is None:
+            # No metered session means no re-extraction, and a repair that cannot
+            # be re-checked is a repair that cannot be accepted. Measuring only.
+            return _l3_record_outcome(result, outcome=L3_OUTCOME_UNCHECKED,
+                                      stage="no_session")
+        try:
+            import canon_lite_l3_adapter as _cl3a
+            session = _cl3a.L3AssistSession(
+                metered_provider=metered,
+                canon_text=_cl.render_canon(canon),
+                worker_model=worker_model or "",
+                telemetry_sink=telemetry_sink)
+        except Exception:  # noqa: BLE001
+            log.warning("canon lite l3: session unavailable "
+                        "(error_code=l3_session_error)")
+            return _l3_record_outcome(result, outcome=L3_OUTCOME_UNCHECKED,
+                                      stage="no_session")
+        provider, extractor = session.repair_provider, session.extract_chapter
+
+    try:
+        run = await _cl3.repair_manuscript(
+            snapshot, canon, mode="assist", result=result,
+            claims_by_index=claims_by_index,
+            repair_provider=provider,
+            extract_chapter=extractor)
+    except Exception:  # noqa: BLE001 - a repair fault must not break delivery
+        log.warning("canon lite l3: repair unavailable (error_code=l3_repair_error)")
+        # `unchecked`, not `clean`: the repair pass did not conclude anything.
+        return _l3_record_outcome(result, outcome=L3_OUTCOME_UNCHECKED,
+                                  stage="repair_error")
+
+    # 🔴 SUBSTITUTE ONLY WHEN A REPAIR WAS ACCEPTED. `repaired_manuscript` equals the
+    #    original bytes when nothing was accepted, so writing it back would be a
+    #    no-op — but it would also be a WRITE, and a write through this path on a
+    #    job that repaired nothing is indistinguishable from one that did. Leaving
+    #    the key untouched keeps "the delivered text moved" and "assist ran" two
+    #    separate, observable facts.
+    if run.changed:
+        key = _cl2.resolve_manuscript_key(result)
+        if key is None:
+            log.error("canon lite l3: repaired bytes have nowhere to go; "
+                      "delivery left untouched")
+            return _l3_record_outcome(result, outcome=L3_OUTCOME_UNRESOLVED,
+                                      stage="unbound", run=run)
+        # 🔴 THE BOOK IS NOT THE ONLY COPY. `_persist_chapters` writes the durable
+        #    narasi_chapters rows from `result["chapters"][*]["content"]`, and the
+        #    reader can read those back. Substituting only the assembled book would
+        #    store the PRE-repair prose against a post-repair verdict — two
+        #    versions of the same chapter, both live, and the hash proving nothing
+        #    about the one a reader actually opens.
+        _after_snap = _cl2.materialize_final_snapshot(
+            {key: run.repaired_manuscript.decode("utf-8")}, canon=canon)
+        if _after_snap is None or not _l3_sync_chapter_records(
+                result, run, snapshot, _after_snap):
+            # A repair we computed and could not deliver consistently. UNRESOLVED,
+            # not unchecked: the verdict exists, it just does not describe what the
+            # reader will get, and the book ships unrepaired.
+            log.error("canon lite l3: repaired chapters could not be written back "
+                      "to the chapter records; delivery left untouched")
+            return _l3_record_outcome(result, outcome=L3_OUTCOME_UNRESOLVED,
+                                      stage="unsyncable", run=run)
+        result[key] = run.repaired_manuscript.decode("utf-8")
+
+    # 🔴 THE PROOF, READ BACK OFF THE DELIVERY PATH. Every hash the engine produced
+    #    describes what the engine built. This is the only check that the bytes the
+    #    reader will receive are the bytes the continuity verdict was computed over
+    #    — the Stage-2 analogue of Stage 1's census, and it fails loudly rather than
+    #    letting a validated-but-undelivered repair pass for a delivered one.
+    applied = _cl3.verify_applied(run, result)
+    telemetry = dict(_cl3.run_telemetry(run))
+    telemetry["delivery_binding"] = applied
+    telemetry["l3_status"] = "present"
+    if applied != _cl2.BINDING_MATCH:
+        # 🔴 A MISMATCH IS AN OUTCOME, NOT A LOG LINE. The verdict describes bytes
+        #    other than the ones being delivered, so whatever the re-check
+        #    concluded, it did not conclude it about this book. Reporting
+        #    `present` next to a broken binding is the same defect the Stage-1
+        #    census existed to remove, one layer up.
+        log.error("canon lite l3: the delivered manuscript is NOT the one the "
+                  "continuity verdict was computed over (binding=%s)", applied)
+        telemetry["continuity_status"] = _cl2.STATUS_UNRESOLVED
+    outcome = (L3_OUTCOME_UNRESOLVED if applied != _cl2.BINDING_MATCH
+               else _l3_normalise_outcome(telemetry["continuity_status"]))
+    bounded = _l3_record_outcome(result, outcome=outcome, stage="complete",
+                                 run=run, delivery_binding=applied)
+    telemetry["outcome"] = bounded["outcome"]
+    telemetry["stage"] = bounded["stage"]
+    return telemetry
+
+
 async def _run_narration_job(
     *, body: dict, job_id: str, job_uuid: Optional[str],
     tenant_id: str, user_id: Optional[str], total: int,
@@ -1702,6 +2005,24 @@ async def _run_narration_job_after_parity(
             log.warning(
                 "canon lite l2: report unavailable "
                 "(error_code=l2_report_error)")
+    elif _cl_l2_mode == "assist":
+        # L3-ASSIST Stage 2. Runs on the same seam as the shadow projection and for
+        # the same reason — this is the last point at which the manuscript is final
+        # — but BEFORE persistence and the bounded payload below, so the repaired
+        # bytes are the ones stored and the ones delivered.
+        try:
+            _cl_l3_telemetry = await _canon_lite_l3_assist_repair(
+                result, mode=_cl_l2_mode, canon=_cl_l2_canon,
+                wave_token=_cl_l2_wave_token,
+                run_id=str(job_id or ""), job_uuid=job_uuid,
+                job_external_id=str(job_id or "") or None,
+                worker_model=model, telemetry_sink=sink)
+            if _cl_l3_telemetry:
+                log.info("canon lite l3: %s", _cl_l3_telemetry)
+        except Exception:  # noqa: BLE001 - repair may never break delivery
+            log.warning(
+                "canon lite l3: repair seam unavailable "
+                "(error_code=l3_seam_error)")
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -4394,6 +4715,10 @@ def _result_payload(result: dict) -> dict:
     _cl_binding = result.get("canon_lite_binding")
     if _cl_binding:
         payload["canon_lite_binding"] = _cl_binding
+    # L3-ASSIST Stage 2 outcome. Same rule: present only when repair actually ran.
+    _cl_l3 = result.get("canon_lite_l3")
+    if _cl_l3:
+        payload["canon_lite_l3"] = _cl_l3
     return payload
 
 

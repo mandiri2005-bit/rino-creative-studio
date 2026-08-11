@@ -819,3 +819,33 @@ def test_real_write_chapter_reports_nothing_when_no_canon_is_given(monkeypatch):
     for key in ("canon_prompt_sha256", "context_sha256_seen", "canon_sha256",
                 "context_sha256"):
         assert key not in res, key
+
+
+# ── 12. the canon reaches the L3 seam on the REAL path ──────────────────────
+@pytest.mark.parametrize("mode", ["shadow", "assist"])
+def test_the_real_job_carries_the_canon_to_the_downstream_seam(mode):
+    """🔴 EXERCISED THROUGH `narrate_chapters`, NOT BY HANDING THE CANON IN.
+
+    The L3 repair seam reads its canon off this transit key. Forwarding it for
+    shadow only left assist receiving `canon=None`, and a canon-less report has no
+    semantic authority, no violations and nothing to repair — assist would have
+    been a permanent silent no-op in production. Every seam test passed anyway,
+    because they all passed the canon directly. Only a test that runs the real
+    function can see the difference.
+    """
+    res, _ = asyncio.run(_run(mode, n=3))
+    assert res.get("ok"), res
+    assert isinstance(res.get("_canon_lite_canon"), cl.CanonLiteV1), \
+        f"mode={mode} produced no canon for the downstream seam"
+    assert res.get("_canon_lite_canon_status") == "present"
+
+
+def test_the_canon_transit_key_never_survives_to_persistence():
+    """It is in-process transit. narration_api pops it before the durable payload,
+    and that pop must be unconditional — the key exists for two modes now."""
+    import narration_api as na
+    res, _ = asyncio.run(_run("assist", n=2))
+    assert "_canon_lite_canon" in res
+    payload = na._result_payload(res)
+    assert "_canon_lite_canon" not in payload
+    assert "_canon_lite_canon" not in repr(payload)

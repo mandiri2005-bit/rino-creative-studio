@@ -1107,8 +1107,13 @@ def test_flag_off_static_return_has_no_private_l2_transit_key_by_construction():
         "the last statement of narrate_chapters is not its terminal return "
         f"(got {type(terminal_node).__name__})")
     terminal = ast.get_source_segment(source, terminal_node.value)
-    assert '_cl_mode == "shadow"' in terminal
+    # The gate widened from shadow to shadow|assist when L3-ASSIST began consuming
+    # the same transit key. The PROPERTY is unchanged and is what is asserted: the
+    # key is included CONDITIONALLY, by construction, so a flag-off return cannot
+    # carry it. Only the set of modes that qualify has grown.
+    assert '_cl_mode in ("shadow", "assist")' in terminal
     assert '"_canon_lite_canon"' in terminal
+    assert '"off"' not in terminal
 
 
 @pytest.mark.parametrize("projection_fails", [False, True])

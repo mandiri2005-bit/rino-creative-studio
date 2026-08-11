@@ -584,6 +584,10 @@ async def repair_manuscript(
             continue
 
         current_violations = _violation_set(current_report)
+        # Did the caller materialize with a canon? Read it off the snapshot rather
+        # than assuming either way; see the note at the staged materialization.
+        _ids_resolved = any(b.chapter_id != _cl.UNKNOWN
+                            for b in current_snapshot.blocks)
         iterations = 0
         reason = REASON_NONE
         accepted_bytes: Optional[bytes] = None
@@ -641,13 +645,26 @@ async def repair_manuscript(
             staged_bytes = _rebuild(current_snapshot, staged_blocks)
             try:
                 staged_text = staged_bytes.decode("utf-8")
+                # 🔴 MATERIALIZED THE SAME WAY AS THE SNAPSHOT IT IS COMPARED
+                #    AGAINST — which the incoming snapshot itself tells us.
+                #    `materialize_final_snapshot` resolves chapter ids only when a
+                #    canon is supplied; supply it when the caller did and the ids
+                #    line up, get it wrong in EITHER direction and every block's
+                #    id disagrees with its claims, `evaluate_semantic` reads every
+                #    artefact as INVALID_EXTRACTOR_OUTPUT, coverage collapses, and
+                #    every candidate is refused as a regression. The symptom is a
+                #    repair engine that silently never repairs — which is exactly
+                #    how this was found, from the delivery seam and not from here.
                 staged_snapshot = _l2.materialize_final_snapshot(
-                    {source_key: staged_text})
+                    {source_key: staged_text},
+                    canon=(canon if _ids_resolved else None))
             except Exception:  # noqa: BLE001 - a candidate that will not materialize
                 reason = REASON_INVALID_CANDIDATE
                 continue
             if staged_snapshot is None \
-                    or len(staged_snapshot.blocks) != len(current_snapshot.blocks):
+                    or len(staged_snapshot.blocks) != len(current_snapshot.blocks) \
+                    or tuple(b.chapter_id for b in staged_snapshot.blocks) != \
+                    tuple(b.chapter_id for b in current_snapshot.blocks):
                 # Every judgement below indexes chapters by position, so a candidate
                 # that changes how many blocks the manuscript has would silently be
                 # compared against the wrong ones.

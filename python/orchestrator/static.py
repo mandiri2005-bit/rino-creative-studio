@@ -1797,9 +1797,16 @@ async def narrate_chapters(
         # flag-off returns the byte/shape-identical legacy dict (C11). narration_api
         # consumes and removes it after every text mutation and before persistence or the
         # bounded result payload. It is never serialized, logged, or sent to the user.
+        # 🔴 ASSIST NEEDS THIS AS MUCH AS SHADOW DOES. Forwarding it for shadow
+        #    only left the real assist path receiving `canon=None` at the L3 seam,
+        #    where a canon-less report has no semantic authority, no violations and
+        #    therefore nothing to repair: assist would have been a permanent,
+        #    silent no-op in production while every seam test passed by handing the
+        #    canon in directly. Still IN-PROCESS TRANSIT ONLY — narration_api pops
+        #    both keys before persistence and before the bounded payload.
         **({"_canon_lite_canon": _cl_canon,
             "_canon_lite_canon_status": _cl_status}
-           if _cl_mode == "shadow" else {}),
+           if _cl_mode in ("shadow", "assist") else {}),
         # ASSIST ONLY — the durable canon binding of this job. Persisted through
         # `_result_payload`, so the binding survives even when chapter checkpoints
         # are off (NARRATION_RESUME_ENABLED=0) and nothing else would record what

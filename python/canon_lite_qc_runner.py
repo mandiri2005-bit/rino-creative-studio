@@ -64,6 +64,7 @@ async def maybe_run_metered_wave(
     sink: Any = None,
     adapter_factory: Any = None,
     redis_getter: Any = None,
+    on_session: Any = None,
 ) -> Optional[Mapping[int, Any]]:
     """Run EXACTLY ONE metered extraction wave, or return None having done nothing.
 
@@ -134,6 +135,15 @@ async def maybe_run_metered_wave(
     if redis_getter is not None:
         metered_kwargs["redis_getter"] = redis_getter
     metered = MeteredProvider(adapter, **metered_kwargs)
+    # 🔴 THE ONE PLACE THE JOB'S METERED SESSION EXISTS. L3-ASSIST re-extracts single
+    #    repaired chapters and must ride THIS provider — same adapter, same sink,
+    #    same AttemptContext, same credential. Handing it out here is what makes the
+    #    reuse literal instead of a second construction that merely looks alike:
+    #    a duplicate would still meter, still succeed, and still double the in-flight
+    #    population the `max_inflight` ceiling was derived from. Callers that do not
+    #    need it pass nothing and nothing changes.
+    if on_session is not None:
+        on_session(metered)
 
     # ONE wave per job. The max_inflight bound is
     # replicas × jobs-per-worker × extractor_concurrency, which holds only while a job
