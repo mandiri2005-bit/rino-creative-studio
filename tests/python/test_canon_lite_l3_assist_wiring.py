@@ -67,6 +67,14 @@ def wave(monkeypatch):
     return _install
 
 
+CANARY_TENANT = "t-canary"
+
+
+@pytest.fixture(autouse=True)
+def _allowlist(monkeypatch):
+    monkeypatch.setenv("NARASI_CANON_LITE_ASSIST_TENANTS", CANARY_TENANT)
+
+
 @pytest.fixture(autouse=True)
 def _no_repairer():
     """Restore the seam's injected hooks; they are process-global."""
@@ -103,9 +111,10 @@ def _real_result(book=BOOK):
     }
 
 
-def _seam(result, *, mode, canon):
+def _seam(result, *, mode, canon, tenant_id=CANARY_TENANT):
     return asyncio.run(na._canon_lite_l3_assist_repair(
-        result, mode=mode, canon=canon, wave_token=None, run_id="j1"))
+        result, mode=mode, canon=canon, wave_token=None, run_id="j1",
+        tenant_id=tenant_id))
 
 
 # ── 1. non-assist modes are untouched ───────────────────────────────────────

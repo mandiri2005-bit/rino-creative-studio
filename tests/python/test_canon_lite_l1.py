@@ -567,19 +567,107 @@ _MODE_MATRIX = [
 ]
 
 
+#: The allowlisted tenant every `assist` row below is resolved for. The matrix keeps
+#: `assist -> assist` only because this tenant is named; see `_TENANT_MATRIX`.
+_CANARY = "t-canary"
+
+
+def _env(raw, allow=_CANARY):
+    e = {cl.MODE_ENV_VAR: raw}
+    if allow is not None:
+        e[cl.ASSIST_TENANTS_ENV_VAR] = allow
+    return e
+
+
 @pytest.mark.parametrize("raw,expected", _MODE_MATRIX)
 def test_resolve_mode_fails_safe(raw, expected):
+    """`resolve_mode` is the GLOBAL configuration and takes no tenant."""
+    assert cl.resolve_mode(_env(raw)) == expected
     assert cl.resolve_mode({cl.MODE_ENV_VAR: raw}) == expected
 
 
-@pytest.mark.parametrize("raw,expected", _MODE_MATRIX)
-def test_inline_gate_in_static_matches_resolve_mode(raw, expected):
-    """C11 forces `narrate_chapters` to gate on a literal string rather than import
-    canon_lite. That duplication is bound here so it cannot drift unnoticed."""
-    inline = str(raw or "").strip().lower()
-    if inline not in ("shadow", "assist", "enforce"):
-        inline = "off"
-    assert inline == expected == cl.resolve_mode({cl.MODE_ENV_VAR: raw})
+#: (mode, allowlist, tenant) -> effective mode. The rows that matter are the ones
+#: where `assist` collapses to `off`: those are the difference between activating a
+#: cohort and activating the fleet.
+_TENANT_MATRIX = [
+    ("assist", _CANARY, _CANARY, "assist"),          # the canary itself
+    ("assist", _CANARY, "t-other", "off"),           # a different tenant
+    ("assist", _CANARY, None, "off"),                # no tenant at all
+    ("assist", _CANARY, "", "off"),
+    ("assist", None, _CANARY, "off"),                # allowlist unset
+    ("assist", "", _CANARY, "off"),                  # allowlist empty
+    ("assist", " , ,, ", _CANARY, "off"),            # allowlist of separators
+    ("assist", "t-a,t-canary,t-b", _CANARY, "assist"),   # multi-entry
+    ("assist", " t-canary , t-b ", _CANARY, "assist"),   # padded entries
+    ("assist", "T-CANARY", _CANARY, "off"),          # case-sensitive: ids are opaque
+    ("assist", _CANARY, " t-canary ", "assist"),     # padded tenant
+    # Every other mode is untouched by the allowlist.
+    ("shadow", None, "t-other", "shadow"),
+    ("shadow", _CANARY, "t-other", "shadow"),
+    ("enforce", None, "t-other", "enforce"),
+    ("off", _CANARY, _CANARY, "off"),
+    ("", _CANARY, _CANARY, "off"),
+]
+
+
+def _inline_static(raw, allow, tenant):
+    """static.py's copy, transcribed. C11 forbids it importing canon_lite."""
+    mode = str(raw or "").strip().lower()
+    if mode not in ("shadow", "assist", "enforce"):
+        mode = "off"
+    if mode == "assist":
+        tid = str(tenant or "").strip()
+        allowed = {x.strip() for x in str(allow or "").split(",") if x.strip()}
+        if not tid or tid not in allowed:
+            mode = "off"
+    return mode
+
+
+@pytest.mark.parametrize("raw,allow,tenant,expected", _TENANT_MATRIX)
+def test_all_three_mode_gates_agree_including_the_tenant_allowlist(
+        raw, allow, tenant, expected, monkeypatch):
+    """🔴 THREE COPIES OF ONE GATE, BOUND OVER ONE MATRIX.
+
+    C11 forbids the flag-off path from importing canon_lite, so `narrate_chapters`
+    and `narration_api` each carry their own literal copy of this decision. Three
+    copies is three chances to drift, and a drift that only shows up on `assist`
+    would mean the dispatcher, the worker and the terminal seam disagree about
+    whether a job is a canary — the worst possible place for them to disagree,
+    because each would be individually self-consistent.
+    """
+    import narration_api as na
+    env = {cl.MODE_ENV_VAR: raw}
+    if allow is not None:
+        env[cl.ASSIST_TENANTS_ENV_VAR] = allow
+
+    canonical = cl.resolve_effective_mode(env, tenant_id=tenant)
+
+    monkeypatch.setenv(cl.MODE_ENV_VAR, raw)
+    if allow is None:
+        monkeypatch.delenv(cl.ASSIST_TENANTS_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(cl.ASSIST_TENANTS_ENV_VAR, allow)
+    api_side = na._cl_effective_mode(tenant)
+
+    assert canonical == api_side == _inline_static(raw, allow, tenant) == expected
+
+
+def test_an_empty_allowlist_makes_the_mode_flag_alone_a_no_op(monkeypatch):
+    """🔴 THE SAFE DIRECTION FOR THE ONE MISTAKE SOMEONE WILL MAKE.
+
+    Flipping `NARASI_CANON_LITE_MODE=assist` and forgetting the allowlist is the
+    obvious operator error, and it is the one that would otherwise put the whole
+    fleet — including jobs already queued — onto the repair path in one step. It
+    resolves to `off` for everybody instead.
+    """
+    monkeypatch.setenv(cl.MODE_ENV_VAR, "assist")
+    monkeypatch.delenv(cl.ASSIST_TENANTS_ENV_VAR, raising=False)
+    for tid in (None, "", "t-canary", "t-anything", "00000000-0000-0000-0000-000000000000"):
+        assert cl.resolve_effective_mode(tenant_id=tid) == "off", tid
+    # ...while the GLOBAL configuration still reads `assist`. The two answers are
+    # different questions, and collapsing them is what broke the metered wave.
+    assert cl.resolve_mode() == "assist"
+    assert cl.assist_tenants() == frozenset()
 
 
 def test_resolve_mode_reads_the_process_environment(monkeypatch):

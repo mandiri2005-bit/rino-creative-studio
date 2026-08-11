@@ -1501,8 +1501,11 @@ def test_wave_token_is_minted_once_at_job_scope_and_never_below_it():
 
     api_src = Path(na.__file__).read_text(encoding="utf-8")
     assert api_src.count("ExtractionWaveToken()") == 1      # exactly one mint site
-    # and it is inside the job-scope helper, called from the job body
-    assert "_cl_l2_wave_token = _canon_lite_wave_token()" in api_src
+    # and it is inside the job-scope helper, called from the job body. The helper
+    # now takes the job's tenant — assist is per-tenant, so a token minted without
+    # one would arm a wave for a job whose effective mode is `off`. The property
+    # this control is about is unchanged: ONE mint site, at job scope.
+    assert "_cl_l2_wave_token = _canon_lite_wave_token(tenant_id)" in api_src
     assert "wave_token=_cl_l2_wave_token" in api_src
 
     # the runner refuses a missing or wrong-typed token rather than defaulting

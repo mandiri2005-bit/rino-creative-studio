@@ -201,3 +201,148 @@ def test_a_non_assist_job_imports_no_l3_module_and_spends_nothing(mode):
     assert out.returncode == 0, out.stderr[-2000:]
     leaked = out.stdout.strip().rsplit("LEAKED:", 1)[-1].strip()
     assert leaked == "", f"mode={mode} imported a paid-path module: {leaked}"
+
+
+# ── 5. the tenant has to reach the REAL QC gate ─────────────────────────────
+#
+# 🔴 EVERY OTHER CONTROL IN THIS FILE STUBS THE WAVE, so none of them can see the
+#    gate inside it. That is exactly where the tenant went missing: the seam
+#    resolved `assist` for a legitimate canary, entered `maybe_run_metered_wave`,
+#    and the gate there re-resolved the mode WITHOUT the tenant — getting `off`,
+#    refusing the wave, never calling `on_session`. Assist then reported
+#    `unchecked/no_session` having repaired nothing, and every stubbed test stayed
+#    green because none of them ran that gate.
+
+def _qc_env(mode="assist", allow="t-canary"):
+    import canon_lite_qc_provider as qc
+    env = {"NARASI_CANON_LITE_MODE": mode,
+           "CANON_LITE_EXTRACTOR_CONCURRENCY": "2", "L2B_MAX_INFLIGHT": "8",
+           qc.QC_API_KEY_ENV: "dummy-not-a-real-credential"}
+    if allow is not None:
+        env["NARASI_CANON_LITE_ASSIST_TENANTS"] = allow
+    return env
+
+
+@pytest.mark.parametrize("allow,tenant,permitted", [
+    ("t-canary", "t-canary", True),        # the canary itself
+    ("t-canary", "t-other", False),        # a different tenant
+    ("t-canary", None, False),             # tenant not threaded at all
+    (None, "t-canary", False),             # allowlist unset
+    ("", "t-canary", False),               # allowlist empty
+])
+def test_the_qc_gate_decides_on_the_JOBS_mode_not_the_deployments(
+        allow, tenant, permitted):
+    """The gate that arms the metered wave, driven directly."""
+    import canon_lite_qc_meter as meter
+    import canon_lite_qc_runner as runner
+    meter.reset_host_role_for_tests()
+    try:
+        meter.declare_host_role("narration_worker")
+        assert runner.metered_wave_permitted(
+            _qc_env(allow=allow), tenant_id=tenant) is permitted
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_a_non_canary_stops_before_the_provider_is_ever_built():
+    """🔴 REFUSED BEFORE THE ADAPTER EXISTS, not after it declines. The gate is the
+    only layer that can promise zero provider construction and zero meter rows."""
+    import canon_lite_qc_meter as meter
+    import canon_lite_qc_runner as runner
+    built = []
+    meter.reset_host_role_for_tests()
+    try:
+        meter.declare_host_role("narration_worker")
+        got = asyncio.run(runner.maybe_run_metered_wave(
+            l2.materialize_final_snapshot({"book": BOOK}), _entity_canon(),
+            run_id="j1", job_uuid="00000000-0000-4000-8000-000000000001",
+            job_external_id="j1", environ=_qc_env(), wave_token=object(),
+            tenant_id="t-other",
+            adapter_factory=lambda: built.append(1) or _Metered(),
+            on_session=lambda m: built.append("session")))
+        assert got is None
+        assert built == [], "a non-canary job built a provider or a session"
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_the_gate_reads_the_effective_mode_not_the_global_one():
+    """By construction: the wrong resolver here is invisible in behaviour until a
+    canary runs in production."""
+    import inspect
+    import canon_lite_qc_runner as runner
+    src = inspect.getsource(runner.metered_wave_permitted)
+    assert "resolve_effective_mode" in src
+    assert "tenant_id=tenant_id" in src
+    # and the seam threads it
+    import narration_api as na
+    seam = inspect.getsource(na._canon_lite_l3_assist_repair)
+    assert "tenant_id=tenant_id" in seam
+
+
+# ── 6. Phase A still reads the DEPLOYMENT's configuration ───────────────────
+def test_operator_phase_a_reads_the_global_mode_not_a_tenants():
+    """🔴 THE OTHER HALF OF THE SPLIT. Phase A asks "is this deployment configured
+    for a mode", which has no tenant and must not acquire one — narrowing it would
+    make an operator readiness verdict say OFF on a deployment that is very much
+    ON for its canary."""
+    import canon_lite as cl
+    import canon_lite_qc_meter as meter
+    env = _qc_env(allow="t-canary")
+    assert cl.resolve_mode(env) == "assist"
+    assert cl.resolve_effective_mode(env, tenant_id="t-other") == "off"
+
+    # Phase A is a readiness-to-reset gate: it REQUIRES the flag to be off, so a
+    # deployment configured `assist` must fail it with `l2b_flag_not_off`.
+    # `inflight_raw` is the RAW Redis value, so it is a string here — an int reads
+    # as malformed and would make both verdicts fail for an unrelated reason,
+    # which would look like this control passing.
+    armed = meter.phase_a_from_product_resolver(
+        inflight_raw="0", inflight_unreadable=False, attempted_rows=0,
+        max_inflight=8, environ=env)
+    assert armed.passes is False and armed.reason_code == "l2b_flag_not_off", \
+        ("Phase A read a per-tenant answer and called an armed deployment OFF — "
+         f"got {armed}")
+
+    # ...and it does pass on a deployment that really is off, so the assertion
+    # above is discriminating rather than a verdict that always fails.
+    off_env = dict(env)
+    off_env["NARASI_CANON_LITE_MODE"] = "off"
+    assert meter.phase_a_from_product_resolver(
+        inflight_raw="0", inflight_unreadable=False, attempted_rows=0,
+        max_inflight=8, environ=off_env).passes is True
+
+
+def test_a_canary_passes_the_real_qc_gate_and_reaches_the_provider():
+    """🔴 THE POSITIVE TWIN. A gate that refuses EVERYBODY satisfies every negative
+    control in this file — including the one directly above — while leaving assist
+    permanently inert. That is precisely the shape of the defect this round is
+    closing: the gate re-resolved the mode without the tenant, said `off`, and no
+    canary ever got a session.
+
+    The adapter factory is the tripwire. It is only reached once the gate has
+    permitted the wave, so reaching it IS the proof, and raising from it stops the
+    run before any real provider work happens.
+    """
+    import canon_lite_extractor as _ext
+    import canon_lite_qc_meter as meter
+    import canon_lite_qc_runner as runner
+
+    class _Reached(RuntimeError):
+        pass
+
+    def _factory():
+        raise _Reached()
+
+    meter.reset_host_role_for_tests()
+    try:
+        meter.declare_host_role("narration_worker")
+        with pytest.raises(_Reached):
+            asyncio.run(runner.maybe_run_metered_wave(
+                l2.materialize_final_snapshot({"book": BOOK}), _entity_canon(),
+                run_id="j1", job_uuid="00000000-0000-4000-8000-000000000001",
+                job_external_id="j1", environ=_qc_env(),
+                wave_token=_ext.ExtractionWaveToken(),
+                tenant_id="t-canary", adapter_factory=_factory))
+    finally:
+        meter.reset_host_role_for_tests()

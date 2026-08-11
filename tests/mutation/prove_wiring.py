@@ -20,6 +20,9 @@ WT = pathlib.Path(os.environ.get(
 NAPI = WT / "python/narration_api.py"
 STATIC = WT / "python/orchestrator/static.py"
 ADAPTER = WT / "python/canon_lite_l3_adapter.py"
+CANON = WT / "python/canon_lite.py"
+METER = WT / "python/canon_lite_qc_meter.py"
+L1_T = "tests/python/test_canon_lite_l1.py"
 RUNNER = WT / "python/canon_lite_qc_runner.py"
 ADAPTER_T = "tests/python/test_canon_lite_l3_adapter.py"
 WIRING = "tests/python/test_canon_lite_l3_assist_wiring.py"
@@ -105,6 +108,66 @@ BREAKS = [
      '    if mode not in ("assist", "shadow", "off", "enforce"):\n        return None',
      f"{WIRING}::test_non_assist_modes_do_not_enter_the_seam[shadow]"),
 
+    # ── the tenant allowlist: the difference between a cohort and the fleet ──
+    ("the tenant gate is removed from static.py — every job takes the repair path",
+     STATIC,
+     r'    if _cl_mode == "assist":\n'
+     r'        # 🔴 ASSIST IS PER-TENANT\. The variable is process-wide, so without this a\n'
+     r'        #    flip to `assist` puts every job this worker touches on the repair path\n'
+     r'        #    at once — queued ones included, which the drain gate never covered\.\n'
+     r'        #    An empty allowlist admits nobody, so the flag alone is a no-op\.\n'
+     r'        _cl_tid = str\(tenant_id or ""\)\.strip\(\)\n'
+     r'        _cl_allow = \{t\.strip\(\) for t in str\(\n'
+     r'            os\.environ\.get\("NARASI_CANON_LITE_ASSIST_TENANTS", ""\) or ""\)\.split\(","\)\n'
+     r'            if t\.strip\(\)\}\n'
+     r'        if not _cl_tid or _cl_tid not in _cl_allow:\n'
+     r'            _cl_mode = "off"\n',
+     "",
+     f"{STAGE1}::test_every_other_tenant_stays_on_the_legacy_path[t-someone-else]"),
+    ("an empty allowlist admits everybody instead of nobody",
+     STATIC,
+     r'        if not _cl_tid or _cl_tid not in _cl_allow:',
+     '        if _cl_allow and _cl_tid not in _cl_allow:',
+     f"{STAGE1}::test_a_missing_allowlist_puts_even_the_canary_on_the_legacy_path"),
+    ("the QC gate reads the DEPLOYMENT's mode — every tenant arms the wave",
+     RUNNER,
+     r"    if _cl\.resolve_effective_mode\(environ, tenant_id=tenant_id\) == _cl\.MODE_OFF:",
+     "    if _cl.resolve_mode(environ) == _cl.MODE_OFF:",
+     f"{ADAPTER_T}::test_the_qc_gate_decides_on_the_JOBS_mode_not_the_deployments[t-canary-t-other-False]"),
+    ("the tenant is not threaded into the QC gate — the canary loses its wave",
+     RUNNER,
+     r"    if not metered_wave_permitted\(environ, tenant_id=tenant_id\):",
+     "    if not metered_wave_permitted(environ):",
+     f"{ADAPTER_T}::test_a_canary_passes_the_real_qc_gate_and_reaches_the_provider"),
+    ("the seam stops threading the tenant to the wave",
+     NAPI,
+     r"            job_uuid=job_uuid, job_external_id=job_external_id,\n"
+     r"            tenant_id=tenant_id,\n",
+     "            job_uuid=job_uuid, job_external_id=job_external_id,\n",
+     f"{ADAPTER_T}::test_the_gate_reads_the_effective_mode_not_the_global_one"),
+    ("Phase A is narrowed to a tenant — an armed deployment reads OFF",
+     METER,
+     r"    effective_mode = canon_lite\.resolve_mode\(environ\)",
+     "    effective_mode = canon_lite.resolve_effective_mode(environ)",
+     f"{ADAPTER_T}::test_operator_phase_a_reads_the_global_mode_not_a_tenants"),
+    ("the canonical resolver stops gating assist",
+     CANON,
+     r'    tid = str\(tenant_id or ""\)\.strip\(\)\n'
+     r'    src = os\.environ if env is None else env\n'
+     r'    return MODE_ASSIST if tid and tid in assist_tenants\(src\) else MODE_OFF',
+     "    return MODE_ASSIST",
+     f"{L1_T}::test_all_three_mode_gates_agree_including_the_tenant_allowlist[assist-t-canary-t-other-off]"),
+    ("narration_api's copy stops gating assist — the seam disagrees with the worker",
+     NAPI,
+     r'    return "assist" if tid and tid in allow else "off"',
+     '    return "assist"',
+     f"{L1_T}::test_all_three_mode_gates_agree_including_the_tenant_allowlist[assist-t-canary-t-other-off]"),
+    ("the allowlist gate leaks onto shadow as well",
+     CANON,
+     r"    if mode != MODE_ASSIST:\n        return mode",
+     "    if mode not in (MODE_ASSIST, MODE_SHADOW):\n        return mode",
+     f"{L1_T}::test_all_three_mode_gates_agree_including_the_tenant_allowlist[shadow-None-t-other-shadow]"),
+
     # ── the adapter session: one per job, budgeted, honestly bound ───────
     ("a session may mint its own provider — the second wave, silently",
      ADAPTER,
@@ -162,7 +225,7 @@ BREAKS = [
      f"{ADAPTER_T}::test_a_non_assist_job_imports_no_l3_module_and_spends_nothing[shadow]"),
 ]
 
-BACKUPS = {p: p.read_bytes() for p in (NAPI, STATIC, ADAPTER, RUNNER)}
+BACKUPS = {p: p.read_bytes() for p in (NAPI, STATIC, ADAPTER, RUNNER, CANON, METER)}
 ok = True
 try:
     for label, target, pat, rep, test in BREAKS:

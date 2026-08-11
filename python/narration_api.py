@@ -1307,7 +1307,33 @@ def _p0a_size_words(body: dict) -> object:
         return None
 
 
-def _canon_lite_wave_token():
+def _cl_effective_mode(tenant_id=None) -> str:
+    """`NARASI_CANON_LITE_MODE` resolved FOR ONE JOB. Mirrors canon_lite.resolve_mode.
+
+    C11 forbids the flag-off path from importing Canon Lite, so this cannot call
+    `resolve_mode` — it is a deliberate duplicate, and the L1 suite binds the two
+    (and static.py's third copy) over a shared matrix so they cannot drift.
+
+    🔴 THE TENANT GATE IS WHY THIS FUNCTION EXISTS. The variable is process-wide:
+       set it to `assist` and every job this worker picks up takes the repair path,
+       including the ones already WAITING in the queue that the pre-deploy drain
+       gate never looked at. "One cohort" is not expressible without an allowlist,
+       and an empty allowlist admits nobody so that flipping the flag alone changes
+       nothing.
+    """
+    raw = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
+    if raw not in ("shadow", "assist", "enforce"):
+        return "off"
+    if raw != "assist":
+        return raw
+    tid = str(tenant_id or "").strip()
+    allow = {t.strip() for t in str(
+        os.environ.get("NARASI_CANON_LITE_ASSIST_TENANTS", "") or "").split(",")
+        if t.strip()}
+    return "assist" if tid and tid in allow else "off"
+
+
+def _canon_lite_wave_token(tenant_id=None):
     """Mint the job's ONE extraction-wave token, or None when Canon Lite is off.
 
     C11 requires flag-off to import no Canon Lite module, so the mode is read from the
@@ -1319,8 +1345,7 @@ def _canon_lite_wave_token():
     one-wave-per-job invariant would be unenforceable in production, which is precisely
     the defect this replaces.
     """
-    mode = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
-    if mode not in ("shadow", "assist", "enforce"):
+    if _cl_effective_mode(tenant_id) == "off":
         return None
     import canon_lite_extractor as _ext
     return _ext.ExtractionWaveToken()
@@ -1363,6 +1388,11 @@ async def _canon_lite_l2_shadow_projection(
     claims_by_index = None
     try:
         import canon_lite_qc_runner as _qcr          # imports no adapter by itself
+        # No tenant here on purpose: this seam only ever runs under `shadow`, and
+        # the allowlist narrows `assist` alone. Passing one would be dead weight;
+        # passing a name this function does not have was a NameError that the
+        # surrounding except swallowed into "metered wave unavailable" — the wave
+        # silently stopped running and the report just came back claims-free.
         claims_by_index = await _qcr.maybe_run_metered_wave(
             snapshot, canon, wave_token=wave_token, run_id=run_id,
             job_uuid=job_uuid, job_external_id=job_external_id)
@@ -1547,6 +1577,7 @@ async def _canon_lite_l3_assist_repair(
     run_id: str = "",
     job_uuid=None,
     job_external_id: "Optional[str]" = None,
+    tenant_id: "Optional[str]" = None,
     worker_model: str = "",
     telemetry_sink=None,
 ) -> "Optional[dict]":
@@ -1586,6 +1617,7 @@ async def _canon_lite_l3_assist_repair(
         claims_by_index = await _qcr.maybe_run_metered_wave(
             snapshot, canon, wave_token=wave_token, run_id=run_id,
             job_uuid=job_uuid, job_external_id=job_external_id,
+            tenant_id=tenant_id,
             on_session=lambda m: session_holder.__setitem__("metered", m))
     except Exception:  # noqa: BLE001
         claims_by_index = None
@@ -1706,9 +1738,7 @@ async def _run_narration_job(
     # executor is actually running a mode.
     _clp = None
     _cl_token = None
-    _cl_local = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
-    if _cl_local not in ("shadow", "assist", "enforce"):
-        _cl_local = "off"
+    _cl_local = _cl_effective_mode(tenant_id)
     if _cl_local == "off":
         if canon_parity is not None:
             # Dispatcher was running a mode, this executor is not — the rollback-skew
@@ -1788,7 +1818,7 @@ async def _run_narration_job_after_parity(
     # real in-flight count while the derived ceiling stayed put. Minting it at the seam —
     # or letting the runner mint it — would hand every wave its own token and make the
     # guard decorative, which is exactly the defect this replaces.
-    _cl_l2_wave_token = _canon_lite_wave_token()
+    _cl_l2_wave_token = _canon_lite_wave_token(tenant_id)
     # ── P0A telemetry, one allowance for the whole job ──────────────────────────────
     # Only ONE P0A write happens before user work: the EXECUTION event, under a hard cap
     # of its own. It stays here on purpose — a job that dies mid-flight would otherwise be
@@ -1987,10 +2017,7 @@ async def _run_narration_job_after_parity(
     # mode gate precedes the L2 import, so flag-off still performs zero L2 imports/calls.
     _cl_l2_canon = result.pop("_canon_lite_canon", None)
     result.pop("_canon_lite_canon_status", None)
-    _cl_l2_mode = str(
-        os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
-    if _cl_l2_mode not in ("shadow", "assist", "enforce"):
-        _cl_l2_mode = "off"
+    _cl_l2_mode = _cl_effective_mode(tenant_id)
     if _cl_l2_mode == "shadow":
         try:
             _cl_l2_telemetry = await _canon_lite_l2_shadow_projection(
@@ -2016,7 +2043,7 @@ async def _run_narration_job_after_parity(
                 wave_token=_cl_l2_wave_token,
                 run_id=str(job_id or ""), job_uuid=job_uuid,
                 job_external_id=str(job_id or "") or None,
-                worker_model=model, telemetry_sink=sink)
+                tenant_id=tenant_id, worker_model=model, telemetry_sink=sink)
             if _cl_l3_telemetry:
                 log.info("canon lite l3: %s", _cl_l3_telemetry)
         except Exception:  # noqa: BLE001 - repair may never break delivery
@@ -5173,9 +5200,7 @@ async def narration_start(body: dict, background: BackgroundTasks,
     # `_cl_snap` stays None and the payload keeps its exact legacy shape — no extra key.
     _cl_snap: Optional[dict] = None
     _cl_model_route = "__unresolved__"
-    _cl_mode_disp = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
-    if _cl_mode_disp not in ("shadow", "assist", "enforce"):
-        _cl_mode_disp = "off"
+    _cl_mode_disp = _cl_effective_mode(tenant_id)
     if _cl_mode_disp != "off":
         try:
             import canon_lite as _cl_disp

@@ -65,6 +65,9 @@ __all__ = [
     "CanonLiteV1",
     "SharedContextFreeze",
     "resolve_mode",
+    "assist_tenants",
+    "resolve_effective_mode",
+    "ASSIST_TENANTS_ENV_VAR",
     "PARITY_SCHEMA_VERSION",
     "NOT_APPLICABLE_L1",
     "PARITY_MATCH",
@@ -110,6 +113,8 @@ MODE_ENFORCE = "enforce"
 _MODES = (MODE_OFF, MODE_SHADOW, MODE_ASSIST, MODE_ENFORCE)
 
 MODE_ENV_VAR = "NARASI_CANON_LITE_MODE"
+#: Comma-separated tenant allowlist. Gates `assist` ONLY. Empty admits nobody.
+ASSIST_TENANTS_ENV_VAR = "NARASI_CANON_LITE_ASSIST_TENANTS"
 
 FACT_SOURCE_POLICIES = ("fiction_generated", "user_supplied", "source_grounded", "unknown")
 ALIAS_SOURCES = ("job_input", "canon_source", "none")
@@ -1021,14 +1026,63 @@ def telemetry_digest(canon: Optional[CanonLiteV1], *, canon_status: str) -> dict
 # ===========================================================================
 
 def resolve_mode(env: Optional[Mapping[str, str]] = None) -> str:
-    """Resolve `NARASI_CANON_LITE_MODE`. Anything unrecognized is `off`.
+    """Resolve `NARASI_CANON_LITE_MODE` — the GLOBAL configuration, no tenant.
 
     Fails SAFE, not open: a typo in the variable must leave production on exact legacy
     behavior (C11), never on a half-enabled path.
+
+    🔴 THIS IS THE CONFIGURATION, NOT THE DECISION FOR A JOB. Callers that ask "is
+       this deployment configured for a mode" want this one — the operator Phase A
+       readiness verdict and the metered-wave host gate both do. Callers that ask
+       "does THIS job run assist" want `resolve_effective_mode`, which additionally
+       requires the tenant.
+
+       These were briefly the same function, and making the single one tenant-aware
+       silently turned every existing caller into "off" whenever a tenant was not
+       threaded through: the metered wave then never ran for a legitimate canary,
+       so no session was ever produced and assist ended `unchecked` having repaired
+       nothing. Splitting them is what makes "forgot to pass the tenant" a visible
+       type of mistake instead of a silent downgrade.
     """
     src = os.environ if env is None else env
     raw = str(src.get(MODE_ENV_VAR, "") or "").strip().lower()
     return raw if raw in _MODES else MODE_OFF
+
+
+def assist_tenants(env: Optional[Mapping[str, str]] = None) -> frozenset:
+    """The tenants allowed onto `assist`, from a comma-separated allowlist.
+
+    Empty when unset, and an empty allowlist admits nobody — see
+    `resolve_effective_mode`.
+    """
+    src = os.environ if env is None else env
+    raw = str(src.get(ASSIST_TENANTS_ENV_VAR, "") or "")
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
+
+
+def resolve_effective_mode(env: Optional[Mapping[str, str]] = None, *,
+                           tenant_id: Optional[str] = None) -> str:
+    """The mode for ONE job: the global mode, narrowed by the assist allowlist.
+
+    🔴 `assist` IS PER-TENANT, AND THAT IS NOT A CONVENIENCE. The variable is
+       process-wide, so flipping it to `assist` would put EVERY job this worker
+       picks up onto the repair path at once — including jobs already sitting in
+       the queue, which the pre-deploy drain gate says nothing about (it proves
+       zero ACTIVE, not zero WAITING). There is no such thing as "one cohort"
+       without this gate.
+
+       Every other tenant resolves to `off` — the legacy path, no import, no spend,
+       no L3 payload. An empty or unset allowlist admits NOBODY, which makes
+       flipping the mode without naming a tenant a no-op rather than a fleet-wide
+       activation. `shadow` and `enforce` are untouched: shadow is observational
+       and enforce is refused everywhere already.
+    """
+    mode = resolve_mode(env)
+    if mode != MODE_ASSIST:
+        return mode
+    tid = str(tenant_id or "").strip()
+    src = os.environ if env is None else env
+    return MODE_ASSIST if tid and tid in assist_tenants(src) else MODE_OFF
 
 
 # ===========================================================================

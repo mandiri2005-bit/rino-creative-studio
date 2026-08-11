@@ -106,9 +106,16 @@ class _Recorder:
             self.live -= 1
 
 
+#: Assist is per-tenant now, so every control that exercises it has to run AS a
+#: tenant that is on the allowlist. That is not test scaffolding around the gate —
+#: it is the gate, and a control that forgot it would silently be testing `off`.
+CANARY_TENANT = "t-canary"
+
+
 @pytest.fixture(autouse=True)
 def _isolated_env(monkeypatch):
     monkeypatch.setenv("NARASI_STORY_BIBLE", "0")
+    monkeypatch.setenv("NARASI_CANON_LITE_ASSIST_TENANTS", CANARY_TENANT)
     monkeypatch.delenv("NARASI_CANON_LITE_MODE", raising=False)
     monkeypatch.delenv("NARRATION_RESUME_ENABLED", raising=False)
     original = st._write_chapter
@@ -132,6 +139,7 @@ async def _run(mode, n=4, *, stub=None, max_parallel=4, **kw):
     rec = stub or _Recorder()
     st._write_chapter = rec
     chapters = _outline(n)
+    kw.setdefault("tenant_id", CANARY_TENANT)
     res = await st.narrate_chapters(
         "topik", chapters, polish="none", max_parallel=max_parallel,
         shared_context=SharedContext(topic="topik", chapters=chapters), **kw)
@@ -344,7 +352,8 @@ def test_the_original_chapter_alias_cannot_reach_the_workers():
     os.environ["NARASI_CANON_LITE_MODE"] = "assist"
     st._write_chapter = _Alias()
     res = asyncio.run(st.narrate_chapters(
-        "topik", chapters, polish="none", max_parallel=4, shared_context=ctx))
+        "topik", chapters, polish="none", max_parallel=4, shared_context=ctx,
+        tenant_id=CANARY_TENANT))
 
     assert res.get("ok"), res
     # The alias really was mutated — otherwise this proves nothing.
@@ -368,7 +377,8 @@ def test_assist_refuses_when_the_outline_diverges_from_the_canon():
     st._write_chapter = rec
     res = asyncio.run(st.narrate_chapters(
         "topik", map_chapters, polish="none", max_parallel=4,
-        shared_context=SharedContext(topic="topik", chapters=ctx_chapters)))
+        shared_context=SharedContext(topic="topik", chapters=ctx_chapters),
+        tenant_id=CANARY_TENANT))
 
     assert res.get("ok") is False, res
     assert res.get("error") == "canon_lite_assist_outline_divergence"
@@ -401,7 +411,8 @@ def test_context_is_restored_to_a_mutable_object_after_the_run():
     os.environ["NARASI_CANON_LITE_MODE"] = "assist"
     st._write_chapter = _Recorder()
     res = asyncio.run(st.narrate_chapters(
-        "topik", chapters, polish="none", max_parallel=2, shared_context=ctx))
+        "topik", chapters, polish="none", max_parallel=2, shared_context=ctx,
+        tenant_id=CANARY_TENANT))
     assert res.get("ok"), res
     ctx.topic = "writable again"              # must not raise
     ctx.chapters.append({"id": 4, "title": "Bab 4"})
@@ -699,7 +710,7 @@ def test_assist_never_reuses_a_checkpoint(monkeypatch):
     monkeypatch.setitem(sys.modules, "database", _fake_db(rows, saved))
     monkeypatch.setenv("NARRATION_RESUME_ENABLED", "1")
 
-    res, rec = asyncio.run(_run("assist", n=3, tenant_id="t-1", job_id="j-1"))
+    res, rec = asyncio.run(_run("assist", n=3, tenant_id=CANARY_TENANT, job_id="j-1"))
     assert res.get("ok"), res
     assert {c["no"] for c in rec.calls} == {0, 1, 2}, \
         "assist reused a checkpoint it cannot show belongs to this run"
@@ -720,7 +731,7 @@ def test_assist_writes_no_binding_into_the_chapter_capture_column(monkeypatch):
     monkeypatch.setitem(sys.modules, "database", _fake_db([], saved))
     monkeypatch.setenv("NARRATION_RESUME_ENABLED", "1")
 
-    res, _ = asyncio.run(_run("assist", n=3, tenant_id="t-1", job_id="j-1"))
+    res, _ = asyncio.run(_run("assist", n=3, tenant_id=CANARY_TENANT, job_id="j-1"))
     assert res.get("ok"), res
     assert len(saved) == 3, saved
     assert {row["source_prompt"] for row in saved} == {""}, \
@@ -734,7 +745,7 @@ def test_non_assist_resume_is_unchanged(monkeypatch):
     monkeypatch.setitem(sys.modules, "database", _fake_db(rows, saved))
     monkeypatch.setenv("NARRATION_RESUME_ENABLED", "1")
 
-    res, rec = asyncio.run(_run("shadow", n=3, tenant_id="t-1", job_id="j-1"))
+    res, rec = asyncio.run(_run("shadow", n=3, tenant_id=CANARY_TENANT, job_id="j-1"))
     assert res.get("ok"), res
     assert 0 not in {c["no"] for c in rec.calls}, \
         "shadow stopped reusing a checkpoint — assist behaviour leaked"
@@ -849,3 +860,59 @@ def test_the_canon_transit_key_never_survives_to_persistence():
     payload = na._result_payload(res)
     assert "_canon_lite_canon" not in payload
     assert "_canon_lite_canon" not in repr(payload)
+
+
+# ── 13. the tenant allowlist, through the REAL job path ─────────────────────
+#
+# 🔴 WITHOUT THIS GATE THERE IS NO SUCH THING AS "ONE COHORT". The mode variable
+#    is process-wide: setting it to `assist` puts every job the worker picks up on
+#    the repair path in one step, including jobs already WAITING in the queue —
+#    which the pre-deploy drain gate never covered, because it proves zero ACTIVE.
+
+def test_the_allowlisted_tenant_gets_assist_through_the_real_job():
+    res, rec = asyncio.run(_run("assist", n=3, tenant_id=CANARY_TENANT))
+    assert res.get("ok"), res
+    assert all(c["canon_text"] for c in rec.calls), "the canary got no canon"
+    assert res.get("canon_lite_binding", {}).get("mode") == "assist"
+    assert isinstance(res.get("_canon_lite_canon"), cl.CanonLiteV1)
+
+
+@pytest.mark.parametrize("tenant", ["t-someone-else", "", None,
+                                    "T-CANARY", " t-canary-2 "])
+def test_every_other_tenant_stays_on_the_legacy_path(tenant):
+    """🔴 NOT MERELY "no repair" — the LEGACY path, indistinguishable from flag-off.
+
+    A non-canary job under a global `assist` must look exactly like a job on a
+    worker that had never heard of L3: no canon injected, no binding on the
+    result, no transit key, no L3 payload. Anything less means the blast radius of
+    activating one cohort is still the whole fleet, just quieter.
+    """
+    res, rec = asyncio.run(_run("assist", n=3, tenant_id=tenant))
+    assert res.get("ok"), res
+    assert rec.calls, "no chapters ran at all"
+    assert all(c["canon_text"] is None for c in rec.calls), \
+        f"tenant {tenant!r} was injected with a canon"
+    assert all(c["canon_prompt_sha"] is None for c in rec.calls)
+    assert "canon_lite_binding" not in res
+    assert "_canon_lite_canon" not in res
+    assert "canon_lite_l3" not in res
+
+
+def test_a_missing_allowlist_puts_even_the_canary_on_the_legacy_path(monkeypatch):
+    """The operator error that would otherwise activate the fleet in one keystroke."""
+    monkeypatch.delenv("NARASI_CANON_LITE_ASSIST_TENANTS", raising=False)
+    res, rec = asyncio.run(_run("assist", n=3, tenant_id=CANARY_TENANT))
+    assert res.get("ok"), res
+    assert all(c["canon_text"] is None for c in rec.calls)
+    assert "canon_lite_binding" not in res
+
+
+def test_shadow_is_not_gated_by_the_allowlist(monkeypatch):
+    """The allowlist gates `assist` ONLY. Shadow is observational and already runs
+    fleet-wide in production; narrowing it here would be an unrequested behaviour
+    change to a mode nobody asked to touch."""
+    monkeypatch.delenv("NARASI_CANON_LITE_ASSIST_TENANTS", raising=False)
+    res, _ = asyncio.run(_run("shadow", n=2, tenant_id="t-anyone"))
+    assert res.get("ok"), res
+    assert isinstance(res.get("_canon_lite_canon"), cl.CanonLiteV1), \
+        "shadow stopped building a canon for a non-allowlisted tenant"

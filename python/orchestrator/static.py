@@ -726,6 +726,17 @@ async def narrate_chapters(
     _cl_mode = str(os.environ.get("NARASI_CANON_LITE_MODE", "") or "").strip().lower()
     if _cl_mode not in ("shadow", "assist", "enforce"):
         _cl_mode = "off"
+    if _cl_mode == "assist":
+        # 🔴 ASSIST IS PER-TENANT. The variable is process-wide, so without this a
+        #    flip to `assist` puts every job this worker touches on the repair path
+        #    at once — queued ones included, which the drain gate never covered.
+        #    An empty allowlist admits nobody, so the flag alone is a no-op.
+        _cl_tid = str(tenant_id or "").strip()
+        _cl_allow = {t.strip() for t in str(
+            os.environ.get("NARASI_CANON_LITE_ASSIST_TENANTS", "") or "").split(",")
+            if t.strip()}
+        if not _cl_tid or _cl_tid not in _cl_allow:
+            _cl_mode = "off"
     if _cl_mode == "enforce":
         # L3-ASSIST implements `assist`. `enforce` is a SEPARATE project, deferred
         # until L1/L2/L3 are live — so it keeps L1's refusal rather than silently

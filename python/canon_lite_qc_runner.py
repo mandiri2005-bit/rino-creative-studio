@@ -37,7 +37,8 @@ log = logging.getLogger("canon-lite-qc-runner")
 QC_PHASE = "canon_lite_l2_extract"
 
 
-def metered_wave_permitted(environ: Optional[Mapping[str, str]] = None) -> bool:
+def metered_wave_permitted(environ: Optional[Mapping[str, str]] = None, *,
+                           tenant_id: Optional[str] = None) -> bool:
     """Gates 1 and 2 only. Performs NO configuration read and NO adapter import.
 
     Split out so the decision is testable on every host without the side effects that
@@ -47,7 +48,12 @@ def metered_wave_permitted(environ: Optional[Mapping[str, str]] = None) -> bool:
     import canon_lite as _cl
     from canon_lite_qc_meter import metered_host_ok
 
-    if _cl.resolve_mode(environ) == _cl.MODE_OFF:
+    # 🔴 THE JOB'S EFFECTIVE MODE, NOT THE DEPLOYMENT'S. Reading the global mode
+    #    here would arm the wave for every tenant the moment the flag flips; reading
+    #    it WITHOUT the tenant does the opposite and refuses the wave for the one
+    #    canary that is allowed, so assist reaches its terminal seam with no session
+    #    and reports `unchecked` having repaired nothing. Both failures are silent.
+    if _cl.resolve_effective_mode(environ, tenant_id=tenant_id) == _cl.MODE_OFF:
         return False
     return metered_host_ok()
 
@@ -61,6 +67,7 @@ async def maybe_run_metered_wave(
     job_external_id: Optional[str],
     environ: Optional[Mapping[str, str]] = None,
     wave_token: Any,
+    tenant_id: Optional[str] = None,
     sink: Any = None,
     adapter_factory: Any = None,
     redis_getter: Any = None,
@@ -75,7 +82,7 @@ async def maybe_run_metered_wave(
     legacy narration delivery. That containment lives at the call site, not here — this
     function raises honestly so the failure is visible to tests and to the meter.
     """
-    if not metered_wave_permitted(environ):
+    if not metered_wave_permitted(environ, tenant_id=tenant_id):
         return None
 
     if not isinstance(run_id, str) or not run_id.strip():

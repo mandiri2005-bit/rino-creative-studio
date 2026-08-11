@@ -598,6 +598,13 @@ def test_assist_and_enforce_refuse_before_the_legacy_body(monkeypatch, mode):
         calls.append(("legacy-body", kwargs))
 
     monkeypatch.setenv("NARASI_CANON_LITE_MODE", mode)
+    # 🔴 THE JOB HAS TO BE AN ASSIST JOB FOR THIS CONTROL TO MEAN ANYTHING.
+    #    `assist` is now per-tenant: a job whose tenant is not on the allowlist
+    #    resolves to `off`, and an `off` executor seeing an absent dispatcher
+    #    snapshot is CONSISTENT, not skewed — the legacy body is then the correct
+    #    outcome. Without naming an allowlisted tenant this test would still pass
+    #    for `enforce` and silently stop exercising `assist` at all.
+    monkeypatch.setenv("NARASI_CANON_LITE_ASSIST_TENANTS", "t")
     monkeypatch.setattr(na, "_set_status", fake_status)
     monkeypatch.setattr(na, "_refund", fake_refund)
     monkeypatch.setattr(na, "_run_narration_job_after_parity", forbidden_body)
