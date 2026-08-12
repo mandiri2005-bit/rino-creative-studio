@@ -286,6 +286,107 @@ def phase_a_ready(
     return PhaseAVerdict(True, "phase_a_ready")
 
 
+# ── Assist ACTIVATION readiness ──────────────────────────────────────────────────
+#
+# 🔴 WHY THIS IS A SEPARATE GATE FROM phase_a_ready. phase_a_ready above answers "is it
+#    safe to RESET / turn L2B off" — it demands `l2b_flag_not_off` and zero open attempted
+#    rows. It is a drain gate, and it can never answer "is Assist actually able to run",
+#    because a passing reset gate says the flag is OFF. Using it as an activation check
+#    would be backwards.
+#
+#    The incident this closes (production job s0di2o1g, 2026-08-11): mode was `assist`, the
+#    tenant WAS in the allowlist, canon injection armed and the census PASSed — and Assist
+#    still checked nothing, because CANON_LITE_QC_PROVIDER_API_KEY was absent on
+#    narration-worker. maybe_run_metered_wave got as far as its lazy provider import before
+#    raising `qc_provider_api_key_missing`, and the terminal seam flattened that to
+#    `l3_metered_wave_error` / `stage=no_session`. The job LOOKED like a successful canary:
+#    outcome=unchecked, rounds=0, chapters_repaired=0, delivery_binding=None. A missing
+#    credential must be legible BEFORE any outline or chapter money is spent, and must never
+#    read as "clean".
+#
+# ⚠️ The provider module is deliberately NOT imported here — refusing to build the provider is
+#    the point of the gate. Names and the ratified route come from canon_lite_qc_contract,
+#    which the provider imports too, so there is ONE definition and drift is structurally
+#    impossible rather than merely detectable by a test someone has to remember to run.
+from canon_lite_qc_contract import (          # noqa: E402 — inert, no SDK/client/secret/I-O
+    QC_API_KEY_ENV,
+    QC_BASE_URL_ENV,
+    QC_PROVIDER_BASE_URL,
+)
+
+
+def assist_activation_ready(
+    *,
+    tenant_id: Any,
+    environ: Optional[Mapping[str, str]] = None,
+) -> PhaseAVerdict:
+    """Can Assist actually run for THIS tenant on THIS host, right now?
+
+    Evaluated in a fixed order so the reason_code names the FIRST thing missing rather than
+    an arbitrary one: mode -> tenant -> host -> extractor concurrency -> inflight policy ->
+    provider key -> ratified route. Returns a bounded verdict and never raises.
+
+    reason_code is always one of the fixed strings below — never a secret value, never an
+    exception message, never provider text. Telemetry made of attacker- or provider-supplied
+    prose is how a config failure turns into an unreadable blob.
+    """
+    env = os.environ if environ is None else environ
+
+    # Steps 1-2 go through the TWO OFFICIAL RESOLVERS and nothing else.
+    #
+    # 🔴 An earlier version of this gate re-parsed NARASI_CANON_LITE_ASSIST_TENANTS by hand.
+    #    That made it a THIRD implementation of a decision that already has exactly two
+    #    sanctioned forms, which is the same class of defect the split between resolve_mode
+    #    and resolve_effective_mode was created to end: the allowlist semantics could drift
+    #    here without either resolver changing, and the drift would look like a tenant gate
+    #    working. canon_lite.assist_tenants() is the only allowlist parser.
+    import canon_lite
+
+    # 1. Deployment CONFIGURATION — global, tenant-blind.
+    if canon_lite.resolve_mode(env) != canon_lite.MODE_ASSIST:
+        return PhaseAVerdict(False, "assist_not_armed")
+
+    # 2. The DECISION for this job — global mode narrowed by the allowlist. Reaching here
+    #    means the global mode is assist, so anything other than assist now is the tenant
+    #    being excluded (an empty allowlist admits nobody, by design).
+    if canon_lite.resolve_effective_mode(
+            env, tenant_id=tenant_id) != canon_lite.MODE_ASSIST:
+        return PhaseAVerdict(False, "tenant_not_allowed")
+
+    # 3. Host sentinel. The module ships to the `python` service too, where the worker-only
+    #    config is intentionally absent; a config load off-host means a skipped gate.
+    if not metered_host_ok():
+        return PhaseAVerdict(False, "host_not_permitted")
+
+    # 4. Extractor concurrency — reuse the ratified loader so bounds stay in one place.
+    try:
+        load_extractor_concurrency(env)
+    except MeterConfigurationError:
+        return PhaseAVerdict(False, "extractor_concurrency_missing")
+
+    # 5. Inflight policy must be present and canonical. Reuse load_max_inflight for the same
+    #    reason as step 4: the bounds and the env name stay defined in exactly one place, so
+    #    this gate cannot drift from the loader the wave itself uses.
+    try:
+        load_max_inflight(env)
+    except MeterConfigurationError:
+        return PhaseAVerdict(False, "inflight_policy_missing")
+
+    # 6. The credential the incident was missing. Presence only — the VALUE is never read
+    #    into a verdict, logged, or compared.
+    if not str(env.get(QC_API_KEY_ENV) or "").strip():
+        return PhaseAVerdict(False, "qc_provider_api_key_missing")
+
+    # 7. Route must stay the ratified one. The override env is optional but, when set, must
+    #    MATCH exactly — a silently repointed QC route bills a different endpoint under
+    #    guarantees that were ratified for this one.
+    override = env.get(QC_BASE_URL_ENV)
+    if override is not None and override != QC_PROVIDER_BASE_URL:
+        return PhaseAVerdict(False, "qc_provider_route_not_ratified")
+
+    return PhaseAVerdict(True, "assist_activation_ready")
+
+
 def phase_a_from_product_resolver(
     *,
     inflight_raw: Any,

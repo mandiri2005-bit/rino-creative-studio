@@ -1471,7 +1471,7 @@ def job_env(monkeypatch):
     trace = {"status": [], "progress": [], "finalize": [], "settle": 0, "refund": 0,
              "tasks": [], "order": []}
 
-    async def gen(req):
+    async def gen(req, **_):
         sink = req.get("telemetry_sink")
         for task_id in ("ch1", "ch1:cont1", "polish:novel"):
             trace["tasks"].append(task_id)
@@ -1602,7 +1602,7 @@ def test_the_real_job_records_the_done_terminal_and_a_duration(fake, job_env):
 
 
 def test_the_real_job_records_a_failed_terminal(fake, job_env, monkeypatch):
-    async def gen(req):
+    async def gen(req, **_):
         return {"ok": False, "error": "generation_failed"}
     monkeypatch.setattr(na, "generate_narration", gen)
     _run_job()
@@ -1610,7 +1610,7 @@ def test_the_real_job_records_a_failed_terminal(fake, job_env, monkeypatch):
 
 
 def test_the_real_job_records_a_cancelled_terminal(fake, job_env, monkeypatch):
-    async def gen(req):
+    async def gen(req, **_):
         await asyncio.sleep(3600)
 
     async def cancel_watcher(job_id, poll=1.5):
@@ -1805,7 +1805,7 @@ def test_the_done_terminal_metric_is_written_after_persist_and_settle(fake, job_
 
 def test_the_failed_terminal_metric_is_written_after_the_refund(fake, job_env,
                                                                 monkeypatch):
-    async def gen(req):
+    async def gen(req, **_):
         return {"ok": False, "error": "generation_failed"}
     monkeypatch.setattr(na, "generate_narration", gen)
     _trace_terminal(monkeypatch, job_env["order"])
@@ -1817,7 +1817,7 @@ def test_the_failed_terminal_metric_is_written_after_the_refund(fake, job_env,
 
 def test_the_cancelled_terminal_metric_is_written_after_the_refund(fake, job_env,
                                                                    monkeypatch):
-    async def gen(req):
+    async def gen(req, **_):
         await asyncio.sleep(3600)
 
     async def cancel_watcher(job_id, poll=1.5):

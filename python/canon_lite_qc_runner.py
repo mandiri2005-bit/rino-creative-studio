@@ -58,6 +58,24 @@ def metered_wave_permitted(environ: Optional[Mapping[str, str]] = None, *,
     return metered_host_ok()
 
 
+def assist_activation_ready(*, tenant_id, environ=None):
+    """Activation preflight, re-exported so callers need no line to the metering module.
+
+    🔴 THIS INDIRECTION IS THE POINT, not boilerplate. test_platform_qc_meter pins the exact
+       set of files allowed to reference canon_lite_qc_meter — the metering machinery gets a
+       bounded number of doorways on purpose. narration_api is not on that list, and it must
+       not become "a doorway for the metering machinery" just because it now needs to ask a
+       yes/no question before spending money. This module already IS a sanctioned doorway, so
+       the question is asked through it.
+
+       Nothing is computed here: the verdict, its ordering and its bounded reason codes all
+       live in one place. A second implementation is what the two-resolver split exists to
+       prevent.
+    """
+    from canon_lite_qc_meter import assist_activation_ready as _impl
+    return _impl(tenant_id=tenant_id, environ=environ)
+
+
 async def maybe_run_metered_wave(
     snapshot: Any,
     canon: Any,
@@ -99,22 +117,38 @@ async def maybe_run_metered_wave(
         # became decorative before.
         raise RuntimeError("qc_wave_token_required")
 
-    # ---- gate 3: config, then the adapter import. Not one line earlier. ----
+    # ---- gate 3: config AND the credential, then the adapter import. ----
+    #
+    # 🔴 THE CREDENTIAL CHECK MUST PRECEDE THE PROVIDER IMPORT. It used to sit after
+    #    `import canon_lite_qc_provider`, which meant a deployment with no QC key still
+    #    imported the provider module before refusing — the exact opposite of "do not build
+    #    the provider when it cannot be used". The name is read from the inert contract
+    #    module so this check needs nothing from the provider itself.
+    #
+    #    The activation preflight upstream is not a licence to leave this order wrong:
+    #    maybe_run_metered_wave is reachable from more than one caller, and a gate that is
+    #    only correct because something earlier happened to be correct is not a gate.
+    from canon_lite_qc_contract import QC_API_KEY_ENV as _QC_API_KEY_ENV
     from canon_lite_qc_meter import (AttemptContext, MeteredProvider, QcUsageSink,
                                      load_extractor_concurrency, load_max_inflight)
-    import canon_lite_extractor as _ext
-    import canon_lite_qc_provider as _qc          # LAZY — §6.0a
 
     env = os.environ if environ is None else environ
     extractor_concurrency = load_extractor_concurrency(environ)
     max_inflight = load_max_inflight(environ)
 
-    api_key = env.get(_qc.QC_API_KEY_ENV)
-    if not api_key:
-        # The credential is Railway-supplied on narration-worker only. Its absence is a
-        # configuration fault, not a reason to silently skip metering — skipping would
-        # produce a report that looks measured but never called anything.
+    if not str(env.get(_QC_API_KEY_ENV) or "").strip():
+        # Railway-supplied on narration-worker only. Its absence is a configuration fault,
+        # not a reason to silently skip metering — skipping would produce a report that looks
+        # measured but never called anything. Raised as the BOUNDED configuration error so the
+        # terminal seam can name the cause instead of flattening it to a generic wave error.
+        # RuntimeError, not MeterConfigurationError: test_platform_qc_meter pins the exact set
+        # of names this module may import from canon_lite_qc_meter, and widening that
+        # allowlist to carry an exception class would trade one bounded contract for another.
+        # The BOUNDED CODE is what the terminal seam matches on, not the class.
         raise RuntimeError("qc_provider_api_key_missing")
+
+    import canon_lite_extractor as _ext
+    import canon_lite_qc_provider as _qc          # LAZY — §6.0a, and only once configured
 
     if isinstance(job_uuid, str):
         job_uuid = UUID(job_uuid)

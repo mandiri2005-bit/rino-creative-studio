@@ -93,7 +93,10 @@ QC_RESPONSE_SCHEMA_NAME = "canon_lite_chapter_claims"
 # ---- OWNER-ENTRY — supplied 2026-08-03, ratified ---------------------------
 # E1/E2: route identity. The base URL is a SOURCE constant, never configuration:
 # mutable config can silently redirect the adapter to another host.
-QC_PROVIDER_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# Re-exported from canon_lite_qc_contract so the activation gate can read the route and
+# the credential's NAME without importing this module (importing it is what the gate
+# exists to prevent). ONE definition, so drift is impossible rather than test-detected.
+from canon_lite_qc_contract import QC_PROVIDER_BASE_URL   # noqa: E402,F401
 QC_PROVIDER_NAME = "gemini_direct"
 
 # E3: the system template, exactly. 1445 chars / 1445 bytes, no trailing newline,
@@ -153,7 +156,7 @@ QC_CAP_STRUCTURED_OUTPUT_SUPPORTED = True
 
 # §7.2 — one model constant, four uses (extract_all's model_version,
 # AttemptContext.model_upstream, the outgoing `model`, the checked response model).
-QC_MODEL_UPSTREAM = "gemini-2.5-flash-lite"
+from canon_lite_qc_contract import QC_MODEL_UPSTREAM   # noqa: E402,F401
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,8 +189,8 @@ QC_PRICING = QcPricingRecord(
 QC_HTTP_TIMEOUT_S = 20.0
 QC_ATTEMPT_TIMEOUT_S = Decimal("30")
 
-QC_API_KEY_ENV = "CANON_LITE_QC_PROVIDER_API_KEY"
-QC_BASE_URL_ENV = "CANON_LITE_QC_PROVIDER_BASE_URL"   # optional; must MATCH or fail
+from canon_lite_qc_contract import QC_API_KEY_ENV   # noqa: E402,F401
+from canon_lite_qc_contract import QC_BASE_URL_ENV   # noqa: E402,F401  optional; must MATCH
 
 _PRICING_VERSION_RE = re.compile(r"qc-rates-\d{4}-\d{2}-\d{2}")
 

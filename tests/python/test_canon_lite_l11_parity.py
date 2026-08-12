@@ -454,7 +454,7 @@ def test_parity_is_checked_before_any_physical_work():
     """§9 and the assist/enforce contract both need the check to precede generation."""
     src = _src("narration_api.py")
     body = src[src.index("async def _run_narration_job"):]
-    assert body.index("check_parity") < body.index("generate_narration(req)")
+    assert body.index("check_parity") < body.index("generate_narration(")
 
 
 def test_the_worker_reads_the_sibling_key_not_the_user_body():
@@ -576,7 +576,7 @@ def test_assist_and_enforce_fail_closed_on_mismatch_in_source():
     """Shadow degrades; assist/enforce must refuse before physical work."""
     src = _src("narration_api.py")
     body = src[src.index("async def _run_narration_job"):]
-    block = body[:body.index("generate_narration(req)")]
+    block = body[:body.index("generate_narration(")]
     assert '_cl_local in ("assist", "enforce")' in block
     assert "_STATUS_FAILED" in block and "_refund" in block
 
@@ -624,7 +624,7 @@ def test_the_off_executor_path_imports_no_canon_lite():
     Canon Lite just to discover it has nothing to do."""
     src = _src("narration_api.py")
     body = src[src.index("async def _run_narration_job"):]
-    block = body[:body.index("generate_narration(req)")]
+    block = body[:body.index("generate_narration(")]
     off_branch = block[block.index('if _cl_local == "off":'):block.index("else:")]
     assert "import canon_lite" not in off_branch
     assert "snapshot_present_while_executor_off" in off_branch

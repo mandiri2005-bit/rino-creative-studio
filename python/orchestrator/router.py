@@ -273,8 +273,24 @@ def _premise_words_per_chapter(topic: str, current: int) -> int:
     return current
 
 
-async def generate_narration(req: dict) -> dict[str, Any]:
+async def generate_narration(
+        req: dict, *,
+        assist_activation_ready: Optional[bool] = None) -> dict[str, Any]:
     """Dispatch a narration request to the right strategy and return a unified result.
+
+    `assist_activation_ready` is an INTERNAL argument, not a request field. It carries the
+    Canon-Lite activation verdict the worker computed server-side before any spend, and
+    only the exact value `True` lets assist stay armed downstream (see
+    static.narrate_chapters). It is keyword-only and defaults to None so that every caller
+    which has NOT run the preflight — laozhang_api's video narration, eval/run.py, any test
+    driving the router directly — fails closed rather than inheriting a decision nobody made.
+
+    🔴 IT IS NOT READ OFF `req`, DELIBERATELY. It used to travel as a private `req` key,
+       which put a server security decision in the same dict as the user-supplied body: it
+       LOOKED like a payload field, so the next caller to assemble a request by hand would
+       drop it silently, and a reader could not tell the two kinds of value apart. A
+       keyword-only parameter cannot be spoofed by a payload and cannot be dropped without
+       changing a call site a reader can see.
 
     `req` keys (all optional; the SHAPE drives routing — see the A–E table):
       topic            : str  — book/script subject (scenarios A/B).
@@ -349,12 +365,14 @@ async def generate_narration(req: dict) -> dict[str, Any]:
             result = await _run_chaptered(
                 req, chapters, settings, style=style, language=language, mode=mode,
                 tenant_id=tenant_id, job_id=job_id, telemetry_sink=telemetry_sink,
+                assist_activation_ready=assist_activation_ready,
             )
 
         elif scenario == "B":
             result = await _run_topic_to_book(
                 req, settings, style=style, language=language, mode=mode,
                 tenant_id=tenant_id, job_id=job_id, telemetry_sink=telemetry_sink,
+                assist_activation_ready=assist_activation_ready,
             )
 
         elif scenario == "C":
@@ -416,7 +434,9 @@ async def _run_single(req: dict, *, style: Optional[str],
 # ---------------------------------------------------------------------------
 async def _run_chaptered(req: dict, chapters: list[dict], settings: "_Settings", *,
                          style, language, mode, tenant_id, job_id,
-                         telemetry_sink) -> dict[str, Any]:
+                         telemetry_sink,
+                         assist_activation_ready: Optional[bool] = None
+                         ) -> dict[str, Any]:
     # RAG off: build a shared context with no retrieval by handing narrate_chapters
     # a pre-built (empty-RAG) context. We do this by setting RAG_PREFER nothing and
     # passing shared_context explicitly when rag is off.
@@ -430,6 +450,11 @@ async def _run_chaptered(req: dict, chapters: list[dict], settings: "_Settings",
         worker_model=req.get("worker_model"), manager_model=req.get("manager_model"),
         telemetry_sink=telemetry_sink, max_parallel=settings.max_workers,
         shared_context=shared,
+        # The server-computed activation verdict, threaded as an internal argument the whole
+        # way down. It comes from the caller's parameter, NEVER from `req` — see
+        # generate_narration — and narrate_chapters treats anything other than True as
+        # "no decision", so dropping this line disarms assist rather than fail-opening it.
+        assist_activation_ready=assist_activation_ready,
     )
 
 
@@ -438,7 +463,9 @@ async def _run_chaptered(req: dict, chapters: list[dict], settings: "_Settings",
 # ---------------------------------------------------------------------------
 async def _run_topic_to_book(req: dict, settings: "_Settings", *,
                              style, language, mode, tenant_id, job_id,
-                             telemetry_sink) -> dict[str, Any]:
+                             telemetry_sink,
+                             assist_activation_ready: Optional[bool] = None
+                             ) -> dict[str, Any]:
     topic = str(req.get("topic", "") or "").strip()
     n_chapters = req.get("n_chapters") or req.get("num_chapters") or 5
     try:
@@ -467,6 +494,10 @@ async def _run_topic_to_book(req: dict, settings: "_Settings", *,
     book = await _run_chaptered(
         req, chapters, settings, style=style, language=language, mode=mode,
         tenant_id=tenant_id, job_id=job_id, telemetry_sink=telemetry_sink,
+        # Scenario B reaches the chapter map THROUGH scenario A, so the decision has to be
+        # relayed here too. Omitting it would leave every topic-to-book job with assist
+        # silently disarmed — a fail-closed bug, but still a bug, and an invisible one.
+        assist_activation_ready=assist_activation_ready,
     )
     book["outline_source"] = outline_res.get("source")
     book["outline"] = chapters
