@@ -41,13 +41,12 @@ class _Metered:
         self.requests.append(request)
         raw = request.chapter_bytes
         needle = (self._needle if self._needle.encode() in raw else BAD_NAME)
-        start = raw.find(needle.encode("utf-8"))
-        end = start + len(needle.encode("utf-8"))
         return {
+            # The wire carries the evidence verbatim; the server locates it and derives
+            # the span and digest.
             "claims": [{
                 "claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
-                "evidence_start": start, "evidence_end": end,
-                "evidence_sha256": cl.sha256_hex(raw[start:end]),
+                "quote": needle,
             }],
             "coverage": {
                 p: (l2.COVERAGE_CHECKED if p == l2.PREDICATE_ENTITY_NAME

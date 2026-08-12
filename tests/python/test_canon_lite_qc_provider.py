@@ -29,10 +29,26 @@ import canon_lite_qc_meter as meter        # noqa: E402
 import canon_lite_qc_contract as qcc       # noqa: E402
 import canon_lite_qc_provider as qc        # noqa: E402
 
+# 🔴 MOVED DELIBERATELY, 2026-08-13 — the request contract changed, so this pin had to.
+#    Was 64efaaaf…829807, which pinned a contract that asked the model for
+#    `evidence_start`, `evidence_end` and `evidence_sha256`. A language model can compute
+#    none of those, and `parse_chapter_claims` recomputed the digest and compared it to
+#    the model's, so every attempt was rejected AFTER the provider had answered and been
+#    billed (live canaries `wbkc80eq`, `p64wz5kp`: 3 units, 9 attempts, 0 usable claims).
+#    The contract now asks for the evidence VERBATIM and the server derives the span and
+#    the digest from the delivered bytes.
+#
+#    This constant exists so the contract cannot drift SILENTLY. Updating it is not a
+#    formality: a diff that moves this line is asserting that the wire contract changed on
+#    purpose, and reviewing it means reading why.
 RATIFIED_PROMPT_SHA256 = \
-    "64efaaaffe82d0b2a3f6628d14feef8ccc33397d152cbb2e4a22d39baf829807"
+    "b4c1a5c39d2aecf188a356861fffef18fcd62fc2673cd63d83f46281cc5578e4"
+# Moved with the prompt pin above and for the same reason: the system template embeds the
+# claim contract, so changing what a claim carries necessarily changes these bytes. The
+# round-trip property this constant guards — template -> JSON -> template, byte-exact — is
+# unchanged and still asserted below.
 RATIFIED_TEMPLATE_SHA256 = \
-    "88cbec8c1de3416a7553361a0133efcae1148f43b20c0b8ff48240e628f82cde"
+    "bb694a823d59ecd201052224a18129ca52e601055a62317ae486056387ad87e3"
 
 BOOK = "## Bab 1\nRatna pergi pagi\n## Bab 2\nRatna pulang malam"
 
@@ -1768,3 +1784,68 @@ def test_8_18b_a_blank_credential_still_refuses_before_any_adapter_exists(monkey
 
     assert str(exc.value) == "qc_provider_api_key_missing"
     assert seen == [], "an adapter was constructed for a deployment with no credential"
+
+
+# ===========================================================================
+# §8.19  BOUNDED TELEMETRY ON A FAILING EXTRACTION — ratified scope, 2026-08-13
+# ===========================================================================
+#
+# 🔴 THREE CANARIES WERE SPENT ESTABLISHING A FACT ONE LOG LINE CARRIES. A failing
+#    extraction used to leave no trace: the provider exception is discarded by design and
+#    replaced with a coverage state, and nothing was logged. The only evidence that nine
+#    attempts had failed was the arithmetic `logical_attempts=9` against `units=3`, which
+#    a reader has to compute before they can even suspect a problem. Silence read as calm.
+#
+#    The ratified scope is narrow and these rows hold it there: `unit_index`,
+#    `attempt_ordinal`, and a COVERAGE_* constant. Never the prompt, the response, a
+#    quote, narration text, a tenant id, a credential, or a raw exception. The exception's
+#    identity stays discarded — the line names WHERE and WHAT CLASS, never WHY in the
+#    provider's own words.
+
+def test_8_19_a_failing_attempt_logs_exactly_one_bounded_line(caplog):
+    import logging
+
+    secret = "PROVIDER-INTERNAL-TRACE-zzz999"
+
+    async def _raising_provider(request):
+        raise RuntimeError(secret)
+
+    snap = _snapshot()
+    canon = _authoritative_canon()
+    with caplog.at_level(logging.WARNING, logger="canon-lite-extractor"):
+        run = _run(ext.extract_all(
+            snap, canon, provider=_raising_provider,
+            model_version=qc.QC_MODEL_UPSTREAM, prompt_sha256=qc.PROMPT_SHA256,
+            max_concurrency=1))
+
+    lines = [r for r in caplog.records if r.name == "canon-lite-extractor"]
+    assert lines, "a failing extraction still leaves no trace — the whole point of this"
+    # one per failed attempt, not one per wave and not one per unit
+    assert len(lines) == run.logical_attempts
+
+    for rec in lines:
+        msg = rec.getMessage()
+        assert "unit_index=" in msg and "attempt_ordinal=" in msg
+        assert "error_code=" in msg
+        code = msg.split("error_code=")[1].rstrip(")")
+        assert code in l2.COVERAGE_STATES, f"error_code {code!r} is not a closed constant"
+        # nothing the provider, the model or the book said may appear
+        assert secret not in msg
+        assert "RuntimeError" not in msg
+        for leak in ("Ratna", "Rina", "Bab", "pergi", "pulang"):
+            assert leak not in msg
+
+
+def test_8_19b_a_successful_extraction_logs_nothing(caplog):
+    """The line marks failure. A clean wave that narrated its own success would train
+    every reader to skim past it, which is how the next silent fault gets missed."""
+    import logging
+
+    snap = _snapshot()
+    canon = _authoritative_canon()
+    with caplog.at_level(logging.WARNING, logger="canon-lite-extractor"):
+        _run(ext.extract_all(
+            snap, canon, provider=_ok_provider(), model_version=qc.QC_MODEL_UPSTREAM,
+            prompt_sha256=qc.PROMPT_SHA256, max_concurrency=1))
+
+    assert [r for r in caplog.records if r.name == "canon-lite-extractor"] == []

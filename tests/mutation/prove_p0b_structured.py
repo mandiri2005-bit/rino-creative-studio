@@ -37,11 +37,14 @@ CORE = WT / "python/orchestrator/core.py"
 STATIC = WT / "python/orchestrator/static.py"
 NAPI = WT / "python/narration_api.py"
 RUNNER = WT / "python/canon_lite_qc_runner.py"
+L2 = WT / "python/canon_lite_l2.py"
+EXT = WT / "python/canon_lite_extractor.py"
 
 T_TRANSPORT = "tests/python/test_narasi_structured_transport.py"
 T_SIDECAR = "tests/python/test_canon_registry_sidecar_threading.py"
 T_PROD = "tests/python/test_canon_lite_p0b_production_combination.py"
 T_QC = "tests/python/test_canon_lite_qc_provider.py"
+T_L2 = "tests/python/test_canon_lite_l2.py"
 
 # (label, file, literal to find, replacement, test file, test that must FAIL)
 BREAKS = [
@@ -115,6 +118,32 @@ BREAKS = [
      "    import canon_lite_l2 as _cl2",
      "tests/python/test_canon_lite_l3_production_path.py",
      "test_the_production_branch_repairs_and_binds_to_the_delivered_bytes"),
+
+    # ── 3d. the evidence contract: quote located, never guessed ──────────
+    ("fabricated citation accepted — quote no longer has to exist in the chapter",
+     L2,
+     '        if hits == 0:\n            raise _schema_error(f"claims[{i}]: quote not found in the chapter block")',
+     '        if False:\n            raise _schema_error(f"claims[{i}]: quote not found in the chapter block")',
+     T_L2, "test_a_quote_that_is_not_in_the_chapter_is_rejected"),
+    ("ambiguity resolved by guessing — first occurrence silently wins",
+     L2,
+     '        if hits > 1:\n            raise _schema_error(f"claims[{i}]: quote is ambiguous in the chapter block")',
+     '        if False:\n            raise _schema_error(f"claims[{i}]: quote is ambiguous in the chapter block")',
+     T_L2, "test_a_quote_appearing_twice_is_refused_rather_than_resolved"),
+    ("span derived from CHARACTER offsets instead of byte offsets",
+     L2,
+     "        start = block.find(needle)",
+     '        start = block.decode("utf-8", errors="ignore").find(quote)',
+     T_L2, "test_a_multibyte_quote_derives_the_correct_byte_span"),
+
+    # ── 3e. the bounded telemetry that ends the silence ──────────────────
+    ("failing extraction goes back to leaving no trace at all",
+     EXT,
+     '            log.warning("canon lite qc extract: attempt failed "\n'
+     '                        "(unit_index=%d attempt_ordinal=%d error_code=%s)",\n'
+     '                        index, attempt, terminal_state)',
+     "            pass",
+     T_QC, "test_8_19_a_failing_attempt_logs_exactly_one_bounded_line"),
 
     # ── 4. surgical containment ──────────────────────────────────────────
     ("containment guard disabled — the patch is bought and the envelope invalidated",

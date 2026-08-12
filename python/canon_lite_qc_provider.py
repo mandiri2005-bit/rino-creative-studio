@@ -78,16 +78,17 @@ QC_RESPONSE_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object", "additionalProperties": False,
-                "required": ["claim_type", "canon_ref", "evidence_start",
-                             "evidence_end", "evidence_sha256"],
+                "required": ["claim_type", "canon_ref", "quote"],
                 "properties": {
                     "claim_type": {"type": "string",
                                    "enum": ["entity_mention", "fixed_literal",
                                             "one_time_event"]},
                     "canon_ref": {"type": "string"},
-                    "evidence_start": {"type": "integer", "minimum": 0},
-                    "evidence_end": {"type": "integer", "minimum": 0},
-                    "evidence_sha256": {"type": "string"}}}}}}
+                    # The evidence itself, verbatim. The server locates it and derives the
+                    # span and the digest; asking the model for byte offsets and a SHA-256
+                    # asked it for two things it cannot compute, and every attempt was
+                    # rejected downstream. See `_CLAIM_FIELDS` in canon_lite_l2.
+                    "quote": {"type": "string", "minLength": 1}}}}}}
 QC_RESPONSE_SCHEMA_NAME = "canon_lite_chapter_claims"
 
 # ---- OWNER-ENTRY — supplied 2026-08-03, ratified ---------------------------
@@ -122,18 +123,22 @@ QC_SYSTEM_TEMPLATE = (
     "- \"claim_type\": \"entity_mention\", \"fixed_literal\", or \"one_time_event\"\n"
     "- \"canon_ref\": an existing compatible identifier from the supplied canon; never "
     "invent one\n"
-    "- \"evidence_start\": zero-based inclusive UTF-8 byte offset in chapter_text\n"
-    "- \"evidence_end\": zero-based exclusive UTF-8 byte offset in chapter_text\n"
-    "- \"evidence_sha256\": lowercase SHA-256 hex digest of exactly that UTF-8 byte span\n"
+    "- \"quote\": the evidence copied VERBATIM from chapter_text\n"
     "\n"
     "Mapping:\n"
     "entity_mention -> entity_name_contradiction\n"
     "fixed_literal -> fixed_literal_contradiction\n"
     "one_time_event -> one_time_event_duplication\n"
     "\n"
-    "Return a claim only when its byte range lies wholly inside chapter_text, decodes as "
-    "valid UTF-8, hashes exactly to evidence_sha256, and canon_ref already exists in the "
-    "supplied canon for that claim type. Never infer or create canon identifiers."
+    "The quote must be copied character for character from chapter_text — do not "
+    "paraphrase, normalise punctuation or whitespace, translate, or re-case it. Keep it "
+    "short but make it UNIQUE: if the text you would copy appears more than once in "
+    "chapter_text, extend it until exactly one occurrence remains. A quote that does not "
+    "appear in chapter_text, or that appears more than once, is discarded.\n"
+    "\n"
+    "Return a claim only when its quote appears in chapter_text exactly once and canon_ref "
+    "already exists in the supplied canon for that claim type. Never infer or create canon "
+    "identifiers."
 )
 
 # E7: generation policy. QC_TEMPERATURE_TEXT is the CANONICAL spelling — see the gate.

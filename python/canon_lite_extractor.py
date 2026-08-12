@@ -13,12 +13,26 @@ which bytes or software contract it claims to describe.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, Optional
 
 import canon_lite as _cl
 import canon_lite_l2 as _l2
+
+# 🔴 BOUNDED TELEMETRY, RATIFIED SCOPE. A failing extraction used to leave NO trace at
+#    all: the provider exception was discarded by design, replaced with a coverage state,
+#    and never logged. Three canaries were spent establishing that nine attempts had
+#    failed — a fact the arithmetic `logical_attempts=9` for `units=3` carried and nothing
+#    else did. Silence read as calm.
+#
+#    What may appear on this logger is fixed and closed: `unit_index`, `attempt_ordinal`,
+#    and a COVERAGE_* constant. Never the prompt, the response, a quote, narration text, a
+#    tenant id, a credential, or a raw exception — the exception's identity is still
+#    discarded, exactly as before. The coverage vocabulary is a closed enum, so no
+#    provider- or attacker-influenced string can reach a log line through it.
+log = logging.getLogger("canon-lite-extractor")
 
 
 EXTRACTOR_VERSION = _cl.L2_EXTRACTOR_VERSION
@@ -371,6 +385,12 @@ async def extract_all(
                         payload, snapshot=snapshot, canon=canon)
                 except Exception:
                     terminal_state = _l2.COVERAGE_INVALID_EXTRACTOR_OUTPUT
+            # Reached only when this attempt did NOT return: the success path above
+            # returns from inside the `else`. One line per failed attempt, three bounded
+            # fields, nothing else.
+            log.warning("canon lite qc extract: attempt failed "
+                        "(unit_index=%d attempt_ordinal=%d error_code=%s)",
+                        index, attempt, terminal_state)
         return _failure_artifact(
             snapshot, index, state=terminal_state, model_version=model_version,
             prompt_sha256=prompt_sha256, canon_sha256=canon.canon_sha256)

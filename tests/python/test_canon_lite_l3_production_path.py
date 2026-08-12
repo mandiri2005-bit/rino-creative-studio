@@ -98,9 +98,7 @@ class _MeteredSpy:
             "claims": [{
                 "claim_type": l2.CLAIM_ENTITY_MENTION,
                 "canon_ref": "e1",
-                "evidence_start": start,
-                "evidence_end": end,
-                "evidence_sha256": cl.sha256_hex(body[start:end]),
+                "quote": GOOD_NAME,
             }],
         }
 

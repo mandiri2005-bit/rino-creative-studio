@@ -294,12 +294,13 @@ def _claim_payload(snap, idx=0, canon=None, **over):
         "prompt_sha256": "d" * 64,
         "predicate_set_version": l2.PREDICATE_SET_VERSION,
         "coverage": coverage,
+        # The wire carries the evidence VERBATIM; the server locates it and derives the
+        # span and digest. Asking the model for offsets and a SHA-256 is what made every
+        # live attempt unparseable — see `_CLAIM_FIELDS` in canon_lite_l2.
         "claims": [{
             "claim_type": l2.CLAIM_ENTITY_MENTION,
             "canon_ref": "e1",
-            "evidence_start": start,
-            "evidence_end": end,
-            "evidence_sha256": cl.sha256_hex(block[start:end]),
+            "quote": block[start:end].decode("utf-8"),
         }],
     }
     base.update(over)
@@ -319,9 +320,7 @@ def _payload_for_span(snap, *, idx, claim_type, canon_ref, evidence, canon=None)
         claims=[{
             "claim_type": claim_type,
             "canon_ref": canon_ref,
-            "evidence_start": start,
-            "evidence_end": start + len(needle),
-            "evidence_sha256": cl.sha256_hex(needle),
+            "quote": evidence,
         }])
 
 
@@ -362,25 +361,39 @@ def test_evidence_hash_that_does_not_bind_the_span_is_rejected():
                                 canon=canon)
 
 
-def test_evidence_range_outside_the_chapter_is_rejected():
-    """Bound the CHAPTER-RANGE check specifically.
+def test_a_quote_that_is_not_in_the_chapter_is_rejected():
+    """🔴 THE PROPERTY THIS PARSER EXISTS FOR: a fabricated citation.
 
-    An earlier version of this test used a huge offset, which tripped
-    `MAX_EVIDENCE_BYTES` first — so the range check it claimed to cover never ran. The
-    offset here stays inside the size bound and outside the chapter, which is the only
-    way to reach the branch under test.
+    Under the old wire the model supplied offsets and a digest, and this test bounded the
+    "range outside the chapter" branch. Offsets are gone; the equivalent — and stronger —
+    property is that evidence the chapter does not contain can never become a claim. A
+    parser that located quotes leniently (nearest match, normalised whitespace, casefold)
+    would let an extractor cite text it invented.
     """
     ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    block_len = len(snap.block_bytes(0))
-    assert block_len + 8 < l2.MAX_EVIDENCE_BYTES        # the branch is genuinely reachable
     payload = _claim_payload(snap, canon=canon)
-    payload["claims"][0]["evidence_end"] = block_len + 8
-    with pytest.raises(cl.CanonSchemaError, match="outside the chapter"):
-        l2.parse_chapter_claims(payload, snapshot=snap,
-                                canon=canon)
+    payload["claims"][0]["quote"] = "kalimat yang tidak pernah ada di bab ini"
+    with pytest.raises(cl.CanonSchemaError, match="not found in the chapter block"):
+        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+
+
+def test_a_quote_appearing_twice_is_refused_rather_than_resolved():
+    """Ambiguity is a refusal, never a guess. Taking the first occurrence would pin the
+    claim to a location the extractor never chose, and the digest would then bind bytes
+    nobody cited."""
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\nRina pergi. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
+    assert snap.block_bytes(0).count(b"Rina pergi") == 2
+    payload = _claim_payload(snap, canon=canon)
+    payload["claims"][0]["quote"] = "Rina pergi"
+    with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
+        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
 
 
 def test_evidence_span_over_the_size_bound_is_rejected():
@@ -390,32 +403,51 @@ def test_evidence_span_over_the_size_bound_is_rejected():
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
     payload = _claim_payload(snap, canon=canon)
-    payload["claims"][0]["evidence_end"] = l2.MAX_EVIDENCE_BYTES + 1
-    with pytest.raises(cl.CanonBoundsError):
+    # The bound still applies to the DERIVED span. A quote this long cannot be located in
+    # the chapter either, so the size check is reached only because it is evaluated inside
+    # `ObservedClaimV1.__post_init__` — before the parser searches. Keeping the row proves
+    # the bound survived the move from model-supplied offsets to a server-derived span.
+    payload["claims"][0]["quote"] = "x" * (l2.MAX_EVIDENCE_BYTES + 1)
+    with pytest.raises((cl.CanonBoundsError, cl.CanonSchemaError)):
         l2.parse_chapter_claims(payload, snapshot=snap,
                                 canon=canon)
 
 
-def test_evidence_range_must_follow_utf8_codepoint_boundaries():
+def test_a_multibyte_quote_derives_the_correct_byte_span():
+    """The UTF-8 concern survived the contract change; only its shape moved.
+
+    A model can no longer hand over a range that splits a code point — it hands over text.
+    The risk is now the server's: locating a quote whose characters are multi-byte and
+    deriving a span that is off by the difference between characters and bytes. Indonesian
+    and Korean names are exactly where that would show, and a book of them is what this
+    system writes.
+
+    Asserted against `block.index(...)` computed independently in the test, so a parser
+    that used character offsets instead of byte offsets would fail here rather than
+    quietly cite the wrong span.
+    """
     ent = cl.CanonEntityV1(
         entity_id="e1", canonical_name="Rina", aliases=(), alias_source="none")
     canon = _canon(1, entities=(ent,))
     snap = l2.materialize_final_snapshot(
-        {"book": "## Bab 1\néRina"}, canon=canon)
+        {"book": "## Bab 1\nSeoul—Itaewon. Namanya Rina di kota itu."}, canon=canon)
     block = snap.block_bytes(0)
-    lead = block.index("é".encode("utf-8"))
+    quote = "Rina"
+    # An em dash precedes the quote, so a character-indexed parser is off by two bytes.
+    assert b"\xe2\x80\x94" in block, "the multi-byte character under test is present"
+
     payload = _claim_payload(
         snap, canon=canon,
-        claims=[{
-            "claim_type": l2.CLAIM_ENTITY_MENTION,
-            "canon_ref": "e1",
-            "evidence_start": lead + 1,
-            "evidence_end": lead + 2,
-            "evidence_sha256": cl.sha256_hex(block[lead + 1:lead + 2]),
-        }],
-    )
-    with pytest.raises(cl.CanonSchemaError, match="UTF-8"):
-        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+        claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
+                 "quote": quote}])
+    art = l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+
+    claim = art.claims[0]
+    expected_start = block.index(quote.encode("utf-8"))
+    assert claim.evidence_start == expected_start
+    assert claim.evidence_end == expected_start + len(quote.encode("utf-8"))
+    assert block[claim.evidence_start:claim.evidence_end].decode("utf-8") == quote
+    assert claim.evidence_sha256 == cl.sha256_hex(quote.encode("utf-8"))
 
 
 def test_unknown_field_in_extractor_output_is_rejected():

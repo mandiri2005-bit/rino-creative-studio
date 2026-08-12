@@ -463,8 +463,21 @@ def materialize_final_snapshot(
 # §6.2 ChapterClaimsV1 — a strict container for UNTRUSTED output
 # ===========================================================================
 
-_CLAIM_FIELDS = ("claim_type", "canon_ref", "evidence_start", "evidence_end",
-                 "evidence_sha256")
+# 🔴 THE WIRE ASKS FOR A QUOTE; THE SERVER DERIVES THE SPAN AND THE HASH.
+#    This used to be ("claim_type", "canon_ref", "evidence_start", "evidence_end",
+#    "evidence_sha256") — the extractor required the MODEL to count byte offsets and to
+#    produce a SHA-256 of the span. A language model can do neither reliably, and the
+#    parser then recomputed the hash and compared it to the model's, so a mismatch failed
+#    the WHOLE payload. Live canaries `wbkc80eq` and `p64wz5kp` proved it: attempt 1
+#    reached the provider, was billed, returned well-formed JSON, and was rejected here
+#    every time — 3 units, 9 attempts, 0 usable claims, `continuity_status=unchecked`.
+#
+#    The model now returns the evidence VERBATIM and the server locates it. That removes
+#    an impossible ask without weakening anything: the hash was already server-computed,
+#    so the model's copy contributed no assurance — only a failure mode. Provenance is
+#    strictly stronger now, because the span and its digest are derived from the delivered
+#    bytes rather than asserted by the thing being checked.
+_CLAIM_FIELDS = ("claim_type", "canon_ref", "quote")
 _CLAIMS_PAYLOAD_FIELDS = (
     "schema_version", "chapter_index", "chapter_id", "content_sha256", "canon_sha256",
     "extractor_version", "model_version", "prompt_sha256", "predicate_set_version",
@@ -717,18 +730,34 @@ def parse_chapter_claims(
     parsed: list[ObservedClaimV1] = []
     for i, rc in enumerate(raw_claims):
         _reject_unknown_fields(rc, _CLAIM_FIELDS, f"claims[{i}]")
+        quote = rc.get("quote")
+        # `type(x) is str`, not isinstance: this value is about to be encoded, searched
+        # for and hashed, and a str SUBCLASS with a poisoned __eq__ must not reach any of
+        # that. Same discipline as the P0-A verdict canonicaliser.
+        if type(quote) is not str or not quote:
+            raise _schema_error(f"claims[{i}]: quote must be a non-empty string")
+        needle = quote.encode("utf-8")
+        # 🔴 EXACTLY ONE OCCURRENCE. Zero means the extractor cited text this chapter does
+        #    not contain — a fabricated citation, which is the single most important thing
+        #    this parser exists to refuse. More than one means the citation does not
+        #    identify a span, and picking the first would silently invent a location the
+        #    model never chose. Ambiguity is a refusal, never a guess.
+        hits = block.count(needle)
+        if hits == 0:
+            raise _schema_error(f"claims[{i}]: quote not found in the chapter block")
+        if hits > 1:
+            raise _schema_error(f"claims[{i}]: quote is ambiguous in the chapter block")
+        start = block.find(needle)
         claim = ObservedClaimV1(
             claim_type=rc["claim_type"], canon_ref=rc["canon_ref"],
-            evidence_start=rc["evidence_start"], evidence_end=rc["evidence_end"],
-            evidence_sha256=rc["evidence_sha256"],
+            evidence_start=start, evidence_end=start + len(needle),
+            evidence_sha256=sha256_hex(needle),
         )
-        # Evidence must actually be IN these bytes and must hash to what was claimed.
-        # Without both halves an extractor could cite a span it never read.
-        if claim.evidence_end > len(block):
-            raise _schema_error(f"claims[{i}]: evidence range outside the chapter")
-        if sha256_hex(block[claim.evidence_start: claim.evidence_end]) \
-                != claim.evidence_sha256:
-            raise _schema_error(f"claims[{i}]: evidence_sha256 does not bind the span")
+        # Retained though the derivation above cannot violate it: UTF-8 is
+        # self-synchronising, so a valid encoded needle can only match on a code-point
+        # boundary. Keeping the check means the invariant is enforced by code rather than
+        # by an argument in a comment, and it survives any future change to how the span
+        # is chosen.
         try:
             block[claim.evidence_start: claim.evidence_end].decode("utf-8", errors="strict")
         except UnicodeDecodeError:
