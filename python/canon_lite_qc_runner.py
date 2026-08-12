@@ -136,7 +136,23 @@ async def maybe_run_metered_wave(
     extractor_concurrency = load_extractor_concurrency(environ)
     max_inflight = load_max_inflight(environ)
 
-    if not str(env.get(_QC_API_KEY_ENV) or "").strip():
+    # 🔴 READ AND BIND ONCE, THEN CHECK THE BOUND VALUE. This used to test
+    #    `env.get(...)` inline and never bind anything, while the default adapter factory
+    #    below referenced a name called `api_key` that no statement in this function ever
+    #    assigned. Every production call takes that default — `narration_api` injects no
+    #    factory — so `adapter_factory()` raised `NameError` on a correctly configured
+    #    deployment. The terminal seam does not recognise `NameError` as one of its bounded
+    #    faults, so it flattened to `l3_metered_wave_error` / `stage=no_session`, which
+    #    reads as "there was no session to be had" rather than "the wave crashed on its
+    #    first line". Live job `yp8f04rr` died exactly here, AFTER a clean census, with the
+    #    key present and every gate upstream green.
+    #
+    #    Every existing test survived it because they all pass `adapter_factory=` explicitly
+    #    and never execute the default. A dependency that only production constructs is a
+    #    dependency no test was holding — the same shape as the fence contract that nothing
+    #    in the transport enforced.
+    api_key = str(env.get(_QC_API_KEY_ENV) or "").strip()
+    if not api_key:
         # Railway-supplied on narration-worker only. Its absence is a configuration fault,
         # not a reason to silently skip metering — skipping would produce a report that looks
         # measured but never called anything. Raised as the BOUNDED configuration error so the

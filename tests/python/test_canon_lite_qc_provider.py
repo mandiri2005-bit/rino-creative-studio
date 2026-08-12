@@ -1665,3 +1665,106 @@ def _valid_payload(snapshot, canon, index=0):
         "coverage": {p: l2.COVERAGE_NO_CLAIMS_FOUND for p in l2.SEMANTIC_PREDICATES},
         "claims": [],
     }
+
+
+# ===========================================================================
+# §8.18  THE DEFAULT ADAPTER FACTORY — the branch production actually takes
+# ===========================================================================
+#
+# 🔴 EVERY ROW ABOVE PASSES `adapter_factory=`, AND THAT IS WHY THEY ALL PASSED WHILE
+#    PRODUCTION CRASHED. `narration_api` injects no factory, so the real call takes the
+#    DEFAULT branch — which referenced a local `api_key` that no statement in
+#    `maybe_run_metered_wave` ever assigned. `adapter_factory()` therefore raised
+#    `NameError` on a correctly configured deployment; the terminal seam does not
+#    recognise that as one of its bounded faults, so it flattened to
+#    `l3_metered_wave_error` / `stage=no_session` — which reads as "there was no session
+#    to be had" rather than "the wave crashed on its first line". Live job `yp8f04rr` died
+#    exactly there, after a clean assist census, with the credential present.
+#
+#    A dependency only production constructs is a dependency no test was holding. These
+#    rows hold it: they run the default branch and nothing else.
+
+class _SpySink:
+    """The wave builds a QcUsageSink when none is passed, and that one talks to the DB."""
+
+    async def begin(self, context, *, unit_index, attempt_ordinal):
+        return {"attempt_id": "a1", "outcome": "inserted"}
+
+    async def settle(self, *a, **k):
+        return {}
+
+    async def arm(self, reason_code):
+        return {}
+
+    async def is_armed(self):
+        return False
+
+
+def _default_factory_spy(monkeypatch):
+    """Make the DEFAULT factory runnable without a provider or a socket.
+
+    Patches the adapter CLASS (not the factory) so the branch under test is the real one,
+    and stubs `extract_all` so the wave stops as soon as the adapter exists — this file
+    asserts on construction, not on extraction.
+    """
+    seen = []
+
+    class _SpyAdapter:
+        def __init__(self, *, api_key, environ=None):
+            seen.append({"api_key": api_key, "environ": environ})
+
+        async def __call__(self, request):                      # pragma: no cover
+            raise AssertionError("no request may leave this test")
+
+    async def _no_extract(snapshot, canon, **kw):
+        class _Run:
+            claims_by_index: dict = {}
+            logical_attempts = 0
+            logical_extractions = 0
+        return _Run()
+
+    monkeypatch.setattr(qc, "QcProviderAdapter", _SpyAdapter)
+    monkeypatch.setattr(ext, "extract_all", _no_extract)
+    return seen
+
+
+def _run_default_wave(env):
+    meter._process_killed = False
+    meter.reset_host_role_for_tests()
+    try:
+        meter.declare_host_role("narration_worker")
+        return _run(runner.maybe_run_metered_wave(
+            _snapshot(), _authoritative_canon(),
+            run_id="r", job_uuid="00000000-0000-4000-8000-000000000001",
+            job_external_id="j", environ=env,
+            wave_token=ext.ExtractionWaveToken(),
+            sink=_SpySink(), redis_getter=_FakeRedis,
+            adapter_factory=None))          # ← the production branch, explicitly
+    finally:
+        meter.reset_host_role_for_tests()
+
+
+def test_8_18_the_default_factory_passes_the_env_credential_to_the_adapter(monkeypatch):
+    """The credential reaches the adapter INTACT — asserted by value, not by presence.
+
+    `api_key is not None` would pass against a factory that forwarded the env NAME, an
+    empty string, or a truthy placeholder. The whole defect was a name that resolved to
+    nothing, so only an equality check against the value the environment actually holds
+    can distinguish a working binding from a lucky one."""
+    seen = _default_factory_spy(monkeypatch)
+    secret = "CREDENTIAL-FROM-ENV-9f3a"
+    _run_default_wave(dict(ENV_ON, **{qc.QC_API_KEY_ENV: secret}))
+
+    assert len(seen) == 1, "the default factory built no adapter"
+    assert seen[0]["api_key"] == secret
+
+
+def test_8_18b_a_blank_credential_still_refuses_before_any_adapter_exists(monkeypatch):
+    """Whitespace-only is absence. The bounded code must survive the fix — binding the
+    value must not turn a configuration fault into a provider built with an empty key."""
+    seen = _default_factory_spy(monkeypatch)
+    with pytest.raises(RuntimeError) as exc:
+        _run_default_wave(dict(ENV_ON, **{qc.QC_API_KEY_ENV: "   "}))
+
+    assert str(exc.value) == "qc_provider_api_key_missing"
+    assert seen == [], "an adapter was constructed for a deployment with no credential"

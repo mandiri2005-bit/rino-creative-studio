@@ -36,10 +36,12 @@ WT = pathlib.Path(os.environ.get(
 CORE = WT / "python/orchestrator/core.py"
 STATIC = WT / "python/orchestrator/static.py"
 NAPI = WT / "python/narration_api.py"
+RUNNER = WT / "python/canon_lite_qc_runner.py"
 
 T_TRANSPORT = "tests/python/test_narasi_structured_transport.py"
 T_SIDECAR = "tests/python/test_canon_registry_sidecar_threading.py"
 T_PROD = "tests/python/test_canon_lite_p0b_production_combination.py"
+T_QC = "tests/python/test_canon_lite_qc_provider.py"
 
 # (label, file, literal to find, replacement, test file, test that must FAIL)
 BREAKS = [
@@ -93,6 +95,15 @@ BREAKS = [
      "                            return bool(src.verify_sha256()\n",
      "                            return bool(True\n",
      T_PROD, "test_the_judge_is_never_offered_a_candidate_that_cannot_arm[sha]"),
+
+    # ── 3b. the default adapter factory's credential binding ─────────────
+    # Reverts to the exact shape live job `yp8f04rr` died on: the credential tested
+    # inline and never bound, so the default factory's `api_key` resolves to nothing.
+    ("credential read but never bound — the default factory raises NameError",
+     RUNNER,
+     '    api_key = str(env.get(_QC_API_KEY_ENV) or "").strip()\n    if not api_key:',
+     '    if not str(env.get(_QC_API_KEY_ENV) or "").strip():',
+     T_QC, "test_8_18_the_default_factory_passes_the_env_credential_to_the_adapter"),
 
     # ── 4. surgical containment ──────────────────────────────────────────
     ("containment guard disabled — the patch is bought and the envelope invalidated",
