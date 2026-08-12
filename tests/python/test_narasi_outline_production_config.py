@@ -44,29 +44,34 @@ PROD_MAX_TOTAL_WORDS = 40_000
 
 
 @pytest.fixture(autouse=True)
-def _no_outbound_provider_calls(monkeypatch):
-    """Hard guarantee that nothing in this file can reach a paid provider.
+def _keyless_provider_chain(monkeypatch):
+    """Put this file's chain in the NO-KEY state its tests are written against.
 
-    🔴 conftest.py does `os.environ.setdefault("LAOZHANG_API_KEY", "sk-test-key-for-unit-
-       tests")`, which makes the laozhang rung look KEYED to _create's `if not key:
-       continue`. So any test that lets the REAL _create walk a chain containing that rung
-       issues a genuine HTTPS request to api.laozhang.ai. That happened while writing this
-       file — six requests, all rejected 401, nothing billed, but nothing that should have
-       left the machine either. Emptying the keys is not enough on its own, because a future
-       rung might resolve one another way, so the OpenAI constructor is a tripwire too.
+    🔴 THIS IS THE SCENARIO, NOT A NETWORK GUARD — and the distinction is load-bearing.
+       conftest.py does `os.environ.setdefault("LAOZHANG_API_KEY", "sk-test-key-for-unit-
+       tests")`, and the rung-skip guard in `_NarasiFailoverClient._create` is
+       `if not key: continue` — so a placeholder key makes the laozhang rung read as USABLE
+       and the real `_create` walks it. Emptying the keys here is what produces the KEYLESS
+       chain `test_legacy_phase_less_path_keeps_the_plain_fallthrough` exists to exercise
+       ("the P1 no-key case"); without it that test does not merely lose a guard, it stops
+       testing the path it names, and its `make_client` fallthrough is never reached.
+       Verified by removing this fixture on the integration branch: exactly that one test
+       failed, with six real attempts to api.laozhang.ai.
+
+    ⚠️ THE OUTBOUND GUARD ITSELF IS NO LONGER HERE. When this file was written on its own
+       branch it also stubbed `laozhang_api.OpenAI` with a raising tripwire, because no
+       suite-wide protection existed yet. `tests/python/conftest.py` now blocks at the
+       SOCKET (`939f1bc`), covering every transport this repo reaches the network through —
+       not just the OpenAI constructor — and FAILS the offending test in teardown rather
+       than relying on the caller to surface the error. That is strictly broader than the
+       tripwire it replaces, so the tripwire was removed as genuinely duplicated
+       enforcement. What stays here is only the key-emptying, which is test setup.
     """
     for var in ("LAOZHANG_API_KEY", "KIE_API_KEY", "ATLASCLOUD_API_KEY", "CLAUDE_API_KEY",
                 "AIMLAPI_API_KEY", "DEEPSEEK_API_KEY", "DEEPSEEK_LAOZHANG_API_KEY",
                 "OPENAI_API_KEY", "GEMINI_API_KEY", "FAL_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(laozhang_api, "API_KEY", "", raising=False)
-
-    def _blocked(*_args, **_kwargs):
-        raise AssertionError(
-            "a test tried to construct a real OpenAI client, which would dial out to a "
-            "paid provider — stub the rung or the client factory instead")
-
-    monkeypatch.setattr(laozhang_api, "OpenAI", _blocked)
 
 
 @pytest.fixture
