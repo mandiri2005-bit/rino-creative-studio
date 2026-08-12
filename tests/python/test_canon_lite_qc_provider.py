@@ -42,13 +42,13 @@ import canon_lite_qc_provider as qc        # noqa: E402
 #    formality: a diff that moves this line is asserting that the wire contract changed on
 #    purpose, and reviewing it means reading why.
 RATIFIED_PROMPT_SHA256 = \
-    "b4c1a5c39d2aecf188a356861fffef18fcd62fc2673cd63d83f46281cc5578e4"
+    "c6ecac2801b1842922e6de1eac182b3227e5c13b0cac4106b5b76c87eaf8d76b"
 # Moved with the prompt pin above and for the same reason: the system template embeds the
 # claim contract, so changing what a claim carries necessarily changes these bytes. The
 # round-trip property this constant guards — template -> JSON -> template, byte-exact — is
 # unchanged and still asserted below.
 RATIFIED_TEMPLATE_SHA256 = \
-    "bb694a823d59ecd201052224a18129ca52e601055a62317ae486056387ad87e3"
+    "b7e04c7932d9f2185e4d40e47ca8c42782ad6141fb59fced01b6637ade48b3f1"
 
 BOOK = "## Bab 1\nRatna pergi pagi\n## Bab 2\nRatna pulang malam"
 

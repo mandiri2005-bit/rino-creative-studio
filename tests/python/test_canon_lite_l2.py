@@ -1246,3 +1246,157 @@ def test_every_closed_vocabulary_is_actually_closed():
         ("NOT_A_STATUS", l2.CONTINUITY_STATUSES),
     ):
         assert value not in allowed
+
+
+# ===========================================================================
+# The locator is not the evidence — repeated names, repeated literals, overlap
+# ===========================================================================
+#
+# 🔴 THE DEFECT THESE ROWS EXIST FOR. A first version of the quote contract required the
+#    quote itself to be unique in the chapter. That silently broke the evaluator, which
+#    compares the evidence span against `{canonical_name, *aliases}`: a name appearing
+#    twice then had NO valid representation. "Rina" was refused as ambiguous, and "Rina
+#    datang" — widened until unique — was compared whole against the canon and reported as
+#    an `entity_name_contradiction` the manuscript never committed. A repeated name is the
+#    ordinary case in a novel, so the contract was wrong for most real chapters.
+#
+#    `context` locates; `quote` is evaluated. These rows hold that separation from both
+#    sides: the claim must parse, AND it must not manufacture a violation.
+
+def _claim(quote, *, canon_ref="e1", claim_type=None, context=None):
+    claim = {"claim_type": claim_type or l2.CLAIM_ENTITY_MENTION,
+             "canon_ref": canon_ref, "quote": quote}
+    if context is not None:
+        claim["context"] = context
+    return claim
+
+
+def test_a_repeated_entity_name_is_located_by_context_and_evaluates_clean():
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    text = "## Bab 1\nRina datang. Rina pergi.\n## Bab 2\nlain"
+    snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
+    assert snap.block_bytes(0).count(b"Rina") == 2, "the repeat under test is real"
+
+    art = l2.parse_chapter_claims(
+        _claim_payload(snap, canon=canon,
+                       claims=[_claim("Rina", context="Rina pergi")]),
+        snapshot=snap, canon=canon)
+
+    # the SPAN is the bare name, not the locator
+    block = snap.block_bytes(0)
+    c = art.claims[0]
+    assert block[c.evidence_start:c.evidence_end].decode("utf-8") == "Rina"
+    # and it is the SECOND occurrence — the one the context named
+    assert c.evidence_start == block.rindex(b"Rina")
+
+    # Chapter 2 must be represented too: a missing unit is PARTIAL coverage, which
+    # reports INCOMPLETE_EXTRACTION and would mask whether chapter 1 evaluated clean.
+    empty = l2.parse_chapter_claims(
+        _claim_payload(snap, idx=1, canon=canon, claims=[],
+                       coverage={p: l2.COVERAGE_NO_CLAIMS_FOUND
+                                 for p in l2.SEMANTIC_PREDICATES}),
+        snapshot=snap, canon=canon)
+    result = l2.evaluate_semantic(
+        l2.PREDICATE_ENTITY_NAME, snap, canon, {0: art, 1: empty})
+    # NO_VIOLATIONS_FOUND, not CHECKED: the server derives the predicate state as
+    # `CHECKED if violations else NO_VIOLATIONS_FOUND`, so "measured and clean" is
+    # precisely this value. Both are in `_PREDICATE_MEASURED`.
+    assert result.coverage_state == l2.COVERAGE_NO_VIOLATIONS_FOUND
+    assert result.coverage_state in l2._PREDICATE_MEASURED
+    assert result.violations == (), (
+        "a correctly located repeated name became a contradiction — the locator leaked "
+        "into the value the evaluator compares")
+
+
+def test_a_repeated_fixed_literal_is_located_by_context_and_evaluates_clean():
+    anchor = cl.CanonAnchorV1(anchor_id="a1", kind="time", literal="10:00")
+    canon = _canon(2, anchors=(anchor,))
+    text = "## Bab 1\nRapat 10:00 lalu 10:00 lagi\n## Bab 2\nlain"
+    snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
+    assert snap.block_bytes(0).count(b"10:00") == 2
+
+    art = l2.parse_chapter_claims(
+        _claim_payload(snap, canon=canon,
+                       coverage={**{p: l2.COVERAGE_NO_CLAIMS_FOUND
+                                    for p in l2.SEMANTIC_PREDICATES},
+                                 l2.PREDICATE_FIXED_LITERAL: l2.COVERAGE_CHECKED},
+                       claims=[_claim("10:00", canon_ref="a1",
+                                      claim_type=l2.CLAIM_FIXED_LITERAL,
+                                      context="lalu 10:00 lagi")]),
+        snapshot=snap, canon=canon)
+
+    block = snap.block_bytes(0)
+    c = art.claims[0]
+    assert block[c.evidence_start:c.evidence_end].decode("utf-8") == "10:00"
+    result = l2.evaluate_semantic(l2.PREDICATE_FIXED_LITERAL, snap, canon, {0: art})
+    assert result.violations == ()
+
+
+def test_an_overlapping_second_occurrence_is_seen_as_ambiguous():
+    """🔴 `bytes.count()` COUNTS NON-OVERLAPPING MATCHES. `b"aaaa".count(b"aaa")` is 1,
+    while "aaa" genuinely starts at offsets 0 and 1. A uniqueness check built on `count()`
+    accepts this quote and binds it to the first offset — a silent mis-location that looks
+    exactly like a correct one."""
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="aaa", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\naaaa\n## Bab 2\nlain"}, canon=canon)
+    block = snap.block_bytes(0)
+    assert block.count(b"aaa") == 1, "count() under-reports, which is the bug"
+    assert block.find(b"aaa", block.find(b"aaa") + 1) != -1, "but it truly repeats"
+
+    with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
+        l2.parse_chapter_claims(
+            _claim_payload(snap, canon=canon, claims=[_claim("aaa")]),
+            snapshot=snap, canon=canon)
+
+
+def test_a_context_that_does_not_contain_the_quote_is_rejected():
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\nRina datang. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
+    with pytest.raises(cl.CanonSchemaError, match="context does not contain the quote"):
+        l2.parse_chapter_claims(
+            _claim_payload(snap, canon=canon,
+                           claims=[_claim("Rina", context="datang.")]),
+            snapshot=snap, canon=canon)
+
+
+def test_an_ambiguous_context_is_rejected_rather_than_resolved():
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\nRina pergi. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
+    with pytest.raises(cl.CanonSchemaError, match="context is ambiguous"):
+        l2.parse_chapter_claims(
+            _claim_payload(snap, canon=canon,
+                           claims=[_claim("Rina", context="Rina pergi")]),
+            snapshot=snap, canon=canon)
+
+
+def test_the_evidence_size_bound_is_actually_reached():
+    """The bound must be hit by a quote that IS in the chapter.
+
+    An earlier version used `"x" * (MAX + 1)`, which is absent from the chapter, so the
+    parse died at `quote not found` and `MAX_EVIDENCE_BYTES` was never exercised — a
+    vacuous row whose comment claimed otherwise. The quote here is real text from the
+    block, so the size check is the only thing left to fail.
+    """
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    long_run = "x" * (l2.MAX_EVIDENCE_BYTES + 50)
+    snap = l2.materialize_final_snapshot(
+        {"book": f"## Bab 1\n{long_run}\n## Bab 2\nlain"}, canon=canon)
+    assert long_run.encode("utf-8") in snap.block_bytes(0), "the quote is really present"
+
+    with pytest.raises(cl.CanonBoundsError):
+        l2.parse_chapter_claims(
+            _claim_payload(snap, canon=canon, claims=[_claim(long_run)]),
+            snapshot=snap, canon=canon)

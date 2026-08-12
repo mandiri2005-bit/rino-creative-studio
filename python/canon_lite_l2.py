@@ -477,7 +477,64 @@ def materialize_final_snapshot(
 #    so the model's copy contributed no assurance — only a failure mode. Provenance is
 #    strictly stronger now, because the span and its digest are derived from the delivered
 #    bytes rather than asserted by the thing being checked.
-_CLAIM_FIELDS = ("claim_type", "canon_ref", "quote")
+#    🔴 AND THE LOCATOR IS NOT THE EVIDENCE. A first version of this contract asked for a
+#    single `quote` that had to be unique in the chapter, which quietly broke the
+#    evaluator: `_evaluate_predicate` compares the evidence span against
+#    `{canonical_name, *aliases}`, so a name that appears twice has NO valid form. "Rina"
+#    is refused as ambiguous, and "Rina datang" — extended to become unique — is then
+#    compared whole against the canon and reported as an `entity_name_contradiction` that
+#    the manuscript never committed. The two roles are separate and are now separate
+#    fields: `quote` is the evidence the evaluator reads, `context` only makes it findable.
+_CLAIM_FIELDS_REQUIRED = ("claim_type", "canon_ref", "quote")
+#: `context` is supplied only when the quote repeats, so it cannot be required — most
+#: claims will not carry one.
+_CLAIM_FIELDS_OPTIONAL = ("context",)
+_CLAIM_FIELDS = _CLAIM_FIELDS_REQUIRED + _CLAIM_FIELDS_OPTIONAL
+
+
+def _reject_claim_fields(mapping: Any, where: str) -> None:
+    """Exact-set validation with ONE optional member.
+
+    `canon_lite._reject_unknown_fields` enforces an exact field set — every allowed name
+    must be present — and that strictness is deliberate everywhere else it is used, so it
+    is not widened here. A claim is the one shape with a genuinely optional member, and
+    saying so locally is safer than teaching a shared validator a mode that every other
+    caller would then have to be checked against.
+    """
+    if not isinstance(mapping, Mapping):
+        raise _schema_error(f"{where}: expected a mapping, "
+                            f"got {type(mapping).__name__}")
+    extra = sorted(set(mapping) - set(_CLAIM_FIELDS), key=repr)
+    if extra:
+        raise _schema_error(f"{where}: unknown field(s) {extra}")
+    missing = sorted(set(_CLAIM_FIELDS_REQUIRED) - set(mapping))
+    if missing:
+        raise _schema_error(f"{where}: missing field(s) {missing}")
+
+
+#: Sentinels for `_locate_unique`. Distinct objects rather than -1/None so a caller cannot
+#: confuse "absent" with "ambiguous" — they are different refusals with different meanings,
+#: and collapsing them is how a fabricated citation would come to look like a formatting
+#: problem.
+_NOT_FOUND = object()
+_AMBIGUOUS = object()
+
+
+def _locate_unique(haystack: bytes, needle: bytes):
+    """Offset of the ONLY occurrence, or `_NOT_FOUND` / `_AMBIGUOUS`.
+
+    🔴 OVERLAP-SAFE BY CONSTRUCTION. `bytes.count()` counts non-overlapping matches, so
+       `b"aaaa".count(b"aaa") == 1` even though "aaa" starts at both offset 0 and offset 1.
+       A uniqueness check built on `count()` therefore accepts a genuinely ambiguous quote
+       and binds it to the first offset — exactly the silent mis-location this function
+       exists to prevent. Re-searching from `first + 1` sees the overlapping match.
+    """
+    first = haystack.find(needle)
+    if first == -1:
+        return _NOT_FOUND
+    if haystack.find(needle, first + 1) != -1:
+        return _AMBIGUOUS
+    return first
 _CLAIMS_PAYLOAD_FIELDS = (
     "schema_version", "chapter_index", "chapter_id", "content_sha256", "canon_sha256",
     "extractor_version", "model_version", "prompt_sha256", "predicate_set_version",
@@ -729,25 +786,53 @@ def parse_chapter_claims(
     accepted_by_type = _accepted_canon_ids_by_claim_type(canon)
     parsed: list[ObservedClaimV1] = []
     for i, rc in enumerate(raw_claims):
-        _reject_unknown_fields(rc, _CLAIM_FIELDS, f"claims[{i}]")
+        _reject_claim_fields(rc, f"claims[{i}]")
         quote = rc.get("quote")
         # `type(x) is str`, not isinstance: this value is about to be encoded, searched
         # for and hashed, and a str SUBCLASS with a poisoned __eq__ must not reach any of
         # that. Same discipline as the P0-A verdict canonicaliser.
         if type(quote) is not str or not quote:
             raise _schema_error(f"claims[{i}]: quote must be a non-empty string")
+        context = rc.get("context")
+        if context is not None and (type(context) is not str or not context):
+            raise _schema_error(f"claims[{i}]: context must be a non-empty string")
         needle = quote.encode("utf-8")
-        # 🔴 EXACTLY ONE OCCURRENCE. Zero means the extractor cited text this chapter does
-        #    not contain — a fabricated citation, which is the single most important thing
-        #    this parser exists to refuse. More than one means the citation does not
-        #    identify a span, and picking the first would silently invent a location the
-        #    model never chose. Ambiguity is a refusal, never a guess.
-        hits = block.count(needle)
-        if hits == 0:
-            raise _schema_error(f"claims[{i}]: quote not found in the chapter block")
-        if hits > 1:
-            raise _schema_error(f"claims[{i}]: quote is ambiguous in the chapter block")
-        start = block.find(needle)
+
+        # 🔴 EXACTLY ONE OCCURRENCE, AND THE SEARCH MUST SEE OVERLAPPING ONES.
+        #    Zero means the extractor cited text this chapter does not contain — a
+        #    fabricated citation, the single most important thing this parser refuses.
+        #    More than one means the citation does not identify a span, and picking the
+        #    first would invent a location the model never chose. Ambiguity is a refusal.
+        #
+        #    `bytes.count()` counts NON-OVERLAPPING matches and is wrong here:
+        #    `b"aaaa".count(b"aaa")` is 1, while "aaa" genuinely starts at offsets 0 and 1.
+        #    `_locate_unique` re-searches from `first + 1`, so an overlapping second
+        #    occurrence is seen and refused instead of silently binding to the first.
+        if context is None:
+            start = _locate_unique(block, needle)
+            if start is _NOT_FOUND:
+                raise _schema_error(f"claims[{i}]: quote not found in the chapter block")
+            if start is _AMBIGUOUS:
+                raise _schema_error(
+                    f"claims[{i}]: quote is ambiguous in the chapter block")
+        else:
+            # The CONTEXT is the locator; the QUOTE is still the evidence. The context
+            # must be unique in the chapter, and the quote must sit at exactly one place
+            # inside it — otherwise the pair does not name a span either.
+            ctx_bytes = context.encode("utf-8")
+            ctx_start = _locate_unique(block, ctx_bytes)
+            if ctx_start is _NOT_FOUND:
+                raise _schema_error(f"claims[{i}]: context not found in the chapter block")
+            if ctx_start is _AMBIGUOUS:
+                raise _schema_error(
+                    f"claims[{i}]: context is ambiguous in the chapter block")
+            offset = _locate_unique(ctx_bytes, needle)
+            if offset is _NOT_FOUND:
+                raise _schema_error(f"claims[{i}]: context does not contain the quote")
+            if offset is _AMBIGUOUS:
+                raise _schema_error(
+                    f"claims[{i}]: quote is ambiguous within its own context")
+            start = ctx_start + offset
         claim = ObservedClaimV1(
             claim_type=rc["claim_type"], canon_ref=rc["canon_ref"],
             evidence_start=start, evidence_end=start + len(needle),
