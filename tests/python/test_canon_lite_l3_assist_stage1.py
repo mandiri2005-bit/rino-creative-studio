@@ -140,6 +140,15 @@ async def _run(mode, n=4, *, stub=None, max_parallel=4, **kw):
     st._write_chapter = rec
     chapters = _outline(n)
     kw.setdefault("tenant_id", CANARY_TENANT)
+    # The server's activation decision must now be PRESENT for assist to stay armed:
+    # narrate_chapters fails closed on anything that is not exactly True, so an absent or
+    # mis-threaded decision disarms rather than being read as consent. These rows are about
+    # what assist DOES once it has been cleared, so they state the clearance explicitly.
+    #
+    # ⚠️ This is NOT the fail-closed check being switched off. The negative controls — absent,
+    #    None, "on", "off", 1, a forged payload field — live in
+    #    test_canon_lite_l3_assist_activation.py and drive this same call WITHOUT the kwarg.
+    kw.setdefault("assist_activation_ready", True)
     res = await st.narrate_chapters(
         "topik", chapters, polish="none", max_parallel=max_parallel,
         shared_context=SharedContext(topic="topik", chapters=chapters), **kw)
@@ -353,7 +362,7 @@ def test_the_original_chapter_alias_cannot_reach_the_workers():
     st._write_chapter = _Alias()
     res = asyncio.run(st.narrate_chapters(
         "topik", chapters, polish="none", max_parallel=4, shared_context=ctx,
-        tenant_id=CANARY_TENANT))
+        tenant_id=CANARY_TENANT, assist_activation_ready=True))
 
     assert res.get("ok"), res
     # The alias really was mutated — otherwise this proves nothing.
@@ -378,7 +387,7 @@ def test_assist_refuses_when_the_outline_diverges_from_the_canon():
     res = asyncio.run(st.narrate_chapters(
         "topik", map_chapters, polish="none", max_parallel=4,
         shared_context=SharedContext(topic="topik", chapters=ctx_chapters),
-        tenant_id=CANARY_TENANT))
+        tenant_id=CANARY_TENANT, assist_activation_ready=True))
 
     assert res.get("ok") is False, res
     assert res.get("error") == "canon_lite_assist_outline_divergence"
@@ -412,7 +421,7 @@ def test_context_is_restored_to_a_mutable_object_after_the_run():
     st._write_chapter = _Recorder()
     res = asyncio.run(st.narrate_chapters(
         "topik", chapters, polish="none", max_parallel=2, shared_context=ctx,
-        tenant_id=CANARY_TENANT))
+        tenant_id=CANARY_TENANT, assist_activation_ready=True))
     assert res.get("ok"), res
     ctx.topic = "writable again"              # must not raise
     ctx.chapters.append({"id": 4, "title": "Bab 4"})

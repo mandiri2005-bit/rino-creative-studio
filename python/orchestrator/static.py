@@ -688,6 +688,7 @@ async def narrate_chapters(
     telemetry_sink: Optional[Any] = None,
     max_parallel: int = MAX_WORKERS,
     shared_context: Optional[SharedContext] = None,
+    assist_activation_ready: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Map-reduce a book: ONE worker per chapter, FULL outline as context.
 
@@ -736,6 +737,38 @@ async def narrate_chapters(
             os.environ.get("NARASI_CANON_LITE_ASSIST_TENANTS", "") or "").split(",")
             if t.strip()}
         if not _cl_tid or _cl_tid not in _cl_allow:
+            _cl_mode = "off"
+        # ── ACTIVATION READINESS — the server's decision, and it must be PRESENT ────
+        #
+        # 🔴 FAIL CLOSED: only the exact object `True` keeps assist armed. Absent, None,
+        #    a string, a typo, a truthy-looking payload value — every one of them means
+        #    "no server decision reached this call", and a job that cannot prove it was
+        #    cleared does not get to run assist. An earlier draft asked the opposite
+        #    question (`== "off"`), which meant a decision that was never threaded — a
+        #    renamed parameter, a dropped call-site argument, a caller that predates the
+        #    preflight — read as consent. That is fail OPEN, and it fails open in exactly
+        #    the situation this gate exists for: the wiring being wrong.
+        #
+        #    Still not an ENABLER. Raising `off` to `assist` remains impossible: the env
+        #    gate above must independently say `assist` AND the tenant must be in the
+        #    allowlist. `True` can only preserve what the environment already permits.
+        #
+        #    It exists because the env gate above answers "is this tenant in the cohort",
+        #    which production job s0di2o1g proved is NOT the same question as "can assist
+        #    actually run". That job passed this gate, armed injection, logged
+        #    `assist injection armed` and an `assist census PASS` — and checked nothing,
+        #    because the QC credential was absent. Arming injection on a deployment that
+        #    cannot run a metered wave produces a canary that looks green.
+        #
+        # ⚠️ It arrives as an INTERNAL keyword-only argument, never off the request dict.
+        #    A server decision parked on `req` looks like a payload field, and the next
+        #    caller to build a request by hand would have silently omitted it.
+        #
+        #    The inline computation above is deliberately NOT replaced by
+        #    canon_lite.resolve_effective_mode: C11 requires the flag-off path to import and
+        #    call nothing from Canon Lite, and that constraint is why this duplication is
+        #    sanctioned. The decision is threaded in as a plain bool for the same reason.
+        if _cl_mode == "assist" and assist_activation_ready is not True:
             _cl_mode = "off"
     if _cl_mode == "enforce":
         # L3-ASSIST implements `assist`. `enforce` is a SEPARATE project, deferred

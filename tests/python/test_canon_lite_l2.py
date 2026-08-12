@@ -1132,7 +1132,7 @@ def test_shared_real_job_body_consumes_private_canon_before_persist_and_finalize
     persisted = []
     finalized = []
 
-    async def generate(_req):
+    async def generate(_req, **_):
         return dict(generated)
 
     async def never_cancel(_job_id):

@@ -252,9 +252,18 @@ def test_module_is_dark_and_imports_no_provider_client():
         # The runner — the ONLY sanctioned caller. It assembles the metered chain, so it
         # legitimately touches the machinery the worker must not. Its own gate order is
         # asserted separately in the DG-4 suite.
+        #
+        # RATIFIED AMENDMENT 2026-08-12 — `assist_activation_ready`. The activation preflight
+        # reuses the meter's own resolvers and bounds so there is no third implementation of
+        # "may assist run"; it therefore has to live in the meter. narration_api needs to ask
+        # that question before any spend, and it is NOT a permitted referrer — the check below
+        # is a plain text search, so even a comment naming the meter would violate it. Routing
+        # the question through the runner keeps the number of doorways at two, which is the
+        # invariant this row actually defends. The name is added, not the module.
         "canon_lite_qc_runner.py": {
             "metered_host_ok", "AttemptContext", "MeteredProvider", "QcUsageSink",
-            "load_extractor_concurrency", "load_max_inflight"},
+            "load_extractor_concurrency", "load_max_inflight",
+            "assist_activation_ready"},
     }
     for path in (REPO / "python").rglob("*.py"):
         if path.name == "canon_lite_qc_meter.py":

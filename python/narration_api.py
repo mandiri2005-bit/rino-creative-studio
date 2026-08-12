@@ -1446,8 +1446,298 @@ def _l3_normalise_outcome(status) -> str:
     return L3_OUTCOME_UNCHECKED
 
 
+# ── Bounded L3 failure vocabulary — THREE DISJOINT SETS, deliberately ────────────────
+#
+# All three share one safety property: telemetry can only ever carry a literal listed here,
+# so an exception message, a dynamically named class, or provider/manuscript text can never
+# reach an operator's dashboard. An unrecognised failure stays generic on purpose.
+#
+# 🔴 WHAT THE SPLIT ADDS IS THAT THE CATEGORY IS ITSELF THE ANSWER TO "WHO FIXES THIS".
+#    One flat set made every bounded failure read as `config_unavailable`, which told an
+#    operator to go looking at Railway variables for faults that no variable can cause. That
+#    is a worse lie than staying generic: it produces confident, wasted work, and it hides a
+#    programming defect behind a category that implies the deployment is misconfigured.
+
+# 1. OPERATOR CONFIGURATION — a value a human must set, or set correctly, on the deployment.
+#    Actionable without touching code, and the only category that means "check the env".
+L3_CONFIG_REASON_CODES = frozenset({
+    "qc_provider_api_key_missing",
+    "qc_provider_route_not_ratified",
+    "qc_provider_route_mismatch",
+    "extractor_concurrency_missing",
+    "extractor_concurrency_invalid",
+    "extractor_concurrency_out_of_range",
+    "extractor_concurrency_host_not_permitted",
+    "inflight_policy_missing",
+    "inflight_policy_missing_or_invalid",
+})
+
+# 2. WIRING — an internal programming fault. `qc_run_id_required` and `qc_wave_token_required`
+#    are raised when a CALLER failed to pass something the runner requires; no environment
+#    variable, credential or Railway setting can produce or fix either one. Calling them
+#    configuration sends an operator to inspect a deployment that is fine while the actual
+#    defect sits in the code path that called the wave.
+#
+#    `assist_preflight_invalid_verdict` joins this set for the same reason, not the
+#    activation set: a verdict object that returns `passes="false"` (truthy, not `True`) or
+#    a reason_code the preflight could never legitimately produce is not evidence the
+#    deployment is unconfigured OR a decision the preflight actually reached — it is the
+#    calling contract between narration_api and the preflight being violated. See
+#    `_l3_canonicalize_verdict`.
+L3_WIRING_REASON_CODES = frozenset({
+    "qc_run_id_required",
+    "qc_wave_token_required",
+    "assist_preflight_invalid_verdict",
+})
+
+# 3. ACTIVATION — verdicts the preflight produces, and ONLY the preflight.
+#
+# ⚠️ These are deliberately NOT matchable from a wave exception. They describe a decision
+#    this process made about whether assist may run; if one ever appeared as the message of
+#    an exception raised deeper down, echoing it would let unrelated code impersonate the
+#    preflight's verdict and would file a runtime fault as an activation decision.
+L3_ACTIVATION_REASON_CODES = frozenset({
+    "assist_not_armed",
+    "tenant_not_allowed",
+    "host_not_permitted",
+    "assist_preflight_error",
+})
+
+# Everything a recorded outcome may carry. The union is for VALIDATION only — never for
+# classification, which is what keeps the three categories from collapsing back into one.
+L3_BOUNDED_REASON_CODES = (
+    L3_CONFIG_REASON_CODES | L3_WIRING_REASON_CODES | L3_ACTIVATION_REASON_CODES)
+
+_L3_MODE_VOCAB = frozenset({"off", "shadow", "assist", "enforce"})
+
+# One stage per category, and the mapping below is the ONLY way a stage is chosen.
+#
+# 🔴 `config_unavailable` IS A CLAIM ABOUT THE DEPLOYMENT — it tells an operator that a
+#    variable, credential or route on this service is wrong, and that changing it will fix
+#    the job. Nothing else may borrow it. A crashed preflight and a process that never
+#    declared its metered-host role are in-process failures: no Railway variable produces
+#    them and none repairs them, so filing either as `config_unavailable` sends someone to
+#    audit an environment that is fine while the real defect sits in the code.
+L3_STAGE_CONFIG_UNAVAILABLE = "config_unavailable"
+L3_STAGE_WIRING_ERROR = "wiring_error"
+L3_STAGE_ACTIVATION_ERROR = "activation_error"
+
+# The three stages that make a CLAIM ABOUT A CATEGORY, as opposed to the lifecycle stages
+# (`no_manuscript`, `no_session`, `delivered`, …) that say where in the job the outcome was
+# taken. Only these are policed: a lifecycle stage carries no attribution to contradict.
+L3_CATEGORY_STAGES = frozenset({
+    L3_STAGE_CONFIG_UNAVAILABLE, L3_STAGE_WIRING_ERROR, L3_STAGE_ACTIVATION_ERROR})
+
+# The one activation code that is not a verdict about the deployment but about the preflight
+# itself failing to reach a verdict. Named once so no call site can spell it differently.
+L3_REASON_PREFLIGHT_ERROR = "assist_preflight_error"
+
+# The preflight RAISED, versus the preflight RETURNED SOMETHING THAT DOES NOT PARSE as a
+# verdict — a `passes` that is truthy but not `True`, a refusal with an unrecognised or
+# non-string code, a success flag paired with the wrong code. Distinct literals: the first
+# means the call never completed, the second means it completed and lied about its shape.
+L3_REASON_PREFLIGHT_INVALID_VERDICT = "assist_preflight_invalid_verdict"
+
+
+def _l3_is_bounded_code(value) -> bool:
+    """Type-safe membership in the full bounded vocabulary.
+
+    🔴 `type(value) is str`, NOT `isinstance(value, str)`. `isinstance` accepts a SUBCLASS
+       of `str`, and a subclass is exactly where a hostile `__eq__` or `__hash__` would
+       live — a genuine, un-subclassed `str` cannot have its comparison or hashing
+       overridden per instance, so demanding the exact builtin type closes that off before
+       `in` ever runs on the value.
+
+    🔴 STILL WRAPPED IN try/except, even though a real `str` "can't" fail the lookup below.
+       This function sits on the same boundary `_l3_canonicalize_verdict` does — a verdict
+       object this process did not construct — and a boundary guard that is safe only
+       because of what it happens to contain today is a weaker guarantee than one that is
+       safe by construction. `x in <frozenset>` also plainly raises on an unhashable `x`
+       (a dict, a list) rather than returning False, which is the failure this replaces.
+    """
+    try:
+        return type(value) is str and value in L3_BOUNDED_REASON_CODES
+    except Exception:  # noqa: BLE001 — a membership check must fail closed, never raise
+        return False
+
+
+def _l3_stage_for(reason_code) -> str:
+    """The stage a bounded code belongs under.
+
+    🔴 DERIVED FROM THE CODE, NEVER CHOSEN AT THE CALL SITE. Every recording path routes
+       through here, so a code cannot be filed under a category it does not belong to by a
+       caller that hard-coded a stage next to it — which is exactly how `assist_preflight_error`
+       came to be reported as `config_unavailable` while sitting in the activation set.
+
+    🔴 AND THE DEFAULT ARM IS `wiring_error`, NOT `activation_error`. A code that is not a
+       member of ANY of the three known sets is not "some activation decision we haven't
+       named yet" — it is the caller being out of sync with the vocabulary, which is a
+       wiring defect regardless of which subsystem produced it. `activation_error` is
+       returned ONLY for codes that are actually IN `L3_ACTIVATION_REASON_CODES`; it is
+       never the fallback for the unrecognised case.
+
+    `type(reason_code) is str` — not `isinstance` — for the same subclass-spoofing reason
+    as `_l3_is_bounded_code`. Non-string input, and anything the membership checks manage
+    to raise on despite that, falls to the same default rather than propagating: this
+    function must stay callable, and return a value, on whatever a less-trusted boundary
+    handed it.
+    """
+    try:
+        if type(reason_code) is not str:
+            return L3_STAGE_WIRING_ERROR
+        if reason_code in L3_CONFIG_REASON_CODES:
+            return L3_STAGE_CONFIG_UNAVAILABLE
+        if reason_code in L3_WIRING_REASON_CODES:
+            return L3_STAGE_WIRING_ERROR
+        if reason_code in L3_ACTIVATION_REASON_CODES:
+            return L3_STAGE_ACTIVATION_ERROR
+        return L3_STAGE_WIRING_ERROR
+    except Exception:  # noqa: BLE001 — a stage lookup must fail closed, never raise
+        return L3_STAGE_WIRING_ERROR
+
+
+# The success sentinel a verdict must carry alongside `passes is True`. Checked explicitly
+# rather than inferred from `passes` alone — see `_l3_canonicalize_verdict`.
+_ASSIST_ACTIVATION_READY_CODE = "assist_activation_ready"
+
+# The only codes the ACTIVATION PREFLIGHT can legitimately return alongside `passes=False`
+# — copied from its seven ordered checks, not from the broader bounded vocabulary, so a
+# verdict is validated against what THAT function can actually produce rather than against
+# every code any subsystem is allowed to use somewhere.
+#
+# ⚠️ Deliberately not named by module here: `test_module_is_dark_and_imports_no_provider_client`
+#    is a plain TEXT search over this file, so even a comment spelling out the metering
+#    module's name would violate the doorway invariant it enforces. `canon_lite_qc_runner`
+#    is the sanctioned doorway (see the preflight call above); this module is not.
+_PREFLIGHT_REFUSAL_CODES = frozenset({
+    "assist_not_armed",
+    "tenant_not_allowed",
+    "host_not_permitted",
+    "extractor_concurrency_missing",
+    "inflight_policy_missing",
+    "qc_provider_api_key_missing",
+    "qc_provider_route_not_ratified",
+})
+
+
+def _l3_canonicalize_verdict(verdict) -> tuple:
+    """`(ready, reason_code)`, validated INDEPENDENTLY of the object that produced it.
+
+    🔴 `bool(verdict.passes)` WAS THE BUG THIS CLOSES. `PhaseAVerdict.passes` is annotated
+       `bool`, but a frozen, slotted dataclass still does not enforce field TYPES at
+       runtime — nothing stops a verdict shaped `passes="false"` (a TRUTHY STRING) or
+       `passes=1` from reaching here, and `bool(...)` on either one arms assist on a verdict
+       that never actually said `True`. Every downstream gate already checks
+       `is not True` (`narrate_chapters`, the terminal-seam conjunct); this coercion was the
+       one place upstream of all of them that didn't, and it ran BEFORE any of those strict
+       checks got a chance to refuse. This function is what makes `_assist_ready` trustworthy
+       enough for `is not True` to mean anything by the time it is set.
+
+    `ready` is `True` for exactly one shape: `passes is True`, paired with the exact success
+    code — not merely "truthy `passes` and nothing else checked". A refusal is trusted only
+    when it is `passes is False` paired with one of the seven codes the preflight can
+    actually produce, checked with `type(code) is str` FIRST — not `isinstance`, because a
+    `str` SUBCLASS can override `__eq__`/`__hash__` to raise or to lie about equality, and
+    that is exactly where a spoofed "yes, I am the success code" would live. `isinstance`
+    would let such a subclass through this guard; `type(...) is str` cannot be fooled by
+    one, since a genuine builtin `str` has no per-instance comparison behaviour to override.
+
+    Any other shape — `passes` neither `True` nor `False`, a well-formed refusal whose code
+    is not on the list of seven, a success flag paired with the wrong code — fails closed to
+    ONE fixed literal, `assist_preflight_invalid_verdict`. The caller never inspects raw
+    verdict content again after this returns.
+
+    🔴 THIS FUNCTION MUST NEVER RAISE — REVIEWED AND CLOSED. `getattr(verdict, "passes",
+       None)` does NOT protect against `passes` implemented as a `@property` whose getter
+       raises something other than `AttributeError`: `getattr`'s default only fires on
+       `AttributeError`, so a property raising `RuntimeError` propagates straight through,
+       uncaught, into a function this process calls expecting a `(bool, str|None)` tuple —
+       reproduced with `RuntimeError: secret-from-property`. The same is true of a
+       `reason_code` property, and of `code == ...` / `code in ...` when `code` is an
+       object whose `__eq__`/`__hash__` itself raises — reproduced with
+       `RuntimeError: secret-from-eq`. Both propagated out of the bare `else:` branch that
+       used to call this with no `try` of its own, and `_run_narration_job_after_parity`
+       is contracted to never raise: an adversarial or merely buggy verdict object could
+       kill a legacy job that never needed assist to run at all.
+
+       The ENTIRE body below is therefore inside one `try/except Exception`. A verdict
+       object is adversarial input by construction — this process did not build it and
+       must survive whatever happens when it is merely INSPECTED, not only when its values
+       are wrong.
+    """
+    try:
+        passes = getattr(verdict, "passes", None)
+        code = getattr(verdict, "reason_code", None)
+
+        if (passes is True and type(code) is str
+                and code == _ASSIST_ACTIVATION_READY_CODE):
+            return True, None
+        if (passes is False and type(code) is str
+                and code in _PREFLIGHT_REFUSAL_CODES):
+            return False, code
+    except Exception:  # noqa: BLE001 — see docstring: this function may not raise, ever
+        pass
+    return False, L3_REASON_PREFLIGHT_INVALID_VERDICT
+
+
+def _l3_bounded_failure(exc: BaseException) -> Optional[tuple]:
+    """`(reason_code, stage)` for a known bounded failure, or None if it is not one.
+
+    🔴 MEMBERSHIP IS THE FILTER, NOT SANITISATION. str(exc) is compared against the closed
+       sets and only ever RETURNED FROM them, so no path can leak arbitrary text into
+       telemetry even if a provider or an attacker controls the message.
+
+    🔴 ACTIVATION CODES ARE NOT CONSULTED HERE. They belong to the preflight, which reports
+       its own verdict directly; matching them off an exception message would let any code
+       that happens to raise `RuntimeError("tenant_not_allowed")` be filed as an activation
+       decision that was never made.
+    """
+    code = str(exc).strip()
+    if code in L3_CONFIG_REASON_CODES or code in L3_WIRING_REASON_CODES:
+        return code, _l3_stage_for(code)
+    return None
+
+
+def _l3_enforced_stage(stage, reason_code) -> str:
+    """The stage that will actually be STORED. The caller does not get to choose it.
+
+    🔴 A HELPER THAT AGREES WITH ITSELF IS NOT AN INVARIANT. `_l3_stage_for` mapped every
+       code to its category correctly and the recorder still wrote whatever stage the call
+       site passed alongside it, so `reason_code=host_not_permitted` with
+       `stage=config_unavailable` was accepted and stored — a contradictory pair, and
+       precisely the misfiling the category split was introduced to end. The rule has to be
+       enforced where the value is written, not where it is computed.
+
+    Three cases, and the middle one is the one that is easy to get wrong:
+
+      · KNOWN code — the stage is DERIVED. Whatever the caller passed is discarded, so a
+        call site cannot file a code under a category that contradicts it.
+      · UNKNOWN code — the caller is out of sync with the vocabulary, which is a wiring
+        defect in the caller. The code is dropped (below) and the stage falls to
+        `wiring_error`. It must never fall to `config_unavailable`: an unrecognised code is
+        no evidence at all about the deployment, and sending an operator to audit Railway
+        on the strength of it is exactly the false report this whole split removes.
+      · NO code — lifecycle stages (`no_manuscript`, `no_session`, `delivered`, …) are the
+        recorder's original vocabulary and stay untouched. But a CATEGORY stage with no code
+        behind it is a claim with no evidence, so it is downgraded the same way.
+
+    🔴 `_l3_is_bounded_code`, NOT A RAW `in` CHECK. `reason_code` can arrive here having come
+       from a verdict object this process does not fully control the shape of; a dict or a
+       list would raise on plain frozenset membership rather than fail the check.
+    """
+    if reason_code is not None:
+        if _l3_is_bounded_code(reason_code):
+            return _l3_stage_for(reason_code)
+        return L3_STAGE_WIRING_ERROR
+    if stage in L3_CATEGORY_STAGES:
+        return L3_STAGE_WIRING_ERROR
+    return stage
+
+
 def _l3_record_outcome(result: dict, *, outcome: str, stage: str,
-                       run=None, delivery_binding=None) -> dict:
+                       run=None, delivery_binding=None,
+                       reason_code=None, requested_mode=None,
+                       effective_mode=None) -> dict:
     """Attach the bounded assist outcome and return it. EVERY path lands here.
 
     🔴 A PATH THAT RETURNS WITHOUT RECORDING IS A JOB THAT RAN ASSIST AND CANNOT
@@ -1455,13 +1745,17 @@ def _l3_record_outcome(result: dict, *, outcome: str, stage: str,
        unsyncable book, a repairer that raised — and those are exactly the ones an
        early `return None` used to leave invisible, indistinguishable afterwards
        from assist never having been switched on.
+
+    🔴 AND IT IS THE ENFORCEMENT POINT FOR THE CODE/STAGE PAIRING. Being the one place every
+       path lands is what makes that possible: a rule applied here cannot be bypassed by a
+       call site that spells the pair differently.
     """
     if outcome not in L3_OUTCOMES:
         outcome = L3_OUTCOME_UNCHECKED
     bounded = {
         "mode": "assist",
         "outcome": outcome,
-        "stage": stage,
+        "stage": _l3_enforced_stage(stage, reason_code),
         "rounds": (run.rounds if run is not None else 0),
         "chapters_targeted": (len(run.chapters) if run is not None else 0),
         "chapters_repaired": (sum(1 for c in run.chapters if c.accepted)
@@ -1471,6 +1765,21 @@ def _l3_record_outcome(result: dict, *, outcome: str, stage: str,
         "manuscript_sha256": (run.manuscript_sha256_after
                               if run is not None else None),
     }
+    # Optional, and validated against the CLOSED union rather than trusted. An unknown value
+    # is dropped instead of recorded, so the schema cannot be widened by a caller. The union
+    # is used only to admit a value — the CATEGORY was already decided by whoever produced it.
+    # `_l3_is_bounded_code` rather than a raw `in`: this dict has held everything from a
+    # verdict-shaped duck-type in a test to a bare exception message, and a raw membership
+    # check raises on the unhashable ones instead of just saying no.
+    if _l3_is_bounded_code(reason_code):
+        bounded["reason_code"] = reason_code
+    # `mode` alone cannot express "assist was asked for and did not happen" — it reads as the
+    # mode that RAN, which is why a config-blocked job used to be indistinguishable from one
+    # where assist was never configured. These two make the gap explicit. Closed vocabulary.
+    if requested_mode in _L3_MODE_VOCAB:
+        bounded["requested_mode"] = requested_mode
+    if effective_mode in _L3_MODE_VOCAB:
+        bounded["effective_mode"] = effective_mode
     result["canon_lite_l3"] = bounded
     return bounded
 
@@ -1619,8 +1928,28 @@ async def _canon_lite_l3_assist_repair(
             job_uuid=job_uuid, job_external_id=job_external_id,
             tenant_id=tenant_id,
             on_session=lambda m: session_holder.__setitem__("metered", m))
-    except Exception:  # noqa: BLE001
+    except Exception as _wave_exc:  # noqa: BLE001
         claims_by_index = None
+        # 🔴 A KNOWN CONFIGURATION FAULT MUST NOT LOOK LIKE AN INTERNAL WAVE ERROR.
+        #    This except used to flatten everything to `l3_metered_wave_error`, and that is
+        #    how production job s0di2o1g reported a MISSING CREDENTIAL: the runner raised
+        #    `qc_provider_api_key_missing`, the seam swallowed the identity of it, and the job
+        #    landed on `stage=no_session` — indistinguishable from "there was simply no
+        #    session to be had". An operator reading that telemetry cannot tell a config gap
+        #    from an engine fault, so the canary looked green while nothing had been checked.
+        #
+        # ⚠️ AND A WIRING FAULT MUST NOT LOOK LIKE A CONFIGURATION ONE. `qc_run_id_required`
+        #    and `qc_wave_token_required` mean a caller omitted an argument; no operator can
+        #    fix that from the environment. They keep their own stage so the telemetry names
+        #    the right owner instead of sending someone to audit Railway variables.
+        _known = _l3_bounded_failure(_wave_exc)
+        if _known is not None:
+            _code, _stage = _known
+            log.warning("canon lite l3: assist unavailable (stage=%s error_code=%s)",
+                        _stage, _code)
+            return _l3_record_outcome(
+                result, outcome=L3_OUTCOME_UNCHECKED,
+                stage=_stage, reason_code=_code)
         log.warning("canon lite l3: metered wave unavailable "
                     "(error_code=l3_metered_wave_error)")
 
@@ -1886,6 +2215,103 @@ async def _run_narration_job_after_parity(
         "telemetry_sink": _checkbox_sink,
     })
 
+    # ── ASSIST ACTIVATION PREFLIGHT — before any outline or chapter spend ─────────
+    #
+    # 🔴 THE INCIDENT THIS EXISTS FOR. Production job s0di2o1g ran with mode=assist and its
+    #    tenant in the allowlist, so injection armed, `assist census PASS` logged, and the
+    #    job spent a full outline + 3 chapters + 121s of gates — then reported
+    #    outcome=unchecked, stage=no_session, chapters_repaired=0, delivery_binding=None.
+    #    The cause was a MISSING CANON_LITE_QC_PROVIDER_API_KEY on narration-worker, which
+    #    nothing checked until the metered wave tried to build a provider, long after the
+    #    money was gone. A credential gap must be known BEFORE the first token.
+    #
+    #    The verdict is computed ONCE, here, server-side, and threaded downstream as an
+    #    INTERNAL keyword-only argument — never as a `req` key. A security decision parked on
+    #    the request dict sits next to the user-supplied body, reads like a payload field, and
+    #    is silently dropped by the next caller who assembles a request by hand.
+    #
+    # 🔴 THE COHORT TEST COMES FIRST, AND A TENANT OUTSIDE IT IS NOT A FAILURE. An earlier
+    #    draft ran the preflight whenever the GLOBAL mode was `assist`, so every tenant not in
+    #    the allowlist was handed `tenant_not_allowed` / `stage=config_unavailable` /
+    #    `requested_mode=assist`. That is false on its face: assist was never requested for
+    #    those jobs. It would have painted the entire non-canary fleet as misconfigured the
+    #    moment the flag went on, burying the two tenants that genuinely are in the cohort.
+    #    Only a job whose EFFECTIVE mode is assist can produce a config failure.
+    #
+    # ⚠️ os.environ is NOT mutated to carry this. The variable is process-wide and jobs run
+    #    concurrently on this worker, so writing the decision into the environment would let
+    #    one job's verdict silently retarget another's.
+    # ⚠️ Asked through the QC RUNNER, deliberately. test_platform_qc_meter enforces that the
+    #    metering module is named by exactly two files, each with its own allowed name set, so
+    #    it keeps a bounded number of doorways — and the check is a plain text search, so even
+    #    a comment naming it counts as a reference. This module is not on that list; the runner
+    #    is, and it is already the doorway used here for the wave itself.
+    _assist_cohort = False          # is THIS job's effective mode assist?
+    _assist_ready = False           # did the preflight clear it? Only True arms anything.
+    _assist_reason = None           # bounded code, set only for a cleared-cohort failure.
+    _assist_stage = None            # the CATEGORY of that code — never assumed, derived.
+    try:
+        import canon_lite as _cl_pre
+        if _cl_pre.resolve_mode() == _cl_pre.MODE_ASSIST:
+            _assist_cohort = (_cl_pre.resolve_effective_mode(tenant_id=tenant_id)
+                              == _cl_pre.MODE_ASSIST)
+    except Exception:  # noqa: BLE001 — a preflight fault must never break a legacy job
+        # Cohort membership could not be established, so this job is NOT known to be in the
+        # cohort and must not be reported as one. Fail closed and stay quiet in the L3 block;
+        # claiming a config failure here would put every tenant back in the false bucket the
+        # ordering above exists to empty. Logged, so it is not invisible.
+        _assist_cohort = False
+        log.warning("canon lite: assist cohort could not be resolved — job runs legacy "
+                    "(error_code=assist_cohort_unresolved)")
+
+    if _assist_cohort:
+        try:
+            import canon_lite_qc_runner as _qcr_pre
+            _verdict = _qcr_pre.assist_activation_ready(tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001 — a preflight fault must never break a legacy job
+            # 🔴 AN EXCEPTION HERE USED TO VANISH. The verdict was reset to None, assist was
+            #    downgraded, and NOTHING was recorded — so a preflight that crashed was
+            #    indistinguishable from a deployment where assist was never configured. That
+            #    is the same silence the incident was made of, one layer up.
+            #
+            # 🔴 AND IT IS NEVER `log.exception`, NEVER `exc_info=True`. A traceback puts the
+            #    exception's CLASS and MESSAGE into the log verbatim, which is the same
+            #    unbounded text the reason_code refuses to carry — bounding the payload while
+            #    the log prints the raw string is not bounding anything, it just moves where
+            #    the leak lands. Both are attacker- or provider-influenceable in the general
+            #    case. The detail is DISCARDED here, not relocated: the bounded code says
+            #    what happened, and a preflight defect is reproduced from a test, not from a
+            #    production log line that may be shipped to an aggregator.
+            _assist_ready = False
+            _assist_reason = L3_REASON_PREFLIGHT_ERROR
+            _assist_stage = L3_STAGE_ACTIVATION_ERROR
+            log.warning(
+                "canon lite: assist preflight raised — job runs legacy "
+                "(requested_mode=assist effective_mode=off stage=%s error_code=%s)",
+                L3_STAGE_ACTIVATION_ERROR, L3_REASON_PREFLIGHT_ERROR)
+        else:
+            # 🔴 CANONICALISED BEFORE ANYTHING ELSE TOUCHES IT — no line between the call
+            #    and this one. `_verdict.passes`/`_verdict.reason_code` must never reach a
+            #    log statement, a membership check, or an arm/disarm decision in their raw
+            #    form: `bool(_verdict.passes)` used to arm assist on any truthy `passes`
+            #    (a string `"false"` included), and an unguarded `reason_code in <frozenset>`
+            #    raises outright on a dict or a list. See `_l3_canonicalize_verdict`.
+            _assist_ready, _assist_reason = _l3_canonicalize_verdict(_verdict)
+
+        if not _assist_ready and _assist_reason != L3_REASON_PREFLIGHT_ERROR:
+            # Assist was genuinely REQUESTED for this tenant and cannot run. The job proceeds
+            # on the legacy path — no injection, no metered wave, delivery untouched — but it
+            # says so, naming the bounded cause instead of leaving an operator to infer it
+            # from `no_session`. `_assist_reason` is CANONICAL here — either the
+            # preflight-raised literal (handled above) or a code
+            # `_l3_canonicalize_verdict` already checked against the closed refusal
+            # vocabulary — so this is the first point any of it is safe to log.
+            _assist_stage = _l3_stage_for(_assist_reason)
+            log.warning(
+                "canon lite: assist requested but not activatable — job runs legacy "
+                "(requested_mode=assist effective_mode=off stage=%s error_code=%s)",
+                _assist_stage, _assist_reason)
+
     # Keep the credit hold's TTL warm across a long job so it never lapses and
     # strands the reservation. Runs alongside the cancel watcher.
     async def _keep_hold_warm() -> None:
@@ -1898,7 +2324,12 @@ async def _run_narration_job_after_parity(
                 pass
             await asyncio.sleep(60)
 
-    gen_task = asyncio.ensure_future(generate_narration(req))
+    # The activation decision travels as an INTERNAL argument, not inside `req`. It is
+    # passed unconditionally so that reading this one line tells you what was decided;
+    # `assist_activation_ready` is False for every job outside the cleared cohort, and
+    # narrate_chapters treats anything other than True as "no decision" and disarms.
+    gen_task = asyncio.ensure_future(
+        generate_narration(req, assist_activation_ready=_assist_ready))
     cancel_task = asyncio.ensure_future(_cancel_watcher(job_id))
     warm_task = asyncio.ensure_future(_keep_hold_warm())
 
@@ -1936,6 +2367,22 @@ async def _run_narration_job_after_parity(
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+
+    # Assist was requested FOR THIS TENANT and could not run: record it ON THE RESULT, not
+    # only in the log. The metered wave never executed, so the terminal seam has nothing to
+    # report, and without this the payload would carry no canon_lite_l3 block at all —
+    # exactly the silence that made a config gap look like assist was simply never on.
+    #
+    # ⚠️ GUARDED BY `_assist_cohort`, NOT BY THE GLOBAL MODE. A tenant outside the allowlist
+    #    never requested assist, so it gets no L3 block at all — same as a deployment with
+    #    the flag off. Recording one for them would be a false positive on every job the
+    #    canary cohort does not own.
+    if _assist_cohort and not _assist_ready and isinstance(result, dict):
+        _l3_record_outcome(
+            result, outcome=L3_OUTCOME_UNCHECKED,
+            stage=_assist_stage or _l3_stage_for(_assist_reason),
+            reason_code=_assist_reason,
+            requested_mode="assist", effective_mode="off")
 
     # --------------------- terminal handling ------------------------------
     if cancelled:
@@ -2032,11 +2479,20 @@ async def _run_narration_job_after_parity(
             log.warning(
                 "canon lite l2: report unavailable "
                 "(error_code=l2_report_error)")
-    elif _cl_l2_mode == "assist":
+    elif _cl_l2_mode == "assist" and _assist_ready:
         # L3-ASSIST Stage 2. Runs on the same seam as the shadow projection and for
         # the same reason — this is the last point at which the manuscript is final
         # — but BEFORE persistence and the bounded payload below, so the repaired
         # bytes are the ones stored and the ones delivered.
+        #
+        # 🔴 `_assist_ready` GATES THIS TOO, AND IT HAS TO. The preflight disarms injection
+        #    upstream, but the mode variable it disagrees with is still `assist` down here.
+        #    Without this conjunct the seam runs anyway on a deployment the preflight has
+        #    already ruled unable to run assist: it re-attempts the metered wave that cannot
+        #    work, and — worse — its own `_l3_record_outcome` OVERWRITES the precise
+        #    `config_unavailable` / `qc_provider_api_key_missing` verdict recorded above with
+        #    a vague `no_manuscript`. That is the s0di2o1g failure reproduced one layer up:
+        #    an accurate diagnosis replaced by a generic one on its way to the operator.
         try:
             _cl_l3_telemetry = await _canon_lite_l3_assist_repair(
                 result, mode=_cl_l2_mode, canon=_cl_l2_canon,

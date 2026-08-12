@@ -26,6 +26,7 @@ import canon_lite as cl                    # noqa: E402
 import canon_lite_extractor as ext         # noqa: E402
 import canon_lite_l2 as l2                 # noqa: E402
 import canon_lite_qc_meter as meter        # noqa: E402
+import canon_lite_qc_contract as qcc       # noqa: E402
 import canon_lite_qc_provider as qc        # noqa: E402
 
 RATIFIED_PROMPT_SHA256 = \
@@ -349,6 +350,45 @@ def test_8_16_route_immutability(monkeypatch):
     assert client.init_kwargs["base_url"] == qc.QC_PROVIDER_BASE_URL
 
 
+# ── Where the provider IDENTITY lives — RATIFIED AMENDMENT 2026-08-12 ───────────────
+#
+# §7.2's invariant is ONE definition of the model and the route. It is NOT "one definition
+# inside canon_lite_qc_provider.py" — that was the implementation location, and these two
+# rows pinned it by accident of how they were written.
+#
+# The activation gate has to read the ratified route and the credential's NAME without
+# importing the provider, because refusing to build the provider is the entire point of that
+# gate. So the canonical owner is now the inert contract module, and the provider re-exports
+# from it. The alternative — the contract importing the provider — would have put the
+# provider import back inside the gate, i.e. defeated the thing being guarded.
+#
+# 🔴 COUNTING OVER THE UNION IS WHY THIS IS A STRENGTHENING, NOT A WEAKENING. A count inside
+#    one file passes the moment a second literal moves to a neighbouring module; the union
+#    covers every module that could plausibly hold a copy, so a duplicate still fails — and
+#    duplication the single-file check could never see now fails too. The canonical owner is
+#    asserted explicitly, so "exactly one" cannot be satisfied by the wrong file, and the
+#    narration seam is asserted at ZERO separately.
+QC_IDENTITY_MODULES = (
+    "canon_lite_qc_contract.py",       # canonical owner
+    "canon_lite_qc_provider.py",       # re-exports the owner's objects
+    "canon_lite_qc_meter.py",          # reads the names through the contract
+    "canon_lite_qc_runner.py",         # reads the names through the contract
+)
+QC_MODEL_LITERAL = '"gemini-2.5-flash-lite"'
+QC_ROUTE_LITERAL = '"https://generativelanguage.googleapis.com/v1beta/openai/"'
+QC_SEAM_MODULE = "narration_api.py"
+
+_PYTHON_DIR = Path(qc.__file__).resolve().parent
+
+
+def _module_source(name):
+    return (_PYTHON_DIR / name).read_text(encoding="utf-8")
+
+
+def _literal_counts(literal):
+    return {name: _module_source(name).count(literal) for name in QC_IDENTITY_MODULES}
+
+
 def test_8_17_model_parity_one_constant_four_uses():
     adapter, client = _adapter()
     _run(adapter(_request()))
@@ -356,14 +396,34 @@ def test_8_17_model_parity_one_constant_four_uses():
     assert client.calls[0]["model"] == qc.QC_MODEL_UPSTREAM       # outgoing request
     assert fields["model_upstream"] == qc.QC_MODEL_UPSTREAM       # AttemptContext
     client.model = qc.QC_MODEL_UPSTREAM                           # checked response
-    source = Path(qc.__file__).read_text(encoding="utf-8")
-    assert source.count('"gemini-2.5-flash-lite"') == 1           # no second literal
+
+    counts = _literal_counts(QC_MODEL_LITERAL)
+    assert sum(counts.values()) == 1, counts                      # no second literal
+    assert counts["canon_lite_qc_contract.py"] == 1, counts       # ...and it lives here
+
+    # The provider's constant is the contract's OBJECT, not a copy that happens to match.
+    # `is` is the assertion that matters: `==` would still hold if someone re-typed the
+    # string, which is exactly the drift the single-definition rule exists to prevent.
+    assert qc.QC_MODEL_UPSTREAM is qcc.QC_MODEL_UPSTREAM
+    assert qc.QC_MODEL_UPSTREAM == "gemini-2.5-flash-lite"
+
+    # The seam that reports L3 outcomes never names the model.
+    assert _module_source(QC_SEAM_MODULE).count(QC_MODEL_LITERAL) == 0
 
 
 def test_8_17a_route_and_provider_parity_no_second_literal():
-    source = Path(qc.__file__).read_text(encoding="utf-8")
-    assert source.count('"https://generativelanguage.googleapis.com/v1beta/openai/"') == 1
-    assert source.count('"gemini_direct"') == 1
+    counts = _literal_counts(QC_ROUTE_LITERAL)
+    assert sum(counts.values()) == 1, counts
+    assert counts["canon_lite_qc_contract.py"] == 1, counts
+
+    assert qc.QC_PROVIDER_BASE_URL is qcc.QC_PROVIDER_BASE_URL
+    assert qc.QC_PROVIDER_BASE_URL == \
+        "https://generativelanguage.googleapis.com/v1beta/openai/"
+    assert _module_source(QC_SEAM_MODULE).count(QC_ROUTE_LITERAL) == 0
+
+    # The provider NAME is not contract material: it never leaves this module and the
+    # activation gate has no use for it, so it stays exactly where it was — once, here.
+    assert _module_source("canon_lite_qc_provider.py").count('"gemini_direct"') == 1
     assert qc.attempt_context_fields()["provider"] == qc.QC_PROVIDER_NAME
 
 
