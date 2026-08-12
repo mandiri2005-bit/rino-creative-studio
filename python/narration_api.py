@@ -1908,6 +1908,20 @@ async def _canon_lite_l3_assist_repair(
     if mode != "assist":
         return None
 
+    # 🔴 `_cl` BELONGS IN THIS BLOCK AND WAS MISSING FROM IT. `render_canon` is read
+    #    further down when the session is built, and the name was bound nowhere — not
+    #    here, not at module scope. Every production call takes that branch (the
+    #    `_L3_*` hooks are test injection points and are None in production), so it was
+    #    a guaranteed `NameError`, swallowed by the `except Exception` around the
+    #    session construction and reported as `l3_session_error` / `stage=no_session` —
+    #    telemetry that names a lifecycle stage where the truth was a missing import.
+    #    Live job `98o7l3o8` died exactly there, AFTER the metered wave had run and
+    #    emitted 9 rows.
+    #
+    #    Kept LOCAL, next to its siblings, rather than promoted to module scope: the
+    #    mode gate above is required to leave `off`/`shadow`/`enforce` having imported
+    #    no Canon Lite module at all, and a module-level import would break that.
+    import canon_lite as _cl
     import canon_lite_l2 as _cl2
     import canon_lite_l3_repair as _cl3
 

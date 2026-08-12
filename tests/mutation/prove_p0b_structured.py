@@ -105,6 +105,17 @@ BREAKS = [
      '    if not str(env.get(_QC_API_KEY_ENV) or "").strip():',
      T_QC, "test_8_18_the_default_factory_passes_the_env_credential_to_the_adapter"),
 
+    # ── 3c. the session's canon renderer ─────────────────────────────────
+    # Reverts to the shape live job `98o7l3o8` died on: `_cl` never imported, so
+    # `_cl.render_canon` raises NameError while building the session and the seam
+    # reports `l3_session_error` / `stage=no_session` instead of naming the fault.
+    ("canon renderer never imported — the session build raises NameError",
+     NAPI,
+     "    import canon_lite as _cl\n    import canon_lite_l2 as _cl2",
+     "    import canon_lite_l2 as _cl2",
+     "tests/python/test_canon_lite_l3_production_path.py",
+     "test_the_production_branch_repairs_and_binds_to_the_delivered_bytes"),
+
     # ── 4. surgical containment ──────────────────────────────────────────
     ("containment guard disabled — the patch is bought and the envelope invalidated",
      STATIC,
