@@ -841,6 +841,11 @@ async def narrate_chapters(
     # an unset name a later reference could NameError on.
     _cl_wants_semantic = (_cl_mode == "assist") and _is_fiction_style(style)
     _cl_semantic_source = None
+    # Advisory `canon_registry` sidecar, threaded from the structured Story Bible response
+    # to `narration_api`'s canon-diff via this function's result dict. `None` on every
+    # non-structured path, where the registry still rides as a fence inside the prose and
+    # the consumer's own regex scrape finds it exactly as before.
+    _cl_canon_registry = None
     if (str(os.environ.get("NARASI_STORY_BIBLE", "1")).strip().lower() not in ("0", "false", "no", "off")
             and total >= 2 and not (ctx.canonical_facts or "").strip()):
         _fic = _is_fiction_style(style)
@@ -876,15 +881,58 @@ async def narrate_chapters(
                 # `structured_semantic=False` (off-mode): the old bare-string shape,
                 # untouched.
                 if _cl_wants_semantic:
-                    _cand_pairs = [c for c in _cands_raw
-                                  if isinstance(c, tuple) and len(c) == 2
-                                  and isinstance(c[0], str) and c[0].strip()]
+                    import canon_lite_semantic_source as _bo_css
+                    _bo_outline = list(ctx.chapters or chapters)
+                    _shaped = [c for c in _cands_raw
+                               if isinstance(c, tuple) and len(c) == 3
+                               and isinstance(c[0], str) and c[0].strip()]
+                    # 🔴 P0-B #4 — ASSIST MAY ONLY SELECT A CANDIDATE THAT CARRIES REAL
+                    #    SEMANTIC AUTHORITY. A candidate whose envelope is absent, invalid
+                    #    or empty cannot be repaired by winning: it will refuse at the
+                    #    arming gate a few hundred lines below, AFTER the judge call and
+                    #    after every chapter task has been planned. Worse, letting the
+                    #    judge see it means a sourceless candidate can BEAT a valid one on
+                    #    prose quality and turn a runnable job into a guaranteed refusal —
+                    #    the two live `oehhe741` candidates were both sourceless, and the
+                    #    judge happily picked #2.
+                    #
+                    #    "Valid" here means the SAME four things the arming gate will ask
+                    #    later — type, self-hash, outline binding, bible binding — plus
+                    #    non-emptiness. Checking only type+emptiness (an earlier version of
+                    #    this filter) would still let a candidate through that the gate is
+                    #    certain to reject, which is the whole failure this filter exists to
+                    #    prevent: the judge would spend a call choosing between candidates,
+                    #    one of which cannot possibly run.
+                    #
+                    #    `binds_bible(p[0])` pairs each envelope against ITS OWN prose —
+                    #    candidate i's text, never the eventual winner's — which is what
+                    #    makes a cross-paired or superseded extraction visible here.
+                    def _bo_usable(p) -> bool:
+                        src = p[1]
+                        if not isinstance(src, _bo_css.CanonLiteSemanticSourceV1):
+                            return False
+                        try:
+                            return bool(src.verify_sha256()
+                                        and src.binds_outline(_bo_outline)
+                                        and src.binds_bible(p[0])
+                                        and src.has_any_semantic_content())
+                        except Exception:  # noqa: BLE001 — an unusable candidate, not a crash
+                            return False
+
+                    _cand_pairs = [p for p in _shaped if _bo_usable(p)]
+                    if len(_cand_pairs) != len(_shaped):
+                        log.warning(
+                            "bible best-of: %d of %d candidate(s) carried no usable semantic "
+                            "source and are NOT eligible for assist selection "
+                            "(error_code=bible_candidate_semantic_source_unusable)",
+                            len(_shaped) - len(_cand_pairs), len(_shaped))
                     _cands = [p[0] for p in _cand_pairs]
                 else:
                     _cand_pairs = None
                     _cands = [c for c in _cands_raw if isinstance(c, str) and c.strip()]
                 _bible = _cands[0] if _cands else ""
                 _cl_semantic_source = _cand_pairs[0][1] if _cand_pairs else None
+                _cl_canon_registry = _cand_pairs[0][2] if _cand_pairs else None
                 if len(_cands) >= 2:
                     try:
                         from laozhang_api import _narasi_cheap_call as _bj_call, _narasi_parse_json as _bj_parse
@@ -921,13 +969,17 @@ async def narrate_chapters(
                         if 1 <= _w <= len(_cands):
                             _bible = _cands[_w - 1]
                             if _cand_pairs:
+                                # The winner's OWN envelope and OWN registry — the three
+                                # values came out of one response and must never be split
+                                # across candidates.
                                 _cl_semantic_source = _cand_pairs[_w - 1][1]
+                                _cl_canon_registry = _cand_pairs[_w - 1][2]
                         log.info("bible best-of-%d: %d candidate(s), winner #%d — %s",
                                  _bo_n, len(_cands), _w, str((_bj or {}).get("reason") or "")[:120])
                     except Exception as _bje:  # noqa: BLE001 — judge is an enhancement
                         log.warning("bible best-of judge failed (non-fatal, candidate #1 kept): %s", _bje)
             elif _cl_wants_semantic:
-                _bible, _cl_semantic_source = await build_story_bible(
+                _bible, _cl_semantic_source, _cl_canon_registry = await build_story_bible(
                     topic, list(ctx.chapters or chapters), is_fiction=_fic,
                     style=style, language=language,
                     manager_model=m_model, telemetry_sink=telemetry_sink,
@@ -1181,6 +1233,39 @@ async def narrate_chapters(
                                     if not _terms:
                                         log.info("ledger-enforce: all %d bible hit(s) premise-supplied (%s) — re-roll skipped",
                                                  len(_terms_all), ", ".join(_terms_all[:6]))
+                                    elif (str(os.environ.get("NARASI_LEDGER_ENFORCE_SURGICAL", "0")).strip().lower()
+                                          in ("1", "true", "yes", "on")
+                                          and _cl_wants_semantic and _cl_semantic_source is not None):
+                                        # 🔴 P0-B #5 — CONTAINED BEFORE THE PROVIDER CALL, NOT AFTER IT.
+                                        #    This patch rewrites the pinned bible in place, but the
+                                        #    semantic source was hashed against the PRE-patch text, so
+                                        #    applying it guarantees `binds_bible()` refuses the job with
+                                        #    `..._bible_changed` — live job `oehhe741` had 18 bible-level
+                                        #    hits and would have died here even with a perfect envelope.
+                                        #
+                                        #    The containment therefore sits AHEAD of `_sp_call`: an
+                                        #    earlier version of this fix checked at the APPLY site, which
+                                        #    still paid for a patch it was always going to throw away.
+                                        #    Nobody should be billed for output whose only possible fate
+                                        #    is being discarded.
+                                        #
+                                        #    Report-only is the containment, NOT re-hashing the old
+                                        #    source against new text: the tuples were extracted from the
+                                        #    unpatched prose, and stamping a fresh digest onto them would
+                                        #    assert a provenance nobody verified — exactly what
+                                        #    `binds_bible()` exists to catch. The reroll branch below is
+                                        #    the one path allowed to replace the bible, because it
+                                        #    carries a NEW envelope from the SAME response.
+                                        #
+                                        #    Cost: assist jobs keep the ledger hits this patch would have
+                                        #    removed — a prose-quality regression bounded to the assist
+                                        #    cohort, traded for a job that actually runs.
+                                        log.info(
+                                            "ledger-enforce SURGICAL: SKIPPED before any provider call — "
+                                            "assist holds a bound semantic source for this bible, so a "
+                                            "patch could only invalidate it (%d bible-level hit(s) left "
+                                            "in place, error_code=surgical_contained_by_assist)",
+                                            int(_lrep.get("bible_hits") or 0))
                                     elif str(os.environ.get("NARASI_LEDGER_ENFORCE_SURGICAL", "0")).strip().lower() in ("1", "true", "yes", "on"):
                                         # ROUND-5.1 SURGICAL RE-ROLL: two consecutive prod rolls burned a FULL
                                         # bible regeneration (203s, 234s) and both came back WORSE (10→13,
@@ -1274,6 +1359,10 @@ async def narrate_chapters(
                                                 _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
                                                          if _n_patched else {})
                                                 if _n_patched and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
+                                                    # Containment for assist lives at the TOP of this
+                                                    # branch (see `surgical_contained_by_assist`), so
+                                                    # reaching here means no bound semantic source is at
+                                                    # risk and the patch may be pinned as it always was.
                                                     ctx.canonical_facts = _bible2
                                                     log.info("ledger-enforce SURGICAL: %d line(s) patched — hits %d → %d, pinned",
                                                              _n_patched, _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
@@ -1293,8 +1382,9 @@ async def narrate_chapters(
                                         # every reroll would (correctly, but wastefully)
                                         # force assist to refuse.
                                         _bible2_src = None
+                                        _bible2_reg = None
                                         if _cl_wants_semantic:
-                                            _bible2, _bible2_src = await build_story_bible(
+                                            _bible2, _bible2_src, _bible2_reg = await build_story_bible(
                                                 topic, list(ctx.chapters or chapters), is_fiction=_fic,
                                                 style=style, language=language,
                                                 manager_model=m_model, telemetry_sink=telemetry_sink,
@@ -1314,8 +1404,12 @@ async def narrate_chapters(
                                             # own envelope failed to parse leaves
                                             # `_cl_semantic_source = None`, and assist then
                                             # refuses rather than pairing new prose with the
-                                            # superseded extraction.
+                                            # superseded extraction. The registry sidecar
+                                            # moves with them for the same reason — all three
+                                            # came out of one response.
                                             _cl_semantic_source = _bible2_src
+                                            if _cl_wants_semantic:
+                                                _cl_canon_registry = _bible2_reg
                                             log.info("ledger-enforce: bible re-rolled — hits %d → %d, re-roll pinned",
                                                      _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
                                         else:
@@ -2020,6 +2114,14 @@ async def narrate_chapters(
         # committed canon when NARASI_CANON_CONFORMANCE is on. as_dict() exposes only the char
         # count, so the raw text otherwise dies here.
         "canonical_facts": ctx.canonical_facts,
+        # P0-B: the advisory `canon_registry` sidecar, threaded from the structured Story
+        # Bible response to `narration_api`'s canon-diff. `None` on every non-structured
+        # path, where the registry still rides as a fence inside `canonical_facts` and the
+        # consumer's own regex finds it exactly as before — so this key ADDS a source, it
+        # does not replace one. Without it the single-object contract would silently strip
+        # the registry out of the prose and push the diff loop into its PAID LLM
+        # re-extraction fallback.
+        "canon_registry": _cl_canon_registry,
         "facts_are_bible": ctx.facts_are_bible,
         # NARASI_CHAPTER_BOUNDARY_CHECK's findings (see _bc_findings above) — [] unless the
         # flag is on AND at least one break fired. Same pattern numeric_ledger_report /

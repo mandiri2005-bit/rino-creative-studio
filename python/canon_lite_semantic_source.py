@@ -473,6 +473,77 @@ _FENCE_RE = re.compile(
     re.DOTALL)
 
 
+#: Top-level keys the structured Story Bible response must carry. Extra keys are ALLOWED
+#: and deliberately so — `canon_registry`, when its flag is on, rides as a SIDECAR in this
+#: same object rather than as a second independent fence (which is what made the two
+#: requests compete and got the semantic one dropped in live job `oehhe741`).
+STRUCTURED_BIBLE_TEXT_KEY = "bible_text"
+STRUCTURED_BIBLE_SEMANTIC_KEY = "semantic_source"
+#: `canon_registry`'s sidecar key. Advisory, and owned by a DIFFERENT subsystem
+#: (`NARASI_CANON_REGISTRY` → `narration_api`'s canon-diff) — this module only carries it
+#: across the decode so the caller can thread it onward; it never validates its contents
+#: and never lets it near a `CanonLiteSemanticSourceV1`.
+STRUCTURED_BIBLE_REGISTRY_KEY = "canon_registry"
+
+
+def parse_structured_bible_response(raw: Any) -> Optional[tuple]:
+    """Decode ONE Story Bible response under the P0-B STRUCTURED contract.
+
+    Returns `(bible_text, semantic_source_raw, canon_registry_raw)` — the prose fact-sheet,
+    the still-raw envelope mapping, and the advisory registry sidecar (`None` when absent
+    or not a mapping) — or `None` if the response does not satisfy the contract. Never
+    raises. The returned `semantic_source_raw` is NOT validated here beyond "is a
+    mapping": `parse_semantic_source_envelope()` remains the single strict gate for its
+    contents, and duplicating any part of that check here would be a second implementation
+    of a decision that already has exactly one.
+
+    🔴 A BAD REGISTRY MUST NOT COST YOU THE BIBLE. `canon_registry` is advisory and
+       report-only in its own subsystem, so a missing or malformed one degrades to `None`
+       and the contract still holds. Failing the whole response over it would make a
+       report-only feature able to kill a paid job — a strictly worse trade than the
+       fenced-block behaviour it replaces, where a malformed registry was simply not found.
+
+    🔴 WHY THIS REPLACED THE FENCE. The fence contract asked one free-text response to
+       carry prose PLUS one or two labelled ```json blocks, and nothing in the transport
+       obliged the model to produce them — `Worker` could not even express
+       `response_format`. Live job `oehhe741` came back twice (both best-of candidates)
+       with a complete bible and no envelope, and assist refused a job that had already
+       burned ~99s of paid model work. Under `response_mime_type="application/json"` the
+       WHOLE response is one JSON document, so prose-plus-fence is not merely discouraged,
+       it is impossible — which is what makes this shape the contract rather than a
+       preference.
+
+    🔴 STRICT ON PURPOSE — NO FENCE-STRIPPING FALLBACK. A response wrapped in ```json
+       markers is a response that did NOT come back in JSON mode, which means the
+       transport silently dropped the request (the `anthropic` proto does exactly that —
+       `_anthropic_messages_create` takes no `response_json`). Quietly unwrapping it would
+       hide a broken transport behind a parser that "still works", which is the same class
+       of silence this whole workstream exists to remove. A non-conforming response is a
+       failed attempt; the caller fails over.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        obj = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    bible_text = obj.get(STRUCTURED_BIBLE_TEXT_KEY)
+    semantic_raw = obj.get(STRUCTURED_BIBLE_SEMANTIC_KEY)
+    # `type(x) is str`, not isinstance: a str SUBCLASS can carry a poisoned __eq__/__hash__
+    # and this value goes on to be hashed and compared for provenance. Same discipline as
+    # `_l3_canonicalize_verdict` in the P0-A preflight.
+    if type(bible_text) is not str or not bible_text.strip():
+        return None
+    if not isinstance(semantic_raw, dict):
+        return None
+    registry_raw = obj.get(STRUCTURED_BIBLE_REGISTRY_KEY)
+    if not isinstance(registry_raw, dict):
+        registry_raw = None
+    return (bible_text.strip(), semantic_raw, registry_raw)
+
+
 def extract_semantic_source_json(text: str) -> Optional[Any]:
     """Pull the ` ```json canon_lite_semantic_source ... ``` ` fence out of raw LLM text
     and JSON-decode it. Returns `None` — never raises — when the fence is absent or its
@@ -483,6 +554,12 @@ def extract_semantic_source_json(text: str) -> Optional[Any]:
     The label is matched literally (`canon_registry`'s own fence, or any other label, is
     NOT a match) — this is the one thing keeping this extractor from ever picking up a
     different JSON block that happens to share the generic ` ```json ` fence syntax.
+
+    ⚠️ NO LONGER THE PRODUCTION CONTRACT. `build_story_bible(structured_semantic=True)`
+       now uses `parse_structured_bible_response()` against a JSON-mode response; see its
+       docstring for why the fence was abandoned. This function is retained as a tested
+       utility, but wiring it back into the bible path would re-create the `oehhe741`
+       defect — a contract the transport never enforces.
     """
     if not isinstance(text, str) or not text:
         return None
@@ -502,5 +579,9 @@ __all__ = [
     "CanonLiteSemanticSourceV1",
     "build_semantic_source_v1",
     "parse_semantic_source_envelope",
+    "parse_structured_bible_response",
+    "STRUCTURED_BIBLE_TEXT_KEY",
+    "STRUCTURED_BIBLE_SEMANTIC_KEY",
+    "STRUCTURED_BIBLE_REGISTRY_KEY",
     "extract_semantic_source_json",
 ]

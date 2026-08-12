@@ -1482,18 +1482,45 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
     # instruction would otherwise suppress the fenced block the SYSTEM addendum asks for.
     # NOT fiction-gated, unlike `_reg_tail` — nonfiction jobs have real named people,
     # dates and one-time events too, and P0-B's semantic authority applies to both regimes.
-    _sem_tail = ""
+    # 🔴 STRUCTURED CONTRACT (P0-B). Under `response_format={"type":"json_object"}` the
+    #    WHOLE response is one JSON document, so the old shape — prose sheet, then one or
+    #    two appended ```json fences — is not just discouraged, it cannot exist. The sheet
+    #    therefore moves INSIDE the `bible_text` value, and `canon_registry` (when its own
+    #    flag is on) becomes a SIDECAR KEY of the same object instead of a second
+    #    independent fence. Two competing "EXCEPTION: also output a fenced block"
+    #    instructions is what got the semantic one dropped on BOTH best-of candidates in
+    #    live job `oehhe741`; one object with named keys cannot have that failure mode.
+    #
+    #    `structured_semantic` False ⟹ this branch is dead and the returned prompt below
+    #    is byte-identical to pre-P0-B, which every non-assist job depends on.
     if structured_semantic:
-        from canon_lite_semantic_source import SEMANTIC_SOURCE_FENCE_LABEL as _sem_label
-        _sem_tail = (" EXCEPTION: after the last numbered heading, ALSO output the fenced "
-                     f"```json {_sem_label} block specified above — it is "
-                     "part of the required output, not prose.")
+        from canon_lite_semantic_source import (
+            STRUCTURED_BIBLE_SEMANTIC_KEY as _sem_key,
+            STRUCTURED_BIBLE_TEXT_KEY as _txt_key,
+        )
+        _sidecar = ""
+        if _reg_tail:
+            _sidecar = (' Also include a "canon_registry" key holding the canon_registry '
+                        "object specified above — a SIDECAR KEY of this same object, never "
+                        "a separate code block.")
+        return (
+            f"TOPIC / PREMISE:\n{topic}\n\n"
+            f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
+            f'Return ONE JSON object and nothing else — no code fences, no commentary. '
+            f'Its "{_txt_key}" key holds the {label}, written in {language}, as a single '
+            f"string: the numbered sheet under the headings ({heads}), one item per line, "
+            f"no preamble, no prose, no chapter text — exactly the sheet you would "
+            f'otherwise have written, as the value of that one key. Its "{_sem_key}" key '
+            f"holds the structured twin specified above.{_sidecar}")
     return (
         f"TOPIC / PREMISE:\n{topic}\n\n"
         f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
         f"Write the {label} in {language}. Output ONLY the numbered sheet under the headings "
         f"({heads}). One item per line. No preamble, no prose, no chapter text."
-        + _reg_tail + _sem_tail
+        # `_sem_tail` is gone, not renamed: the structured branch above RETURNS, so this
+        # line is only ever reached with `structured_semantic` False, where that tail was
+        # unconditionally "". Concatenating it here produced the identical string.
+        + _reg_tail
     )
 
 
@@ -1551,11 +1578,19 @@ async def build_story_bible(
     shape for whichever contract `structured_semantic` selected ("" or ("", None)), so the
     caller simply proceeds without a bible (prior behavior, unchanged in shape).
     """
-    def _bible_return(text: str, source):
+    def _bible_return(text: str, source, registry=None):
         # ONE place deciding the return shape, used at every return point below, so the
         # `structured_semantic` branch cannot drift out of sync between an early exit, a
         # successful attempt, and the all-attempts-failed path.
-        return (text, source) if structured_semantic else text
+        #
+        # 🔴 THREE elements under `structured_semantic`, not two. `canon_registry` used to
+        #    reach its consumer (`narration_api`'s canon-diff) by riding as a ```json fence
+        #    INSIDE the prose, scraped back out of `result["canonical_facts"]` with a regex.
+        #    The single-object contract takes the fence out of the prose, so that scrape now
+        #    finds nothing and the diff loop falls through to its PAID LLM re-extraction.
+        #    The registry therefore travels as its own value, threaded to the consumer,
+        #    rather than being re-embedded in prose it no longer belongs in.
+        return (text, source, registry) if structured_semantic else text
 
     if not (topic and outline):
         return _bible_return("", None)
@@ -1863,9 +1898,23 @@ async def build_story_bible(
         # emission cap and the diff loop's triage cap always agree.
         _ncr_n_chapters = len(outline) if isinstance(outline, list) else 0
         _ncr_event_cap = min(8 + max(0, _ncr_n_chapters - 6), 14)
-        system = system + (
+        # 🔴 THE SAME INSTRUCTION, TWO CARRIERS. Under the structured contract the whole
+        #    reply is ONE JSON object, so "output a fenced block after the prose" is not
+        #    merely redundant — it is impossible to obey, and asking for it alongside the
+        #    semantic key re-creates exactly the competition that made the model drop one
+        #    of the two blocks in live job `oehhe741`. Only the CARRIER sentence changes;
+        #    the schema, caps and rules below are shared verbatim by both paths, so the two
+        #    cannot drift. `structured_semantic` False ⟹ byte-identical to pre-P0-B.
+        _ncr_carrier = (
+            "\n\nADDENDUM to heading 6 (KEY FACTS / REVEAL) — CANON REGISTRY: your reply's "
+            "\"canon_registry\" key (a SIDECAR KEY of the same JSON object, never a separate "
+            "code block) holds ONLY "
+            if structured_semantic else
             "\n\nADDENDUM to heading 6 (KEY FACTS / REVEAL) — CANON REGISTRY: AFTER the prose "
             "fact-sheet, output a fenced ```json code block labelled canon_registry serializing ONLY "
+        )
+        system = system + (
+            _ncr_carrier +
             "the LOAD-BEARING facts as machine-checkable rows. Shape: {\"events\":[{\"id\":\"<slug>\","
             "\"summary\":\"<short>\",\"when\":{\"actor_age\":<int|null>,\"anchor\":\"<slug>\"},"
             "\"where\":\"<location slug, if this event's location is load-bearing>\","
@@ -2051,12 +2100,16 @@ async def build_story_bible(
     _semantic_scale_n = max(1, len(outline or []))
     _semantic_event_cap = min(6 + max(0, _semantic_scale_n - 6), 12)
     if structured_semantic:
-        from canon_lite_semantic_source import SEMANTIC_SOURCE_FENCE_LABEL as _sem_label
+        from canon_lite_semantic_source import (
+            STRUCTURED_BIBLE_SEMANTIC_KEY as _sem_key,
+            STRUCTURED_BIBLE_TEXT_KEY as _txt_key,
+        )
         system = system + (
             "\n\nADDENDUM to heading 1/3 (CHARACTERS / TIMELINE & QUANTITIES) — SEMANTIC "
-            f"SOURCE: AFTER the prose fact-sheet, output a fenced ```json code block "
-            f"labelled {_sem_label} serializing ONLY load-bearing facts, "
-            "machine-checkable. Shape: {\"entities\":[{\"canonical_name\":\"<full name as "
+            f'SOURCE: your entire reply is ONE JSON object. Its "{_txt_key}" key holds the '
+            f'prose fact-sheet as a string; its "{_sem_key}" key holds a machine-checkable '
+            "object serializing ONLY load-bearing facts from that same sheet. "
+            f'"{_sem_key}" shape: {{"entities":[{{"canonical_name":"<full name as '
             "used in the fact-sheet>\",\"aliases\":[\"<nickname or short form actually used "
             "in the fact-sheet, if any>\"]}],\"anchors\":[{\"kind\":\"time\"|\"quantity\","
             "\"literal\":\"<the EXACT literal as pinned — a date, a duration, a count, an "
@@ -2068,12 +2121,13 @@ async def build_story_bible(
             "anchors = every PINNED date, duration, age, or count the fact-sheet commits to "
             "as a fixed value chapters must not contradict; one_time_events = irreversible, "
             "ONE-TIME plot events the fact-sheet pins to a specific chapter (a death, a "
-            "reveal, a departure — not a recurring state). Use the SAME names/values already "
-            "in the prose above — this block restates them structurally, it does not invent "
-            "new ones. Hard caps so you TRIAGE, not dump: <=20 entities, <=15 anchors, "
-            f"<={_semantic_event_cap} one_time_events. If a category is empty for this "
-            "premise, emit an empty list for it — never omit the key. This JSON is "
-            "machine-only; it does NOT replace the prose fact-sheet above.")
+            "reveal, a departure — not a recurring state). Use the SAME names/values you "
+            f'wrote into "{_txt_key}" — this key restates them structurally, it does not '
+            "invent new ones. Hard caps so you TRIAGE, not dump: <=20 entities, <=15 "
+            f"anchors, <={_semantic_event_cap} one_time_events. If a category is empty for "
+            "this premise, emit an empty list for it — never omit the key. This key is "
+            f'machine-only; it does NOT replace the prose fact-sheet in "{_txt_key}", and '
+            f'"{_txt_key}" must never contain this JSON.')
     # ENFORCEMENT RE-ROLL (round-3, caller-driven via NARASI_LEDGER_ENFORCE): the first
     # draft's bible-level ledger hits, quoted back so the retry knows exactly what to
     # replace. None (default) ⟹ byte-identical prompt.
@@ -2176,6 +2230,10 @@ async def build_story_bible(
         worker = Worker(
             name="planner:bible", role="manager", phase="bible", model=_mdl,
             system=system, temperature=0.3, max_tokens=_bib_max, telemetry_sink=telemetry_sink,
+            # P0-B: the ONLY thing that obliges the model to return the structured object.
+            # `None` on every non-assist job ⟹ `_sync_chat` omits the key entirely and the
+            # provider call is byte-identical to pre-P0-B (see `Worker.response_format`).
+            response_format=({"type": "json_object"} if structured_semantic else None),
         )
         _skip_tok = _skip_var.set(True) if _skip_var is not None else None
         try:
@@ -2191,6 +2249,36 @@ async def build_story_bible(
             if _i > 0:
                 log.info("build_story_bible: primary failed — bible via fallback model %s", _mdl)
             _bible_text = str(res["output"]).strip()
+            # P0-B STRUCTURED CONTRACT — decoded FIRST, before anything reads the prose.
+            #
+            # 🔴 A NON-CONFORMING RESPONSE FAILS THIS ATTEMPT OVER rather than being kept
+            #    as a bible with no envelope. The shape is not a model-quality question:
+            #    it means JSON mode was not applied to this call at all (the `anthropic`
+            #    proto silently drops `response_json`), so a DIFFERENT rung is exactly the
+            #    thing that might fix it. Keeping the prose instead would guarantee a later
+            #    assist refusal after the whole job had been paid for — which is precisely
+            #    what `oehhe741` did. Contents that are merely INVALID (right shape, bad
+            #    values) are handled below and do NOT fail over: re-rolling the same model
+            #    for the same premise is not a fix, and candidate selection (P0-B #4) is
+            #    where an unusable envelope is supposed to be caught.
+            _semantic_raw = None
+            _registry_raw = None
+            if structured_semantic:
+                from canon_lite_semantic_source import parse_structured_bible_response
+                _decoded = parse_structured_bible_response(_bible_text)
+                if _decoded is None:
+                    log.warning(
+                        "build_story_bible: model %s did not honour the structured contract "
+                        "(attempt %d/%d, error_code=structured_bible_contract_unmet)%s",
+                        _mdl, _i + 1, len(_chain),
+                        " — failing over" if _i + 1 < len(_chain) else " — no attempts left")
+                    continue
+                # ONLY the prose goes on from here. The semantic JSON never reaches
+                # `_bible_text`, so it cannot reach `ctx.canonical_facts` or any chapter
+                # prompt (P0-B #3) — and the brand scan below now reads the fact-sheet
+                # instead of a fact-sheet with a JSON block stapled to it. The registry
+                # rides out separately to its own consumer; see `_bible_return`.
+                _bible_text, _semantic_raw, _registry_raw = _decoded
             # DETERMINISTIC REAL-BRAND COLLISION CHECK (this session — "Daesung 72x" defect,
             # job funym2wo): report-only, unconditional (no flag gate — pure logging, ZERO
             # behavior change to the returned bible), runs ONCE right after generation, BEFORE
@@ -2221,27 +2309,27 @@ async def build_story_bible(
                 pass
             _semantic_source = None
             if structured_semantic:
-                # 🔴 A PARSE FAILURE HERE MUST NEVER TOUCH `_bible_text`. The fence rides
-                #    in the SAME response as the prose (same reasoning as canon_registry:
-                #    "machine-only; it does NOT replace the prose fact-sheet above" — left
-                #    in place, not stripped out, matching that existing precedent exactly
-                #    rather than inventing a new stripping step with its own bug surface).
-                #    Extraction/parsing failing is reported as `semantic_source=None`, and
-                #    the CALLER (`orchestrator/static.py`) decides what an absent envelope
-                #    means for this job — this function's own contract is "never raises",
-                #    and a structured-extraction defect breaking the prose bible would be
-                #    exactly the kind of collateral damage that contract exists to prevent.
+                # 🔴 A PARSE FAILURE HERE MUST NEVER TOUCH `_bible_text`. The envelope
+                #    arrives as a sibling KEY of the prose in one JSON object, so the two
+                #    are already separated by the time this runs — the prose is whatever
+                #    `bible_text` held, untouched by anything that happens to the semantic
+                #    key. A failure is reported as `semantic_source=None`, and the CALLER
+                #    (`orchestrator/static.py`) decides what an absent envelope means for
+                #    this job — this function's own contract is "never raises", and a
+                #    structured-extraction defect breaking the prose bible would be exactly
+                #    the kind of collateral damage that contract exists to prevent.
                 try:
-                    from canon_lite_semantic_source import (
-                        extract_semantic_source_json, parse_semantic_source_envelope)
-                    _raw_envelope = extract_semantic_source_json(_bible_text)
-                    if _raw_envelope is not None:
-                        # `bible_text=_bible_text` — the EXACT response this envelope was
-                        # extracted from, hashed into the source so a later swap of
-                        # `ctx.canonical_facts` (a surgical ledger patch, or a full reroll)
-                        # can be detected by the caller. See `binds_bible`.
+                    from canon_lite_semantic_source import parse_semantic_source_envelope
+                    if _semantic_raw is not None:
+                        # `bible_text=_bible_text` — the PROSE these tuples describe and the
+                        # exact string that becomes `ctx.canonical_facts`, hashed into the
+                        # source so a later swap of it (a surgical ledger patch, or a full
+                        # reroll) is detectable by the caller. See `binds_bible`. Binding to
+                        # the prose alone — rather than to prose+fence as the old contract
+                        # did — is what makes that comparison meaningful now that the two
+                        # are separate values.
                         _semantic_source = parse_semantic_source_envelope(
-                            _raw_envelope, outline_chapters=outline,
+                            _semantic_raw, outline_chapters=outline,
                             bible_text=_bible_text)
                         log.info(
                             "build_story_bible: semantic source parsed — %d entities, "
@@ -2249,8 +2337,10 @@ async def build_story_bible(
                             len(_semantic_source.entities), len(_semantic_source.anchors),
                             len(_semantic_source.one_time_events))
                     else:
-                        log.warning("build_story_bible: no semantic_source fence found "
-                                    "(error_code=semantic_source_fence_absent)")
+                        # Defensive only: the contract decode above `continue`s on a missing
+                        # semantic key, so reaching this means the two checks disagree.
+                        log.warning("build_story_bible: structured decode produced no "
+                                    "semantic key (error_code=semantic_source_absent)")
                 except Exception as _sse:  # noqa: BLE001 — extraction must never break the bible
                     # Bounded log only: `_sse` could carry model-produced text (a
                     # malformed field value echoed into an exception message) — never
@@ -2260,7 +2350,7 @@ async def build_story_bible(
                         "(error_code=semantic_source_parse_error class=%s)",
                         type(_sse).__name__)
                     _semantic_source = None
-            return _bible_return(_bible_text, _semantic_source)
+            return _bible_return(_bible_text, _semantic_source, _registry_raw)
         if _truncated:
             # A bible cut off at the token cap is INCOMPLETE — every parallel chapter would inherit a
             # partial fact-sheet. Reject it and fail over (or proceed with none) rather than poison the book.

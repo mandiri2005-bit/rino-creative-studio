@@ -78,7 +78,9 @@ async def _fake_story_bible_with_semantics(topic, outline, *, is_fiction=True, s
         entities=(cl.CanonEntityV1(entity_id="ent1", canonical_name="Test Entity",
                                    aliases=(), alias_source="none"),),
     )
-    return text, source
+    # THREE values under `structured_semantic`: prose, envelope, and the advisory
+    # `canon_registry` sidecar (`None` here — this double has no registry to carry).
+    return text, source, None
 
 #: Not a credential. Presence is all the gate reads; the value is never resolved, compared
 #: or transmitted, and this string never leaves the process.

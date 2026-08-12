@@ -3941,6 +3941,30 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _cf = str(result.get("canonical_facts") or "")
                 _reg = None
                 _reg_dbg = ""
+                # 🔴 P0-B: PREFER THE THREADED SIDECAR OVER SCRAPING THE PROSE.
+                #    Under the structured Story Bible contract the registry no longer rides
+                #    as a ```json fence inside `canonical_facts` — the whole point of that
+                #    contract is that the prose is prose. The scrape below would therefore
+                #    find nothing on an assist job and fall straight through to the PAID
+                #    LLM re-extraction further down: a new per-job cost, introduced by a
+                #    change that was supposed to be cost-neutral. `narrate_chapters` now
+                #    hands the decoded object over directly.
+                #
+                #    ADDITIVE, never a replacement: `None` on every non-structured path,
+                #    where the fence is still in the prose and the scrape still owns the
+                #    job. Nothing below changes for those.
+                #    🔴 TYPE ONLY, NEVER TRUTHINESS. An EMPTY dict is a real answer — the
+                #       bible said "no registry rows for this premise" — and it is exactly
+                #       the answer a truthiness check misreads as "nothing was threaded".
+                #       That misreading is expensive: it falls through to the scrape, finds
+                #       nothing in prose that no longer carries a fence, and then bills a
+                #       provider call to re-extract a registry that was already known to be
+                #       empty. Absence is `None`; emptiness is `{}`; only the first should
+                #       cost money.
+                _reg_threaded = result.get("canon_registry")
+                if isinstance(_reg_threaded, dict):
+                    _reg = _reg_threaded
+                    _reg_dbg = "threaded from the structured story bible response"
                 # FIX (2026-07-18, event-cap root-cause): computed once, up front, so BOTH the
                 # fallback-extraction prompt (below) and the main diff loop's own triage cap
                 # (further down) agree on the same scaled-by-chapter-count budget instead of two
@@ -3950,7 +3974,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             or len(body.get("chapters") or [])
                             or _gbook0.count("\n## "))
                 _cd_event_cap = min(8 + max(0, _cd_nch0 - 6), 14)
-                if _cf:
+                # `_reg is None` guard: the threaded sidecar above already answered this, and
+                # re-scraping the prose could only find a DIFFERENT registry than the one the
+                # winning bible actually carried.
+                if _cf and _reg is None:
                     _cands = []
                     _m = _cre.search(r"```(?:json)?\s*(\{.*?\})\s*```", _cf, _cre.S)
                     if _m:

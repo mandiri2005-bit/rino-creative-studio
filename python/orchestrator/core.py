@@ -349,6 +349,28 @@ class Worker:
     system: str = ""
     temperature: float = 0.7
     max_tokens: Optional[int] = None
+    #: OpenAI-style structured-output request, e.g. `{"type": "json_object"}`. `None`
+    #: (every existing caller) ⟹ the key is never added to the provider call at all, so
+    #: the request is byte-identical to pre-P0-B behaviour — see `_sync_chat`.
+    #:
+    #: 🔴 THIS FIELD IS THE ONLY WAY STRUCTURED OUTPUT CAN REACH A PROVIDER FROM THE
+    #:    ORCHESTRATOR. The translation below it already existed and already worked:
+    #:    `_NarasiFailoverClient._create` reads `call_kw["response_format"]` and turns it
+    #:    into `response_json=True` for the `vertex_genai` and `fal_queue` rungs, which
+    #:    `_vertex_gemini_create` turns into `response_mime_type="application/json"` when
+    #:    `NARASI_GENAI_JSON_MIME` is on; the plain OpenAI rung receives `response_format`
+    #:    natively. What was missing was this last hop — `Worker` had no such field and
+    #:    `_sync_chat` never passed one — so `NARASI_GENAI_JSON_MIME=1` could never apply
+    #:    to a Story Bible call however it was configured. Live canary `oehhe741` refused
+    #:    on exactly that gap: the bible was asked for a fenced JSON block in free text,
+    #:    nothing obliged the model to produce one, and both best-of candidates came back
+    #:    with prose and no envelope.
+    #:
+    #: ⚠️ NOT honoured on the `anthropic` proto: `_anthropic_messages_create` takes no
+    #:    `response_json` argument, so JSON mode is silently dropped if a call fails over
+    #:    to a KIE/LaoZhang rung. A caller that REQUIRES structured output must treat a
+    #:    non-conforming response as a failure rather than assume the mode was applied.
+    response_format: Optional[dict] = None
     telemetry_sink: Optional[TelemetrySink] = field(default=None, repr=False)
 
     def resolved_model(self) -> str:
@@ -393,22 +415,35 @@ def _build_messages(system: str, task: str) -> list[dict[str, str]]:
 
 
 def _sync_chat(model: str, messages: list[dict[str, str]], *,
-               temperature: float, max_tokens: int, role: str = "", phase: str = ""):
+               temperature: float, max_tokens: int, role: str = "", phase: str = "",
+               response_format: Optional[dict] = None):
     """Blocking single chat-completion call against the env-built client.
     Mirrors laozhang_api's call shape: client.chat.completions.create(...).
     `role` (e.g. "worker" for MAP/chapter calls) is forwarded so make_narasi_client
     can apply role-scoped routing (NARASI_WORKER_KIE_FIRST).
     `phase` (Rino 2026-07-15, independent of role) is forwarded so the per-phase/
-    per-provider switchboard (NARASI_{PHASE}_{PROVIDER}) applies here too."""
+    per-provider switchboard (NARASI_{PHASE}_{PROVIDER}) applies here too.
+    `response_format` (P0-B) requests structured output; see `Worker.response_format`.
+
+    🔴 THE KEY IS ADDED ONLY WHEN ASKED FOR, never as `response_format=None`. Downstream
+       reads it with `bool(call_kw.get("response_format"))`, so a literal None would be
+       falsey and harmless there — but `**call_kw` is also splatted straight into the
+       plain OpenAI rung's own `create()`, and shipping an explicit `response_format=None`
+       to a provider that does not expect the key is a behaviour change on a path that
+       must stay byte-identical for every non-assist job. Omitting the key is the only
+       shape that is provably unchanged."""
     client = _lz_make_client(model, role=role, phase=phase)
     resolved = MODELS.get(model, model)
-    return client.chat.completions.create(
-        model=resolved,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        stream=False,
-    )
+    kwargs: dict[str, Any] = {
+        "model": resolved,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": False,
+    }
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+    return client.chat.completions.create(**kwargs)
 
 
 def _extract(resp: Any) -> tuple[str, int, int, str]:
@@ -483,7 +518,7 @@ async def run_worker(
                 asyncio.to_thread(
                     _sync_chat, model, messages,
                     temperature=worker.temperature, max_tokens=max_tokens, role=worker.role,
-                    phase=worker.phase,
+                    phase=worker.phase, response_format=worker.response_format,
                 ),
                 timeout=timeout,
             )

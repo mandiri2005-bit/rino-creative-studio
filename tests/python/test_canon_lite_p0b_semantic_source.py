@@ -120,7 +120,7 @@ def _make_bible_double(*, entities=(), anchors=(), one_time_events=(), text="FAK
         source = css.build_semantic_source_v1(
             outline_chapters=outline, bible_text=text, entities=entities,
             anchors=anchors, one_time_events=one_time_events)
-        return text, source
+        return text, source, None
     return _fake
 
 
@@ -376,62 +376,98 @@ def test_old_callers_get_a_plain_string_and_an_unmodified_prompt(monkeypatch):
     assert result == "bible prose only"
 
 
+def _structured(bible_text, semantic="__omit__", **extra):
+    """Build a response in the P0-B STRUCTURED contract: one JSON object, prose under
+    `bible_text`, envelope under `semantic_source`, anything else as a sidecar key."""
+    obj = {css.STRUCTURED_BIBLE_TEXT_KEY: bible_text}
+    if semantic != "__omit__":
+        obj[css.STRUCTURED_BIBLE_SEMANTIC_KEY] = semantic
+    obj.update(extra)
+    return json.dumps(obj, ensure_ascii=False)
+
+
+_GOOD_SEMANTIC = {
+    "entities": [{"canonical_name": "Ratna", "aliases": []}],
+    "anchors": [{"kind": "time", "literal": "pagi hari"}],
+    "one_time_events": [{"description": "kehilangan kunci", "occurs_chapter": 1}],
+}
+
+
 def test_new_caller_true_gets_a_tuple_even_when_extraction_fails(monkeypatch):
+    """A response that ignores the structured contract FAILS THE ATTEMPT OVER.
+
+    Changed by the `oehhe741` fix, deliberately. Under the old fence contract this kept
+    the prose and returned `source=None`, which guaranteed a later assist refusal AFTER
+    the whole job had been paid for. A response that is not the object means JSON mode was
+    not applied to the call at all, so another rung is exactly what might fix it; with a
+    single-model chain there is no other rung and the honest result is the empty shape.
+    """
     result, captured, _ = asyncio.run(_run_bible(
-        monkeypatch, structured_semantic=True, output_text="prose, no fence at all"))
-    assert isinstance(result, tuple) and len(result) == 2
-    text, source = result
-    assert text == "prose, no fence at all"
-    assert source is None
-    assert css.SEMANTIC_SOURCE_FENCE_LABEL in captured["system"], \
-        "the addendum asking for the fence must be present when requested"
+        monkeypatch, structured_semantic=True, output_text="prose, not an object"))
+    assert isinstance(result, tuple) and len(result) == 3
+    assert result == ("", None, None), "a non-conforming response must not become a bible"
+    assert css.STRUCTURED_BIBLE_SEMANTIC_KEY in captured["system"], \
+        "the addendum asking for the structured object must be present when requested"
 
 
-def test_new_caller_true_parses_a_well_formed_fence(monkeypatch):
-    bible = (
-        "1. CHARACTERS\nRatna, seorang guru.\n\n"
-        f"```json {css.SEMANTIC_SOURCE_FENCE_LABEL}\n"
-        '{"entities":[{"canonical_name":"Ratna","aliases":[]}],'
-        '"anchors":[{"kind":"time","literal":"pagi hari"}],'
-        '"one_time_events":[{"description":"kehilangan kunci","occurs_chapter":1}]}\n```'
-    )
+def test_new_caller_true_parses_a_well_formed_structured_object(monkeypatch):
+    prose = "1. CHARACTERS\nRatna, seorang guru."
     result, _, outline = asyncio.run(_run_bible(
-        monkeypatch, structured_semantic=True, output_text=bible))
-    text, source = result
-    assert text == bible, "the prose is returned UNCHANGED, fence left in place (matches canon_registry precedent)"
+        monkeypatch, structured_semantic=True,
+        output_text=_structured(prose, _GOOD_SEMANTIC)))
+    text, source, _registry = result
+    # 🔴 P0-B #3: ONLY the prose comes back. The envelope is a sibling key, so it can never
+    #    reach `ctx.canonical_facts` or a chapter prompt — under the old fence contract the
+    #    returned text was the WHOLE response, JSON block included.
+    assert text == prose
+    assert css.STRUCTURED_BIBLE_SEMANTIC_KEY not in text
+    assert "canonical_name" not in text
     assert source is not None
     assert [e.canonical_name for e in source.entities] == ["Ratna"]
     assert source.binds_outline(outline)
 
 
-def test_new_caller_true_survives_a_malformed_fence_without_losing_the_prose(monkeypatch):
-    bible = (
-        "1. CHARACTERS\nRatna.\n\n"
-        f"```json {css.SEMANTIC_SOURCE_FENCE_LABEL}\n"
-        '{"entities":[{"canonical_name":"Ratna","aliases":[]}],'
-        '"anchors":[{"kind":"NOT_A_REAL_KIND","literal":"x"}],'  # invalid enum
-        '"one_time_events":[]}\n```'
-    )
+def test_the_canon_registry_rides_as_a_sidecar_key_not_a_second_block(monkeypatch):
+    """P0-B #2: when `canon_registry` is also requested it shares THIS object. Two
+    independent fenced blocks is what made the requests compete in `oehhe741`; a sidecar
+    key cannot be dropped in favour of the other one, and must not leak into the prose."""
+    prose = "1. CHARACTERS\nRatna."
     result, _, _ = asyncio.run(_run_bible(
-        monkeypatch, structured_semantic=True, output_text=bible))
-    text, source = result
-    assert text == bible, "prose must survive a structured-extraction validation failure"
+        monkeypatch, structured_semantic=True,
+        output_text=_structured(prose, _GOOD_SEMANTIC,
+                                canon_registry={"events": [], "timeline": []})))
+    text, source, _registry = result
+    assert text == prose, "a sidecar key must not end up in the fact-sheet"
+    assert source is not None, "an unknown sidecar key must not invalidate the envelope"
+
+
+def test_new_caller_true_survives_a_malformed_envelope_without_losing_the_prose(monkeypatch):
+    """Right shape, bad CONTENTS — the opposite of the contract-unmet case above. This one
+    does NOT fail over: re-rolling the same model for the same premise is not a fix, and
+    candidate selection is where an unusable envelope is meant to be caught."""
+    prose = "1. CHARACTERS\nRatna."
+    bad = dict(_GOOD_SEMANTIC, anchors=[{"kind": "NOT_A_REAL_KIND", "literal": "x"}])
+    result, _, _ = asyncio.run(_run_bible(
+        monkeypatch, structured_semantic=True, output_text=_structured(prose, bad)))
+    text, source, _registry = result
+    assert text == prose, "prose must survive a structured-extraction validation failure"
     assert source is None
 
 
 def test_new_caller_true_survives_the_extraction_step_itself_raising(monkeypatch):
     """Even a defect INSIDE extraction (not just a bad LLM response) must not take the
-    prose down with it — patch the extractor to blow up and confirm the bible still
+    prose down with it — patch the parser to blow up and confirm the bible still
     returns."""
-    bible = f"1. CHARACTERS\nRatna.\n\n```json {css.SEMANTIC_SOURCE_FENCE_LABEL}\n{{}}\n```"
+    prose = "1. CHARACTERS\nRatna."
 
-    def _boom(text):
+    def _boom(*a, **k):
         raise RuntimeError("extraction blew up")
-    monkeypatch.setattr(css, "extract_semantic_source_json", _boom)
+    monkeypatch.setattr(css, "parse_semantic_source_envelope", _boom)
     result, _, _ = asyncio.run(_run_bible(
-        monkeypatch, structured_semantic=True, output_text=bible))
-    text, source = result
-    assert text == bible
+        monkeypatch, structured_semantic=True,
+        output_text=_structured(prose, _GOOD_SEMANTIC)))
+    text, source, _registry = result
+    assert text == prose
     assert source is None
 
 
@@ -439,7 +475,7 @@ def test_truncated_response_yields_no_bible_and_no_source(monkeypatch):
     result, _, _ = asyncio.run(_run_bible(
         monkeypatch, structured_semantic=True, output_text="cut off mid",
         finish_reason="max_tokens"))
-    text, source = result
+    text, source, _registry = result
     assert text == ""
     assert source is None
 
@@ -450,7 +486,7 @@ def test_all_attempts_failing_returns_the_empty_tuple_shape(monkeypatch):
     monkeypatch.setattr(dyn, "run_worker", always_fails)
     result = asyncio.run(dyn.build_story_bible(
         "topik", _outline(2), is_fiction=True, language="id", structured_semantic=True))
-    assert result == ("", None)
+    assert result == ("", None, None)
 
 
 def test_topic_or_outline_missing_returns_the_empty_shape_immediately(monkeypatch):
@@ -459,7 +495,7 @@ def test_topic_or_outline_missing_returns_the_empty_shape_immediately(monkeypatc
                         lambda *a, **k: called.append(1) or asyncio.sleep(0))
     result = asyncio.run(dyn.build_story_bible(
         "", [], is_fiction=True, language="id", structured_semantic=True))
-    assert result == ("", None)
+    assert result == ("", None, None)
     assert not called, "no LLM call at all when topic/outline are empty"
 
 
@@ -468,17 +504,29 @@ def test_nonfiction_also_gets_the_addendum_unlike_canon_registry():
     real named people/dates/events too. Prompt-level check, no LLM call needed."""
     prompt = dyn._story_bible_prompt(
         "topik", _outline(1), "id", False, structured_semantic=True)
-    assert css.SEMANTIC_SOURCE_FENCE_LABEL in prompt
+    assert css.STRUCTURED_BIBLE_SEMANTIC_KEY in prompt
 
 
-def test_the_prompt_carries_the_suppression_exception_when_requested():
-    """Same bug class as the `canon_registry` suppression fix this file's own docstring
-    documents — the base prompt's "Output ONLY... no preamble, no prose" would otherwise
-    swallow the fenced block."""
+def test_the_prompt_switches_to_the_single_object_contract_when_requested():
+    """P0-B #2. The old prompt appended "EXCEPTION: ALSO output the fenced X block" — once
+    for `canon_registry`, once for the semantic source. Two competing exceptions to the
+    same "no prose" rule read as one exception, and live job `oehhe741` dropped the
+    semantic one on BOTH best-of candidates. The contract is now a single JSON object with
+    named keys, which has no "which exception did it obey?" failure mode.
+
+    OFF must stay byte-identical: not merely free of the new keys, but character-for-
+    character the pre-P0-B prompt, which is what every non-assist job gets."""
     on = dyn._story_bible_prompt("t", _outline(1), "id", True, structured_semantic=True)
     off = dyn._story_bible_prompt("t", _outline(1), "id", True, structured_semantic=False)
-    assert "EXCEPTION" in on and css.SEMANTIC_SOURCE_FENCE_LABEL in on
-    assert css.SEMANTIC_SOURCE_FENCE_LABEL not in off
+
+    assert css.STRUCTURED_BIBLE_TEXT_KEY in on
+    assert css.STRUCTURED_BIBLE_SEMANTIC_KEY in on
+    assert "ONE JSON object" in on
+    assert "```" not in on, "the object contract must not ask for a fenced block at all"
+
+    assert css.STRUCTURED_BIBLE_SEMANTIC_KEY not in off
+    assert off.startswith("TOPIC / PREMISE:") and "Output ONLY the numbered sheet" in off
+    assert "ONE JSON object" not in off
 
 
 def test_best_of_n_pairs_each_candidates_own_envelope_with_its_own_prose(monkeypatch):
@@ -500,7 +548,7 @@ def test_best_of_n_pairs_each_candidates_own_envelope_with_its_own_prose(monkeyp
         src = css.build_semantic_source_v1(
             outline_chapters=outline, bible_text=text,
             entities=(_entity(name=f"Entity-From-Candidate-{i}", eid="ent1"),))
-        return text, src
+        return text, src, None
 
     async def judge_picks_two(sys, user, *, tenant_id, user_id, job_uuid, json_mode):
         return json.dumps({"winner": 2, "reason": "test"}), None
@@ -605,7 +653,7 @@ def _double_returning_none_source(text="prose, no fence at all"):
     async def _fake(topic, outline, *, is_fiction=True, style=None, language="id",
                     manager_model=None, timeout=None, telemetry_sink=None,
                     extra_negative=None, structured_semantic=False):
-        return text if not structured_semantic else (text, None)
+        return text if not structured_semantic else (text, None, None)
     return _fake
 
 
@@ -692,7 +740,7 @@ def test_a_summary_edit_after_binding_is_detected_and_assist_refuses(monkeypatch
         # not a copy substitution the caller could not have produced.
         if isinstance(outline, list) and outline:
             outline[0]["summary"] = "SUMMARY MUTATED AFTER THE BIBLE CALL RETURNED"
-        return "bible text", source
+        return "bible text", source, None
 
     res, rec = asyncio.run(_map_chapters(monkeypatch, bible_double=mutating_bible, n=2))
     assert res.get("ok") is False, res
@@ -876,7 +924,7 @@ def test_event_identity_survives_into_the_canon_and_the_qc_projection(monkeypatc
             return BIBLE, css.parse_semantic_source_envelope(
                 {"entities": [], "anchors": [],
                  "one_time_events": [{"description": desc, "occurs_chapter": 1}]},
-                outline_chapters=outline, bible_text=BIBLE)
+                outline_chapters=outline, bible_text=BIBLE), None
         return _fake
 
     res_a, _ = asyncio.run(_map_chapters(
@@ -913,7 +961,7 @@ def test_a_surgical_bible_mutation_after_extraction_makes_assist_refuse(monkeypa
             outline_chapters=outline, bible_text=original, entities=(_entity(),))
         # The caller pins a DIFFERENT bible than the one this envelope came from — exactly
         # what the surgical ledger patch does a few statements later in the real code.
-        return "SURGICALLY PATCHED BIBLE TEXT", src
+        return "SURGICALLY PATCHED BIBLE TEXT", src, None
 
     res, rec = asyncio.run(_map_chapters(monkeypatch, bible_double=_surgical, n=2))
     assert res.get("ok") is False, res
@@ -932,7 +980,7 @@ def test_a_reroll_without_its_own_envelope_makes_assist_refuse(monkeypatch):
             return "REROLLED BIBLE"
         src = css.build_semantic_source_v1(
             outline_chapters=outline, bible_text="FIRST BIBLE", entities=(_entity(),))
-        return "REROLLED BIBLE", src
+        return "REROLLED BIBLE", src, None
 
     res, rec = asyncio.run(_map_chapters(monkeypatch, bible_double=_reroll_lost_envelope,
                                           n=2))
