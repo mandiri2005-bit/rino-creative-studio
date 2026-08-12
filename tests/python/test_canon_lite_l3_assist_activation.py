@@ -50,12 +50,35 @@ import canon_lite as cl                              # noqa: E402
 import canon_lite_qc_contract as qcc                 # noqa: E402
 import canon_lite_qc_meter as meter                  # noqa: E402
 import canon_lite_qc_runner as runner                # noqa: E402
+import canon_lite_semantic_source as css             # noqa: E402
 import narration_api as na                           # noqa: E402
+from orchestrator import dynamic as dyn              # noqa: E402
 from orchestrator import static as st                # noqa: E402
 from orchestrator.context_builder import SharedContext  # noqa: E402
 
 CANARY = "t-canary"
 OUTSIDER = "t-outsider"
+
+
+async def _fake_story_bible_with_semantics(topic, outline, *, is_fiction=True, style=None,
+                                           language="id", manager_model=None, timeout=None,
+                                           telemetry_sink=None, extra_negative=None,
+                                           structured_semantic=False):
+    """P0-B test double for `orchestrator.dynamic.build_story_bible` — see the identical
+    double in test_canon_lite_l3_assist_stage1.py for the full rationale. This file's own
+    concern is the ACTIVATION PREFLIGHT (P0-A); P0-B adds a SECOND precondition assist must
+    clear (semantic authority), so a row that asserts assist ARMS now also needs this."""
+    text = "1. CHARACTERS\nTest Entity (test double bible, no LLM called)."
+    if not structured_semantic:
+        return text
+    # P0-B round 2: the envelope binds the EXACT bible response it came from, so the double
+    # must name its own `text` — a source that cannot say which bible produced it is refused.
+    source = css.build_semantic_source_v1(
+        outline_chapters=outline, bible_text=text,
+        entities=(cl.CanonEntityV1(entity_id="ent1", canonical_name="Test Entity",
+                                   aliases=(), alias_source="none"),),
+    )
+    return text, source
 
 #: Not a credential. Presence is all the gate reads; the value is never resolved, compared
 #: or transmitted, and this string never leaves the process.
@@ -134,10 +157,23 @@ def _outline(n=3):
 
 
 def _map_chapters(monkeypatch, *, tenant_id=CANARY, n=3, **kw):
-    """Drive the REAL `narrate_chapters` and return `(result, recorder)`."""
+    """Drive the REAL `narrate_chapters` and return `(result, recorder)`.
+
+    P0-B: `NARASI_STORY_BIBLE` is "1" (not "0") and `build_story_bible` is patched to the
+    instant, no-network test double — assist now requires REAL semantic authority to arm,
+    which only a Story Bible call can produce, and this file's rows about ACTIVATION
+    (does assist arm at all) need that second precondition satisfied to observe P0-A's own
+    behaviour once it is armed.
+    """
     rec = Recorder()
     monkeypatch.setattr(st, "_write_chapter", rec)
-    monkeypatch.setenv("NARASI_STORY_BIBLE", "0")
+    monkeypatch.setenv("NARASI_STORY_BIBLE", "1")
+    monkeypatch.setattr(dyn, "build_story_bible", _fake_story_bible_with_semantics)
+    # P0-B round 2: assist additionally requires FICTION (see the P0-B suite). This file
+    # passes no style, and `_is_fiction_style(None)` is False — forced True so these rows
+    # keep testing the ACTIVATION preflight rather than silently exercising P0-B's
+    # nonfiction refusal.
+    monkeypatch.setattr(st, "_is_fiction_style", lambda style: True)
     chapters = _outline(n)
     res = asyncio.run(st.narrate_chapters(
         "topik", chapters, polish="none", max_parallel=n, tenant_id=tenant_id,

@@ -1441,7 +1441,8 @@ _STORY_BIBLE_SYSTEM_NONFICTION = (
 )
 
 
-def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_fiction: bool) -> str:
+def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_fiction: bool,
+                        *, structured_semantic: bool = False) -> str:
     ol_lines = []
     for i, c in enumerate(outline or []):
         cid = c.get("id", i + 1) if isinstance(c, dict) else i + 1
@@ -1475,11 +1476,24 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
         _reg_tail = (" EXCEPTION: after the last numbered heading, ALSO output the fenced "
                      "```json canon_registry block specified above — it is part of the "
                      "required output, not prose.")
+    # SEMANTIC SOURCE suppression fix (P0-B) — SAME bug class as the canon_registry fix
+    # immediately above, fixed the same way, on first write rather than rediscovered
+    # later: this prompt's own "Output ONLY the numbered sheet... no preamble, no prose"
+    # instruction would otherwise suppress the fenced block the SYSTEM addendum asks for.
+    # NOT fiction-gated, unlike `_reg_tail` — nonfiction jobs have real named people,
+    # dates and one-time events too, and P0-B's semantic authority applies to both regimes.
+    _sem_tail = ""
+    if structured_semantic:
+        from canon_lite_semantic_source import SEMANTIC_SOURCE_FENCE_LABEL as _sem_label
+        _sem_tail = (" EXCEPTION: after the last numbered heading, ALSO output the fenced "
+                     f"```json {_sem_label} block specified above — it is "
+                     "part of the required output, not prose.")
     return (
         f"TOPIC / PREMISE:\n{topic}\n\n"
         f"CHAPTER OUTLINE ({len(outline or [])} chapters):\n{ol}\n\n"
         f"Write the {label} in {language}. Output ONLY the numbered sheet under the headings "
-        f"({heads}). One item per line. No preamble, no prose, no chapter text." + _reg_tail
+        f"({heads}). One item per line. No preamble, no prose, no chapter text."
+        + _reg_tail + _sem_tail
     )
 
 
@@ -1494,10 +1508,31 @@ async def build_story_bible(
     timeout: Optional[float] = None,
     telemetry_sink: Optional[Any] = None,
     extra_negative: Optional[str] = None,
-) -> str:
+    structured_semantic: bool = False,
+):
     """ONE manager call → a canonical fact-sheet pinning the piece's load-bearing specifics
     (names, the central subject's fixed identity, locations, timeline, POV, key reveal) so
     parallel chapter-writers cannot contradict each other.
+
+    🔴 `structured_semantic` (P0-B) — DEFAULT-OFF, OPT-IN ONLY, RETURN TYPE VARIES BY IT.
+       False (default, EVERY existing caller): returns `str` exactly as before — same
+       prompt, same call, same behaviour. `NARASI_STORY_BIBLE` runs this function for
+       EVERY multi-chapter job regardless of Canon Lite mode (off included), so the
+       structured request MUST stay opt-in at the call site, not a global flag — a global
+       flag would grow every off-mode job's prompt and output-token bill for a feature
+       those jobs never asked for, and "off-path byte-identical, no new call" is a hard
+       requirement of this work.
+
+       True: returns `(bible_text: str, semantic_source: CanonLiteSemanticSourceV1 | None)`.
+       The SAME single LLM call is asked to ALSO emit a fenced JSON block (see
+       `canon_lite_semantic_source.SEMANTIC_SOURCE_FENCE_LABEL`) after the prose — no
+       second call, ever. `semantic_source` is `None` whenever that block is absent,
+       unparseable, or fails `canon_lite_semantic_source` validation; `bible_text` is
+       UNCHANGED by that failure, because a structured-extraction defect must never take
+       the prose fact-sheet down with it (this function's own "NEVER raises" contract).
+       The caller (`orchestrator/static.py`) decides what an absent/empty envelope means
+       for THIS job — refuse (assist) or tolerate (shadow) — this function only reports
+       what it got.
 
     is_fiction toggles the regime: FICTION decides/invents the specifics; NONFICTION pins only
     what the premise gives and marks unknowns [VERIFY] (never fabricates — fabrication-safety).
@@ -1512,11 +1547,18 @@ async def build_story_bible(
     failover; the aggregator/provider failover (KIE→LaoZhang→AtlasCloud, same model) already runs
     INSIDE each attempt via make_narasi_client. Set NARASI_BIBLE_FALLBACK_MODEL="" to disable the fallback.
 
-    Robust like outline_from_topic: NEVER raises. Returns "" on any failure, so the caller
-    simply proceeds without a bible (prior behavior).
+    Robust like outline_from_topic: NEVER raises. On any failure returns the "nothing happened"
+    shape for whichever contract `structured_semantic` selected ("" or ("", None)), so the
+    caller simply proceeds without a bible (prior behavior, unchanged in shape).
     """
+    def _bible_return(text: str, source):
+        # ONE place deciding the return shape, used at every return point below, so the
+        # `structured_semantic` branch cannot drift out of sync between an early exit, a
+        # successful attempt, and the all-attempts-failed path.
+        return (text, source) if structured_semantic else text
+
     if not (topic and outline):
-        return ""
+        return _bible_return("", None)
     _to = float(timeout if timeout is not None else os.environ.get("NARASI_BIBLE_TIMEOUT", "120"))
     system = _STORY_BIBLE_SYSTEM_FICTION if is_fiction else _STORY_BIBLE_SYSTEM_NONFICTION
     # SECONDARY WANT (9.0->9.x craft lever) — pin ONE want/friction per recurring NAMED secondary so
@@ -1992,6 +2034,46 @@ async def build_story_bible(
                     "premise-specific choices for every one of these slots.")
         except Exception:  # noqa: BLE001 — ledger is an enhancement; its absence must never block a bible
             pass
+    # SEMANTIC SOURCE ENVELOPE (P0-B, caller-driven via `structured_semantic` — NOT an env
+    # flag; see the docstring for why). Ask for a MACHINE-CHECKABLE twin of exactly the
+    # three things `canon_lite_semantic_source.CanonLiteSemanticSourceV1` needs, in a
+    # fenced block AFTER the prose, in this SAME response — no second call.
+    #
+    # ⚠️ DELIBERATELY NOT `canon_registry`'s schema or label. canon_registry's events/
+    #    timeline/kinship/exhibit_sets/chains/quantities shape has no entity table with
+    #    canonical_name/aliases, is triage-oriented ("pin ONLY... TRIAGE, not dump" — a
+    #    continuity-diff aid, not an authority), and this workstream was told explicitly
+    #    not to promote it into L2. `SEMANTIC_SOURCE_FENCE_LABEL` names a DISTINCT block;
+    #    the schema below asks for exactly the three tuples `build_canon_lite_v1()` takes,
+    #    nothing else — entities/anchors/one_time_events, no ids (assigned server-side,
+    #    positionally — see `canon_lite_semantic_source._positional_id`), no secrets, no
+    #    prose beyond what each field is FOR.
+    _semantic_scale_n = max(1, len(outline or []))
+    _semantic_event_cap = min(6 + max(0, _semantic_scale_n - 6), 12)
+    if structured_semantic:
+        from canon_lite_semantic_source import SEMANTIC_SOURCE_FENCE_LABEL as _sem_label
+        system = system + (
+            "\n\nADDENDUM to heading 1/3 (CHARACTERS / TIMELINE & QUANTITIES) — SEMANTIC "
+            f"SOURCE: AFTER the prose fact-sheet, output a fenced ```json code block "
+            f"labelled {_sem_label} serializing ONLY load-bearing facts, "
+            "machine-checkable. Shape: {\"entities\":[{\"canonical_name\":\"<full name as "
+            "used in the fact-sheet>\",\"aliases\":[\"<nickname or short form actually used "
+            "in the fact-sheet, if any>\"]}],\"anchors\":[{\"kind\":\"time\"|\"quantity\","
+            "\"literal\":\"<the EXACT literal as pinned — a date, a duration, a count, an "
+            "age — verbatim, not paraphrased>\"}],\"one_time_events\":[{\"description\":"
+            "\"<short phrase naming the event>\",\"occurs_chapter\":<1-based chapter number "
+            "where it is dramatized on-page>}]}. RULES: entities = every NAMED character or "
+            "organization the fact-sheet pins (aliases = ONLY names/nicknames the fact-sheet "
+            "itself uses for them elsewhere — empty list if it uses only the one name); "
+            "anchors = every PINNED date, duration, age, or count the fact-sheet commits to "
+            "as a fixed value chapters must not contradict; one_time_events = irreversible, "
+            "ONE-TIME plot events the fact-sheet pins to a specific chapter (a death, a "
+            "reveal, a departure — not a recurring state). Use the SAME names/values already "
+            "in the prose above — this block restates them structurally, it does not invent "
+            "new ones. Hard caps so you TRIAGE, not dump: <=20 entities, <=15 anchors, "
+            f"<={_semantic_event_cap} one_time_events. If a category is empty for this "
+            "premise, emit an empty list for it — never omit the key. This JSON is "
+            "machine-only; it does NOT replace the prose fact-sheet above.")
     # ENFORCEMENT RE-ROLL (round-3, caller-driven via NARASI_LEDGER_ENFORCE): the first
     # draft's bible-level ledger hits, quoted back so the retry knows exactly what to
     # replace. None (default) ⟹ byte-identical prompt.
@@ -2001,7 +2083,8 @@ async def build_story_bible(
             + str(extra_negative)[:600] +
             ". Regenerate the bible WITHOUT these items or near-variants of them; replace each "
             "with a fresh, premise-specific invention. Every other requirement above still applies.")
-    prompt = _story_bible_prompt(topic, outline, language, is_fiction)
+    prompt = _story_bible_prompt(
+        topic, outline, language, is_fiction, structured_semantic=structured_semantic)
     # The bible BLOCKS the whole job before any chapter starts, so it must be FAST + RELIABLE. Opus is the
     # FIRST heavy call of the job (cold KIE connection) and is flaky/slow for it: when it works ~106s, else a
     # full NARASI_BIBLE_TIMEOUT waste (~300s) that ALSO double-bills the abandoned LaoZhang opus (a 502 to us
@@ -2136,7 +2219,48 @@ async def build_story_bible(
                         ", ".join(sorted({str(h.get("brand")) for h in _bhits})), _bhits[:3])
             except Exception:  # noqa: BLE001
                 pass
-            return _bible_text
+            _semantic_source = None
+            if structured_semantic:
+                # 🔴 A PARSE FAILURE HERE MUST NEVER TOUCH `_bible_text`. The fence rides
+                #    in the SAME response as the prose (same reasoning as canon_registry:
+                #    "machine-only; it does NOT replace the prose fact-sheet above" — left
+                #    in place, not stripped out, matching that existing precedent exactly
+                #    rather than inventing a new stripping step with its own bug surface).
+                #    Extraction/parsing failing is reported as `semantic_source=None`, and
+                #    the CALLER (`orchestrator/static.py`) decides what an absent envelope
+                #    means for this job — this function's own contract is "never raises",
+                #    and a structured-extraction defect breaking the prose bible would be
+                #    exactly the kind of collateral damage that contract exists to prevent.
+                try:
+                    from canon_lite_semantic_source import (
+                        extract_semantic_source_json, parse_semantic_source_envelope)
+                    _raw_envelope = extract_semantic_source_json(_bible_text)
+                    if _raw_envelope is not None:
+                        # `bible_text=_bible_text` — the EXACT response this envelope was
+                        # extracted from, hashed into the source so a later swap of
+                        # `ctx.canonical_facts` (a surgical ledger patch, or a full reroll)
+                        # can be detected by the caller. See `binds_bible`.
+                        _semantic_source = parse_semantic_source_envelope(
+                            _raw_envelope, outline_chapters=outline,
+                            bible_text=_bible_text)
+                        log.info(
+                            "build_story_bible: semantic source parsed — %d entities, "
+                            "%d anchors, %d one_time_events",
+                            len(_semantic_source.entities), len(_semantic_source.anchors),
+                            len(_semantic_source.one_time_events))
+                    else:
+                        log.warning("build_story_bible: no semantic_source fence found "
+                                    "(error_code=semantic_source_fence_absent)")
+                except Exception as _sse:  # noqa: BLE001 — extraction must never break the bible
+                    # Bounded log only: `_sse` could carry model-produced text (a
+                    # malformed field value echoed into an exception message) — never
+                    # log the exception body itself, only its class name.
+                    log.warning(
+                        "build_story_bible: semantic_source parse failed "
+                        "(error_code=semantic_source_parse_error class=%s)",
+                        type(_sse).__name__)
+                    _semantic_source = None
+            return _bible_return(_bible_text, _semantic_source)
         if _truncated:
             # A bible cut off at the token cap is INCOMPLETE — every parallel chapter would inherit a
             # partial fact-sheet. Reject it and fail over (or proceed with none) rather than poison the book.
@@ -2149,7 +2273,7 @@ async def build_story_bible(
     log.warning("BIBLE-LESS ROLL: all %d bible attempt(s) failed — %d parallel chapters will "
                 "run with NO canonical facts (fork risk HIGH; see roll-11 postmortem)",
                 len(_chain), len(outline or []))
-    return ""
+    return _bible_return("", None)
 
 
 __all__ = [

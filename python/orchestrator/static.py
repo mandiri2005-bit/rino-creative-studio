@@ -808,6 +808,39 @@ async def narrate_chapters(
     #   (facts_are_bible stays False ⟹ the [VERIFY] framing). Runs only when the facts slot is
     #   still EMPTY (RAG facts win). Never raises; on failure ctx is unchanged. Metered through
     #   the same telemetry_sink as the outline/chapters, so _settle bills it.
+    # P0-B: does THIS job want the structured semantic envelope alongside the prose?
+    #
+    # 🔴 `assist` ONLY — NOT `shadow`. Requesting the envelope changes the Story Bible
+    #    SYSTEM PROMPT and the user prompt (the suppression exception), grows the response
+    #    with a fenced JSON block, and — because that fence is deliberately left in the
+    #    returned text, matching `canon_registry`'s own precedent — changes
+    #    `ctx.canonical_facts`, which every chapter worker receives as its pinned prefix.
+    #    Shadow's governing invariant is that it "may observe, never prevent — §9: no
+    #    user-visible change" (see `test_shadow_context_stays_writable` and the shadow
+    #    branch below). Different prompt, different output tokens, different chapter input
+    #    is a user-visible change by any reading. An earlier draft had this as
+    #    `_cl_mode in ("shadow", "assist")`, which silently redefined what shadow means —
+    #    exactly the kind of quiet scope creep the mode split exists to prevent.
+    #
+    # 🔴 FICTION ONLY, and the nonfiction case REFUSES rather than degrades (below). The
+    #    envelope's entities/anchors/events come from an LLM inventing or restating the
+    #    fact-sheet's own content. For FICTION that is legitimate: the bible DECIDES the
+    #    invented specifics (`facts_are_bible=True`), so it IS the authority. For
+    #    NONFICTION the regime is the opposite — the sheet pins only what the premise
+    #    gives and marks unknowns `[VERIFY]`, never fabricating — so LLM-produced tuples
+    #    would be UNGROUNDED claims about real people, dates and events, promoted to canon
+    #    authority QC then enforces against. Until a provenance path exists that can prove
+    #    `job_input`/`source_grounded` grounding, nonfiction gets no semantic authority.
+    #
+    # off-mode never requests it, so `structured_semantic` stays unpassed below, which is
+    # what keeps the off-path call byte-identical to before P0-B existed.
+    #
+    # `_cl_semantic_source` is initialized here, UNCONDITIONALLY, so every path past this
+    # point — Story Bible skipped entirely (RAG facts already present, flag off, single
+    # chapter), the call raising, or a normal run — leaves it a defined `None` rather than
+    # an unset name a later reference could NameError on.
+    _cl_wants_semantic = (_cl_mode == "assist") and _is_fiction_style(style)
+    _cl_semantic_source = None
     if (str(os.environ.get("NARASI_STORY_BIBLE", "1")).strip().lower() not in ("0", "false", "no", "off")
             and total >= 2 and not (ctx.canonical_facts or "").strip()):
         _fic = _is_fiction_style(style)
@@ -832,11 +865,26 @@ async def narrate_chapters(
                     *[build_story_bible(
                         topic, list(ctx.chapters or chapters), is_fiction=_fic,
                         style=style, language=language,
-                        manager_model=m_model, telemetry_sink=telemetry_sink)
+                        manager_model=m_model, telemetry_sink=telemetry_sink,
+                        structured_semantic=_cl_wants_semantic)
                       for _ in range(_bo_n)],
                     return_exceptions=True)
-                _cands = [c for c in _cands_raw if isinstance(c, str) and c.strip()]
+                # P0-B + best-of interaction: each candidate carries ITS OWN envelope (the
+                # same LLM response that produced its prose), never a different candidate's
+                # — that pairing is what keeps the structured data "not an independent
+                # authority" once a WINNER is picked below. `_cand_pairs` is None under
+                # `structured_semantic=False` (off-mode): the old bare-string shape,
+                # untouched.
+                if _cl_wants_semantic:
+                    _cand_pairs = [c for c in _cands_raw
+                                  if isinstance(c, tuple) and len(c) == 2
+                                  and isinstance(c[0], str) and c[0].strip()]
+                    _cands = [p[0] for p in _cand_pairs]
+                else:
+                    _cand_pairs = None
+                    _cands = [c for c in _cands_raw if isinstance(c, str) and c.strip()]
                 _bible = _cands[0] if _cands else ""
+                _cl_semantic_source = _cand_pairs[0][1] if _cand_pairs else None
                 if len(_cands) >= 2:
                     try:
                         from laozhang_api import _narasi_cheap_call as _bj_call, _narasi_parse_json as _bj_parse
@@ -872,10 +920,19 @@ async def narrate_chapters(
                         _w = int((_bj or {}).get("winner") or 1)
                         if 1 <= _w <= len(_cands):
                             _bible = _cands[_w - 1]
+                            if _cand_pairs:
+                                _cl_semantic_source = _cand_pairs[_w - 1][1]
                         log.info("bible best-of-%d: %d candidate(s), winner #%d — %s",
                                  _bo_n, len(_cands), _w, str((_bj or {}).get("reason") or "")[:120])
                     except Exception as _bje:  # noqa: BLE001 — judge is an enhancement
                         log.warning("bible best-of judge failed (non-fatal, candidate #1 kept): %s", _bje)
+            elif _cl_wants_semantic:
+                _bible, _cl_semantic_source = await build_story_bible(
+                    topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                    style=style, language=language,
+                    manager_model=m_model, telemetry_sink=telemetry_sink,
+                    structured_semantic=True,
+                )
             else:
                 _bible = await build_story_bible(
                     topic, list(ctx.chapters or chapters), is_fiction=_fic,
@@ -1227,15 +1284,38 @@ async def narrate_chapters(
                                         except Exception as _spe:  # noqa: BLE001
                                             log.warning("ledger-enforce surgical failed (non-fatal): %s", _spe)
                                     else:
-                                        _bible2 = await build_story_bible(
-                                            topic, list(ctx.chapters or chapters), is_fiction=_fic,
-                                            style=style, language=language,
-                                            manager_model=m_model, telemetry_sink=telemetry_sink,
-                                            extra_negative=", ".join(_terms))
+                                        # P0-B: the reroll REPLACES the pinned bible, so it
+                                        # must carry its OWN semantic source from the SAME
+                                        # response — the old source describes a document
+                                        # that is about to stop being the canon's bible.
+                                        # Pairing them here is what keeps `binds_bible()`
+                                        # satisfiable after a legitimate reroll; without it
+                                        # every reroll would (correctly, but wastefully)
+                                        # force assist to refuse.
+                                        _bible2_src = None
+                                        if _cl_wants_semantic:
+                                            _bible2, _bible2_src = await build_story_bible(
+                                                topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                                                style=style, language=language,
+                                                manager_model=m_model, telemetry_sink=telemetry_sink,
+                                                extra_negative=", ".join(_terms),
+                                                structured_semantic=True)
+                                        else:
+                                            _bible2 = await build_story_bible(
+                                                topic, list(ctx.chapters or chapters), is_fiction=_fic,
+                                                style=style, language=language,
+                                                manager_model=m_model, telemetry_sink=telemetry_sink,
+                                                extra_negative=", ".join(_terms))
                                         _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
                                                  if _bible2 else {})
                                         if _bible2 and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
                                             ctx.canonical_facts = _bible2
+                                            # Pinned together, or not at all: a reroll whose
+                                            # own envelope failed to parse leaves
+                                            # `_cl_semantic_source = None`, and assist then
+                                            # refuses rather than pairing new prose with the
+                                            # superseded extraction.
+                                            _cl_semantic_source = _bible2_src
                                             log.info("ledger-enforce: bible re-rolled — hits %d → %d, re-roll pinned",
                                                      _lrep.get("bible_hits"), _rep2.get("bible_hits") or 0)
                                         else:
@@ -1344,6 +1424,7 @@ async def narrate_chapters(
     if _cl_mode in ("shadow", "assist"):
         try:
             import canon_lite as _cl
+            import canon_lite_semantic_source as _cl_semantic_source_module
             _cl_outline = list(ctx.chapters or chapters)
             _cl_cfg = _cl.build_job_config_snapshot(
                 outline_chapters=_cl_outline,
@@ -1361,15 +1442,79 @@ async def narrate_chapters(
                 _cl_policy = "source_grounded"
             else:
                 _cl_policy = "unknown"
+
+            # ── P0-B: validate the semantic source against the outline ABOUT TO BE USED ──
+            #
+            # 🔴 THIS IS THE MUTATION-AFTER-BINDING CHECK, AND IT MUST RUN HERE, NOT AT
+            #    THE STORY BIBLE CALL SITE. `_cl_semantic_source.accepted_outline_content_sha256`
+            #    was bound to whatever `ctx.chapters` looked like when the Story Bible call
+            #    ran, several statements — and, on the best-of-N path, one LLM judge call —
+            #    earlier. `_cl_outline` above is what is ABOUT to become the real canon's
+            #    chapter identity. `binds_outline()` re-hashes `_cl_outline` right now and
+            #    compares: a mismatch means the accepted outline moved in that window, and
+            #    injecting the stale extraction would describe a book that is no longer the
+            #    one being written. `verify_sha256()` catches the same class of problem from
+            #    the other direction — the object's own content no longer matches its hash.
+            #
+            #    A cleared-cohort assist job that fails ANY of these three checks — absent,
+            #    unbound, or genuinely empty (parsed fine but extracted nothing) — refuses
+            #    below, before the canon (and therefore before the MAP) rather than silently
+            #    building a structurally-present-but-semantically-empty canon: that exact
+            #    shape is `has_semantic_authority() == False` while `canon_lite_l3` still
+            #    reports `outcome=unchecked` as if something had been verified — the false
+            #    canary this workstream exists to close, one layer up from P0-A's.
+            _cl_semantic_valid = None
+            _cl_semantic_reason = "canon_lite_assist_semantic_source_unavailable"
+            # 🔴 `isinstance`, NOT `is not None` ALONE. `build_story_bible()`'s documented
+            #    contract is "`None` or a validated `CanonLiteSemanticSourceV1`", but this
+            #    block must stay correct even if that contract is ever violated by a future
+            #    change — an untyped truthy value reaching `.verify_sha256()` would raise
+            #    `AttributeError` INSIDE this try, which the outer `except` catches and
+            #    reports as the unrelated, less precise `canon_lite_assist_canon_unavailable`.
+            #    Checking the type here keeps the diagnosis honest about what actually failed.
+            _cl_bible_now = getattr(ctx, "canonical_facts", "") or None
+            if not _cl_wants_semantic and _cl_assist:
+                # Assist asked for, but this job is not eligible to HAVE a semantic source
+                # at all — today that means nonfiction (see `_cl_wants_semantic`). Refusing
+                # is the point: silently running assist with empty tuples would be a canon
+                # that passes every structural check and can verify nothing.
+                _cl_semantic_reason = "canon_lite_assist_semantic_source_not_eligible"
+            elif isinstance(_cl_semantic_source,
+                            _cl_semantic_source_module.CanonLiteSemanticSourceV1):
+                if not _cl_semantic_source.verify_sha256():
+                    _cl_semantic_reason = "canon_lite_assist_semantic_source_unbound"
+                elif not _cl_semantic_source.binds_outline(_cl_outline):
+                    _cl_semantic_reason = "canon_lite_assist_semantic_source_unbound"
+                elif not _cl_semantic_source.binds_bible(_cl_bible_now):
+                    # The pinned bible is no longer the one these tuples came from — a
+                    # surgical ledger patch rewrote it in place, or a reroll replaced it
+                    # without carrying its own envelope. Distinct code from `unbound`: the
+                    # outline is fine, the PROVENANCE is not.
+                    _cl_semantic_reason = "canon_lite_assist_semantic_source_bible_changed"
+                elif not _cl_semantic_source.has_any_semantic_content():
+                    _cl_semantic_reason = "canon_lite_assist_semantic_source_empty"
+                else:
+                    _cl_semantic_valid, _cl_semantic_reason = _cl_semantic_source, None
+
             _cl_canon = _cl.build_canon_lite_v1(
                 outline_chapters=_cl_outline,
                 job_config=_cl_cfg,
                 fact_source_policy=_cl_policy,
                 advisory_bible_text=(getattr(ctx, "canonical_facts", "") or None),
+                # SHADOW with an invalid/absent source proceeds on EMPTY tuples — same
+                # "tolerate and log" discipline as an unavailable canon; only ASSIST
+                # refuses (checked below, after this try/except, matching the existing
+                # canon-unavailable check's own structure).
+                entities=(_cl_semantic_valid.entities if _cl_semantic_valid else ()),
+                anchors=(_cl_semantic_valid.anchors if _cl_semantic_valid else ()),
+                one_time_events=(
+                    _cl_semantic_valid.one_time_events if _cl_semantic_valid else ()),
             )
             _cl_status = "present"
         except Exception as _cle:  # noqa: BLE001 - shadow must never break a job
             _cl_canon, _cl_status = None, "invalid"
+            _cl_semantic_valid = None
+            _cl_semantic_reason = "canon_lite_assist_semantic_source_unavailable"
             # Fixed code only: even a dynamically named exception class can carry
             # attacker-controlled prose, so neither message nor type name is telemetry.
             log.warning(
@@ -1380,6 +1525,12 @@ async def narrate_chapters(
         # on; assist has nothing to inject and must not pretend otherwise.
         if _cl_assist and _cl_canon is None:
             return _assist_refuse("canon_lite_assist_canon_unavailable")
+        # P0-B: a non-None canon is not enough for assist — it must carry REAL semantic
+        # authority. `_cl_semantic_reason` is always a bounded literal from the fixed set
+        # above; never provider/LLM text (§C12-style discipline, same as the L3 reason
+        # codes this mirrors).
+        if _cl_assist and _cl_semantic_valid is None:
+            return _assist_refuse(_cl_semantic_reason)
         try:
             # C7/§8.1: absent or invalid canon is REPORTED as such. The digest is
             # hashes, counts and bounded labels only — no name, title, literal or prose.
