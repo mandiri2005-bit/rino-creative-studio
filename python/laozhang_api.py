@@ -159,6 +159,12 @@ _VERTEX_GLOBAL_MODELS = frozenset({
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
     "gemini-3-pro-preview",
+    # Added 2026-08-11. NARASI_OUTLINE_MODEL in prod, same 3.x class as the models above, so
+    # the same regional 404 is expected — an omitted entry does not fail loudly, it 404s in
+    # us-central1 and silently drops the call through the failover chain, which is exactly
+    # how the gemini-3.5-flash case was found. If a regional endpoint later serves it,
+    # remove the entry; leaving it costs nothing but a global round-trip.
+    "gemini-3.6-flash",
 })
 
 
@@ -314,6 +320,14 @@ MODELS = {
     # NARASI_OUTLINE_MODEL in prod (Rino 2026-07-04) — proven serving on LaoZhang;
     # registered so usage is PRICED (was billed 0 credits while off-catalog).
     "gemini-3.5-flash": "gemini-3.5-flash",
+    # NARASI_OUTLINE_MODEL in prod since 2026-08-11. Registration here is HALF the whitelist:
+    # _narasi_model_ok requires `model in MODELS` AND a non-zero _calc_cost, so a
+    # priced-but-unregistered id is rejected and a registered-but-unpriced id would generate
+    # for free. Add to MODELS and _MODEL_COSTS_PER_M in the same change, never one alone.
+    # NOTE: the whitelist only actually GATES the outline once admission reads the effective
+    # model (_narasi_admit, this same change) — before that it validated body["model"] while
+    # execution used NARASI_OUTLINE_MODEL, so registration priced the call but gated nothing.
+    "gemini-3.6-flash": "gemini-3.6-flash",
 }
 
 # Models that support tool/function calling via OpenAI-compatible endpoint
@@ -448,6 +462,10 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     # or ceiling, ceiling) and the polish Worker leaves max_tokens=None, so it would request
     # this whole value; 32k is definitely accepted, 65k risks a strict-validator rejection.
     "gemini-3.5-flash": 60000,
+    # Added 2026-08-11. Same 60000 as 3.5-flash — a deliberate operational ceiling, not the
+    # model's published max output; a missing entry silently falls back to
+    # DEFAULT_MAX_TOKENS (16384), which is a quiet truncation rather than an error.
+    "gemini-3.6-flash": 60000,
 }
 DEFAULT_MAX_TOKENS = 16384
 
@@ -546,11 +564,32 @@ _MODEL_COSTS_PER_M: dict[str, tuple[float, float] | list[tuple[int, float, float
     "deepseek-v4-pro":        (0.55,   2.19),
     "deepseek-r1":            (0.55,   2.19),
     # Gemini (longer prefixes first so -lite/-pro win over -flash)
+    #
+    # ⚠️ FOUR ROWS BELOW ARE KNOWN WRONG AND DELIBERATELY LEFT ALONE HERE. An audit on
+    #    2026-08-11 measured gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro and
+    #    gemini-3-flash as UNDER-charging against Google's published rates — gemini-2.5-flash
+    #    is NARASI_POLISH_MODEL in production and is the worst of them. Correcting them is a
+    #    money-path change with its own blast radius (this table is the BILLING basis, not
+    #    just COGS: credit_catalog.operation_usd("narasi", …) calls _calc_cost and the narasi
+    #    markup is x1), and it also needs a provider dimension this table does not have —
+    #    Vertex and the Gemini Developer API publish DIFFERENT rates for the same id, and
+    #    _calc_cost sees neither the provider nor the thinking mode. Tracked as separate work;
+    #    do not "fix" a row here in passing.
     "gemini-2.5-flash-lite":  (0.075,  0.30),
     "gemini-2.5-flash":       (0.15,   0.60),
     "gemini-2.5-pro":         (1.25,  10.00),
     "gemini-3-flash":         (0.15,   0.60),
     "gemini-3.5-flash":       (1.50,   9.00),
+    # NARASI_OUTLINE_MODEL in prod. Required for the model to work at all: _narasi_model_ok
+    # rejects an unpriced id, so without this row the outline is refused by admission (and
+    # before this change, when admission still read body["model"], it would instead have
+    # generated for FREE). Registration and price must land together.
+    # ⚠️ PROVENANCE: (1.50, 7.50) was recorded on 2026-08-11 as Google's published list rate.
+    #    It was NOT independently re-verified in this change — the Vertex pricing page could
+    #    not be read end-to-end — and the primary serving path here is Vertex, whose table
+    #    splits thinking vs non-thinking output on some models while this one has no such
+    #    axis. Treat as provisional and reconcile against a real invoice.
+    "gemini-3.6-flash":       (1.50,   7.50),
     "gemini-1.5-flash":       (0.075,  0.30),
     "gemini-1.5-pro":         (1.25,   5.00),
     # Others (best-effort estimates)
@@ -1179,6 +1218,21 @@ _NARASI_GEMINI_FAILOVER_MODELS = {
     # 3.5-flash in the configured GCP_LOCATION it returns empty → falls through to
     # LaoZhang (today's behavior), so this is strictly a win-or-noop.
     "gemini-3.5-flash",
+    # Added 2026-08-11 — NARASI_OUTLINE_MODEL. Same rationale as 3.5-flash above, but be
+    # precise about what it does and does not buy, because it was measured:
+    #   · Under TODAY'S prod env (NARASI_OUTLINE_GEMINI=gemini-3.6-flash, NARASI_OUTLINE_
+    #     LAOZHANG/_KIE/_ATLASCLOUD=0) this membership is a NO-OP on the effective chain. The
+    #     phase switchboard force-includes the vertex rung on its own and drops every other
+    #     rung, so the chain is single-rung Vertex either way. Do not read this entry as
+    #     "Vertex primary, LaoZhang fallback" — there is no fallback while LAOZHANG=0.
+    #   · It becomes LOAD-BEARING the moment NARASI_OUTLINE_LAOZHANG is flipped to 1. Without
+    #     it, _narasi_failover_chain_base does not recognise the id as a gemini-family model
+    #     and falls through to the CLAUDE family chain, so the laozhang rung would serve
+    #     claude-opus-4-6 — wrong model family — and would sit AHEAD of vertex in chain order.
+    #     With it, the flip yields the intended [vertex/3.6, laozhang/3.6].
+    # Also in _VERTEX_GLOBAL_MODELS, without which the Vertex rung 404s regionally and this
+    # membership buys nothing.
+    "gemini-3.6-flash",
 }
 # Sonnet narasi models eligible for the LaoZhang failover chain (Rino 2026-07-06).
 # MANAGER_MODEL defaults to claude-sonnet-4-6 (all polish/merge/synthesize). These
@@ -1718,16 +1772,62 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     if response_json and os.getenv("NARASI_GENAI_JSON_MIME", "0").strip().lower() in ("1", "true", "yes", "on"):
         # json_mode was silently dropped on this rung (response_format is an OpenAI-ism).
         cfg_kwargs["response_mime_type"] = "application/json"
-        # 2.5-family thinks by default and thought tokens bill against max_output_tokens —
+        # Gemini thinks by default and thought tokens bill against max_output_tokens —
         # a cheap-call budget (800) is consumed entirely by thinking on a 12k-char counting
         # task -> finish=MAX_TOKENS with zero text parts -> resp.text None -> '' (register
-        # gate 6/6 empty in prod). JSON side-calls don't need thinking; force it off.
-        # Scoped: 2.5 ids only (gemini-3.x rejects thinking_budget=0) and small budgets only.
-        if "-2.5-" in (model or "") and int(max_tokens) <= 4000:
-            try:
-                cfg_kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=0)
-            except Exception:
-                pass
+        # gate 6/6 empty in prod). JSON side-calls don't need thinking; force it down.
+        #
+        # 🔴 TWO FAMILIES, TWO DIFFERENT KNOBS — and getting this wrong is silent:
+        #      · 2.5 ids take thinking_budget=0 (a hard off).
+        #      · 3.x ids REJECT thinking_budget=0 and must use thinking_level instead.
+        #    Until 2026-08-11 only the 2.5 branch existed, so every gemini-3.x JSON call ran
+        #    at Google's DEFAULT thinking level. That is the production outline path
+        #    (NARASI_OUTLINE_MODEL=gemini-3.6-flash), i.e. the exact call this whole branch
+        #    exists to protect was the one call it did not protect — a 3-chapter outline
+        #    budgets only 4000 output tokens, so thought tokens can still starve the JSON
+        #    and reproduce the same truncated/empty failure on 3.x that 2.5 was fixed for.
+        #    MINIMAL (not off) because structured extraction wants the floor, and 3.x has no
+        #    zero. Escape hatch: NARASI_GENAI_3X_THINKING_LEVEL=off leaves Google's default.
+        #
+        # 🔴 THE CEILING USED TO BE A HARD 4000, AND THAT SILENTLY BROKE EVERY OUTLINE OF
+        #    4+ CHAPTERS. The outline call budgets max(4000, chap_count*600 + 2000), so
+        #    3 chapters lands exactly ON 4000 and passes, 4 chapters lands at 4400 and does
+        #    not. Above the ceiling thinking stayed ON, thought tokens ate max_output_tokens,
+        #    and the model returned either truncated JSON (json.loads fails -> HTTP 500
+        #    "Tidak bisa parse outline") or no text parts at all (tout=1 -> "vertex empty").
+        #    Two different-looking production failures, one cause. Confirmed live 2026-08-11.
+        #
+        #    A JSON side-call does not need thinking at ANY budget — that is the whole point
+        #    of the branch, and the old bound made the fix apply only to the smallest calls
+        #    it was tested on. The ceiling is kept (rather than removed) so the override can
+        #    never silently attach to some future very large call, but it now defaults to the
+        #    2.5-flash output ceiling, which covers the widest outline the admission gate
+        #    allows: DALANG_MAX_CHAPTERS=20 -> max_tok 14000 <= 16384.
+        _nothink_max = 16384
+        try:
+            _nothink_max = int(os.environ.get("NARASI_GENAI_NOTHINK_MAX_TOKENS") or 16384)
+        except (TypeError, ValueError):
+            pass
+        if int(max_tokens) <= _nothink_max:
+            _tm = model or ""
+            if "-2.5-" in _tm:
+                try:
+                    cfg_kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=0)
+                except Exception:
+                    pass
+            elif _tm.startswith("gemini-3"):
+                # thinking_level, never thinking_budget — see the note above. An unknown
+                # level name or an SDK without the field falls through to Google's default
+                # rather than failing the call; the same bound as the 2.5 branch applies so
+                # one env var governs both families.
+                _lvl = (os.environ.get("NARASI_GENAI_3X_THINKING_LEVEL") or "MINIMAL").strip()
+                if _lvl.lower() not in ("", "0", "off", "no", "false", "none", "default"):
+                    try:
+                        cfg_kwargs["thinking_config"] = _gt.ThinkingConfig(
+                            thinking_level=getattr(
+                                _gt.ThinkingLevel, _lvl.upper(), _lvl.upper()))
+                    except Exception:
+                        pass
     try:
         cfg = _gt.GenerateContentConfig(**cfg_kwargs)
     except TypeError:
@@ -2059,6 +2159,13 @@ class _NarasiFailoverClient:
                         # stamp the serving aggregator so _log_narasi_usage records it in the
                         # `provider` column (kie/laozhang/atlascloud) → margin/rung is verifiable.
                         object.__setattr__(resp, "_narasi_served_by", name)
+                        # …and the model that rung actually sent upstream. Without this the
+                        # only model identity available downstream is the one the CALLER
+                        # asked for, which the phase switchboard is free to override — so a
+                        # call requested as claude-opus-4-7 but served as gemini-3.6-flash
+                        # was priced as Opus ($5/$25 per M vs $1.50/$7.50). The trace print
+                        # below already knew `model_id`; it just never left this frame.
+                        object.__setattr__(resp, "_narasi_served_model", model_id)
                     except Exception:
                         pass
                     # MODEL-TRACE (Rino): the model that ACTUALLY served this call + the rung.
@@ -2081,7 +2188,28 @@ class _NarasiFailoverClient:
                 print(f"[narasi-failover] {name} exhausted after {_NARASI_RUNG_ATTEMPTS} "
                       f"attempts → next rung")
         if attempted == 0:
-            # no keyed rung in the chain → fall back to the standard single-provider client
+            # Every rung in this phase's chain was keyless.
+            #
+            # 🔴 DO NOT fall through to make_client when the operator has taken explicit
+            #    control of this phase's routing. make_client sends every non-DeepSeek model
+            #    to LaoZhang ("All other models always use LAOZHANG_API_KEY" — its own
+            #    docstring), so this fallthrough silently re-enables the very provider an
+            #    operator switched off: with NARASI_OUTLINE_LAOZHANG=0 the phase gate drops
+            #    the laozhang rung, a keyless Vertex rung then lands here, and the call goes
+            #    to LaoZhang regardless. "Provider disabled" has to mean disabled — most of
+            #    all when the primary is down, which is exactly when this path runs.
+            #    An explicit error is recoverable; a silent provider substitution is a
+            #    billing and data-routing surprise that looks like success.
+            if self._phase and _narasi_phase_has_override(self._phase):
+                raise RuntimeError(
+                    f"narasi phase '{self._phase}' has an explicit provider switchboard and "
+                    f"no rung in its chain has a usable key "
+                    f"(chain: {[(c[0], c[4]) for c in chain]}) — refusing to fall back to the "
+                    f"default LaoZhang client, which this switchboard may deliberately "
+                    f"exclude. Configure a key for one of the allowed providers, or change "
+                    f"the NARASI_{self._phase.upper()}_* flags.")
+            # Legacy phase-less path: no operator override in play, so the historic
+            # single-provider fallthrough remains correct and is preserved byte-for-byte.
             return make_client(self._model).chat.completions.create(**kw)
         raise RuntimeError("narasi failover exhausted — all aggregators failed: " + " | ".join(errors))
 
@@ -2177,7 +2305,8 @@ def _resp_err_detail(resp) -> str:
         return "no choices/content"
 
 
-def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = "", phase: str = ""):
+def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = "", phase: str = "",
+                     response_format=None):
     """Resilient SYNCHRONOUS narasi chat completion. Tries `model` then _NARASI_MODEL_FALLBACKS
     until one returns usable content (guards choices=None / empty). Byte-identical to a plain
     create when the primary works. Returns (resp, used_model). Raises RuntimeError with the
@@ -2204,8 +2333,88 @@ def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = ""
     # BEFORE the current `m` is appended to it.
     _wk_lz_override = _narasi_phase_laozhang_override("worker")
     _wk_lz_sole_rung = _narasi_phase_laozhang_sole_rung("worker")
+
+    # 🔴 DEDUP ON THE EFFECTIVE CHAIN, NOT ON THE CANDIDATE NAME.
+    #
+    #    A candidate name says nothing about what will be sent upstream: the per-phase
+    #    switchboard can rewrite a rung's model in place and drop every other rung, so
+    #    DIFFERENT candidate names can collapse onto the IDENTICAL upstream call. Measured
+    #    under the deployed outline env (NARASI_OUTLINE_GEMINI=gemini-3.6-flash,
+    #    _LAOZHANG/_KIE/_ATLASCLOUD=0):
+    #
+    #        gemini-3.6-flash   -> [(vertex, gemini-3.6-flash)]
+    #        claude-opus-4-7    -> [(vertex, gemini-3.6-flash)]
+    #        claude-sonnet-4-6  -> [(vertex, gemini-3.6-flash)]
+    #        gemini-2.5-flash   -> [(vertex, gemini-3.6-flash)]
+    #
+    #    One distinct chain across four candidates. With _NARASI_RUNG_ATTEMPTS=2 that is up
+    #    to EIGHT identical calls for one request: no added resilience (they cannot fail
+    #    differently), 8x the latency, and 8x the upstream spend on a failing outline.
+    #    🔴 THE SIGNATURE MUST MATCH WHAT _create WILL ACTUALLY DO, not what the chain looks
+    #       like on paper. Two ways those diverge, both caught by audit after the first
+    #       version of this dedup — and both made the dedup DESTROY recovery rather than
+    #       merely save waste, which is strictly worse than the duplicate calls it fixes:
+    #
+    #       · _create SKIPS any rung whose resolved API key is empty (`if not key:
+    #         continue`). Only rungs with a usable key may enter the signature. What happens
+    #         when none remain then splits on whether the operator configured this phase:
+    #           - NO phase override (legacy): _create falls through to
+    #             make_client(candidate), a plain call on the CANDIDATE's own model. Those
+    #             are genuinely different calls per candidate and must NOT be deduped —
+    #             deduping them skipped Claude fallbacks that would have succeeded.
+    #           - phase override ACTIVE: _create now fails closed rather than handing the
+    #             call to LaoZhang behind the operator's back (see its comment). There is no
+    #             legitimate upstream call at all, so every candidate collapses to the same
+    #             "no route" signature and one clear error beats four copies of it.
+    #
+    #       · `mt` is NOT constant across candidates: the primary sends max_tokens verbatim
+    #         while a fallback clamps to that model's own ceiling. A lower budget is
+    #         emphatically NOT "never a better attempt" — a primary asking 100000 can be
+    #         rejected outright where the SAME model at its 64000 ceiling succeeds. An
+    #         earlier version of this note claimed otherwise and was wrong; max_tokens is
+    #         part of the key, so rm/mt must be computed BEFORE the signature.
+    #
+    #    The laozhang-pinning guard below is the narrow, phase="worker"-only special case of
+    #    this same failure; it is kept for its more specific diagnostic message.
+    _chain_sigs: list[tuple] = []
+    # Whether the operator has configured THIS phase at all. Candidate-independent, so it is
+    # resolved once: it decides what "no keyed rung" means (fail closed vs plain fallthrough).
+    _phase_is_governed = bool(phase) and _narasi_phase_has_override(phase)
+    _NO_ROUTE_SIG = ((("__no_route__", ""),), 0)
+
+    def _chain_signature(cand: str, resolved: str, max_tok: int) -> tuple:
+        """The upstream call `cand` will actually produce, as a comparable key. Routing
+        introspection must never break the call itself, so any failure degrades to a
+        candidate-unique key (i.e. "cannot prove it is a duplicate" → try it)."""
+        try:
+            chained = _narasi_will_chain(cand, phase)
+            rungs: tuple = ()
+            if chained:
+                rungs = tuple((c[0], c[4])
+                              for c in _narasi_failover_chain(cand, role, phase)
+                              if (c[3] or "").strip())
+            if rungs:
+                return (rungs, int(max_tok))
+            if chained and _phase_is_governed:
+                # _create fails closed here — no upstream call exists to be distinct about,
+                # and max_tokens cannot change that, so every candidate shares one key.
+                return _NO_ROUTE_SIG
+            # Legacy fallthrough: a plain call on this candidate's own resolved model.
+            return ((("__plain__", resolved),), int(max_tok))
+        except Exception:
+            return ((("__unknown__", cand),), int(max_tok))
+
     for m in [model] + _NARASI_MODEL_FALLBACKS:
         if not m or m in seen:
+            continue
+        rm = MODELS.get(m, m)
+        mt = int(max_tokens) if m == model else min(int(max_tokens), MODEL_MAX_TOKENS.get(rm, DEFAULT_MAX_TOKENS))
+        _sig = _chain_signature(m, rm, mt)
+        if _sig in _chain_sigs:
+            print(f"[narasi] fallback candidate {m} skipped — it resolves to an upstream "
+                  f"call already attempted in this request ({list(_sig[0])} @ "
+                  f"max_tokens={_sig[1]}); repeating it cannot fail differently.")
+            tried.append(f"{m}:skipped(duplicate-chain)")
             continue
         if seen and _wk_lz_override and _wk_lz_override in seen and _wk_lz_sole_rung:
             print(f"[narasi] worker fallback candidate {m} skipped — NARASI_WORKER_LAOZHANG pins "
@@ -2215,16 +2424,29 @@ def _narasi_complete(model: str, messages: list, max_tokens: int, role: str = ""
                   f"double-bill it.")
             tried.append(f"{m}:skipped(laozhang-pinned-doomed)")
             continue
+        # Recorded only now: a candidate skipped by the guard above never ran, so banking
+        # its signature would wrongly block a later candidate that resolves the same way.
+        _chain_sigs.append(_sig)
         seen.append(m)
-        rm = MODELS.get(m, m)
-        mt = int(max_tokens) if m == model else min(int(max_tokens), MODEL_MAX_TOKENS.get(rm, DEFAULT_MAX_TOKENS))
         try:
-            resp = make_narasi_client(m, role=role, phase=phase).chat.completions.create(
-                model=rm, messages=messages, max_tokens=mt, stream=False)
+            call_kw = dict(model=rm, messages=messages, max_tokens=mt, stream=False)
+            if response_format is not None:
+                call_kw["response_format"] = response_format
+            resp = make_narasi_client(m, role=role, phase=phase).chat.completions.create(**call_kw)
             if _resp_content(resp) is not None:
                 if m != model:
                     print(f"[narasi] model fallback {model} → {m} (primary returned no content)")
-                return resp, m
+                # 🔴 RETURN WHAT SERVED, NOT WHAT WE ASKED FOR. Callers feed this straight
+                #    into _log_narasi_usage, which prices it via _calc_cost — so returning
+                #    the candidate LABEL bills the wrong model whenever the switchboard
+                #    overrode it. Concretely: this loop can be on candidate
+                #    claude-opus-4-7 while the vertex rung serves gemini-3.6-flash, and
+                #    Opus is priced $5/$25 per M against Gemini's $1.50/$7.50 — a ~3.3x
+                #    overcharge on a row the user is debited for (the brief call site passes
+                #    charge=True). The failover client stamps the rung's real upstream id;
+                #    the plain non-chaining path has no override, so `m` is already correct
+                #    there and stays the fallback.
+                return resp, (getattr(resp, "_narasi_served_model", None) or m)
             tried.append(f"{m}:empty({_resp_err_detail(resp)})")
         except Exception as e:
             tried.append(f"{m}:{type(e).__name__}:{str(e)[:100]}")
@@ -7870,16 +8092,42 @@ def _pint(v, default: int) -> int:
         return int(default)
 
 
+def _narasi_outline_model() -> str:
+    """Single source of truth for WHICH model /narasi/outline actually runs on.
+
+    Extracted 2026-08-11 because admission and execution had drifted apart: _narasi_admit
+    validated `body["model"]` (a field the outline FE does not even send, so it defaulted to
+    gemini-2.5-flash) while _narasi_outline_impl executed NARASI_OUTLINE_MODEL. The whitelist
+    is fail-closed on purpose — an unregistered/unpriced model must never generate — but it
+    was inspecting a model no call ever used, so the check passed on a default while
+    production ran gemini-3.6-flash unexamined. The outline model is OPERATOR-CHOSEN (env,
+    no FE control), so there is exactly one correct answer and both callers must read it
+    from here. Do not re-derive this expression anywhere else."""
+    return (os.environ.get("NARASI_OUTLINE_MODEL") or "gemini-2.5-flash").strip()
+
+
 def _narasi_admit(body: dict, *, kind: str) -> None:
-    """Slice 0 admission gate (§7). Raises HTTPException(400) for an out-of-policy
-    request (over-limit fan-out or off-whitelist/unpriced model). No-op when
+    """Slice 0 admission gate (§7). Raises HTTPException for an out-of-policy request
+    (over-limit fan-out or off-whitelist/unpriced model). No-op when
     DALANG_ADMISSION_ENABLED is OFF, so pre-Slice-0 behavior is preserved exactly.
-    Call BEFORE any hold/charge. `kind` is "generate" or "outline"."""
+    Call BEFORE any hold/charge. `kind` is "generate" or "outline".
+
+    Status code follows WHOSE mistake it is: a client-supplied model is a 400, but the
+    outline's model comes from NARASI_OUTLINE_MODEL, so an unpriced one is a server
+    misconfiguration and must not be reported to the user as a bad request."""
     if not _dalang_admission_enabled():
         return
-    model = (body.get("model") or "gemini-2.5-flash").strip()
-    if not _narasi_model_ok(model):
-        raise HTTPException(400, f"model '{model}' is not an allowed/priced narasi model")
+    if kind == "outline":
+        model = _narasi_outline_model()
+        if not _narasi_model_ok(model):
+            raise HTTPException(500, (
+                f"NARASI_OUTLINE_MODEL='{model}' is not an allowed/priced narasi model — "
+                f"register it in MODELS and _MODEL_COSTS_PER_M, or point the env at a "
+                f"model that is. Refusing to generate an unpriced outline."))
+    else:
+        model = (body.get("model") or "gemini-2.5-flash").strip()
+        if not _narasi_model_ok(model):
+            raise HTTPException(400, f"model '{model}' is not an allowed/priced narasi model")
     if kind == "generate":
         chapters = body.get("chapters") or []
         if not isinstance(chapters, list):
@@ -11346,7 +11594,9 @@ async def _narasi_outline_impl(body: dict):
     # FORCE a fast, env-configurable model here regardless of what the FE sends; only the chapter
     # NARRATION path uses the heavy model. Tune with NARASI_OUTLINE_MODEL on the python svc (no FE
     # rebuild). Set it to claude-opus-4-6 etc. if you ever want a heavier outline.
-    model = (os.environ.get("NARASI_OUTLINE_MODEL") or "gemini-2.5-flash").strip()
+    # Read through _narasi_outline_model so admission and execution cannot drift — see its
+    # docstring for the bug that came from these being two separate expressions.
+    model = _narasi_outline_model()
     topic = (body.get("topic") or "").strip()
     style = (body.get("style") or "storytelling").strip()
     language = (body.get("language") or "id").strip()
@@ -11378,6 +11628,103 @@ async def _narasi_outline_impl(body: dict):
         _oi_is_fic = bool(_oi_isf(style))
     except Exception:  # noqa: BLE001 — gating is an enhancement, never blocks the outline
         _oi_is_fic = False
+    # 🔴 DESCRIPTION LENGTH IS A HARD WORD CAP, NOT A SENTENCE HINT.
+    #
+    #    The clause used to read "3-6 sentences ... carrying the FULL substance ... nothing
+    #    plot-relevant may be left out ... must not merely tease". A bounded cap sitting in
+    #    the same breath as an unbounded completeness demand is not a cap: the model resolves
+    #    the conflict toward completeness every time. Measured in prod 2026-08-11 on a
+    #    3-chapter request: 15 / 22 / 14 sentences against a stated 3-6, and 1802 words of
+    #    description against a requested story budget of word_min=1800 — the outline had
+    #    written the book. At 20 chapters that same behaviour needs ~53k output tokens
+    #    against a 14k budget and a 16,384 model ceiling, so it cannot be tuned out; it 500s
+    #    at the JSON parse ("Tidak bisa parse outline").
+    #
+    #    Word caps hold where sentence counts do not, so the bound is stated in words and the
+    #    prompt now says explicitly WHAT to keep and WHAT to drop.
+    #
+    # 🚧 DOWNSTREAM CONTINUITY UNDER THIS BAND IS UNPROVEN. An earlier version of this note
+    #    claimed continuity was safe because the description "was never the only carrier".
+    #    That claim is withdrawn — it is an argument, not evidence, and one of its legs is
+    #    conditional. What is actually true:
+    #      · pakem/assembler.build_static_prefix does render the FULL OUTLINE (every chapter's
+    #        title + description) into EVERY chapter's system prefix. But within one outline
+    #        call the model already plans all chapters together, so that mechanism protects
+    #        only the facts a description actually still CONTAINS. Shortening the description
+    #        shortens what it carries.
+    #      · "reveals" is a structured field (id / secret / chapter / characters_involved /
+    #        method / source_character / source_established_chapter) — but it is gated behind
+    #        NARASI_OUTLINE_REVEALS, which DEFAULTS TO "0". With the flag off it is never
+    #        requested, so it carries nothing and the description IS the only carrier. Read
+    #        the deployed value before relying on this bullet.
+    #      · the Story Bible carries tone, voice and arc — not per-chapter plant/payoff.
+    #      · NARASI_CONTINUITY_PINS / THREAD_TRACKER / CANON_REGISTRY / LANE_LEDGER are live,
+    #        each with its own flag; none of them has been shown to recover a setup dropped
+    #        from a description.
+    #    The real risk is NOT the outline's chapters contradicting each other at plan time —
+    #    it is a setup/payoff detail being lost when the outline is handed to the chapter
+    #    worker.
+    #
+    # 🛑 GATE BEFORE DEPLOY — NOT BEFORE CANARY. This band is applied UNCONDITIONALLY: it is
+    #    computed at the top of this function and interpolated into both the fresh and the
+    #    revise prompt with no flag and no tenant allowlist, unlike _oi_reveals_on right
+    #    below it. It is NOT scoped to the L3 assist cohort. So the first deploy changes
+    #    every outline for every tenant at once, which means a canary gate would be checked
+    #    after the blast radius was already global. A/B one story and confirm that every
+    #    reveal, information source, plant and payoff still appears in the relevant chapter
+    #    description AND survives into the finished chapter. Until that runs the honest
+    #    status is "continuity unproven" — neither "safe" nor "broken".
+    #    If it needs to ship before that A/B can run, gate it first (env flag or allowlist);
+    #    do not let "ungated" and "unproven" hold at the same time.
+    #
+    #    Independent of continuity, a shorter description does make the outline more legible
+    #    to each worker: it is repeated into all N prefixes, so 600 words/chapter meant ~12k
+    #    words of pseudo-prose competing with the writing task in every single one.
+    #
+    #    Raise NARASI_OUTLINE_DESC_MAX_WORDS if beats genuinely do not fit; do not remove it.
+    #    ⚠️ It is a BAND, not a ceiling. A bare "at most N words" reads as a target and the
+    #    model drifts to the wall; a bare floor invites padding. 80 is the floor because a
+    #    Wimba outline carries beatmap/twist structure that 1-2 sentences cannot hold — the
+    #    old ceritaAI clause (still live on origin/main) is too poor for this pipeline and is
+    #    NOT what this replaces it with.
+    #
+    #    ⛔ The band is enforced by INSTRUCTION ONLY. Never post-truncate a description in
+    #       Python: descriptions are written in narrative order, so a mechanical cut removes
+    #       the END — which is exactly where a chapter's reveal or payoff sits.
+    _oi_desc_max_words = 200
+    _oi_desc_min_words = 80
+    try:
+        _oi_desc_max_words = max(40, int(
+            os.environ.get("NARASI_OUTLINE_DESC_MAX_WORDS") or 200))
+    except (TypeError, ValueError):
+        pass
+    try:
+        _oi_desc_min_words = int(
+            os.environ.get("NARASI_OUTLINE_DESC_MIN_WORDS") or 80)
+    except (TypeError, ValueError):
+        pass
+    _oi_desc_min_words = max(20, min(_oi_desc_min_words, _oi_desc_max_words))
+    # The story word budget describes the FINISHED PROSE and must never be read as a target
+    # for the outline's own output — that misreading is what produced 1802 words against
+    # word_min=1800. Stated once, in both branches, right next to the schema.
+    _oi_budget_scope = (
+        f"SCOPE OF THE WORD BUDGET: the {word_min}-{word_max} range is the budget for the "
+        f"FINISHED MANUSCRIPT — the prose a writer will later produce. It is represented in "
+        f"this response by ONE thing only: the \"chapters[].words\" integers, which must sum "
+        f"into that range. It is NOT a budget for the text you are writing now. Your "
+        f"descriptions stay inside their own word band no matter how large that range is; a "
+        f"40000-word manuscript does not get longer descriptions than a 2000-word one.\n\n")
+    _oi_desc_spec = (
+        f"{_oi_desc_min_words}-{_oi_desc_max_words} words, in {lang_label} -- "
+        f"{_oi_desc_max_words} is a HARD MAXIMUM, not a target; write the fewest words that "
+        f"carry the beats. A COMPACT BEAT LIST, not "
+        f"prose. Keep every continuity-bearing fact the chapter turns on: which named "
+        f"characters are present, what changes between them, the plot/engine progress, "
+        f"anything planted or paid off here, and how it connects to the chapters on either "
+        f"side. Drop atmosphere, sensory description, dialogue, imagery and restatement -- "
+        f"the chapter writer supplies those from the style rules, the Story Bible and the "
+        f"full outline it already receives. Write it so a writer cannot miss a beat, not so "
+        f"a reader can enjoy it.")
     _oi_reveals_on = _oi_is_fic and os.environ.get(
         "NARASI_OUTLINE_REVEALS", "0").strip().lower() in ("1", "true", "yes", "on")
     _oi_dedup_on = _oi_is_fic and os.environ.get(
@@ -11604,8 +11951,16 @@ async def _narasi_outline_impl(body: dict):
         # budget when this call is actually going to chain — see its docstring.
         try:
             resp, _um = await asyncio.wait_for(
-                asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], 1000),
-                timeout=_narasi_outline_timeout(model))
+                asyncio.to_thread(
+                    _narasi_complete, model, [{"role": "user", "content": user}], 1000,
+                    phase="outline"),
+                # phase MUST match the phase passed to _narasi_complete below. The timeout
+                # floors itself to the failover chain's budget only when _narasi_will_chain
+                # agrees this (model, phase) will actually walk a chain — so a phase-less
+                # call here computes a SINGLE-PROVIDER timeout for a call that is now
+                # chaining, and cuts the walk off mid-chain. Exactly the undersized-outer-
+                # timeout bug this function was written to end.
+                timeout=_narasi_outline_timeout(model, "outline"))
         except asyncio.TimeoutError:
             import logging as _lg
             _lg.getLogger("narasi").warning("[narasi] brief LLM timed out (model=%s)", model)
@@ -11622,12 +11977,10 @@ async def _narasi_outline_impl(body: dict):
             f"heavier chapters get more words.\n\n"
             f"{_oi_role_clause}"
             f"{_oi_reveals_clause}"
+            f"{_oi_budget_scope}"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array, each with: \"id\" (string), \"title\" (in {lang_label}), "
-            f"\"description\" (3-6 sentences, in {lang_label}, carrying the FULL substance of what "
-            f"this chapter must convey -- every plot-relevant beat, relationship development, and "
-            f"any planted twist/reveal element -- this is the text the chapter will actually be "
-            f"written from, so nothing important may be left out of it), \"words\" (integer)\n"
+            f"\"description\" ({_oi_desc_spec}), \"words\" (integer)\n"
             f"{_oi_reveals_schema}"
             f"No fences, no explanation."
             + vo_note
@@ -11674,6 +12027,7 @@ async def _narasi_outline_impl(body: dict):
             f"{_zoom_note}"
             f"{_oi_role_clause}"
             f"{_oi_reveals_clause}"
+            f"{_oi_budget_scope}"
             f"Return ONLY a valid JSON object with:\n"
             f"  \"chapters\": array of exactly {chap_count} objects, each with:\n"
             f"    \"id\": chapter number as string\n"
@@ -11681,11 +12035,7 @@ async def _narasi_outline_impl(body: dict):
             f"chapter's content; NEVER a story-structure or craft beat-label (do NOT use 'Midpoint', "
             f"'Climax', 'Inciting Incident', 'Rising Action', 'Falling Action', 'Reversal', 'Turning Point', "
             f"'Act One/Two/Three', 'Setup', 'Payoff', 'Denouement', 'Resolution', 'Crisis')\n"
-            f"    \"description\": 3-6 sentences, in {lang_label}, carrying the FULL substance of what "
-            f"this chapter must convey -- every plot-relevant beat (relationship development, "
-            f"plot/engine progress, and any planted twist or reveal element the story structure "
-            f"calls for here). This is the text the chapter will actually be written from -- "
-            f"nothing plot-relevant may be left out of it, and it must not merely tease what happens.\n"
+            f"    \"description\": {_oi_desc_spec}\n"
             f"    \"words\": integer word count weighted by topical depth\n"
             f"{_oi_reveals_schema}"
             f"No markdown fences, no explanation. Just the JSON."
@@ -11702,10 +12052,13 @@ async def _narasi_outline_impl(body: dict):
     # _narasi_outline_timeout (not the flat constant) floors this to the failover chain's own
     # budget when this call is actually going to chain — see its docstring; today's exact
     # (unfloored) value when no chain is active.
-    _outline_timeout = _narasi_outline_timeout(model)
+    # phase MUST match the phase passed to _narasi_complete below — see the brief call site.
+    _outline_timeout = _narasi_outline_timeout(model, "outline")
     try:
         resp, _um = await asyncio.wait_for(
-            asyncio.to_thread(_narasi_complete, model, [{"role": "user", "content": user}], max_tok),
+            asyncio.to_thread(
+                _narasi_complete, model, [{"role": "user", "content": user}], max_tok,
+                phase="outline", response_format={"type": "json_object"}),
             timeout=_outline_timeout)
     except asyncio.TimeoutError:
         import logging as _lg
@@ -11719,6 +12072,22 @@ async def _narasi_outline_impl(body: dict):
             f"(model={model}, ~{max_tok} tokens for {chap_count} chapters). "
             "Try again — or ask the operator to switch NARASI_OUTLINE_MODEL to a faster model."
         ))
+    # THE one usage row for the main outline call. Keyed on `_um` — the model that actually
+    # SERVED — not on `model`, so provider/margin attribution survives a failover swap.
+    #
+    # 🔴 Do not add a second _log_narasi_usage for this same `resp`. One used to sit in the
+    #    save_outline block below and logged the identical response a SECOND time, keyed on the
+    #    env model instead of the served one: two rows, credit_row=True on both, so
+    #    SUM(usage_logs.credits) double-counted every outline and the two rows disagreed about
+    #    which model ran. Removed 2026-08-11.
+    #
+    # ⚠️ OPEN, DELIBERATELY NOT CHANGED HERE: `charge` is omitted, so this row records credits
+    #    but nothing is ever debited for an outline — _log_narasi_usage's own docstring lists
+    #    outline as a charge=True one-shot endpoint, and the brief sub-call above DOES pass
+    #    charge=True. So SUM(usage_logs.credits) still overstates outline against the balance,
+    #    now by 1x instead of 2x. Closing that is a billing decision (start charging, or set
+    #    credit_row=False and log 0 credits), not a bug fix, and must not ride along in a
+    #    routing change.
     await _log_narasi_usage(_ou_tenant, _ou_user, _um, resp)
     raw = (_resp_content(resp) or "").strip()
     raw = _re.sub(r"^```(?:json)?\s*", "", raw, flags=_re.MULTILINE)
@@ -11838,7 +12207,8 @@ async def _narasi_outline_impl(body: dict):
             result.get("outline_text", ""),
             result.get("chapters", []),
             model)
-        await _log_narasi_usage(_octx.tenant_id, _outline_user, model, resp)
+        # No _log_narasi_usage here — this block's job is the artifact, not metering, and
+        # `resp` is already logged once at the call site above. See the note there.
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("save_outline/usage failed (non-fatal): %s", _e)
 
