@@ -37,8 +37,42 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
 
 import canon_lite as cl                                    # noqa: E402
+import canon_lite_semantic_source as css                   # noqa: E402
+from orchestrator import dynamic as dyn                     # noqa: E402
 from orchestrator import static as st                      # noqa: E402
 from orchestrator.context_builder import SharedContext     # noqa: E402
+
+
+async def _fake_story_bible_with_semantics(topic, outline, *, is_fiction=True, style=None,
+                                           language="id", manager_model=None, timeout=None,
+                                           telemetry_sink=None, extra_negative=None,
+                                           structured_semantic=False):
+    """P0-B test double for `orchestrator.dynamic.build_story_bible` — no LLM call, no
+    delay, returns INSTANTLY.
+
+    🔴 WHY THIS FILE NEEDS IT NOW. Assist requires REAL semantic authority to arm (P0-B):
+       `has_semantic_authority()` — and therefore this file's whole `assist` fixture —
+       needs at least one entity/anchor/one_time_event, which only a Story Bible call can
+       produce. This file predates P0-B and deliberately disables the real Story Bible
+       call (`NARASI_STORY_BIBLE=0`) to stay fast and focused on FREEZE MECHANICS, not
+       Story Bible content — this double keeps that focus: it returns a MINIMAL valid
+       envelope built from whatever outline it is called with (so it binds correctly for
+       any `n`), never touches a provider, and returns before any `await` could yield to
+       the scheduler — so it cannot change the MAP-phase concurrency this file measures
+       (`rec.peak`): it is one sequential, pre-MAP await that completes before the MAP's
+       `asyncio.gather` is even created, exactly like the real call it replaces.
+    """
+    text = "1. CHARACTERS\nTest Entity (test double bible, no LLM called)."
+    if not structured_semantic:
+        return text
+    # P0-B round 2: the envelope binds the EXACT bible response it came from, so the double
+    # must name its own `text` — a source that cannot say which bible produced it is refused.
+    source = css.build_semantic_source_v1(
+        outline_chapters=outline, bible_text=text,
+        entities=(cl.CanonEntityV1(entity_id="ent1", canonical_name="Test Entity",
+                                   aliases=(), alias_source="none"),),
+    )
+    return text, source
 
 
 def _outline(n=3):
@@ -114,7 +148,21 @@ CANARY_TENANT = "t-canary"
 
 @pytest.fixture(autouse=True)
 def _isolated_env(monkeypatch):
-    monkeypatch.setenv("NARASI_STORY_BIBLE", "0")
+    # P0-B: was "0" (Story Bible disabled) before P0-B existed, when this file's freeze
+    # mechanics had no dependency on it. Assist now REQUIRES semantic authority to arm, and
+    # semantic authority comes only from a Story Bible call — so it must run, but only
+    # against the test double below, never a real provider: `_fake_story_bible_with_semantics`
+    # is instant and makes no network call at all, so it stays inert under the outbound
+    # guard rather than tripping it.
+    monkeypatch.setenv("NARASI_STORY_BIBLE", "1")
+    monkeypatch.setattr(dyn, "build_story_bible", _fake_story_bible_with_semantics)
+    # P0-B round 2 gates structured extraction to FICTION (nonfiction gets no LLM-derived
+    # semantic authority until a grounding provenance path exists). This file passes no
+    # style at all, and `_is_fiction_style(None)` is False — without this override every
+    # assist row here would take the nonfiction refusal path and stop testing freeze
+    # mechanics entirely. The nonfiction refusal itself is covered in
+    # test_canon_lite_p0b_semantic_source.py, which is where it belongs.
+    monkeypatch.setattr(st, "_is_fiction_style", lambda style: True)
     monkeypatch.setenv("NARASI_CANON_LITE_ASSIST_TENANTS", CANARY_TENANT)
     monkeypatch.delenv("NARASI_CANON_LITE_MODE", raising=False)
     monkeypatch.delenv("NARRATION_RESUME_ENABLED", raising=False)

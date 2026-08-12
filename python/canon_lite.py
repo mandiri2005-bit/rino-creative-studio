@@ -84,6 +84,9 @@ __all__ = [
     "sha256_hex",
     "build_job_config_snapshot",
     "build_canon_lite_v1",
+    "outline_digest",
+    "accepted_outline_content_digest",
+    "advisory_bible_digest",
     "parse_canon_lite_v1",
     "render_canon",
     "telemetry_digest",
@@ -522,6 +525,39 @@ def outline_digest(outline_chapters: Sequence[Mapping[str, Any]]) -> str:
     return _digest("canon_lite.outline.v1", rows)
 
 
+def accepted_outline_content_digest(outline_chapters: Sequence[Mapping[str, Any]]) -> str:
+    """Hash id + order + title + summary/description for every chapter.
+
+    🔴 DELIBERATELY WIDER THAN `outline_digest()` — that is the point of this function
+       existing as a SEPARATE one, not a parameter on the old one. `outline_digest` binds
+       only chapter IDENTITY (order/id/title) because identity is what `build_canon_lite_v1`
+       needs to bind the outline to the job config. A semantic-extraction call (P0-B) reads
+       the FULL accepted outline — summary/description included, since that prose is what a
+       Story Bible call is actually shown — so binding only identity would let a
+       summary/description edit made AFTER extraction silently outlive the extraction it
+       should have invalidated: the entities/anchors/events on file would still describe
+       text that is no longer the accepted outline, and `outline_digest` alone would not
+       notice, because it was never asked to.
+
+    Same projection as `_canonical_outline_chapters` for order/id/title (ONE identity
+    projection, reused, not a second divergent one), plus each row's own `summary` —
+    falling back to `description` — normalized exactly as `_story_bible_prompt` reads it,
+    so the hash binds what the LLM was actually shown, not a different serialization of it.
+    """
+    canonical = _canonical_outline_chapters(outline_chapters)
+    source = list(outline_chapters or [])
+    rows = []
+    for ch, raw in zip(canonical, source):
+        summary = ""
+        if isinstance(raw, Mapping):
+            summary = str(raw.get("summary", raw.get("description", "")) or "")
+        rows.append({
+            "order": ch.order, "id": ch.chapter_id, "title": ch.expected_title,
+            "summary": _norm_text(summary),
+        })
+    return _digest("canon_lite.semantic_source.accepted_outline_content.v1", rows)
+
+
 def build_job_config_snapshot(
     *,
     outline_chapters: Sequence[Mapping[str, Any]],
@@ -812,6 +848,32 @@ def _finalize(canon_kwargs: dict[str, Any]) -> CanonLiteV1:
         canon_sha256=_digest("canon_lite.canon.v1", hash_input), **canon_kwargs)
 
 
+def advisory_bible_digest(advisory_bible_text: Optional[str]) -> str:
+    """Hash the ADVISORY prose bible, or `UNKNOWN` when there is none.
+
+    🔴 ONE PROJECTION, TWO CALLERS. `build_canon_lite_v1` computes the canon's own
+       `advisory_bible_sha256` from this, and `canon_lite_semantic_source` binds its
+       envelope to the bible it was extracted from using the SAME function — so
+       "the canon's bible" and "the bible the semantic tuples came from" are comparable
+       by construction. Two separately-written hashes of "the bible" would be exactly the
+       kind of near-duplicate projection that lets a swap slip through unnoticed: the
+       binding check would compare two numbers that were never guaranteed to agree even
+       when nothing had changed.
+
+    Only the hash ever travels: the bible's TEXT is not authority (§6.1) and prose must
+    never enter a value that gets compared or reported (§10).
+    """
+    if advisory_bible_text is None:
+        return UNKNOWN
+    if not isinstance(advisory_bible_text, str):
+        raise CanonSchemaError(
+            "advisory_bible_text: expected str or None, got "
+            f"{type(advisory_bible_text).__name__}")
+    if not advisory_bible_text.strip():
+        return UNKNOWN
+    return sha256_hex(_norm_text(advisory_bible_text).encode("utf-8"))
+
+
 def build_canon_lite_v1(
     *,
     outline_chapters: Sequence[Mapping[str, Any]],
@@ -855,15 +917,7 @@ def build_canon_lite_v1(
         raise CanonSchemaError(
             "chapter_count: outline does not match the bound job-config snapshot")
 
-    bible_sha = UNKNOWN
-    if advisory_bible_text is not None:
-        if not isinstance(advisory_bible_text, str):
-            raise CanonSchemaError(
-                "advisory_bible_text: expected str or None, got "
-                f"{type(advisory_bible_text).__name__}")
-        if advisory_bible_text.strip():
-            bible_sha = sha256_hex(
-                _norm_text(advisory_bible_text).encode("utf-8"))
+    bible_sha = advisory_bible_digest(advisory_bible_text)
 
     return _finalize({
         "schema_version": SCHEMA_VERSION,
