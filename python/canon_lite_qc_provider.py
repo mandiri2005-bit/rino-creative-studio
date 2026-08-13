@@ -49,7 +49,14 @@ from canon_lite_qc_meter import MeterConfigurationError, ProviderUsage
 # request carries bounded retry feedback. Both change the exact wire bytes, so the one
 # message-shape version moves with them. PROMPT_SHA256 therefore moves too, deliberately:
 # the first production run after deploy repays extraction for every chapter.
-QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v3"
+#
+# RATIFIED 2026-08-13: v3 -> v4. `attempt` now travels in the request. Without it the
+# retry feedback was not enough to separate attempts 2 and 3 — both carry the same
+# `retry_reason` after the same failure, so at temperature 0.0 their bytes were IDENTICAL
+# (proven by sha256) and the third answer could not differ from the second. Canary
+# `gjpmhjzs` therefore bought three attempts per failing chapter and asked only two
+# distinct questions. This is the fix for that, and it moves the wire again.
+QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v4"
 
 #: 🔴 THIS CONSTANT IS A CLAIM ABOUT A SHAPE, AND THE SHAPE MOVED UNDER IT. It told the QC
 #: contract exactly which projection the `canon` field carries; then `one_time_events` rows
@@ -69,7 +76,7 @@ QC_CANON_PROJECTION_REVISION = "canon_projection_v2"
 QC_CANON_PROJECTION_RULE = (
     f"canon_lite_v2.to_canonical_obj(include_hash=True) rev={QC_CANON_PROJECTION_REVISION}")
 QC_RESPONSE_FORMAT_SCHEDULE = ("json_schema", "json_schema", "json_schema")
-QC_DYNAMIC_FIELD_ORDER = ("chapter_index", "chapter_id", "content_sha256",
+QC_DYNAMIC_FIELD_ORDER = ("chapter_index", "chapter_id", "content_sha256", "attempt",
                           "retry_reason", "chapter_text", "canon")
 
 # Serialization parameters — read by BOTH the request builder and the contract builder,
@@ -204,7 +211,12 @@ QC_MAX_TOKENS = 16384
 # read from the cited sources; this module does not independently verify it, and
 # D-METER-23 forbids the call that would test it.
 QC_CAP_SOURCE = (
-    "https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite; "
+    # Moved with QC_MODEL_UPSTREAM 2026-08-13. Re-read on that date: Flash attests the
+    # SAME values already recorded below — 65,536 output tokens, structured outputs
+    # Supported, model card last updated 2026-06-23 — so the figures did not move, only
+    # the model they are an attestation FOR. A pricing update alone would have left this
+    # record vouching for a different model than the one being called.
+    "https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash; "
     "https://ai.google.dev/gemini-api/docs/openai; "
     "https://ai.google.dev/api/generate-content")
 QC_CAP_REVISION = (
@@ -239,13 +251,22 @@ class QcPricingRecord:
 # float constructor would put a binary artefact into the ledger. Never derived from
 # _MODEL_COSTS_PER_M, which is best-effort and not accounting authority.
 QC_PRICING = QcPricingRecord(
-    pricing_version="qc-rates-2026-07-30",                       # E6
-    rate_in_usd_per_m=Decimal("0.10"),                           # E4
-    rate_out_usd_per_m=Decimal("0.40"),                          # E4
+    pricing_version="qc-rates-2026-08-13",                       # E6
+    rate_in_usd_per_m=Decimal("0.30"),                           # E4
+    rate_out_usd_per_m=Decimal("2.50"),                          # E4
     source=("https://ai.google.dev/gemini-api/docs/pricing"      # E5
-            " — Gemini 2.5 Flash-Lite Standard paid tier"),
-    revision="Last updated 2026-07-30 UTC",                      # E5
+            " — Gemini 2.5 Flash Standard paid tier"),
+    revision="Last updated 2026-08-13 UTC",                      # E5
 )
+# Moved with `QC_MODEL_UPSTREAM` (flash-lite -> flash), read from the E5 source above on
+# 2026-08-13: Flash-Lite $0.10/$0.40, Flash $0.30/$2.50 per million tokens. The old record
+# was verified correct for the model it described before being replaced.
+#
+# Cost shape, so the change is judged on the right number: QC sends the CHAPTER TEXT as
+# input and returns a small claims object, so input dominates — the practical increase is
+# ~3x, not the 6.25x the output rate suggests. Against that, every QC call today is pure
+# waste: two canaries burned three billed attempts per chapter and measured nothing. An
+# extraction that succeeds on attempt 1 costs less in practice than three that fail.
 
 # §3 — pinned timeouts. 20 s is the SDK/HTTP bound for ONE upstream request; the
 # extractor's own per-attempt wait_for (30 s) is the controlling deadline the meter
@@ -500,6 +521,13 @@ def build_user_content(request: Any) -> str:
         "chapter_index": request.chapter_index,
         "chapter_id": request.chapter_id,
         "content_sha256": request.content_sha256,
+        # 🔴 WITHOUT THIS, ATTEMPT 3 IS A BILLED COPY OF ATTEMPT 2. `retry_reason` alone
+        #    cannot separate them: attempts 2 and 3 after the same failure carry the same
+        #    code, so at temperature 0.0 the request bytes were IDENTICAL (verified by
+        #    sha256) and the answer could not differ. Canary `gjpmhjzs` spent three
+        #    attempts per failing chapter and only ever asked two distinct questions.
+        #    The ordinal is the one field that makes the third attempt a real one.
+        "attempt": request.attempt,
         "retry_reason": retry_reason,
         # No lossy transformation: no trimming, normalization, case folding, whitespace
         # collapsing, truncation or replacement. JSON escaping is expected and lossless —

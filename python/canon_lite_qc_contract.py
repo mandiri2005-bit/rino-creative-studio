@@ -34,7 +34,35 @@ QC_BASE_URL_ENV = "CANON_LITE_QC_PROVIDER_BASE_URL"
 QC_PROVIDER_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 # The ratified upstream model for QC extraction.
-QC_MODEL_UPSTREAM = "gemini-2.5-flash-lite"
+#
+# 🔴 RAISED FROM `gemini-2.5-flash-lite` 2026-08-13, AFTER TWO CANARIES MEASURED NOTHING.
+#    The QC evidence contract asks for something narrow and unforgiving: a `quote` copied
+#    character-for-character from `chapter_text`, the bare name or literal ALONE for
+#    entity/literal claims, never widened to disambiguate — plus, when that quote repeats,
+#    a `context` that is itself verbatim, occurs exactly once, and contains the quote
+#    exactly once. Two nested exact strings, both byte-perfect.
+#
+#    Flash-Lite did not satisfy it in two canaries (`4wq7ntq3`, `gjpmhjzs`), each leaving
+#    2 of 3 chapters unmeasured on `quote_not_found`.
+#
+#    ⚠️ THAT IS NOT A PROVEN CAPABILITY VERDICT, AND AN EARLIER DRAFT OF THIS COMMENT
+#       CLAIMED IT WAS. `attempt` was not serialized at the time, so attempts 2 and 3
+#       carried identical bytes at temperature 0.0 — the model was asked TWO distinct
+#       questions, not three, and the third answer could not have differed. Failed
+#       output is also deliberately not retained, so which part missed — quote,
+#       context, escaping, or one claim type — was never observed.
+#
+#    This change is therefore a CONTROLLED EXPERIMENT, not a fix for a diagnosed cause.
+#    It is worth running because Google positions Flash-Lite for cheap simple extraction
+#    while this contract is neither, and because `flash` already satisfies an equally
+#    strict structured contract on the Story Bible path (2/2 candidates, both canaries).
+#    A larger model is the next lever, NOT the first — and only after three genuinely
+#    distinct requests have failed.
+#
+# ⚠️ `QC_PRICING` MOVES WITH THIS LINE, ALWAYS. The rate record is frozen with its own
+#    `pricing_version` precisely so a model change cannot land without one; a model billed
+#    at another model's rate is a silent accounting fault, not a rounding error.
+QC_MODEL_UPSTREAM = "gemini-2.5-flash"
 
 # Closed adapter-failure vocabulary. This lives in the inert contract module so the
 # provider can validate what it raises and the provider-agnostic extractor can preserve

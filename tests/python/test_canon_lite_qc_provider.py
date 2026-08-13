@@ -10,6 +10,7 @@ from this file. An earlier draft claimed the adapter is never constructed in tes
 contradicted 8.6-8.9 — those rows must construct it to assert max_retries=0, the request
 count, the retry-mode schedule, and the absence of failover.
 """
+import ast
 import asyncio
 import hashlib
 import json
@@ -83,7 +84,7 @@ import canon_lite_qc_provider as qc        # noqa: E402
 #    zero. All three attempts now retain the schema and carry bounded retry feedback. This
 #    is a deliberate cache-key move: the first post-deploy run repays every chapter.
 RATIFIED_PROMPT_SHA256 = \
-    "dc48b95637290b7e6922ff455f0a36d971fc040c161c5d041a0e818346021312"
+    "432b98e4552fa107bab82817251e8796649dc186a31e803b4ae2b0e8a515ae91"
 # Moved with the prompt pin above and for the same reason: the system template embeds the
 # claim contract, so changing what a claim carries necessarily changes these bytes. The
 # round-trip property this constant guards — template -> JSON -> template, byte-exact — is
@@ -438,7 +439,10 @@ QC_IDENTITY_MODULES = (
     "canon_lite_qc_meter.py",          # reads the names through the contract
     "canon_lite_qc_runner.py",         # reads the names through the contract
 )
-QC_MODEL_LITERAL = '"gemini-2.5-flash-lite"'
+# The QUOTED form matters: `"gemini-2.5-flash"` cannot match inside
+# `"gemini-2.5-flash-lite"` (the closing quote differs), so prose mentioning the old
+# model in a comment cannot be miscounted as a second definition.
+QC_MODEL_LITERAL = '"gemini-2.5-flash"'
 QC_ROUTE_LITERAL = '"https://generativelanguage.googleapis.com/v1beta/openai/"'
 QC_SEAM_MODULE = "narration_api.py"
 
@@ -469,10 +473,72 @@ def test_8_17_model_parity_one_constant_four_uses():
     # `is` is the assertion that matters: `==` would still hold if someone re-typed the
     # string, which is exactly the drift the single-definition rule exists to prevent.
     assert qc.QC_MODEL_UPSTREAM is qcc.QC_MODEL_UPSTREAM
-    assert qc.QC_MODEL_UPSTREAM == "gemini-2.5-flash-lite"
+    # RAISED 2026-08-13, flash-lite -> flash, as a CONTROLLED EXPERIMENT — see
+    # QC_MODEL_UPSTREAM's own note, which records what the canaries did and did NOT prove.
+    # A diff moving this line moves QC_PRICING with it, or 8_17b fails.
+    assert qc.QC_MODEL_UPSTREAM == "gemini-2.5-flash"
 
-    # The seam that reports L3 outcomes never names the model.
-    assert _module_source(QC_SEAM_MODULE).count(QC_MODEL_LITERAL) == 0
+
+def test_8_17c_the_l3_seam_has_no_qc_model_identity():
+    """🔴 THE INVARIANT IS SEMANTIC, AND A SUBSTRING COUNT ONLY EVER APPROXIMATED IT.
+
+       The rule is: the seam that reports L3 outcomes does not hold, read, or publish the
+       QC model's identity. That was checked by counting the model literal in
+       `narration_api.py` and requiring zero — which worked only while the QC model was a
+       string nothing else used. The moment QC moved to `gemini-2.5-flash`, the seam's own
+       unrelated narration default became an indistinguishable "hit", and the test failed
+       for a reason that had nothing to do with the invariant.
+
+       Letting that failure pick the production model would be backwards: the test would be
+       choosing the model to keep its own implementation working. So the check now asks the
+       real question, structurally — no reference to the constant, no import of the modules
+       that own it, and no model-shaped field in what the reporter emits.
+    """
+    tree = ast.parse(_module_source(QC_SEAM_MODULE))
+    reporters = [n for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and n.name.startswith("_l3_")]
+    assert reporters, "no L3 reporter functions found — the probe lost its subject"
+
+    # 1. no reporter reads the model constant, by either spelling
+    for fn in reporters:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Name):
+                assert node.id != "QC_MODEL_UPSTREAM", fn.name
+            if isinstance(node, ast.Attribute):
+                assert node.attr != "QC_MODEL_UPSTREAM", fn.name
+
+    # 2. no reporter reaches the QC provider or its contract — importing the provider on
+    #    this host is the very thing the activation gate exists to prevent (see 8.42)
+    qc_modules = {"canon_lite_qc_provider", "canon_lite_qc_contract"}
+    for fn in reporters:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name not in qc_modules, f"{fn.name} imports {alias.name}"
+            if isinstance(node, ast.ImportFrom):
+                assert node.module not in qc_modules, f"{fn.name} imports {node.module}"
+            # ...and by the dynamic spellings, which are not Import nodes at all. This
+            # gap was found by falsifying this very test: the first version passed against
+            # a reporter doing `__import__("canon_lite_qc_provider")`, because it only
+            # looked for import STATEMENTS.
+            if isinstance(node, ast.Call):
+                target = node.func
+                dynamic = (isinstance(target, ast.Name) and target.id == "__import__") or (
+                    isinstance(target, ast.Attribute) and target.attr == "import_module")
+                if dynamic:
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and type(arg.value) is str:
+                            assert arg.value not in qc_modules, (
+                                f"{fn.name} dynamically imports {arg.value}")
+
+    # 3. nothing model-shaped in the record the reporter publishes. Read from the dict
+    #    literal it builds, so this holds without importing the seam module at all.
+    record = next(fn for fn in reporters if fn.name == "_l3_record_outcome")
+    keys = [k.value for node in ast.walk(record) if isinstance(node, ast.Dict)
+            for k in node.keys if isinstance(k, ast.Constant) and type(k.value) is str]
+    assert keys, "the outcome record has no literal keys — the probe found nothing"
+    assert not [k for k in keys if "model" in k], keys
 
 
 def test_8_17a_route_and_provider_parity_no_second_literal():
@@ -494,8 +560,14 @@ def test_8_17a_route_and_provider_parity_no_second_literal():
 def test_8_17b_pricing_parity_one_immutable_record():
     fields = qc.attempt_context_fields()
     assert fields["pricing_version"] == qc.QC_PRICING.pricing_version
-    assert fields["rate_in_usd_per_m"] == Decimal("0.10")
-    assert fields["rate_out_usd_per_m"] == Decimal("0.40")
+    # Gemini 2.5 Flash Standard paid tier, read from the record's own E5 source on
+    # 2026-08-13 ($0.30 in / $2.50 out per million). Flash-Lite was $0.10/$0.40 and the
+    # old record was correct for the model it described — it moved because the MODEL did.
+    assert fields["rate_in_usd_per_m"] == Decimal("0.30")
+    assert fields["rate_out_usd_per_m"] == Decimal("2.50")
+    assert qc.QC_PRICING.pricing_version == "qc-rates-2026-08-13"
+    assert "Flash Standard" in qc.QC_PRICING.source
+    assert "Flash-Lite" not in qc.QC_PRICING.source
     assert isinstance(fields["rate_in_usd_per_m"], Decimal)
     with pytest.raises(Exception):         # frozen: a rate cannot move alone
         qc.QC_PRICING.rate_in_usd_per_m = Decimal("0.20")
@@ -567,7 +639,11 @@ def test_8_23_serializer_contract_mutation_changes_the_digest():
     base = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     for key, mutation in (
         ("json_ensure_ascii", True), ("json_sort_keys", False),
-        ("json_separators", [", ", ": "]), ("contract_version", "qc_request_contract_v4"),
+        # The probe value must never equal the LIVE version, or the mutation is a no-op
+        # and this key silently stops being tested — which is what happened when the
+        # contract moved to v4 while the probe still said v4.
+        ("json_separators", [", ", ": "]),
+        ("contract_version", "qc_request_contract_vPROBE"),
         ("dynamic_field_order", ["canon", "chapter_text"]),
         ("canon_projection_rule", "something_else"),
     ):
@@ -938,7 +1014,7 @@ def test_8_39_extractor_codes_are_extractor_owned():
 
 def test_8_40_contract_has_one_source_of_truth():
     source = Path(qc.__file__).read_text(encoding="utf-8")
-    assert source.count('"qc_request_contract_v3"') == 1
+    assert source.count('"qc_request_contract_v4"') == 1
     rebuilt = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     rebuilt["temperature"] = "0.9"
     text = json.dumps(rebuilt, ensure_ascii=False, sort_keys=True,
