@@ -2161,6 +2161,13 @@ def test_json_mode_survives_the_last_hop_into_google_genai(monkeypatch):
 # 5g. THE PRODUCTION PATH, END TO END, WITH ONLY THE SOCKET FAKED
 # ===========================================================================
 
+#: A canon_registry sidecar shaped like the real one (events/timeline), kept OPAQUE on
+#: purpose — this module never validates its contents, and a fixture that modelled
+#: them would be a second definition of another subsystem's contract.
+_REGISTRY_SIDECAR = {"events": [{"id": "e1", "what": "kunci hilang"}],
+                     "timeline": ["pagi", "malam"]}
+
+
 class _FakeGenaiResp:
     def __init__(self, text):
         self.text = text
@@ -2185,13 +2192,19 @@ def test_the_schema_reaches_generate_content_and_the_envelope_parses(monkeypatch
     """
     lz = pytest.importorskip("laozhang_api")
     captured = {}
+    calls = []
 
     class _Models:
         def generate_content(self, *, model, contents, config):
+            calls.append(model)
             captured["model"] = model
             captured["config"] = config
-            return _FakeGenaiResp(_structured("prosa fact-sheet yang sah",
-                                              semantic=_GOOD_SEMANTIC))
+            captured["prompt"] = contents
+            # The response production actually asks for: prose + envelope + the advisory
+            # canon_registry SIDECAR, all in ONE object.
+            return _FakeGenaiResp(_structured(
+                "prosa fact-sheet yang sah", semantic=_GOOD_SEMANTIC,
+                canon_registry=_REGISTRY_SIDECAR))
 
     class _Client:
         models = _Models()
@@ -2213,6 +2226,11 @@ def test_the_schema_reaches_generate_content_and_the_envelope_parses(monkeypatch
     monkeypatch.setenv("NARASI_BIBLE_LAOZHANG", "0")
     monkeypatch.setenv("NARASI_BIBLE_KIE", "0")
     monkeypatch.setenv("NARASI_BIBLE_ATLASCLOUD", "0")
+    # 🔴 PRODUCTION RUNS THIS ON, AND THE FIRST SCHEMA FORGOT IT. The prompt then asks
+    #    for a `canon_registry` sidecar key that a closed schema would FORBID — the two
+    #    halves of one request contradicting each other. A test that leaves this unset
+    #    passes against that defect, which is exactly what happened.
+    monkeypatch.setenv("NARASI_CANON_REGISTRY", "1")
 
     outline = _outline(2)
     result = asyncio.run(dyn.build_story_bible(
@@ -2229,6 +2247,13 @@ def test_the_schema_reaches_generate_content_and_the_envelope_parses(monkeypatch
     assert schema == css.STRUCTURED_BIBLE_JSON_SCHEMA
     assert schema["additionalProperties"] is False
     assert schema["required"] == ["bible_text", "semantic_source"]
+    # the key the PROMPT asks for must be one the SCHEMA permits
+    assert "canon_registry" in captured["prompt"], (
+        "fixture drift: NARASI_CANON_REGISTRY=1 must make the prompt request the "
+        "sidecar, or this test is not mirroring production")
+    assert "canon_registry" in schema["properties"], (
+        "the schema forbids the very key the prompt requests")
+    assert "canon_registry" not in schema["required"], "the sidecar is advisory"
 
     # --- and the response actually became a semantic source ----------------
     bible_text, source, _registry = result
@@ -2239,6 +2264,16 @@ def test_the_schema_reaches_generate_content_and_the_envelope_parses(monkeypatch
     assert [a.literal for a in source.anchors] == ["pagi hari"]
     assert len(source.one_time_events) == 1
     assert source.verify_sha256()
+
+    # --- and the advisory sidecar survived the decode -----------------------
+    # `narration_api` threads it with `isinstance(_reg_threaded, dict)`; a dict here
+    # is precisely the condition that BYPASSES the scrape and the paid fallback
+    # re-extraction. `{}` would be an answer too — absence is what costs money.
+    assert _registry == _REGISTRY_SIDECAR
+    assert isinstance(_registry, dict)
+    assert len(calls) == 1, (
+        f"the bible path made {len(calls)} provider calls; a second one means a "
+        f"fallback extraction was billed for a sidecar that was already present")
 
 
 def test_a_bible_that_asks_for_no_structure_sends_no_schema(monkeypatch):

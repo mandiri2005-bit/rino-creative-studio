@@ -642,7 +642,29 @@ STRUCTURED_BIBLE_JSON_SCHEMA = _obj(
                     _EVENT_FIELDS)},
             },
             _ENVELOPE_FIELDS),
+        # 🔴 OPTIONAL, BUT IT MUST BE LISTED — `additionalProperties: false` FORBIDS ANY KEY
+        #    THAT IS NOT. Production runs `NARASI_CANON_REGISTRY=1`, whose prompt tells the
+        #    model to include `canon_registry` as "a SIDECAR KEY of the same JSON object"
+        #    (`orchestrator/dynamic.py`), and this module's own `STRUCTURED_BIBLE_REGISTRY_KEY`
+        #    comment says extra keys are allowed *deliberately*. A closed schema that omitted
+        #    it would have the provider forbidding the exact key the prompt asks for — the two
+        #    halves of one request contradicting each other, with the model forced to drop the
+        #    sidecar and `narration_api` then paying for a fallback re-extraction it should
+        #    never need.
+        #
+        #    OPEN on purpose (`type: object`, no property list): the registry's shape belongs
+        #    to a DIFFERENT subsystem (`NARASI_CANON_REGISTRY` → narration_api's canon-diff),
+        #    and this module carries it across the decode without ever validating its
+        #    contents. Modelling its keys here would be a second definition of somebody
+        #    else's contract, free to drift — the failure this schema exists to prevent.
+        STRUCTURED_BIBLE_REGISTRY_KEY: {
+            "type": "object",
+            "description": ("Advisory canon_registry sidecar, when the caller's prompt "
+                            "asked for one. Never validated here."),
+        },
     },
+    # REQUIRED stays exactly two: the registry is advisory, and a bible that omits it is
+    # still a valid bible — `parse_structured_bible_response` degrades it to None.
     (STRUCTURED_BIBLE_TEXT_KEY, STRUCTURED_BIBLE_SEMANTIC_KEY),
 )
 
