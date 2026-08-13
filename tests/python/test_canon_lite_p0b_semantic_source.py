@@ -2100,7 +2100,12 @@ def test_the_bible_worker_requests_json_mode_only_when_asked(monkeypatch):
     monkeypatch.setattr(dyn, "run_worker", fake_run_worker)
     asyncio.run(dyn.build_story_bible("topik uji", _outline(2), is_fiction=True,
                                       language="id", structured_semantic=True))
-    assert seen["planner:bible"] == {"type": "json_object"}
+    rf = seen["planner:bible"]
+    assert rf["type"] == "json_schema", (
+        "bare json_object is SYNTAX-only — it obliges valid JSON, not OUR JSON, which is "
+        "exactly how the 2026-08-13 canary produced well-formed useless objects")
+    assert rf["json_schema"]["schema"] == css.STRUCTURED_BIBLE_JSON_SCHEMA
+    assert rf["json_schema"]["strict"] is True
 
     seen.clear()
     asyncio.run(dyn.build_story_bible("topik uji", _outline(2), is_fiction=True,
@@ -2150,6 +2155,131 @@ def test_json_mode_survives_the_last_hop_into_google_genai(monkeypatch):
     except Exception:  # noqa: BLE001
         pass
     assert captured.get("response_mime_type") is None
+
+
+# ===========================================================================
+# 5g. THE PRODUCTION PATH, END TO END, WITH ONLY THE SOCKET FAKED
+# ===========================================================================
+
+class _FakeGenaiResp:
+    def __init__(self, text):
+        self.text = text
+        self.usage_metadata = type("U", (), {"prompt_token_count": 10,
+                                             "candidates_token_count": 20})()
+
+
+def test_the_schema_reaches_generate_content_and_the_envelope_parses(monkeypatch):
+    """🔴 THE ONE TEST THAT WOULD HAVE CAUGHT THE 2026-08-13 CANARY BEFORE IT SPENT.
+
+       Drives the REAL chain — `build_story_bible` → `run_worker` → `_sync_chat` →
+       `make_narasi_client` → `_NarasiFailoverClient` → `_vertex_gemini_create` — and fakes
+       exactly one thing: the google.genai client. Everything between the caller and the
+       socket is production code.
+
+       What it pins is the hop that was silently lossy: `_create` used to compute
+       `response_json=bool(call_kw.get("response_format"))`, which turned a whole schema
+       into `True`. Vertex then received `response_mime_type="application/json"` and no
+       shape at all, so the model was free to return well-formed JSON with any keys it
+       liked — which is exactly what it did, twice, for a paid Story Bible each time. A
+       test asserting only "JSON mode was requested" passes against that defect.
+    """
+    lz = pytest.importorskip("laozhang_api")
+    captured = {}
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            captured["model"] = model
+            captured["config"] = config
+            return _FakeGenaiResp(_structured("prosa fact-sheet yang sah",
+                                              semantic=_GOOD_SEMANTIC))
+
+    class _Client:
+        models = _Models()
+
+    monkeypatch.setattr(lz, "_genai_client", lambda *a, **k: _Client())
+    # The vertex rung is ALWAYS in the gemini chain, but `_create` skips a rung whose
+    # key is empty — and the key is "" unless `_ensure_vertex()` succeeds. Production
+    # has GCP OAuth configured; without this the chain silently advances to LaoZhang
+    # and the test would prove nothing about Vertex.
+    monkeypatch.setattr(lz, "_ensure_vertex", lambda: True)
+    monkeypatch.setenv("NARASI_GENAI_JSON_MIME", "1")
+    monkeypatch.setenv("NARASI_BIBLE_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("NARASI_BIBLE_BEST_OF", "1")
+    # PRODUCTION ROUTING, mirrored: the bible phase pins Gemini and force-excludes
+    # every aggregator rung, so Vertex is the only door. Without the phase override
+    # `_narasi_will_chain` returns the plain single-provider client and the call never
+    # reaches the failover walk at all.
+    monkeypatch.setenv("NARASI_BIBLE_GEMINI", "gemini-2.5-flash")
+    monkeypatch.setenv("NARASI_BIBLE_LAOZHANG", "0")
+    monkeypatch.setenv("NARASI_BIBLE_KIE", "0")
+    monkeypatch.setenv("NARASI_BIBLE_ATLASCLOUD", "0")
+
+    outline = _outline(2)
+    result = asyncio.run(dyn.build_story_bible(
+        "topik uji", outline, is_fiction=True, language="id",
+        structured_semantic=True))
+
+    # --- the config Vertex actually received -------------------------------
+    assert captured, "generate_content was never reached — the chain did not pick Vertex"
+    cfg = captured["config"]
+    assert getattr(cfg, "response_mime_type", None) == "application/json"
+    schema = getattr(cfg, "response_json_schema", None)
+    assert schema, ("the SHAPE never arrived — this is the bool-coercion defect: "
+                    "JSON mode was requested, the schema was not")
+    assert schema == css.STRUCTURED_BIBLE_JSON_SCHEMA
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["bible_text", "semantic_source"]
+
+    # --- and the response actually became a semantic source ----------------
+    bible_text, source, _registry = result
+    assert bible_text == "prosa fact-sheet yang sah"
+    assert source is not None, "a schema-valid response must parse into an envelope"
+    assert source.has_any_semantic_content()
+    assert [e.canonical_name for e in source.entities] == ["Ratna"]
+    assert [a.literal for a in source.anchors] == ["pagi hari"]
+    assert len(source.one_time_events) == 1
+    assert source.verify_sha256()
+
+
+def test_a_bible_that_asks_for_no_structure_sends_no_schema(monkeypatch):
+    """The off-path, unchanged: no `response_format` key, so no mime type and no schema."""
+    lz = pytest.importorskip("laozhang_api")
+    captured = {}
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            captured["config"] = config
+            return _FakeGenaiResp("prosa bible biasa")
+
+    class _Client:
+        models = _Models()
+
+    monkeypatch.setattr(lz, "_genai_client", lambda *a, **k: _Client())
+    # The vertex rung is ALWAYS in the gemini chain, but `_create` skips a rung whose
+    # key is empty — and the key is "" unless `_ensure_vertex()` succeeds. Production
+    # has GCP OAuth configured; without this the chain silently advances to LaoZhang
+    # and the test would prove nothing about Vertex.
+    monkeypatch.setattr(lz, "_ensure_vertex", lambda: True)
+    monkeypatch.setenv("NARASI_GENAI_JSON_MIME", "1")
+    monkeypatch.setenv("NARASI_BIBLE_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("NARASI_BIBLE_BEST_OF", "1")
+    # PRODUCTION ROUTING, mirrored: the bible phase pins Gemini and force-excludes
+    # every aggregator rung, so Vertex is the only door. Without the phase override
+    # `_narasi_will_chain` returns the plain single-provider client and the call never
+    # reaches the failover walk at all.
+    monkeypatch.setenv("NARASI_BIBLE_GEMINI", "gemini-2.5-flash")
+    monkeypatch.setenv("NARASI_BIBLE_LAOZHANG", "0")
+    monkeypatch.setenv("NARASI_BIBLE_KIE", "0")
+    monkeypatch.setenv("NARASI_BIBLE_ATLASCLOUD", "0")
+
+    out = asyncio.run(dyn.build_story_bible(
+        "topik uji", _outline(2), is_fiction=True, language="id"))
+
+    assert isinstance(out, str) and out == "prosa bible biasa"
+    cfg = captured.get("config")
+    assert cfg is not None
+    assert getattr(cfg, "response_mime_type", None) is None
+    assert getattr(cfg, "response_json_schema", None) is None
 
 
 # ===========================================================================

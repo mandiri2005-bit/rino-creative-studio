@@ -603,8 +603,14 @@ def test_failover_client_really_stamps_the_served_model(prod_env):
     seen = {}
 
     def fake_vertex_create(model_id, messages, max_tokens, timeout,
-                           temperature=None, response_json=False):
+                           temperature=None, response_json=False,
+                           response_schema=None):
+        # `response_schema` carries the JSON Schema uncoerced; `response_json` stays a
+        # bool that only gates the mime type. This fake takes both so a signature change
+        # on the real seam shows up as a failing ASSERTION somewhere, not as a TypeError
+        # swallowed into 'all aggregators failed'.
         seen["model_id"] = model_id
+        seen["response_schema"] = response_schema
         return _FakeResp('{"chapters": [{"id": "1"}]}')
 
     prod_env.setattr(laozhang_api, "_vertex_gemini_create", fake_vertex_create)

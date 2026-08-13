@@ -598,6 +598,79 @@ STRUCTURED_BIBLE_SEMANTIC_KEY = "semantic_source"
 STRUCTURED_BIBLE_REGISTRY_KEY = "canon_registry"
 
 
+def _obj(props: dict, required: Sequence[str]) -> dict:
+    """A CLOSED object node. `additionalProperties: false` is the whole point: an open
+    node lets the model satisfy the schema while inventing the keys we then fail to find."""
+    return {"type": "object", "properties": props,
+            "required": list(required), "additionalProperties": False}
+
+
+#: The shape the Story Bible response MUST take, as a real JSON Schema.
+#:
+#: 🔴 `response_mime_type="application/json"` CONSTRAINS THE SYNTAX AND NOTHING ELSE. It
+#:    obliges the model to emit valid JSON — it does not oblige it to emit OUR JSON. A live
+#:    canary (2026-08-13) came back with well-formed JSON twice and failed the contract
+#:    both times, because "JSON mode" was the only instruction that ever reached Vertex:
+#:    `_create` coerced the whole `response_format` to `bool(...)`, so the SHAPE was thrown
+#:    away one line before the provider call. A schema is what closes that gap, and it has
+#:    to travel as a schema the entire way.
+#:
+#: Built from the SAME constants the parsers read (`_ENVELOPE_FIELDS`, `_ENTITY_FIELDS`,
+#: `_ANCHOR_FIELDS`, `_EVENT_FIELDS`, `canon_lite.ANCHOR_KINDS`) so the thing we ASK for and
+#: the thing we ACCEPT cannot drift apart — a hand-copied schema would be a second
+#: definition of the contract, which is the failure mode this workstream keeps closing.
+STRUCTURED_BIBLE_JSON_SCHEMA = _obj(
+    {
+        STRUCTURED_BIBLE_TEXT_KEY: {
+            "type": "string",
+            "description": "The prose Story Bible fact-sheet. Never JSON, never fenced.",
+        },
+        STRUCTURED_BIBLE_SEMANTIC_KEY: _obj(
+            {
+                "entities": {"type": "array", "items": _obj(
+                    {"canonical_name": {"type": "string"},
+                     "aliases": {"type": "array", "items": {"type": "string"}}},
+                    _ENTITY_FIELDS)},
+                "anchors": {"type": "array", "items": _obj(
+                    {"kind": {"type": "string",
+                              "enum": list(canon_lite.ANCHOR_KINDS)},
+                     "literal": {"type": "string"}},
+                    _ANCHOR_FIELDS)},
+                "one_time_events": {"type": "array", "items": _obj(
+                    {"description": {"type": "string"},
+                     "occurs_chapter": {"type": "integer"}},
+                    _EVENT_FIELDS)},
+            },
+            _ENVELOPE_FIELDS),
+    },
+    (STRUCTURED_BIBLE_TEXT_KEY, STRUCTURED_BIBLE_SEMANTIC_KEY),
+)
+
+#: The OpenAI-shaped request carrying that schema. `json_schema`, NOT `json_object`: the
+#: latter is the syntax-only mode that already failed in production.
+STRUCTURED_BIBLE_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "canon_lite_structured_bible", "strict": True,
+                    "schema": STRUCTURED_BIBLE_JSON_SCHEMA},
+}
+
+
+def response_format_json_schema(response_format: Any) -> Optional[dict]:
+    """Pull the JSON Schema out of an OpenAI-style `response_format`, or `None`.
+
+    The ONE place that translation lives. `{"type": "json_object"}` legitimately carries no
+    schema and returns `None`; anything malformed returns `None` rather than raising, because
+    this runs inside a provider call that must not acquire a new way to fail.
+    """
+    if not isinstance(response_format, Mapping):
+        return None
+    block = response_format.get("json_schema")
+    if not isinstance(block, Mapping):
+        return None
+    schema = block.get("schema")
+    return dict(schema) if isinstance(schema, Mapping) else None
+
+
 #: Bounded reasons ONE Story Bible response can fail the structured contract. Closed, and
 #: never the response body — these travel to the single log line `build_story_bible` emits.
 #:
@@ -728,6 +801,9 @@ __all__ = [
     "parse_semantic_source_envelope",
     "parse_structured_bible_response",
     "STRUCTURED_BIBLE_REASON_CODES",
+    "STRUCTURED_BIBLE_JSON_SCHEMA",
+    "STRUCTURED_BIBLE_RESPONSE_FORMAT",
+    "response_format_json_schema",
     "STRUCTURED_BIBLE_TEXT_KEY",
     "STRUCTURED_BIBLE_SEMANTIC_KEY",
     "STRUCTURED_BIBLE_REGISTRY_KEY",

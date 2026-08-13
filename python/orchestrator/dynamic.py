@@ -1524,6 +1524,23 @@ def _story_bible_prompt(topic: str, outline: list[dict], language: str, is_ficti
     )
 
 
+def _structured_bible_response_format() -> dict:
+    """The schema-bearing request for the Story Bible call.
+
+    Falls back to the SYNTAX-only `json_object` if canon-lite cannot be imported, because
+    `build_story_bible`'s contract is 'never raises'. That fallback is the exact shape
+    that failed the 2026-08-13 canary, so it is logged rather than taken quietly.
+    """
+    try:
+        from canon_lite_semantic_source import STRUCTURED_BIBLE_RESPONSE_FORMAT
+        return dict(STRUCTURED_BIBLE_RESPONSE_FORMAT)
+    except Exception:  # noqa: BLE001
+        log.warning("build_story_bible: structured schema unavailable "
+                    "(error_code=structured_bible_schema_unavailable); "
+                    "falling back to syntax-only json_object")
+        return {"type": "json_object"}
+
+
 async def build_story_bible(
     topic: str,
     outline: list[dict],
@@ -2233,7 +2250,8 @@ async def build_story_bible(
             # P0-B: the ONLY thing that obliges the model to return the structured object.
             # `None` on every non-assist job ⟹ `_sync_chat` omits the key entirely and the
             # provider call is byte-identical to pre-P0-B (see `Worker.response_format`).
-            response_format=({"type": "json_object"} if structured_semantic else None),
+            response_format=(_structured_bible_response_format() if structured_semantic
+                             else None),
         )
         _skip_tok = _skip_var.set(True) if _skip_var is not None else None
         try:

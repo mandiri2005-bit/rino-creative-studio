@@ -1744,8 +1744,24 @@ def _fal_llm_create(model: str, messages: list, max_tokens: int, timeout: float,
     return _AdaptedResp(result["text"], "stop", result["tin"], result["tout"])
 
 
+def _response_format_schema(response_format) -> Optional[dict]:
+    """The JSON Schema inside an OpenAI-style `response_format`, or None.
+
+    Lazy import: `canon_lite_semantic_source` owns the translation (one definition), and
+    importing it at module scope here would couple the provider layer to canon-lite for
+    every call, including the ones that never ask for structure. Degrades to None rather
+    than raising — a provider call must not acquire a new way to fail.
+    """
+    try:
+        from canon_lite_semantic_source import response_format_json_schema
+        return response_format_json_schema(response_format)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
-                          timeout: float, temperature=None, response_json: bool = False):
+                          timeout: float, temperature=None, response_json: bool = False,
+                          response_schema: Optional[dict] = None):
     """Call Vertex Gemini via google.genai OAuth. Translates the OpenAI messages
     format to Vertex `contents` (system role hoisted to system_instruction, remaining
     roles concatenated) and wraps the reply in _AdaptedResp so the rest of the
@@ -1772,6 +1788,14 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     if response_json and os.getenv("NARASI_GENAI_JSON_MIME", "0").strip().lower() in ("1", "true", "yes", "on"):
         # json_mode was silently dropped on this rung (response_format is an OpenAI-ism).
         cfg_kwargs["response_mime_type"] = "application/json"
+        if response_schema:
+            # 🔴 MIME TYPE IS SYNTAX; SCHEMA IS SHAPE. The mime type alone obliges the
+            #    model to emit valid JSON, not to emit OUR JSON — a live canary came
+            #    back with well-formed objects using different keys, twice, because the
+            #    schema was coerced to a bool one line before this call. Same gate as the
+            #    mime type on purpose: one switch, not two, so JSON mode can never be
+            #    half-applied.
+            cfg_kwargs["response_json_schema"] = response_schema
         # Gemini thinks by default and thought tokens bill against max_output_tokens —
         # a cheap-call budget (800) is consumed entirely by thinking on a 12k-char counting
         # task -> finish=MAX_TOKENS with zero text parts -> resp.text None -> '' (register
@@ -2133,11 +2157,16 @@ class _NarasiFailoverClient:
                                                           call_kw.get("max_tokens") or 4000, rung_timeout,
                                                           temperature=call_kw.get("temperature"))
                     elif proto == "vertex_genai":
+                        # `response_json` stays a bool (it gates the mime type); the SCHEMA
+                        # travels separately and uncoerced. `bool(response_format)` alone
+                        # discarded the shape here — the defect the 2026-08-13 canary hit.
                         resp = _vertex_gemini_create(model_id,
                                                       call_kw.get("messages") or [],
                                                       call_kw.get("max_tokens") or 4000, rung_timeout,
                                                       temperature=call_kw.get("temperature"),
-                                                      response_json=bool(call_kw.get("response_format")))
+                                                      response_json=bool(call_kw.get("response_format")),
+                                                      response_schema=_response_format_schema(
+                                                          call_kw.get("response_format")))
                     elif proto == "fal_queue":
                         resp = _fal_llm_create(model_id,
                                                call_kw.get("messages") or [],
