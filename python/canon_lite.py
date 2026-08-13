@@ -97,7 +97,17 @@ __all__ = [
 # Constants — versions, sentinels, bounds, closed enums
 # ===========================================================================
 
-SCHEMA_VERSION = "canon_lite_v1"
+#: 🔴 RATIFIED 2026-08-13: v1 -> v2, because `CanonEventV1` GAINED A FIELD. This follows the
+#: same rule that keeps `CLAIMS_SCHEMA_VERSION` at v2 while the QC wire moved (see
+#: `canon_lite_l2`): bump when the ARTIFACT'S OWN ROWS change, not when something around it
+#: does. `one_time_events` rows now carry `label`, so an artifact stamped `canon_lite_v1`
+#: and one stamped this describe genuinely different shapes, and `to_canonical_obj()` —
+#: which is what QC receives and what `canon_sha256` binds — is not the same projection it
+#: was. Deliberately NOT bumped alongside: `JOB_CONFIG_SCHEMA_VERSION`,
+#: `PARITY_SCHEMA_VERSION`, `L2_*`, and the `outline`/`job_config`/`parity` digest domains —
+#: none of those objects' fields moved, and bumping them would force re-acceptance of
+#: shapes that never changed.
+SCHEMA_VERSION = "canon_lite_v2"
 JOB_CONFIG_SCHEMA_VERSION = "job_config_snapshot_v1"
 L2_EXTRACTOR_VERSION = "cl_l2_extractor_v1"
 L2_PREDICATE_SET_VERSION = "cl_l2_predicates_v1"
@@ -139,6 +149,17 @@ MAX_NAME_LEN = 200
 MAX_TITLE_LEN = 300
 MAX_LITERAL_LEN = 200
 MAX_LANGUAGE_LEN = 32
+
+#: An event's legible identity (`CanonEventV1.label`).
+#:
+#: 🔴 BOUND TO `MAX_LITERAL_LEN` ON PURPOSE, NOT COINCIDENTALLY. The semantic-source
+#:    envelope validates an event `description` at `MAX_LITERAL_LEN`, so tying the label's
+#:    bound to the same constant means an accepted description ALWAYS fits its label whole.
+#:    That is what removes truncation — and with it the entire class of "two labels that
+#:    are identical only because both were cut at the same character". If these two ever
+#:    drift apart, that collision class comes back silently, which is exactly how the
+#:    40-char `_EVENT_SLUG_MAX` defect happened. One constant, so they cannot drift.
+MAX_EVENT_LABEL_LEN = MAX_LITERAL_LEN
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,%d}$" % (MAX_ID_LEN - 1))
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -194,6 +215,96 @@ def _norm_text(value: str) -> str:
     return unicodedata.normalize("NFC", value)
 
 
+#: Unicode `Default_Ignorable_Code_Point`, from DerivedCoreProperties. These render as
+#: NOTHING, so they can only ever smuggle a difference past a human reader or a model.
+#:
+#: 🔴 CATEGORY IS THE WRONG TEST, AND GUESSING IT COST TWO REVIEW ROUNDS. An earlier fold
+#:    dropped `Cf`/`Cc` and reasoned that covered invisible characters. It does not:
+#:    U+FE0F VARIATION SELECTOR-16 is `Mn`, U+034F COMBINING GRAPHEME JOINER is `Mn`, and
+#:    the Hangul fillers U+115F/U+1160/U+3164 are `Lo` — a LETTER, so they satisfied a
+#:    "contains a letter" legibility test while displaying nothing at all. Only the
+#:    property itself describes the set, so the property is what is written down here.
+#:    `unicodedata` does not expose it, hence the explicit ranges.
+_DEFAULT_IGNORABLE_RANGES = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
+    (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E),
+    (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def _is_default_ignorable(ch: str) -> bool:
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _DEFAULT_IGNORABLE_RANGES)
+
+
+def event_label_fold(label: str) -> str:
+    """The COMPARISON key for an event label — never stored, never rendered, never sent.
+
+    🔴 NFC IS THE RIGHT STORAGE FORM AND THE WRONG COMPARISON KEY. `_norm_text` is what the
+       canon stores; comparing those bytes directly let visually IDENTICAL labels through
+       (U+00A0 for a space, an added zero-width character, a variation selector), shipping
+       two canon rows a model cannot tell apart — the defect `CanonEventV1.label` exists to
+       close, one encoding layer down. Verified against the real builders, not reasoned
+       about.
+
+    The fold answers "would a reader see the same text?", so it is deliberately aggressive:
+    NFKC folds compatibility variants (ligature `ﬁ`/`fi`, fullwidth `Ｒ`/`R`); every
+    default-ignorable code point is dropped; every whitespace run collapses to one space
+    (Python's `split()` treats NBSP as whitespace); `casefold()` last, because two labels
+    differing only in case read as one name.
+
+    Aggressive is the correct direction: a false MATCH refuses an envelope and asks the
+    bible for a clearer description, while a false MISS ships two events QC must guess
+    between — the failure this whole subsystem exists to prevent.
+
+    🔴 NORMALIZE LAST, NOT ONLY FIRST — THE FOLD MUST BE IDEMPOTENT. Normalizing once up
+       front is not enough, because the later steps can DE-normalize: removing an ignorable
+       re-exposes a composable sequence (`a` + CGJ + combining grave becomes `a` +
+       combining grave, which never recomposes to `à`), and `casefold()` does it too
+       (`ẞ` → `ss`). That left `fold(fold(x)) != fold(x)` — and a projection that is not
+       idempotent is not an equivalence class. The observable cost: inserting ONE invisible
+       character BETWEEN a base letter and its combining mark defeated the collision check
+       entirely, across Latin diacritics, Japanese dakuten and Korean jamo. Re-normalizing
+       after every transformation is what closes it, and `fold(fold(x)) == fold(x)` is
+       asserted in the suite so it stays closed.
+
+    🔴 WHITESPACE IS A SEPARATOR AND MUST SURVIVE AS ONE — DROPPING IT JOINS THE WORDS
+       EITHER SIDE. This loop looks redundant next to `split()`, and is not. TAB, NEWLINE,
+       CR, VT and FF are category `Cc`, so an earlier version — which dropped `Cf`/`Cc`
+       BEFORE collapsing — DELETED them instead of collapsing them: `"Rina\tpergi"` folded
+       to `"rinapergi"` while `"Rina pergi"` folded to `"rina pergi"`, and the two shipped
+       as two distinct events. That is a false MISS, the direction this fold exists to
+       prevent, and it reached QC as two rows a reader cannot tell apart. Whitespace is
+       therefore mapped to a space FIRST and only then are the genuinely invisible
+       characters dropped — `.isspace()` is the right test because it is true for the `Cc`
+       whitespace, for NBSP and for U+2028/U+2029, and false for ZWSP/ZWNJ/BOM, which
+       render as nothing and must keep being deleted rather than becoming a word break.
+    """
+    kept: list[str] = []
+    for ch in unicodedata.normalize("NFKC", label):
+        if ch.isspace():
+            kept.append(" ")
+        elif _is_default_ignorable(ch) or unicodedata.category(ch) in ("Cf", "Cc"):
+            continue
+        else:
+            kept.append(ch)
+    return unicodedata.normalize("NFKC", " ".join("".join(kept).split()).casefold())
+
+
+#: Bounded reasons a one-time event row can be refused. Closed, and deliberately NOT the
+#: label text: these travel to a log line (see `canon_lite_semantic_source`).
+EVENT_LABEL_ILLEGIBLE = "event_label_illegible"
+EVENT_LABEL_AMBIGUOUS = "event_label_ambiguous"
+
+
+def _event_label_error(msg: str, code: str) -> Exception:
+    exc = CanonSchemaError(msg)
+    exc.reason_code = code
+    return exc
+
+
 # ===========================================================================
 # Field validators
 # ===========================================================================
@@ -213,6 +324,40 @@ def _req_str(value: Any, field: str, *, max_len: int, allow_unknown: bool = Fals
     if len(text) > max_len:
         raise CanonBoundsError(f"{field}: length {len(text)} exceeds {max_len}")
     return text
+
+
+def _req_nfc(value: Any, field: str) -> None:
+    """REFUSE text that is not already NFC. The other half of `_bind_norm`, and the half
+    that was missing at every validator door.
+
+    🔴 `_req_str` NORMALIZES TO MEASURE AND RETURNS A VALUE MOST CALLERS DISCARD. That is
+       not a bug in `_req_str` — the PARSER and BUILDER paths (`parse_semantic_source_
+       envelope`, `build_job_config_snapshot`, the outline title) genuinely need
+       normalize-and-return, because raw model/user text legitimately arrives NFD and must
+       be accepted and canonicalised. The VALIDATOR paths need the opposite, and shared one
+       function with them: `_validate_entities`, `_validate_simple` and `_validate_chapters`
+       all call `_req_str` for its exceptions and throw the normalized string away, so the
+       row keeps whatever bytes it arrived with.
+
+       Measured consequence, on every text field at once: a row mutated after construction
+       (or hand-built) and then passed to `build_canon_lite_v1` was ACCEPTED, its NFD text
+       reached `to_canonical_obj()` — the projection QC reads — and `canon_sha256` was
+       computed over the NFD bytes, so `verify_sha256()` returned **True**. A perfectly
+       self-consistent artifact carrying text in a form the system promises it never
+       stores, and two canons identical to any reader hashing differently.
+
+    THE RULE, stated once so it cannot be half-applied again: **a field bound by
+    `_bind_norm` at construction must be REFUSED by its validator in any other form.**
+    Refuse, never repair — repairing inside `_validate_canon_instance` would rewrite a
+    tampered artifact into passing its own `verify_sha256()`, turning the integrity check
+    into a repair shop. Every `_bind_norm`'d field is covered: `expected_title`,
+    `canonical_name`, every alias, `literal`, `label`, `target_language`.
+    """
+    if type(value) is str and value != UNKNOWN and value != _norm_text(value):
+        raise CanonSchemaError(
+            f"{field}: not NFC-normalized; this field is bound to NFC at construction, so "
+            f"a value in any other form never went through it and would hash differently "
+            f"from its identical twin")
 
 
 def _req_id(value: Any, field: str) -> str:
@@ -332,12 +477,55 @@ class CanonAnchorV1:
 
 @dataclass(frozen=True, slots=True)
 class CanonEventV1:
+    """A one-time event: an id to cite, a placement, and a LEGIBLE identity.
+
+    🔴 `label` EXISTS BECAUSE AN ID ALONE CANNOT IDENTIFY AN EVENT. Unlike `CanonEntityV1`
+       (`canonical_name`) and `CanonAnchorV1` (`literal`), this row used to carry no
+       content field at all — only `event_id` and `occurs_chapter_order`. QC is handed
+       exactly this projection and nothing else, so an event was identifiable only insofar
+       as its id happened to be legible. Two failures followed from that, both found in
+       review rather than by tests:
+         · a description with no Latin letters (Korean, Japanese, Arabic, Thai …)
+           slugified to nothing and produced a hash-only `evt_<hash12>`, leaving QC no
+           way to match a passage to this row — i.e. continuity checking was structurally
+           impossible for most of the world's scripts;
+         · two descriptions agreeing on their first `_EVENT_SLUG_MAX` characters produced
+           ids differing ONLY by that opaque hash — unique to the schema, indistinguishable
+           to the reader and the model.
+       Carrying the label directly fixes both at the source: identity now lives in a field
+       meant to hold it, not in the incidental legibility of a generated id.
+
+    §10 IS NOT WEAKENED. The privacy rule bounds what leaves for a LOG or a METRIC; this
+    module's own header already classes `render_canon()` output and canonical names as
+    PROMPT MATERIAL, and the label is exactly that class — the same status
+    `CanonEntityV1.canonical_name` has carried all along. It is strictly weaker than those,
+    in fact: no predicate ever COMPARES a label (`evaluate_semantic`'s one_time_event
+    branch reads `canon_ref` only), so a label can never become a compared value or
+    manufacture a violation. `telemetry_digest()` remains the only observable projection.
+
+    ⚠️ NOT the same decision as `CanonRevealV1`, which still stores no secret. A reveal's
+       content is withheld because putting a planned twist in a chapter prompt would leak
+       it to the writer. An event is something that HAPPENS, already present in the
+       advisory bible the writer reads, so naming it in the canon reveals nothing new.
+    """
+
     event_id: str
     occurs_chapter_order: int   # 1..N or UNKNOWN_ORDER
+    label: str                  # bounded, never compared — see the class docstring
+
+    def __post_init__(self) -> None:
+        # Every other text-bearing row binds its normalization here, and this one was the
+        # exception: `_validate_simple` discards `_req_str`'s normalized return, so an
+        # NFD label stayed NFD in the object AND in `canon_sha256` — two canons that
+        # render identically hashing differently, through a field that is an element of
+        # `CLAIM_CACHE_KEY_FIELDS`. Binding it is what makes `_bind_norm`'s own promise
+        # ("equal names hash equally") true for events too.
+        _bind_norm(self, "label")
 
     def to_canonical_obj(self) -> dict[str, Any]:
         return {"event_id": self.event_id,
-                "occurs_chapter_order": self.occurs_chapter_order}
+                "occurs_chapter_order": self.occurs_chapter_order,
+                "label": self.label}
 
 
 @dataclass(frozen=True, slots=True)
@@ -658,7 +846,7 @@ class CanonLiteV1:
 
     def compute_sha256(self) -> str:
         """Recompute the canon hash from the artifact's own content."""
-        return _digest("canon_lite.canon.v1", self.to_canonical_obj(include_hash=False))
+        return _digest("canon_lite.canon.v2", self.to_canonical_obj(include_hash=False))
 
     def verify_sha256(self) -> bool:
         """True when `canon_sha256` still binds this exact content."""
@@ -690,6 +878,7 @@ def _validate_chapters(rows: Sequence[CanonChapterV1]) -> tuple[CanonChapterV1, 
                 f"chapters[{i}].order: expected exactly {i + 1}, got {ch.order!r}")
         _req_str(ch.expected_title, f"chapters[{i}].expected_title",
                  max_len=MAX_TITLE_LEN, allow_unknown=True)
+        _req_nfc(ch.expected_title, f"chapters[{i}].expected_title")
     return tuple(rows)
 
 
@@ -706,6 +895,7 @@ def _validate_entities(rows: Sequence[CanonEntityV1]) -> tuple[CanonEntityV1, ..
             raise CanonSchemaError(f"entities[{i}].entity_id: duplicate {e.entity_id!r}")
         seen.add(e.entity_id)
         _req_str(e.canonical_name, f"entities[{i}].canonical_name", max_len=MAX_NAME_LEN)
+        _req_nfc(e.canonical_name, f"entities[{i}].canonical_name")
         if not isinstance(e.aliases, tuple):
             raise CanonSchemaError(f"entities[{i}].aliases: expected tuple")
         if len(e.aliases) > MAX_ALIASES_PER_ENTITY:
@@ -713,6 +903,7 @@ def _validate_entities(rows: Sequence[CanonEntityV1]) -> tuple[CanonEntityV1, ..
                 f"entities[{i}].aliases: {len(e.aliases)} exceeds {MAX_ALIASES_PER_ENTITY}")
         for j, alias in enumerate(e.aliases):
             _req_str(alias, f"entities[{i}].aliases[{j}]", max_len=MAX_NAME_LEN)
+            _req_nfc(alias, f"entities[{i}].aliases[{j}]")
         _req_enum(e.alias_source, f"entities[{i}].alias_source", ALIAS_SOURCES)
         # §7.1 alias-authority rule, enforced structurally: aliases may not exist
         # without a declared authoritative source, and a declared source may not be
@@ -751,7 +942,75 @@ def _validate_simple(rows, *, kind: str, max_n: int, id_attr: str,
             _req_enum(getattr(row, attr), f"{kind}[{i}].{attr}", allowed)
         for attr, max_len in dict(text_attrs).items():
             _req_str(getattr(row, attr), f"{kind}[{i}].{attr}", max_len=max_len)
+            _req_nfc(getattr(row, attr), f"{kind}[{i}].{attr}")
     return tuple(rows)
+
+
+def _validate_events(rows, *, count: int,
+                     order_attrs: Sequence[str] = ("occurs_chapter_order",)) -> tuple:
+    """`_validate_simple` for one-time events, PLUS the two rules that make an event
+    identifiable at all.
+
+    🔴 THIS LIVES HERE, ON THE CANON, AND NOT IN THE SEMANTIC-SOURCE PARSER. An earlier
+       round enforced these rules only in `canon_lite_semantic_source`, which left the
+       FINAL CANON — the artifact QC actually reads, built by `_finalize`, which
+       `orchestrator/static.py` calls directly — accepting two events whose labels differ
+       only by a non-breaking space. A rule the consumer's own validator does not enforce
+       is a rule with a door standing open behind it. Every constructor path runs
+       `_finalize` or `_validate_canon_instance`, so putting it here closes all of them at
+       once, including any future one.
+
+    Both rules are about the ONE projection QC receives (`CanonEventV1.to_canonical_obj`):
+      · a label with no letter or digit in any script names nothing, so the row is
+        identity-free — and `_req_str`'s `not text.strip()` guard cannot see it, because
+        `str.strip()` removes none of U+200B/U+FE0F/U+115F and friends;
+      · two labels with the same fold are the same event to any reader, leaving the model
+        to choose between them by their opaque id hashes.
+
+    `order_attrs` is a PARAMETER because the two callers legitimately differ on it, and
+    collapsing that was a real (caught) regression: the canon knows its final chapter count
+    and must bounds-check `occurs_chapter_order` against it, while a semantic source is
+    validated BEFORE it is known which chapter count it will be merged into and passes
+    `()` on purpose (see `_validate_semantic_source_instance`). The LABEL rules below are
+    identical for both — those depend on nothing the caller owns.
+    """
+    rows = _validate_simple(
+        rows, kind="one_time_events", max_n=MAX_EVENTS, id_attr="event_id",
+        order_attrs=order_attrs, count=count, row_type=CanonEventV1,
+        text_attrs={"label": MAX_EVENT_LABEL_LEN})
+    seen: dict[str, int] = {}
+    for i, row in enumerate(rows):
+        label = row.label
+        # `type(x) is str`, not isinstance: this value is folded and used as a dict key, so
+        # a str SUBCLASS with a poisoned __eq__/__hash__ must not reach either.
+        if type(label) is not str:
+            raise _event_label_error(
+                f"one_time_events[{i}].label: expected exactly str, "
+                f"got {type(label).__name__}", EVENT_LABEL_ILLEGIBLE)
+        # NFC is NOT checked here. It was, for one round — and that was the same mistake
+        # this module keeps making one layer down: a rule written for `label` alone while
+        # `canonical_name`, every alias and `literal` had the identical hole. It now lives
+        # in `_req_nfc`, called from `_validate_simple` above (which this function runs
+        # first) and from every other validator door. One rule, one definition, every
+        # text field — see `_req_nfc`'s docstring for the measured consequence.
+        #
+        # It raises a plain `CanonSchemaError` with no `reason_code` deliberately: the
+        # envelope classifier maps that to `semantic_source_schema_invalid`, so the agreed
+        # four-code vocabulary stays closed and this needed no fifth code.
+        fold = event_label_fold(label)
+        if not any(unicodedata.category(ch)[0] in ("L", "N") for ch in fold):
+            raise _event_label_error(
+                f"one_time_events[{i}].label: contains no letter or digit in any script, "
+                f"so it names no event the QC extractor could match a passage to",
+                EVENT_LABEL_ILLEGIBLE)
+        first = seen.get(fold)
+        if first is not None:
+            raise _event_label_error(
+                f"one_time_events[{i}]: its label is indistinguishable from "
+                f"one_time_events[{first}]'s, so the two events differ only by an opaque "
+                f"hash the QC extractor cannot interpret", EVENT_LABEL_AMBIGUOUS)
+        seen[fold] = i
+    return rows
 
 
 def _validate_canon_instance(canon: CanonLiteV1) -> None:
@@ -761,6 +1020,7 @@ def _validate_canon_instance(canon: CanonLiteV1) -> None:
     _req_sha256(canon.generation_config_sha256, "generation_config_sha256")
     _req_str(canon.target_language, "target_language",
              max_len=MAX_LANGUAGE_LEN, allow_unknown=True)
+    _req_nfc(canon.target_language, "target_language")
     _req_enum(canon.fact_source_policy, "fact_source_policy", FACT_SOURCE_POLICIES)
     if canon.advisory_bible_sha256 != UNKNOWN:
         _req_sha256(canon.advisory_bible_sha256, "advisory_bible_sha256")
@@ -777,10 +1037,7 @@ def _validate_canon_instance(canon: CanonLiteV1) -> None:
         canon.anchors, kind="anchors", max_n=MAX_ANCHORS, id_attr="anchor_id",
         order_attrs=(), count=count, row_type=CanonAnchorV1,
         enum_attrs={"kind": ANCHOR_KINDS}, text_attrs={"literal": MAX_LITERAL_LEN})
-    _validate_simple(
-        canon.one_time_events, kind="one_time_events", max_n=MAX_EVENTS,
-        id_attr="event_id", order_attrs=("occurs_chapter_order",), count=count,
-        row_type=CanonEventV1)
+    _validate_events(canon.one_time_events, count=count)
     _validate_simple(
         canon.reveals, kind="reveals", max_n=MAX_REVEALS, id_attr="reveal_id",
         order_attrs=("planned_chapter_order",), count=count, row_type=CanonRevealV1)
@@ -803,6 +1060,7 @@ def _finalize(canon_kwargs: dict[str, Any]) -> CanonLiteV1:
     _req_sha256(canon_kwargs["generation_config_sha256"], "generation_config_sha256")
     _req_str(canon_kwargs["target_language"], "target_language",
              max_len=MAX_LANGUAGE_LEN, allow_unknown=True)
+    _req_nfc(canon_kwargs["target_language"], "target_language")
     _req_enum(canon_kwargs["fact_source_policy"], "fact_source_policy", FACT_SOURCE_POLICIES)
     if canon_kwargs["advisory_bible_sha256"] != UNKNOWN:
         _req_sha256(canon_kwargs["advisory_bible_sha256"], "advisory_bible_sha256")
@@ -814,10 +1072,8 @@ def _finalize(canon_kwargs: dict[str, Any]) -> CanonLiteV1:
         order_attrs=(), count=count, row_type=CanonAnchorV1,
         enum_attrs={"kind": ANCHOR_KINDS},
         text_attrs={"literal": MAX_LITERAL_LEN})
-    canon_kwargs["one_time_events"] = _validate_simple(
-        canon_kwargs["one_time_events"], kind="one_time_events", max_n=MAX_EVENTS,
-        id_attr="event_id", order_attrs=("occurs_chapter_order",), count=count,
-        row_type=CanonEventV1)
+    canon_kwargs["one_time_events"] = _validate_events(
+        canon_kwargs["one_time_events"], count=count)
     canon_kwargs["reveals"] = _validate_simple(
         canon_kwargs["reveals"], kind="reveals", max_n=MAX_REVEALS, id_attr="reveal_id",
         order_attrs=("planned_chapter_order",), count=count, row_type=CanonRevealV1)
@@ -845,7 +1101,7 @@ def _finalize(canon_kwargs: dict[str, Any]) -> CanonLiteV1:
         "advisory_bible_sha256": canon_kwargs["advisory_bible_sha256"],
     }
     return CanonLiteV1(
-        canon_sha256=_digest("canon_lite.canon.v1", hash_input), **canon_kwargs)
+        canon_sha256=_digest("canon_lite.canon.v2", hash_input), **canon_kwargs)
 
 
 def advisory_bible_digest(advisory_bible_text: Optional[str]) -> str:
@@ -944,7 +1200,7 @@ _COMPONENT_SPECS = {
     "chapters": (CanonChapterV1, ("chapter_id", "order", "expected_title")),
     "entities": (CanonEntityV1, ("entity_id", "canonical_name", "aliases", "alias_source")),
     "anchors": (CanonAnchorV1, ("anchor_id", "kind", "literal")),
-    "one_time_events": (CanonEventV1, ("event_id", "occurs_chapter_order")),
+    "one_time_events": (CanonEventV1, ("event_id", "occurs_chapter_order", "label")),
     "reveals": (CanonRevealV1, ("reveal_id", "planned_chapter_order")),
     "flashback_exceptions": (CanonFlashbackExceptionV1,
                              ("exception_id", "chapter_order", "reason_code")),

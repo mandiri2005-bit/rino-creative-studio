@@ -202,7 +202,7 @@ def test_digest_is_domain_separated_from_the_other_artifacts():
     payload = {"a": 1}
     seen = {cl._digest(d, payload) for d in (
         "canon_lite.parity_config.v1", "canon_lite.parity_snapshot.v1",
-        "canon_lite.canon.v1", "canon_lite.job_config.v1")}
+        "canon_lite.canon.v2", "canon_lite.job_config.v1")}
     assert len(seen) == 4
 
 

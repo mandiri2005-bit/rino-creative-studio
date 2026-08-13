@@ -560,7 +560,7 @@ def test_fixed_literal_predicate_is_deterministic():
 
 
 def test_one_time_event_predicate_flags_only_repeated_occurrences():
-    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1)
+    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1, label="pintu pecah")
     canon = _canon(2, events=(event,))
     text = "## Bab 1\npintu pecah\n## Bab 2\npintu pecah lagi"
     snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
@@ -577,8 +577,40 @@ def test_one_time_event_predicate_flags_only_repeated_occurrences():
         (l2.VIOLATION_ONE_TIME_EVENT, 1)]
 
 
+def test_one_time_event_duplication_ignores_quote_wording_only_canon_ref_matters():
+    """🔴 THE EVALUATOR NEVER READS THE EVIDENCE FOR ONE_TIME_EVENT. `CanonEventV1` carries
+    no literal to compare against (unlike entity_mention/fixed_literal), so two claims
+    citing the SAME canon_ref with COMPLETELY DIFFERENT wording must still be flagged as a
+    duplicate — the predicate is canon_ref identity alone, never quote equality. The row
+    above uses identical evidence text both times and cannot by itself tell "compares
+    canon_ref" apart from "happens to compare equal text"; this one can."""
+    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1, label="pintu pecah")
+    canon = _canon(2, events=(event,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\npintu itu pecah berkeping-keping\n"
+                 "## Bab 2\nsuara ledakan menggema di lorong"},
+        canon=canon)
+    rows = {
+        0: l2.parse_chapter_claims(
+            _payload_for_span(snap, idx=0, claim_type=l2.CLAIM_ONE_TIME_EVENT,
+                              canon_ref="ev1", evidence="pintu itu pecah berkeping-keping",
+                              canon=canon),
+            snapshot=snap, canon=canon),
+        1: l2.parse_chapter_claims(
+            _payload_for_span(snap, idx=1, claim_type=l2.CLAIM_ONE_TIME_EVENT,
+                              canon_ref="ev1", evidence="suara ledakan menggema di lorong",
+                              canon=canon),
+            snapshot=snap, canon=canon),
+    }
+    result = l2.evaluate_semantic(l2.PREDICATE_ONE_TIME_EVENT, snap, canon, rows)
+    assert [(v.code, v.chapter_index) for v in result.violations] == [
+        (l2.VIOLATION_ONE_TIME_EVENT, 1)], (
+        "duplication must fire on canon_ref identity alone — wording never matters for "
+        "one_time_event, unlike entity_mention/fixed_literal")
+
+
 def test_claim_type_cannot_reference_an_id_from_another_authority_class():
-    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1)
+    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1, label="pintu pecah")
     canon = _canon(2, events=(event,))
     snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
     payload = _claim_payload(snap, canon=canon)
@@ -1244,8 +1276,14 @@ def test_every_closed_vocabulary_is_actually_closed():
         ("NOT_A_STATE", l2.COVERAGE_STATES),
         ("NOT_A_BINDING", l2.BINDING_STATES),
         ("NOT_A_STATUS", l2.CONTINUITY_STATUSES),
+        ("NOT_A_REASON", l2.EXTRACT_REASON_CODES),
     ):
         assert value not in allowed
+    # The reason vocabulary must stay DISJOINT from the coverage vocabulary, not merely
+    # closed: canon_lite_extractor logs one `error_code` field carrying either kind, so an
+    # overlapping member would make a log line ambiguous about which vocabulary it names.
+    assert not set(l2.EXTRACT_REASON_CODES) & set(l2.COVERAGE_STATES)
+    assert len(set(l2.EXTRACT_REASON_CODES)) == len(l2.EXTRACT_REASON_CODES)
 
 
 # ===========================================================================
@@ -1400,3 +1438,75 @@ def test_the_evidence_size_bound_is_actually_reached():
         l2.parse_chapter_claims(
             _claim_payload(snap, canon=canon, claims=[_claim(long_run)]),
             snapshot=snap, canon=canon)
+
+
+# ===========================================================================
+# one_time_event quote semantics — P1 audit finding, 2026-08-13
+# ===========================================================================
+# The prompt used to define "quote" as "the name or literal ALONE" for every claim_type.
+# True for entity_mention/fixed_literal; false for one_time_event — evaluate_semantic never
+# reads a one_time_event claim's evidence text (see its `else` branch above), and
+# CanonEventV1 carries no literal to compare it against in the first place. Quote semantics
+# are now defined per claim_type (canon_lite_qc_provider's QC_SYSTEM_TEMPLATE): for events,
+# the shortest verbatim phrase that shows the event happened. These rows prove the parser
+# accepts a phrase-shaped quote through the same mechanism a name already uses, and that
+# the evaluator genuinely does not care what that phrase says.
+
+def test_one_time_event_quote_can_be_a_phrase_located_by_context():
+    """Unlike entity_mention/fixed_literal, an event's quote is not a bare name — the
+    contract defines it as the shortest verbatim phrase that shows the event happened. The
+    parser's quote+context mechanism is claim-type-agnostic, so a multi-word phrase must
+    locate exactly the way a repeated name already does."""
+    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1, label="pintu pecah")
+    canon = _canon(2, events=(event,))
+    text = ("## Bab 1\npintu itu pecah. Lalu pintu itu pecah lagi dalam mimpinya.\n"
+            "## Bab 2\nlain")
+    snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
+    block = snap.block_bytes(0)
+    assert block.count("pintu itu pecah".encode("utf-8")) == 2, \
+        "the repeat under test is real"
+
+    art = l2.parse_chapter_claims(
+        _claim_payload(
+            snap, canon=canon,
+            coverage={**{p: l2.COVERAGE_NO_CLAIMS_FOUND for p in l2.SEMANTIC_PREDICATES},
+                      l2.PREDICATE_ONE_TIME_EVENT: l2.COVERAGE_CHECKED},
+            claims=[_claim("pintu itu pecah", canon_ref="ev1",
+                           claim_type=l2.CLAIM_ONE_TIME_EVENT,
+                           context="Lalu pintu itu pecah lagi")]),
+        snapshot=snap, canon=canon)
+
+    c = art.claims[0]
+    assert block[c.evidence_start:c.evidence_end].decode("utf-8") == "pintu itu pecah"
+    assert c.evidence_start == block.rindex("pintu itu pecah".encode("utf-8")), \
+        "must bind to the occurrence the context named, not the first one"
+
+
+def test_claim_rejections_carry_distinct_closed_reason_codes():
+    """§10.3 / P2 audit finding: canon_lite_extractor's telemetry narrows
+    `INVALID_EXTRACTOR_OUTPUT` using `.reason_code`, set here. Prove it at the source:
+    three genuinely different claims-loop rejections must carry three different codes, not
+    one shared code reused regardless of cause."""
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\nRina pergi\n## Bab 2\nlain"}, canon=canon)
+
+    def _raised(**claim_kwargs):
+        with pytest.raises(cl.CanonSchemaError) as exc:
+            l2.parse_chapter_claims(
+                _claim_payload(snap, canon=canon, claims=[_claim(**claim_kwargs)]),
+                snapshot=snap, canon=canon)
+        return exc.value
+
+    not_found = _raised(quote="ABSENT_FROM_THE_CHAPTER")
+    bad_ref = _raised(quote="Rina", canon_ref="not-a-real-id")
+    ctx_not_found = _raised(quote="Rina", context="ABSENT CONTEXT")
+
+    assert not_found.reason_code == l2.EXTRACT_REASON_QUOTE_NOT_FOUND
+    assert bad_ref.reason_code == l2.EXTRACT_REASON_CANON_REF_INVALID
+    assert ctx_not_found.reason_code == l2.EXTRACT_REASON_CONTEXT_NOT_FOUND
+    codes = {not_found.reason_code, bad_ref.reason_code, ctx_not_found.reason_code}
+    assert len(codes) == 3, "three distinct causes must not collapse into fewer codes"
+    assert codes <= set(l2.EXTRACT_REASON_CODES)

@@ -122,8 +122,12 @@ BREAKS = [
     # ── 3d. the evidence contract: quote located, never guessed ──────────
     ("fabricated citation accepted — quote no longer has to exist in the chapter",
      L2,
-     '            if start is _NOT_FOUND:\n                raise _schema_error(f"claims[{i}]: quote not found in the chapter block")',
-     '            if False:\n                raise _schema_error(f"claims[{i}]: quote not found in the chapter block")',
+     '            if start is _NOT_FOUND:\n'
+     '                raise _schema_error(f"claims[{i}]: quote not found in the chapter block",\n'
+     '                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)',
+     '            if False:\n'
+     '                raise _schema_error(f"claims[{i}]: quote not found in the chapter block",\n'
+     '                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)',
      T_L2, "test_a_quote_that_is_not_in_the_chapter_is_rejected"),
     ("ambiguity resolved by guessing — first occurrence silently wins",
      L2,
@@ -148,9 +152,18 @@ BREAKS = [
      EXT,
      '            log.warning("canon lite qc extract: attempt failed "\n'
      '                        "(unit_index=%d attempt_ordinal=%d error_code=%s)",\n'
-     '                        index, attempt, terminal_state)',
+     '                        index, attempt, error_code)',
      "            pass",
      T_QC, "test_8_19_a_failing_attempt_logs_exactly_one_bounded_line"),
+
+    # ── 3f. the reason-code classifier that narrows INVALID_EXTRACTOR_OUTPUT ──
+    # Reverts to the shape the P2 audit finding named: every parser-side rejection
+    # collapsing to one coarse code regardless of which rule actually rejected it.
+    ("reason-code lookup disabled — every parser rejection collapses to one bucket again",
+     EXT,
+     '    code = getattr(exc, "reason_code", None)',
+     "    code = None",
+     T_QC, "test_8_19d_a_canon_ref_rejection_gets_a_different_code_than_a_quote_rejection"),
 
     # ── 4. surgical containment ──────────────────────────────────────────
     ("containment guard disabled — the patch is bought and the envelope invalidated",
@@ -211,6 +224,30 @@ def main() -> int:
             res = _run(test_file, test_name)
         finally:
             path.write_text(original, encoding="utf-8")
+        # 🔴 A NON-ZERO EXIT IS NOT A KILL. pytest exits 4 when a node path is bad and 5
+        #    when `-k` matches nothing — both non-zero, and both would have been counted as
+        #    KILLED here while proving nothing at all. The embedded harness grew this guard
+        #    first; the harness that actually runs standalone had none.
+        if res.returncode in (4, 5) or "no tests ran" in res.stdout \
+                or "not found:" in res.stderr:
+            print(f"NO-WITNESS    {label}\n              {test_name} collected NOTHING "
+                  f"(rc={res.returncode}) — the mutant was never exercised")
+            missed += 1
+            continue
+        # 🔴 ...AND A NON-ZERO EXIT WITH NO FAILED TEST IS NOT ONE EITHER. The guard above
+        #    catches a witness that never ran; it does NOT catch a mutant that broke
+        #    COLLECTION of its own target file, which also exits non-zero and would have
+        #    been printed as KILLED. That is not hypothetical: a call-site harness written
+        #    against this same tree reported 4/4 KILLED on returncode alone while every
+        #    mutant was in fact green — an unrelated collection error was supplying the
+        #    exit status. A kill is a test that RAN and FAILED, and nothing else.
+        #    (The embedded harness in `test_canon_lite_p0b_semantic_source.py` has
+        #    asserted this all along; only the standalone one was missing it.)
+        if res.returncode != 0 and " failed" not in res.stdout:
+            print(f"NO-FAILURE    {label}\n              exited rc={res.returncode} without a "
+                  f"test failure — the mutant broke collection rather than being caught")
+            missed += 1
+            continue
         if res.returncode != 0:
             killed += 1
             print(f"KILLED        {label}")

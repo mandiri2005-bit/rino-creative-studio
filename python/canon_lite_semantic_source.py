@@ -59,12 +59,13 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 import canon_lite
 
-SEMANTIC_SOURCE_SCHEMA_VERSION = "canon_lite_semantic_source_v1"
+SEMANTIC_SOURCE_SCHEMA_VERSION = "canon_lite_semantic_source_v2"
 
 #: The only `ALIAS_SOURCES` member this module ever produces. Aliases surfaced here came
 #: from the Story Bible extraction, which is inherently part of BUILDING canon — not a
@@ -135,7 +136,7 @@ class CanonLiteSemanticSourceV1:
         return obj
 
     def compute_sha256(self) -> str:
-        return canon_lite._digest("canon_lite.semantic_source.v1",
+        return canon_lite._digest("canon_lite.semantic_source.v2",
                                   self.to_canonical_obj(include_hash=False))
 
     def verify_sha256(self) -> bool:
@@ -225,11 +226,29 @@ def _validate_semantic_source_instance(src: CanonLiteSemanticSourceV1) -> None:
     # actually matters. Under-counting here would either reject a valid extraction for a
     # count it doesn't own yet, or (worse) over-trust a wrong count silently — no count is
     # honest about what this stage does and does not know.
-    canon_lite._validate_simple(
-        src.one_time_events, kind="one_time_events", max_n=canon_lite.MAX_EVENTS,
-        id_attr="event_id", order_attrs=(), count=0, row_type=canon_lite.CanonEventV1)
-    if not isinstance(src.source_sha256, str) or len(src.source_sha256) != 64:
-        raise canon_lite.CanonSchemaError("source_sha256: expected a 64-char hex sha256")
+    # `_validate_events`, matching `build_semantic_source_v1`. This INSTANCE validator was
+    # left on `_validate_simple` when the builder moved, so a caller constructing
+    # `CanonLiteSemanticSourceV1(...)` directly — which `__post_init__` routes here — could
+    # still mint a source carrying duplicate labels, an unbounded label, or a non-str one.
+    # That is the same shape as the bypass that made the label rules move onto the canon in
+    # the first place: migrated at the builder, missed at the instance validator.
+    canon_lite._validate_events(src.one_time_events, count=0, order_attrs=())
+    # 🔴 "VALIDATED, SELF-BINDING" WAS A CLAIM THIS FUNCTION NEVER CHECKED. It tested the
+    #    TYPE and the LENGTH of the digest and nothing else — not even that the characters
+    #    were hex. Measured: `"z"*64`, `"A"*64` and `"0"*64` were all ACCEPTED by the public
+    #    constructor, each producing an envelope whose own `verify_sha256()` returned False.
+    #    `CanonLiteV1` has always ended `_validate_canon_instance` with exactly this pair of
+    #    checks; the envelope — the object that carries semantic AUTHORITY into assist —
+    #    had neither, so it was strictly weaker than the artifact it feeds.
+    #
+    #    Not currently exploitable end-to-end: `orchestrator/static.py` re-checks
+    #    `verify_sha256()` on the arming path before trusting a source. That makes this a
+    #    false contract rather than a live injection — and a caller is entitled to rely on
+    #    the constructor's own promise instead of a re-check it cannot see.
+    canon_lite._req_sha256(src.source_sha256, "source_sha256")
+    if not src.verify_sha256():
+        raise canon_lite.CanonSchemaError(
+            "source_sha256: does not bind this content")
 
 
 def build_semantic_source_v1(
@@ -270,9 +289,17 @@ def build_semantic_source_v1(
         order_attrs=(), count=0, row_type=canon_lite.CanonAnchorV1,
         enum_attrs={"kind": canon_lite.ANCHOR_KINDS},
         text_attrs={"literal": canon_lite.MAX_LITERAL_LEN})
-    validated_events = canon_lite._validate_simple(
-        tuple(one_time_events), kind="one_time_events", max_n=canon_lite.MAX_EVENTS,
-        id_attr="event_id", order_attrs=(), count=0, row_type=canon_lite.CanonEventV1)
+    # `_validate_events`, not `_validate_simple`: the label rules (legible, and unique by
+    # fold) belong to the EVENT ROW itself, so every door that builds one inherits them
+    # from a single definition in `canon_lite`. This builder is exported and its callers
+    # hand over ready-made `CanonEventV1`s that nothing upstream has necessarily checked,
+    # so it is a real door — but so is `_finalize`, which is why the rule lives there
+    # rather than being re-implemented at each entrance.
+    # `order_attrs=()` / `count=0` preserved from the previous `_validate_simple` call —
+    # see `_validate_semantic_source_instance` for why this stage deliberately does NOT
+    # bounds-check `occurs_chapter_order`. Only the LABEL rules are inherited here.
+    validated_events = canon_lite._validate_events(
+        tuple(one_time_events), count=0, order_attrs=())
     hash_input = {
         "schema_version": SEMANTIC_SOURCE_SCHEMA_VERSION,
         "accepted_outline_content_sha256": outline_content_sha,
@@ -281,7 +308,7 @@ def build_semantic_source_v1(
         "anchors": [a.to_canonical_obj() for a in validated_anchors],
         "one_time_events": [e.to_canonical_obj() for e in validated_events],
     }
-    source_sha = canon_lite._digest("canon_lite.semantic_source.v1", hash_input)
+    source_sha = canon_lite._digest("canon_lite.semantic_source.v2", hash_input)
     return CanonLiteSemanticSourceV1(
         schema_version=SEMANTIC_SOURCE_SCHEMA_VERSION,
         accepted_outline_content_sha256=outline_content_sha,
@@ -312,6 +339,21 @@ def _positional_id(prefix: str, index: int) -> str:
 _EVENT_SLUG_MAX = 40
 
 
+def _event_slug(description: str) -> str:
+    """The ASCII-legible half of an event id — `""` when nothing slugifies.
+
+    ⚠️ COSMETIC ONLY. This is `[a-z0-9]`-shaped, so it erases every non-Latin script, and
+       it truncates at `_EVENT_SLUG_MAX`. Both properties are fine for making an id
+       skimmable in a log and were catastrophic when the id was the only identity an event
+       had. Identity now lives in `CanonEventV1.label`, and the collision check compares
+       `canon_lite.event_label_fold(label)` — never this. Do not reintroduce it as a
+       comparison key: mutant `M11` exists specifically to fail if anyone does.
+    """
+    normalized = canon_lite._norm_text(description)
+    slug = re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")[:_EVENT_SLUG_MAX]
+    return slug.strip("_")
+
+
 def _event_id(description: str, occurs_chapter: int) -> str:
     """A CONTENT-DERIVED, human-legible, collision-free event id: `evt_<slug>_<hash12>`.
 
@@ -333,30 +375,89 @@ def _event_id(description: str, occurs_chapter: int) -> str:
        · the SLUG makes the id MEANINGFUL — `evt_ledakan_gedung_9c1f...` tells a reader and
          an extractor what the event actually is, which is the whole point of preserving
          semantic identity into the canon;
-       · the HASH SUFFIX makes it UNAMBIGUOUS — slugs alone collide (punctuation-only
-         differences, truncation at 40 chars, or a description that is entirely non-ASCII
-         and slugifies to nothing at all), and a collision would resurrect the exact bug
-         this function closes.
+       · the HASH SUFFIX makes it UNIQUE — slugs alone collide (punctuation-only
+         differences, or truncation at 40 chars), and a duplicate id would be rejected
+         outright by `canon_lite._validate_simple` as a malformed canon.
 
-    The hash covers `(normalized description, occurs_chapter)`, so the SAME description in
-    two DIFFERENT chapters yields two different ids (legitimately different occurrences),
-    while the same description twice in the SAME chapter yields one id — which
-    `canon_lite._validate_simple`'s duplicate-id check then rejects, correctly: that is a
-    malformed envelope listing one event twice, not two events.
+       ⚠️ UNIQUE IS NOT INTERPRETABLE, and an earlier version of this docstring claimed the
+          hash suffix made a colliding slug "unambiguous". It does not. It makes the ROW
+          distinct; it tells a reader nothing. Two descriptions differing only past the
+          40-char cap produce `evt_<same 40 chars>_1143fdbb9002` and
+          `evt_<same 40 chars>_8e7101fa5c2d` — valid, distinct, and indistinguishable to
+          the one consumer that matters. That gap is closed in the envelope parser, not
+          here (this function sees one row and cannot detect a collision), by
+          `canon_lite._validate_events`.
+
+    The hash covers `(normalized description, occurs_chapter)`, so the same description in
+    two different chapters yields two different ids. Note this does NOT make such a pair
+    acceptable — `canon_lite._validate_events` refuses it on the LABEL, before any
+    duplicate-id check could apply, because two events a bible describes identically are
+    not tellable apart by anything QC can read.
 
     No prose survives into the canon: a slug is a normalized, truncated, `[a-z0-9_]`-only
     token, not the description text. `CanonEventV1` still stores no description field, and
     §10's "prose never becomes a compared value" is unchanged.
+
+    🔴 THE SLUG IS A CONVENIENCE, NOT THE IDENTITY — `CanonEventV1.label` IS.
+       An earlier round made this function REFUSE when a description slugified to nothing,
+       reasoning that a hash-only `evt_<hash12>` left QC nothing to match a passage
+       against. The premise was right and the remedy was wrong: `[^a-z0-9]` strips entire
+       writing systems, so refusing made L3-assist structurally impossible for Korean,
+       Japanese, Chinese, Russian, Arabic, Thai and Hindi — every non-Latin market — and
+       flattened Vietnamese diacritics into collisions. It turned a silent degradation
+       into a hard, paid-for job refusal.
+
+       The identity now lives in `CanonEventV1.label`, which carries the description
+       whole, in its own script, and travels in the very same projection QC reads. So a
+       hash-only id is once again harmless HERE: it is a stable key to cite, and the row
+       it sits on says in plain language which event it is. Legibility in the id remains
+       best-effort; identity is no longer its job.
     """
     normalized = canon_lite._norm_text(description)
     digest = canon_lite.sha256_hex(
         canon_lite.canonical_bytes([normalized, int(occurs_chapter)]))[:12]
-    slug = re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")[:_EVENT_SLUG_MAX]
-    slug = slug.strip("_")
-    # An all-non-ASCII description slugifies to "" — the id is then hash-only, still valid
-    # and still unique, just not legible. Legibility is best-effort; uniqueness is not.
+    slug = _event_slug(description)
     return f"evt_{slug}_{digest}" if slug else f"evt_{digest}"
 
+
+#: Bounded reasons a semantic-source envelope can be refused, for the ONE log line the
+#: caller emits (`orchestrator/dynamic.py`). Closed, and deliberately never the label, the
+#: description, model output, or a raw exception — the same discipline
+#: `canon_lite_extractor`'s `EXTRACT_REASON_CODES` follows for the extraction path.
+#:
+#: 🔴 THIS EXISTS BECAUSE THIS DIFF ADDED A NEW WAY FOR A PAID JOB TO DIE. A label
+#:    collision refuses the envelope AFTER the Story Bible has been bought (up to
+#:    `NARASI_BIBLE_BEST_OF` candidates plus a judge call), and without a code it logged as
+#:    `semantic_source_parse_error class=CanonSchemaError` — indistinguishable from "the
+#:    model emitted garbage", the one diagnosis that sends an operator looking in entirely
+#:    the wrong place.
+SEMANTIC_SOURCE_REASON_EVENT_LABEL_ILLEGIBLE = canon_lite.EVENT_LABEL_ILLEGIBLE
+SEMANTIC_SOURCE_REASON_EVENT_LABEL_AMBIGUOUS = canon_lite.EVENT_LABEL_AMBIGUOUS
+SEMANTIC_SOURCE_REASON_SCHEMA_INVALID = "semantic_source_schema_invalid"
+SEMANTIC_SOURCE_REASON_OTHER = "other"
+SEMANTIC_SOURCE_REASON_CODES = (
+    SEMANTIC_SOURCE_REASON_EVENT_LABEL_ILLEGIBLE,
+    SEMANTIC_SOURCE_REASON_EVENT_LABEL_AMBIGUOUS,
+    SEMANTIC_SOURCE_REASON_SCHEMA_INVALID,
+    SEMANTIC_SOURCE_REASON_OTHER,
+)
+
+
+def semantic_source_reason_code(exc: BaseException) -> str:
+    """Classify an envelope refusal into a CLOSED code. Never reads the exception message.
+
+    A specific `.reason_code` — attached by `canon_lite._event_label_error` at the two
+    sites that can name a precise cause — wins. Any other schema/bounds refusal is
+    SCHEMA_INVALID. Anything else is OTHER. Every branch returns a
+    `SEMANTIC_SOURCE_REASON_CODES` member, so the vocabulary stays closed no matter what
+    future code raises.
+    """
+    code = getattr(exc, "reason_code", None)
+    if code in SEMANTIC_SOURCE_REASON_CODES:
+        return code
+    if isinstance(exc, (canon_lite.CanonSchemaError, canon_lite.CanonBoundsError)):
+        return SEMANTIC_SOURCE_REASON_SCHEMA_INVALID
+    return SEMANTIC_SOURCE_REASON_OTHER
 
 def parse_semantic_source_envelope(
     raw: Any,
@@ -443,14 +544,21 @@ def parse_semantic_source_envelope(
                 f"semantic_source.one_time_events[{i}]: expected a mapping")
         canon_lite._reject_unknown_fields(row, _EVENT_FIELDS,
                                           f"semantic_source.one_time_events[{i}]")
-        # `description` is read for VALIDATION ONLY (bounded length, must be a real
-        # string) — it is intentionally NOT stored on `CanonEventV1`, which carries only
-        # `event_id`/`occurs_chapter_order` (§6.1's identity+placement, no prose). Prose
-        # never becomes a hashed/compared value (§10) — this mirrors why `CanonRevealV1`
-        # does not store a reveal's secret either.
-        canon_lite._req_str(row["description"],
-                            f"semantic_source.one_time_events[{i}].description",
-                            max_len=canon_lite.MAX_LITERAL_LEN)
+        # 🔴 READ ONCE, THEN USE ONLY THE LOCAL. `row` is an UNTRUSTED mapping, and this
+        #    value now feeds three consumers — the bound check, the id's hash, and the
+        #    stored label. Re-indexing `row` for each would let a Mapping with a varying
+        #    `__getitem__` return different strings to different consumers, so the label
+        #    the collision check compares need not be the description the id was derived
+        #    from. Production hands us a plain `dict` from `json.loads`, but this module
+        #    already hardens against exactly this class elsewhere, and a validator that
+        #    validates one value while storing another is not a validator.
+        description = canon_lite._req_str(
+            row["description"], f"semantic_source.one_time_events[{i}].description",
+            max_len=canon_lite.MAX_LITERAL_LEN)
+        # The label IS the description, normalized — never truncated (see
+        # `MAX_EVENT_LABEL_LEN`). Normalizing here rather than at comparison time means
+        # the value stored, the value hashed and the value compared are one value.
+        label = canon_lite._norm_text(description)
         occurs = row["occurs_chapter"]
         if isinstance(occurs, bool) or not isinstance(occurs, int):
             raise canon_lite.CanonSchemaError(
@@ -461,7 +569,11 @@ def parse_semantic_source_envelope(
                 f"semantic_source.one_time_events[{i}].occurs_chapter: {occurs} outside "
                 f"1..{n_chapters}")
         events.append(canon_lite.CanonEventV1(
-            event_id=_event_id(row["description"], occurs), occurs_chapter_order=occurs))
+            event_id=_event_id(description, occurs),
+            occurs_chapter_order=occurs, label=label))
+    # No label check here: `build_semantic_source_v1` below runs `_validate_events`, and a
+    # second copy of the rule at this door is exactly the drift-prone duplication that let
+    # the two builders enforce DIFFERENT rules for a round.
 
     return build_semantic_source_v1(
         outline_chapters=outline_chapters, bible_text=bible_text, entities=entities,

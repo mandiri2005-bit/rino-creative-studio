@@ -41,7 +41,7 @@ from canon_lite import (  # strict foundation — do not re-implement these here
 )
 
 
-def _schema_error(msg: str) -> Exception:
+def _schema_error(msg: str, *, code: Optional[str] = None) -> Exception:
     """Raise through the CURRENT `canon_lite` module, never a snapshot of it.
 
     `from canon_lite import CanonSchemaError` binds the class OBJECT at import time. The
@@ -50,8 +50,25 @@ def _schema_error(msg: str) -> Exception:
     raises an exception that `except canon_lite.CanonSchemaError` no longer catches. For a
     module whose entire job is to refuse bad input, an uncatchable refusal is worse than a
     noisy one, so the class is resolved at RAISE time.
+
+    `code`, when given, must be an `EXTRACT_REASON_CODES` member (§10.3). It is attached as
+    `.reason_code` so canon_lite_extractor's telemetry can name a specific cause without
+    ever parsing this exception's message: the message stays free-form prose for a human
+    reading a traceback, the attribute stays a closed constant for a log line.
     """
-    return _cl.CanonSchemaError(msg)
+    if code is not None:
+        # NOT `assert`: `python3 -O` strips assertions, and this module's whole discipline
+        # is "refuse, never assume" — a guard that compiles away in the deployment mode it
+        # most needs to hold is not a guard. The consuming classifier re-checks membership
+        # too, so the log line stays closed either way; this raise is what keeps a typo'd
+        # code from being silently attached and read as a real one by future code.
+        if code not in EXTRACT_REASON_CODES:
+            raise _cl.CanonSchemaError(
+                f"_schema_error: {code!r} is not an EXTRACT_REASON_CODES member")
+    exc = _cl.CanonSchemaError(msg)
+    if code is not None:
+        exc.reason_code = code
+    return exc
 
 
 def _bounds_error(msg: str) -> Exception:
@@ -65,6 +82,17 @@ SNAPSHOT_SCHEMA_VERSION = "final_chapter_snapshot_v1"
 # genuinely does not know which canon produced it and inferring one would fabricate
 # provenance. REPORT_SCHEMA_VERSION deliberately stays v1: ContinuityReportV1 already
 # carries canon_sha256, so bumping it would force re-acceptance of an unchanged schema.
+#
+# RATIFIED 2026-08-13: stays v2 through the QC_REQUEST_CONTRACT_VERSION v1->v2 move (quote
+# semantics defined per claim_type; see canon_lite_qc_provider's E3/PROMPT_SHA256). This is
+# deliberate, not an oversight — the WIRE changed (what the model is told "quote" means),
+# but the ARTIFACT this constant versions did not: `ObservedClaimV1` still carries exactly
+# `evidence_start`/`evidence_end`/`evidence_sha256`, server-derived, unchanged in shape or
+# meaning. `PROMPT_SHA256` already prevents an old- and new-contract payload from colliding
+# in cache (`CLAIM_CACHE_KEY_FIELDS` carries `prompt_sha256`), so bumping this constant too
+# would force re-acceptance of an artifact shape that never moved. Don't bump it for a
+# future wire change either unless `ObservedClaimV1`'s own fields change — re-ratify
+# explicitly if that reasoning ever needs revisiting.
 CLAIMS_SCHEMA_VERSION = "chapter_claims_v2"
 REPORT_SCHEMA_VERSION = "continuity_report_v1"
 
@@ -127,6 +155,33 @@ COVERAGE_STATES = (
 #: predicate report from claiming "no claims" after it successfully evaluated real claims.
 _EXTRACTION_MEASURED = frozenset({COVERAGE_CHECKED, COVERAGE_NO_CLAIMS_FOUND})
 _PREDICATE_MEASURED = frozenset({COVERAGE_CHECKED, COVERAGE_NO_VIOLATIONS_FOUND})
+
+#: §10.3 — bounded EXTRACTION-ATTEMPT FAILURE REASONS, for telemetry only. Never stored on
+#: any artifact: `PredicateCoverageV1.state` must stay a `COVERAGE_STATES` member (enforced
+#: by `_req_enum`), so a reason code cannot travel through that field. A coverage state
+#: says WHAT a chapter's lifecycle outcome was; a reason code says WHY one parser-side
+#: rejection happened, so canon_lite_extractor's bounded log line (its own module
+#: docstring: "fixed and closed... never a raw exception") can name a specific cause
+#: without widening what may reach that logger or ever touching the exception itself.
+#:
+#: Set via `_schema_error(..., code=)` at the handful of claims-loop sites in
+#: `parse_chapter_claims` that can name one precisely. Every other schema/bounds refusal
+#: buckets to SCHEMA_INVALID, and anything not even a schema/bounds error to OTHER — see
+#: canon_lite_extractor's classifier — so the vocabulary stays closed no matter what a
+#: future raise site forgets to tag.
+EXTRACT_REASON_QUOTE_NOT_FOUND = "quote_not_found"
+EXTRACT_REASON_QUOTE_AMBIGUOUS = "quote_ambiguous"
+EXTRACT_REASON_CONTEXT_NOT_FOUND = "context_not_found"
+EXTRACT_REASON_CONTEXT_AMBIGUOUS = "context_ambiguous"
+EXTRACT_REASON_CANON_REF_INVALID = "canon_ref_invalid"
+EXTRACT_REASON_SCHEMA_INVALID = "schema_invalid"
+EXTRACT_REASON_OTHER = "other"
+EXTRACT_REASON_CODES = (
+    EXTRACT_REASON_QUOTE_NOT_FOUND, EXTRACT_REASON_QUOTE_AMBIGUOUS,
+    EXTRACT_REASON_CONTEXT_NOT_FOUND, EXTRACT_REASON_CONTEXT_AMBIGUOUS,
+    EXTRACT_REASON_CANON_REF_INVALID, EXTRACT_REASON_SCHEMA_INVALID,
+    EXTRACT_REASON_OTHER,
+)
 
 #: D-L2-7 / §11.2 — delivery and persistence bind separately and are reported separately.
 BINDING_MATCH = "MATCH"
@@ -503,13 +558,16 @@ def _reject_claim_fields(mapping: Any, where: str) -> None:
     """
     if not isinstance(mapping, Mapping):
         raise _schema_error(f"{where}: expected a mapping, "
-                            f"got {type(mapping).__name__}")
+                            f"got {type(mapping).__name__}",
+                            code=EXTRACT_REASON_SCHEMA_INVALID)
     extra = sorted(set(mapping) - set(_CLAIM_FIELDS), key=repr)
     if extra:
-        raise _schema_error(f"{where}: unknown field(s) {extra}")
+        raise _schema_error(f"{where}: unknown field(s) {extra}",
+                            code=EXTRACT_REASON_SCHEMA_INVALID)
     missing = sorted(set(_CLAIM_FIELDS_REQUIRED) - set(mapping))
     if missing:
-        raise _schema_error(f"{where}: missing field(s) {missing}")
+        raise _schema_error(f"{where}: missing field(s) {missing}",
+                            code=EXTRACT_REASON_SCHEMA_INVALID)
 
 
 #: Sentinels for `_locate_unique`. Distinct objects rather than -1/None so a caller cannot
@@ -792,10 +850,12 @@ def parse_chapter_claims(
         # for and hashed, and a str SUBCLASS with a poisoned __eq__ must not reach any of
         # that. Same discipline as the P0-A verdict canonicaliser.
         if type(quote) is not str or not quote:
-            raise _schema_error(f"claims[{i}]: quote must be a non-empty string")
+            raise _schema_error(f"claims[{i}]: quote must be a non-empty string",
+                                code=EXTRACT_REASON_SCHEMA_INVALID)
         context = rc.get("context")
         if context is not None and (type(context) is not str or not context):
-            raise _schema_error(f"claims[{i}]: context must be a non-empty string")
+            raise _schema_error(f"claims[{i}]: context must be a non-empty string",
+                                code=EXTRACT_REASON_SCHEMA_INVALID)
         needle = quote.encode("utf-8")
 
         # 🔴 EXACTLY ONE OCCURRENCE, AND THE SEARCH MUST SEE OVERLAPPING ONES.
@@ -811,10 +871,12 @@ def parse_chapter_claims(
         if context is None:
             start = _locate_unique(block, needle)
             if start is _NOT_FOUND:
-                raise _schema_error(f"claims[{i}]: quote not found in the chapter block")
+                raise _schema_error(f"claims[{i}]: quote not found in the chapter block",
+                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)
             if start is _AMBIGUOUS:
                 raise _schema_error(
-                    f"claims[{i}]: quote is ambiguous in the chapter block")
+                    f"claims[{i}]: quote is ambiguous in the chapter block",
+                    code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
         else:
             # The CONTEXT is the locator; the QUOTE is still the evidence. The context
             # must be unique in the chapter, and the quote must sit at exactly one place
@@ -822,16 +884,20 @@ def parse_chapter_claims(
             ctx_bytes = context.encode("utf-8")
             ctx_start = _locate_unique(block, ctx_bytes)
             if ctx_start is _NOT_FOUND:
-                raise _schema_error(f"claims[{i}]: context not found in the chapter block")
+                raise _schema_error(f"claims[{i}]: context not found in the chapter block",
+                                    code=EXTRACT_REASON_CONTEXT_NOT_FOUND)
             if ctx_start is _AMBIGUOUS:
                 raise _schema_error(
-                    f"claims[{i}]: context is ambiguous in the chapter block")
+                    f"claims[{i}]: context is ambiguous in the chapter block",
+                    code=EXTRACT_REASON_CONTEXT_AMBIGUOUS)
             offset = _locate_unique(ctx_bytes, needle)
             if offset is _NOT_FOUND:
-                raise _schema_error(f"claims[{i}]: context does not contain the quote")
+                raise _schema_error(f"claims[{i}]: context does not contain the quote",
+                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)
             if offset is _AMBIGUOUS:
                 raise _schema_error(
-                    f"claims[{i}]: quote is ambiguous within its own context")
+                    f"claims[{i}]: quote is ambiguous within its own context",
+                    code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
             start = ctx_start + offset
         claim = ObservedClaimV1(
             claim_type=rc["claim_type"], canon_ref=rc["canon_ref"],
@@ -847,12 +913,14 @@ def parse_chapter_claims(
             block[claim.evidence_start: claim.evidence_end].decode("utf-8", errors="strict")
         except UnicodeDecodeError:
             raise _schema_error(
-                f"claims[{i}]: evidence range splits a UTF-8 code point") from None
+                f"claims[{i}]: evidence range splits a UTF-8 code point",
+                code=EXTRACT_REASON_SCHEMA_INVALID) from None
         # D-L2-5: an extractor may not mint an id and then rely on it as authority.
         if claim.canon_ref == UNKNOWN or claim.canon_ref not in accepted_by_type[
                 claim.claim_type]:
             raise _schema_error(
-                f"claims[{i}]: canon_ref is not accepted for {claim.claim_type}")
+                f"claims[{i}]: canon_ref is not accepted for {claim.claim_type}",
+                code=EXTRACT_REASON_CANON_REF_INVALID)
         parsed.append(claim)
 
     return ChapterClaimsV1(

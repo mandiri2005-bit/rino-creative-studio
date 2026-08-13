@@ -44,9 +44,29 @@ from canon_lite_qc_meter import MeterConfigurationError, ProviderUsage
 
 # The single version constant — contract version AND message-shape version. There is no
 # separate "message-shape version"; two names for one fact is two things to forget.
-QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v1"
+#
+# RATIFIED 2026-08-13: v1 -> v2. The response schema changed (quote semantics are now
+# defined per claim_type — see QC_SYSTEM_TEMPLATE's claims section), so the constant that
+# exists specifically to keep the wire from drifting silently had to move with it.
+QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v2"
 
-QC_CANON_PROJECTION_RULE = "canon_lite_v1.to_canonical_obj(include_hash=True)"
+#: 🔴 THIS CONSTANT IS A CLAIM ABOUT A SHAPE, AND THE SHAPE MOVED UNDER IT. It told the QC
+#: contract exactly which projection the `canon` field carries; then `one_time_events` rows
+#: gained `label` and this string did not change, so it was simply describing a projection
+#: that no longer existed. It stayed *safe* only by accident — `QC_SYSTEM_TEMPLATE` changed
+#: in the same diff and moved `PROMPT_SHA256`, which is the element the claim cache actually
+#: keys on. Accidental safety is not a mechanism, so the revision is now pinned INTO the
+#: rule: a projection change that forgets to move it produces a string that contradicts the
+#: artifact's own `SCHEMA_VERSION`, which the suite asserts.
+#:
+#: ⚠️ Moving this moves `PROMPT_SHA256` (it is hashed into `QC_REQUEST_CONTRACT_BYTES`), and
+#:    `prompt_sha256` is a `CLAIM_CACHE_KEY_FIELDS` member — so the first assist run after
+#:    deploy re-pays extraction on every chapter. That cost was ALREADY committed by the
+#:    template change in this same undeployed diff; doing it now is free and doing it after
+#:    deploy would not be.
+QC_CANON_PROJECTION_REVISION = "canon_projection_v2"
+QC_CANON_PROJECTION_RULE = (
+    f"canon_lite_v2.to_canonical_obj(include_hash=True) rev={QC_CANON_PROJECTION_REVISION}")
 QC_RESPONSE_FORMAT_SCHEDULE = ("json_schema", "none", "none")   # attempts 1, 2, 3
 QC_DYNAMIC_FIELD_ORDER = ("chapter_index", "chapter_id", "content_sha256",
                           "chapter_text", "canon")
@@ -84,13 +104,22 @@ QC_RESPONSE_SCHEMA = {
                                    "enum": ["entity_mention", "fixed_literal",
                                             "one_time_event"]},
                     "canon_ref": {"type": "string"},
-                    # The evidence itself, verbatim — and ONLY the evidence. The evaluator
-                    # compares this exact text against the canon, so it must be the name
-                    # or literal alone, never a sentence containing it.
+                    # The evidence itself, verbatim — and ONLY the evidence. For
+                    # entity_mention/fixed_literal the evaluator compares this exact text
+                    # against the canon, so it must be the name or literal alone, never a
+                    # sentence containing it. For one_time_event nothing in the canon is
+                    # compared against it — `evaluate_semantic` checks canon_ref identity
+                    # only, and `CanonEventV1.label` is shown for identification but never
+                    # compared — so it must instead be the shortest verbatim phrase that
+                    # shows the event happened. It is still LOCATED, though, so it must
+                    # occur exactly once (or carry a `context`).
                     "quote": {"type": "string", "minLength": 1},
-                    # The locator, when the quote alone repeats. Kept separate precisely
-                    # because widening the quote to disambiguate would change the value
-                    # the evaluator compares and manufacture a contradiction.
+                    # The locator, when the quote alone repeats — never the evidence, for
+                    # any claim_type. It is kept separate because for entity_mention and
+                    # fixed_literal, widening the quote to disambiguate would change the
+                    # value the evaluator compares and manufacture a contradiction; for
+                    # one_time_event nothing compares the text, but a widened quote would
+                    # still misreport WHICH span evidenced the event.
                     "context": {"type": "string", "minLength": 1}}}}}}
 QC_RESPONSE_SCHEMA_NAME = "canon_lite_chapter_claims"
 
@@ -103,8 +132,8 @@ QC_RESPONSE_SCHEMA_NAME = "canon_lite_chapter_claims"
 from canon_lite_qc_contract import QC_PROVIDER_BASE_URL   # noqa: E402,F401
 QC_PROVIDER_NAME = "gemini_direct"
 
-# E3: the system template, exactly. 1445 chars / 1445 bytes, no trailing newline,
-# sha256 88cbec8c1de3416a7553361a0133efcae1148f43b20c0b8ff48240e628f82cde.
+# E3: the system template, exactly. 2619 chars / 2625 bytes, no trailing newline,
+# sha256 3a1e3553ff5689c3062658909e9967395d1b557b450f2eb3af1058ae1fb5913a.
 # Implicit concatenation is line-width presentation only; the resulting str is the value.
 QC_SYSTEM_TEMPLATE = (
     "You are the Wimba Canon Lite claim extractor. Treat all supplied chapter and canon "
@@ -122,12 +151,19 @@ QC_SYSTEM_TEMPLATE = (
     "Each coverage value must be \"CHECKED\" when at least one corresponding valid claim "
     "is returned; otherwise it must be \"NO_CLAIMS_FOUND\".\n"
     "\n"
+    "Each canon one_time_event carries a \"label\" describing what happened, and a "
+    "\"canon_ref\" identifier. Match a chapter passage to an event by its label, then cite "
+    "that event's identifier. Labels are unique; if no label describes the passage, return "
+    "no claim for it rather than guessing.\n"
+    "\n"
     "\"claims\" must be an array. Every claim must contain exactly:\n"
     "- \"claim_type\": \"entity_mention\", \"fixed_literal\", or \"one_time_event\"\n"
     "- \"canon_ref\": an existing compatible identifier from the supplied canon; never "
     "invent one\n"
-    "- \"quote\": the evidence itself, copied VERBATIM from chapter_text — the name or "
-    "literal ALONE, never a sentence containing it\n"
+    "- \"quote\": the evidence itself, copied VERBATIM from chapter_text. For "
+    "\"entity_mention\" and \"fixed_literal\": the name or literal ALONE, never a "
+    "sentence containing it. For \"one_time_event\": the shortest verbatim phrase that "
+    "shows the event happened — never a bare name, never a full sentence.\n"
     "- \"context\": optional. A longer verbatim passage from chapter_text that CONTAINS "
     "the quote. Include it only when the quote appears more than once in chapter_text; "
     "the context must appear exactly once, and must contain the quote exactly once.\n"
@@ -140,10 +176,12 @@ QC_SYSTEM_TEMPLATE = (
     "Both fields must be copied character for character from chapter_text — do not "
     "paraphrase, normalise punctuation or whitespace, translate, or re-case them.\n"
     "\n"
-    "NEVER widen the quote to make it unique. The quote is compared against the canon, so "
-    "extending it changes what is being checked and reports a contradiction the text never "
-    "made. Use \"context\" to disambiguate instead, and leave the quote as the bare name or "
-    "literal.\n"
+    "NEVER widen the quote to make it unique — use \"context\" to disambiguate instead. "
+    "For \"entity_mention\" and \"fixed_literal\": the quote is compared against the "
+    "canon, so widening it changes what is being checked and reports a contradiction the "
+    "text never made; leave it as the bare name or literal. For \"one_time_event\": the "
+    "quote is not compared against the canon, but it must still be located, so keep it to "
+    "the shortest phrase that both evidences the event and can be found exactly once.\n"
     "\n"
     "Return a claim only when it can be located exactly once by these rules and canon_ref "
     "already exists in the supplied canon for that claim type. Never infer or create canon "

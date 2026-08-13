@@ -219,6 +219,26 @@ def _provider_payload(
     }
 
 
+def _extraction_reason_code(exc: BaseException) -> str:
+    """Bounded, closed reason for ONE failed attempt's log line — never the exception
+    itself (canon_lite_l2's §10.3, and this module's own "fixed and closed... never a raw
+    exception" telemetry scope).
+
+    A specific `.reason_code` — set only at the handful of claims-loop sites in
+    `parse_chapter_claims` that can name a precise cause — wins. Any other schema/bounds
+    refusal (a structural check earlier in `parse_chapter_claims`, or `_provider_payload`'s
+    own `_reject_unknown_fields`) is `SCHEMA_INVALID`. Anything else — a bug neither of
+    those anticipated — is `OTHER`. Every branch returns an `_l2.EXTRACT_REASON_CODES`
+    member, so the log line's vocabulary stays closed no matter what future code raises.
+    """
+    code = getattr(exc, "reason_code", None)
+    if code in _l2.EXTRACT_REASON_CODES:
+        return code
+    if isinstance(exc, (_cl.CanonSchemaError, _cl.CanonBoundsError)):
+        return _l2.EXTRACT_REASON_SCHEMA_INVALID
+    return _l2.EXTRACT_REASON_OTHER
+
+
 def _preflight_request(
     request: ExtractionRequestV1,
     *,
@@ -348,6 +368,7 @@ async def extract_all(
     async def one(index: int) -> _l2.ChapterClaimsV1:
         nonlocal active, observed, attempts
         terminal_state = _l2.COVERAGE_PROVIDER_FAILURE
+        error_code = _l2.COVERAGE_PROVIDER_FAILURE
         block = snapshot.blocks[index]
         for attempt in range(1, max_attempts + 1):
             # ---- step 4: construct, then parity-check BEFORE MeteredProvider ----
@@ -371,10 +392,12 @@ async def extract_all(
                 raise
             except asyncio.TimeoutError:
                 terminal_state = _l2.COVERAGE_TIMEOUT
+                error_code = _l2.COVERAGE_TIMEOUT
             except Exception:
                 # Fixed bounded state only. The provider exception never enters a report,
                 # log, fixture, or default result payload.
                 terminal_state = _l2.COVERAGE_PROVIDER_FAILURE
+                error_code = _l2.COVERAGE_PROVIDER_FAILURE
             else:
                 try:
                     payload = _provider_payload(
@@ -383,14 +406,17 @@ async def extract_all(
                         canon_sha256=canon.canon_sha256)
                     return _l2.parse_chapter_claims(
                         payload, snapshot=snapshot, canon=canon)
-                except Exception:
+                except Exception as exc:
                     terminal_state = _l2.COVERAGE_INVALID_EXTRACTOR_OUTPUT
+                    error_code = _extraction_reason_code(exc)
             # Reached only when this attempt did NOT return: the success path above
             # returns from inside the `else`. One line per failed attempt, three bounded
-            # fields, nothing else.
+            # fields, nothing else. `error_code` narrows INVALID_EXTRACTOR_OUTPUT to WHICH
+            # parser-side rule rejected the attempt; TIMEOUT/PROVIDER_FAILURE were already
+            # as specific as the coverage vocabulary gets, so they pass straight through.
             log.warning("canon lite qc extract: attempt failed "
                         "(unit_index=%d attempt_ordinal=%d error_code=%s)",
-                        index, attempt, terminal_state)
+                        index, attempt, error_code)
         return _failure_artifact(
             snapshot, index, state=terminal_state, model_version=model_version,
             prompt_sha256=prompt_sha256, canon_sha256=canon.canon_sha256)

@@ -133,8 +133,11 @@ def _anchor(literal="pagi hari", kind="time", aid="anc1"):
     return cl.CanonAnchorV1(anchor_id=aid, kind=kind, literal=literal)
 
 
-def _event(order=1, eid="evt1"):
-    return cl.CanonEventV1(event_id=eid, occurs_chapter_order=order)
+def _event(order=1, eid="evt1", label=None):
+    # The label defaults off the id so two `_event()`s with different ids stay
+    # distinguishable — `_reject_indistinguishable_events` refuses a shared label.
+    return cl.CanonEventV1(event_id=eid, occurs_chapter_order=order,
+                           label=label or f"peristiwa {eid}")
 
 
 async def _map_chapters(monkeypatch, *, tenant_id=CANARY, n=3, bible_double=None,
@@ -892,23 +895,217 @@ def test_an_empty_description_is_rejected_outright(desc):
             outline_chapters=outline, bible_text=BIBLE)
 
 
-@pytest.mark.parametrize("desc", ["日本語だけの説明", "!!!", "...---...", "→←↑↓"])
-def test_an_unsluggable_description_still_produces_a_unique_valid_id(desc):
-    """Legibility is best-effort; UNIQUENESS is not. A NON-EMPTY description that carries no
-    `[a-z0-9]` at all slugifies to nothing and falls back to a hash-only id — still valid,
-    still distinct. (An empty description is a different case entirely — rejected above.)"""
+@pytest.mark.parametrize("desc,script", [
+    ("리나가 아버지의 책상 서랍에서 비밀 편지를 발견했다", "Korean"),
+    ("リナは父の机の引き出しで秘密の手紙を見つけた", "Japanese"),
+    ("Рина нашла тайное письмо в ящике стола", "Russian"),
+    ("وجدت رينا رسالة سرية في درج المكتب", "Arabic"),
+    ("เธอพบจดหมายลับในลิ้นชัก", "Thai"),
+    ("丽娜发现了抽屉里的秘密信件", "Chinese"),
+    ("रीना को मेज़ की दराज़ में पत्र मिला", "Hindi"),
+])
+def test_a_description_with_no_latin_letters_still_gets_a_real_identity(desc, script):
+    """🔴 THE WHOLE POINT OF `label`. `_event_slug` strips `[^a-z0-9]`, which deletes entire
+       writing systems — so for these descriptions the id degrades to `evt_<hash12>`.
+
+       Two earlier designs both failed here. Storing nothing but the id meant QC received a
+       bare hash and could not match a passage to the row at all. Then FAIL-CLOSING on an
+       empty slug meant every Korean, Japanese, Chinese, Russian, Arabic, Thai and Hindi
+       job was REFUSED outright — after its Story Bible had already been paid for —
+       because `_cl_wants_semantic` gates on fiction, never on language. That made
+       continuity checking structurally impossible for most of the world's scripts.
+
+       The label carries the description in its own script, so identity no longer depends
+       on the id being legible. The parse succeeds and QC gets something it can read."""
     outline = _outline(2)
     src = css.parse_semantic_source_envelope(
         {"entities": [], "anchors": [],
          "one_time_events": [{"description": desc, "occurs_chapter": 1}]},
         outline_chapters=outline, bible_text=BIBLE)
-    eid = src.one_time_events[0].event_id
-    assert cl._ID_RE.match(eid), eid
-    other = css.parse_semantic_source_envelope(
-        {"entities": [], "anchors": [],
-         "one_time_events": [{"description": desc + " berbeda", "occurs_chapter": 1}]},
+    event = src.one_time_events[0]
+    assert cl._ID_RE.match(event.event_id), event.event_id
+    assert event.label == desc, f"{script}: the label must survive verbatim"
+    # and it must reach the projection QC actually reads, not just the dataclass
+    assert event.to_canonical_obj()["label"] == desc
+
+
+@pytest.mark.parametrize("desc", ["", "   ", "\t\n"])
+def test_a_blank_description_is_still_rejected(desc):
+    """Relaxing the unsluggable case must NOT relax the empty one: a blank description has
+    no semantic content to carry into a label either, so there is nothing to identify."""
+    outline = _outline(2)
+    with pytest.raises((cl.CanonSchemaError, cl.CanonBoundsError)):
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [],
+             "one_time_events": [{"description": desc, "occurs_chapter": 1}]},
+            outline_chapters=outline, bible_text=BIBLE)
+
+
+def test_a_truncation_colliding_pair_is_distinguishable_by_label():
+    """🔴 THE COLLISION CLASS IS REMOVED AT THE SOURCE, NOT DETECTED. `_event_id` caps its
+       slug at `_EVENT_SLUG_MAX`, so these two ids differ ONLY by an opaque digest:
+
+           evt_rina_menemukan_surat_rahasia_di_laci_mej_713163bc5b59
+           evt_rina_menemukan_surat_rahasia_di_laci_mej_46515164e30b
+
+       When the id was all QC received, that pair was unresolvable. `label` carries the
+       description WHOLE and untruncated (`MAX_EVENT_LABEL_LEN` is tied to the same bound
+       the description is validated against), so the rows QC reads are now genuinely
+       different and both events survive. Refusing them would be the wrong fix: they ARE
+       two different events, and a novel is entitled to describe them similarly."""
+    outline = _outline(4)
+    src = css.parse_semantic_source_envelope(
+        {"entities": [], "anchors": [], "one_time_events": [
+            {"description": "Rina menemukan surat rahasia di laci meja kerja ayahnya",
+             "occurs_chapter": 1},
+            {"description": "Rina menemukan surat rahasia di laci meja kerja ibunya",
+             "occurs_chapter": 4}]},
         outline_chapters=outline, bible_text=BIBLE)
-    assert eid != other.one_time_events[0].event_id
+    a, b = src.one_time_events
+    # the ids really do collide on their legible half — the defect's precondition holds
+    assert a.event_id.rsplit("_", 1)[0] == b.event_id.rsplit("_", 1)[0]
+    # ...and the projection QC actually reads still tells them apart
+    assert a.label != b.label
+    assert a.to_canonical_obj()["label"].endswith("ayahnya")
+    assert b.to_canonical_obj()["label"].endswith("ibunya")
+
+
+def test_two_events_sharing_a_label_are_refused_even_in_different_chapters():
+    """🔴 THE CHAPTER IS NOT A TIEBREAK. An earlier version of this check scoped uniqueness
+       to `(label, occurs_chapter)` and let a cross-chapter collision through, reasoning
+       that `occurs_chapter_order` distinguishes the rows. It does not: no predicate reads
+       it (`occurs_chapter_order` appears zero times in `canon_lite_l2`),
+       `_accepted_canon_ids_by_claim_type` hands the extractor every event id at once
+       unfiltered by chapter, and the prompt names no tiebreak. Using declared placement to
+       decide which event a passage evidences would assume the canon matches the text —
+       the one thing a continuity check must not assume. The measured cost was a FALSE
+       `one_time_event_duplication` on two genuinely different events.
+
+       Note `_validate_simple`'s duplicate-id check CANNOT catch this: the id hash covers
+       the chapter, so these two ids differ. Only the label check sees it."""
+    outline = _outline(3)
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable"):
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [], "one_time_events": [
+                {"description": "ledakan", "occurs_chapter": 1},
+                {"description": "ledakan", "occurs_chapter": 3}]},
+            outline_chapters=outline, bible_text=BIBLE)
+
+
+@pytest.mark.parametrize("variant,what", [
+    ("Rina membakar\u00a0surat itu", "NBSP for space"),
+    ("Rina membakar \u200bsurat itu", "zero-width space added"),
+    ("Rina membakar\u200c surat itu", "zero-width non-joiner"),
+    ("\u200eRina membakar surat itu", "bidi mark"),
+    ("\ufeffRina membakar surat itu", "byte-order mark"),
+    ("Rina mem\u00adbakar surat itu", "soft hyphen"),
+    ("rina MEMBAKAR surat itu", "case only"),
+    ("Rina  membakar  surat itu", "doubled spaces"),
+    ("Rina membakar surat itu ", "trailing space"),
+])
+def test_labels_that_render_identically_are_refused(variant, what):
+    """\U0001f534 NFC IS STORAGE, NOT A COMPARISON KEY. Comparing the stored NFC label
+       byte-for-byte let every one of these through: each differs in bytes and renders
+       IDENTICALLY, so the two canon rows QC receives are visually the same event carrying
+       two different opaque hashes \u2014 the exact defect `label` was introduced to close,
+       one encoding layer down.
+
+       `_event_label_fold` asks "would a reader see the same text?" \u2014 NFKC, drop
+       zero-width/format characters, collapse whitespace, casefold."""
+    base = "Rina membakar surat itu"
+    assert variant != base, f"{what}: the two spellings must really differ in bytes"
+    outline = _outline(4)
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable"):
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [], "one_time_events": [
+                {"description": base, "occurs_chapter": 1},
+                {"description": variant, "occurs_chapter": 3}]},
+            outline_chapters=outline, bible_text=BIBLE)
+
+
+def test_a_label_differing_only_in_unicode_composition_is_refused():
+    """The NFD/NFC pair, spelled with explicit escapes so the source cannot silently
+    normalize it: `caf\u00e9` composed vs `cafe\u0301` decomposed render identically."""
+    composed, decomposed = "caf\u00e9 terbakar", "cafe\u0301 terbakar"
+    assert composed != decomposed, "the two spellings really are different bytes"
+    outline = _outline(3)
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable"):
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [], "one_time_events": [
+                {"description": composed, "occurs_chapter": 1},
+                {"description": decomposed, "occurs_chapter": 2}]},
+            outline_chapters=outline, bible_text=BIBLE)
+
+
+def test_the_fold_does_not_over_merge_genuinely_different_text():
+    """POSITIVE CONTROL. The fold is deliberately aggressive, so it needs a floor: a
+    zero-width space REPLACING a space genuinely changes the rendering (`membakar surat`
+    vs `membakarsurat`), and those are two different descriptions that must both survive.
+    Without this row `_event_label_fold` could return a constant and every refusal test
+    above would still pass."""
+    outline = _outline(4)
+    src = css.parse_semantic_source_envelope(
+        {"entities": [], "anchors": [], "one_time_events": [
+            {"description": "Rina membakar surat itu", "occurs_chapter": 1},
+            {"description": "Rina membakar\u200bsurat itu", "occurs_chapter": 3}]},
+        outline_chapters=outline, bible_text=BIBLE)
+    assert len({cl.event_label_fold(e.label) for e in src.one_time_events}) == 2
+
+
+@pytest.mark.parametrize("desc,what", [
+    ("\u200b\u200b\u200b", "zero-width spaces only"),
+    ("\u00ad\u00ad", "soft hyphens only"),
+    ("\ufeff\ufeff", "byte-order marks only"),
+    ("\u2060\u2060", "word joiners only"),
+    ("!!!", "punctuation only"),
+    ("\u2192\u2190\u2191\u2193", "arrows only"),
+])
+def test_a_label_with_no_letter_or_digit_in_any_script_is_refused(desc, what):
+    """\U0001f534 `_req_str`'s EMPTINESS GUARD CANNOT SEE THESE. It tests `not text.strip()`,
+       and `str.strip()` removes none of U+200B/200C/00AD/2060/FEFF \u2014 so a description
+       of three zero-width spaces was non-empty, passed every check, and produced a row
+       whose label RENDERS AS NOTHING beside a hash-only id. That is precisely the
+       identity-free event `label` exists to make impossible, reached through the very
+       field meant to prevent it.
+
+       The rule is the Unicode question the original `[a-z0-9]` test was standing in for:
+       at least one letter or digit, in ANY script. It admits every writing system in the
+       row above and still refuses text that names nothing."""
+    outline = _outline(2)
+    with pytest.raises((cl.CanonSchemaError, cl.CanonBoundsError)):
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [],
+             "one_time_events": [{"description": desc, "occurs_chapter": 1}]},
+            outline_chapters=outline, bible_text=BIBLE)
+
+
+def test_the_exported_builder_enforces_the_same_rules_by_the_same_comparison():
+    """`build_semantic_source_v1` is exported, so it is a SECOND door into a semantic
+    source, and its callers hand over ready-made `CanonEventV1`s nothing upstream has
+    checked. A rule enforced at one of two doors is not enforced \u2014 and enforcing a
+    WEAKER rule there is worse, because it reads as covered.
+
+    `_validate_simple` discards `_req_str`'s normalized return, so this door never
+    normalized its labels; comparing stored bytes here meant a pair door 1 refuses sailed
+    through door 2. Both doors now share `_reject_indistinguishable_events`, fold included.
+    """
+    outline = _outline(3)
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable"):
+        css.build_semantic_source_v1(
+            outline_chapters=outline, bible_text=BIBLE,
+            one_time_events=(_event(order=1, eid="evta", label="ledakan"),
+                             _event(order=2, eid="evtb", label="ledakan")))
+    # ...and labels that merely RENDER identically, the case this door used to miss
+    with pytest.raises(cl.CanonSchemaError):
+        css.build_semantic_source_v1(
+            outline_chapters=outline, bible_text=BIBLE,
+            one_time_events=(_event(order=1, eid="evta", label="ledakan besar"),
+                             _event(order=2, eid="evtb", label="ledakan\u00a0besar")))
+    # ...and an identity-free label
+    with pytest.raises(cl.CanonSchemaError, match="no letter or digit"):
+        css.build_semantic_source_v1(
+            outline_chapters=outline, bible_text=BIBLE,
+            one_time_events=(_event(order=1, eid="evta", label="\u200b\u200b"),))
 
 
 def test_event_identity_survives_into_the_canon_and_the_qc_projection(monkeypatch):
@@ -1112,6 +1309,732 @@ def test_nonfiction_shadow_and_off_are_unaffected(monkeypatch):
 
 
 # ===========================================================================
+# 5b. EVERY DOOR ONTO THE LABEL RULE, PINNED INDIVIDUALLY
+# ===========================================================================
+#
+# 🔴 EVERY LABEL TEST ABOVE ENTERS THROUGH `parse_semantic_source_envelope`, AND THAT IS
+#    PRECISELY WHY A CALL-SITE REGRESSION IS INVISIBLE HERE. `_validate_events` is reached
+#    through FOUR doors, and each is backstopped by another: `build_canon_lite_v1`
+#    validates and then constructs a `CanonLiteV1` whose `__post_init__` validates again;
+#    `build_semantic_source_v1` stands in the same relation to
+#    `_validate_semantic_source_instance`. Defense in depth is correct and stays — but it
+#    means reverting ONE door to the pre-fix `_validate_simple` shape leaves a sibling
+#    holding, so nothing fails and no test can name the door that broke.
+#
+#    MEASURED, NOT ARGUED. Reverting each of the four call sites in turn — the literal
+#    round-5 defect (canon door open while the semantic-source door was shut) and the
+#    literal round-6 defect (instance validator left on the old validator) — left the
+#    focused suite at **974 passed, 0 failed, all four times**. The rule-body mutants
+#    M10-M14 are blind to it by construction: they neuter the body, which every door
+#    shares, so any one door still kills them.
+#
+#    A door is therefore only pinned by a test that can reach it ALONE. Each test below
+#    isolates exactly one: either by calling the validator directly on an instance made
+#    invalid after construction, or by no-op'ing the sibling validator so that only the
+#    door under test is left able to raise. M15-M18 revert each door in turn and must die
+#    here.
+
+#: NBSP for space: different bytes, identical rendering, same fold. The pair from Rino's
+#: own round-5 reproduction, kept in one place so all four door tests use one witness.
+_DOOR_LABEL_A = "Rina membakar surat itu"
+_DOOR_LABEL_B = "Rina membakar surat itu"
+
+
+def _door_events():
+    """Two individually-VALID rows that collide only as a pair.
+
+    Distinct `event_id`s on purpose: `_validate_simple`'s duplicate-id check must not be
+    what refuses these, or the test would pass with the label rule entirely absent.
+    """
+    return (cl.CanonEventV1(event_id="evt_alpha01", occurs_chapter_order=1,
+                            label=_DOOR_LABEL_A),
+            cl.CanonEventV1(event_id="evt_bravo02", occurs_chapter_order=2,
+                            label=_DOOR_LABEL_B))
+
+
+def _door_cfg(outline):
+    return cl.build_job_config_snapshot(
+        outline_chapters=outline, target_language="id",
+        narration_style="kdrama_serial")
+
+
+def test_door_1_the_final_canon_builder_enforces_labels_by_itself(monkeypatch):
+    """`_finalize`'s OWN call, with the instance validator no-op'd so it cannot cover.
+
+    This is the round-5 door: `orchestrator/static.py` calls `build_canon_lite_v1`
+    directly, so with this call site gone the FINAL CANON — the artifact QC actually
+    reads — carries two events whose labels differ only by a non-breaking space.
+    """
+    outline = _outline(3)
+    cfg = _door_cfg(outline)
+    monkeypatch.setattr(cl, "_validate_canon_instance", lambda canon: None)
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable") as exc:
+        cl.build_canon_lite_v1(outline_chapters=outline, job_config=cfg,
+                               one_time_events=_door_events())
+    assert getattr(exc.value, "reason_code", None) == cl.EVENT_LABEL_AMBIGUOUS
+
+
+def test_door_2_the_canon_instance_validator_enforces_labels_by_itself():
+    """`_validate_canon_instance` called directly — the door a caller reaches by building
+    a `CanonLiteV1` by hand rather than through the builder.
+
+    The events are swapped in AFTER construction, so the builder's own call never sees
+    them. The label check sits ahead of the `canon_sha256` binding check inside the
+    validator, so a label refusal — not a hash refusal — is what must come back.
+    """
+    outline = _outline(3)
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=outline, job_config=_door_cfg(outline),
+        one_time_events=(cl.CanonEventV1(event_id="evt_alpha01",
+                                         occurs_chapter_order=1,
+                                         label="Rina naik bus terakhir"),))
+    object.__setattr__(canon, "one_time_events", _door_events())
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable") as exc:
+        cl._validate_canon_instance(canon)
+    assert getattr(exc.value, "reason_code", None) == cl.EVENT_LABEL_AMBIGUOUS
+
+
+def test_door_3_the_semantic_source_instance_validator_enforces_labels_by_itself():
+    """`_validate_semantic_source_instance` called directly — the round-6 door, left on
+    `_validate_simple` when the builder moved to `_validate_events`."""
+    src = css.build_semantic_source_v1(
+        outline_chapters=_outline(3), bible_text=BIBLE,
+        one_time_events=(cl.CanonEventV1(event_id="evt_alpha01",
+                                         occurs_chapter_order=1,
+                                         label="Rina naik bus terakhir"),))
+    object.__setattr__(src, "one_time_events", _door_events())
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable") as exc:
+        css._validate_semantic_source_instance(src)
+    assert getattr(exc.value, "reason_code", None) == cl.EVENT_LABEL_AMBIGUOUS
+
+
+def test_door_4_the_semantic_source_builder_enforces_labels_by_itself(monkeypatch):
+    """`build_semantic_source_v1`'s OWN call, with the instance validator no-op'd.
+
+    It is exported and its callers hand over ready-made `CanonEventV1`s that nothing
+    upstream has necessarily checked, so it is a real door in its own right.
+    """
+    monkeypatch.setattr(css, "_validate_semantic_source_instance", lambda src: None)
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable") as exc:
+        css.build_semantic_source_v1(
+            outline_chapters=_outline(3), bible_text=BIBLE,
+            one_time_events=_door_events())
+    assert getattr(exc.value, "reason_code", None) == cl.EVENT_LABEL_AMBIGUOUS
+
+
+def test_the_legibility_rule_is_pinned_at_the_canon_door_too(monkeypatch):
+    """The other half of the rule, at the door round 5 found open. A label of nothing but
+    default-ignorable code points passes `_req_str` (`str.strip()` removes none of them)
+    and names no event at all."""
+    outline = _outline(3)
+    cfg = _door_cfg(outline)
+    monkeypatch.setattr(cl, "_validate_canon_instance", lambda canon: None)
+    with pytest.raises(cl.CanonSchemaError, match="no letter or digit") as exc:
+        cl.build_canon_lite_v1(
+            outline_chapters=outline, job_config=cfg,
+            one_time_events=(cl.CanonEventV1(
+                event_id="evt_alpha01", occurs_chapter_order=1,
+                label="​ᅟ️͏"),))
+    assert getattr(exc.value, "reason_code", None) == cl.EVENT_LABEL_ILLEGIBLE
+
+
+# ===========================================================================
+# 5c. THE ENVELOPE REASON CODES — closed, and never carrying content
+# ===========================================================================
+#
+# 🔴 SHIPPED WITH ZERO TESTS UNTIL NOW. `SEMANTIC_SOURCE_REASON_CODES`,
+#    `semantic_source_reason_code` and the `dynamic.py` handler that calls it had no test
+#    of any kind — not the vocabulary, not a single classifier branch, not the promise
+#    that no label text reaches the log. The codes exist because this diff added a NEW way
+#    for a paid job to die, so the thing they must never do is leak the content that
+#    killed it.
+
+def test_the_envelope_reason_vocabulary_is_exactly_the_four_agreed_codes():
+    """A closed set, pinned by value. Adding a code is a deliberate act: this line is the
+    one that makes an accidental fifth code, or a renamed one, fail loudly."""
+    assert css.SEMANTIC_SOURCE_REASON_CODES == (
+        "event_label_illegible", "event_label_ambiguous",
+        "semantic_source_schema_invalid", "other")
+    # the two label codes are the CANON's, not re-spelled here — one definition, so a
+    # rename cannot leave the classifier agreeing with a stale copy of itself
+    assert css.SEMANTIC_SOURCE_REASON_EVENT_LABEL_ILLEGIBLE is cl.EVENT_LABEL_ILLEGIBLE
+    assert css.SEMANTIC_SOURCE_REASON_EVENT_LABEL_AMBIGUOUS is cl.EVENT_LABEL_AMBIGUOUS
+
+
+@pytest.mark.parametrize("label_a,label_b,expected", [
+    (_DOOR_LABEL_A, _DOOR_LABEL_B, "event_label_ambiguous"),
+    ("ledakan besar", "ledakan besar", "event_label_ambiguous"),
+])
+def test_a_label_collision_classifies_as_ambiguous_not_as_garbage(
+        label_a, label_b, expected):
+    """The distinction the code exists to draw: a refusal of WELL-FORMED model output,
+    raised after the Story Bible was already bought, must not log the same way as the
+    model emitting malformed JSON."""
+    with pytest.raises(cl.CanonSchemaError) as exc:
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [], "one_time_events": [
+                {"description": label_a, "occurs_chapter": 1},
+                {"description": label_b, "occurs_chapter": 3}]},
+            outline_chapters=_outline(4), bible_text=BIBLE)
+    assert css.semantic_source_reason_code(exc.value) == expected
+
+
+def test_malformed_output_still_classifies_as_schema_invalid():
+    """The other side of the same distinction — genuinely malformed output must NOT
+    borrow a label code."""
+    with pytest.raises((cl.CanonSchemaError, cl.CanonBoundsError)) as exc:
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [], "one_time_events": [
+                {"description": "ledakan", "occurs_chapter": "bukan angka"}]},
+            outline_chapters=_outline(3), bible_text=BIBLE)
+    assert css.semantic_source_reason_code(exc.value) == "semantic_source_schema_invalid"
+
+
+def test_the_classifier_never_reads_the_exception_message():
+    """§10 in one assertion. The classifier reads `.reason_code` and the exception TYPE,
+    never the message — so a label echoed into a message (or an attacker-shaped one) can
+    neither pick the code nor travel inside it."""
+    poisoned = cl.CanonSchemaError(
+        f"event_label_ambiguous {_DOOR_LABEL_A} semantic_source_schema_invalid")
+    assert css.semantic_source_reason_code(poisoned) == "semantic_source_schema_invalid"
+    # ...and the code that comes back carries none of it
+    assert _DOOR_LABEL_A not in css.semantic_source_reason_code(poisoned)
+
+
+@pytest.mark.parametrize("exc", [
+    RuntimeError("boom"), ValueError("bad"), KeyboardInterrupt(), MemoryError(),
+    cl.CanonSchemaError("plain"), cl.CanonBoundsError("bounds"),
+])
+def test_every_classifier_branch_returns_a_member_of_the_closed_set(exc):
+    """Total over BaseException, including the exception types a `except Exception`
+    handler would not even see — the vocabulary must stay closed no matter what future
+    code raises."""
+    assert css.semantic_source_reason_code(exc) in css.SEMANTIC_SOURCE_REASON_CODES
+
+
+def test_an_unrecognised_reason_code_on_an_exception_is_not_passed_through():
+    """A `.reason_code` is only honoured if it is already in the closed set. Otherwise the
+    classifier would become an arbitrary-string channel the moment some future raiser
+    attaches one."""
+    rogue = cl.CanonSchemaError("x")
+    rogue.reason_code = "totally_made_up_code"
+    assert css.semantic_source_reason_code(rogue) == "semantic_source_schema_invalid"
+    rogue2 = RuntimeError("x")
+    rogue2.reason_code = _DOOR_LABEL_A
+    assert css.semantic_source_reason_code(rogue2) == "other"
+
+
+# ===========================================================================
+# 5d. ROUND 7 — whitespace-as-control, NFC at the door, and the version literals
+# ===========================================================================
+#
+# All three were found by Rino against a suite that was 997/997 green, and all three are
+# the same family as everything before them: a rule that holds at one door, in one form,
+# for one alphabet of inputs, and is simply absent one layer over.
+
+@pytest.mark.parametrize("ws,what", [
+    ("\t", "TAB — category Cc"),
+    ("\n", "LINE FEED — Cc"),
+    ("\r", "CARRIAGE RETURN — Cc"),
+    ("\x0b", "VERTICAL TAB — Cc"),
+    ("\x0c", "FORM FEED — Cc"),
+    (" ", "NBSP — Zs"),
+    (" ", "OGHAM SPACE MARK — Zs"),
+    (" ", "LINE SEPARATOR — Zl"),
+    (" ", "PARAGRAPH SEPARATOR — Zp"),
+    ("　", "IDEOGRAPHIC SPACE — Zs"),
+])
+def test_whitespace_collapses_to_a_space_it_does_not_vanish(ws, what):
+    """🔴 THE `Cc` WHITESPACE WAS BEING DELETED, NOT COLLAPSED — SO IT JOINED THE WORDS.
+
+    The fold dropped `Cf`/`Cc` BEFORE collapsing runs of whitespace, and TAB/LF/CR/VT/FF
+    are all `Cc`. `"Rina\\tpergi"` therefore folded to `"rinapergi"` while `"Rina pergi"`
+    folded to `"rina pergi"`: two DIFFERENT folds for two labels a reader sees as the same
+    event, which is a false MISS — the direction this fold exists to prevent, and the one
+    that ships two rows QC has to guess between.
+
+    The `Zs`/`Zl`/`Zp` cases never had the bug (`str.split()` handles them), and are here
+    so a future rewrite cannot fix the controls by breaking the separators.
+    """
+    base = "Rina membakar surat itu"
+    variant = f"Rina membakar{ws}surat itu"
+    assert variant != base, f"{what}: the two spellings must really differ in bytes"
+    assert cl.event_label_fold(variant) == cl.event_label_fold(base), what
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable"):
+        css.parse_semantic_source_envelope(
+            {"entities": [], "anchors": [], "one_time_events": [
+                {"description": base, "occurs_chapter": 1},
+                {"description": variant, "occurs_chapter": 3}]},
+            outline_chapters=_outline(4), bible_text=BIBLE)
+
+
+@pytest.mark.parametrize("inv,what", [
+    ("​", "ZERO WIDTH SPACE"), ("‌", "ZWNJ"), ("﻿", "BOM"),
+    ("­", "SOFT HYPHEN"), ("͏", "COMBINING GRAPHEME JOINER"),
+    ("️", "VARIATION SELECTOR-16"),
+])
+def test_invisible_characters_are_deleted_and_do_not_become_a_word_break(inv, what):
+    """The OTHER direction of the same fix, and the reason it is a two-branch loop rather
+    than "map everything control-ish to a space".
+
+    An invisible character renders as NOTHING, so `"Rina<ZWSP>pergi"` reads as `"Rinapergi"`
+    — one word. If the whitespace fix had turned these into spaces too, it would fold to
+    `"rina pergi"` and collide with a genuinely different label. Deleting them is correct;
+    collapsing them would be a false MATCH manufactured by the fix for the false MISS.
+    """
+    joined = f"Rina{inv}pergi"
+    assert cl.event_label_fold(joined) == cl.event_label_fold("Rinapergi"), what
+    assert cl.event_label_fold(joined) != cl.event_label_fold("Rina pergi"), what
+
+
+def test_the_fold_stays_idempotent_across_every_whitespace_and_invisible_case():
+    """Idempotence is the property the trailing re-normalize exists for, and the whitespace
+    branch is new code in front of it. An equivalence class that is not idempotent is not
+    one."""
+    for s in ["Rina\tpergi", "Rina\npergi", "Rina pergi", "Rina pergi",
+              "Rina  pergi", "Rina​pergi", "Rina️pergi", "café terbakar",
+              " Rina　pergi\t", "리나가 시장에 간다", "ΣΣ ς σ"]:
+        once = cl.event_label_fold(s)
+        assert cl.event_label_fold(once) == once, ascii(s)
+
+
+# --- NFC at the door, not only at the constructor ------------------------------
+
+#: Spelled with explicit escapes on purpose: typing these literally lets the editor, the
+#: filesystem or a shell silently normalize them, and the test would then assert nothing.
+_NFC_LABEL = "café terbakar"
+_NFD_LABEL = "café terbakar"
+
+
+def _nfd_mutated_event():
+    """A row whose label was made NFD AFTER construction — the only way to get one, since
+    `__post_init__` binds NFC. Exactly what a hand-built row or a mutated artifact looks
+    like."""
+    row = cl.CanonEventV1(event_id="evt_alpha01", occurs_chapter_order=1, label=_NFC_LABEL)
+    object.__setattr__(row, "label", _NFD_LABEL)
+    return row
+
+
+def test_the_repro_precondition_actually_holds():
+    """Guard the guard: if these two ever stop differing in bytes, or stop folding equal,
+    every NFD test below passes for the wrong reason."""
+    assert _NFD_LABEL != _NFC_LABEL
+    assert cl.event_label_fold(_NFD_LABEL) == cl.event_label_fold(_NFC_LABEL)
+    assert _nfd_mutated_event().label == _NFD_LABEL, "post-construction mutation must stick"
+
+
+@pytest.mark.parametrize("door", ["validate_events", "final_canon", "sem_src_builder",
+                                  "sem_src_instance"])
+def test_a_non_nfc_label_is_refused_at_every_door(door):
+    """🔴 `_req_str` NORMALIZES TO MEASURE AND THROWS THE RESULT AWAY. `_bind_norm`'s own
+       docstring states the rule this broke — "a validator that normalizes and returns a
+       value nobody assigns leaves the original bytes in the object and in its hash". NFC
+       was therefore guaranteed only by `CanonEventV1.__post_init__`, and a row that never
+       went through it kept its NFD label. That label FOLDS equal to its NFC twin, so the
+       uniqueness rule passes it happily — and then it is HASHED as it lies, producing two
+       different `canon_sha256`/`source_sha256` for one event. The semantic-source doors
+       have no hash check behind them to notice.
+
+       REFUSED, not repaired: normalizing inside `_validate_canon_instance` would rewrite a
+       tampered artifact into passing its own `verify_sha256()`.
+    """
+    row = _nfd_mutated_event()
+    outline = _outline(3)
+    runners = {
+        "validate_events": lambda: cl._validate_events((row,), count=3),
+        "final_canon": lambda: cl.build_canon_lite_v1(
+            outline_chapters=outline, job_config=_door_cfg(outline), one_time_events=(row,)),
+        "sem_src_builder": lambda: css.build_semantic_source_v1(
+            outline_chapters=outline, bible_text=BIBLE, one_time_events=(row,)),
+        "sem_src_instance": lambda: css._validate_semantic_source_instance(
+            _sem_src_with_mutated_label()),
+    }
+    with pytest.raises(cl.CanonSchemaError, match="not NFC-normalized"):
+        runners[door]()
+
+
+def _sem_src_with_mutated_label():
+    src = css.build_semantic_source_v1(
+        outline_chapters=_outline(3), bible_text=BIBLE,
+        one_time_events=(cl.CanonEventV1(event_id="evt_alpha01", occurs_chapter_order=1,
+                                         label="Rina naik bus terakhir"),))
+    object.__setattr__(src.one_time_events[0], "label", _NFD_LABEL)
+    return src
+
+
+def test_a_non_nfc_refusal_classifies_inside_the_agreed_four_codes():
+    """It raises a plain `CanonSchemaError` with NO `reason_code` on purpose, so the
+    classifier files it under `semantic_source_schema_invalid`. That keeps the vocabulary
+    Rino agreed to at exactly four — this defect did not need a fifth code."""
+    with pytest.raises(cl.CanonSchemaError) as exc:
+        cl._validate_events((_nfd_mutated_event(),), count=3)
+    assert getattr(exc.value, "reason_code", None) is None
+    assert css.semantic_source_reason_code(exc.value) == "semantic_source_schema_invalid"
+    assert css.semantic_source_reason_code(exc.value) in css.SEMANTIC_SOURCE_REASON_CODES
+
+
+def test_an_nfd_label_supplied_normally_still_WORKS():
+    """The control that keeps the fix from becoming a refusal of legitimate input. A caller
+    handing NFD text to the CONSTRUCTOR is fine — `__post_init__` binds it to NFC and the
+    event is built. Only a row that bypassed the constructor is refused."""
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=_outline(3), job_config=_door_cfg(_outline(3)),
+        one_time_events=(cl.CanonEventV1(event_id="evt_alpha01", occurs_chapter_order=1,
+                                         label=_NFD_LABEL),))
+    assert canon.one_time_events[0].label == _NFC_LABEL
+    assert canon.verify_sha256()
+
+
+def test_one_event_spelled_two_ways_hashes_identically():
+    """The actual harm the NFD bypass caused, stated as an equality. Two envelopes for the
+    SAME event must not carry two different `source_sha256`."""
+    def envelope(label):
+        return css.build_semantic_source_v1(
+            outline_chapters=_outline(3), bible_text=BIBLE,
+            one_time_events=(cl.CanonEventV1(event_id="evt_alpha01",
+                                             occurs_chapter_order=1, label=label),))
+    assert envelope(_NFC_LABEL).source_sha256 == envelope(_NFD_LABEL).source_sha256
+
+
+# --- versions, digest domains, and the projection rule -------------------------
+
+def test_the_artifact_versions_moved_because_the_rows_changed():
+    """`CanonEventV1` gained a field, so the artifacts that carry it are a different shape.
+    Pinned by value: a silent revert shows up here."""
+    assert cl.SCHEMA_VERSION == "canon_lite_v2"
+    assert css.SEMANTIC_SOURCE_SCHEMA_VERSION == "canon_lite_semantic_source_v2"
+
+
+def test_the_versions_that_deliberately_did_NOT_move_are_pinned_too():
+    """The boundary of the decision, made explicit so a future round does not "tidy" these
+    into v2 as well. None of these objects' own fields changed, and bumping them would
+    force re-acceptance of shapes that never moved — the same reasoning that keeps
+    `CLAIMS_SCHEMA_VERSION` where it is."""
+    assert cl.JOB_CONFIG_SCHEMA_VERSION == "job_config_snapshot_v1"
+    assert cl.PARITY_SCHEMA_VERSION == "canon_lite_parity_v1"
+    assert l2.CLAIMS_SCHEMA_VERSION == "chapter_claims_v2"
+    assert l2.REPORT_SCHEMA_VERSION == "continuity_report_v1"
+
+
+def test_the_qc_projection_rule_names_the_version_the_artifact_actually_is():
+    """🔴 THIS CONSTANT IS A CLAIM ABOUT A SHAPE, AND THE SHAPE MOVED UNDER IT. It read
+       `canon_lite_v1.to_canonical_obj(include_hash=True)` while the projection had gained
+       an event `label` — describing something that no longer existed. It stayed harmless
+       only because the template changed in the same diff and moved `PROMPT_SHA256` anyway.
+
+       This assertion is the mechanism replacing that accident: the rule must NAME the
+       artifact's own `SCHEMA_VERSION`, so a future projection change that forgets to move
+       the rule contradicts the artifact and fails here.
+    """
+    import canon_lite_qc_provider as qp
+    assert cl.SCHEMA_VERSION in qp.QC_CANON_PROJECTION_RULE
+    assert f"rev={qp.QC_CANON_PROJECTION_REVISION}" in qp.QC_CANON_PROJECTION_RULE
+    assert "canon_lite_v1." not in qp.QC_CANON_PROJECTION_RULE
+
+
+def test_the_canon_digest_domain_is_pinned_by_value():
+    """The hash DOMAIN separates "these bytes, meaning a canon" from the same bytes meaning
+    anything else. `to_canonical_obj()` changed shape, so the domain moved with it. Pinned
+    behaviourally rather than by scraping the source: recomputing under the expected domain
+    must reproduce the artifact's own hash."""
+    outline = _outline(3)
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=outline, job_config=_door_cfg(outline),
+        one_time_events=(cl.CanonEventV1(event_id="evt_alpha01", occurs_chapter_order=1,
+                                         label="Rina naik bus terakhir"),))
+    assert canon.canon_sha256 == cl._digest(
+        "canon_lite.canon.v2", canon.to_canonical_obj(include_hash=False))
+    assert canon.canon_sha256 != cl._digest(
+        "canon_lite.canon.v1", canon.to_canonical_obj(include_hash=False))
+
+
+def test_the_semantic_source_digest_domain_is_pinned_by_value():
+    src = css.build_semantic_source_v1(
+        outline_chapters=_outline(3), bible_text=BIBLE,
+        one_time_events=(cl.CanonEventV1(event_id="evt_alpha01", occurs_chapter_order=1,
+                                         label="Rina naik bus terakhir"),))
+    hashed = {
+        "schema_version": css.SEMANTIC_SOURCE_SCHEMA_VERSION,
+        "accepted_outline_content_sha256": src.accepted_outline_content_sha256,
+        "bible_sha256": src.bible_sha256,
+        "entities": [e.to_canonical_obj() for e in src.entities],
+        "anchors": [a.to_canonical_obj() for a in src.anchors],
+        "one_time_events": [e.to_canonical_obj() for e in src.one_time_events],
+    }
+    assert src.source_sha256 == cl._digest("canon_lite.semantic_source.v2", hashed)
+    assert src.source_sha256 != cl._digest("canon_lite.semantic_source.v1", hashed)
+
+
+# --- the telemetry handler, driven for real ------------------------------------
+
+def test_the_telemetry_handler_names_the_reason_and_carries_no_label(monkeypatch, caplog):
+    """The one log line a paid job's refusal leaves behind, asserted END TO END through the
+    real `build_story_bible` rather than through the classifier alone.
+
+    §7 listed this as the remaining belt-and-braces gap: the classifier was pinned, but
+    nothing drove the `except` branch and READ what it emitted. Two live jobs in this
+    workstream (`yp8f04rr`, `98o7l3o8`) already died on this exact path.
+    """
+    colliding = {"entities": [], "anchors": [], "one_time_events": [
+        {"description": _DOOR_LABEL_A, "occurs_chapter": 1},
+        {"description": _DOOR_LABEL_B, "occurs_chapter": 2}]}
+    with caplog.at_level("WARNING"):
+        result, _, _ = asyncio.run(_run_bible(
+            monkeypatch, structured_semantic=True,
+            output_text=_structured("prosa bible yang sah", semantic=colliding)))
+
+    # the prose survives; only the envelope is refused (the handler's whole point)
+    assert result[1] is None, "a refused envelope must not become a semantic source"
+    assert result[0] == "prosa bible yang sah", "a parse failure must not touch the prose"
+
+    lines = [r.getMessage() for r in caplog.records
+             if "semantic_source parse failed" in r.getMessage()]
+    assert len(lines) == 1, f"expected exactly one bounded line, got {lines}"
+    line = lines[0]
+    assert "reason=event_label_ambiguous" in line, line
+    assert "class=CanonSchemaError" in line, line
+    # ...and NOTHING of the content that caused it
+    assert _DOOR_LABEL_A not in line and "membakar" not in line, line
+    assert "indistinguishable" not in line, "the exception body must not travel"
+
+
+def test_the_telemetry_handler_cannot_raise_even_if_the_classifier_does(monkeypatch, caplog):
+    """`build_story_bible`'s contract is "never raises", and this handler runs INSIDE an
+    exception handler — a raise here escapes as a different exception from a function whose
+    callers do not expect one. The classifier is wrapped in its own try/except → `other`
+    for exactly that reason; this proves the wrapper, not the comment."""
+    def exploding(exc):
+        raise RuntimeError("classifier itself is broken")
+    monkeypatch.setattr(css, "semantic_source_reason_code", exploding)
+
+    colliding = {"entities": [], "anchors": [], "one_time_events": [
+        {"description": _DOOR_LABEL_A, "occurs_chapter": 1},
+        {"description": _DOOR_LABEL_B, "occurs_chapter": 2}]}
+    with caplog.at_level("WARNING"):
+        result, _, _ = asyncio.run(_run_bible(
+            monkeypatch, structured_semantic=True,
+            output_text=_structured("prosa bible yang sah", semantic=colliding)))
+
+    assert result[1] is None
+    assert result[0] == "prosa bible yang sah"
+    lines = [r.getMessage() for r in caplog.records
+             if "semantic_source parse failed" in r.getMessage()]
+    assert len(lines) == 1, lines
+    assert "reason=other" in lines[0], lines[0]
+    assert "other" in css.SEMANTIC_SOURCE_REASON_CODES
+
+
+# ===========================================================================
+# 5e. ROUND 8 — NFC on EVERY text field, and a genuinely self-binding envelope
+# ===========================================================================
+#
+# 🔴 ROUND 7 FIXED NFC FOR `label` AND LEFT THE IDENTICAL HOLE ON EVERY OTHER TEXT FIELD.
+#    `canonical_name`, every alias and anchor `literal` are each `_bind_norm`'d at
+#    construction and each validated by a `_req_str` call whose normalized return value is
+#    discarded. Measured by Rino: all three ACCEPTED an NFD value mutated in before the
+#    canon was built, the NFD text reached `to_canonical_obj()` — the projection QC reads —
+#    and `canon_sha256` was computed over those bytes, so **`verify_sha256()` returned
+#    True**. A perfectly self-consistent artifact carrying text in a form the system
+#    promises it never stores, with two reader-identical canons hashing differently.
+#
+#    The rule now lives once, in `_req_nfc`, and is applied at every validator door to
+#    every `_bind_norm`'d field. Fixing `label` alone is what made round 8 necessary; these
+#    tests exist so a per-field fix cannot pass for the whole class again.
+
+#: ASCII escapes, NOT literal characters — a literal NFD string is silently
+#: NFC-normalized in transit and the pair collapses into one.
+_R8_NFC = "caf\u00e9 Rina"
+_R8_NFD = "cafe\u0301 Rina"
+
+
+def _r8_entity(name=_R8_NFC, aliases=(), source="none", mutate=None):
+    e = cl.CanonEntityV1(entity_id="ent_alpha01", canonical_name=name,
+                         aliases=tuple(aliases), alias_source=source)
+    if mutate:
+        mutate(e)
+    return e
+
+
+def _r8_anchor(literal=_R8_NFC, mutate=None):
+    a = cl.CanonAnchorV1(anchor_id="anc_alpha01", kind="time", literal=literal)
+    if mutate:
+        mutate(a)
+    return a
+
+
+def test_the_round8_repro_precondition_holds():
+    """Guard the guard. A literal NFD string typed into a source file, a shell or an editor
+    is silently NFC-normalized in transit — these are built from escapes for that reason,
+    and if they ever stop differing every test below passes for nothing."""
+    assert _R8_NFD != _R8_NFC
+    assert cl._norm_text(_R8_NFD) == _R8_NFC
+    e = _r8_entity(mutate=lambda x: object.__setattr__(x, "canonical_name", _R8_NFD))
+    assert e.canonical_name == _R8_NFD, "post-construction mutation must actually stick"
+
+
+@pytest.mark.parametrize("what,rows", [
+    ("canonical_name", lambda: {"entities": (_r8_entity(
+        mutate=lambda e: object.__setattr__(e, "canonical_name", _R8_NFD)),)}),
+    ("alias", lambda: {"entities": (_r8_entity(
+        name="Rina", aliases=(_R8_NFC,), source="job_input",
+        mutate=lambda e: object.__setattr__(e, "aliases", (_R8_NFD,))),)}),
+    ("second alias only", lambda: {"entities": (_r8_entity(
+        name="Rina", aliases=("Neng", _R8_NFC), source="job_input",
+        mutate=lambda e: object.__setattr__(e, "aliases", ("Neng", _R8_NFD))),)}),
+    ("anchor literal", lambda: {"anchors": (_r8_anchor(
+        mutate=lambda a: object.__setattr__(a, "literal", _R8_NFD)),)}),
+    ("event label", lambda: {"one_time_events": (cl.CanonEventV1(
+        event_id="evt_alpha01", occurs_chapter_order=1, label=_R8_NFC),)}),
+])
+def test_nfd_is_refused_in_every_text_field_by_the_canon_builder(what, rows):
+    """The door `orchestrator/static.py` actually calls. "second alias only" is deliberate:
+    an implementation that checked `aliases[0]` and stopped would pass every other case."""
+    kw = rows()
+    if what == "event label":                      # mutate after construction
+        object.__setattr__(kw["one_time_events"][0], "label", _R8_NFD)
+    outline = _outline(3)
+    with pytest.raises(cl.CanonSchemaError, match="not NFC-normalized"):
+        cl.build_canon_lite_v1(outline_chapters=outline, job_config=_door_cfg(outline), **kw)
+
+
+def test_nfd_is_REFUSED_by_the_instance_validator_and_not_silently_repaired():
+    """🔴 REFUSE, NEVER REPAIR — the distinction Rino ratified, and the reason the rule is a
+       check rather than a re-binding. A validator that normalized in place would take a
+       TAMPERED artifact, quietly restore the field to the form its stored hash was computed
+       over, and hand back a canon that passes its own `verify_sha256()`. The tampering
+       would be undone and never reported: an integrity check turned into a repair shop.
+    """
+    outline = _outline(3)
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=outline, job_config=_door_cfg(outline),
+        anchors=(_r8_anchor(),))
+    assert canon.verify_sha256(), "fixture precondition: the artifact starts self-consistent"
+    object.__setattr__(canon.anchors[0], "literal", _R8_NFD)
+
+    with pytest.raises(cl.CanonSchemaError, match="not NFC-normalized"):
+        cl._validate_canon_instance(canon)
+    # ...and the artifact was NOT quietly rewritten on the way out
+    assert canon.anchors[0].literal == _R8_NFD, (
+        "the validator repaired the field instead of refusing it — a tampered artifact "
+        "would now pass verify_sha256() with no trace")
+
+
+def test_nfd_in_target_language_is_refused_at_the_instance_door():
+    """`target_language` is `_bind_norm`'d on the canon itself, so it is the same class of
+    field as the row text — included so the rule is provably applied to ALL of them."""
+    outline = _outline(3)
+    canon = cl.build_canon_lite_v1(outline_chapters=outline, job_config=_door_cfg(outline))
+    object.__setattr__(canon, "target_language", _R8_NFD)
+    with pytest.raises(cl.CanonSchemaError, match="not NFC-normalized"):
+        cl._validate_canon_instance(canon)
+
+
+@pytest.mark.parametrize("door", ["builder", "instance"])
+def test_nfd_entities_and_anchors_are_refused_by_the_semantic_source_doors(door):
+    """The envelope carries the same rows and has no canon hash behind it."""
+    ent = _r8_entity(mutate=lambda e: object.__setattr__(e, "canonical_name", _R8_NFD))
+    if door == "builder":
+        with pytest.raises(cl.CanonSchemaError, match="not NFC-normalized"):
+            css.build_semantic_source_v1(outline_chapters=_outline(3), bible_text=BIBLE,
+                                         entities=(ent,))
+        return
+    src = css.build_semantic_source_v1(
+        outline_chapters=_outline(3), bible_text=BIBLE, entities=(_r8_entity(),))
+    object.__setattr__(src.entities[0], "canonical_name", _R8_NFD)
+    with pytest.raises(cl.CanonSchemaError, match="not NFC-normalized"):
+        css._validate_semantic_source_instance(src)
+
+
+def test_one_name_spelled_two_ways_produces_one_hash():
+    """The harm, stated as an equality. NFD handed to the CONSTRUCTOR is still legitimate
+    input — `__post_init__` binds it — so the two spellings must converge, not diverge."""
+    outline = _outline(3)
+
+    def canon_for(name):
+        return cl.build_canon_lite_v1(
+            outline_chapters=outline, job_config=_door_cfg(outline),
+            entities=(cl.CanonEntityV1(entity_id="ent_alpha01", canonical_name=name,
+                                       aliases=(), alias_source="none"),))
+    a, b = canon_for(_R8_NFC), canon_for(_R8_NFD)
+    assert a.canon_sha256 == b.canon_sha256
+    assert b.entities[0].canonical_name == _R8_NFC
+    assert a.verify_sha256() and b.verify_sha256()
+
+
+# --- the envelope's own hash: format AND binding --------------------------------
+
+def _envelope_with_sha(bad):
+    src = css.build_semantic_source_v1(
+        outline_chapters=_outline(3), bible_text=BIBLE, entities=(_r8_entity(),))
+    object.__setattr__(src, "source_sha256", bad)
+    return src
+
+
+@pytest.mark.parametrize("bad,why", [
+    ("z" * 64, "64 chars, not hex at all"),
+    ("A" * 64, "hex digits but UPPERCASE — a different string claiming the same bytes"),
+    ("abc123", "too short"),
+    ("a" * 65, "too long"),
+    (None, "not a string"),
+    (True, "a bool, which is an int, which is not a digest"),
+])
+def test_a_MALFORMED_source_sha256_is_refused_AS_MALFORMED(bad, why):
+    """🔴 "VALIDATED, SELF-BINDING" WAS A CLAIM THE CONSTRUCTOR NEVER CHECKED. It tested the
+       TYPE and the LENGTH and nothing else — not even that the characters were hex. So
+       `"z"*64` and `"0"*64` both built an envelope whose own `verify_sha256()` was False.
+       `CanonLiteV1` has always ended its instance validator with `_req_sha256` + a binding
+       check; the envelope that carries semantic AUTHORITY into assist had neither, leaving
+       it strictly weaker than the artifact it feeds.
+
+       ⚠️ THE MESSAGE IS THE ASSERTION, and a first version of this test missed that. The
+       binding check alone refuses all of these too — a garbage digest does not bind
+       anything — so asserting "it raises" cannot tell the format check from the binding
+       check, and the mutation that deleted the format check SURVIVED. It matters which
+       one fires: an operator reading `does not bind this content` for `"z"*64` goes
+       looking for a stale envelope instead of a corrupt field.
+    """
+    with pytest.raises(cl.CanonSchemaError, match="expected a lowercase 64-hex sha256"):
+        css._validate_semantic_source_instance(_envelope_with_sha(bad))
+
+
+def test_a_WELL_FORMED_but_unbound_source_sha256_is_refused_AS_UNBOUND():
+    """The other half of the pair: a real lowercase-hex digest that simply is not this
+    content's. Only the binding check can see this one, and it must say so."""
+    with pytest.raises(cl.CanonSchemaError, match="does not bind this content"):
+        css._validate_semantic_source_instance(_envelope_with_sha("0" * 64))
+
+
+def test_a_content_swap_under_a_valid_hash_is_refused():
+    """The binding check earning its place: the digest is well-formed and was genuinely
+    correct — for different content."""
+    src = css.build_semantic_source_v1(
+        outline_chapters=_outline(3), bible_text=BIBLE,
+        entities=(cl.CanonEntityV1(entity_id="ent_alpha01", canonical_name="Rina",
+                                   aliases=(), alias_source="none"),))
+    assert src.verify_sha256(), "fixture precondition"
+    object.__setattr__(src, "entities", (cl.CanonEntityV1(
+        entity_id="ent_alpha01", canonical_name="Bukan Rina", aliases=(),
+        alias_source="none"),))
+    with pytest.raises(cl.CanonSchemaError, match="does not bind this content"):
+        css._validate_semantic_source_instance(src)
+
+
+def test_a_legitimately_built_envelope_still_passes_both_checks():
+    """The control. A rule that refuses everything is not a rule."""
+    src = css.build_semantic_source_v1(
+        outline_chapters=_outline(3), bible_text=BIBLE,
+        entities=(_r8_entity(name=_R8_NFD),),          # NFD INPUT is fine — post_init binds
+        anchors=(_r8_anchor(literal=_R8_NFD),),
+        one_time_events=(cl.CanonEventV1(event_id="evt_alpha01", occurs_chapter_order=1,
+                                         label=_R8_NFD),))
+    assert src.verify_sha256()
+    assert src.entities[0].canonical_name == _R8_NFC
+    assert src.anchors[0].literal == _R8_NFC
+    assert src.one_time_events[0].label == _R8_NFC
+    css._validate_semantic_source_instance(src)          # must not raise
+
+
+# ===========================================================================
 # 6. MUTATION HARNESS — bypass, empty-authority, wrong-binding, shared-seam
 # ===========================================================================
 #
@@ -1212,8 +2135,10 @@ MUTANTS = [
                 "which event it is supposed to find"),
         "edits": [(
             "python/canon_lite_semantic_source.py",
-            "            event_id=_event_id(row[\"description\"], occurs), occurs_chapter_order=occurs))",
-            "            event_id=_positional_id(\"evt\", i), occurs_chapter_order=occurs))",
+            "            event_id=_event_id(description, occurs),\n"
+            "            occurs_chapter_order=occurs, label=label))",
+            "            event_id=_positional_id(\"evt\", i),\n"
+            "            occurs_chapter_order=occurs, label=label))",
         )],
         "nodes": ["test_two_different_events_in_one_chapter_stay_distinguishable",
                   "test_event_identity_survives_into_the_canon_and_the_qc_projection"],
@@ -1255,13 +2180,432 @@ MUTANTS = [
         )],
         "nodes": ["test_nonfiction_assist_refuses_rather_than_taking_ungrounded_authority"],
     },
+    {
+        "id": "M10-label-collision-accepted",
+        "why": ("the label-collision check never fires, so two events a bible describes "
+                "identically ship as two canon rows differing only by an opaque hash — "
+                "unique to the schema, indistinguishable to the QC extractor, which is the "
+                "exact defect `label` exists to close. NOTE this mutates the check's BODY, "
+                "not its call site: the rule is enforced at TWO doors "
+                "(parse_semantic_source_envelope and the exported build_semantic_source_v1), "
+                "so neutering one call leaves the other holding and the mutant SURVIVES — "
+                "observed, not hypothesised, on the first run of this entry"),
+        "edits": [(
+            "python/canon_lite.py",
+            "        first = seen.get(fold)",
+            "        first = None",
+        )],
+        "nodes": ["test_two_events_sharing_a_label_are_refused_even_in_different_chapters"],
+    },
+    {
+        "id": "M11-fold-drops-only-cf-cc-not-default-ignorables",
+        "why": ("the fold goes back to guessing by CATEGORY instead of using the "
+                "Default_Ignorable_Code_Point property, so U+FE0F and U+034F (both `Mn`) "
+                "and the Hangul fillers (`Lo`) survive it — two labels differing only by "
+                "an invisible character ship as two indistinguishable canon rows, and a "
+                "label made only of Hangul fillers passes the letter-or-digit rule while "
+                "rendering as nothing"),
+        # Re-pointed when the fold grew its whitespace branch (see M21): the old anchor
+        # described a comprehension that no longer exists. The MUTATION is unchanged in
+        # meaning — drop the property test, keep only the category guess.
+        "edits": [(
+            "python/canon_lite.py",
+            "        elif _is_default_ignorable(ch) or unicodedata.category(ch) in (\"Cf\", \"Cc\"):",
+            "        elif unicodedata.category(ch) in (\"Cf\", \"Cc\"):",
+        )],
+        "nodes": ["test_the_fold_drops_every_default_ignorable_code_point"],
+        "test_file": "tests/python/test_canon_lite_l1.py",
+    },
+    {
+        "id": "M12-label-dropped-from-the-qc-projection",
+        "why": ("`label` stops travelling in `to_canonical_obj`, so the canon still HOLDS "
+                "the event's identity but QC never receives it — the rows the extractor "
+                "reads go back to {event_id, occurs_chapter_order} and every non-Latin "
+                "event becomes an opaque hash again, silently"),
+        "edits": [(
+            "python/canon_lite.py",
+            "        return {\"event_id\": self.event_id,\n"
+            "                \"occurs_chapter_order\": self.occurs_chapter_order,\n"
+            "                \"label\": self.label}",
+            "        return {\"event_id\": self.event_id,\n"
+            "                \"occurs_chapter_order\": self.occurs_chapter_order}",
+        )],
+        "nodes": ["test_a_description_with_no_latin_letters_still_gets_a_real_identity"],
+    },
+    {
+        "id": "M13-label-compared-as-raw-bytes",
+        "why": ("the collision check compares the stored NFC label instead of its fold, so "
+                "two labels that RENDER identically — NBSP for space, an added zero-width "
+                "character, different case — ship as two indistinguishable canon rows; the "
+                "R3/R4 defect one encoding layer down"),
+        "edits": [(
+            "python/canon_lite.py",
+            "        fold = event_label_fold(label)",
+            "        fold = label",
+        )],
+        "nodes": ["test_labels_that_render_identically_are_refused"],
+    },
+    {
+        "id": "M14-illegible-label-check-dropped",
+        "why": ("the letter-or-digit rule stops firing, so a description of nothing but "
+                "zero-width characters becomes a canon row whose label renders as EMPTY "
+                "beside a hash-only id — the identity-free event `label` exists to prevent, "
+                "and one `_req_str`'s `.strip()`-based emptiness guard cannot catch"),
+        "edits": [(
+            "python/canon_lite.py",
+            "        if not any(unicodedata.category(ch)[0] in (\"L\", \"N\") for ch in fold):",
+            "        if False:",
+        )],
+        "nodes": ["test_a_label_with_no_letter_or_digit_in_any_script_is_refused"],
+    },
+
+    # ── CALL SITES, not the rule body ────────────────────────────────────────
+    # 🔴 M10-M14 ALL MUTATE THE BODY OF `_validate_events`, AND A BODY MUTANT CANNOT SEE
+    #    THE DEFECT THIS WORKSTREAM ACTUALLY SHIPPED TWICE. Round 5 was an intact body
+    #    that the canon door did not CALL; round 6 was the same shape at the semantic-source
+    #    instance validator. Reverting each door in turn to its pre-fix `_validate_simple`
+    #    shape left the focused suite at 974 passed / 0 failed every time — four live
+    #    regressions, fully green. These six restore the missing half of the coverage: the
+    #    rule is only enforced where somebody calls it.
+    {
+        "id": "M15-final-canon-door-reverted",
+        "why": ("the EXACT round-5 defect: `_finalize` goes back to `_validate_simple`, so "
+                "the FINAL CANON — the artifact QC reads, built by the path "
+                "`orchestrator/static.py` calls directly — stops enforcing labels while "
+                "the semantic-source door still holds and hides it"),
+        "edits": [(
+            "python/canon_lite.py",
+            '    canon_kwargs["one_time_events"] = _validate_events(\n'
+            '        canon_kwargs["one_time_events"], count=count)',
+            '    canon_kwargs["one_time_events"] = _validate_simple(\n'
+            '        canon_kwargs["one_time_events"], kind="one_time_events",\n'
+            '        max_n=MAX_EVENTS, id_attr="event_id",\n'
+            '        order_attrs=("occurs_chapter_order",), count=count,\n'
+            '        row_type=CanonEventV1, text_attrs={"label": MAX_EVENT_LABEL_LEN})',
+        )],
+        "nodes": ["test_door_1_the_final_canon_builder_enforces_labels_by_itself",
+                  "test_the_legibility_rule_is_pinned_at_the_canon_door_too"],
+    },
+    {
+        "id": "M16-canon-instance-door-reverted",
+        "why": ("a directly-constructed `CanonLiteV1` stops enforcing labels — the door "
+                "`__post_init__` exists to be, and the one a caller reaches without the "
+                "builder"),
+        "edits": [(
+            "python/canon_lite.py",
+            "    _validate_events(canon.one_time_events, count=count)",
+            '    _validate_simple(\n'
+            '        canon.one_time_events, kind="one_time_events", max_n=MAX_EVENTS,\n'
+            '        id_attr="event_id", order_attrs=("occurs_chapter_order",),\n'
+            '        count=count, row_type=CanonEventV1,\n'
+            '        text_attrs={"label": MAX_EVENT_LABEL_LEN})',
+        )],
+        "nodes": ["test_door_2_the_canon_instance_validator_enforces_labels_by_itself"],
+    },
+    {
+        "id": "M17-semantic-source-instance-door-reverted",
+        "why": ("the EXACT round-6 defect: the instance validator left on the old "
+                "validator when the builder moved, so constructing "
+                "`CanonLiteSemanticSourceV1(...)` directly mints a source with duplicate "
+                "labels"),
+        "edits": [(
+            "python/canon_lite_semantic_source.py",
+            "    canon_lite._validate_events(src.one_time_events, count=0, order_attrs=())",
+            '    canon_lite._validate_simple(\n'
+            '        src.one_time_events, kind="one_time_events",\n'
+            '        max_n=canon_lite.MAX_EVENTS, id_attr="event_id", order_attrs=(),\n'
+            '        count=0, row_type=canon_lite.CanonEventV1,\n'
+            '        text_attrs={"label": canon_lite.MAX_EVENT_LABEL_LEN})',
+        )],
+        "nodes": ["test_door_3_the_semantic_source_instance_validator_enforces_labels_by_itself"],
+    },
+    {
+        "id": "M18-semantic-source-builder-door-reverted",
+        "why": ("the exported builder stops enforcing labels; its callers hand over "
+                "ready-made CanonEventV1s that nothing upstream has checked"),
+        "edits": [(
+            "python/canon_lite_semantic_source.py",
+            "    validated_events = canon_lite._validate_events(\n"
+            "        tuple(one_time_events), count=0, order_attrs=())",
+            '    validated_events = canon_lite._validate_simple(\n'
+            '        tuple(one_time_events), kind="one_time_events",\n'
+            '        max_n=canon_lite.MAX_EVENTS, id_attr="event_id", order_attrs=(),\n'
+            '        count=0, row_type=canon_lite.CanonEventV1,\n'
+            '        text_attrs={"label": canon_lite.MAX_EVENT_LABEL_LEN})',
+        )],
+        "nodes": ["test_door_4_the_semantic_source_builder_enforces_labels_by_itself"],
+    },
+
+    # ── the envelope reason codes ────────────────────────────────────────────
+    {
+        "id": "M19-reason-code-collapses-to-one-bucket",
+        "why": ("the specific `.reason_code` is ignored, so a label collision — a refusal "
+                "of well-formed output raised AFTER the Story Bible was paid for — logs "
+                "identically to the model emitting garbage, which is the one diagnosis "
+                "that sends an operator looking in the wrong place"),
+        "edits": [(
+            "python/canon_lite_semantic_source.py",
+            '    code = getattr(exc, "reason_code", None)\n'
+            "    if code in SEMANTIC_SOURCE_REASON_CODES:\n"
+            "        return code",
+            '    code = getattr(exc, "reason_code", None)\n'
+            "    if False:\n"
+            "        return code",
+        )],
+        "nodes": ["test_a_label_collision_classifies_as_ambiguous_not_as_garbage"],
+    },
+    {
+        "id": "M20-reason-code-becomes-an-open-string-channel",
+        "why": ("the closed-set membership test is dropped, so ANY string a future raiser "
+                "attaches to an exception travels into the log line — the vocabulary stops "
+                "being closed and §10's bound on what leaves for a log is gone"),
+        "edits": [(
+            "python/canon_lite_semantic_source.py",
+            "    if code in SEMANTIC_SOURCE_REASON_CODES:\n        return code",
+            "    if code is not None:\n        return code",
+        )],
+        "nodes": ["test_an_unrecognised_reason_code_on_an_exception_is_not_passed_through"],
+    },
+
+    # ── ROUND 7: whitespace-as-control, NFC at the door, version literals ────
+    {
+        "id": "M21-whitespace-control-deleted-instead-of-collapsed",
+        "why": ("the fold goes back to dropping Cf/Cc BEFORE collapsing, so TAB/LF/CR/VT/FF "
+                "— all category Cc — are DELETED and the words either side are joined: "
+                "'Rina\\tpergi' folds to 'rinapergi' while 'Rina pergi' folds to "
+                "'rina pergi', and one event ships as two rows QC must guess between"),
+        "edits": [(
+            "python/canon_lite.py",
+            "        if ch.isspace():\n            kept.append(\" \")",
+            "        if False:\n            kept.append(\" \")",
+        )],
+        "nodes": ["test_whitespace_collapses_to_a_space_it_does_not_vanish"],
+    },
+    {
+        "id": "M22-invisibles-become-spaces-instead-of-vanishing",
+        "why": ("the OVER-correction for M21: invisible characters treated as separators "
+                "rather than deleted, so 'Rina<ZWSP>pergi' — which a reader sees as one "
+                "word — folds to 'rina pergi' and collides with a genuinely different "
+                "label. A false MATCH manufactured by the fix for the false MISS"),
+        "edits": [(
+            "python/canon_lite.py",
+            "        elif _is_default_ignorable(ch) or unicodedata.category(ch) in (\"Cf\", \"Cc\"):\n"
+            "            continue",
+            "        elif _is_default_ignorable(ch) or unicodedata.category(ch) in (\"Cf\", \"Cc\"):\n"
+            "            kept.append(\" \")",
+        )],
+        "nodes": ["test_invisible_characters_are_deleted_and_do_not_become_a_word_break"],
+    },
+    {
+        "id": "M23-nfc-rule-body-neutered",
+        "why": ("`_req_nfc` stops refusing, so EVERY text field goes back to keeping "
+                "whatever bytes it arrived with: the NFD value reaches to_canonical_obj() "
+                "and canon_sha256 is computed over it, so the artifact still verifies "
+                "against itself while two reader-identical canons hash differently"),
+        "edits": [(
+            "python/canon_lite.py",
+            "    if type(value) is str and value != UNKNOWN and value != _norm_text(value):",
+            "    if False:",
+        )],
+        "nodes": ["test_a_non_nfc_label_is_refused_at_every_door",
+                  "test_nfd_is_refused_in_every_text_field_by_the_canon_builder",
+                  "test_one_event_spelled_two_ways_hashes_identically"],
+    },
+    {
+        "id": "M24-nfc-repaired-instead-of-refused",
+        "why": ("the door normalizes in place rather than refusing — which makes "
+                "`_validate_canon_instance` silently rewrite a TAMPERED artifact into "
+                "passing its own verify_sha256(), turning an integrity check into a repair "
+                "shop and leaving the tampering unreported"),
+        "edits": [(
+            "python/canon_lite.py",
+            "        for attr, max_len in dict(text_attrs).items():\n"
+            "            _req_str(getattr(row, attr), f\"{kind}[{i}].{attr}\", max_len=max_len)\n"
+            "            _req_nfc(getattr(row, attr), f\"{kind}[{i}].{attr}\")",
+            "        for attr, max_len in dict(text_attrs).items():\n"
+            "            object.__setattr__(row, attr, _req_str(\n"
+            "                getattr(row, attr), f\"{kind}[{i}].{attr}\", max_len=max_len))",
+        )],
+        "nodes": ["test_nfd_is_REFUSED_by_the_instance_validator_and_not_silently_repaired"],
+    },
+
+    # ── ROUND 8: the rule is only enforced where somebody CALLS it ───────────
+    # M23 neuters the shared body; these five remove it from ONE door each. Round 5 is the
+    # reason both kinds exist — a body mutant is killed by any surviving call site, so it
+    # cannot see the defect this workstream keeps shipping.
+    {
+        "id": "M30-nfc-dropped-for-canonical_name",
+        "why": "entities[i].canonical_name goes back to keeping NFD bytes into the hash",
+        "edits": [(
+            "python/canon_lite.py",
+            "        _req_nfc(e.canonical_name, f\"entities[{i}].canonical_name\")\n",
+            "",
+        )],
+        "nodes": ["test_nfd_is_refused_in_every_text_field_by_the_canon_builder",
+                  "test_one_name_spelled_two_ways_produces_one_hash"],
+    },
+    {
+        "id": "M31-nfc-dropped-for-aliases",
+        "why": "every alias goes back to keeping NFD bytes into the hash",
+        "edits": [(
+            "python/canon_lite.py",
+            "            _req_nfc(alias, f\"entities[{i}].aliases[{j}]\")\n",
+            "",
+        )],
+        "nodes": ["test_nfd_is_refused_in_every_text_field_by_the_canon_builder"],
+    },
+    {
+        "id": "M32-nfc-checked-on-the-first-alias-only",
+        "why": ("the subtler shape: the rule is applied to aliases[0] and stops, so an "
+                "entity whose SECOND alias is NFD passes — an implementation that looks "
+                "correct in every single-alias test"),
+        "edits": [(
+            "python/canon_lite.py",
+            "            _req_nfc(alias, f\"entities[{i}].aliases[{j}]\")",
+            "            if j == 0:\n"
+            "                _req_nfc(alias, f\"entities[{i}].aliases[{j}]\")",
+        )],
+        "nodes": ["test_nfd_is_refused_in_every_text_field_by_the_canon_builder"],
+    },
+    {
+        "id": "M33-nfc-dropped-for-anchor-literal-and-event-label",
+        "why": ("the `text_attrs` call site — anchors' literal and events' label together, "
+                "since both reach the rule through _validate_simple"),
+        "edits": [(
+            "python/canon_lite.py",
+            "            _req_nfc(getattr(row, attr), f\"{kind}[{i}].{attr}\")\n",
+            "",
+        )],
+        "nodes": ["test_nfd_is_refused_in_every_text_field_by_the_canon_builder",
+                  "test_a_non_nfc_label_is_refused_at_every_door"],
+    },
+    {
+        "id": "M34-nfc-dropped-for-target_language-at-the-instance-door",
+        "why": "the canon's own bound text field stops being checked when re-validated",
+        "edits": [(
+            "python/canon_lite.py",
+            "    _req_nfc(canon.target_language, \"target_language\")\n",
+            "",
+        )],
+        "nodes": ["test_nfd_in_target_language_is_refused_at_the_instance_door"],
+    },
+
+    # ── ROUND 8: the envelope's "self-binding" claim ─────────────────────────
+    {
+        "id": "M35-source-sha256-back-to-type-and-length",
+        "why": ("the digest is checked for TYPE and LENGTH only — not even that the "
+                "characters are hex — so 'z'*64 and 'A'*64 build an envelope whose own "
+                "verify_sha256() is False, from a constructor that advertises itself as "
+                "validated and self-binding"),
+        "edits": [(
+            "python/canon_lite_semantic_source.py",
+            "    canon_lite._req_sha256(src.source_sha256, \"source_sha256\")",
+            "    if not isinstance(src.source_sha256, str) or len(src.source_sha256) != 64:\n"
+            "        raise canon_lite.CanonSchemaError(\n"
+            "            \"source_sha256: expected a 64-char hex sha256\")",
+        )],
+        "nodes": ["test_a_MALFORMED_source_sha256_is_refused_AS_MALFORMED"],
+    },
+    {
+        "id": "M36-envelope-binding-check-removed",
+        "why": ("the hash is well-formed but never checked to BIND the content, so an "
+                "envelope whose entities were swapped after construction still validates — "
+                "the exact 'self-binding' claim that was false before round 8"),
+        "edits": [(
+            "python/canon_lite_semantic_source.py",
+            "    if not src.verify_sha256():\n"
+            "        raise canon_lite.CanonSchemaError(\n"
+            "            \"source_sha256: does not bind this content\")",
+            "    if False:\n"
+            "        raise canon_lite.CanonSchemaError(\n"
+            "            \"source_sha256: does not bind this content\")",
+        )],
+        "nodes": ["test_a_content_swap_under_a_valid_hash_is_refused",
+                  "test_a_WELL_FORMED_but_unbound_source_sha256_is_refused_AS_UNBOUND"],
+    },
+    {
+        "id": "M25-projection-rule-reverted-to-the-v1-literal",
+        "why": ("the constant goes back to describing a projection shape that no longer "
+                "exists — `canon_lite_v1.to_canonical_obj(...)` after the projection gained "
+                "an event label. It is the QC contract's only statement about that shape, "
+                "and it would again be safe purely by accident"),
+        "edits": [(
+            "python/canon_lite_qc_provider.py",
+            "QC_CANON_PROJECTION_RULE = (\n"
+            "    f\"canon_lite_v2.to_canonical_obj(include_hash=True) rev={QC_CANON_PROJECTION_REVISION}\")",
+            "QC_CANON_PROJECTION_RULE = \"canon_lite_v1.to_canonical_obj(include_hash=True)\"",
+        )],
+        "nodes": ["test_the_qc_projection_rule_names_the_version_the_artifact_actually_is"],
+    },
+    {
+        "id": "M26-canon-digest-domain-reverted",
+        "why": ("the hash DOMAIN goes back to v1 while the canonical object it covers has "
+                "gained a field — both sites together, so the artifact still verifies "
+                "against itself and ONLY a test pinning the domain by value can see it"),
+        "edits": [
+            ("python/canon_lite.py",
+             "        return _digest(\"canon_lite.canon.v2\", self.to_canonical_obj(include_hash=False))",
+             "        return _digest(\"canon_lite.canon.v1\", self.to_canonical_obj(include_hash=False))"),
+            ("python/canon_lite.py",
+             "        canon_sha256=_digest(\"canon_lite.canon.v2\", hash_input), **canon_kwargs)",
+             "        canon_sha256=_digest(\"canon_lite.canon.v1\", hash_input), **canon_kwargs)"),
+        ],
+        "nodes": ["test_the_canon_digest_domain_is_pinned_by_value"],
+    },
+    {
+        "id": "M27-schema-version-reverted",
+        "why": ("`SCHEMA_VERSION` goes back to canon_lite_v1 while CanonEventV1 carries a "
+                "field it did not have — two genuinely different artifact shapes claiming "
+                "one version, and the projection rule now contradicts the artifact"),
+        "edits": [(
+            "python/canon_lite.py",
+            "SCHEMA_VERSION = \"canon_lite_v2\"",
+            "SCHEMA_VERSION = \"canon_lite_v1\"",
+        )],
+        "nodes": ["test_the_artifact_versions_moved_because_the_rows_changed",
+                  "test_the_qc_projection_rule_names_the_version_the_artifact_actually_is"],
+    },
+
+    # ── ROUND 7: the telemetry handler, which two live jobs already died on ──
+    {
+        "id": "M28-telemetry-logs-the-raw-exception-body",
+        "why": ("the bounded code is replaced by the exception's own message, so "
+                "model-produced text and the event LABEL that caused the refusal travel "
+                "into the log line — the §10 bound on what leaves for a log, gone"),
+        "edits": [(
+            "python/orchestrator/dynamic.py",
+            "                        type(_sse).__name__, _reason)",
+            "                        type(_sse).__name__, str(_sse))",
+        )],
+        "nodes": ["test_the_telemetry_handler_names_the_reason_and_carries_no_label"],
+    },
+    {
+        "id": "M29-telemetry-classifier-left-unguarded",
+        "why": ("the try/except around the classifier is removed, so a raise inside it "
+                "escapes from a function whose contract is 'never raises' — and it escapes "
+                "DURING exception handling, which is how jobs yp8f04rr and 98o7l3o8 died"),
+        "edits": [(
+            "python/orchestrator/dynamic.py",
+            "                    try:\n"
+            "                        _reason = semantic_source_reason_code(_sse)\n"
+            "                    except Exception:      # noqa: BLE001 — telemetry may never break a job\n"
+            "                        _reason = \"other\"",
+            "                    _reason = semantic_source_reason_code(_sse)",
+        )],
+        "nodes": ["test_the_telemetry_handler_cannot_raise_even_if_the_classifier_does"],
+    },
 ]
 
 
-def _build_mutant_tree(root, edits):
+def _build_mutant_tree(root, edits, test_files=()):
     shutil.copytree(REPO / "python", root / "python", ignore=_IGNORE)
     (root / "tests" / "python").mkdir(parents=True)
-    for name in ("conftest.py", Path(__file__).name):
+    # `test_files` lets a mutant be witnessed by a test in ANOTHER suite. The label rules
+    # moved onto the canon itself, so the test that proves the fold covers every
+    # default-ignorable code point lives with `canon_lite`'s own suite — copying only this
+    # file would silently collect zero nodes and report the mutant as killed.
+    names = {"conftest.py", Path(__file__).name} | {Path(f).name for f in test_files}
+    for name in sorted(names):
         shutil.copy2(REPO / "tests" / "python" / name, root / "tests" / "python" / name)
     for rel, old, new in edits:
         target = root / rel
@@ -1278,13 +2622,24 @@ def _build_mutant_tree(root, edits):
 def test_the_mutation_is_killed(tmp_path, mutant):
     root = tmp_path / "tree"
     root.mkdir()
-    _build_mutant_tree(root, mutant["edits"])
+    test_file = mutant.get("test_file", f"tests/python/{Path(__file__).name}")
+    _build_mutant_tree(root, mutant["edits"], test_files=(test_file,))
 
-    this_file = Path(__file__).name
-    nodes = [f"tests/python/{this_file}::{n}" for n in mutant["nodes"]]
+    nodes = [f"{test_file}::{n}" for n in mutant["nodes"]]
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *nodes],
         cwd=root, capture_output=True, text=True, timeout=600)
+    # 🔴 A MUTANT WHOSE WITNESS VANISHED IS THE ONE FAILURE THIS HARNESS CANNOT AFFORD, and
+    #    the first version of this guard could not detect it: pytest writes `ERROR: not
+    #    found: <node>` to STDERR, not stdout, and the check was `"ERROR" not in
+    #    <list of lines>` — a membership test needing a line exactly equal to "ERROR".
+    #    It was inert in both directions. Read stderr, match as a SUBSTRING, and cover
+    #    both exit codes: 4 (node not found) and 5 (nothing collected).
+    if proc.returncode in (4, 5) or "not found:" in proc.stderr or "no tests ran" in proc.stdout:
+        raise AssertionError(
+            f"{mutant['id']}: its witness collected no tests (rc={proc.returncode}) — the "
+            f"node name or test_file is stale, so this mutant proves nothing.\n"
+            f"stdout: {proc.stdout[-1500:]}\nstderr: {proc.stderr[-1500:]}")
     assert proc.returncode != 0, (
         f"SURVIVED {mutant['id']} — {mutant['why']}. The mutation applied cleanly and "
         f"{', '.join(mutant['nodes'])} still passed, so the fix is unguarded.\n"

@@ -75,7 +75,7 @@ def test_unknown_nested_field_is_rejected_in_every_section(section):
         outline_chapters=_outline(), job_config=_cfg(),
         entities=[cl.CanonEntityV1("e1", "Sari", ("Neng Sari",), "job_input")],
         anchors=[cl.CanonAnchorV1("a1", "time", "12 Maret 1998")],
-        one_time_events=[cl.CanonEventV1("ev1", 2)],
+        one_time_events=[cl.CanonEventV1("ev1", 2, "rumah Sari terbakar")],
         reveals=[cl.CanonRevealV1("r1", 3)],
         flashback_exceptions=[cl.CanonFlashbackExceptionV1("f1", 2, "declared_flashback")],
     )
@@ -357,7 +357,9 @@ def test_parser_rejects_an_empty_chapter_set_even_with_a_recomputed_hash():
     obj = _canon().to_canonical_obj()
     obj["chapters"] = []
     without_hash = {k: v for k, v in obj.items() if k != "canon_sha256"}
-    obj["canon_sha256"] = cl._digest("canon_lite.canon.v1", without_hash)
+    # v2 — the LIVE domain. Under the stale v1 this test still passed, but not for
+    # the reason its name gives: the hash was never a valid recomputation at all.
+    obj["canon_sha256"] = cl._digest("canon_lite.canon.v2", without_hash)
     with pytest.raises(cl.CanonSchemaError, match="chapters: empty"):
         cl.parse_canon_lite_v1(obj)
 
@@ -403,15 +405,29 @@ def test_canon_hash_is_stable_in_a_separate_interpreter():
     pytest.param(lambda o: o.__setitem__("advisory_bible_sha256", "a" * 64), id="bible"),
 ])
 def test_every_bound_field_changes_the_hash(mutate):
+    """🔴 THIS TEST WAS VACUOUS FOR ALL FIVE CASES AND STILL PASSED. It recomputed under
+       the domain `canon_lite.canon.v1` while production had moved to `.v2`, so the two
+       digests differed BEFORE `mutate` touched anything — the assertion was satisfied by
+       the stale domain, not by the mutation, and would have kept passing if mutating a
+       bound field had stopped changing the hash entirely.
+
+       The precondition below is what makes the assertion mean what its name says: prove
+       the UNMUTATED object reproduces the artifact's own hash first, so the inequality
+       afterwards can only be the mutation's doing. A domain-only mismatch now fails loudly
+       here instead of silently disarming five cases.
+    """
     canon = _canon(advisory_bible_text="x")
     obj = canon.to_canonical_obj(include_hash=False)
+    assert cl._digest("canon_lite.canon.v2", obj) == canon.canon_sha256, (
+        "precondition: the unmutated projection must reproduce the artifact's own hash, "
+        "or the inequality below proves nothing about the mutation")
     mutate(obj)
-    assert cl._digest("canon_lite.canon.v1", obj) != canon.canon_sha256
+    assert cl._digest("canon_lite.canon.v2", obj) != canon.canon_sha256
 
 
 def test_domain_separation_between_artifact_kinds():
     payload = {"a": 1}
-    assert (cl._digest("canon_lite.canon.v1", payload)
+    assert (cl._digest("canon_lite.canon.v2", payload)
             != cl._digest("canon_lite.job_config.v1", payload))
 
 
@@ -1246,3 +1262,137 @@ def test_canon_lite_module_has_no_import_time_side_effects():
     """It must be safe for `narrate_chapters` to import this lazily inside a job."""
     mod = importlib.reload(cl)
     assert mod.resolve_mode({}) == "off"
+
+
+# ===========================================================================
+# Event label identity — enforced by the CANON, not only by its callers
+# ===========================================================================
+#
+# 🔴 THE BYPASS THESE ROWS EXIST FOR. The label rules first lived in
+#    `canon_lite_semantic_source`, which left `build_canon_lite_v1`/`_finalize` — the
+#    builder `orchestrator/static.py` calls DIRECTLY, and the one that produces the artifact
+#    QC actually reads — accepting two events whose labels differ only by a non-breaking
+#    space. A green suite and a 19/19 mutation harness both missed it, because every test
+#    reached the canon through the parser that happened to check.
+#
+#    The rules now live on the canon's own validator, so every constructor path inherits
+#    them. These rows probe that path directly, with no semantic source anywhere in sight.
+
+def _canon_with_events(events):
+    return _canon(one_time_events=list(events))
+
+
+@pytest.mark.parametrize("a,b,what", [
+    ("Rina membakar surat", "Rina membakar surat", "NBSP for space"),
+    ("Rina membakar surat", "Rina membakar surat​", "zero-width space"),
+    ("Rina membakar surat", "Rina membakar surat️", "variation selector (Mn)"),
+    ("Rina membakar surat", "Rina͏ membakar surat", "combining grapheme joiner (Mn)"),
+    ("Rina membakar surat", "Rina membakar suratᅟ", "Hangul choseong filler (Lo)"),
+    ("Rina membakar surat", "rina MEMBAKAR surat", "case only"),
+    ("Rina membakar surat", "Rina  membakar  surat", "doubled spaces"),
+])
+def test_the_canon_itself_refuses_two_indistinguishable_event_labels(a, b, what):
+    """Straight through `build_canon_lite_v1` — no semantic source involved."""
+    assert a != b, f"{what}: the two labels must really differ in bytes"
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable"):
+        _canon_with_events([cl.CanonEventV1("eva", 1, a), cl.CanonEventV1("evb", 2, b)])
+
+
+@pytest.mark.parametrize("label,what", [
+    ("​​", "zero-width spaces"),
+    ("️️", "variation selectors"),
+    ("ᅟᅟ", "Hangul choseong fillers — category Lo, renders as nothing"),
+    ("!!!", "punctuation only"),
+])
+def test_the_canon_itself_refuses_an_identity_free_event_label(label, what):
+    """`ᅟ` is the sharp case: category `Lo` means a naive "contains a letter" test
+    calls it legible, while it renders as nothing at all."""
+    with pytest.raises(cl.CanonSchemaError, match="no letter or digit"):
+        _canon_with_events([cl.CanonEventV1("eva", 1, label)])
+
+
+def test_the_canon_still_accepts_distinct_labels_in_every_script():
+    """POSITIVE CONTROL. Without it the two rows above would pass against a validator that
+    refused every event, and the non-Latin regression this workstream already shipped once
+    would be invisible."""
+    for label in ("리나가 편지를 발견했다",
+                  "リナは手紙を見つけた",
+                  "вЖда нашла письмо",
+                  "وجدت رينا رسالة",
+                  "Rina menemukan surat"):
+        canon = _canon_with_events([cl.CanonEventV1("eva", 1, label)])
+        assert canon.one_time_events[0].to_canonical_obj()["label"] == label
+    # ...and two genuinely different events coexist
+    canon = _canon_with_events([cl.CanonEventV1("eva", 1, "kehilangan kunci"),
+                                cl.CanonEventV1("evb", 2, "ledakan gedung")])
+    assert len(canon.one_time_events) == 2
+
+
+def test_event_label_refusals_carry_a_bounded_reason_code():
+    """The refusal travels to a log line, so it must name a CLOSED reason — not the label,
+    which is model-authored prose."""
+    with pytest.raises(cl.CanonSchemaError) as ambiguous:
+        _canon_with_events([cl.CanonEventV1("eva", 1, "ledakan"),
+                            cl.CanonEventV1("evb", 2, "ledakan")])
+    with pytest.raises(cl.CanonSchemaError) as illegible:
+        _canon_with_events([cl.CanonEventV1("eva", 1, "​​")])
+    assert ambiguous.value.reason_code == cl.EVENT_LABEL_AMBIGUOUS
+    assert illegible.value.reason_code == cl.EVENT_LABEL_ILLEGIBLE
+    assert ambiguous.value.reason_code != illegible.value.reason_code
+
+
+def test_the_fold_drops_every_default_ignorable_code_point():
+    """The property, not a category guess. An earlier fold dropped `Cf`/`Cc` and reasoned
+    that covered invisible characters — it does not: U+FE0F and U+034F are `Mn`, and the
+    Hangul fillers are `Lo`. Each range below must fold away to nothing."""
+    for lo, hi in cl._DEFAULT_IGNORABLE_RANGES:
+        for cp in {lo, hi}:
+            ch = chr(cp)
+            assert cl.event_label_fold(f"ledakan{ch}") == "ledakan", f"U+{cp:04X} survived"
+
+
+@pytest.mark.parametrize("plain,sneaky,what", [
+    ("Rina màu ledakan", "Rina ma͏̀u ledakan", "Latin diacritic split by CGJ"),
+    ("ñ terbakar", "n​̃ terbakar", "tilde split by zero-width space"),
+    ("が meledak", "か​゙ meledak", "Japanese dakuten split by ZWSP"),
+    ("한 meledak", "ᄒ​ᅡᆫ meledak", "Korean jamo split by ZWSP"),
+])
+def test_an_ignorable_between_a_base_and_its_combining_mark_still_collides(
+        plain, sneaky, what):
+    """🔴 THE CASE EVERY EARLIER WITNESS WALKED PAST. The fold normalized ONCE, up front,
+       then stripped ignorables and casefolded — both of which can DE-normalize. Dropping
+       an ignorable from between a base letter and its combining mark re-exposed a
+       decomposed sequence that never recomposed, so `fold(fold(x)) != fold(x)` and one
+       invisible character defeated the collision check outright.
+
+       Existing tests all appended the ignorable at a word boundary, where nothing follows
+       it to recompose with — which is exactly why a green suite and 33 mutants missed it.
+    """
+    assert plain != sneaky
+    assert cl.event_label_fold(plain) == cl.event_label_fold(sneaky), what
+    with pytest.raises(cl.CanonSchemaError, match="indistinguishable"):
+        _canon_with_events([cl.CanonEventV1("eva", 1, plain),
+                            cl.CanonEventV1("evb", 2, sneaky)])
+
+
+@pytest.mark.parametrize("label", [
+    "a͏́", "ẞtest", "が", "ᄒ​ᅡᆫ",
+    "ﬁle", "Rina  membakar  surat", "CAFÉ", "① ledakan",
+])
+def test_the_fold_is_idempotent(label):
+    """A projection onto equivalence classes that is not idempotent is not one. This is the
+    property the CGJ bypass violated, so it is asserted directly rather than only through
+    the pairs above."""
+    once = cl.event_label_fold(label)
+    assert cl.event_label_fold(once) == once
+
+
+def test_an_event_label_is_nfc_bound_like_every_other_text_row():
+    """`CanonEventV1` was the only text-bearing row without `_bind_norm`, so an NFD label
+    stayed NFD in the object AND in `canon_sha256` — two canons that render identically
+    hashing differently, through a field that is a `CLAIM_CACHE_KEY_FIELDS` member."""
+    composed = _canon_with_events([cl.CanonEventV1("eva", 1, "café terbakar")])
+    decomposed = _canon_with_events([cl.CanonEventV1("eva", 1, "café terbakar")])
+    assert composed.one_time_events[0].label == decomposed.one_time_events[0].label
+    assert composed.canon_sha256 == decomposed.canon_sha256, \
+        "equal labels must hash equally — the promise _bind_norm exists to keep"

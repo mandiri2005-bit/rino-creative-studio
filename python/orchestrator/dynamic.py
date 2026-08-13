@@ -2319,7 +2319,10 @@ async def build_story_bible(
                 #    structured-extraction defect breaking the prose bible would be exactly
                 #    the kind of collateral damage that contract exists to prevent.
                 try:
-                    from canon_lite_semantic_source import parse_semantic_source_envelope
+                    # `semantic_source_reason_code` is imported HERE, alongside the parser,
+                    # so the handler below never has to import anything — see its comment.
+                    from canon_lite_semantic_source import (
+                        parse_semantic_source_envelope, semantic_source_reason_code)
                     if _semantic_raw is not None:
                         # `bible_text=_bible_text` — the PROSE these tuples describe and the
                         # exact string that becomes `ctx.canonical_facts`, hashed into the
@@ -2344,11 +2347,33 @@ async def build_story_bible(
                 except Exception as _sse:  # noqa: BLE001 — extraction must never break the bible
                     # Bounded log only: `_sse` could carry model-produced text (a
                     # malformed field value echoed into an exception message) — never
-                    # log the exception body itself, only its class name.
+                    # log the exception body itself, only its class name and a code from
+                    # a CLOSED vocabulary.
+                    #
+                    # 🔴 `reason` DISTINGUISHES A REFUSAL FROM GARBAGE. Every refusal here
+                    #    used to read `semantic_source_parse_error class=CanonSchemaError`,
+                    #    so an event-label collision — a refusal of WELL-FORMED output,
+                    #    raised after the Story Bible was already paid for — was
+                    #    indistinguishable from the model emitting malformed JSON. Those
+                    #    two want opposite responses: one means the bible must describe its
+                    #    events more distinctly, the other means the model failed.
+                    #
+                    # ⚠️ THIS HANDLER MUST NOT BE ABLE TO RAISE. The classifier is imported
+                    #    in the TRY above — but that import is itself one of the things
+                    #    that can land us here, and a failed import leaves the name unbound,
+                    #    so calling it bare would raise NameError DURING exception handling,
+                    #    out of a function whose contract is "never raises". Two live jobs
+                    #    in this workstream (`yp8f04rr`, `98o7l3o8`) already died to missing
+                    #    imports on this path. `other` is a member of the closed vocabulary,
+                    #    so the degraded case still logs a valid code.
+                    try:
+                        _reason = semantic_source_reason_code(_sse)
+                    except Exception:      # noqa: BLE001 — telemetry may never break a job
+                        _reason = "other"
                     log.warning(
                         "build_story_bible: semantic_source parse failed "
-                        "(error_code=semantic_source_parse_error class=%s)",
-                        type(_sse).__name__)
+                        "(error_code=semantic_source_parse_error class=%s reason=%s)",
+                        type(_sse).__name__, _reason)
                     _semantic_source = None
             return _bible_return(_bible_text, _semantic_source, _registry_raw)
         if _truncated:

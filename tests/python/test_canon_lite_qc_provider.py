@@ -41,14 +41,50 @@ import canon_lite_qc_provider as qc        # noqa: E402
 #    This constant exists so the contract cannot drift SILENTLY. Updating it is not a
 #    formality: a diff that moves this line is asserting that the wire contract changed on
 #    purpose, and reviewing it means reading why.
+#
+# 🔴 MOVED AGAIN, SAME DAY — Rino's code audit of the move above found two more P1s before
+#    any canary spent money on them: (1) "quote" was defined as "the name or literal
+#    ALONE" for every claim_type, which is simply false for one_time_event — CanonEventV1
+#    carries no literal, and evaluate_semantic never reads a one_time_event claim's
+#    evidence text, only its canon_ref. Quote semantics are now defined PER claim_type. (2)
+#    a non-ASCII event description could reach `_event_id` with no legible slug at all;
+#    unrelated to this prompt's bytes directly, but fixed alongside since both changes
+#    landed in the same audit round — see canon_lite_semantic_source.py's `_event_id`.
+#
+# 🔴 MOVED A THIRD TIME, same day, same reason as the second: a further review round found
+#    the one_time_event wording above was itself wrong. It told the model "only canon_ref
+#    identity is checked, NEVER the quote text" — true of `evaluate_semantic`, but FALSE of
+#    `parse_chapter_claims`, which still requires the quote to occur verbatim exactly once
+#    (or carry a `context`), decode as UTF-8, and fit `MAX_EVIDENCE_BYTES`. Combined with
+#    "shortest phrase", that invited quotes too short to locate — rejected attempts on a
+#    METERED path. The line now says the quote is not compared but must still be found.
+#
+# 🔴 MOVED A FOURTH TIME. `CanonEventV1` gained a `label` — the whole justification for
+#    that field is "QC is handed this projection, so it can match a passage to the
+#    row" — and the template never mentioned it. The field travelled on the wire while
+#    the model was told nothing about what it is or how to use it, so the benefit was
+#    asserted only in a Python comment the model never sees. The template now names
+#    `label` and says to match on it, then cite that event's identifier.
+#
+# 🔴 MOVED A FIFTH TIME — and this one is a CONTRACT-BYTES move, not a template move, so
+#    `RATIFIED_TEMPLATE_SHA256` below is deliberately UNCHANGED. `QC_CANON_PROJECTION_RULE`
+#    was still the string `canon_lite_v1.to_canonical_obj(include_hash=True)` after the
+#    projection it names had gained an event `label`, i.e. it described a shape that no
+#    longer existed. It had stayed safe only by accident — the template moved in the same
+#    diff, which moved this hash anyway. The rule now carries the artifact's real version
+#    AND an explicit `rev=` (`QC_CANON_PROJECTION_REVISION`), and `SCHEMA_VERSION` itself
+#    went `canon_lite_v1` -> `canon_lite_v2` because `CanonEventV1`'s own fields changed.
+#    ⚠️ `prompt_sha256` is a `CLAIM_CACHE_KEY_FIELDS` member, so this re-pays extraction on
+#    the first assist run after deploy — a cost the fourth move had already committed in
+#    this same UNDEPLOYED diff, which is exactly why it was done now rather than later.
 RATIFIED_PROMPT_SHA256 = \
-    "c6ecac2801b1842922e6de1eac182b3227e5c13b0cac4106b5b76c87eaf8d76b"
+    "069e3f82d323b016b6e8c3446601df23ebfc0e69bf6f43463a895f173da805e1"
 # Moved with the prompt pin above and for the same reason: the system template embeds the
 # claim contract, so changing what a claim carries necessarily changes these bytes. The
 # round-trip property this constant guards — template -> JSON -> template, byte-exact — is
 # unchanged and still asserted below.
 RATIFIED_TEMPLATE_SHA256 = \
-    "b7e04c7932d9f2185e4d40e47ca8c42782ad6141fb59fced01b6637ade48b3f1"
+    "3a1e3553ff5689c3062658909e9967395d1b557b450f2eb3af1058ae1fb5913a"
 
 BOOK = "## Bab 1\nRatna pergi pagi\n## Bab 2\nRatna pulang malam"
 
@@ -519,7 +555,7 @@ def test_8_23_serializer_contract_mutation_changes_the_digest():
     base = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     for key, mutation in (
         ("json_ensure_ascii", True), ("json_sort_keys", False),
-        ("json_separators", [", ", ": "]), ("contract_version", "qc_request_contract_v2"),
+        ("json_separators", [", ", ": "]), ("contract_version", "qc_request_contract_v3"),
         ("dynamic_field_order", ["canon", "chapter_text"]),
         ("canon_projection_rule", "something_else"),
     ):
@@ -889,7 +925,7 @@ def test_8_39_extractor_codes_are_extractor_owned():
 
 def test_8_40_contract_has_one_source_of_truth():
     source = Path(qc.__file__).read_text(encoding="utf-8")
-    assert source.count('"qc_request_contract_v1"') == 1
+    assert source.count('"qc_request_contract_v2"') == 1
     rebuilt = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     rebuilt["temperature"] = "0.9"
     text = json.dumps(rebuilt, ensure_ascii=False, sort_keys=True,
@@ -1797,10 +1833,17 @@ def test_8_18b_a_blank_credential_still_refuses_before_any_adapter_exists(monkey
 #    a reader has to compute before they can even suspect a problem. Silence read as calm.
 #
 #    The ratified scope is narrow and these rows hold it there: `unit_index`,
-#    `attempt_ordinal`, and a COVERAGE_* constant. Never the prompt, the response, a
-#    quote, narration text, a tenant id, a credential, or a raw exception. The exception's
-#    identity stays discarded — the line names WHERE and WHAT CLASS, never WHY in the
+#    `attempt_ordinal`, and an `error_code`. Never the prompt, the response, a quote,
+#    narration text, a tenant id, a credential, or a raw exception. The exception's
+#    identity stays discarded — the line names WHERE and a CLOSED CLASS, never WHY in the
 #    provider's own words.
+#
+#    `error_code` is a COVERAGE_* constant for TIMEOUT/PROVIDER_FAILURE — those were
+#    already specific — and, for a parser-side rejection, one of `_l2.EXTRACT_REASON_*`
+#    instead of the single coarse `INVALID_EXTRACTOR_OUTPUT` every cause used to share
+#    regardless of which rule actually rejected it (2026-08-13, same-day audit finding —
+#    rows 8.19c/8.19d below). Still exactly three fields, still a closed vocabulary either
+#    way: narrower, not wider.
 
 def test_8_19_a_failing_attempt_logs_exactly_one_bounded_line(caplog):
     import logging
@@ -1834,6 +1877,68 @@ def test_8_19_a_failing_attempt_logs_exactly_one_bounded_line(caplog):
         assert "RuntimeError" not in msg
         for leak in ("Ratna", "Rina", "Bab", "pergi", "pulang"):
             assert leak not in msg
+
+
+def test_8_19c_a_quote_rejection_names_the_specific_rule(caplog):
+    """The gap §8.19 left open: this parser-side rejection used to log the same coarse
+    `INVALID_EXTRACTOR_OUTPUT` as every other one. It now names WHICH rule — still without
+    the quote itself, or the exception, ever reaching the line."""
+    import logging
+
+    async def _unfindable_quote(request):
+        return {
+            "coverage": {**{p: "NO_CLAIMS_FOUND" for p in l2.SEMANTIC_PREDICATES},
+                        l2.PREDICATE_ENTITY_NAME: "CHECKED"},
+            "claims": [{"claim_type": l2.CLAIM_ENTITY_MENTION,
+                       "canon_ref": "e1", "quote": "NOPE_NOT_IN_THE_CHAPTER"}],
+        }
+
+    snap = l2.materialize_final_snapshot({"book": "## Bab 1\nRatna pergi pagi"})
+    canon = _authoritative_canon()
+    with caplog.at_level(logging.WARNING, logger="canon-lite-extractor"):
+        _run(ext.extract_all(
+            snap, canon, provider=_unfindable_quote, model_version=qc.QC_MODEL_UPSTREAM,
+            prompt_sha256=qc.PROMPT_SHA256, max_concurrency=1, max_attempts=1))
+
+    lines = [r for r in caplog.records if r.name == "canon-lite-extractor"]
+    assert len(lines) == 1
+    msg = lines[0].getMessage()
+    code = msg.split("error_code=")[1].rstrip(")")
+    assert code == l2.EXTRACT_REASON_QUOTE_NOT_FOUND
+    assert code != l2.COVERAGE_INVALID_EXTRACTOR_OUTPUT, (
+        "narrowed code must not just repeat the coarse coverage constant")
+    assert "NOPE_NOT_IN_THE_CHAPTER" not in msg
+
+
+def test_8_19d_a_canon_ref_rejection_gets_a_different_code_than_a_quote_rejection(caplog):
+    """🔴 THE ACTUAL PROOF OF NON-COLLAPSE. Same closed vocabulary, a genuinely different
+    cause — §8.19c alone could pass even if every rejection mapped to one hardcoded
+    constant; this row is what makes that a lie."""
+    import logging
+
+    async def _unknown_canon_ref(request):
+        return {
+            "coverage": {**{p: "NO_CLAIMS_FOUND" for p in l2.SEMANTIC_PREDICATES},
+                        l2.PREDICATE_ENTITY_NAME: "CHECKED"},
+            "claims": [{"claim_type": l2.CLAIM_ENTITY_MENTION,
+                       "canon_ref": "not_a_real_canon_id", "quote": "Ratna"}],
+        }
+
+    snap = l2.materialize_final_snapshot({"book": "## Bab 1\nRatna pergi pagi"})
+    canon = _authoritative_canon()
+    with caplog.at_level(logging.WARNING, logger="canon-lite-extractor"):
+        _run(ext.extract_all(
+            snap, canon, provider=_unknown_canon_ref, model_version=qc.QC_MODEL_UPSTREAM,
+            prompt_sha256=qc.PROMPT_SHA256, max_concurrency=1, max_attempts=1))
+
+    lines = [r for r in caplog.records if r.name == "canon-lite-extractor"]
+    assert len(lines) == 1
+    msg = lines[0].getMessage()
+    code = msg.split("error_code=")[1].rstrip(")")
+    assert code == l2.EXTRACT_REASON_CANON_REF_INVALID
+    assert code != l2.EXTRACT_REASON_QUOTE_NOT_FOUND, (
+        "two distinct parser-side rejections collapsed into the same error_code")
+    assert "not_a_real_canon_id" not in msg
 
 
 def test_8_19b_a_successful_extraction_logs_nothing(caplog):
