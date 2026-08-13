@@ -77,14 +77,19 @@ import canon_lite_qc_provider as qc        # noqa: E402
 #    ⚠️ `prompt_sha256` is a `CLAIM_CACHE_KEY_FIELDS` member, so this re-pays extraction on
 #    the first assist run after deploy — a cost the fourth move had already committed in
 #    this same UNDEPLOYED diff, which is exactly why it was done now rather than later.
+#
+# 🔴 MOVED A SIXTH TIME. Attempts 2-3 used to drop the JSON schema while the adapter still
+#    required the exact JSON shape, and retry requests were byte-identical at temperature
+#    zero. All three attempts now retain the schema and carry bounded retry feedback. This
+#    is a deliberate cache-key move: the first post-deploy run repays every chapter.
 RATIFIED_PROMPT_SHA256 = \
-    "069e3f82d323b016b6e8c3446601df23ebfc0e69bf6f43463a895f173da805e1"
+    "dc48b95637290b7e6922ff455f0a36d971fc040c161c5d041a0e818346021312"
 # Moved with the prompt pin above and for the same reason: the system template embeds the
 # claim contract, so changing what a claim carries necessarily changes these bytes. The
 # round-trip property this constant guards — template -> JSON -> template, byte-exact — is
 # unchanged and still asserted below.
 RATIFIED_TEMPLATE_SHA256 = \
-    "3a1e3553ff5689c3062658909e9967395d1b557b450f2eb3af1058ae1fb5913a"
+    "6d9f3e358c446833fd0136d70ae1674c42630d9c125f5f332ede6d831c118ede"
 
 BOOK = "## Bab 1\nRatna pergi pagi\n## Bab 2\nRatna pulang malam"
 
@@ -295,17 +300,24 @@ def test_8_7_exactly_one_http_call_per_invocation_across_outcomes():
     assert len(client.calls) == 1
 
 
-def test_8_8_retry_mode_schedule_attempt1_schema_attempts23_bare():
-    adapter, client = _adapter()
-    _run(adapter(_request(attempt=1)))
-    rf = client.calls[0]["response_format"]
-    assert rf["type"] == "json_schema"
-    # asserted EQUAL to the constant, not merely present
-    assert rf["json_schema"]["schema"] == qc.QC_RESPONSE_SCHEMA
-    for attempt in (2, 3):
+def test_8_8_every_attempt_sends_the_same_closed_json_schema():
+    sent = []
+    for attempt in (1, 2, 3):
         adapter, client = _adapter()
         _run(adapter(_request(attempt=attempt)))
-        assert "response_format" not in client.calls[0]
+        rf = client.calls[0]["response_format"]
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["schema"] == qc.QC_RESPONSE_SCHEMA
+        assert rf["json_schema"]["strict"] is True
+        sent.append(rf)
+    assert sent[1] == sent[0] == sent[2]
+
+
+def test_8_8a_response_format_out_of_range_refuses_without_index_error():
+    for bad in (0, 4, -1, True, "1", None):
+        with pytest.raises(qc.QcProviderError) as exc:
+            qc.response_format_for(bad)
+        assert str(exc.value) == "qc_provider_schema_violation"
 
 
 def test_8_9_no_failover_client_is_ever_constructed():
@@ -555,7 +567,7 @@ def test_8_23_serializer_contract_mutation_changes_the_digest():
     base = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     for key, mutation in (
         ("json_ensure_ascii", True), ("json_sort_keys", False),
-        ("json_separators", [", ", ": "]), ("contract_version", "qc_request_contract_v3"),
+        ("json_separators", [", ", ": "]), ("contract_version", "qc_request_contract_v4"),
         ("dynamic_field_order", ["canon", "chapter_text"]),
         ("canon_projection_rule", "something_else"),
     ):
@@ -907,8 +919,9 @@ def test_8_39_extractor_codes_are_extractor_owned():
         stripped = line.strip()
         assert not stripped.startswith(
             ("import canon_lite_qc_provider", "from canon_lite_qc_provider")), line
-        assert not (stripped.startswith(("import ", "from "))
-                    and "canon_lite_qc" in stripped), line
+        assert not stripped.startswith(
+            ("import canon_lite_qc_meter", "from canon_lite_qc_meter")), line
+    assert "from canon_lite_qc_contract import (" in source
     assert "raise QcProviderError" not in source
     snap, canon = _snapshot(), _authoritative_canon()
     bad = ext.ExtractionRequestV1(
@@ -925,7 +938,7 @@ def test_8_39_extractor_codes_are_extractor_owned():
 
 def test_8_40_contract_has_one_source_of_truth():
     source = Path(qc.__file__).read_text(encoding="utf-8")
-    assert source.count('"qc_request_contract_v2"') == 1
+    assert source.count('"qc_request_contract_v3"') == 1
     rebuilt = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     rebuilt["temperature"] = "0.9"
     text = json.dumps(rebuilt, ensure_ascii=False, sort_keys=True,
@@ -1102,13 +1115,12 @@ def test_8_43a_max_tokens_type_and_bounds():
 
 def test_8_43b_structured_output_support_is_required():
     assert qc.QC_CAP_STRUCTURED_OUTPUT_SUPPORTED is True
-    assert qc.QC_RESPONSE_FORMAT_SCHEDULE[0] == "json_schema"
-    # never falls back to plain mode or json_object for attempt 1
+    assert qc.QC_RESPONSE_FORMAT_SCHEDULE == ("json_schema",) * 3
+    # never falls back to plain mode or json_object on any bounded attempt
     src = Path(qc.__file__).read_text(encoding="utf-8")
     assert '"type": "json_object"' not in src
-    assert qc.response_format_for(1)["type"] == "json_schema"
-    assert qc.response_format_for(2) is None
-    assert qc.response_format_for(3) is None
+    for attempt in (1, 2, 3):
+        assert qc.response_format_for(attempt)["type"] == "json_schema"
 
 
 def _gate(**over):
@@ -1939,6 +1951,71 @@ def test_8_19d_a_canon_ref_rejection_gets_a_different_code_than_a_quote_rejectio
     assert code != l2.EXTRACT_REASON_QUOTE_NOT_FOUND, (
         "two distinct parser-side rejections collapsed into the same error_code")
     assert "not_a_real_canon_id" not in msg
+
+
+def test_8_19e_provider_code_survives_without_provider_text(caplog):
+    """The adapter already minted a closed code; the extractor must not flatten it."""
+    import logging
+
+    secret = "RAW-PROVIDER-BODY-MUST-NOT-APPEAR"
+
+    async def _unparseable(request):
+        exc = qc.QcProviderError("qc_provider_unparseable")
+        exc.provider_body = secret
+        raise exc
+
+    with caplog.at_level(logging.WARNING, logger="canon-lite-extractor"):
+        run = _run(ext.extract_all(
+            _snapshot(), _authoritative_canon(), provider=_unparseable,
+            model_version=qc.QC_MODEL_UPSTREAM, prompt_sha256=qc.PROMPT_SHA256,
+            max_concurrency=1, max_attempts=1))
+
+    assert all(a.coverage_state == l2.COVERAGE_PROVIDER_FAILURE for a in run.claims)
+    lines = [r.getMessage() for r in caplog.records
+             if r.name == "canon-lite-extractor"]
+    assert lines and all("error_code=qc_provider_unparseable" in line for line in lines)
+    assert all(secret not in line for line in lines)
+
+
+def test_8_19f_quote_retry_changes_request_bytes_and_becomes_measured():
+    """Attempt 2 receives bounded feedback and can recover a rejected first response."""
+    canon = _canon(
+        n_chapters=1,
+        entities=(cl.CanonEntityV1(
+            entity_id="e1", canonical_name="Ratna", aliases=(), alias_source="none"),),
+    )
+    snapshot = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\nRatna pergi pagi"}, canon=canon)
+    seen = []
+
+    async def _retrying_provider(request):
+        seen.append(request)
+        if request.attempt == 1:
+            return {
+                "coverage": {
+                    **{p: "NO_CLAIMS_FOUND" for p in l2.SEMANTIC_PREDICATES},
+                    l2.PREDICATE_ENTITY_NAME: "CHECKED",
+                },
+                "claims": [{"claim_type": l2.CLAIM_ENTITY_MENTION,
+                            "canon_ref": "e1", "quote": "BUKAN TEKS BAB"}],
+            }
+        return {"coverage": {p: "NO_CLAIMS_FOUND"
+                             for p in l2.SEMANTIC_PREDICATES}, "claims": []}
+
+    run = _run(ext.extract_all(
+        snapshot, canon, provider=_retrying_provider,
+        model_version=qc.QC_MODEL_UPSTREAM, prompt_sha256=qc.PROMPT_SHA256,
+        max_concurrency=1))
+
+    assert run.logical_attempts == 2
+    assert run.claims[0].measured is True
+    assert [r.retry_reason for r in seen] == [
+        qcc.QC_RETRY_REASON_NONE,
+        qcc.QC_RETRY_REASON_QUOTE_NOT_FOUND,
+    ]
+    request_bytes = [qc.build_user_content(r).encode("utf-8") for r in seen]
+    assert request_bytes[0] != request_bytes[1]
+    assert json.loads(request_bytes[1])["retry_reason"] == "quote_not_found"
 
 
 def test_8_19b_a_successful_extraction_logs_nothing(caplog):

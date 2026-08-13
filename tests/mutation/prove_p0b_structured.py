@@ -39,6 +39,7 @@ NAPI = WT / "python/narration_api.py"
 RUNNER = WT / "python/canon_lite_qc_runner.py"
 L2 = WT / "python/canon_lite_l2.py"
 EXT = WT / "python/canon_lite_extractor.py"
+QCP = WT / "python/canon_lite_qc_provider.py"
 
 T_TRANSPORT = "tests/python/test_narasi_structured_transport.py"
 T_SIDECAR = "tests/python/test_canon_registry_sidecar_threading.py"
@@ -122,7 +123,7 @@ BREAKS = [
     # ── 3d. the evidence contract: quote located, never guessed ──────────
     ("fabricated citation accepted — quote no longer has to exist in the chapter",
      L2,
-     '            if start is _NOT_FOUND:\n'
+     '            if located is _NOT_FOUND:\n'
      '                raise _schema_error(f"claims[{i}]: quote not found in the chapter block",\n'
      '                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)',
      '            if False:\n'
@@ -143,9 +144,51 @@ BREAKS = [
      T_L2, "test_an_overlapping_second_occurrence_is_seen_as_ambiguous"),
     ("the locator leaks into the evidence — context span used as the quote span",
      L2,
-     "            start = ctx_start + offset",
-     "            start = ctx_start\n            needle = ctx_bytes",
+     "            start = ctx_start + quote_start\n            end = ctx_start + quote_end",
+     "            start = ctx_start\n            end = ctx_end",
      T_L2, "test_a_repeated_entity_name_is_located_by_context_and_evaluates_clean"),
+
+    # ── 3d.1 retry structure and NFC-equivalent provenance ──────────────
+    ("attempts 2-3 drop the schema and return to loose output",
+     QCP,
+     'QC_RESPONSE_FORMAT_SCHEDULE = ("json_schema", "json_schema", "json_schema")',
+     'QC_RESPONSE_FORMAT_SCHEDULE = ("json_schema", "none", "none")',
+     T_QC, "test_8_8_every_attempt_sends_the_same_closed_json_schema"),
+    ("adapter-minted provider code flattened back to generic PROVIDER_FAILURE",
+     EXT,
+     '                error_code = _provider_error_code(exc) or _l2.COVERAGE_PROVIDER_FAILURE',
+     '                error_code = _l2.COVERAGE_PROVIDER_FAILURE',
+     T_QC, "test_8_19e_provider_code_survives_without_provider_text"),
+    ("bounded retry reason is never threaded to the next request",
+     EXT,
+     '            retry_reason = _retry_reason(error_code)',
+     '            retry_reason = QC_RETRY_REASON_NONE',
+     T_QC, "test_8_19f_quote_retry_changes_request_bytes_and_becomes_measured"),
+    ("NFC-equivalent fallback disabled — composed/decomposed evidence is lost",
+     L2,
+     '    return _locate_unique_nfc(haystack, needle)',
+     '    return _NOT_FOUND',
+     T_L2, "test_nfc_fallback_maps_to_original_bytes_and_hash_not_normalized_bytes"),
+    ("NFC ambiguity guard disabled — one of two equivalent spans is guessed",
+     L2,
+     '            if len(spans) > 1:\n                return _AMBIGUOUS',
+     '            if False:\n                return _AMBIGUOUS',
+     T_L2, "test_two_nfc_equivalent_original_spans_remain_ambiguous"),
+    ("normalized quote bytes replace the original evidence bytes and offsets",
+     L2,
+     '        evidence = block[start:end]',
+     '        end = start + len(needle)\n        evidence = needle',
+     T_L2, "test_nfc_fallback_maps_to_original_bytes_and_hash_not_normalized_bytes"),
+    ("context locator bypasses NFC equivalence while the direct quote door keeps it",
+     L2,
+     '            ctx_located = _locate_unique_equivalent(block, ctx_bytes)',
+     '            ctx_located = _locate_unique(block, ctx_bytes)',
+     T_L2, "test_nfc_fallback_applies_to_both_context_and_quote_locator_doors"),
+    ("quote-inside-context locator bypasses NFC equivalence",
+     L2,
+     '            quote_located = _locate_unique_equivalent(original_context, needle)',
+     '            quote_located = _locate_unique(original_context, needle)',
+     T_L2, "test_nfc_fallback_applies_to_both_context_and_quote_locator_doors"),
 
     # ── 3e. the bounded telemetry that ends the silence ──────────────────
     ("failing extraction goes back to leaving no trace at all",

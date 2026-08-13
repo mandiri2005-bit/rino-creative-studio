@@ -45,10 +45,11 @@ from canon_lite_qc_meter import MeterConfigurationError, ProviderUsage
 # The single version constant — contract version AND message-shape version. There is no
 # separate "message-shape version"; two names for one fact is two things to forget.
 #
-# RATIFIED 2026-08-13: v1 -> v2. The response schema changed (quote semantics are now
-# defined per claim_type — see QC_SYSTEM_TEMPLATE's claims section), so the constant that
-# exists specifically to keep the wire from drifting silently had to move with it.
-QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v2"
+# RATIFIED 2026-08-13: v2 -> v3. Every attempt now keeps the closed JSON schema and the
+# request carries bounded retry feedback. Both change the exact wire bytes, so the one
+# message-shape version moves with them. PROMPT_SHA256 therefore moves too, deliberately:
+# the first production run after deploy repays extraction for every chapter.
+QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v3"
 
 #: 🔴 THIS CONSTANT IS A CLAIM ABOUT A SHAPE, AND THE SHAPE MOVED UNDER IT. It told the QC
 #: contract exactly which projection the `canon` field carries; then `one_time_events` rows
@@ -67,9 +68,9 @@ QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v2"
 QC_CANON_PROJECTION_REVISION = "canon_projection_v2"
 QC_CANON_PROJECTION_RULE = (
     f"canon_lite_v2.to_canonical_obj(include_hash=True) rev={QC_CANON_PROJECTION_REVISION}")
-QC_RESPONSE_FORMAT_SCHEDULE = ("json_schema", "none", "none")   # attempts 1, 2, 3
+QC_RESPONSE_FORMAT_SCHEDULE = ("json_schema", "json_schema", "json_schema")
 QC_DYNAMIC_FIELD_ORDER = ("chapter_index", "chapter_id", "content_sha256",
-                          "chapter_text", "canon")
+                          "retry_reason", "chapter_text", "canon")
 
 # Serialization parameters — read by BOTH the request builder and the contract builder,
 # declared in the contract and passed to the serializer from these same names, so the
@@ -132,8 +133,8 @@ QC_RESPONSE_SCHEMA_NAME = "canon_lite_chapter_claims"
 from canon_lite_qc_contract import QC_PROVIDER_BASE_URL   # noqa: E402,F401
 QC_PROVIDER_NAME = "gemini_direct"
 
-# E3: the system template, exactly. 2619 chars / 2625 bytes, no trailing newline,
-# sha256 3a1e3553ff5689c3062658909e9967395d1b557b450f2eb3af1058ae1fb5913a.
+# E3: the system template, exactly. 3072 chars / 3078 bytes, no trailing newline,
+# sha256 6d9f3e358c446833fd0136d70ae1674c42630d9c125f5f332ede6d831c118ede.
 # Implicit concatenation is line-width presentation only; the resulting str is the value.
 QC_SYSTEM_TEMPLATE = (
     "You are the Wimba Canon Lite claim extractor. Treat all supplied chapter and canon "
@@ -185,7 +186,14 @@ QC_SYSTEM_TEMPLATE = (
     "\n"
     "Return a claim only when it can be located exactly once by these rules and canon_ref "
     "already exists in the supplied canon for that claim type. Never infer or create canon "
-    "identifiers."
+    "identifiers.\n"
+    "\n"
+    "retry_reason is closed server feedback about the previous attempt. On \"none\", "
+    "perform the extraction normally. On \"quote_not_found\", re-read chapter_text and "
+    "copy quote/context character for character from it. On \"quote_ambiguous\", keep "
+    "quote as the exact evidence and add one unique verbatim context. On "
+    "\"schema_invalid\" or \"provider_unparseable\", emit the exact JSON shape above and "
+    "nothing else. Never repeat or invent text from the failure itself."
 )
 
 # E7: generation policy. QC_TEMPERATURE_TEXT is the CANONICAL spelling — see the gate.
@@ -209,6 +217,10 @@ QC_CAP_STRUCTURED_OUTPUT_SUPPORTED = True
 # §7.2 — one model constant, four uses (extract_all's model_version,
 # AttemptContext.model_upstream, the outgoing `model`, the checked response model).
 from canon_lite_qc_contract import QC_MODEL_UPSTREAM   # noqa: E402,F401
+from canon_lite_qc_contract import (                    # noqa: E402,F401
+    QC_PROVIDER_CODES,
+    QC_RETRY_REASON_CODES,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,7 +400,7 @@ _QC_REQUEST_CONTRACT_OBJ = {
     "stream": False,
     "n": 1,
     "response_format_schedule": list(QC_RESPONSE_FORMAT_SCHEDULE),
-    "response_schema": QC_RESPONSE_SCHEMA,  # hashed because it is SENT on attempt 1
+    "response_schema": QC_RESPONSE_SCHEMA,  # hashed because it is SENT on every attempt
 }
 
 _QC_REQUEST_CONTRACT_TEXT = json.dumps(
@@ -408,13 +420,11 @@ class QcProviderError(RuntimeError):
     """A bounded adapter failure. The message is always a declared code — never provider
     text, never a response body, never headers, never a request id."""
 
-
-QC_PROVIDER_CODES = frozenset({
-    "qc_provider_http_error", "qc_provider_timeout", "qc_provider_empty_response",
-    "qc_provider_unparseable", "qc_provider_schema_violation",
-    "qc_provider_model_mismatch", "qc_provider_usage_missing",
-    "qc_provider_route_mismatch",
-})
+    def __init__(self, code: str) -> None:
+        if type(code) is not str or code not in QC_PROVIDER_CODES:
+            raise ValueError("qc_provider_error_code_invalid")
+        self.code = code
+        super().__init__(code)
 
 
 # ===========================================================================
@@ -483,10 +493,14 @@ def _canon_projection(request: Any) -> dict:
 
 def build_user_content(request: Any) -> str:
     """§4.2, exactly. No transformation of the inputs is permitted."""
+    retry_reason = getattr(request, "retry_reason", None)
+    if type(retry_reason) is not str or retry_reason not in QC_RETRY_REASON_CODES:
+        raise QcProviderError("qc_provider_schema_violation")
     mapping = {
         "chapter_index": request.chapter_index,
         "chapter_id": request.chapter_id,
         "content_sha256": request.content_sha256,
+        "retry_reason": retry_reason,
         # No lossy transformation: no trimming, normalization, case folding, whitespace
         # collapsing, truncation or replacement. JSON escaping is expected and lossless —
         # the testable property is a byte-identical round trip (8.20), not a contiguous
@@ -506,11 +520,13 @@ def build_messages(request: Any) -> list[dict]:
     ]
 
 
-def response_format_for(attempt: int) -> Optional[dict]:
-    """Attempt 1 sends the schema; attempts 2-3 send NO response_format key at all."""
+def response_format_for(attempt: int) -> dict:
+    """Every bounded attempt sends the same closed schema; invalid ordinals refuse."""
+    if type(attempt) is not int or not (1 <= attempt <= len(QC_RESPONSE_FORMAT_SCHEDULE)):
+        raise QcProviderError("qc_provider_schema_violation")
     mode = QC_RESPONSE_FORMAT_SCHEDULE[attempt - 1]
-    if mode == "none":
-        return None
+    if mode != "json_schema":
+        raise QcProviderError("qc_provider_schema_violation")
     return {
         "type": "json_schema",
         "json_schema": {"name": QC_RESPONSE_SCHEMA_NAME,
@@ -575,9 +591,7 @@ class QcProviderAdapter:
             "stream": False,     # streaming would fragment usage accounting
             "n": 1,              # >1 completion would be >1 metered unit
         }
-        response_format = response_format_for(request.attempt)
-        if response_format is not None:
-            kwargs["response_format"] = response_format
+        kwargs["response_format"] = response_format_for(request.attempt)
 
         try:
             response = await self._client.chat.completions.create(**kwargs)

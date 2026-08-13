@@ -11,6 +11,7 @@ whole construction path is dead.
 import ast
 import asyncio
 import sys
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -448,6 +449,122 @@ def test_a_multibyte_quote_derives_the_correct_byte_span():
     assert claim.evidence_end == expected_start + len(quote.encode("utf-8"))
     assert block[claim.evidence_start:claim.evidence_end].decode("utf-8") == quote
     assert claim.evidence_sha256 == cl.sha256_hex(quote.encode("utf-8"))
+
+
+def _parse_single_entity_quote(*, chapter_text, quote, canonical_name="Rina"):
+    entity = cl.CanonEntityV1(
+        entity_id="e1", canonical_name=canonical_name, aliases=(), alias_source="none")
+    canon = _canon(1, entities=(entity,))
+    snapshot = l2.materialize_final_snapshot(
+        {"book": f"## Bab 1\n{chapter_text}"}, canon=canon)
+    payload = _claim_payload(
+        snapshot, canon=canon,
+        claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION,
+                 "canon_ref": "e1", "quote": quote}],
+    )
+    return snapshot, l2.parse_chapter_claims(payload, snapshot=snapshot, canon=canon)
+
+
+def test_nfc_fallback_maps_to_original_bytes_and_hash_not_normalized_bytes():
+    original = "e\u0301"
+    quote = "é"
+    assert unicodedata.normalize("NFC", original) == quote
+    assert original.encode("utf-8") != quote.encode("utf-8")
+
+    snapshot, artifact = _parse_single_entity_quote(
+        chapter_text=f"Awal 前 {original} 後 akhir", quote=quote,
+        canonical_name=quote)
+    block = snapshot.block_bytes(0)
+    expected = original.encode("utf-8")
+    start = block.index(expected)
+    claim = artifact.claims[0]
+
+    assert claim.evidence_start == start
+    assert claim.evidence_end == start + len(expected)
+    assert block[claim.evidence_start:claim.evidence_end] == expected
+    assert claim.evidence_sha256 == cl.sha256_hex(expected)
+    assert claim.evidence_sha256 != cl.sha256_hex(quote.encode("utf-8"))
+
+
+def test_hangul_composed_quote_maps_to_original_decomposed_jamo_span():
+    original = "한"
+    quote = "한"
+    assert unicodedata.normalize("NFC", original) == quote
+
+    snapshot, artifact = _parse_single_entity_quote(
+        chapter_text=f"서울에서 {original} 사람을 만났다.", quote=quote,
+        canonical_name=quote)
+    block = snapshot.block_bytes(0)
+    expected = original.encode("utf-8")
+    claim = artifact.claims[0]
+    assert block[claim.evidence_start:claim.evidence_end] == expected
+    assert claim.evidence_end - claim.evidence_start == len(expected)
+    assert claim.evidence_sha256 == cl.sha256_hex(expected)
+
+
+def test_nfc_fallback_applies_to_both_context_and_quote_locator_doors():
+    original_quote = "Jose\u0301"
+    requested_quote = "José"
+    original_context = f"Cafe\u0301 menyapa {original_quote}."
+    requested_context = "Café menyapa José."
+    entity = cl.CanonEntityV1(
+        entity_id="e1", canonical_name=requested_quote,
+        aliases=(), alias_source="none")
+    canon = _canon(1, entities=(entity,))
+    snapshot = l2.materialize_final_snapshot(
+        {"book": f"## Bab 1\n{original_context} {original_quote} pergi."}, canon=canon)
+    payload = _claim_payload(
+        snapshot, canon=canon,
+        claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION,
+                 "canon_ref": "e1", "quote": requested_quote,
+                 "context": requested_context}],
+    )
+
+    artifact = l2.parse_chapter_claims(payload, snapshot=snapshot, canon=canon)
+    block = snapshot.block_bytes(0)
+    expected = original_quote.encode("utf-8")
+    claim = artifact.claims[0]
+    assert block[claim.evidence_start:claim.evidence_end] == expected
+    assert claim.evidence_sha256 == cl.sha256_hex(expected)
+
+
+@pytest.mark.parametrize("quote", ["東京", "北京"])
+def test_exact_japanese_and_mandarin_spans_are_unchanged(quote):
+    snapshot, artifact = _parse_single_entity_quote(
+        chapter_text=f"前置き—{quote}—後書き", quote=quote, canonical_name=quote)
+    block = snapshot.block_bytes(0)
+    expected = quote.encode("utf-8")
+    claim = artifact.claims[0]
+    assert claim.evidence_start == block.index(expected)
+    assert block[claim.evidence_start:claim.evidence_end] == expected
+    assert claim.evidence_sha256 == cl.sha256_hex(expected)
+
+
+def test_two_nfc_equivalent_original_spans_remain_ambiguous():
+    quote = "A\u0323\u0301"
+    first = "Ạ\u0301"
+    second = "Á\u0323"
+    assert quote not in (first, second)
+    assert len({unicodedata.normalize("NFC", x)
+                for x in (quote, first, second)}) == 1
+
+    with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
+        _parse_single_entity_quote(
+            chapter_text=f"{first} lalu {second}", quote=quote,
+            canonical_name=unicodedata.normalize("NFC", quote))
+
+
+@pytest.mark.parametrize(
+    ("chapter_text", "quote"),
+    [
+        ("Rina datang", "rina"),
+        ("Rina datang", "Rina  datang"),
+        ("Rina datang.", "Rina datang!"),
+    ],
+)
+def test_nfc_fallback_does_not_fold_case_whitespace_or_punctuation(chapter_text, quote):
+    with pytest.raises(cl.CanonSchemaError, match="not found"):
+        _parse_single_entity_quote(chapter_text=chapter_text, quote=quote)
 
 
 def test_unknown_field_in_extractor_output_is_rejected():

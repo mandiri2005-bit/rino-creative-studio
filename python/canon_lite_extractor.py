@@ -20,6 +20,15 @@ from typing import Any, Awaitable, Callable, Mapping, Optional
 
 import canon_lite as _cl
 import canon_lite_l2 as _l2
+from canon_lite_qc_contract import (
+    QC_PROVIDER_CODES,
+    QC_RETRY_REASON_CODES,
+    QC_RETRY_REASON_NONE,
+    QC_RETRY_REASON_PROVIDER_UNPARSEABLE,
+    QC_RETRY_REASON_QUOTE_AMBIGUOUS,
+    QC_RETRY_REASON_QUOTE_NOT_FOUND,
+    QC_RETRY_REASON_SCHEMA_INVALID,
+)
 
 # 🔴 BOUNDED TELEMETRY, RATIFIED SCOPE. A failing extraction used to leave NO trace at
 #    all: the provider exception was discarded by design, replaced with a coverage state,
@@ -28,10 +37,10 @@ import canon_lite_l2 as _l2
 #    else did. Silence read as calm.
 #
 #    What may appear on this logger is fixed and closed: `unit_index`, `attempt_ordinal`,
-#    and a COVERAGE_* constant. Never the prompt, the response, a quote, narration text, a
-#    tenant id, a credential, or a raw exception — the exception's identity is still
-#    discarded, exactly as before. The coverage vocabulary is a closed enum, so no
-#    provider- or attacker-influenced string can reach a log line through it.
+#    and a member of the coverage, parser-reason, or provider-code vocabularies. Never the
+#    prompt, response, quote, narration, tenant id, credential, or raw exception. The
+#    extractor reads only an adapter-minted `.code` that it revalidates against the inert
+#    contract; provider text cannot become a log value.
 log = logging.getLogger("canon-lite-extractor")
 
 
@@ -73,6 +82,7 @@ class ExtractionRequestV1:
     attempt: int
     chapter_bytes: bytes = field(repr=False)
     canon: _cl.CanonLiteV1 = field(repr=False)
+    retry_reason: str = QC_RETRY_REASON_NONE
 
     def __post_init__(self) -> None:
         if isinstance(self.chapter_index, bool) or not isinstance(
@@ -85,6 +95,9 @@ class ExtractionRequestV1:
         if isinstance(self.attempt, bool) or not isinstance(
                 self.attempt, int) or not (1 <= self.attempt <= MAX_LOGICAL_ATTEMPTS):
             raise _schema_error("attempt: outside the logical-attempt ceiling")
+        if type(self.retry_reason) is not str \
+                or self.retry_reason not in QC_RETRY_REASON_CODES:
+            raise _schema_error("retry_reason: outside the closed retry vocabulary")
         if not isinstance(self.chapter_bytes, bytes):
             raise _schema_error("chapter_bytes: expected bytes")
         if not isinstance(self.canon, _cl.CanonLiteV1):
@@ -239,6 +252,38 @@ def _extraction_reason_code(exc: BaseException) -> str:
     return _l2.EXTRACT_REASON_OTHER
 
 
+def _provider_error_code(exc: BaseException) -> Optional[str]:
+    """Return only a code minted by the closed QC provider vocabulary.
+
+    The provider exception class itself cannot be imported here: importing the adapter on
+    a non-metering host violates its lazy-import boundary. The inert contract module owns
+    the vocabulary shared by both sides; an arbitrary exception carrying any other value
+    is refused and remains the generic PROVIDER_FAILURE coverage state.
+    """
+    code = getattr(exc, "code", None)
+    return code if type(code) is str and code in QC_PROVIDER_CODES else None
+
+
+def _retry_reason(error_code: str) -> str:
+    """Map one closed failure code to bounded prompt feedback for the next attempt."""
+    if error_code in (_l2.EXTRACT_REASON_QUOTE_NOT_FOUND,
+                      _l2.EXTRACT_REASON_CONTEXT_NOT_FOUND):
+        return QC_RETRY_REASON_QUOTE_NOT_FOUND
+    if error_code in (_l2.EXTRACT_REASON_QUOTE_AMBIGUOUS,
+                      _l2.EXTRACT_REASON_CONTEXT_AMBIGUOUS):
+        return QC_RETRY_REASON_QUOTE_AMBIGUOUS
+    if error_code == "qc_provider_unparseable":
+        return QC_RETRY_REASON_PROVIDER_UNPARSEABLE
+    if error_code in (
+            _l2.EXTRACT_REASON_SCHEMA_INVALID,
+            _l2.EXTRACT_REASON_CANON_REF_INVALID,
+            _l2.EXTRACT_REASON_OTHER,
+            "qc_provider_schema_violation",
+    ):
+        return QC_RETRY_REASON_SCHEMA_INVALID
+    return QC_RETRY_REASON_NONE
+
+
 def _preflight_request(
     request: ExtractionRequestV1,
     *,
@@ -369,13 +414,15 @@ async def extract_all(
         nonlocal active, observed, attempts
         terminal_state = _l2.COVERAGE_PROVIDER_FAILURE
         error_code = _l2.COVERAGE_PROVIDER_FAILURE
+        retry_reason = QC_RETRY_REASON_NONE
         block = snapshot.blocks[index]
         for attempt in range(1, max_attempts + 1):
             # ---- step 4: construct, then parity-check BEFORE MeteredProvider ----
             request = ExtractionRequestV1(
                 chapter_index=index, chapter_id=block.chapter_id,
                 content_sha256=block.content_sha256, canon_sha256=canon.canon_sha256,
-                attempt=attempt, chapter_bytes=snapshot.block_bytes(index), canon=canon)
+                attempt=attempt, chapter_bytes=snapshot.block_bytes(index), canon=canon,
+                retry_reason=retry_reason)
             _preflight_request(request, snapshot=snapshot, index=index, canon=canon)
             try:
                 async with semaphore:
@@ -393,11 +440,12 @@ async def extract_all(
             except asyncio.TimeoutError:
                 terminal_state = _l2.COVERAGE_TIMEOUT
                 error_code = _l2.COVERAGE_TIMEOUT
-            except Exception:
-                # Fixed bounded state only. The provider exception never enters a report,
-                # log, fixture, or default result payload.
+            except Exception as exc:
+                # The durable coverage state remains the fixed PROVIDER_FAILURE value, but
+                # an adapter-minted CLOSED code is preserved for the bounded log and next
+                # retry. The exception message/body is never inspected or retained.
                 terminal_state = _l2.COVERAGE_PROVIDER_FAILURE
-                error_code = _l2.COVERAGE_PROVIDER_FAILURE
+                error_code = _provider_error_code(exc) or _l2.COVERAGE_PROVIDER_FAILURE
             else:
                 try:
                     payload = _provider_payload(
@@ -409,11 +457,12 @@ async def extract_all(
                 except Exception as exc:
                     terminal_state = _l2.COVERAGE_INVALID_EXTRACTOR_OUTPUT
                     error_code = _extraction_reason_code(exc)
+            retry_reason = _retry_reason(error_code)
             # Reached only when this attempt did NOT return: the success path above
             # returns from inside the `else`. One line per failed attempt, three bounded
             # fields, nothing else. `error_code` narrows INVALID_EXTRACTOR_OUTPUT to WHICH
-            # parser-side rule rejected the attempt; TIMEOUT/PROVIDER_FAILURE were already
-            # as specific as the coverage vocabulary gets, so they pass straight through.
+            # parser-side rule rejected the attempt and preserves an adapter-minted closed
+            # provider code; unknown exceptions remain the generic PROVIDER_FAILURE.
             log.warning("canon lite qc extract: attempt failed "
                         "(unit_index=%d attempt_ordinal=%d error_code=%s)",
                         index, attempt, error_code)

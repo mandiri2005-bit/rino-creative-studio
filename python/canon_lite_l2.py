@@ -22,6 +22,7 @@ aggregate therefore travels with its denominator and its coverage state.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
@@ -593,6 +594,87 @@ def _locate_unique(haystack: bytes, needle: bytes):
     if haystack.find(needle, first + 1) != -1:
         return _AMBIGUOUS
     return first
+
+
+def _nfc_segments(text: str) -> list[tuple[str, int, int]]:
+    """Return NFC-stable segments with their original character boundaries.
+
+    A naive map built from character counts is wrong: NFC can turn two source code points
+    into one, and Hangul composition can involve code points whose canonical combining
+    class is zero. We therefore keep a starter plus its complete combining sequence in one
+    segment and also merge any adjacent zero-class character that actually composes under
+    NFC. Segment boundaries are the only boundaries mapped back to original bytes.
+    """
+    if not text:
+        return []
+    rows: list[tuple[str, int, int]] = []
+    start = 0
+    segment = text[0]
+    for index, ch in enumerate(text[1:], 1):
+        normalized_segment = unicodedata.normalize("NFC", segment)
+        independent = normalized_segment + unicodedata.normalize("NFC", ch)
+        combined = unicodedata.normalize("NFC", segment + ch)
+        if unicodedata.combining(ch) == 0 and combined == independent:
+            rows.append((normalized_segment, start, index))
+            start = index
+            segment = ch
+        else:
+            segment += ch
+    rows.append((unicodedata.normalize("NFC", segment), start, len(text)))
+    return rows
+
+
+def _locate_unique_nfc(haystack: bytes, needle: bytes):
+    """Locate one NFC-equivalent span and return its ORIGINAL byte boundaries.
+
+    Only segment-aligned matches are eligible. That conservative rule prevents a
+    normalized character index from being mistaken for an original byte offset when
+    composition changed length. Multiple equivalent original spans remain ambiguous.
+    """
+    try:
+        source = haystack.decode("utf-8", errors="strict")
+        target = unicodedata.normalize("NFC", needle.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError:
+        return _NOT_FOUND
+    if not target:
+        return _NOT_FOUND
+
+    byte_boundaries = [0]
+    for ch in source:
+        byte_boundaries.append(byte_boundaries[-1] + len(ch.encode("utf-8")))
+
+    normalized_parts: list[str] = []
+    normalized_to_original: dict[int, int] = {0: 0}
+    normalized_index = 0
+    for normalized, original_start, original_end in _nfc_segments(source):
+        normalized_to_original[normalized_index] = byte_boundaries[original_start]
+        normalized_parts.append(normalized)
+        normalized_index += len(normalized)
+        normalized_to_original[normalized_index] = byte_boundaries[original_end]
+    normalized_source = "".join(normalized_parts)
+
+    spans: set[tuple[int, int]] = set()
+    position = normalized_source.find(target)
+    while position != -1:
+        end = position + len(target)
+        if position in normalized_to_original and end in normalized_to_original:
+            spans.add((normalized_to_original[position], normalized_to_original[end]))
+            if len(spans) > 1:
+                return _AMBIGUOUS
+        position = normalized_source.find(target, position + 1)
+    if not spans:
+        return _NOT_FOUND
+    return next(iter(spans))
+
+
+def _locate_unique_equivalent(haystack: bytes, needle: bytes):
+    """Exact unique lookup first; only an exact miss may use NFC equivalence."""
+    exact = _locate_unique(haystack, needle)
+    if exact is _AMBIGUOUS:
+        return _AMBIGUOUS
+    if exact is not _NOT_FOUND:
+        return exact, exact + len(needle)
+    return _locate_unique_nfc(haystack, needle)
 _CLAIMS_PAYLOAD_FIELDS = (
     "schema_version", "chapter_index", "chapter_id", "content_sha256", "canon_sha256",
     "extractor_version", "model_version", "prompt_sha256", "predicate_set_version",
@@ -869,40 +951,46 @@ def parse_chapter_claims(
         #    `_locate_unique` re-searches from `first + 1`, so an overlapping second
         #    occurrence is seen and refused instead of silently binding to the first.
         if context is None:
-            start = _locate_unique(block, needle)
-            if start is _NOT_FOUND:
+            located = _locate_unique_equivalent(block, needle)
+            if located is _NOT_FOUND:
                 raise _schema_error(f"claims[{i}]: quote not found in the chapter block",
                                     code=EXTRACT_REASON_QUOTE_NOT_FOUND)
-            if start is _AMBIGUOUS:
+            if located is _AMBIGUOUS:
                 raise _schema_error(
                     f"claims[{i}]: quote is ambiguous in the chapter block",
                     code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
+            start, end = located
         else:
             # The CONTEXT is the locator; the QUOTE is still the evidence. The context
             # must be unique in the chapter, and the quote must sit at exactly one place
             # inside it — otherwise the pair does not name a span either.
             ctx_bytes = context.encode("utf-8")
-            ctx_start = _locate_unique(block, ctx_bytes)
-            if ctx_start is _NOT_FOUND:
+            ctx_located = _locate_unique_equivalent(block, ctx_bytes)
+            if ctx_located is _NOT_FOUND:
                 raise _schema_error(f"claims[{i}]: context not found in the chapter block",
                                     code=EXTRACT_REASON_CONTEXT_NOT_FOUND)
-            if ctx_start is _AMBIGUOUS:
+            if ctx_located is _AMBIGUOUS:
                 raise _schema_error(
                     f"claims[{i}]: context is ambiguous in the chapter block",
                     code=EXTRACT_REASON_CONTEXT_AMBIGUOUS)
-            offset = _locate_unique(ctx_bytes, needle)
-            if offset is _NOT_FOUND:
+            ctx_start, ctx_end = ctx_located
+            original_context = block[ctx_start:ctx_end]
+            quote_located = _locate_unique_equivalent(original_context, needle)
+            if quote_located is _NOT_FOUND:
                 raise _schema_error(f"claims[{i}]: context does not contain the quote",
                                     code=EXTRACT_REASON_QUOTE_NOT_FOUND)
-            if offset is _AMBIGUOUS:
+            if quote_located is _AMBIGUOUS:
                 raise _schema_error(
                     f"claims[{i}]: quote is ambiguous within its own context",
                     code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
-            start = ctx_start + offset
+            quote_start, quote_end = quote_located
+            start = ctx_start + quote_start
+            end = ctx_start + quote_end
+        evidence = block[start:end]
         claim = ObservedClaimV1(
             claim_type=rc["claim_type"], canon_ref=rc["canon_ref"],
-            evidence_start=start, evidence_end=start + len(needle),
-            evidence_sha256=sha256_hex(needle),
+            evidence_start=start, evidence_end=end,
+            evidence_sha256=sha256_hex(evidence),
         )
         # Retained though the derivation above cannot violate it: UTF-8 is
         # self-synchronising, so a valid encoded needle can only match on a code-point
