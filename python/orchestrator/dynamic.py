@@ -2265,12 +2265,17 @@ async def build_story_bible(
             _registry_raw = None
             if structured_semantic:
                 from canon_lite_semantic_source import parse_structured_bible_response
-                _decoded = parse_structured_bible_response(_bible_text)
+                _decoded, _why = parse_structured_bible_response(_bible_text)
                 if _decoded is None:
+                    # `reason` is a bounded code from STRUCTURED_BIBLE_REASON_CODES, never
+                    # the response body: it distinguishes "JSON mode never reached the
+                    # provider" from "it did, and the shape is wrong" — two faults that
+                    # send an operator to opposite places and used to log identically.
                     log.warning(
                         "build_story_bible: model %s did not honour the structured contract "
-                        "(attempt %d/%d, error_code=structured_bible_contract_unmet)%s",
-                        _mdl, _i + 1, len(_chain),
+                        "(attempt %d/%d, error_code=structured_bible_contract_unmet "
+                        "reason=%s)%s",
+                        _mdl, _i + 1, len(_chain), _why or "other",
                         " — failing over" if _i + 1 < len(_chain) else " — no attempts left")
                     continue
                 # ONLY the prose goes on from here. The semantic JSON never reaches

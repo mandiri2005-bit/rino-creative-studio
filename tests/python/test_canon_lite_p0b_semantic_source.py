@@ -2035,6 +2035,124 @@ def test_a_legitimately_built_envelope_still_passes_both_checks():
 
 
 # ===========================================================================
+# 5f. THE BIBLE TRANSPORT — does JSON mode actually reach Google GenAI?
+# ===========================================================================
+#
+# 🔴 A LIVE CANARY (2026-08-13) BURNED TWO STORY BIBLE CANDIDATES AND LEFT ONE BIT BEHIND.
+#    Both attempts logged `structured_bible_contract_unmet` and nothing else, so "the
+#    transport never applied JSON mode" and "it did, and the model used other keys" were
+#    indistinguishable — and the first guess (blame the model) was wrong twice over. These
+#    tests exist so the next failure names itself instead of needing an investigation.
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, "bible_response_not_text"),
+    ("", "bible_response_not_text"),
+    ("   ", "bible_response_not_text"),
+    (b'{"bible_text":"x"}', "bible_response_not_text"),
+    ("prosa biasa tanpa JSON sama sekali", "bible_response_not_json"),
+    ("```json\n{\"bible_text\":\"x\"}\n```", "bible_response_not_json"),
+    ("[1, 2, 3]", "bible_response_json_not_object"),
+    ('"just a string"', "bible_response_json_not_object"),
+    ('{"semantic_source": {}}', "bible_text_missing"),
+    ('{"bible_text": "   ", "semantic_source": {}}', "bible_text_missing"),
+    ('{"bible_text": 42, "semantic_source": {}}', "bible_text_missing"),
+    ('{"bible_text": "prosa"}', "semantic_source_missing"),
+    ('{"bible_text": "prosa", "semantic_source": []}', "semantic_source_missing"),
+])
+def test_every_structured_bible_failure_names_itself(raw, expected):
+    """Each branch gets its OWN bounded code. The fenced-block case is deliberate: a
+    ```json wrapper means the response did NOT come back in JSON mode, which is a
+    TRANSPORT verdict — the opposite diagnosis from a well-formed object with wrong keys,
+    and previously the same log line."""
+    decoded, reason = css.parse_structured_bible_response(raw)
+    assert decoded is None
+    assert reason == expected
+    assert reason in css.STRUCTURED_BIBLE_REASON_CODES
+
+
+def test_the_structured_bible_reason_vocabulary_is_closed():
+    assert css.STRUCTURED_BIBLE_REASON_CODES == (
+        "bible_response_not_text", "bible_response_not_json",
+        "bible_response_json_not_object", "bible_text_missing",
+        "semantic_source_missing")
+
+
+def test_a_valid_structured_bible_decodes_with_no_reason():
+    decoded, reason = css.parse_structured_bible_response(
+        _structured("prosa fact-sheet", semantic=_GOOD_SEMANTIC))
+    assert reason == ""
+    bible_text, semantic_raw, registry_raw = decoded
+    assert bible_text == "prosa fact-sheet"
+    assert semantic_raw == _GOOD_SEMANTIC
+    assert registry_raw is None
+
+
+def test_the_bible_worker_requests_json_mode_only_when_asked(monkeypatch):
+    """`response_format` is the ONLY thing that obliges the model to return the object, and
+    it must stay absent on every non-assist job (off-path byte-identical)."""
+    seen = {}
+
+    async def fake_run_worker(worker, prompt, timeout=None, task_id=None):
+        seen[worker.name] = worker.response_format
+        return {"ok": True, "telemetry": {"finish_reason": "stop"},
+                "output": _structured("prosa", semantic=_GOOD_SEMANTIC)}
+
+    monkeypatch.setattr(dyn, "run_worker", fake_run_worker)
+    asyncio.run(dyn.build_story_bible("topik uji", _outline(2), is_fiction=True,
+                                      language="id", structured_semantic=True))
+    assert seen["planner:bible"] == {"type": "json_object"}
+
+    seen.clear()
+    asyncio.run(dyn.build_story_bible("topik uji", _outline(2), is_fiction=True,
+                                      language="id"))
+    assert seen["planner:bible"] is None, \
+        "a non-assist bible must not grow a response_format key at all"
+
+
+def test_json_mode_survives_the_last_hop_into_google_genai(monkeypatch):
+    """🔴 THE HOP NOBODY HAD PROVEN. `response_format` is an OpenAI-ism; only the
+       `vertex_genai` rung turns it into `response_mime_type="application/json"`, and only
+       when `NARASI_GENAI_JSON_MIME` is on. Asserted against the ACTUAL config object
+       handed to `client.models.generate_content`, not against the code that builds it."""
+    lz = pytest.importorskip("laozhang_api")
+    gt = pytest.importorskip("google.genai.types")
+    captured = {}
+
+    class _Halt(Exception):
+        pass
+
+    def _recorder(**kwargs):
+        captured.update(kwargs)
+        raise _Halt
+
+    monkeypatch.setattr(gt, "GenerateContentConfig", _recorder)
+    monkeypatch.setattr(lz, "_genai_client", lambda *a, **k: object())
+    monkeypatch.setenv("NARASI_GENAI_JSON_MIME", "1")
+    msgs = [{"role": "user", "content": "halo"}]
+
+    for response_json, expected in ((True, "application/json"), (False, None)):
+        captured.clear()
+        try:
+            lz._vertex_gemini_create("gemini-2.5-flash", msgs, 4000, 30.0,
+                                     response_json=response_json)
+        except Exception:  # noqa: BLE001 — the recorder halts before any network call
+            pass
+        assert captured, "the config was never constructed — the probe missed its seam"
+        assert captured.get("response_mime_type") == expected, (
+            f"response_json={response_json} produced "
+            f"response_mime_type={captured.get('response_mime_type')!r}")
+
+    # ...and the env flag is a real gate, not decoration
+    monkeypatch.setenv("NARASI_GENAI_JSON_MIME", "0")
+    captured.clear()
+    try:
+        lz._vertex_gemini_create("gemini-2.5-flash", msgs, 4000, 30.0, response_json=True)
+    except Exception:  # noqa: BLE001
+        pass
+    assert captured.get("response_mime_type") is None
+
+
+# ===========================================================================
 # 6. MUTATION HARNESS — bypass, empty-authority, wrong-binding, shared-seam
 # ===========================================================================
 #

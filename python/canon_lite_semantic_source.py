@@ -598,10 +598,41 @@ STRUCTURED_BIBLE_SEMANTIC_KEY = "semantic_source"
 STRUCTURED_BIBLE_REGISTRY_KEY = "canon_registry"
 
 
-def parse_structured_bible_response(raw: Any) -> Optional[tuple]:
+#: Bounded reasons ONE Story Bible response can fail the structured contract. Closed, and
+#: never the response body — these travel to the single log line `build_story_bible` emits.
+#:
+#: 🔴 FIVE DIFFERENT FAULTS USED TO LOG AS ONE CODE, AND THEY WANT OPPOSITE RESPONSES.
+#:    `structured_bible_contract_unmet` was emitted whether the response was not JSON at
+#:    all, was a JSON array, or was a perfectly good JSON object using different keys. The
+#:    first says JSON MODE NEVER REACHED THE PROVIDER — a transport/routing fault, fixed by
+#:    a different rung or flag. The last says the transport worked and the PROMPT is wrong.
+#:    A live canary (2026-08-13) burned two best-of Story Bible candidates and left exactly
+#:    one bit of information behind: "unmet". That is the same coarse-code shape this
+#:    workstream already removed twice (`EXTRACT_REASON_CODES`, `SEMANTIC_SOURCE_REASON_CODES`).
+STRUCTURED_BIBLE_REASON_NOT_TEXT = "bible_response_not_text"
+STRUCTURED_BIBLE_REASON_NOT_JSON = "bible_response_not_json"
+STRUCTURED_BIBLE_REASON_JSON_NOT_OBJECT = "bible_response_json_not_object"
+STRUCTURED_BIBLE_REASON_TEXT_MISSING = "bible_text_missing"
+STRUCTURED_BIBLE_REASON_SEMANTIC_MISSING = "semantic_source_missing"
+STRUCTURED_BIBLE_REASON_CODES = (
+    STRUCTURED_BIBLE_REASON_NOT_TEXT,
+    STRUCTURED_BIBLE_REASON_NOT_JSON,
+    STRUCTURED_BIBLE_REASON_JSON_NOT_OBJECT,
+    STRUCTURED_BIBLE_REASON_TEXT_MISSING,
+    STRUCTURED_BIBLE_REASON_SEMANTIC_MISSING,
+)
+
+
+def parse_structured_bible_response(raw: Any) -> tuple:
     """Decode ONE Story Bible response under the P0-B STRUCTURED contract.
 
-    Returns `(bible_text, semantic_source_raw, canon_registry_raw)` — the prose fact-sheet,
+    Returns `(decoded, reason)`. On success `decoded` is
+    `(bible_text, semantic_source_raw, canon_registry_raw)` and `reason` is `""`; on
+    failure `decoded` is `None` and `reason` is a `STRUCTURED_BIBLE_REASON_CODES` member.
+    The pair exists because the caller must be able to say WHICH way the contract broke —
+    see the vocabulary above.
+
+    `(bible_text, semantic_source_raw, canon_registry_raw)` is the prose fact-sheet,
     the still-raw envelope mapping, and the advisory registry sidecar (`None` when absent
     or not a mapping) — or `None` if the response does not satisfy the contract. Never
     raises. The returned `semantic_source_raw` is NOT validated here beyond "is a
@@ -634,26 +665,30 @@ def parse_structured_bible_response(raw: Any) -> Optional[tuple]:
        failed attempt; the caller fails over.
     """
     if not isinstance(raw, str) or not raw.strip():
-        return None
+        return None, STRUCTURED_BIBLE_REASON_NOT_TEXT
     try:
         obj = json.loads(raw)
     except (ValueError, TypeError):
-        return None
+        # THE TRANSPORT SIGNAL. A response that is not JSON at all did not come back in
+        # JSON mode, which points at the request, not the model's willingness.
+        return None, STRUCTURED_BIBLE_REASON_NOT_JSON
     if not isinstance(obj, dict):
-        return None
+        return None, STRUCTURED_BIBLE_REASON_JSON_NOT_OBJECT
     bible_text = obj.get(STRUCTURED_BIBLE_TEXT_KEY)
     semantic_raw = obj.get(STRUCTURED_BIBLE_SEMANTIC_KEY)
     # `type(x) is str`, not isinstance: a str SUBCLASS can carry a poisoned __eq__/__hash__
     # and this value goes on to be hashed and compared for provenance. Same discipline as
     # `_l3_canonicalize_verdict` in the P0-A preflight.
     if type(bible_text) is not str or not bible_text.strip():
-        return None
+        # JSON mode WAS applied — the model simply used a different shape. The opposite
+        # diagnosis to NOT_JSON, and previously indistinguishable from it.
+        return None, STRUCTURED_BIBLE_REASON_TEXT_MISSING
     if not isinstance(semantic_raw, dict):
-        return None
+        return None, STRUCTURED_BIBLE_REASON_SEMANTIC_MISSING
     registry_raw = obj.get(STRUCTURED_BIBLE_REGISTRY_KEY)
     if not isinstance(registry_raw, dict):
         registry_raw = None
-    return (bible_text.strip(), semantic_raw, registry_raw)
+    return (bible_text.strip(), semantic_raw, registry_raw), ""
 
 
 def extract_semantic_source_json(text: str) -> Optional[Any]:
@@ -692,6 +727,7 @@ __all__ = [
     "build_semantic_source_v1",
     "parse_semantic_source_envelope",
     "parse_structured_bible_response",
+    "STRUCTURED_BIBLE_REASON_CODES",
     "STRUCTURED_BIBLE_TEXT_KEY",
     "STRUCTURED_BIBLE_SEMANTIC_KEY",
     "STRUCTURED_BIBLE_REGISTRY_KEY",
