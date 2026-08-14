@@ -483,32 +483,74 @@ def test_nonstructural_declared_chapter_never_overrides_quote_and_deferral_is_co
     ]
 
 
-def test_mixed_lanes_share_one_max_chapter_attempt_budget(monkeypatch):
+@pytest.mark.parametrize("parallel", [0, 2])
+@pytest.mark.parametrize("provider_accepts", [False, True])
+def test_rejected_structural_attempts_preserve_success_cap_and_debit_retry_headroom(
+        monkeypatch, parallel, provider_accepts):
     monkeypatch.setenv("NARASI_REVISE_MAX_CHAPTERS", "4")
-    captured = {}
+    monkeypatch.setenv("NARASI_REVISE_PARALLEL", str(parallel))
+    book = "".join(
+        f"## Bab {number}: Judul {number}\n\nKalimat salah unik{number} tetap lengkap.\n\n"
+        for number in range(1, 9)
+    )
+    provider_calls = []
 
     async def patch(*_args, **_kwargs):
-        return CHAPTER, 2, {
-            "targeted": 2, "attempted": 2, "accepted": 0,
-            "not_attempted_reason_counts": {}, "owned_chapter_numbers": {1, 2},
+        return book, 4, {
+            "targeted": 4, "attempted": 4, "accepted": 0,
+            "not_attempted_reason_counts": {},
+            "rejected_reason_counts": {"response_not_json": 4},
+            "unresolved_locator_count": 0,
+            "owned_chapter_numbers": {5, 6, 7, 8},
         }
 
-    async def legacy(full_text, _violations, *_args, **kwargs):
-        captured["max"] = kwargs["max_chapters_override"]
-        return full_text, 1
+    class _LegacyCompletions:
+        def create(self, **kwargs):
+            provider_calls.append(kwargs)
+            marker = "[CHAPTER — return the corrected version, unchanged except for the fixes]\n"
+            chapter = kwargs["messages"][-1]["content"].split(marker, 1)[1]
+            chapter = chapter.split("\n\n[CORRECTION]\n", 1)[0]
+            output = (chapter.replace("salah", "benar", 1)
+                      if provider_accepts else chapter.rstrip("."))
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=output),
+                    finish_reason="stop",
+                )],
+                usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0),
+            )
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_LegacyCompletions()))
+
+    async def log_usage(*_args, **_kwargs):
+        return 1
 
     monkeypatch.setattr(lz, "_narasi_structural_patch_revise", patch)
-    monkeypatch.setattr(lz, "_narasi_revise_chunked", legacy)
-    critique = {"violations": [
-        {"severity": "high", "type": "outline_beat_order", "chapter": 1},
-        {"severity": "high", "type": "timeline", "evidence": '"unmapped quote"'},
-    ]}
-    asyncio.run(lz._narasi_consistency_revise(
-        CHAPTER, critique, "storytelling", "id", model="test-model",
+    monkeypatch.setattr(lz, "make_narasi_client", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(lz, "_log_narasi_usage", log_usage)
+    critique = {"violations": (
+        [
+            {"severity": "high", "type": "outline_beat_order", "chapter": number}
+            for number in range(5, 9)
+        ]
+        + [
+            {"severity": "high", "type": "timeline",
+             "evidence": f'"Kalimat salah unik{number} tetap lengkap."'}
+            for number in range(1, 5)
+        ]
+    )}
+    revised, credits = asyncio.run(lz._narasi_consistency_revise(
+        book, critique, "storytelling", "id", model="test-model",
         tenant_id="t", user_id="u", job_uuid=None,
         authority_text="AUTHORITY", outline_packets={},
     ))
-    assert captured["max"] == 2
+
+    assert len(provider_calls) == 4
+    assert revised.count("Kalimat benar") == (4 if provider_accepts else 0)
+    assert revised.count("Kalimat salah") == (4 if provider_accepts else 8)
+    assert credits == 8
+    assert critique["structural_patch"]["status"] == "attempted_no_accept"
 
 
 def test_real_legacy_lane_never_calls_provider_for_owned_quoted_chapter(monkeypatch):

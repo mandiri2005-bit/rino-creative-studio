@@ -9199,7 +9199,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                                  tenant_id, user_id, job_uuid, phase="revise",
                                  credit_row: bool = True, authority_text: str = "",
                                  excluded_chapter_numbers=None,
-                                 max_chapters_override=None):
+                                 attempts_already_spent=0):
     """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
     violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
@@ -9227,6 +9227,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     import re as _re
     resolved = MODELS.get(rev_model, rev_model)
     _excluded_chapter_numbers = frozenset(excluded_chapter_numbers or ())
+    _attempts_already_spent = max(0, int(attempts_already_spent))
 
     def _spans(ev):
         # Pull the quoted book-text out of a violation's evidence (straight + curly quotes); the
@@ -9316,9 +9317,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             return True
         return bool(chnos) and _part_chnums[p_idx] in chnos
 
-    _max_ch = (_envint("NARASI_REVISE_MAX_CHAPTERS", 4)
-               if max_chapters_override is None
-               else max(0, int(max_chapters_override)))
+    _max_ch = _envint("NARASI_REVISE_MAX_CHAPTERS", 4)
     _sev = _revise_min_severities()
     # A violation with a MISSING / blank / unrecognized severity must NOT be silently dropped — the
     # critic occasionally omits the field on a real, locatable violation. Default unknown → "medium"
@@ -9360,7 +9359,10 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     #    part order (same set serial accepts). Fail-safe identical: error/timeout/reject keeps ORIGINAL. ──
     _rev_par = _envint("NARASI_REVISE_PARALLEL", 0)
     if _rev_par >= 2:
+        _parallel_attempts = 0
+
         async def _revise_one_part(_p, _vs):
+            nonlocal _parallel_attempts
             # EXACT MIRROR of the serial per-part body below — KEEP IN SYNC. Returns (text_or_None, cr).
             # Never raises (any exception → keep original chapter, like the serial except: branch).
             _directives = "\n".join(
@@ -9403,6 +9405,13 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             _part_cr = 0
             _corrective = None
             for _attempt_no in (1, 2):
+                # Mixed routing shares the serial 2*_max_ch attempt headroom with
+                # the structural patch lane.  Pure-legacy parallel retains its
+                # pre-existing two-wave behavior when no earlier lane spent attempts.
+                if (_attempts_already_spent > 0
+                        and _parallel_attempts + _attempts_already_spent >= 2 * _max_ch):
+                    return None, _part_cr
+                _parallel_attempts += 1
                 _u_send = _u if _corrective is None else f"{_u}\n\n[CORRECTION]\n{_corrective}"
                 try:
                     _resp = await asyncio.wait_for(asyncio.to_thread(
@@ -9507,9 +9516,9 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # _max_ch targeted chapters; ONLY if fewer than _max_ch land (rejections/timeouts) does wave 2
         # fire the headroom (next up to _max_ch), preserving serial's retry resilience. ⚠ COST BOUND
         # (audit 2026-07-18): with the per-part corrective retry, each part can fire up to 2 calls, so
-        # the parallel worst case under MASS rejection is 4*_max_ch calls (vs serial's shared 2*_max_ch
-        # attempt budget) — strictly bounded, cost-identical to serial in the common accept case, but
-        # NOT the same worst-case invariant. Acceptance stays first-_max_ch-successes in
+        # the PURE-LEGACY parallel worst case under MASS rejection is 4*_max_ch calls (vs serial's
+        # shared 2*_max_ch attempt budget). A mixed structural+legacy run additionally debits the
+        # structural attempts and stays within 2*_max_ch total calls. Acceptance stays first-_max_ch-successes in
         # PART ORDER → the exact chapter set serial accepts; untargeted/over-budget parts keep original.
         _accepted, _p_total_cr, _p_revised = {}, 0, 0
         for _wave in (_plan[:_max_ch], _plan[_max_ch: 2 * _max_ch]):
@@ -9550,7 +9559,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         _n_targeted += 1
         # Cap SUCCESSFUL revises at _max_ch; give ATTEMPTS 2x headroom so a burst of early-chapter
         # timeouts/errors doesn't consume the budget and starve later chapters whose fix would land.
-        if _n_revised >= _max_ch or _n_attempts >= 2 * _max_ch:
+        if (_n_revised >= _max_ch
+                or _n_attempts + _attempts_already_spent >= 2 * _max_ch):
             out.append(_p)
             continue
         _directives = "\n".join(
@@ -10106,11 +10116,9 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                     phase="canon_diff_revise", credit_row=credit_row,
                     authority_text=authority_text,
                     excluded_chapter_numbers=owned,
-                    # Preserve the operator knob's pre-V5 meaning as one chapter-call
-                    # ceiling for the whole pass, not an independent cap per lane.
-                    max_chapters_override=max(
-                        0, _envint("NARASI_REVISE_MAX_CHAPTERS", 4)
-                        - int(patch_stats["attempted"])))
+                    # Preserve legacy's success cap while sharing only its attempt
+                    # headroom with calls already spent by the structural patch lane.
+                    attempts_already_spent=int(patch_stats["attempted"]))
             except Exception as legacy_error:
                 import logging as _mixlog
                 _mixlog.getLogger("narasi").warning(

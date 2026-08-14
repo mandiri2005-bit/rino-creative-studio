@@ -329,6 +329,20 @@ def test_classic_job_result_uses_the_same_top_level_structural_summary_path():
     assert result["structural_patch"] is summary
 
 
+def test_classic_generation_calls_the_top_level_structural_summary_publisher():
+    tree = ast.parse(inspect.getsource(lz._narasi_generate_impl))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_narasi_copy_structural_patch_summary"
+    ]
+    assert len(calls) == 1
+    assert [arg.id for arg in calls[0].args if isinstance(arg, ast.Name)] == [
+        "_result", "_critique_payload"
+    ]
+
+
 class _FakeCompletions:
     def __init__(self, output: str, captured: list[dict]):
         self.output = output
