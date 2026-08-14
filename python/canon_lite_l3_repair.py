@@ -76,12 +76,15 @@ module produced, and none of them says anything about what was delivered.
 from __future__ import annotations
 
 import unicodedata
+import logging
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Mapping, Optional, Protocol, Sequence
 
 import canon_lite as _cl
 import canon_lite_l2 as _l2
+
+_LOG = logging.getLogger("canon_lite_l3_repair")
 
 __all__ = [
     "REPAIR_SCHEMA_VERSION",
@@ -451,6 +454,34 @@ def _heading_line(data: bytes) -> Optional[str]:
     return unicodedata.normalize("NFC", first).strip() if first.startswith("## ") else None
 
 
+_INVALID_CANDIDATE_STAGES = frozenset({
+    "pre.type",
+    "pre.empty",
+    "pre.utf8",
+    "pre.heading",
+    "post.materialize",
+    "post.block_count",
+    "post.chapter_identity",
+})
+
+
+def _validate_candidate_detailed(original: bytes, candidate: Any) -> tuple[Optional[bytes], Optional[str]]:
+    """Return candidate plus the one-to-one pre-validation branch code."""
+    if candidate is None or not isinstance(candidate, (bytes, bytearray)):
+        return None, "pre.type"
+    data = bytes(candidate)
+    if not data.strip():
+        return None, "pre.empty"
+    try:
+        data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None, "pre.utf8"
+    before_heading = _heading_line(original)
+    if before_heading is not None and _heading_line(data) != before_heading:
+        return None, "pre.heading"
+    return data, None
+
+
 def _validate_candidate(original: bytes, candidate: Any) -> Optional[bytes]:
     """`bytes` when the candidate is a usable chapter, `None` when it is not.
 
@@ -458,19 +489,17 @@ def _validate_candidate(original: bytes, candidate: Any) -> Optional[bytes]:
     heading is a STRUCTURAL edit arriving through the semantic door, and it would
     move the very block identity the whole report is indexed by.
     """
-    if candidate is None or not isinstance(candidate, (bytes, bytearray)):
-        return None
-    data = bytes(candidate)
-    if not data.strip():
-        return None
-    try:
-        data.decode("utf-8", errors="strict")
-    except UnicodeDecodeError:
-        return None
-    before_heading = _heading_line(original)
-    if before_heading is not None and _heading_line(data) != before_heading:
-        return None
+    data, _stage = _validate_candidate_detailed(original, candidate)
     return data
+
+
+def _log_invalid_candidate(stage: str, *, chapter_index: int, attempt: int,
+                           original: bytes, candidate: Any) -> None:
+    """Bounded observability only: no prose, raw exception, hash, or request id."""
+    output_bytes = len(candidate) if isinstance(candidate, (bytes, bytearray)) else 0
+    _LOG.warning(
+        "l3 invalid candidate stage=%s chapter_index=%d attempt=%d input_bytes=%d output_bytes=%d",
+        stage, chapter_index, attempt, len(original), output_bytes)
 
 
 def _binding_ok(fresh: Any, *, chapter_index: int, chapter_id: str,
@@ -627,9 +656,12 @@ async def repair_manuscript(
                 reason = REASON_PROVIDER_FAILED
                 break
 
-            candidate = _validate_candidate(original, raw)
+            candidate, invalid_stage = _validate_candidate_detailed(original, raw)
             if candidate is None:
                 reason = REASON_INVALID_CANDIDATE
+                _log_invalid_candidate(
+                    invalid_stage or "pre.type", chapter_index=index, attempt=attempt,
+                    original=original, candidate=raw)
                 continue
             if candidate == original:
                 reason = REASON_INEFFECTIVE
@@ -680,15 +712,25 @@ async def repair_manuscript(
                     canon=(canon if _ids_resolved else None))
             except Exception:  # noqa: BLE001 - a candidate that will not materialize
                 reason = REASON_INVALID_CANDIDATE
+                _log_invalid_candidate(
+                    "post.materialize", chapter_index=index, attempt=attempt,
+                    original=original, candidate=candidate)
                 continue
-            if staged_snapshot is None \
-                    or len(staged_snapshot.blocks) != len(current_snapshot.blocks) \
-                    or tuple(b.chapter_id for b in staged_snapshot.blocks) != \
-                    tuple(b.chapter_id for b in current_snapshot.blocks):
+            if staged_snapshot is None or len(staged_snapshot.blocks) != len(current_snapshot.blocks):
                 # Every judgement below indexes chapters by position, so a candidate
                 # that changes how many blocks the manuscript has would silently be
                 # compared against the wrong ones.
                 reason = REASON_INVALID_CANDIDATE
+                _log_invalid_candidate(
+                    "post.block_count", chapter_index=index, attempt=attempt,
+                    original=original, candidate=candidate)
+                continue
+            if tuple(b.chapter_id for b in staged_snapshot.blocks) != \
+                    tuple(b.chapter_id for b in current_snapshot.blocks):
+                reason = REASON_INVALID_CANDIDATE
+                _log_invalid_candidate(
+                    "post.chapter_identity", chapter_index=index, attempt=attempt,
+                    original=original, candidate=candidate)
                 continue
             staged_claims = dict(current_claims)
             staged_claims[index] = fresh

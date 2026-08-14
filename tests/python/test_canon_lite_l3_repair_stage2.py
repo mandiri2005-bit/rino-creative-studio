@@ -598,6 +598,28 @@ def test_an_unusable_candidate_is_rejected_without_touching_the_bytes(bad):
     assert run.repaired_manuscript == snap.manuscript_bytes
 
 
+@pytest.mark.parametrize(
+    ("bad", "stage"),
+    [
+        (None, "pre.type"),
+        ("not bytes", "pre.type"),
+        (b"   ", "pre.empty"),
+        (b"\xff\xfe", "pre.utf8"),
+        (b"## Bab Lain\nisi.\n", "pre.heading"),
+    ],
+)
+def test_invalid_candidate_pre_subtype_maps_one_to_one_to_validator_branch(caplog, bad, stage):
+    snap, canon, claims, result = _setup()
+    with caplog.at_level("WARNING", logger="canon_lite_l3_repair"):
+        run = _run(snap, canon, claims, result, _Provider(bad), _Extractor())
+    assert run.chapters[0].last_reason == rp.REASON_INVALID_CANDIDATE
+    rows = [record.message for record in caplog.records if "l3 invalid candidate" in record.message]
+    assert rows
+    assert all(f"stage={stage}" in row for row in rows)
+    assert all("chapter_index=1" in row and "attempt=" in row for row in rows)
+    assert all(GOOD_NAME not in row and BAD_NAME not in row for row in rows)
+
+
 # ── 11. bookkeeping that must not be able to lie ────────────────────────────
 def test_a_rejected_chapter_reports_a_zero_edit_ratio():
     """A non-zero ratio on a rejected repair would describe an edit that never
@@ -915,7 +937,7 @@ def test_a_repair_may_not_reintroduce_what_an_earlier_repair_removed():
     assert by_index[1].after_sha256 == by_index[1].before_sha256
 
 
-def test_a_candidate_that_changes_the_block_count_is_refused():
+def test_a_candidate_that_changes_the_block_count_is_refused(caplog):
     """🔴 EVERY JUDGEMENT BELOW INDEXES CHAPTERS BY POSITION.
 
     The heading check only guards the candidate's FIRST line, so a candidate can
@@ -931,8 +953,9 @@ def test_a_candidate_that_changes_the_block_count_is_refused():
     assert grown.decode().startswith("## Bab 2")
 
     provider = _Provider(lambda b: grown)
-    run = _run(snap, canon, claims, result, provider, _Extractor(),
-               max_edit_ratio_ppm=1_000_000)
+    with caplog.at_level("WARNING", logger="canon_lite_l3_repair"):
+        run = _run(snap, canon, claims, result, provider, _Extractor(),
+                   max_edit_ratio_ppm=1_000_000)
 
     rec = run.chapters[0]
     assert rec.outcome == rp.OUTCOME_UNRESOLVED
@@ -942,6 +965,7 @@ def test_a_candidate_that_changes_the_block_count_is_refused():
     assert b"bab siluman" not in run.repaired_manuscript
     # Rejected on both attempts, not silently accepted on the second.
     assert len(provider.calls) == rp.MAX_REPAIR_ITERATIONS
+    assert any("stage=post.block_count" in record.message for record in caplog.records)
 
 
 def test_the_final_report_invariant_compares_the_whole_verdict():
