@@ -41,6 +41,7 @@ The per-chapter worker pipeline is EXACTLY (as WS-6 requires):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -93,6 +94,25 @@ def _gate(text: str, lang: str = "en") -> str:
     return out
 
 log = logging.getLogger("orchestrator.static")
+
+
+def _build_narrative_authority_packet(ctx: SharedContext) -> Optional[dict[str, str]]:
+    """Freeze the exact outline/Bible authority the MAP is about to consume.
+
+    This is in-process transit, not product output.  Hashes make the hand-off
+    attributable without logging user prose; ``text`` is forwarded only to later
+    text-mutating stages and is removed before persistence by ``narration_api``.
+    """
+    text = ctx.narrative_authority()
+    if not text:
+        return None
+    outline = ctx.outline()
+    bible = str(ctx.canonical_facts or "")
+    return {
+        "text": text,
+        "outline_sha256": hashlib.sha256(outline.encode("utf-8")).hexdigest(),
+        "bible_sha256": hashlib.sha256(bible.encode("utf-8")).hexdigest(),
+    }
 
 
 # ===========================================================================
@@ -1695,6 +1715,24 @@ async def narrate_chapters(
             return _assist_refuse("canon_lite_assist_outline_divergence")
         chapters = _frozen_chapters
 
+    # Freeze the SAME accepted outline and winning Bible the MAP will read, after
+    # every outline amendment and (under assist) after switching to the frozen
+    # chapter snapshot.  Later polish/revise stages previously reconstructed no
+    # authority at all, which let a final edit rename the protagonist, move beats
+    # between chapters, and create time jumps even when every MAP prompt was correct.
+    # This packet stays private and in-process; narration_api removes it before
+    # persistence.  An outline-less strategy gets None and retains legacy prompts.
+    _narrative_authority = _build_narrative_authority_packet(ctx)
+    _narrative_authority_text = str(
+        (_narrative_authority or {}).get("text") or "")
+    if _narrative_authority:
+        log.info(
+            "narrate_chapters: narrative authority frozen outline_sha256=%s "
+            "bible_sha256=%s",
+            _narrative_authority["outline_sha256"],
+            _narrative_authority["bible_sha256"],
+        )
+
     # 2) MAP — bounded parallel fan-out. Semaphore caps concurrency at max_parallel
     #    so a 40-chapter book doesn't open 40 sockets at once.
     sem = asyncio.Semaphore(max(1, int(max_parallel or 1)))
@@ -2053,6 +2091,7 @@ async def narrate_chapters(
         timeout=_mgr_timeout,
         telemetry_sink=telemetry_sink,
         any_failures=(n_ok < total),
+        authority_text=_narrative_authority_text,
     )
     # Print the EFFECTIVE polish model — _polish_reduce overrides manager_model
     # with NARASI_POLISH_MODEL when set, so `m_model` (passed-in) is misleading
@@ -2085,6 +2124,13 @@ async def narrate_chapters(
         "model": w_model,
         "manager_model": m_model,
         "strategy": "narrate_chapters",
+        # Private in-process transit only. The exact accepted outline + winning
+        # Bible must survive the MAP/REDUCE return boundary so narration_api's
+        # diet and consistency revise cannot operate under a weaker contract.
+        # _result_payload never includes it, and narration_api pops it before
+        # chapter persistence/finalisation.
+        **({"_narrative_authority": _narrative_authority}
+           if _narrative_authority is not None else {}),
         # L2a in-process transit only. This key exists only while shadow genuinely ran;
         # flag-off returns the byte/shape-identical legacy dict (C11). narration_api
         # consumes and removes it after every text mutation and before persistence or the
@@ -2164,6 +2210,19 @@ def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool 
         "exactly as given — do not remove, rename, renumber, translate or move them, and never "
         f"write a new heading of your own. Return ONLY the lightly-edited {ret} in {language}.")
     return instruction, "polish"
+
+
+def _polish_system(authority_text: str) -> str:
+    """Put narrative authority at system priority without changing legacy prompts."""
+    authority_text = str(authority_text or "").strip()
+    if not authority_text:
+        return ""
+    return (
+        "You are a meticulous senior editor. The narrative authority below is "
+        "immutable. An editing request may improve prose only inside it; if an edit "
+        "would conflict, preserve the original prose instead.\n\n"
+        + authority_text
+    )
 
 
 _POLISH_CHAPTER_SPLIT_RX = re.compile(r"(?m)(?=^## )")
@@ -2252,7 +2311,8 @@ def _split_into_chunks(book: str, chunk_words: int):
     return chunks
 
 
-async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink, task_id):
+async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink, task_id,
+                      authority_text: str = ""):
     """Polish ONE blob (whole book or a chunk) via synthesize. Returns (out, ok). Post-
     truncation guard (>=75% words) keeps the original on a cut/degraded pass. Post-bloat guard
     (<=135% words) does the SAME for the opposite failure: neither a "light" (preserve length)
@@ -2266,8 +2326,10 @@ async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink
     Never raises."""
     wrapped = [{"ok": True, "output": text, "model": model}]
     _t = time.monotonic()
-    res = await synthesize(instruction, wrapped, role=role, model=model, timeout=timeout,
-                           telemetry_sink=telemetry_sink, task_id=task_id)
+    res = await synthesize(
+        instruction, wrapped, role=role, model=model,
+        system=_polish_system(authority_text), timeout=timeout,
+        telemetry_sink=telemetry_sink, task_id=task_id)
     _tel = res.get("telemetry") or {}
     log.info("_polish_reduce: %s role=%s model=%s served_by=%s ok=%s in %.1fs (tok_in=%s tok_out=%s)",
              task_id, role, model, _tel.get("provider") or "?", res.get("ok"),
@@ -2311,6 +2373,7 @@ async def _polish_reduce(
     timeout: float,
     telemetry_sink,
     any_failures: bool = False,
+    authority_text: str = "",
 ):
     """3-mode polish reducer (none/light/heavy). When the assembled book exceeds the polish
     model's single-call OUTPUT ceiling, CHUNK it — split by chapter into <=NARASI_POLISH_CHUNK_WORDS
@@ -2342,7 +2405,8 @@ async def _polish_reduce(
     _need = int(_book_words * 1.45 * 1.08)   # tokens to reproduce the book + slack
     if (not _ceil) or _need <= int(_ceil * 0.95):
         return await _polish_one(book, instruction=instruction, role=role, model=manager_model,
-                                 timeout=timeout, telemetry_sink=telemetry_sink, task_id=f"polish:{mode}")
+                                 timeout=timeout, telemetry_sink=telemetry_sink,
+                                 task_id=f"polish:{mode}", authority_text=authority_text)
 
     # Too big for one call → CHUNK by chapter (default on; NARASI_POLISH_CHUNK=0 disables).
     if str(os.environ.get("NARASI_POLISH_CHUNK", "1")).strip().lower() not in ("0", "false", "no", "off"):
@@ -2373,7 +2437,8 @@ async def _polish_reduce(
                     async with _psem:
                         return await _polish_one(_ch, instruction=c_instr, role=c_role, model=manager_model,
                                                  timeout=timeout, telemetry_sink=telemetry_sink,
-                                                 task_id=f"polish:{mode}:chunk{_i + 1}/{len(chunks)}")
+                                                 task_id=f"polish:{mode}:chunk{_i + 1}/{len(chunks)}",
+                                                 authority_text=authority_text)
 
                 for _o, _ok in await asyncio.gather(*[_polish_chunk(i, ch) for i, ch in enumerate(chunks)]):
                     polished.append(_o)
@@ -2382,7 +2447,8 @@ async def _polish_reduce(
                 for i, ch in enumerate(chunks):
                     _o, _ok = await _polish_one(ch, instruction=c_instr, role=c_role, model=manager_model,
                                                 timeout=timeout, telemetry_sink=telemetry_sink,
-                                                task_id=f"polish:{mode}:chunk{i + 1}/{len(chunks)}")
+                                                task_id=f"polish:{mode}:chunk{i + 1}/{len(chunks)}",
+                                                authority_text=authority_text)
                     polished.append(_o)
                     any_ok = any_ok or _ok
             rejoined = "\n\n".join(polished)
@@ -2411,7 +2477,8 @@ async def _polish_reduce(
     if _big and _big_ceil and _need <= int(_big_ceil * 0.95):
         log.info("_polish_reduce: promoting to %s (ceiling %d) instead of skipping", _big, _big_ceil)
         return await _polish_one(book, instruction=instruction, role=role, model=_big,
-                                 timeout=timeout, telemetry_sink=telemetry_sink, task_id=f"polish:{mode}")
+                                 timeout=timeout, telemetry_sink=telemetry_sink,
+                                 task_id=f"polish:{mode}", authority_text=authority_text)
     log.info("_polish_reduce: skipping polish — book needs ~%d tokens but %s ceiling is %d "
              "(no chunking, no big-model)", _need, manager_model, _ceil)
     return book, False

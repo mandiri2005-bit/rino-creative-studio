@@ -251,6 +251,47 @@ class SharedContext:
             + "\n".join(lines)
         )
 
+    def narrative_authority(self) -> str:
+        """Render the immutable outline/Bible contract for every text-mutating stage.
+
+        MAP workers already receive the same facts through :meth:`brief_block` and
+        :meth:`outline`.  Later polish/revise stages do not have a ``SharedContext``;
+        this byte-stable rendering is the single hand-off they receive.  The accepted
+        outline is deliberately LAST so its precedence over the derived Bible is both
+        explicit and positional.  An outline-less strategy returns ``""`` and keeps
+        the legacy rewrite prompts byte-identical.
+        """
+        outline = self.outline().strip()
+        if not outline:
+            return ""
+
+        parts = [
+            "NARRATIVE AUTHORITY CONTRACT (immutable across generation, polish, and "
+            "revision):\n"
+            "- Priority is AUTHORITATIVE FULL OUTLINE > STORY BIBLE / CANONICAL FACTS "
+            "> critique or editing instruction > existing prose.\n"
+            "- Never rename or re-identify a character, change an alias or relationship, "
+            "move an outlined event to another chapter, reveal future information early, "
+            "repeat an already-completed reveal, or invent a time jump absent from the "
+            "outline.\n"
+            "- The Bible may fill only details the outline leaves open. It may never add, "
+            "remove, redistribute, reinterpret, or override an outlined beat.\n"
+            "- If a requested edit conflicts with this authority, leave the affected prose "
+            "unchanged rather than violating the authority."
+        ]
+        bible = str(self.canonical_facts or "").strip()
+        if bible:
+            label = ("SUBORDINATE STORY BIBLE" if self.facts_are_bible
+                     else "SUBORDINATE CANONICAL FACTS")
+            parts.append(
+                f"{label} (binding only where compatible with the outline):\n{bible}"
+            )
+        parts.append(
+            "AUTHORITATIVE FULL OUTLINE (highest authority; chapter ownership, order, "
+            "identity, reveal timing, and chronology are immutable):\n" + outline
+        )
+        return "\n\n".join(parts)
+
     # -- per-worker scope -------------------------------------------------
     def scope_for(self, no: int) -> str:
         """Build the position-aware contract for chapter index `no` (0-based).
@@ -558,9 +599,11 @@ class SharedContext:
             )
         else:
             parts.append(
-                "CANONICAL FACTS: (none retrieved for this job — state NO specific "
-                "names, dates, numbers, quotes, or physical/documentary evidence descriptions "
-                "as fact; where you need one, write "
+                "CANONICAL FACTS: (none retrieved for this job — the exact names, dates, "
+                "numbers, relationships, and events explicitly stated in the AUTHORITATIVE "
+                "FULL OUTLINE remain allowed and immutable. Outside those outlined facts, "
+                "state NO additional specific names, dates, numbers, quotes, or physical/"
+                "documentary evidence descriptions as fact; where you need one, write "
                 "\"[VERIFY: ...]\" so an editor can fill it in.)"
             )
         return "\n\n".join(parts).strip()

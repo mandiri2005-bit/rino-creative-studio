@@ -126,7 +126,8 @@ def test_chapter_scope_is_a_falsifiable_user_only_cache_isolation_witness():
 def test_outline_authority_is_pinned_at_bible_creation_and_worker_consumption():
     fiction = dynamic._STORY_BIBLE_SYSTEM_FICTION
     nonfiction = dynamic._STORY_BIBLE_SYSTEM_NONFICTION
-    system = _compose_for(_ctx(2), 0).static_prefix
+    ctx = _ctx(2)
+    system = _compose_for(ctx, 0).static_prefix
 
     assert "immutable, highest-authority story specification" in fiction
     assert "Never override, correct, improve, or redistribute the outline" in fiction
@@ -134,7 +135,15 @@ def test_outline_authority_is_pinned_at_bible_creation_and_worker_consumption():
     assert "Rules: DECIDE concrete values" not in fiction
     assert "OVERRIDES heading 4" not in fiction
     assert "outline always wins over this sheet" in nonfiction
-    assert "AUTHORITATIVE FULL OUTLINE" in system
+    # Exact assembler-block witness. A broad substring check is vacuous because
+    # COHERENCE_RULES also says "AUTHORITATIVE FULL OUTLINE"; this assertion must
+    # fail if the actual outline label regresses to the old plain "FULL OUTLINE".
+    outline_label = (
+        "AUTHORITATIVE FULL OUTLINE (immutable story specification; if any other "
+        "prompt block conflicts with it, this outline wins):\n"
+    )
+    assert outline_label in system
+    assert system.rstrip().endswith(outline_label + ctx.outline())
     assert "which always wins any conflict" in system
     # The authoritative outline is deliberately the final static content block, after
     # the derived bible inside NARRATIVE BRIEF, so conflict precedence is also positional.

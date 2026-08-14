@@ -140,6 +140,33 @@ def _wq(s, n: int = 110) -> str:
     return f'"{s}"' if s else ""
 
 
+def _narrative_authority_text(result: dict) -> str:
+    """Read the private MAP authority packet without widening the public result."""
+    packet = result.get("_narrative_authority") if isinstance(result, dict) else None
+    if not isinstance(packet, dict):
+        return ""
+    text = packet.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _diet_rewrite_messages(user_content: str, authority_text: str) -> list[dict[str, str]]:
+    """Build the diet request; empty authority preserves its legacy one-turn shape."""
+    messages = [{"role": "user", "content": user_content}]
+    authority_text = str(authority_text or "").strip()
+    if authority_text:
+        messages.insert(0, {
+            "role": "system",
+            "content": (
+                "Perform only the requested surgical reductions. The narrative "
+                "authority below is immutable; never rename or re-identify a "
+                "character, move a beat between chapters, change reveal timing, "
+                "or invent chronology. If a reduction conflicts with it, preserve "
+                "the original prose instead.\n\n" + authority_text
+            ),
+        })
+    return messages
+
+
 def _canon_chapter_lookup(chapters) -> dict:
     """CANON-FORK CLASSIFIER WIDENING (2026-07-17, part a/b): build a {1-indexed chapter
     number -> content} map from result['chapters']. chapter_records' 'no' is 0-INDEXED
@@ -2520,6 +2547,11 @@ async def _run_narration_job_after_parity(
             log.warning(
                 "canon lite l3: repair seam unavailable "
                 "(error_code=l3_seam_error)")
+    # Private prompt material must not cross the persistence boundary. The bounded
+    # result payload already ignores unknown keys; the explicit pop also prevents a
+    # future broad serializer or chapter persistence refactor from leaking the raw
+    # outline/Bible packet.
+    result.pop("_narrative_authority", None)
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -2552,6 +2584,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         return
     style = str(body.get("style") or "").strip()
     language = str(body.get("language") or "id").strip()
+    # Exact snapshot from orchestrator.static after every outline/Bible amendment.
+    # Do not reconstruct it from body["chapters"] here: that request copy can be stale
+    # and, on the explicit-outline path, is not necessarily the object the MAP used.
+    _authority_text = _narrative_authority_text(result)
 
     # ── (0.05) FRONT-MATTER STRIP — runs BEFORE every scan (NARASI_FRONTMATTER_STRIP, default OFF, round-8):
     # roll-12 exported the ENTIRE production brief — bilingual synopsis, episode
@@ -2649,10 +2685,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     # plenty. Older 1.45 × 1.25 = 1.81 bloat gave Opus room to expand.
                     _mult = float(os.environ.get("NARASI_DIET_MAX_TOKENS_MULT", "1.15"))
                     mt = min(32000, int(len(book.split()) * 1.45 * _mult) + 400)
+                    _diet_messages = _diet_rewrite_messages(
+                        instr + "\n\nMANUSCRIPT:\n" + book, _authority_text)
                     resp = await asyncio.wait_for(asyncio.to_thread(
                         lambda: cli.chat.completions.create(
                             model=model,
-                            messages=[{"role": "user", "content": instr + "\n\nMANUSCRIPT:\n" + book}],
+                            messages=_diet_messages,
                             max_tokens=mt, stream=False)),
                         timeout=float(os.environ.get("NARASI_DIET_TIMEOUT", "300")))
                     # A2: this is a real (up to 32k-token Opus) call — it MUST be metered
@@ -4986,7 +5024,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             _v3g_new, _v3g_cr = await _narasi_consistency_revise(
                 _gbook0, {"violations": _v3g_merged}, style, language,
                 model=(body.get("model") or ""),
-                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, credit_row=False)
+                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                credit_row=False, authority_text=_authority_text)
             _v3g_t_rev = time.monotonic() - _v3g_t_rev0
             # P0A: recorded HERE, inside the branch that actually ran a revise — reading
             # the variable after the block would report the 0.0 initialiser as a

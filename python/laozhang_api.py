@@ -9017,6 +9017,22 @@ _REVISE_TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_len
 # counters' gloss/dash handling (_GLOSS_RX et al.) already treats – as equivalent to —/-- for
 # interrupted-dialogue/thought dashes, so this check's accepted set should too.
 _REVISE_TAIL_UNTERMINATED_RX = _re.compile(r'(?:[.!?…]|—|–|--)["\'’”»\)\]]*\s*$')
+_REVISE_HEADLINE_RX = _re.compile(
+    r'(?m)^[^\w\n]*(?:##[ \t]|(?:Chapter|Bab|BAB|Chapitre|Cap[íi]tulo)[ \t]+\d+).*$')
+
+
+def _revise_authority_suffix(authority_text: str) -> str:
+    """System-priority authority for rewrite calls; empty keeps legacy bytes."""
+    authority_text = str(authority_text or "").strip()
+    if not authority_text:
+        return ""
+    return (
+        "\n\nThe narrative authority below is immutable and outranks every "
+        "consistency finding or editing instruction. Never rename or re-identify a "
+        "character, move an outlined beat to another chapter, change reveal timing, "
+        "or invent chronology. If a requested fix conflicts with it, leave that prose "
+        "unchanged.\n\n" + authority_text
+    )
 
 
 def _revise_min_severities():
@@ -9030,7 +9046,8 @@ def _revise_min_severities():
 
 
 async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
-                                 tenant_id, user_id, job_uuid, phase="revise", credit_row: bool = True):
+                                 tenant_id, user_id, job_uuid, phase="revise",
+                                 credit_row: bool = True, authority_text: str = ""):
     """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
     violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
@@ -9206,6 +9223,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                     "every sentence not carrying a fix must be preserved verbatim. Never INVENT "
                     "filler sentences to reach a word target either — the band is satisfied by "
                     "preserving the original text, not by padding.")
+            _sys += _revise_authority_suffix(authority_text)
             _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
                   f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
             _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
@@ -9394,6 +9412,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                 "every sentence not carrying a fix must be preserved verbatim. Never INVENT "
                 "filler sentences to reach a word target either — the band is satisfied by "
                 "preserving the original text, not by padding.")
+        _sys += _revise_authority_suffix(authority_text)
         _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
               f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
         _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
@@ -9554,7 +9573,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
 
 
 async def _narasi_consistency_revise(full_text, critique, style, language, *, model,
-                                     tenant_id, user_id, job_uuid, credit_row: bool = True):
+                                     tenant_id, user_id, job_uuid,
+                                     credit_row: bool = True, authority_text: str = ""):
     """Whole-book consistency revise (DISPATCHER). NARASI_REVISE_CHUNKED=1 → per-chapter CHUNKED path
     (bounded output per chapter → robust to a per-request output cap); default (0) → the whole-book
     path below (now a 128K output ceiling). Both minimal-edit + length-preserving; the whole-book path
@@ -9583,7 +9603,8 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             return await _narasi_revise_chunked(
                 full_text, viol, style, language, rev_model,
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                phase="canon_diff_revise", credit_row=credit_row)
+                phase="canon_diff_revise", credit_row=credit_row,
+                authority_text=authority_text)
         except Exception as _ce:
             import logging as _lg
             _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
@@ -9601,6 +9622,7 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             "problem — reword only the sentences carrying the contradiction; keep every other "
             "sentence, the chapter count and headings, the length, the style and language "
             "IDENTICAL. Return the FULL corrected book (all chapters, same headings), nothing else.")
+    _sys += _revise_authority_suffix(authority_text)
     _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[CONSISTENCY PROBLEMS TO FIX]\n{directives}"
           f"\n\n[FULL BOOK — return the corrected version, unchanged except for the fixes]\n{full_text}")
     try:
@@ -9642,6 +9664,33 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             "finish_reason=%s, max_tokens=%d, model=%s, cr=%d",
             _ow, _nw, int(_ow * 0.9), _fr, safe_max, resolved, int(cr))
         return full_text, 0
+    if authority_text:
+        # An authority-bound whole-book pass is allowed to repair prose, not to
+        # restructure the book or silently replace it with another story. The old
+        # >=90%-words gate admits a 100%-different manuscript of the same length;
+        # pin heading identity/order and require the edit to remain genuinely local.
+        _old_heads = _REVISE_HEADLINE_RX.findall(full_text or "")
+        _new_heads = _REVISE_HEADLINE_RX.findall(new)
+        if _old_heads != _new_heads:
+            import logging as _lgh
+            _lgh.getLogger("narasi").warning(
+                "whole-book revise DISCARDED: authority-bound heading sequence changed")
+            return full_text, 0
+        import difflib as _wdifflib
+        _whole_fid = _wdifflib.SequenceMatcher(
+            None, (full_text or "").split(), new.split()).ratio()
+        try:
+            _whole_min_fid = float(os.getenv(
+                "NARASI_REVISE_WHOLE_MIN_FIDELITY", "0.80"))
+        except Exception:
+            _whole_min_fid = 0.80
+        _whole_min_fid = min(1.0, max(0.0, _whole_min_fid))
+        if _whole_fid < _whole_min_fid:
+            import logging as _lgf
+            _lgf.getLogger("narasi").warning(
+                "whole-book revise DISCARDED: authority-bound fidelity %.2f below %.2f",
+                _whole_fid, _whole_min_fid)
+            return full_text, 0
     return new, int(cr)
 
 

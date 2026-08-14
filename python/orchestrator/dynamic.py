@@ -1109,11 +1109,14 @@ _STORY_BIBLE_SYSTEM_FICTION = (
     "given (e.g. \"46 years old\" and \"an inspector for nineteen years\" before an earlier role), "
     "confirm the arithmetic is possible — do not let the combination imply an impossible start age "
     "— and cross-check it against any other biographical fact (a firing date, an origin year) "
-    "pinned elsewhere in this sheet. NAME DIVERSITY: choose DISTINCT, "
-    "fresh names and vary them across the cast — avoid the over-used defaults an LLM reaches for "
-    "first (for Korean settings do NOT default to Min-woo / Seo / Park / Ji-min / Mi-young; apply "
-    "the same 'avoid the obvious default' rule to any culture), and make sure no two characters "
-    "share a starting syllable or rhyme, so the reader never confuses them.\n"
+    "pinned elsewhere in this sheet. NAME DIVERSITY applies ONLY to characters the accepted "
+    "outline leaves unnamed. Every name explicitly present in the outline is immutable even if "
+    "it resembles a common default or another cast member: use that exact spelling for that exact "
+    "role, never a fresher substitute and never an additional same-role person. For genuinely "
+    "unnamed characters, choose DISTINCT fresh names and vary them across the cast — avoid the "
+    "over-used defaults an LLM reaches for first (for Korean settings do NOT default to Min-woo / "
+    "Seo / Park / Ji-min / Mi-young; apply the same 'avoid the obvious default' rule to any "
+    "culture), and make sure no two newly invented names share a starting syllable or rhyme.\n"
     "2. CENTRAL SUBJECT — the ONE object / place / phenomenon the whole story turns on. Fix its "
     "identity and EVERY measurable attribute (type, size, age, distance, material, provenance, "
     "COUNT) so it is unmistakably the SAME thing in chapter 1 and the last chapter. If the "
@@ -1548,6 +1551,39 @@ def _structured_bible_response_format() -> dict:
         return {"type": "json_object"}
 
 
+def _outline_name_lock_names(topic: str, outline: list[dict]) -> tuple[str, ...]:
+    """Extract explicit romanized Korean full names from premise AND outline.
+
+    The former flag-gated implementation inspected only ``topic``; a chapter outline
+    could name the entire cast while a generic topic named nobody, so the lock was empty
+    on exactly the jobs that needed it.  This remains deliberately narrow rather than
+    pretending generic proper-name extraction is deterministic across languages.
+    """
+    source_parts = [str(topic or "")]
+    for chapter in outline or []:
+        if not isinstance(chapter, dict):
+            continue
+        source_parts.append(str(chapter.get("title") or ""))
+        source_parts.append(str(
+            chapter.get("summary", chapter.get("description", "")) or ""))
+    source = "\n".join(source_parts)
+    stop = {
+        "based", "adjacent", "side", "style", "related", "driven", "level",
+        "owned", "run", "led", "backed", "facing", "bound", "wide", "term",
+        "old", "new", "free", "born", "made", "year", "story", "life",
+        "class", "scale", "wing", "bank", "front", "long",
+    }
+    names: list[str] = []
+    for match in re.finditer(
+            r"\b([A-Z][a-z]+)\s+([A-Z][a-z]+(?:-[a-z]+)+)\b", source):
+        full = match.group(0)
+        if match.group(2).rsplit("-", 1)[-1].lower() in stop:
+            continue
+        if full not in names:
+            names.append(full)
+    return tuple(names[:12])
+
+
 async def build_story_bible(
     topic: str,
     outline: list[dict],
@@ -1643,37 +1679,22 @@ async def build_story_bible(
             "value of any fact stated more than once. A longer book needs MORE pinned names and "
             "facts, not a longer prose sheet — keep it a terse locked list. Any name or number a "
             "chapter needs that is NOT pinned here is a fork waiting to happen.")
-    # ROUND-14 PREMISE NAME LOCK (NARASI_PREMISE_NAME_LOCK, default OFF): the brief NAMES its
-    # leads (e.g. "Lee Seo-an", "Lee Hae-won"); roll-16 renamed them (Song/Do-yoon/Hwang) because
-    # best-of-3 reinvented the cast. Extract the premise-supplied full names and order the bible
-    # to USE THEM VERBATIM for those roles. Deterministic name grab (Latin given-surname shapes,
-    # incl. hyphenated Korean given names); append-only; no-op when the brief names no one.
-    if is_fiction and os.environ.get("NARASI_PREMISE_NAME_LOCK", "0").strip().lower() in ("1", "true", "yes", "on"):
-        try:
-            import re as _pnl_re
-            # ROUND-14 audit: the given-surname shape also matches hyphenated English
-            # adjectives/places ("New York-based", "Han River-side"). A romanized Korean
-            # given name never ends in a common English word — drop those tails.
-            _pnl_stop = {"based", "adjacent", "side", "style", "related", "driven", "level",
-                         "owned", "run", "led", "backed", "facing", "bound", "wide", "term",
-                         "old", "new", "free", "born", "made", "year", "story", "life",
-                         "class", "scale", "wing", "bank", "front", "born", "long"}
-            _pnl = []
-            for _m in _pnl_re.finditer(r"\b([A-Z][a-z]+)\s+([A-Z][a-z]+(?:-[a-z]+)+)\b", str(topic or "")):
-                _full = _m.group(0)
-                if _m.group(2).rsplit("-", 1)[-1].lower() in _pnl_stop:
-                    continue
-                if _full not in _pnl:
-                    _pnl.append(_full)
-            _pnl = _pnl[:8]
-            if _pnl:
-                system = system + (
-                    "\n\nADDENDUM — PREMISE NAME LOCK: the brief names these characters — use each "
-                    "EXACTLY as written for that same role, never a re-invented substitute: "
-                    + ", ".join(_pnl) + ". You may add fresh names ONLY for characters the brief "
-                    "leaves unnamed.")
-        except Exception:  # noqa: BLE001
-            pass
+    # OUTLINE NAME LOCK — always on when the accepted premise/outline contains an
+    # explicit romanized Korean full name. The old NARASI_PREMISE_NAME_LOCK was OFF
+    # by default and inspected only `topic`; the rooftop outline named Kang Tae-jun,
+    # Cha Eun-soo and Cha Min-jae while its topic named nobody, so the Bible was still
+    # invited to "choose fresh names" and substituted Kim Do-hyun. No new call and no
+    # prompt growth when this narrow deterministic extractor finds no name.
+    _locked_names: tuple[str, ...] = ()
+    if is_fiction:
+        _locked_names = _outline_name_lock_names(topic, outline)
+        if _locked_names:
+            system = system + (
+                "\n\nADDENDUM — OUTLINE NAME LOCK: the accepted premise/outline names these "
+                "characters — use each EXACTLY as written for that same role, never a "
+                "re-invented substitute and never an additional same-role person: "
+                + ", ".join(_locked_names)
+                + ". You may add fresh names ONLY for characters the outline leaves unnamed.")
     if is_fiction and os.environ.get("NARASI_CRAFT_LEVERS", "0").strip().lower() in ("1", "true", "yes", "on"):
         system = system + (
             "\n\nADDENDUM to heading 1 (CHARACTERS) — SECONDARY DEPTH: for each NAMED secondary who "
@@ -2309,6 +2330,23 @@ async def build_story_bible(
                 # instead of a fact-sheet with a JSON block stapled to it. The registry
                 # rides out separately to its own consumer; see `_bible_return`.
                 _bible_text, _semantic_raw, _registry_raw = _decoded
+            # Deterministic outline-name acceptance gate. Prompt wording alone did not
+            # prevent the live Kang Tae-jun -> Kim Do-hyun substitution. A Bible that
+            # omits any explicitly locked name is not a derived sheet for this outline;
+            # fail this attempt over rather than fan the wrong identity into every MAP
+            # worker. Counts only — never log user names or generated prose.
+            if _locked_names:
+                _missing_locked = [name for name in _locked_names
+                                   if name not in _bible_text]
+                if _missing_locked:
+                    log.warning(
+                        "build_story_bible: model %s omitted %d/%d outline-locked "
+                        "name(s) (error_code=outline_name_lock_unmet, attempt %d/%d)%s",
+                        _mdl, len(_missing_locked), len(_locked_names),
+                        _i + 1, len(_chain),
+                        " — failing over" if _i + 1 < len(_chain)
+                        else " — no attempts left")
+                    continue
             # DETERMINISTIC REAL-BRAND COLLISION CHECK (this session — "Daesung 72x" defect,
             # job funym2wo): report-only, unconditional (no flag gate — pure logging, ZERO
             # behavior change to the returned bible), runs ONCE right after generation, BEFORE
