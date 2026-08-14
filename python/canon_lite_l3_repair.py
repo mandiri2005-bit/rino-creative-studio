@@ -100,6 +100,7 @@ __all__ = [
     "REASON_COVERAGE_REGRESSED",
     "REASON_GUARD_REJECTED",
     "REASON_PROVIDER_FAILED",
+    "REASON_REEXTRACTION_FAILED",
     "REASON_INVALID_CANDIDATE",
     "REASON_EXTRACTOR_IDENTITY",
     "RepairError",
@@ -147,13 +148,29 @@ REASON_INEFFECTIVE = "ineffective"
 REASON_REGRESSED = "introduced_new_violation"
 REASON_COVERAGE_REGRESSED = "coverage_regressed"
 REASON_GUARD_REJECTED = "guard_rejected"
+#: The REPAIR CANDIDATE call raised. Rare by construction: `RepairProvider`
+#: implementations are contracted to DECLINE (return None) rather than raise on an
+#: ordinary provider fault — see `L3AssistSession.repair_provider`'s own docstring —
+#: so a raise reaching here means something outside that contract (budget
+#: accounting, a lazy import, worker construction) failed, not a generation miss.
 REASON_PROVIDER_FAILED = "provider_failed"
+#: 🔴 SPLIT FROM `REASON_PROVIDER_FAILED` — THEY MEANT DIFFERENT FAILURES AND SHARED ONE
+#:    WORD. Live canary `19444d6` showed `unresolved_reasons: {'provider_failed': 3}` on
+#:    all three chapters with the REPAIR call never having failed (its own
+#:    `l3_repair_generation_error` log line never fired) — the actual failure was in
+#:    RE-EXTRACTING the candidate's claims to verify the repair, a call this engine
+#:    treats as a fault (`break`, no retry) exactly like a generation fault, but which is
+#:    a different subsystem (the QC extraction path) with its own bounded reason
+#:    vocabulary logged at `L3AssistSession.extract_chapter`
+#:    (`error_code=l3_repair_reextraction_error`). An operator reading ONE coarse word
+#:    could not tell "the writer failed" from "the checker failed" — now they can.
+REASON_REEXTRACTION_FAILED = "reextraction_failed"
 REASON_INVALID_CANDIDATE = "invalid_candidate"
 REASON_EXTRACTOR_IDENTITY = "extractor_identity_mismatch"
 REASONS = (
     REASON_NONE, REASON_INEFFECTIVE, REASON_REGRESSED, REASON_COVERAGE_REGRESSED,
-    REASON_GUARD_REJECTED, REASON_PROVIDER_FAILED, REASON_INVALID_CANDIDATE,
-    REASON_EXTRACTOR_IDENTITY,
+    REASON_GUARD_REJECTED, REASON_PROVIDER_FAILED, REASON_REEXTRACTION_FAILED,
+    REASON_INVALID_CANDIDATE, REASON_EXTRACTOR_IDENTITY,
 )
 
 
@@ -630,8 +647,10 @@ async def repair_manuscript(
                 fresh = await extract_chapter(
                     chapter_index=index, chapter_id=block.chapter_id,
                     block_bytes=candidate, canon=canon)
-            except Exception:  # noqa: BLE001
-                reason = REASON_PROVIDER_FAILED
+            except Exception:  # noqa: BLE001 - the adapter already logged a bounded
+                # code for WHY (error_code=l3_repair_reextraction_error); this engine
+                # stays provider-agnostic and records only WHICH phase failed.
+                reason = REASON_REEXTRACTION_FAILED
                 break
             if not _binding_ok(fresh, chapter_index=index,
                                chapter_id=block.chapter_id, candidate=candidate,

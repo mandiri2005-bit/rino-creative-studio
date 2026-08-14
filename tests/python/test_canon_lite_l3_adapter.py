@@ -111,6 +111,66 @@ def test_the_adapter_never_reaches_for_a_second_wave():
 
 
 # ── 2. the budget is the session's own ──────────────────────────────────────
+def test_reextraction_failure_is_classified_with_the_extractors_own_vocabulary(caplog):
+    """🔴 THIS SITE WAS THE UNNAMED HALF OF `provider_failed` — see canon_lite_l3_repair's
+    `REASON_REEXTRACTION_FAILED` docstring for the live canary this traces back to.
+    `extract_chapter` must classify a re-extraction fault with the SAME bounded
+    vocabulary `canon_lite_extractor` already uses for a first-pass extraction failure
+    (never inventing a second, narrower one), log it as ONE bounded line, then re-raise
+    so the engine still records the failure as an outcome."""
+    class _KnownFault(RuntimeError):
+        """Shaped like the real QcProviderError: a `.code` from the closed vocabulary,
+        never provider text. Built by hand rather than importing the real class, which
+        would violate this module's own lazy-import boundary from a non-metering host."""
+        def __init__(self, code):
+            self.code = code
+            super().__init__(code)
+
+    class _BoomMetered(_Metered):
+        async def __call__(self, request):
+            self.requests.append(request)
+            raise _KnownFault("qc_provider_timeout")
+
+    session = _session(metered=_BoomMetered())
+    canon = _entity_canon()
+    with caplog.at_level("WARNING"):
+        with pytest.raises(_KnownFault):
+            asyncio.run(session.extract_chapter(
+                chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon))
+
+    lines = [r.getMessage() for r in caplog.records
+             if "repair re-extraction failed" in r.getMessage()]
+    assert len(lines) == 1, f"expected exactly one bounded line, got {lines}"
+    assert "error_code=l3_repair_reextraction_error" in lines[0]
+    # the EXACT code the extractor's own vocabulary would give a first-pass failure —
+    # not just "some code, not obviously wrong"
+    assert "reason=qc_provider_timeout" in lines[0]
+    assert "boom" not in lines[0], "the raw exception message must never reach the log"
+
+
+def test_reextraction_failure_falls_back_to_other_when_unclassifiable(caplog):
+    """The other half of the classifier: an exception carrying no bounded code at all
+    (not a QcProviderError, not a CanonSchemaError) must still produce a CLOSED-vocabulary
+    reason — 'other' — never leak its own message into the reason itself."""
+    class _BoomMetered(_Metered):
+        async def __call__(self, request):
+            self.requests.append(request)
+            raise TimeoutError("boom")
+
+    session = _session(metered=_BoomMetered())
+    canon = _entity_canon()
+    with caplog.at_level("WARNING"):
+        with pytest.raises(TimeoutError):
+            asyncio.run(session.extract_chapter(
+                chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon))
+
+    lines = [r.getMessage() for r in caplog.records
+             if "repair re-extraction failed" in r.getMessage()]
+    assert len(lines) == 1
+    assert "reason=other" in lines[0]
+    assert "boom" not in lines[0]
+
+
 def test_the_session_budget_is_independent_of_the_engine_bound():
     session = _session(max_calls=2)
     canon = _entity_canon()

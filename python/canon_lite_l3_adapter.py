@@ -215,13 +215,32 @@ class L3AssistSession:
             chapter_index=0, chapter_id=block.chapter_id,
             content_sha256=block.content_sha256, canon_sha256=canon.canon_sha256,
             attempt=1, chapter_bytes=mini.block_bytes(0), canon=canon)
-        _ext._preflight_request(request, snapshot=mini, index=0, canon=canon)
-        raw = await self._metered(request)
-        payload = _ext._provider_payload(
-            raw, snapshot=mini, index=0,
-            model_version=_qc.QC_MODEL_UPSTREAM, prompt_sha256=_qc.PROMPT_SHA256,
-            canon_sha256=canon.canon_sha256)
-        artifact = _l2.parse_chapter_claims(payload, snapshot=mini, canon=canon)
+        try:
+            _ext._preflight_request(request, snapshot=mini, index=0, canon=canon)
+            raw = await self._metered(request)
+            payload = _ext._provider_payload(
+                raw, snapshot=mini, index=0,
+                model_version=_qc.QC_MODEL_UPSTREAM, prompt_sha256=_qc.PROMPT_SHA256,
+                canon_sha256=canon.canon_sha256)
+            artifact = _l2.parse_chapter_claims(payload, snapshot=mini, canon=canon)
+        except Exception as exc:  # noqa: BLE001 - bounded classification, then re-raise
+            # 🔴 THIS SITE WAS THE UNNAMED HALF OF `provider_failed`. Live canary
+            #    `19444d6`'s L3 record showed `unresolved_reasons: {'provider_failed': 3}`
+            #    on ALL THREE chapters after QC extraction itself had already succeeded
+            #    on attempt 1 (no timeout, no quote_ambiguous) — meaning the failure was
+            #    NOT in the repair generation call (`repair_provider` above logs its own
+            #    `l3_repair_generation_error` and did not fire) but in THIS re-verification
+            #    pass, and canon_lite_l3_repair.py's bare `except Exception` had nothing
+            #    more specific to report than the one word "provider_failed" either way.
+            #    Reusing `canon_lite_extractor`'s own classifiers means a repair
+            #    re-extraction failure is described in the EXACT SAME bounded vocabulary
+            #    as a first-pass extraction failure — `qc_provider_timeout`,
+            #    `quote_ambiguous`, `schema_invalid`, etc. — instead of inventing a
+            #    second, narrower one for this call site alone.
+            _code = _ext._provider_error_code(exc) or _ext._extraction_reason_code(exc)
+            log.warning("canon lite l3: repair re-extraction failed "
+                        "(error_code=l3_repair_reextraction_error reason=%s)", _code)
+            raise
 
         # 🔴 STAMPED, AND SAID SO. A one-block request is index 0 by construction, so
         #    these two fields carry no information about which chapter was really

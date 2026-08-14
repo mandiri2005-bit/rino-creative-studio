@@ -556,6 +556,33 @@ def test_a_provider_that_raises_leaves_the_chapter_untouched():
     assert not run.changed
 
 
+def test_a_raising_reextractor_is_distinguished_from_a_raising_repair_provider():
+    """🔴 THE SPLIT THIS COMMIT EXISTS FOR. Live canary `19444d6` reported
+    `unresolved_reasons: {'provider_failed': 3}` on all three chapters while the repair
+    GENERATION call had not failed at all — the failure was in RE-EXTRACTING the
+    candidate to verify it, a different subsystem entirely. Before this fix both raised
+    the identical `REASON_PROVIDER_FAILED`, so nothing distinguished "the writer failed"
+    from "the checker failed"."""
+    class _BoomExtractor(_Extractor):
+        async def __call__(self, **kw):
+            self.calls.append(kw["chapter_index"])
+            raise RuntimeError("qc_provider_timeout")  # simulates a real bounded fault
+
+    snap, canon, claims, result = _setup()
+    extractor = _BoomExtractor()
+    run = _run(snap, canon, claims, result, _Provider(lambda b: _fixed_block(snap)),
+              extractor)
+    rec = run.chapters[0]
+
+    assert rec.outcome == rp.OUTCOME_UNRESOLVED
+    assert rec.last_reason == rp.REASON_REEXTRACTION_FAILED, (
+        f"got {rec.last_reason!r} — a re-extraction fault must not collapse into the "
+        f"generic {rp.REASON_PROVIDER_FAILED!r} the repair-GENERATION path uses")
+    assert rec.last_reason != rp.REASON_PROVIDER_FAILED
+    assert len(extractor.calls) == 1, "a raising extractor was retried"
+    assert not run.changed
+
+
 @pytest.mark.parametrize("bad", [None, "", b"", b"   ", "not bytes",
                                  b"\xff\xfe not utf8", b"## Bab Lain\nisi.\n"])
 def test_an_unusable_candidate_is_rejected_without_touching_the_bytes(bad):
