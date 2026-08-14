@@ -140,11 +140,14 @@ def _wq(s, n: int = 110) -> str:
     return f'"{s}"' if s else ""
 
 
-def _narrative_authority_text(result: dict) -> str:
+def _narrative_authority_packet(result: dict) -> dict:
     """Read the private MAP authority packet without widening the public result."""
     packet = result.get("_narrative_authority") if isinstance(result, dict) else None
-    if not isinstance(packet, dict):
-        return ""
+    return packet if isinstance(packet, dict) else {}
+
+
+def _narrative_authority_text(result: dict) -> str:
+    packet = _narrative_authority_packet(result)
     text = packet.get("text")
     return text.strip() if isinstance(text, str) else ""
 
@@ -2596,7 +2599,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # Exact snapshot from orchestrator.static after every outline/Bible amendment.
     # Do not reconstruct it from body["chapters"] here: that request copy can be stale
     # and, on the explicit-outline path, is not necessarily the object the MAP used.
+    _authority_packet = _narrative_authority_packet(result)
     _authority_text = _narrative_authority_text(result)
+    _outline_packets = _authority_packet.get("outline_packets_by_chapter")
+    if not isinstance(_outline_packets, dict):
+        _outline_packets = {}
 
     # ── (0.05) FRONT-MATTER STRIP — runs BEFORE every scan (NARASI_FRONTMATTER_STRIP, default OFF, round-8):
     # roll-12 exported the ENTIRE production brief — bilingual synopsis, episode
@@ -5032,11 +5039,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         try:
             from laozhang_api import _narasi_consistency_revise
             _v3g_t_rev0 = time.monotonic()
+            _v3g_revise_request = {"violations": _v3g_merged}
             _v3g_new, _v3g_cr = await _narasi_consistency_revise(
-                _gbook0, {"violations": _v3g_merged}, style, language,
+                _gbook0, _v3g_revise_request, style, language,
                 model=(body.get("model") or ""),
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                credit_row=False, authority_text=_authority_text)
+                credit_row=False, authority_text=_authority_text,
+                outline_packets=_outline_packets)
+            if isinstance(_v3g_revise_request.get("structural_patch"), dict):
+                result["structural_patch"] = _v3g_revise_request["structural_patch"]
             _v3g_t_rev = time.monotonic() - _v3g_t_rev0
             # P0A: recorded HERE, inside the branch that actually ran a revise — reading
             # the variable after the block would report the 0.0 initialiser as a
@@ -5280,6 +5291,11 @@ def _result_payload(result: dict) -> dict:
         # phantom-name scan (0.75) — bounded: <=8 names, one short snippet each
         "phantom_name_report": result.get("phantom_name_report"),
     }
+    # Bounded mixed-routing outcome. Present only if consistency-revise ran;
+    # the nested schema_version pins its consumer contract.
+    _structural_patch = result.get("structural_patch")
+    if _structural_patch:
+        payload["structural_patch"] = _structural_patch
     # 🔴 L3-ASSIST: ADDED ONLY WHEN THERE IS ONE. Listing it beside the keys above
     #    would put `canon_lite_binding: null` on every off/shadow job's persisted
     #    payload — a shape change to jobs that never ran assist, which is exactly

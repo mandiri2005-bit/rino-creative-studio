@@ -9162,7 +9162,8 @@ def _revise_min_severities():
 
 async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                                  tenant_id, user_id, job_uuid, phase="revise",
-                                 credit_row: bool = True, authority_text: str = ""):
+                                 credit_row: bool = True, authority_text: str = "",
+                                 excluded_chapter_numbers=None):
     """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
     violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
@@ -9189,6 +9190,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     false-reject legit continuity fixes."""
     import re as _re
     resolved = MODELS.get(rev_model, rev_model)
+    _excluded_chapter_numbers = frozenset(excluded_chapter_numbers or ())
 
     def _spans(ev):
         # Pull the quoted book-text out of a violation's evidence (straight + curly quotes); the
@@ -9278,6 +9280,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # takes priority — a violation with both a quote and an @chN locator can match via either
         # (e.g. when the quote no longer matches verbatim after polish, the @chN locator still
         # routes it correctly; see _chn_locators/_vspans build above).
+        if _part_chnums[p_idx] in _excluded_chapter_numbers:
+            return False
         if any(s and _occ(s, p_text) for s in sps):
             return True
         return bool(chnos) and _part_chnums[p_idx] in chnos
@@ -9705,9 +9709,219 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     return "".join(out), total_cr
 
 
+_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v1"
+_STRUCTURAL_PATCH_NOT_ATTEMPTED_REASONS = frozenset({
+    "attempt_cap",
+    "outline_packet_missing",
+    "segmentation_failure",
+})
+
+
+def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
+                                     attempted=0, accepted=0,
+                                     not_attempted_reason_counts=None,
+                                     deferred_by_chapter=None,
+                                     manuscript_changed=None):
+    """Build and assert the bounded four-state mixed-routing summary."""
+    reasons = {
+        str(key): int(value)
+        for key, value in (not_attempted_reason_counts or {}).items()
+        if key in _STRUCTURAL_PATCH_NOT_ATTEMPTED_REASONS and int(value) > 0
+    }
+    deferred = [
+        {"chapter_index": int(chapter_no) - 1, "count": int(count)}
+        for chapter_no, count in sorted((deferred_by_chapter or {}).items())
+        if int(chapter_no) > 0 and int(count) > 0
+    ]
+    targeted, attempted, accepted = int(targeted), int(attempted), int(accepted)
+    if targeted == 0:
+        status = "not_targeted"
+    elif attempted == 0:
+        status = "targeted_not_attempted"
+    elif accepted == 0:
+        status = "attempted_no_accept"
+    else:
+        status = "accepted"
+    if not (0 <= accepted <= attempted <= targeted):
+        raise AssertionError("structural patch counter invariant")
+    if sum(reasons.values()) != targeted - attempted:
+        raise AssertionError("structural patch not-attempted invariant")
+    if status == "not_targeted" and (targeted or attempted or accepted):
+        raise AssertionError("structural patch not-targeted invariant")
+    if accepted > 0 and manuscript_changed is False:
+        raise AssertionError("structural patch accepted-without-change invariant")
+    return {
+        "schema_version": _STRUCTURAL_PATCH_SUMMARY_VERSION,
+        "status": status,
+        "structural_violations": int(structural_violations),
+        "chapters_targeted": targeted,
+        "chapters_attempted": attempted,
+        "chapters_accepted": accepted,
+        "not_attempted_reason_counts": reasons,
+        "deferred_nonstructural_total": sum(item["count"] for item in deferred),
+        "deferred_nonstructural_by_chapter": deferred,
+    }
+
+
+def _narasi_publish_structural_patch_summary(critique, summary):
+    if isinstance(critique, dict):
+        critique["structural_patch"] = summary
+    import logging as _slog
+    _slog.getLogger("narasi").info(
+        "structural patch summary: %s",
+        json.dumps(summary, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _narasi_violation_chapter_number(violation):
+    """Return one validated 1-based locator, without fuzzy prose inference."""
+    if not isinstance(violation, dict):
+        return None
+    declared = violation.get("chapter")
+    if type(declared) is int and declared > 0:
+        return declared
+    matches = _re.findall(r"@ch(\d+)", str(violation.get("evidence") or ""), flags=_re.IGNORECASE)
+    numbers = {int(value) for value in matches if int(value) > 0}
+    return next(iter(numbers)) if len(numbers) == 1 else None
+
+
+def _narasi_split_patch_chapters(full_text):
+    """Split a book exactly; return [(chapter_number|None, exact_part), ...]."""
+    opener = r'(?:##[ \t]|(?:Chapter|Bab|BAB|Chapitre|Cap[íi]tulo)[ \t]+\d+)'
+    parts = _re.split(r'(?m)(?=^[^\w\n]*' + opener + r')', full_text or "")
+    output = []
+    for part in parts:
+        match = _re.match(r'(?m)^[^\w\n]*' + opener + r'.*$', part)
+        number = None
+        if match:
+            digit = _re.search(r'\d+', match.group(0))
+            number = int(digit.group(0)) if digit else None
+        output.append((number, part))
+    return output
+
+
+async def _narasi_structural_patch_revise(full_text, violations, style, language, rev_model, *,
+                                           tenant_id, user_id, job_uuid, credit_row=True,
+                                           authority_text="", outline_packets=None):
+    """Classic-only provider adapter over the pure addressed-patch core."""
+    from narasi_addressed_patch import (
+        PATCH_SCHEMA_VERSION,
+        PatchValidationError,
+        apply_addressed_patch,
+        segment_chapter,
+    )
+
+    packet_map = outline_packets if isinstance(outline_packets, dict) else {}
+    parts = _narasi_split_patch_chapters(full_text)
+    by_number = {number: index for index, (number, part) in enumerate(parts) if number and part.strip()}
+    violations_by_chapter = {}
+    for violation in violations:
+        number = _narasi_violation_chapter_number(violation)
+        if number in by_number:
+            violations_by_chapter.setdefault(number, []).append(violation)
+    targeted_numbers = sorted(violations_by_chapter)
+    max_chapters = max(0, _envint("NARASI_REVISE_MAX_CHAPTERS", 4))
+    reason_counts = {}
+    attempted = accepted = total_cr = 0
+    resolved = MODELS.get(rev_model, rev_model)
+    output_parts = [part for _number, part in parts]
+
+    def _not_attempted(reason):
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    for target_position, chapter_number in enumerate(targeted_numbers):
+        if target_position >= max_chapters:
+            _not_attempted("attempt_cap")
+            continue
+        packet = packet_map.get(str(chapter_number), packet_map.get(chapter_number))
+        if not isinstance(packet, str) or not packet.strip():
+            _not_attempted("outline_packet_missing")
+            continue
+        part_index = by_number[chapter_number]
+        part = output_parts[part_index]
+        trail = part[len(part.rstrip()):]
+        original_chapter = part.rstrip()
+        try:
+            segmented = segment_chapter(original_chapter)
+        except PatchValidationError:
+            _not_attempted("segmentation_failure")
+            continue
+
+        directives = "\n".join(
+            f"- [{item.get('severity', '?')}/{item.get('type', '?')}] "
+            f"{str(item.get('evidence') or '')[:420]} -> FIX: {str(item.get('fix') or '')[:420]}"
+            for item in violations_by_chapter[chapter_number][:8]
+        )
+        system = (
+            "You repair structural continuity in ONE chapter by returning a strict JSON addressed patch. "
+            "Never return a full chapter, prose outside JSON, markdown fences, analysis, or quotes used as "
+            "addresses. IDs are the only addresses and refer to the ORIGINAL unit table. Use no more than "
+            "4 operations. Closed operations: insert_before {anchor_id,text}, insert_after {anchor_id,text}, "
+            "replace {unit_id,text}, move {unit_id,before_id OR after_id}. New prose must match the chapter's "
+            "language/style and end with terminal punctuation. Return exactly "
+            f'{{"schema_version":"{PATCH_SCHEMA_VERSION}","operations":[...]}}.'
+        )
+        system += _revise_authority_suffix(authority_text)
+        user = (
+            f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
+            f"[STRUCTURAL PROBLEMS IN CHAPTER {chapter_number}]\n{directives}\n\n"
+            f"[EXACT OUTLINE EXECUTION PACKET]\n{packet}\n\n"
+            f"[ORIGINAL ADDRESS TABLE]\n{segmented.annotated()}\n\n"
+            "[RESPONSE SHAPE]\nReturn strict JSON only. Apply the smallest sufficient patch."
+        )
+        attempted += 1
+        try:
+            response = await asyncio.wait_for(asyncio.to_thread(
+                lambda _s=system, _u=user: make_narasi_client(
+                    rev_model, phase="canon_diff_revise").chat.completions.create(
+                        model=resolved,
+                        messages=[{"role": "system", "content": _s}, {"role": "user", "content": _u}],
+                        temperature=0.1,
+                        max_tokens=min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 2400),
+                        response_format={"type": "json_object"},
+                        stream=False,
+                        timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
+                    )),
+                timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
+            )
+        except Exception:
+            continue
+        if not getattr(response, "choices", None):
+            continue
+        total_cr += int(await _log_narasi_usage(
+            tenant_id, user_id, rev_model, response, job_id=job_uuid, credit_row=credit_row) or 0)
+        raw_patch = _resp_content(response) or ""
+        try:
+            patched = apply_addressed_patch(segmented, raw_patch)
+        except PatchValidationError:
+            continue
+        original_words = len(original_chapter.split())
+        patched_words = len(patched.text.split())
+        floor, ceil = int(original_words * 0.9), int(original_words * 1.4)
+        if not (floor <= patched_words <= ceil):
+            continue
+        if not (int(len(original_chapter) * 0.75) <= len(patched.text) <= int(len(original_chapter) * 1.5)):
+            continue
+        output_parts[part_index] = patched.text + trail
+        accepted += 1
+
+    return (
+        "".join(output_parts),
+        total_cr,
+        {
+            "targeted": len(targeted_numbers),
+            "attempted": attempted,
+            "accepted": accepted,
+            "not_attempted_reason_counts": reason_counts,
+            "owned_chapter_numbers": set(targeted_numbers),
+        },
+    )
+
+
 async def _narasi_consistency_revise(full_text, critique, style, language, *, model,
                                      tenant_id, user_id, job_uuid,
-                                     credit_row: bool = True, authority_text: str = ""):
+                                     credit_row: bool = True, authority_text: str = "",
+                                     outline_packets=None):
     """Whole-book consistency revise (DISPATCHER). NARASI_REVISE_CHUNKED=1 → per-chapter CHUNKED path
     (bounded output per chapter → robust to a per-request output cap); default (0) → the whole-book
     path below (now a 128K output ceiling). Both minimal-edit + length-preserving; the whole-book path
@@ -9716,8 +9930,76 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
     for GATES-phase callers that already fold cr into a job-level running total. Never raises."""
     viol = critique.get("violations") or []
     if not viol:
+        _narasi_publish_structural_patch_summary(
+            critique, _narasi_structural_patch_summary())
         return full_text, 0
     rev_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
+    structural = [item for item in viol if _is_authority_structural_violation(item)]
+    if structural:
+        nonstructural = [item for item in viol if not _is_authority_structural_violation(item)]
+        try:
+            patched_text, patch_cr, patch_stats = await _narasi_structural_patch_revise(
+                full_text, structural, style, language, rev_model,
+                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                credit_row=credit_row, authority_text=authority_text,
+                outline_packets=outline_packets)
+        except Exception as patch_error:
+            import logging as _splog
+            _splog.getLogger("narasi").warning(
+                "structural patch adapter failed before targeting (%s) — original preserved",
+                type(patch_error).__name__)
+            patch_cr = 0
+            patch_stats = {
+                "targeted": 0,
+                "attempted": 0,
+                "accepted": 0,
+                "not_attempted_reason_counts": {},
+                "owned_chapter_numbers": set(),
+            }
+            patched_text = full_text
+
+        owned = set(patch_stats["owned_chapter_numbers"])
+        deferred_by_chapter = {}
+        legacy_violations = []
+        for item in nonstructural:
+            chapter_number = _narasi_violation_chapter_number(item)
+            if chapter_number in owned:
+                deferred_by_chapter[chapter_number] = deferred_by_chapter.get(chapter_number, 0) + 1
+            else:
+                legacy_violations.append(item)
+
+        legacy_cr = 0
+        final_text = patched_text
+        if legacy_violations:
+            try:
+                # Mixed runs are always chapter-scoped.  Structural-owned chapters are
+                # excluded even when quote-based evidence would otherwise locate there.
+                final_text, legacy_cr = await _narasi_revise_chunked(
+                    patched_text, legacy_violations, style, language, rev_model,
+                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                    phase="canon_diff_revise", credit_row=credit_row,
+                    authority_text=authority_text,
+                    excluded_chapter_numbers=owned)
+            except Exception as legacy_error:
+                import logging as _mixlog
+                _mixlog.getLogger("narasi").warning(
+                    "mixed non-structural chapter revise failed (%s) — structural result preserved",
+                    type(legacy_error).__name__)
+
+        summary = _narasi_structural_patch_summary(
+            structural_violations=len(structural),
+            targeted=patch_stats["targeted"],
+            attempted=patch_stats["attempted"],
+            accepted=patch_stats["accepted"],
+            not_attempted_reason_counts=patch_stats["not_attempted_reason_counts"],
+            deferred_by_chapter=deferred_by_chapter,
+            manuscript_changed=(patched_text != full_text),
+        )
+        _narasi_publish_structural_patch_summary(critique, summary)
+        return final_text, int(patch_cr or 0) + int(legacy_cr or 0)
+
+    _narasi_publish_structural_patch_summary(
+        critique, _narasi_structural_patch_summary())
     # CHUNKED revise (env-gated, DEFAULT OFF now the whole-book path has a 128K ceiling). Authority-
     # structural findings are the exception: they force this safer chapter-scoped lane so a
     # whole-book rewrite cannot fix one seam by moving other outlined beats. Otherwise, set
@@ -12620,6 +12902,14 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     # final whole-draft critic/revise runs after the chapter loop and otherwise has
     # no access to that authority, leaving its structural guard silently disabled.
     _narrative_authority = _narasi_classic_narrative_authority(outline, brief)
+    try:
+        from narasi_outline_packet import outline_packet_bundle as _outline_packet_bundle
+        _classic_outline_execution = _outline_packet_bundle(chapters)
+        _classic_outline_packets = _classic_outline_execution["packets_by_chapter"]
+    except Exception:
+        # Structural repair will publish outline_packet_missing per targeted chapter;
+        # generation itself remains fail-safe and unchanged.
+        _classic_outline_packets = {}
     lang_label = _resolve_narasi_lang(language)
     tmp_dir = Path(f"/app/data/narasi_temp/{job_id}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -13062,7 +13352,8 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
                     _full_book, _cq, style, language, model=model,
                     tenant_id=_narasi_tenant, user_id=_narasi_user,
                     job_uuid=_narasi_job_uuid,
-                    authority_text=_narrative_authority)
+                    authority_text=_narrative_authority,
+                    outline_packets=_classic_outline_packets)
                 _meter_actual += _revc
                 if _rev and _rev != _full_book:
                     _consistency_revised = _rev

@@ -14,6 +14,7 @@ import narration_api as na
 from orchestrator import dynamic
 from orchestrator import static
 from orchestrator.context_builder import SharedContext
+from narasi_outline_packet import OUTLINE_PACKET_CONTRACT_VERSION, outline_packet_bundle
 
 
 def _ctx() -> SharedContext:
@@ -47,6 +48,11 @@ def test_authority_packet_binds_the_exact_final_outline_and_bible():
         ctx.outline().encode("utf-8")).hexdigest()
     assert packet["bible_sha256"] == hashlib.sha256(
         ctx.canonical_facts.encode("utf-8")).hexdigest()
+    execution = outline_packet_bundle(ctx.chapters)
+    assert packet["outline_packet_contract_version"] == OUTLINE_PACKET_CONTRACT_VERSION
+    assert packet["outline_packet_bundle_sha256"] == execution["bundle_sha256"]
+    assert packet["outline_packets_by_chapter"] == execution["packets_by_chapter"]
+    assert packet["outline_packet_sha256_by_chapter"] == execution["packet_sha256_by_chapter"]
     assert packet["text"].index("SUBORDINATE STORY BIBLE") \
         < packet["text"].index("AUTHORITATIVE FULL OUTLINE (highest authority")
     assert packet["text"].rstrip().endswith(ctx.outline())
@@ -272,6 +278,7 @@ def test_gate_forwards_the_private_authority_to_consistency_revise(monkeypatch):
 
     assert captured["critic_authority_text"] == _authority()
     assert captured["authority_text"] == _authority()
+    assert captured["outline_packets"] == packet["outline_packets_by_chapter"]
 
 
 def test_authority_aware_critic_contract_names_the_canary_failure_classes():
@@ -302,6 +309,15 @@ def test_private_authority_never_enters_the_durable_payload():
     payload = na._result_payload(result)
     assert "_narrative_authority" not in payload
     assert "Kang Tae-jun" not in json.dumps(payload)
+
+
+def test_structural_patch_summary_persists_only_when_revise_published_it():
+    summary = lz._narasi_structural_patch_summary()
+    with_summary = na._result_payload({"book": "Text.", "structural_patch": summary})
+    without_summary = na._result_payload({"book": "Text."})
+
+    assert with_summary["structural_patch"] == summary
+    assert "structural_patch" not in without_summary
 
 
 class _FakeCompletions:
@@ -373,18 +389,22 @@ def test_whole_book_and_chunked_revise_receive_the_same_authority(monkeypatch):
         "never a template for your reply's length or register.")
 
 
-def test_authority_structural_finding_forces_chapter_scoped_repair(monkeypatch):
+def test_authority_structural_finding_forces_addressed_patch_repair(monkeypatch):
     monkeypatch.setenv("NARASI_REVISE_CHUNKED", "0")
     monkeypatch.setenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")
     captured: dict = {}
 
-    async def fake_chunked(full_text, violations, *args, **kwargs):
+    async def fake_patch(full_text, violations, *args, **kwargs):
         captured["full_text"] = full_text
         captured["violations"] = violations
         captured.update(kwargs)
-        return full_text, 0
+        return full_text, 0, {
+            "targeted": 1, "attempted": 0, "accepted": 0,
+            "not_attempted_reason_counts": {"outline_packet_missing": 1},
+            "owned_chapter_numbers": {2},
+        }
 
-    monkeypatch.setattr(lz, "_narasi_revise_chunked", fake_chunked)
+    monkeypatch.setattr(lz, "_narasi_structural_patch_revise", fake_patch)
     book = (
         "## Chapter 1: Return\nAlpha sentence.\n\n"
         "## Chapter 2: Reveal\nBeta sentence."
@@ -407,11 +427,11 @@ def test_authority_structural_finding_forces_chapter_scoped_repair(monkeypatch):
     assert captured["authority_text"] == _authority()
 
 
-def test_authority_structural_chunk_failure_never_falls_back_to_whole_book(monkeypatch):
+def test_authority_structural_patch_failure_never_falls_back_to_whole_book(monkeypatch):
     monkeypatch.setenv("NARASI_REVISE_CHUNKED", "0")
     monkeypatch.setenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")
 
-    async def broken_chunked(*args, **kwargs):
+    async def broken_patch(*args, **kwargs):
         raise RuntimeError("unsupported heading shape")
 
     # A RAISING tripwire cannot witness this on its own: the whole-book path wraps its
@@ -426,7 +446,7 @@ def test_authority_structural_chunk_failure_never_falls_back_to_whole_book(monke
         entered["whole_book"] = True
         raise AssertionError("authority repair must not enter whole-book rewrite")
 
-    monkeypatch.setattr(lz, "_narasi_revise_chunked", broken_chunked)
+    monkeypatch.setattr(lz, "_narasi_structural_patch_revise", broken_patch)
     monkeypatch.setattr(lz, "make_narasi_client", forbidden_client)
     book = (
         "## Chapter 1: Return\nAlpha sentence.\n\n"
@@ -512,6 +532,11 @@ def test_classic_final_revise_is_wired_to_its_exact_outline_authority():
          if kw.arg == "authority_text"), None)
     assert isinstance(authority_kw, ast.Name)
     assert authority_kw.id == "_narrative_authority"
+    packets_kw = next(
+        (kw.value for kw in revise_calls[0].keywords
+         if kw.arg == "outline_packets"), None)
+    assert isinstance(packets_kw, ast.Name)
+    assert packets_kw.id == "_classic_outline_packets"
 
     critique_calls = [
         node for node in ast.walk(tree)
