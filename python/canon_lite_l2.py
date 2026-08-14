@@ -624,7 +624,7 @@ def _nfc_segments(text: str) -> list[tuple[str, int, int]]:
     return rows
 
 
-def _locate_unique_nfc(haystack: bytes, needle: bytes):
+def _locate_unique_nfc(haystack: bytes, needle: bytes, *, allow_first: bool = False):
     """Locate one NFC-equivalent span and return its ORIGINAL byte boundaries.
 
     Only segment-aligned matches are eligible. That conservative rule prevents a
@@ -659,12 +659,39 @@ def _locate_unique_nfc(haystack: bytes, needle: bytes):
         end = position + len(target)
         if position in normalized_to_original and end in normalized_to_original:
             spans.add((normalized_to_original[position], normalized_to_original[end]))
-            if len(spans) > 1:
+            if len(spans) > 1 and not allow_first:
                 return _AMBIGUOUS
         position = normalized_source.find(target, position + 1)
     if not spans:
         return _NOT_FOUND
-    return next(iter(spans))
+    # `min` = EARLIEST span, deterministic. Only reachable with allow_first; the unique
+    # path has already refused anything with more than one span.
+    return min(spans) if allow_first else next(iter(spans))
+
+
+#: Claim types whose VERDICT cannot depend on which occurrence was cited.
+#:
+#: 🔴 PROVEN FROM `evaluate_semantic`, NOT ASSUMED. Both of these branches read only the
+#:    evidence TEXT — `_norm_text(evidence).strip().casefold()` against the entity's
+#:    names, `_norm_text(evidence).strip()` against the anchor's literal. Every match of
+#:    one needle is that same text (and NFC-equivalent matches normalize to it), so the
+#:    comparison returns the same answer whichever occurrence is bound. `one_time_event`
+#:    is deliberately ABSENT: its branch reads `canon_ref` only and ignores the evidence
+#:    (`_evidence`), but two occurrences of one phrase can evidence two different
+#:    moments, so WHICH span is cited is real provenance there and stays strict.
+_OCCURRENCE_INVARIANT_CLAIMS = frozenset({CLAIM_ENTITY_MENTION, CLAIM_FIXED_LITERAL})
+
+
+def _locate_first_equivalent(haystack: bytes, needle: bytes):
+    """EARLIEST occurrence — exact preferred, NFC-equivalent as fallback.
+
+    Only for `_OCCURRENCE_INVARIANT_CLAIMS`. Provenance stays honest: the offsets point
+    at a REAL occurrence of exactly this text, not at an invented location.
+    """
+    first = haystack.find(needle)
+    if first != -1:
+        return first, first + len(needle)
+    return _locate_unique_nfc(haystack, needle, allow_first=True)
 
 
 def _locate_unique_equivalent(haystack: bytes, needle: bytes):
@@ -956,9 +983,23 @@ def parse_chapter_claims(
                 raise _schema_error(f"claims[{i}]: quote not found in the chapter block",
                                     code=EXTRACT_REASON_QUOTE_NOT_FOUND)
             if located is _AMBIGUOUS:
-                raise _schema_error(
-                    f"claims[{i}]: quote is ambiguous in the chapter block",
-                    code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
+                # 🔴 AMBIGUITY IS ONLY A DEFECT WHERE IT CAN CHANGE THE ANSWER. For
+                #    entity_mention and fixed_literal the quote is the BARE name or
+                #    literal, so every occurrence carries the same text and
+                #    `evaluate_semantic` returns the same verdict for any of them —
+                #    refusing them bought nothing and cost the whole chapter. Live
+                #    canaries `gjpmhjzs` and `o2eeafh5` died exactly here: a recurring
+                #    character name has no unique form, which this module's own §6.2
+                #    note already recorded, and the fix at the time (make the MODEL
+                #    supply a unique `context`) is what kept failing.
+                #
+                #    `one_time_event` is NOT relaxed — see _OCCURRENCE_INVARIANT_CLAIMS.
+                if rc["claim_type"] in _OCCURRENCE_INVARIANT_CLAIMS:
+                    located = _locate_first_equivalent(block, needle)
+                if located is _AMBIGUOUS or located is _NOT_FOUND:
+                    raise _schema_error(
+                        f"claims[{i}]: quote is ambiguous in the chapter block",
+                        code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
             start, end = located
         else:
             # The CONTEXT is the locator; the QUOTE is still the evidence. The context

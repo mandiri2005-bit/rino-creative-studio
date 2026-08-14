@@ -381,20 +381,96 @@ def test_a_quote_that_is_not_in_the_chapter_is_rejected():
         l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
 
 
-def test_a_quote_appearing_twice_is_refused_rather_than_resolved():
-    """Ambiguity is a refusal, never a guess. Taking the first occurrence would pin the
-    claim to a location the extractor never chose, and the digest would then bind bytes
-    nobody cited."""
+def test_nfc_equivalent_repeats_bind_to_the_earliest_span():
+    """When the relaxation falls through to NFC equivalence, the span it picks must be
+    the EARLIEST — a deterministic choice, not whichever the set happened to yield.
+    `_locate_unique_nfc` collects spans in a set, so returning an arbitrary member would
+    make provenance vary between runs for identical input."""
+    nfc = "caf\u00e9"
+    nfd = "cafe\u0301"
+    assert nfc != nfd and nfc.encode() != nfd.encode()
+
+    haystack = f"{nfd} lalu {nfd} lagi".encode("utf-8")
+    needle = nfc.encode("utf-8")
+    assert haystack.find(needle) == -1, "no exact match — the NFC path must be exercised"
+    assert l2._locate_unique_nfc(haystack, needle) is l2._AMBIGUOUS
+
+    span = l2._locate_first_equivalent(haystack, needle)
+    assert span == (0, len(nfd.encode("utf-8"))), "the earliest occurrence, not any other"
+    assert haystack[span[0]:span[1]] == nfd.encode("utf-8"), (
+        "the span is the ORIGINAL decomposed bytes, never the normalized form")
+    assert all(l2._locate_first_equivalent(haystack, needle) == span for _ in range(20)), \
+        "deterministic across repeated calls"
+
+
+def test_a_quote_appearing_twice_is_refused_for_one_time_event():
+    """Ambiguity is still a refusal WHERE IT CAN CHANGE THE ANSWER. For a one_time_event
+    the quote is a phrase evidencing that the event happened, and two occurrences can
+    evidence two different moments — so binding to the first would misreport WHICH span
+    is the evidence. `one_time_event` is deliberately absent from
+    `_OCCURRENCE_INVARIANT_CLAIMS` for exactly this reason."""
     ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
                            alias_source="none")
-    canon = _canon(2, entities=(ent,))
+    ev = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1,
+                         label="Rina meninggalkan rumah")
+    canon = _canon(2, entities=(ent,), events=(ev,))
     snap = l2.materialize_final_snapshot(
         {"book": "## Bab 1\nRina pergi. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
     assert snap.block_bytes(0).count(b"Rina pergi") == 2
-    payload = _claim_payload(snap, canon=canon)
-    payload["claims"][0]["quote"] = "Rina pergi"
+    payload = _claim_payload(snap, canon=canon,
+                             claims=[_claim("Rina pergi", canon_ref="ev1",
+                                            claim_type=l2.CLAIM_ONE_TIME_EVENT)])
     with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
         l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+
+
+@pytest.mark.parametrize("claim_type,ref", [
+    (l2.CLAIM_ENTITY_MENTION, "e1"),
+    (l2.CLAIM_FIXED_LITERAL, "a1"),
+])
+def test_a_repeated_quote_resolves_to_the_first_occurrence(claim_type, ref):
+    """🔴 REFUSING THIS BOUGHT NOTHING AND COST THE WHOLE CHAPTER. `evaluate_semantic`
+       compares only the evidence TEXT — `_norm_text(evidence).strip().casefold()` for an
+       entity, `_norm_text(evidence).strip()` for a literal. Every occurrence of one
+       needle carries that same text, so the verdict is identical whichever is bound;
+       ambiguity here was a refusal that could not change any answer.
+
+       A recurring character name has no unique form — this module's §6.2 note already
+       said so — and the fix at the time (make the MODEL supply a unique `context`) is
+       what failed in live canaries `gjpmhjzs` and `o2eeafh5`, taking `continuity_status`
+       to `unchecked` both times.
+
+       Provenance stays honest: the offsets point at a REAL occurrence of exactly this
+       text, and the digest is computed from those original bytes."""
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina pergi", aliases=(),
+                           alias_source="none")
+    anc = cl.CanonAnchorV1(anchor_id="a1", kind="time", literal="Rina pergi")
+    canon = _canon(2, entities=(ent,), anchors=(anc,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\nRina pergi. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
+    block = snap.block_bytes(0)
+    assert block.count(b"Rina pergi") == 2, "the quote must really repeat"
+
+    # coverage must name the predicate this claim_type maps to, or the artifact refuses
+    # the payload before the locator is ever reached
+    coverage = {pred: l2.COVERAGE_NO_CLAIMS_FOUND for pred in l2.SEMANTIC_PREDICATES}
+    coverage[l2._CLAIM_PREDICATE[claim_type]] = l2.COVERAGE_CHECKED
+    artifact = l2.parse_chapter_claims(
+        _claim_payload(snap, canon=canon, coverage=coverage,
+                       claims=[_claim("Rina pergi", canon_ref=ref,
+                                      claim_type=claim_type)]),
+        snapshot=snap, canon=canon)
+
+    claim = artifact.claims[0]
+    assert claim.evidence_start == block.find(b"Rina pergi"), "must be the FIRST occurrence"
+    evidence = block[claim.evidence_start:claim.evidence_end]
+    assert evidence == b"Rina pergi", "the span is exactly the cited text"
+    assert claim.evidence_sha256 == l2.sha256_hex(evidence)
+    # the invariance this relaxation rests on, asserted rather than argued
+    second = block.find(b"Rina pergi", claim.evidence_start + 1)
+    assert block[second:second + len(b"Rina pergi")] == evidence, (
+        "every occurrence carries identical bytes, so the verdict cannot depend on "
+        "which one was bound")
 
 
 def test_evidence_span_over_the_size_bound_is_rejected():
@@ -451,16 +527,21 @@ def test_a_multibyte_quote_derives_the_correct_byte_span():
     assert claim.evidence_sha256 == cl.sha256_hex(quote.encode("utf-8"))
 
 
-def _parse_single_entity_quote(*, chapter_text, quote, canonical_name="Rina"):
+def _parse_single_entity_quote(*, chapter_text, quote, canonical_name="Rina",
+                               claim_type=None, canon_ref="e1"):
+    """`claim_type` defaults to entity_mention. Pass `one_time_event` for the cases that
+    must stay STRICT under `_OCCURRENCE_INVARIANT_CLAIMS` — see that constant."""
     entity = cl.CanonEntityV1(
         entity_id="e1", canonical_name=canonical_name, aliases=(), alias_source="none")
-    canon = _canon(1, entities=(entity,))
+    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1,
+                            label="peristiwa uji sekali jalan")
+    canon = _canon(1, entities=(entity,), events=(event,))
     snapshot = l2.materialize_final_snapshot(
         {"book": f"## Bab 1\n{chapter_text}"}, canon=canon)
     payload = _claim_payload(
         snapshot, canon=canon,
-        claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION,
-                 "canon_ref": "e1", "quote": quote}],
+        claims=[{"claim_type": claim_type or l2.CLAIM_ENTITY_MENTION,
+                 "canon_ref": canon_ref, "quote": quote}],
     )
     return snapshot, l2.parse_chapter_claims(payload, snapshot=snapshot, canon=canon)
 
@@ -548,10 +629,12 @@ def test_two_nfc_equivalent_original_spans_remain_ambiguous():
     assert len({unicodedata.normalize("NFC", x)
                 for x in (quote, first, second)}) == 1
 
+    # STRICT path only — one_time_event is not occurrence-invariant.
     with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
         _parse_single_entity_quote(
             chapter_text=f"{first} lalu {second}", quote=quote,
-            canonical_name=unicodedata.normalize("NFC", quote))
+            canonical_name=unicodedata.normalize("NFC", quote),
+            claim_type=l2.CLAIM_ONE_TIME_EVENT, canon_ref="ev1")
 
 
 @pytest.mark.parametrize(
@@ -1496,16 +1579,21 @@ def test_an_overlapping_second_occurrence_is_seen_as_ambiguous():
     exactly like a correct one."""
     ent = cl.CanonEntityV1(entity_id="e1", canonical_name="aaa", aliases=(),
                            alias_source="none")
-    canon = _canon(2, entities=(ent,))
+    ev = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1, label="peristiwa aaa")
+    canon = _canon(2, entities=(ent,), events=(ev,))
     snap = l2.materialize_final_snapshot(
         {"book": "## Bab 1\naaaa\n## Bab 2\nlain"}, canon=canon)
     block = snap.block_bytes(0)
     assert block.count(b"aaa") == 1, "count() under-reports, which is the bug"
     assert block.find(b"aaa", block.find(b"aaa") + 1) != -1, "but it truly repeats"
 
+    # Asserted on the STRICT claim type: entity_mention now resolves a repeat to its
+    # first occurrence, so the overlap guard must be witnessed where it still refuses.
     with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
         l2.parse_chapter_claims(
-            _claim_payload(snap, canon=canon, claims=[_claim("aaa")]),
+            _claim_payload(snap, canon=canon,
+                           claims=[_claim("aaa", canon_ref="ev1",
+                                          claim_type=l2.CLAIM_ONE_TIME_EVENT)]),
             snapshot=snap, canon=canon)
 
 

@@ -134,7 +134,7 @@ BREAKS = [
      L2,
      "    if haystack.find(needle, first + 1) != -1:\n        return _AMBIGUOUS",
      "    if False:\n        return _AMBIGUOUS",
-     T_L2, "test_a_quote_appearing_twice_is_refused_rather_than_resolved"),
+     T_L2, "test_a_quote_appearing_twice_is_refused_for_one_time_event"),
     ("uniqueness checked with bytes.count() — blind to overlapping occurrences",
      L2,
      "    first = haystack.find(needle)\n    if first == -1:\n        return _NOT_FOUND\n"
@@ -142,6 +142,29 @@ BREAKS = [
      "    if haystack.count(needle) == 0:\n        return _NOT_FOUND\n"
      "    if haystack.count(needle) > 1:\n        return _AMBIGUOUS\n    return haystack.find(needle)",
      T_L2, "test_an_overlapping_second_occurrence_is_seen_as_ambiguous"),
+    # ── 3d-bis. the occurrence-invariant relaxation, guarded BOTH ways ───
+    ("the relaxation spreads to one_time_event — a repeated phrase silently binds "
+     "to its first occurrence, misreporting WHICH span evidenced the event",
+     L2,
+     "_OCCURRENCE_INVARIANT_CLAIMS = frozenset({CLAIM_ENTITY_MENTION, CLAIM_FIXED_LITERAL})",
+     "_OCCURRENCE_INVARIANT_CLAIMS = frozenset({CLAIM_ENTITY_MENTION, CLAIM_FIXED_LITERAL, "
+     "CLAIM_ONE_TIME_EVENT})",
+     T_L2, "test_a_quote_appearing_twice_is_refused_for_one_time_event"),
+    ("the relaxation is reverted — a recurring character name has no unique form, so "
+     "the whole chapter goes unmeasured again",
+     L2,
+     '                if rc["claim_type"] in _OCCURRENCE_INVARIANT_CLAIMS:\n'
+     "                    located = _locate_first_equivalent(block, needle)",
+     "                if False:\n"
+     "                    located = _locate_first_equivalent(block, needle)",
+     T_L2, "test_a_repeated_quote_resolves_to_the_first_occurrence"),
+    ("first-occurrence picks an arbitrary span instead of the earliest — provenance "
+     "becomes non-deterministic across runs",
+     L2,
+     "    return min(spans) if allow_first else next(iter(spans))",
+     "    return next(iter(spans))",
+     T_L2, "test_nfc_equivalent_repeats_bind_to_the_earliest_span"),
+
     ("the locator leaks into the evidence — context span used as the quote span",
      L2,
      "            start = ctx_start + quote_start\n            end = ctx_start + quote_end",
@@ -171,7 +194,9 @@ BREAKS = [
      T_L2, "test_nfc_fallback_maps_to_original_bytes_and_hash_not_normalized_bytes"),
     ("NFC ambiguity guard disabled — one of two equivalent spans is guessed",
      L2,
-     '            if len(spans) > 1:\n                return _AMBIGUOUS',
+     # anchor moved when `allow_first` was added — the MUTATION is unchanged in meaning:
+     # neuter the ambiguity guard so one of two equivalent spans is silently guessed
+     '            if len(spans) > 1 and not allow_first:\n                return _AMBIGUOUS',
      '            if False:\n                return _AMBIGUOUS',
      T_L2, "test_two_nfc_equivalent_original_spans_remain_ambiguous"),
     ("normalized quote bytes replace the original evidence bytes and offsets",
