@@ -361,7 +361,16 @@ def test_whole_book_and_chunked_revise_receive_the_same_authority(monkeypatch):
         tenant_id="t", user_id="u", job_uuid=None,
         authority_text=_authority()))
     assert revised == book
-    assert captured[-1]["messages"][0]["content"].endswith(_authority())
+    # The chapter lane no longer ENDS on the authority: the response-shape contract closes
+    # the prompt, because leaving the outline as the last thing read produced the inserted
+    # bridge alone instead of the chapter (prod pk6ci880: 530/540/828 words -> 48/54/72).
+    # The authority must still be present, with NOTHING between it and that closing block.
+    _chunk_sys = captured[-1]["messages"][0]["content"]
+    assert _authority() in _chunk_sys
+    _after_authority = _chunk_sys.split(_authority(), 1)[1]
+    assert _after_authority.startswith("\n\nRESPONSE SHAPE")
+    assert _after_authority.rstrip().endswith(
+        "never a template for your reply's length or register.")
 
 
 def test_authority_structural_finding_forces_chapter_scoped_repair(monkeypatch):
@@ -587,3 +596,38 @@ def test_classic_final_revise_rejects_same_length_total_replacement(monkeypatch)
 
     assert revised == book
     assert captured[-1]["messages"][0]["content"].endswith(authority)
+
+
+def test_chapter_shape_tail_is_inert_without_authority_and_names_the_failure():
+    # Legacy bytes must not move: no bound authority -> no tail at all.
+    assert lz._revise_chapter_shape_tail("", 100, 140) == ""
+    assert lz._revise_chapter_shape_tail("   ", 100, 140) == ""
+
+    tail = lz._revise_chapter_shape_tail(_authority(), 477, 742)
+    # Governs FORM only — it must not appear to outrank the narrative authority, or it
+    # would contradict _revise_authority_suffix's precedence contract one line above it.
+    assert "governs the FORM of your reply only" in tail
+    assert "still outranks every content decision" in tail
+    # The concrete band travels with it, and the observed failure mode is named outright.
+    assert "477-742 words" in tail
+    for banned_shape in ("only the bridge or passage you added",
+                         "only the sentences you changed",
+                         "a diff, a summary, or an outline entry"):
+        assert banned_shape in tail
+
+
+def test_both_chapter_prompt_sites_close_with_the_shape_tail():
+    # The parallel and serial chapter lanes build byte-identical system prompts. A rule
+    # added to one door and missed at the other is this workstream's most repeated defect,
+    # so pin that BOTH append the tail, and that each does so AFTER the authority suffix.
+    src = inspect.getsource(lz._narasi_revise_chunked)
+    authority_calls = [ln for ln in src.splitlines()
+                       if "_sys += _revise_authority_suffix(" in ln]
+    shape_calls = [ln for ln in src.splitlines()
+                   if "_sys += _revise_chapter_shape_tail(" in ln]
+    assert len(authority_calls) == 2
+    assert len(shape_calls) == 2
+    # Order matters: the shape tail is only the LAST thing read if it follows the authority.
+    assert src.index("_revise_authority_suffix(") < src.index("_revise_chapter_shape_tail(")
+    for a, s in zip(authority_calls, shape_calls):
+        assert a.rstrip().startswith(" " * (len(s) - len(s.lstrip())))

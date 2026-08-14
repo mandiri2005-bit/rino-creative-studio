@@ -9103,6 +9103,39 @@ def _revise_authority_suffix(authority_text: str) -> str:
     )
 
 
+def _revise_chapter_shape_tail(authority_text: str, floor: int, ceil: int) -> str:
+    """Restate the RESPONSE SHAPE after the authority block, for chapter-scoped revise.
+
+    `_revise_authority_suffix` appends the whole authority packet, which ENDS with the
+    full multi-chapter outline — so the last thing the model reads before being asked to
+    "return the corrected version" is a summary-register document, while the
+    authority-structural directives (sorted first since 4ae8b66) read as imperatives to ADD
+    a bridge. Prod job `pk6ci880` returned 48 / 54 / 72 words for 530 / 540 / 828-word
+    chapters: clustered rather than proportional, each with an unterminated tail — the
+    inserted passage alone, not the chapter. The bounded corrective retry already says
+    "Return the FULL corrected chapter" and made it WORSE (368 -> 72), so restating the
+    contract earlier in the prompt is not what this needs; it has to be the LAST thing read.
+
+    Deliberately scoped to FORM, not precedence: the authority still outranks every content
+    decision, and this says nothing about content. Deliberately NOT applied to the whole-book
+    lane, which has the same structure but no observed failure and did land a revise
+    (09:56Z) — an unevidenced change there risks a path that currently works.
+
+    Empty without bound authority, so the legacy prompt stays byte-identical.
+    """
+    if not str(authority_text or "").strip():
+        return ""
+    return (
+        "\n\nRESPONSE SHAPE — this governs the FORM of your reply only; the narrative "
+        "authority above still outranks every content decision. Reply with the COMPLETE "
+        "chapter: begin at its heading line, end at its last prose line, "
+        f"{floor}-{ceil} words. Do NOT reply with only the bridge or passage you added, "
+        "only the sentences you changed, a diff, a summary, or an outline entry. The "
+        "outline above is context you must obey — never a template for your reply's "
+        "length or register."
+    )
+
+
 _AUTHORITY_STRUCTURAL_VIOLATIONS = frozenset({
     "outline_beat_order",
     "outline_missing_beat",
@@ -9322,6 +9355,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                     "filler sentences to reach a word target either — the band is satisfied by "
                     "preserving the original text, not by padding.")
             _sys += _revise_authority_suffix(authority_text)
+            _sys += _revise_chapter_shape_tail(authority_text, _floor, _ceil)
             _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
                   f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
             _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
@@ -9511,6 +9545,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                 "filler sentences to reach a word target either — the band is satisfied by "
                 "preserving the original text, not by padding.")
         _sys += _revise_authority_suffix(authority_text)
+        _sys += _revise_chapter_shape_tail(authority_text, _floor, _ceil)
         _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
               f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
         _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
