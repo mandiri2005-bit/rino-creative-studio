@@ -84,7 +84,7 @@ import canon_lite_qc_provider as qc        # noqa: E402
 #    zero. All three attempts now retain the schema and carry bounded retry feedback. This
 #    is a deliberate cache-key move: the first post-deploy run repays every chapter.
 RATIFIED_PROMPT_SHA256 = \
-    "432b98e4552fa107bab82817251e8796649dc186a31e803b4ae2b0e8a515ae91"
+    "93be577d1fa091ec62fc275508b76742e2880ad55e6c04c02f69b178d0aed456"
 # Moved with the prompt pin above and for the same reason: the system template embeds the
 # claim contract, so changing what a claim carries necessarily changes these bytes. The
 # round-trip property this constant guards — template -> JSON -> template, byte-exact — is
@@ -362,6 +362,28 @@ def test_8_11_no_provider_text_body_or_headers_leaks():
 def test_8_12_timeout_ordering_asserted_on_constants():
     assert qc.QC_HTTP_TIMEOUT_S < float(qc.QC_ATTEMPT_TIMEOUT_S)
     assert float(qc.QC_ATTEMPT_TIMEOUT_S) == ext.DEFAULT_TIMEOUT_S
+
+
+def test_8_12b_thinking_is_pinned_off_and_reaches_the_wire():
+    """🔴 THE MODEL RAISE SILENTLY TURNED THINKING ON. Gemini 2.5 Flash thinks by
+       default; Flash-Lite — the model these pins were tuned for — is the one 2.5 model
+       that does not. Canary `2peg3q6i` paid for it three times on the longest chapter
+       (`qc_provider_timeout` x3), with thought tokens billed as OUTPUT at $2.50/M for
+       nothing: extraction is read-and-point, not reasoning. The vertex path has had
+       this guard for months; this is the OpenAI-compat path finally getting it.
+
+       Falsified before being trusted: with the kwarg line removed from the adapter,
+       the wire assertion below fails; with the contract entry removed, the digest
+       assertion fails.
+    """
+    assert qc.QC_REASONING_EFFORT == "none"
+    adapter, client = _adapter()
+    _run(adapter(_request()))
+    # the WIRE, not the constant: what the provider call actually carries
+    assert client.calls[0]["reasoning_effort"] == "none"
+    # and the contract DECLARES what the wire carries, so the pin is hash-bound:
+    # a diff dropping it moves PROMPT_SHA256 and trips the ratified pin above
+    assert qc._QC_REQUEST_CONTRACT_OBJ["reasoning_effort"] is qc.QC_REASONING_EFFORT
 
 
 def test_8_13_each_attempt_gets_a_fresh_budget():
@@ -899,9 +921,9 @@ def test_8_34_contract_summary_parity():
     """The component set named in the record is exactly what is hashed."""
     assert set(qc._QC_REQUEST_CONTRACT_OBJ) == {
         "contract_version", "system_template", "dynamic_field_order",
-        "canon_projection_rule", "json_ensure_ascii", "json_sort_keys",
-        "json_separators", "temperature", "max_tokens", "stream", "n",
-        "response_format_schedule", "response_schema"}
+        "canon_projection_rule", "reasoning_effort", "json_ensure_ascii",
+        "json_sort_keys", "json_separators", "temperature", "max_tokens", "stream",
+        "n", "response_format_schedule", "response_schema"}
 
 
 def test_8_35_canon_none_yields_unknown_with_zero_calls():
@@ -1014,7 +1036,7 @@ def test_8_39_extractor_codes_are_extractor_owned():
 
 def test_8_40_contract_has_one_source_of_truth():
     source = Path(qc.__file__).read_text(encoding="utf-8")
-    assert source.count('"qc_request_contract_v4"') == 1
+    assert source.count('"qc_request_contract_v5"') == 1
     rebuilt = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     rebuilt["temperature"] = "0.9"
     text = json.dumps(rebuilt, ensure_ascii=False, sort_keys=True,
@@ -1024,7 +1046,7 @@ def test_8_40_contract_has_one_source_of_truth():
 
 def test_8_40a_contract_derivation_is_exact():
     obj = qc._QC_REQUEST_CONTRACT_OBJ
-    assert len(obj) == 13
+    assert len(obj) == 14
     # declared parameters ARE the ones used
     assert obj["json_ensure_ascii"] is qc.QC_JSON_ENSURE_ASCII
     assert obj["json_sort_keys"] is qc.QC_JSON_SORT_KEYS
@@ -1274,7 +1296,7 @@ def test_empty_string_content_is_a_failure_not_a_success():
 
 
 def test_8_43c_capability_constants_are_outside_the_contract():
-    assert len(qc._QC_REQUEST_CONTRACT_OBJ) == 13
+    assert len(qc._QC_REQUEST_CONTRACT_OBJ) == 14
     for key in qc._QC_REQUEST_CONTRACT_OBJ:
         assert not key.startswith("cap_")
     assert "QC_CAP" not in json.dumps(qc._QC_REQUEST_CONTRACT_OBJ)

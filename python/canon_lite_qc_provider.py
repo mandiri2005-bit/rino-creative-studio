@@ -56,7 +56,16 @@ from canon_lite_qc_meter import MeterConfigurationError, ProviderUsage
 # (proven by sha256) and the third answer could not differ from the second. Canary
 # `gjpmhjzs` therefore bought three attempts per failing chapter and asked only two
 # distinct questions. This is the fix for that, and it moves the wire again.
-QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v4"
+#
+# RATIFIED 2026-08-14: v4 -> v5. The request now pins `reasoning_effort="none"` and the
+# contract declares it. Gemini 2.5 Flash THINKS BY DEFAULT; 2.5 Flash-Lite is the one
+# 2.5 model that does not — so the model raise silently switched thinking ON, responses
+# blew through the 20 s ceiling (canary `2peg3q6i`: qc_provider_timeout x3 on the longest
+# chapter), and every thought token billed as OUTPUT at the new $2.50/M rate. The vertex
+# path learned this exact lesson long ago (`laozhang_api`: "JSON side-calls don't need
+# thinking; force it down"); this adapter, on the OpenAI-compat path, never got the
+# guard because flash-lite never needed one.
+QC_REQUEST_CONTRACT_VERSION = "qc_request_contract_v5"
 
 #: 🔴 THIS CONSTANT IS A CLAIM ABOUT A SHAPE, AND THE SHAPE MOVED UNDER IT. It told the QC
 #: contract exactly which projection the `canon` field carries; then `one_time_events` rows
@@ -205,6 +214,13 @@ QC_SYSTEM_TEMPLATE = (
 
 # E7: generation policy. QC_TEMPERATURE_TEXT is the CANONICAL spelling — see the gate.
 QC_TEMPERATURE_TEXT = "0.0"
+#: Thinking OFF, pinned. Extraction is read-and-point, not reasoning; thought tokens
+#: bill as output and inflate latency for nothing. Docs (QC_CAP_SOURCE, openai-compat
+#: page): 'If you want to disable thinking, you can set reasoning_effort to "none" for
+#: 2.5 models.' ⚠️ SAME PAGE: 'Reasoning cannot be turned off for Gemini 2.5 Pro or 3
+#: models' — a future QC_MODEL_UPSTREAM move to those families invalidates this pin and
+#: must revisit it, not carry it blindly.
+QC_REASONING_EFFORT = "none"
 QC_MAX_TOKENS = 16384
 
 # E9/E10: capability attestation for the PINNED route + model. The owner's attestation,
@@ -271,6 +287,11 @@ QC_PRICING = QcPricingRecord(
 # §3 — pinned timeouts. 20 s is the SDK/HTTP bound for ONE upstream request; the
 # extractor's own per-attempt wait_for (30 s) is the controlling deadline the meter
 # records, which is why they differ and why 8.12 asserts HTTP < extractor.
+# ⚠️ DELIBERATELY NOT RAISED in the v5 (thinking-off) change, so the next canary moves
+#    ONE variable: if `qc_provider_timeout` still fires at this ceiling with thinking
+#    off, the latency is real and these move as a PAIR (HTTP < attempt), sized from the
+#    measured latency — not guessed. Raising them alongside the thinking pin would have
+#    made a passing canary unattributable.
 QC_HTTP_TIMEOUT_S = 20.0
 QC_ATTEMPT_TIMEOUT_S = Decimal("30")
 
@@ -416,6 +437,7 @@ _QC_REQUEST_CONTRACT_OBJ = {
     "json_ensure_ascii": QC_JSON_ENSURE_ASCII,
     "json_sort_keys": QC_JSON_SORT_KEYS,
     "json_separators": list(QC_JSON_SEPARATORS),
+    "reasoning_effort": QC_REASONING_EFFORT,
     "temperature": QC_TEMPERATURE_TEXT,   # the canonical TEXT, never a JSON number:
     "max_tokens": QC_MAX_TOKENS,          # float formatting must not reach the digest
     "stream": False,
@@ -618,6 +640,9 @@ class QcProviderAdapter:
             "max_tokens": QC_MAX_TOKENS,
             "stream": False,     # streaming would fragment usage accounting
             "n": 1,              # >1 completion would be >1 metered unit
+            # Thinking off — see QC_REASONING_EFFORT. Without this, flash thinks by
+            # default: slower past the HTTP ceiling, and billed at the output rate.
+            "reasoning_effort": QC_REASONING_EFFORT,
         }
         kwargs["response_format"] = response_format_for(request.attempt)
 
@@ -697,7 +722,7 @@ def attempt_context_fields() -> dict[str, Any]:
 __all__ = [
     "PROMPT_SHA256", "QC_REQUEST_CONTRACT_BYTES", "QC_MODEL_UPSTREAM",
     "QC_PROVIDER_NAME", "QC_PROVIDER_BASE_URL", "QC_SYSTEM_TEMPLATE",
-    "QC_RESPONSE_SCHEMA", "QC_ATTEMPT_TIMEOUT_S", "QC_API_KEY_ENV",
+    "QC_RESPONSE_SCHEMA", "QC_ATTEMPT_TIMEOUT_S", "QC_REASONING_EFFORT", "QC_API_KEY_ENV",
     "QcProviderAdapter", "QcProviderError", "QcProviderResult",
     "usage_reader", "build_messages", "build_user_content", "resolve_base_url",
     "response_format_for", "attempt_context_fields",
