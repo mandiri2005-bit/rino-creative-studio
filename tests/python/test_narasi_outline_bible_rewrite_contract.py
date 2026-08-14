@@ -50,6 +50,9 @@ def test_authority_packet_binds_the_exact_final_outline_and_bible():
     assert packet["text"].index("SUBORDINATE STORY BIBLE") \
         < packet["text"].index("AUTHORITATIVE FULL OUTLINE (highest authority")
     assert packet["text"].rstrip().endswith(ctx.outline())
+    assert "execute the outlined beats in their written order" in packet["text"]
+    assert "causal, location, and elapsed-time handoff" in packet["text"]
+    assert "advance that clock visibly" in packet["text"]
     for chapter in ctx.chapters:
         assert chapter["summary"] in packet["text"]
 
@@ -384,6 +387,9 @@ def test_classic_final_revise_is_wired_to_its_exact_outline_authority():
     assert authority.index("SUBORDINATE NARRATIVE BRIEF") \
         < authority.index("AUTHORITATIVE FULL OUTLINE (highest authority")
     assert lz._narasi_classic_narrative_authority("", brief) == ""
+    assert "execute outlined beats in their written order" in authority
+    assert "causal/location/time handoff" in authority
+    assert "unaccounted-for time jump" in authority
 
     # AST-scoped call-site witness: the active Classic whole-draft path must pass
     # the frozen authority rather than falling through the helper's default "".
@@ -400,6 +406,16 @@ def test_classic_final_revise_is_wired_to_its_exact_outline_authority():
          if kw.arg == "authority_text"), None)
     assert isinstance(authority_kw, ast.Name)
     assert authority_kw.id == "_narrative_authority"
+
+
+def test_boundary_detector_and_repair_cover_unbridged_time_progression():
+    detector = inspect.getsource(static.narrate_chapters)
+    actuator = inspect.getsource(na._r7_actuator_violations)
+
+    assert "skip a required causal/location/time bridge" in detector
+    assert "bounded duration/deadline suddenly expires" in detector
+    assert "make the causal decision, location" in actuator
+    assert "Preserve this " in actuator and "chapter's outlined beat order" in actuator
 
 
 def test_classic_final_revise_rejects_same_length_total_replacement(monkeypatch):

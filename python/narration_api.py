@@ -478,9 +478,10 @@ def _r7_actuator_violations(result: dict) -> list[dict]:
                 out.append({
                     "type": "chapter_boundary_break", "severity": "high",
                     "evidence": _bce[:200],
-                    "fix": ("Add a brief bridging sentence or short scene resolving what the "
-                            "ending of the previous chapter left unresolved before this "
-                            "chapter's opening beat.")})
+                    "fix": ("Add the smallest on-page bridge from the preceding chapter's "
+                            "completed state to this opening: make the causal decision, location "
+                            "change, and elapsed time explicit where needed. Preserve this "
+                            "chapter's outlined beat order, and never invent a new plot event.")})
         # — entity-attribute drift: a named character's gender/title/age, or a mentioned-but-
         # unnamed relative's relation descriptor, contradicts itself across chapters (the
         # "Ha-neul referred to with male pronouns in most chapters, female in one chapter"

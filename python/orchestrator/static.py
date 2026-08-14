@@ -1994,9 +1994,13 @@ async def narrate_chapters(
                     "break at the seam between them. You are given the ENDING of chapter N and "
                     "the OPENING of chapter N+1. Question: does the OPENING of chapter N+1 "
                     "CONTRADICT or REDUNDANTLY RE-STAGE something the ENDING of chapter N already "
-                    "resolved — e.g. re-introducing an event, journey, decision or arrival that "
-                    "already happened, with different details (different character, different "
-                    "means, different time of day)? Return ONLY JSON: {\"broken\": true|false, "
+                    "resolved, OR skip a required causal/location/time bridge so it assumes an "
+                    "off-page decision, journey, reconciliation, arrival, or large time jump? "
+                    "Also mark broken when a bounded duration/deadline suddenly expires without "
+                    "the adjacent prose accounting for the elapsed interval. Examples include "
+                    "re-introducing an event that already happened with different details, or "
+                    "jumping straight from considering a plan to executing it at a new location. "
+                    "Return ONLY JSON: {\"broken\": true|false, "
                     "\"reason\": \"<one sentence, or empty if broken=false>\"}")
                 # Number-keyed lookup, NOT positional list indexing: the exception handler
                 # above can append a "no": -1 placeholder for a chapter task that raised,

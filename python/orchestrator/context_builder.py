@@ -274,6 +274,13 @@ class SharedContext:
             "move an outlined event to another chapter, reveal future information early, "
             "repeat an already-completed reveal, or invent a time jump absent from the "
             "outline.\n"
+            "- Inside each chapter, execute the outlined beats in their written order. "
+            "Do not reverse two beats merely to create a smoother causal link; explicit "
+            "PAST/PRESENT, flashback, or parallel labels retain their outlined order.\n"
+            "- Every chapter after the first must show the causal, location, and elapsed-time "
+            "handoff from the preceding outlined state before its first new set-piece. If the "
+            "story has a bounded duration or deadline, advance that clock visibly and never "
+            "declare it expired without accounting on-page for the intervening time.\n"
             "- The Bible may fill only details the outline leaves open. It may never add, "
             "remove, redistribute, reinterpret, or override an outlined beat.\n"
             "- If a requested edit conflicts with this authority, leave the affected prose "
@@ -342,6 +349,34 @@ class SharedContext:
                 "What this chapter covers (internal planning note — do not copy "
                 f"this literally or as a scene list; render it as flowing prose): {mine_desc}"
             )
+        lines.append(
+            "BEAT SEQUENCE — execute the CURRENT ASSIGNMENT's beats in the exact order "
+            "written. Treat sentence order and ordered clauses as story order unless the "
+            "outline explicitly labels a flashback, parallel action, or another chronology. "
+            "Do not move a later threat, reveal, decision, or resolution ahead of an earlier one."
+        )
+        if no == 0:
+            lines.append(
+                "STORY CLOCK START — establish the opening position of any duration or deadline "
+                "the outline makes important; later chapters must be able to advance it visibly."
+            )
+        else:
+            prev = self.chapters[no - 1]
+            prev_title = (str(prev.get("title", "") or "").strip()
+                          or f"Chapter {no}")
+            lines.append(
+                f"ON-PAGE HANDOFF — begin from Chapter {no}, \"{prev_title}\", as already "
+                "completed. Before this chapter's first new set-piece, supply the brief causal, "
+                "location, and elapsed-time bridge needed to reach it. Never assume an off-page "
+                "decision, journey, reconciliation, or large time jump that neither adjacent "
+                "outline summary establishes."
+            )
+        lines.append(
+            "STORY CLOCK — if the premise, title, contract, countdown, or deadline fixes a total "
+            "span, state enough elapsed-time progress in this chapter to keep that span legible. "
+            "Never announce that it expired or completed unless the intervening time has been "
+            "accounted for on-page; a concise marker such as days/weeks later is sufficient."
+        )
 
         if no == n - 1:
             lines.append("FUTURE RESERVED — none; this chapter closes the book.")

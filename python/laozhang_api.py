@@ -9040,6 +9040,11 @@ def _narasi_classic_narrative_authority(outline: str, brief: str = "") -> str:
         "move an outlined event to another chapter, reveal future information early, "
         "repeat an already-completed reveal, or invent a time jump absent from the "
         "outline.\n"
+        "- Within each chapter, execute outlined beats in their written order; never move "
+        "a later threat, reveal, decision, or resolution ahead of an earlier beat.\n"
+        "- Every chapter after the first must show the causal/location/time handoff from "
+        "the preceding outlined state. Advance any bounded duration or deadline visibly; "
+        "never declare it expired through an unaccounted-for time jump.\n"
         "- The brief may fill only details the outline leaves open and may never "
         "override an outlined beat."
     ]

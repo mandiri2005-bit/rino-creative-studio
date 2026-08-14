@@ -339,6 +339,20 @@ def build_dynamic_block(
     if chapter.summary:
         scope.append(f"  Summary: {chapter.summary}")
     scope.append(
+        "  Beat order: execute the summary's beats in the exact written order; do not "
+        "move a later threat, reveal, decision, or resolution ahead of an earlier beat."
+    )
+    if chapter.index > 0:
+        scope.append(
+            "  Handoff: before the first new set-piece, show the brief causal/location/time "
+            "transition from the preceding outlined chapter; do not assume an off-page "
+            "decision, journey, reconciliation, or large time jump."
+        )
+    scope.append(
+        "  Story clock: if the book has a fixed duration or deadline, visibly advance it "
+        "here and never declare it expired without accounting for the intervening time."
+    )
+    scope.append(
         f"  Target: {chapter.word_target} words "
         f"(range {chapter.word_min}–{chapter.word_max})."
     )

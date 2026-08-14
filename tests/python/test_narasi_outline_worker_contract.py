@@ -84,6 +84,56 @@ def test_middle_worker_reads_past_current_and_future_but_owns_only_current():
     assert "STORY SO FAR" not in user
 
 
+def test_rooftop_worker_locks_intra_chapter_beat_order_and_visible_story_clock():
+    chapters = [
+        {
+            "title": "A Blanket of Stars and Rust",
+            "summary": "Tae-jun returns, accepts Eun-soo's ghost-designer offer.",
+            "word_target": 650,
+        },
+        {
+            "title": "The Price of Drafted Dreams",
+            "summary": (
+                "Their drafting exposes Tae-jun's identity. MIDPOINT: Eun-soo proves "
+                "he stole her savings. THEN Min-jae threatens foreclosure. FINALLY they "
+                "recognize the institutional system as the adversary."
+            ),
+            "word_target": 650,
+        },
+        {
+            "title": "Unsheltered Under the Sky",
+            "summary": "On day 30 they confront the board and the lease expires.",
+            "word_target": 650,
+        },
+    ]
+    ctx = SharedContext(
+        topic="Kontrak Cinta 30 Hari di Rooftop Seoul",
+        chapters=chapters,
+        canonical_facts="The contract lasts exactly 30 days.",
+        facts_are_bible=True,
+        style="kdrama_serial",
+    )
+    user = _compose_for(ctx, 1).dynamic_block
+
+    assert "BEAT SEQUENCE — execute the CURRENT ASSIGNMENT's beats in the exact order" in user
+    assert "Do not move a later threat, reveal, decision, or resolution" in user
+    assert 'ON-PAGE HANDOFF — begin from Chapter 1, "A Blanket of Stars and Rust"' in user
+    assert "Never assume an off-page decision, journey, reconciliation, or large time jump" in user
+    assert "STORY CLOCK — if the premise, title, contract, countdown, or deadline" in user
+    assert "never declare it expired without accounting for the intervening time" in user
+    assert user.index("MIDPOINT: Eun-soo proves") < user.index("THEN Min-jae threatens")
+
+
+def test_assembler_keeps_order_and_clock_rules_when_no_shared_context_scope_exists():
+    ctx = _ctx(3)
+    user = _compose_for(ctx, 1, scope="").dynamic_block
+
+    assert "CHAPTER CONTINUITY CONTRACT:" not in user
+    assert "Beat order: execute the summary's beats in the exact written order" in user
+    assert "Handoff: before the first new set-piece" in user
+    assert "Story clock: if the book has a fixed duration or deadline" in user
+
+
 def test_first_and_last_worker_have_correct_boundary_semantics():
     ctx = _ctx(3)
     first = _compose_for(ctx, 0).dynamic_block
@@ -131,6 +181,8 @@ def test_outline_authority_is_pinned_at_bible_creation_and_worker_consumption():
 
     assert "immutable, highest-authority story specification" in fiction
     assert "Never override, correct, improve, or redistribute the outline" in fiction
+    assert "preserve the written order of its outlined sentences and beats" in fiction
+    assert "story-clock marker for EVERY chapter" in fiction
     assert "DECIDE and FIX" not in fiction
     assert "Rules: DECIDE concrete values" not in fiction
     assert "OVERRIDES heading 4" not in fiction
