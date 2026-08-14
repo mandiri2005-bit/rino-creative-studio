@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import hashlib
+import inspect
 import json
 import sys
 from types import SimpleNamespace
@@ -368,3 +370,73 @@ def test_authority_bound_whole_book_revise_rejects_restructure_and_replacement(m
         tenant_id="t", user_id="u", job_uuid=None,
         authority_text=_authority()))
     assert revised == book
+
+
+def test_classic_final_revise_is_wired_to_its_exact_outline_authority():
+    outline = (
+        "1. Return — Kang Tae-jun returns as Lee Jin-woo.\n"
+        "2. Reveal — Cha Eun-soo proves the theft."
+    )
+    brief = "Kang Tae-jun is the protagonist; Lee Jin-woo is only his alias."
+    authority = lz._narasi_classic_narrative_authority(outline, brief)
+
+    assert authority.rstrip().endswith(outline)
+    assert authority.index("SUBORDINATE NARRATIVE BRIEF") \
+        < authority.index("AUTHORITATIVE FULL OUTLINE (highest authority")
+    assert lz._narasi_classic_narrative_authority("", brief) == ""
+
+    # AST-scoped call-site witness: the active Classic whole-draft path must pass
+    # the frozen authority rather than falling through the helper's default "".
+    tree = ast.parse(inspect.getsource(lz._narasi_generate_impl))
+    revise_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_narasi_consistency_revise"
+    ]
+    assert len(revise_calls) == 1
+    authority_kw = next(
+        (kw.value for kw in revise_calls[0].keywords
+         if kw.arg == "authority_text"), None)
+    assert isinstance(authority_kw, ast.Name)
+    assert authority_kw.id == "_narrative_authority"
+
+
+def test_classic_final_revise_rejects_same_length_total_replacement(monkeypatch):
+    monkeypatch.setenv("NARASI_REVISE_CHUNKED", "0")
+    monkeypatch.setenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")
+    body1 = " ".join(f"alpha{i}" for i in range(70)) + "."
+    body2 = " ".join(f"beta{i}" for i in range(70)) + "."
+    book = f"## Chapter 1: Return\n{body1}\n\n## Chapter 2: Reveal\n{body2}"
+    replacement = (
+        "## Chapter 9: Totally Different\n" + "omega " * 70 + "end.\n\n"
+        "## Chapter 10: Also Different\n" + "sigma " * 70 + "end."
+    )
+    captured: list[dict] = []
+    _install_revise_client(monkeypatch, replacement, captured)
+    authority = lz._narasi_classic_narrative_authority(
+        "1. Return — Kang Tae-jun returns.\n2. Reveal — the theft is proven.",
+        "Kang Tae-jun is the protagonist.")
+
+    # Counterfactual witness for the exact production gap Claude found: the old
+    # call shape accepted this full swap because its word count cleared the 90% gate.
+    unbound, _ = asyncio.run(lz._narasi_consistency_revise(
+        book, {"violations": [{
+            "severity": "high", "type": "timeline", "evidence": '"alpha1"',
+            "fix": "Correct it.",
+        }]}, "storytelling", "en", model="test-model",
+        tenant_id="t", user_id="u", job_uuid=None))
+    assert unbound == replacement
+
+    captured.clear()
+    _install_revise_client(monkeypatch, replacement, captured)
+    revised, _ = asyncio.run(lz._narasi_consistency_revise(
+        book, {"violations": [{
+            "severity": "high", "type": "timeline", "evidence": '"alpha1"',
+            "fix": "Correct it.",
+        }]}, "storytelling", "en", model="test-model",
+        tenant_id="t", user_id="u", job_uuid=None,
+        authority_text=authority))
+
+    assert revised == book
+    assert captured[-1]["messages"][0]["content"].endswith(authority)

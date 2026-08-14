@@ -9021,6 +9021,39 @@ _REVISE_HEADLINE_RX = _re.compile(
     r'(?m)^[^\w\n]*(?:##[ \t]|(?:Chapter|Bab|BAB|Chapitre|Cap[íi]tulo)[ \t]+\d+).*$')
 
 
+def _narasi_classic_narrative_authority(outline: str, brief: str = "") -> str:
+    """Freeze the exact Classic outline/brief consumed by every chapter worker.
+
+    Classic narration does not build a ``SharedContext`` or Story Bible, so it
+    cannot reuse the Dalang authority packet directly. This byte-stable local
+    rendering gives its final whole-book revise the same precedence contract;
+    an outline-less legacy request stays unchanged.
+    """
+    outline = str(outline or "").strip()
+    if not outline:
+        return ""
+    parts = [
+        "NARRATIVE AUTHORITY CONTRACT (immutable during revision):\n"
+        "- Priority is AUTHORITATIVE FULL OUTLINE > NARRATIVE BRIEF > "
+        "consistency finding or editing instruction > existing prose.\n"
+        "- Never rename or re-identify a character, change an alias or relationship, "
+        "move an outlined event to another chapter, reveal future information early, "
+        "repeat an already-completed reveal, or invent a time jump absent from the "
+        "outline.\n"
+        "- The brief may fill only details the outline leaves open and may never "
+        "override an outlined beat."
+    ]
+    brief = str(brief or "").strip()
+    if brief:
+        parts.append(
+            "SUBORDINATE NARRATIVE BRIEF (binding only where compatible with the "
+            "outline):\n" + brief)
+    parts.append(
+        "AUTHORITATIVE FULL OUTLINE (highest authority; chapter ownership, order, "
+        "identity, reveal timing, and chronology are immutable):\n" + outline)
+    return "\n\n".join(parts)
+
+
 def _revise_authority_suffix(authority_text: str) -> str:
     """System-priority authority for rewrite calls; empty keeps legacy bytes."""
     authority_text = str(authority_text or "").strip()
@@ -12465,6 +12498,10 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
     use_rag  = bool(body.get("use_rag", False)) and RAG_AVAILABLE 
     brief = (body.get("brief") or "").strip()
     outline = (body.get("outline") or "").strip()
+    # Freeze the same accepted outline/brief sent to every Classic chapter. The
+    # final whole-draft critic/revise runs after the chapter loop and otherwise has
+    # no access to that authority, leaving its structural guard silently disabled.
+    _narrative_authority = _narasi_classic_narrative_authority(outline, brief)
     lang_label = _resolve_narasi_lang(language)
     tmp_dir = Path(f"/app/data/narasi_temp/{job_id}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -12904,7 +12941,9 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             if _narasi_critique_revise_enabled() and _crit_bad:
                 _rev, _revc = await _narasi_consistency_revise(
                     _full_book, _cq, style, language, model=model,
-                    tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid)
+                    tenant_id=_narasi_tenant, user_id=_narasi_user,
+                    job_uuid=_narasi_job_uuid,
+                    authority_text=_narrative_authority)
                 _meter_actual += _revc
                 if _rev and _rev != _full_book:
                     _consistency_revised = _rev
