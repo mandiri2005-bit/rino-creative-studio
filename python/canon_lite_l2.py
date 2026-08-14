@@ -22,7 +22,6 @@ aggregate therefore travels with its denominator and its coverage state.
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
@@ -84,18 +83,17 @@ SNAPSHOT_SCHEMA_VERSION = "final_chapter_snapshot_v1"
 # provenance. REPORT_SCHEMA_VERSION deliberately stays v1: ContinuityReportV1 already
 # carries canon_sha256, so bumping it would force re-acceptance of an unchanged schema.
 #
-# RATIFIED 2026-08-13: stays v2 through the QC_REQUEST_CONTRACT_VERSION v1->v2 move (quote
-# semantics defined per claim_type; see canon_lite_qc_provider's E3/PROMPT_SHA256). This is
-# deliberate, not an oversight — the WIRE changed (what the model is told "quote" means),
-# but the ARTIFACT this constant versions did not: `ObservedClaimV1` still carries exactly
-# `evidence_start`/`evidence_end`/`evidence_sha256`, server-derived, unchanged in shape or
-# meaning. `PROMPT_SHA256` already prevents an old- and new-contract payload from colliding
-# in cache (`CLAIM_CACHE_KEY_FIELDS` carries `prompt_sha256`), so bumping this constant too
-# would force re-acceptance of an artifact shape that never moved. Don't bump it for a
-# future wire change either unless `ObservedClaimV1`'s own fields change — re-ratify
-# explicitly if that reasoning ever needs revisiting.
-CLAIMS_SCHEMA_VERSION = "chapter_claims_v2"
+# v3 binds the deterministic atom table used to resolve model addresses. The evidence
+# fields themselves remain server-derived, but an artefact now proves WHICH address table
+# was shown to the model; content_sha256 alone cannot distinguish two atomiser versions.
+CLAIMS_SCHEMA_VERSION = "chapter_claims_v3"
 REPORT_SCHEMA_VERSION = "continuity_report_v1"
+
+# The atomiser is deliberately lexical rather than sentence-based. A sentence address is
+# too wide for entity and fixed-literal predicates, whose evaluator compares the exact
+# evidence surface. Lexical atoms make an exact multi-token surface expressible using only
+# atom_start/atom_end; the model never copies prose or counts UTF-8 bytes/code points.
+ATOM_TABLE_VERSION = "chapter_atom_table_v1"
 
 #: Bumped whenever the split/offset algorithm changes. A snapshot is only comparable to
 #: another snapshot built by the same materializer version.
@@ -119,6 +117,7 @@ MAX_CLAIMS_PER_CHAPTER = 200
 MAX_VIOLATIONS = 400
 MAX_EVIDENCE_BYTES = 4096
 MAX_LABEL_LEN = 64
+MAX_ATOMS_PER_CHAPTER = 100_000
 
 # ---------------------------------------------------------------------------
 # Closed vocabularies
@@ -170,16 +169,15 @@ _PREDICATE_MEASURED = frozenset({COVERAGE_CHECKED, COVERAGE_NO_VIOLATIONS_FOUND}
 #: buckets to SCHEMA_INVALID, and anything not even a schema/bounds error to OTHER — see
 #: canon_lite_extractor's classifier — so the vocabulary stays closed no matter what a
 #: future raise site forgets to tag.
-EXTRACT_REASON_QUOTE_NOT_FOUND = "quote_not_found"
-EXTRACT_REASON_QUOTE_AMBIGUOUS = "quote_ambiguous"
-EXTRACT_REASON_CONTEXT_NOT_FOUND = "context_not_found"
-EXTRACT_REASON_CONTEXT_AMBIGUOUS = "context_ambiguous"
+EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE = "atom_index_out_of_range"
+EXTRACT_REASON_ATOM_SPAN_INVERTED = "atom_span_inverted"
+EXTRACT_REASON_ATOM_TABLE_MISMATCH = "atom_table_mismatch"
 EXTRACT_REASON_CANON_REF_INVALID = "canon_ref_invalid"
 EXTRACT_REASON_SCHEMA_INVALID = "schema_invalid"
 EXTRACT_REASON_OTHER = "other"
 EXTRACT_REASON_CODES = (
-    EXTRACT_REASON_QUOTE_NOT_FOUND, EXTRACT_REASON_QUOTE_AMBIGUOUS,
-    EXTRACT_REASON_CONTEXT_NOT_FOUND, EXTRACT_REASON_CONTEXT_AMBIGUOUS,
+    EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE, EXTRACT_REASON_ATOM_SPAN_INVERTED,
+    EXTRACT_REASON_ATOM_TABLE_MISMATCH,
     EXTRACT_REASON_CANON_REF_INVALID, EXTRACT_REASON_SCHEMA_INVALID,
     EXTRACT_REASON_OTHER,
 )
@@ -519,193 +517,100 @@ def materialize_final_snapshot(
 # §6.2 ChapterClaimsV1 — a strict container for UNTRUSTED output
 # ===========================================================================
 
-# 🔴 THE WIRE ASKS FOR A QUOTE; THE SERVER DERIVES THE SPAN AND THE HASH.
-#    This used to be ("claim_type", "canon_ref", "evidence_start", "evidence_end",
-#    "evidence_sha256") — the extractor required the MODEL to count byte offsets and to
-#    produce a SHA-256 of the span. A language model can do neither reliably, and the
-#    parser then recomputed the hash and compared it to the model's, so a mismatch failed
-#    the WHOLE payload. Live canaries `wbkc80eq` and `p64wz5kp` proved it: attempt 1
-#    reached the provider, was billed, returned well-formed JSON, and was rejected here
-#    every time — 3 units, 9 attempts, 0 usable claims, `continuity_status=unchecked`.
-#
-#    The model now returns the evidence VERBATIM and the server locates it. That removes
-#    an impossible ask without weakening anything: the hash was already server-computed,
-#    so the model's copy contributed no assurance — only a failure mode. Provenance is
-#    strictly stronger now, because the span and its digest are derived from the delivered
-#    bytes rather than asserted by the thing being checked.
-#    🔴 AND THE LOCATOR IS NOT THE EVIDENCE. A first version of this contract asked for a
-#    single `quote` that had to be unique in the chapter, which quietly broke the
-#    evaluator: `_evaluate_predicate` compares the evidence span against
-#    `{canonical_name, *aliases}`, so a name that appears twice has NO valid form. "Rina"
-#    is refused as ambiguous, and "Rina datang" — extended to become unique — is then
-#    compared whole against the canon and reported as an `entity_name_contradiction` that
-#    the manuscript never committed. The two roles are separate and are now separate
-#    fields: `quote` is the evidence the evaluator reads, `context` only makes it findable.
-_CLAIM_FIELDS_REQUIRED = ("claim_type", "canon_ref", "quote")
-#: `context` is supplied only when the quote repeats, so it cannot be required — most
-#: claims will not carry one.
-_CLAIM_FIELDS_OPTIONAL = ("context",)
-_CLAIM_FIELDS = _CLAIM_FIELDS_REQUIRED + _CLAIM_FIELDS_OPTIONAL
+_CLAIM_FIELDS = ("claim_type", "canon_ref", "atom_start", "atom_end")
 
 
 def _reject_claim_fields(mapping: Any, where: str) -> None:
-    """Exact-set validation with ONE optional member.
-
-    `canon_lite._reject_unknown_fields` enforces an exact field set — every allowed name
-    must be present — and that strictness is deliberate everywhere else it is used, so it
-    is not widened here. A claim is the one shape with a genuinely optional member, and
-    saying so locally is safer than teaching a shared validator a mode that every other
-    caller would then have to be checked against.
-    """
+    """Claims use one exact address-only shape; prose never crosses this boundary."""
     if not isinstance(mapping, Mapping):
-        raise _schema_error(f"{where}: expected a mapping, "
-                            f"got {type(mapping).__name__}",
+        raise _schema_error(f"{where}: expected a mapping, got {type(mapping).__name__}",
                             code=EXTRACT_REASON_SCHEMA_INVALID)
     extra = sorted(set(mapping) - set(_CLAIM_FIELDS), key=repr)
+    missing = sorted(set(_CLAIM_FIELDS) - set(mapping))
     if extra:
         raise _schema_error(f"{where}: unknown field(s) {extra}",
                             code=EXTRACT_REASON_SCHEMA_INVALID)
-    missing = sorted(set(_CLAIM_FIELDS_REQUIRED) - set(mapping))
     if missing:
         raise _schema_error(f"{where}: missing field(s) {missing}",
                             code=EXTRACT_REASON_SCHEMA_INVALID)
 
 
-#: Sentinels for `_locate_unique`. Distinct objects rather than -1/None so a caller cannot
-#: confuse "absent" with "ambiguous" — they are different refusals with different meanings,
-#: and collapsing them is how a fabricated citation would come to look like a formatting
-#: problem.
-_NOT_FOUND = object()
-_AMBIGUOUS = object()
+_ATOM_RX = re.compile(r"\w+|\s+|[^\w\s]", re.UNICODE)
 
 
-def _locate_unique(haystack: bytes, needle: bytes):
-    """Offset of the ONLY occurrence, or `_NOT_FOUND` / `_AMBIGUOUS`.
+@dataclass(frozen=True, slots=True)
+class ChapterAtomV1:
+    """One exact, addressable lexical span in a chapter block."""
 
-    🔴 OVERLAP-SAFE BY CONSTRUCTION. `bytes.count()` counts non-overlapping matches, so
-       `b"aaaa".count(b"aaa") == 1` even though "aaa" starts at both offset 0 and offset 1.
-       A uniqueness check built on `count()` therefore accepts a genuinely ambiguous quote
-       and binds it to the first offset — exactly the silent mis-location this function
-       exists to prevent. Re-searching from `first + 1` sees the overlapping match.
+    index: int
+    byte_start: int
+    byte_end: int
+    text: str
+
+    def __post_init__(self) -> None:
+        if type(self.index) is not int or self.index < 0:
+            raise _schema_error("atom.index: expected a non-negative int")
+        if type(self.byte_start) is not int or type(self.byte_end) is not int \
+                or self.byte_start < 0 or self.byte_end <= self.byte_start:
+            raise _schema_error("atom byte range: invalid")
+        if type(self.text) is not str or not self.text:
+            raise _schema_error("atom.text: expected a non-empty string")
+
+    def to_wire_obj(self) -> list[Any]:
+        # Compact but unambiguous: JSON array position is part of the ratified contract.
+        return [self.index, self.text]
+
+
+def build_chapter_atom_table(chapter_bytes: bytes) -> tuple[tuple[ChapterAtomV1, ...], str]:
+    """Split exact UTF-8 bytes into deterministic lexical atoms and bind the table.
+
+    Word runs, whitespace runs, and individual punctuation/symbol code points are atoms.
+    This is intentionally not a linguistic sentence splitter: any exact entity, literal,
+    or event phrase can be addressed as an inclusive atom range without copied text or
+    model-authored byte offsets. The table covers every original byte exactly once.
     """
-    first = haystack.find(needle)
-    if first == -1:
-        return _NOT_FOUND
-    if haystack.find(needle, first + 1) != -1:
-        return _AMBIGUOUS
-    return first
+    if not isinstance(chapter_bytes, bytes):
+        raise _schema_error("chapter_bytes: expected bytes")
+    text = chapter_bytes.decode("utf-8", errors="strict")
+    char_to_byte = [0]
+    for ch in text:
+        char_to_byte.append(char_to_byte[-1] + len(ch.encode("utf-8")))
+    atoms = tuple(
+        ChapterAtomV1(
+            index=index,
+            byte_start=char_to_byte[match.start()],
+            byte_end=char_to_byte[match.end()],
+            text=match.group(0),
+        )
+        for index, match in enumerate(_ATOM_RX.finditer(text))
+    )
+    if len(atoms) > MAX_ATOMS_PER_CHAPTER:
+        raise _bounds_error(
+            f"chapter atoms: {len(atoms)} exceeds {MAX_ATOMS_PER_CHAPTER}")
+    if atoms:
+        if atoms[0].byte_start != 0 or atoms[-1].byte_end != len(chapter_bytes):
+            raise _schema_error("atom table: does not cover the chapter bytes")
+        for left, right in zip(atoms, atoms[1:]):
+            if left.byte_end != right.byte_start:
+                raise _schema_error("atom table: ranges are not contiguous")
+    elif chapter_bytes:
+        raise _schema_error("atom table: non-empty bytes produced no atoms")
+    digest = _digest("canon_lite_l2.chapter_atom_table", {
+        "atom_table_version": ATOM_TABLE_VERSION,
+        "content_sha256": sha256_hex(chapter_bytes),
+        "atoms": [
+            {"index": atom.index, "byte_start": atom.byte_start,
+             "byte_end": atom.byte_end, "text_sha256": sha256_hex(atom.text.encode("utf-8"))}
+            for atom in atoms
+        ],
+    })
+    return atoms, digest
 
 
-def _nfc_segments(text: str) -> list[tuple[str, int, int]]:
-    """Return NFC-stable segments with their original character boundaries.
-
-    A naive map built from character counts is wrong: NFC can turn two source code points
-    into one, and Hangul composition can involve code points whose canonical combining
-    class is zero. We therefore keep a starter plus its complete combining sequence in one
-    segment and also merge any adjacent zero-class character that actually composes under
-    NFC. Segment boundaries are the only boundaries mapped back to original bytes.
-    """
-    if not text:
-        return []
-    rows: list[tuple[str, int, int]] = []
-    start = 0
-    segment = text[0]
-    for index, ch in enumerate(text[1:], 1):
-        normalized_segment = unicodedata.normalize("NFC", segment)
-        independent = normalized_segment + unicodedata.normalize("NFC", ch)
-        combined = unicodedata.normalize("NFC", segment + ch)
-        if unicodedata.combining(ch) == 0 and combined == independent:
-            rows.append((normalized_segment, start, index))
-            start = index
-            segment = ch
-        else:
-            segment += ch
-    rows.append((unicodedata.normalize("NFC", segment), start, len(text)))
-    return rows
-
-
-def _locate_unique_nfc(haystack: bytes, needle: bytes, *, allow_first: bool = False):
-    """Locate one NFC-equivalent span and return its ORIGINAL byte boundaries.
-
-    Only segment-aligned matches are eligible. That conservative rule prevents a
-    normalized character index from being mistaken for an original byte offset when
-    composition changed length. Multiple equivalent original spans remain ambiguous.
-    """
-    try:
-        source = haystack.decode("utf-8", errors="strict")
-        target = unicodedata.normalize("NFC", needle.decode("utf-8", errors="strict"))
-    except UnicodeDecodeError:
-        return _NOT_FOUND
-    if not target:
-        return _NOT_FOUND
-
-    byte_boundaries = [0]
-    for ch in source:
-        byte_boundaries.append(byte_boundaries[-1] + len(ch.encode("utf-8")))
-
-    normalized_parts: list[str] = []
-    normalized_to_original: dict[int, int] = {0: 0}
-    normalized_index = 0
-    for normalized, original_start, original_end in _nfc_segments(source):
-        normalized_to_original[normalized_index] = byte_boundaries[original_start]
-        normalized_parts.append(normalized)
-        normalized_index += len(normalized)
-        normalized_to_original[normalized_index] = byte_boundaries[original_end]
-    normalized_source = "".join(normalized_parts)
-
-    spans: set[tuple[int, int]] = set()
-    position = normalized_source.find(target)
-    while position != -1:
-        end = position + len(target)
-        if position in normalized_to_original and end in normalized_to_original:
-            spans.add((normalized_to_original[position], normalized_to_original[end]))
-            if len(spans) > 1 and not allow_first:
-                return _AMBIGUOUS
-        position = normalized_source.find(target, position + 1)
-    if not spans:
-        return _NOT_FOUND
-    # `min` = EARLIEST span, deterministic. Only reachable with allow_first; the unique
-    # path has already refused anything with more than one span.
-    return min(spans) if allow_first else next(iter(spans))
-
-
-#: Claim types whose VERDICT cannot depend on which occurrence was cited.
-#:
-#: 🔴 PROVEN FROM `evaluate_semantic`, NOT ASSUMED. Both of these branches read only the
-#:    evidence TEXT — `_norm_text(evidence).strip().casefold()` against the entity's
-#:    names, `_norm_text(evidence).strip()` against the anchor's literal. Every match of
-#:    one needle is that same text (and NFC-equivalent matches normalize to it), so the
-#:    comparison returns the same answer whichever occurrence is bound. `one_time_event`
-#:    is deliberately ABSENT: its branch reads `canon_ref` only and ignores the evidence
-#:    (`_evidence`), but two occurrences of one phrase can evidence two different
-#:    moments, so WHICH span is cited is real provenance there and stays strict.
-_OCCURRENCE_INVARIANT_CLAIMS = frozenset({CLAIM_ENTITY_MENTION, CLAIM_FIXED_LITERAL})
-
-
-def _locate_first_equivalent(haystack: bytes, needle: bytes):
-    """EARLIEST occurrence — exact preferred, NFC-equivalent as fallback.
-
-    Only for `_OCCURRENCE_INVARIANT_CLAIMS`. Provenance stays honest: the offsets point
-    at a REAL occurrence of exactly this text, not at an invented location.
-    """
-    first = haystack.find(needle)
-    if first != -1:
-        return first, first + len(needle)
-    return _locate_unique_nfc(haystack, needle, allow_first=True)
-
-
-def _locate_unique_equivalent(haystack: bytes, needle: bytes):
-    """Exact unique lookup first; only an exact miss may use NFC equivalence."""
-    exact = _locate_unique(haystack, needle)
-    if exact is _AMBIGUOUS:
-        return _AMBIGUOUS
-    if exact is not _NOT_FOUND:
-        return exact, exact + len(needle)
-    return _locate_unique_nfc(haystack, needle)
 _CLAIMS_PAYLOAD_FIELDS = (
     "schema_version", "chapter_index", "chapter_id", "content_sha256", "canon_sha256",
-    "extractor_version", "model_version", "prompt_sha256", "predicate_set_version",
-    "coverage", "claims",
+    "atom_table_sha256", "extractor_version", "model_version", "prompt_sha256",
+    "predicate_set_version", "coverage", "claims",
 )
 
 
@@ -771,6 +676,7 @@ class ChapterClaimsV1:
     chapter_id: str
     content_sha256: str
     canon_sha256: str
+    atom_table_sha256: str
     extractor_version: str
     model_version: str
     prompt_sha256: str
@@ -795,6 +701,7 @@ class ChapterClaimsV1:
         # does receive the canon.
         if self.canon_sha256 != UNKNOWN:
             _req_sha256(self.canon_sha256, "canon_sha256")
+        _req_sha256(self.atom_table_sha256, "atom_table_sha256")
         _req_str(self.extractor_version, "extractor_version", max_len=MAX_LABEL_LEN,
                  allow_unknown=False)
         _req_str(self.model_version, "model_version", max_len=MAX_LABEL_LEN,
@@ -864,6 +771,7 @@ class ChapterClaimsV1:
             "chapter_id": self.chapter_id,
             "content_sha256": self.content_sha256,
             "canon_sha256": self.canon_sha256,
+            "atom_table_sha256": self.atom_table_sha256,
             "extractor_version": self.extractor_version,
             "model_version": self.model_version,
             "prompt_sha256": self.prompt_sha256,
@@ -902,6 +810,13 @@ def parse_chapter_claims(
     content_sha = _req_sha256(payload.get("content_sha256"), "content_sha256")
     if content_sha != block_meta.content_sha256:
         raise _schema_error("content_sha256: does not bind the snapshot block")
+    block = snapshot.block_bytes(index)
+    atoms, expected_atom_sha = build_chapter_atom_table(block)
+    atom_table_sha = _req_sha256(
+        payload.get("atom_table_sha256"), "atom_table_sha256")
+    if atom_table_sha != expected_atom_sha:
+        raise _schema_error("atom_table_sha256: does not bind the chapter atom table",
+                            code=EXTRACT_REASON_ATOM_TABLE_MISMATCH)
 
     # ---- canon binding, BOTH directions -----------------------------------
     # Rejecting UNKNOWN when a canon was supplied is necessary but NOT sufficient: a
@@ -949,84 +864,23 @@ def parse_chapter_claims(
     if not isinstance(raw_claims, list):
         raise _schema_error("claims: expected a list")
 
-    block = snapshot.block_bytes(index)
     accepted_by_type = _accepted_canon_ids_by_claim_type(canon)
     parsed: list[ObservedClaimV1] = []
     for i, rc in enumerate(raw_claims):
         _reject_claim_fields(rc, f"claims[{i}]")
-        quote = rc.get("quote")
-        # `type(x) is str`, not isinstance: this value is about to be encoded, searched
-        # for and hashed, and a str SUBCLASS with a poisoned __eq__ must not reach any of
-        # that. Same discipline as the P0-A verdict canonicaliser.
-        if type(quote) is not str or not quote:
-            raise _schema_error(f"claims[{i}]: quote must be a non-empty string",
+        atom_start = rc.get("atom_start")
+        atom_end = rc.get("atom_end")
+        if type(atom_start) is not int or type(atom_end) is not int:
+            raise _schema_error(f"claims[{i}]: atom addresses must be integers",
                                 code=EXTRACT_REASON_SCHEMA_INVALID)
-        context = rc.get("context")
-        if context is not None and (type(context) is not str or not context):
-            raise _schema_error(f"claims[{i}]: context must be a non-empty string",
-                                code=EXTRACT_REASON_SCHEMA_INVALID)
-        needle = quote.encode("utf-8")
-
-        # 🔴 EXACTLY ONE OCCURRENCE, AND THE SEARCH MUST SEE OVERLAPPING ONES.
-        #    Zero means the extractor cited text this chapter does not contain — a
-        #    fabricated citation, the single most important thing this parser refuses.
-        #    More than one means the citation does not identify a span, and picking the
-        #    first would invent a location the model never chose. Ambiguity is a refusal.
-        #
-        #    `bytes.count()` counts NON-OVERLAPPING matches and is wrong here:
-        #    `b"aaaa".count(b"aaa")` is 1, while "aaa" genuinely starts at offsets 0 and 1.
-        #    `_locate_unique` re-searches from `first + 1`, so an overlapping second
-        #    occurrence is seen and refused instead of silently binding to the first.
-        if context is None:
-            located = _locate_unique_equivalent(block, needle)
-            if located is _NOT_FOUND:
-                raise _schema_error(f"claims[{i}]: quote not found in the chapter block",
-                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)
-            if located is _AMBIGUOUS:
-                # 🔴 AMBIGUITY IS ONLY A DEFECT WHERE IT CAN CHANGE THE ANSWER. For
-                #    entity_mention and fixed_literal the quote is the BARE name or
-                #    literal, so every occurrence carries the same text and
-                #    `evaluate_semantic` returns the same verdict for any of them —
-                #    refusing them bought nothing and cost the whole chapter. Live
-                #    canaries `gjpmhjzs` and `o2eeafh5` died exactly here: a recurring
-                #    character name has no unique form, which this module's own §6.2
-                #    note already recorded, and the fix at the time (make the MODEL
-                #    supply a unique `context`) is what kept failing.
-                #
-                #    `one_time_event` is NOT relaxed — see _OCCURRENCE_INVARIANT_CLAIMS.
-                if rc["claim_type"] in _OCCURRENCE_INVARIANT_CLAIMS:
-                    located = _locate_first_equivalent(block, needle)
-                if located is _AMBIGUOUS or located is _NOT_FOUND:
-                    raise _schema_error(
-                        f"claims[{i}]: quote is ambiguous in the chapter block",
-                        code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
-            start, end = located
-        else:
-            # The CONTEXT is the locator; the QUOTE is still the evidence. The context
-            # must be unique in the chapter, and the quote must sit at exactly one place
-            # inside it — otherwise the pair does not name a span either.
-            ctx_bytes = context.encode("utf-8")
-            ctx_located = _locate_unique_equivalent(block, ctx_bytes)
-            if ctx_located is _NOT_FOUND:
-                raise _schema_error(f"claims[{i}]: context not found in the chapter block",
-                                    code=EXTRACT_REASON_CONTEXT_NOT_FOUND)
-            if ctx_located is _AMBIGUOUS:
-                raise _schema_error(
-                    f"claims[{i}]: context is ambiguous in the chapter block",
-                    code=EXTRACT_REASON_CONTEXT_AMBIGUOUS)
-            ctx_start, ctx_end = ctx_located
-            original_context = block[ctx_start:ctx_end]
-            quote_located = _locate_unique_equivalent(original_context, needle)
-            if quote_located is _NOT_FOUND:
-                raise _schema_error(f"claims[{i}]: context does not contain the quote",
-                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)
-            if quote_located is _AMBIGUOUS:
-                raise _schema_error(
-                    f"claims[{i}]: quote is ambiguous within its own context",
-                    code=EXTRACT_REASON_QUOTE_AMBIGUOUS)
-            quote_start, quote_end = quote_located
-            start = ctx_start + quote_start
-            end = ctx_start + quote_end
+        if atom_start > atom_end:
+            raise _schema_error(f"claims[{i}]: atom span is inverted",
+                                code=EXTRACT_REASON_ATOM_SPAN_INVERTED)
+        if atom_start < 0 or atom_end >= len(atoms):
+            raise _schema_error(f"claims[{i}]: atom address is outside the table",
+                                code=EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE)
+        start = atoms[atom_start].byte_start
+        end = atoms[atom_end].byte_end
         evidence = block[start:end]
         claim = ObservedClaimV1(
             claim_type=rc["claim_type"], canon_ref=rc["canon_ref"],
@@ -1055,25 +909,27 @@ def parse_chapter_claims(
     return ChapterClaimsV1(
         schema_version=CLAIMS_SCHEMA_VERSION, chapter_index=index,
         chapter_id=chapter_id, content_sha256=content_sha, canon_sha256=canon_sha,
+        atom_table_sha256=atom_table_sha,
         extractor_version=version, model_version=model_version,
         prompt_sha256=prompt_sha256, predicate_set_version=PREDICATE_SET_VERSION,
         coverage=coverage, claims=tuple(parsed),
     )
 
 
-#: §4.4 — the claim cache key, frozen. Nine elements, this exact order, no omissions, no
+#: §4.4 — the claim cache key, frozen. Ten elements, this exact order, no omissions, no
 #: reordering, no implementer-selected additions. Every element changes the MEANING of the
 #: cached claim: the schema it obeys, WHICH CHAPTER it is, the bytes it read, the canon it
 #: was judged against, the extractor and model that produced it, the request contract it
 #: was asked under, and the predicate vocabulary it may use.
 CLAIM_CACHE_KEY_FIELDS = (
     "schema_version", "chapter_index", "chapter_id", "content_sha256", "canon_sha256",
-    "extractor_version", "model_version", "prompt_sha256", "predicate_set_version",
+    "atom_table_sha256", "extractor_version", "model_version", "prompt_sha256",
+    "predicate_set_version",
 )
 
 
 def claim_cache_key(artifact: ChapterClaimsV1) -> tuple:
-    """The frozen nine-element cache identity for one claim artefact.
+    """The frozen ten-element cache identity for one claim artefact.
 
     `chapter_index` and `chapter_id` are part of the key because both are sent to the
     provider and both are carried on the artefact: without them two chapters with
@@ -1339,6 +1195,8 @@ def evaluate_semantic(
         if artifact.chapter_index != index \
                 or artifact.chapter_id != block.chapter_id \
                 or artifact.content_sha256 != block.content_sha256 \
+                or artifact.atom_table_sha256 != build_chapter_atom_table(
+                    snapshot.block_bytes(index))[1] \
                 or artifact.predicate_set_version != PREDICATE_SET_VERSION:
             failure_states.append(COVERAGE_INVALID_EXTRACTOR_OUTPUT)
             continue

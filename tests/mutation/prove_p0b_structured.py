@@ -40,12 +40,16 @@ RUNNER = WT / "python/canon_lite_qc_runner.py"
 L2 = WT / "python/canon_lite_l2.py"
 EXT = WT / "python/canon_lite_extractor.py"
 QCP = WT / "python/canon_lite_qc_provider.py"
+METER = WT / "python/canon_lite_qc_meter.py"
+L3A = WT / "python/canon_lite_l3_adapter.py"
 
 T_TRANSPORT = "tests/python/test_narasi_structured_transport.py"
 T_SIDECAR = "tests/python/test_canon_registry_sidecar_threading.py"
 T_PROD = "tests/python/test_canon_lite_p0b_production_combination.py"
 T_QC = "tests/python/test_canon_lite_qc_provider.py"
 T_L2 = "tests/python/test_canon_lite_l2.py"
+T_METER = "tests/python/test_platform_qc_meter.py"
+T_L3A = "tests/python/test_canon_lite_l3_adapter.py"
 
 # (label, file, literal to find, replacement, test file, test that must FAIL)
 BREAKS = [
@@ -120,58 +124,59 @@ BREAKS = [
      "tests/python/test_canon_lite_l3_production_path.py",
      "test_the_production_branch_repairs_and_binds_to_the_delivered_bytes"),
 
-    # ── 3d. the evidence contract: quote located, never guessed ──────────
-    ("fabricated citation accepted — quote no longer has to exist in the chapter",
+    # ── 3d. server-owned atom addresses and bound provenance ─────────────
+    ("atom-table version drops out of the provenance digest",
      L2,
-     '            if located is _NOT_FOUND:\n'
-     '                raise _schema_error(f"claims[{i}]: quote not found in the chapter block",\n'
-     '                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)',
-     '            if False:\n'
-     '                raise _schema_error(f"claims[{i}]: quote not found in the chapter block",\n'
-     '                                    code=EXTRACT_REASON_QUOTE_NOT_FOUND)',
-     T_L2, "test_a_quote_that_is_not_in_the_chapter_is_rejected"),
-    ("ambiguity resolved by guessing — first occurrence silently wins",
+     '        "atom_table_version": ATOM_TABLE_VERSION,',
+     '        "atom_table_version": "unversioned",',
+     T_L2, "test_atom_table_version_is_part_of_the_digest"),
+    ("atom-table binding disabled — payload can name a table the chapter never used",
      L2,
-     "    if haystack.find(needle, first + 1) != -1:\n        return _AMBIGUOUS",
-     "    if False:\n        return _AMBIGUOUS",
-     T_L2, "test_a_quote_appearing_twice_is_refused_for_one_time_event"),
-    ("uniqueness checked with bytes.count() — blind to overlapping occurrences",
+     "    if atom_table_sha != expected_atom_sha:\n"
+     "        raise _schema_error(\"atom_table_sha256: does not bind the chapter atom table\",\n"
+     "                            code=EXTRACT_REASON_ATOM_TABLE_MISMATCH)",
+     "    if False:\n"
+     "        raise _schema_error(\"atom_table_sha256: does not bind the chapter atom table\",\n"
+     "                            code=EXTRACT_REASON_ATOM_TABLE_MISMATCH)",
+     T_L2, "test_atom_table_digest_mismatch_refuses_before_claim_resolution"),
+    ("request accepts atom rows built from different chapter bytes",
+     EXT,
+     "        if self.chapter_atoms != atoms or self.atom_table_sha256 != atom_sha:",
+     "        if self.atom_table_sha256 != atom_sha:",
+     T_QC, "test_8_20b_request_refuses_an_atom_table_from_different_bytes"),
+    ("out-of-range atom indexes accepted instead of refused",
      L2,
-     "    first = haystack.find(needle)\n    if first == -1:\n        return _NOT_FOUND\n"
-     "    if haystack.find(needle, first + 1) != -1:\n        return _AMBIGUOUS\n    return first",
-     "    if haystack.count(needle) == 0:\n        return _NOT_FOUND\n"
-     "    if haystack.count(needle) > 1:\n        return _AMBIGUOUS\n    return haystack.find(needle)",
-     T_L2, "test_an_overlapping_second_occurrence_is_seen_as_ambiguous"),
-    # ── 3d-bis. the occurrence-invariant relaxation, guarded BOTH ways ───
-    ("the relaxation spreads to one_time_event — a repeated phrase silently binds "
-     "to its first occurrence, misreporting WHICH span evidenced the event",
+     "        if atom_start < 0 or atom_end >= len(atoms):",
+     "        if False:",
+     T_L2, "test_invalid_atom_addresses_refuse_with_bounded_codes"),
+    ("inverted atom range guard disabled",
      L2,
-     "_OCCURRENCE_INVARIANT_CLAIMS = frozenset({CLAIM_ENTITY_MENTION, CLAIM_FIXED_LITERAL})",
-     "_OCCURRENCE_INVARIANT_CLAIMS = frozenset({CLAIM_ENTITY_MENTION, CLAIM_FIXED_LITERAL, "
-     "CLAIM_ONE_TIME_EVENT})",
-     T_L2, "test_a_quote_appearing_twice_is_refused_for_one_time_event"),
-    ("the relaxation is reverted — a recurring character name has no unique form, so "
-     "the whole chapter goes unmeasured again",
+     "        if atom_start > atom_end:",
+     "        if False:",
+     T_L2, "test_invalid_atom_addresses_refuse_with_bounded_codes"),
+    ("model address ignored — every claim silently binds to atom zero",
      L2,
-     '                if rc["claim_type"] in _OCCURRENCE_INVARIANT_CLAIMS:\n'
-     "                    located = _locate_first_equivalent(block, needle)",
-     "                if False:\n"
-     "                    located = _locate_first_equivalent(block, needle)",
-     T_L2, "test_a_repeated_quote_resolves_to_the_first_occurrence"),
-    ("first-occurrence picks an arbitrary span instead of the earliest — provenance "
-     "becomes non-deterministic across runs",
+     "        start = atoms[atom_start].byte_start\n        end = atoms[atom_end].byte_end",
+     "        start = atoms[0].byte_start\n        end = atoms[0].byte_end",
+     T_L2, "test_repeated_text_is_disambiguated_by_address_not_copied_context"),
+    ("artifact drops the atom-table digest that produced its evidence offsets",
      L2,
-     "    return min(spans) if allow_first else next(iter(spans))",
-     "    return next(iter(spans))",
-     T_L2, "test_nfc_equivalent_repeats_bind_to_the_earliest_span"),
+     "        atom_table_sha256=atom_table_sha,",
+     "        atom_table_sha256=content_sha,",
+     T_L2, "test_a_well_formed_address_derives_original_byte_span_and_sha"),
+    ("provider schema re-opens copied quote/context fields",
+     QCP,
+     '                "required": ["claim_type", "canon_ref", "atom_start", "atom_end"],',
+     '                "required": ["claim_type", "canon_ref"],',
+     T_QC, "test_8_8b_claim_wire_is_address_only"),
+    ("atom wire drops exact whitespace atoms and cannot reconstruct chapter bytes",
+     QCP,
+     '        "chapter_atoms": [atom.to_wire_obj() for atom in request.chapter_atoms],',
+     '        "chapter_atoms": [atom.to_wire_obj() for atom in request.chapter_atoms '
+     'if not atom.text.isspace()],',
+     T_QC, "test_8_20_chapter_atom_round_trip"),
 
-    ("the locator leaks into the evidence — context span used as the quote span",
-     L2,
-     "            start = ctx_start + quote_start\n            end = ctx_start + quote_end",
-     "            start = ctx_start\n            end = ctx_end",
-     T_L2, "test_a_repeated_entity_name_is_located_by_context_and_evaluates_clean"),
-
-    # ── 3d.1 retry structure and NFC-equivalent provenance ──────────────
+    # ── 3d.1 retry structure ─────────────────────────────────────────────
     ("attempts 2-3 drop the schema and return to loose output",
      QCP,
      'QC_RESPONSE_FORMAT_SCHEDULE = ("json_schema", "json_schema", "json_schema")',
@@ -186,34 +191,40 @@ BREAKS = [
      EXT,
      '            retry_reason = _retry_reason(error_code)',
      '            retry_reason = QC_RETRY_REASON_NONE',
-     T_QC, "test_8_19f_quote_retry_changes_request_bytes_and_becomes_measured"),
-    ("NFC-equivalent fallback disabled — composed/decomposed evidence is lost",
-     L2,
-     '    return _locate_unique_nfc(haystack, needle)',
-     '    return _NOT_FOUND',
-     T_L2, "test_nfc_fallback_maps_to_original_bytes_and_hash_not_normalized_bytes"),
-    ("NFC ambiguity guard disabled — one of two equivalent spans is guessed",
-     L2,
-     # anchor moved when `allow_first` was added — the MUTATION is unchanged in meaning:
-     # neuter the ambiguity guard so one of two equivalent spans is silently guessed
-     '            if len(spans) > 1 and not allow_first:\n                return _AMBIGUOUS',
-     '            if False:\n                return _AMBIGUOUS',
-     T_L2, "test_two_nfc_equivalent_original_spans_remain_ambiguous"),
-    ("normalized quote bytes replace the original evidence bytes and offsets",
-     L2,
-     '        evidence = block[start:end]',
-     '        end = start + len(needle)\n        evidence = needle',
-     T_L2, "test_nfc_fallback_maps_to_original_bytes_and_hash_not_normalized_bytes"),
-    ("context locator bypasses NFC equivalence while the direct quote door keeps it",
-     L2,
-     '            ctx_located = _locate_unique_equivalent(block, ctx_bytes)',
-     '            ctx_located = _locate_unique(block, ctx_bytes)',
-     T_L2, "test_nfc_fallback_applies_to_both_context_and_quote_locator_doors"),
-    ("quote-inside-context locator bypasses NFC equivalence",
-     L2,
-     '            quote_located = _locate_unique_equivalent(original_context, needle)',
-     '            quote_located = _locate_unique(original_context, needle)',
-     T_L2, "test_nfc_fallback_applies_to_both_context_and_quote_locator_doors"),
+     T_QC, "test_8_19f_address_retry_changes_request_bytes_and_becomes_measured"),
+
+    # ── 3d.2 durable meter identity and process-latch observability ──────
+    ("meter ignores the explicit physical identity and collides with semantic chapter zero",
+     METER,
+     '        unit_index = getattr(request, "meter_unit_index", None)\n'
+     '        attempt_ordinal = getattr(request, "meter_attempt_ordinal", None)',
+     '        unit_index = getattr(request, "chapter_index", None)\n'
+     '        attempt_ordinal = getattr(request, "attempt", None)',
+     T_METER, "test_meter_uses_explicit_identity_not_semantic_chapter_identity"),
+    ("durable replay makes a second physical provider call",
+     METER,
+     '            if outcome == "replay":',
+     '            if False:',
+     T_METER, "test_durable_replay_never_makes_a_second_physical_call"),
+    ("process-local kill latch goes silent again",
+     METER,
+     '            if not _process_latch_logged:\n'
+     '                log.error("platform_qc_meter process_latch_blocking=1")\n'
+     '                _process_latch_logged = True',
+     '            if False:\n'
+     '                log.error("platform_qc_meter process_latch_blocking=1")\n'
+     '                _process_latch_logged = True',
+     T_METER, "test_process_latch_logs_once_and_performs_no_external_reads"),
+    ("L3 re-extraction falls back into the initial-extraction meter namespace",
+     L3A,
+     "            meter_unit_index=L3_REEXTRACT_UNIT_BASE + chapter_index,",
+     "            meter_unit_index=chapter_index,",
+     T_L3A, "test_repair_after_an_already_metered_chapter_never_reresolves_one_attempt_id"),
+    ("L3 re-extraction hardcodes attempt one and collides across repair iterations",
+     L3A,
+     "            meter_attempt_ordinal=attempt)",
+     "            meter_attempt_ordinal=1)",
+     T_L3A, "test_repair_after_an_already_metered_chapter_never_reresolves_one_attempt_id"),
 
     # ── 3e. the bounded telemetry that ends the silence ──────────────────
     ("failing extraction goes back to leaving no trace at all",
@@ -231,7 +242,7 @@ BREAKS = [
      EXT,
      '    code = getattr(exc, "reason_code", None)',
      "    code = None",
-     T_QC, "test_8_19d_a_canon_ref_rejection_gets_a_different_code_than_a_quote_rejection"),
+     T_QC, "test_8_19d_a_canon_ref_rejection_differs_from_an_address_rejection"),
 
     # ── 4. surgical containment ──────────────────────────────────────────
     ("containment guard disabled — the patch is bought and the envelope invalidated",

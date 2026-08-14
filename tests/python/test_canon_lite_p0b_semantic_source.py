@@ -1705,14 +1705,12 @@ def test_the_artifact_versions_moved_because_the_rows_changed():
     assert css.SEMANTIC_SOURCE_SCHEMA_VERSION == "canon_lite_semantic_source_v2"
 
 
-def test_the_versions_that_deliberately_did_NOT_move_are_pinned_too():
-    """The boundary of the decision, made explicit so a future round does not "tidy" these
-    into v2 as well. None of these objects' own fields changed, and bumping them would
-    force re-acceptance of shapes that never moved — the same reasoning that keeps
-    `CLAIMS_SCHEMA_VERSION` where it is."""
+def test_related_artifact_versions_are_pinned_at_their_real_boundaries():
+    """Claims moved to v3 because atom-table binding changed its artifact shape; the
+    unrelated job/parity/report artifacts remain at their existing versions."""
     assert cl.JOB_CONFIG_SCHEMA_VERSION == "job_config_snapshot_v1"
     assert cl.PARITY_SCHEMA_VERSION == "canon_lite_parity_v1"
-    assert l2.CLAIMS_SCHEMA_VERSION == "chapter_claims_v2"
+    assert l2.CLAIMS_SCHEMA_VERSION == "chapter_claims_v3"
     assert l2.REPORT_SCHEMA_VERSION == "continuity_report_v1"
 
 

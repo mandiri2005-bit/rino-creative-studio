@@ -23,10 +23,9 @@ import canon_lite_l2 as _l2
 from canon_lite_qc_contract import (
     QC_PROVIDER_CODES,
     QC_RETRY_REASON_CODES,
+    QC_RETRY_REASON_ADDRESS_INVALID,
     QC_RETRY_REASON_NONE,
     QC_RETRY_REASON_PROVIDER_UNPARSEABLE,
-    QC_RETRY_REASON_QUOTE_AMBIGUOUS,
-    QC_RETRY_REASON_QUOTE_NOT_FOUND,
     QC_RETRY_REASON_SCHEMA_INVALID,
 )
 
@@ -79,10 +78,14 @@ class ExtractionRequestV1:
     chapter_id: str
     content_sha256: str
     canon_sha256: str
+    atom_table_sha256: str
     attempt: int
     chapter_bytes: bytes = field(repr=False)
+    chapter_atoms: tuple[_l2.ChapterAtomV1, ...] = field(repr=False)
     canon: _cl.CanonLiteV1 = field(repr=False)
     retry_reason: str = QC_RETRY_REASON_NONE
+    meter_unit_index: Optional[int] = None
+    meter_attempt_ordinal: Optional[int] = None
 
     def __post_init__(self) -> None:
         if isinstance(self.chapter_index, bool) or not isinstance(
@@ -92,6 +95,7 @@ class ExtractionRequestV1:
             _cl._req_id(self.chapter_id, "chapter_id")
         _cl._req_sha256(self.content_sha256, "content_sha256")
         _cl._req_sha256(self.canon_sha256, "canon_sha256")
+        _cl._req_sha256(self.atom_table_sha256, "atom_table_sha256")
         if isinstance(self.attempt, bool) or not isinstance(
                 self.attempt, int) or not (1 <= self.attempt <= MAX_LOGICAL_ATTEMPTS):
             raise _schema_error("attempt: outside the logical-attempt ceiling")
@@ -102,6 +106,22 @@ class ExtractionRequestV1:
             raise _schema_error("chapter_bytes: expected bytes")
         if not isinstance(self.canon, _cl.CanonLiteV1):
             raise _schema_error("canon: expected CanonLiteV1")
+        if not isinstance(self.chapter_atoms, tuple) or any(
+                not isinstance(atom, _l2.ChapterAtomV1) for atom in self.chapter_atoms):
+            raise _schema_error("chapter_atoms: expected tuple[ChapterAtomV1, ...]")
+        atoms, atom_sha = _l2.build_chapter_atom_table(self.chapter_bytes)
+        if self.chapter_atoms != atoms or self.atom_table_sha256 != atom_sha:
+            raise _schema_error("chapter_atoms: do not bind chapter_bytes")
+        meter_unit = self.chapter_index if self.meter_unit_index is None \
+            else self.meter_unit_index
+        meter_attempt = self.attempt if self.meter_attempt_ordinal is None \
+            else self.meter_attempt_ordinal
+        if type(meter_unit) is not int or not (0 <= meter_unit < 10_000):
+            raise _schema_error("meter_unit_index: outside 0..9999")
+        if type(meter_attempt) is not int or not (1 <= meter_attempt < 1_000):
+            raise _schema_error("meter_attempt_ordinal: outside 1..999")
+        object.__setattr__(self, "meter_unit_index", meter_unit)
+        object.__setattr__(self, "meter_attempt_ordinal", meter_attempt)
 
 
 ProviderCall = Callable[[ExtractionRequestV1], Awaitable[Mapping[str, Any]]]
@@ -189,6 +209,7 @@ def _failure_artifact(
     canon_sha256: str,
 ) -> _l2.ChapterClaimsV1:
     block = snapshot.blocks[index]
+    _atoms, atom_sha = _l2.build_chapter_atom_table(snapshot.block_bytes(index))
     return _l2.ChapterClaimsV1(
         schema_version=_l2.CLAIMS_SCHEMA_VERSION,
         chapter_index=index,
@@ -197,6 +218,7 @@ def _failure_artifact(
         # Failure artefacts name the canon too, not only success payloads — a failed
         # extraction must still say which canon it failed against.
         canon_sha256=canon_sha256,
+        atom_table_sha256=atom_sha,
         extractor_version=EXTRACTOR_VERSION,
         model_version=model_version,
         prompt_sha256=prompt_sha256,
@@ -217,12 +239,14 @@ def _provider_payload(
 ) -> dict[str, Any]:
     _cl._reject_unknown_fields(raw, ("coverage", "claims"), "provider_output")
     block = snapshot.blocks[index]
+    _atoms, atom_sha = _l2.build_chapter_atom_table(snapshot.block_bytes(index))
     return {
         "schema_version": _l2.CLAIMS_SCHEMA_VERSION,
         "chapter_index": index,
         "chapter_id": block.chapter_id,
         "content_sha256": block.content_sha256,
         "canon_sha256": canon_sha256,
+        "atom_table_sha256": atom_sha,
         "extractor_version": EXTRACTOR_VERSION,
         "model_version": model_version,
         "prompt_sha256": prompt_sha256,
@@ -266,12 +290,12 @@ def _provider_error_code(exc: BaseException) -> Optional[str]:
 
 def _retry_reason(error_code: str) -> str:
     """Map one closed failure code to bounded prompt feedback for the next attempt."""
-    if error_code in (_l2.EXTRACT_REASON_QUOTE_NOT_FOUND,
-                      _l2.EXTRACT_REASON_CONTEXT_NOT_FOUND):
-        return QC_RETRY_REASON_QUOTE_NOT_FOUND
-    if error_code in (_l2.EXTRACT_REASON_QUOTE_AMBIGUOUS,
-                      _l2.EXTRACT_REASON_CONTEXT_AMBIGUOUS):
-        return QC_RETRY_REASON_QUOTE_AMBIGUOUS
+    if error_code in (
+            _l2.EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE,
+            _l2.EXTRACT_REASON_ATOM_SPAN_INVERTED,
+            _l2.EXTRACT_REASON_ATOM_TABLE_MISMATCH,
+    ):
+        return QC_RETRY_REASON_ADDRESS_INVALID
     if error_code == "qc_provider_unparseable":
         return QC_RETRY_REASON_PROVIDER_UNPARSEABLE
     if error_code in (
@@ -307,6 +331,9 @@ def _preflight_request(
     block = snapshot.blocks[index]
     if _cl.sha256_hex(request.chapter_bytes) != request.content_sha256:
         raise _schema_error("extractor_request_content_hash_mismatch")
+    atoms, atom_sha = _l2.build_chapter_atom_table(request.chapter_bytes)
+    if request.chapter_atoms != atoms or request.atom_table_sha256 != atom_sha:
+        raise _schema_error("extractor_request_atom_table_mismatch")
     if request.chapter_index != index or request.chapter_id != block.chapter_id:
         raise _schema_error("extractor_request_identity_mismatch")
     # Request-canon parity — three conjuncts, all required. Content and identity bind the
@@ -416,13 +443,17 @@ async def extract_all(
         error_code = _l2.COVERAGE_PROVIDER_FAILURE
         retry_reason = QC_RETRY_REASON_NONE
         block = snapshot.blocks[index]
+        chapter_bytes = snapshot.block_bytes(index)
+        chapter_atoms, atom_table_sha = _l2.build_chapter_atom_table(chapter_bytes)
         for attempt in range(1, max_attempts + 1):
             # ---- step 4: construct, then parity-check BEFORE MeteredProvider ----
             request = ExtractionRequestV1(
                 chapter_index=index, chapter_id=block.chapter_id,
                 content_sha256=block.content_sha256, canon_sha256=canon.canon_sha256,
-                attempt=attempt, chapter_bytes=snapshot.block_bytes(index), canon=canon,
-                retry_reason=retry_reason)
+                atom_table_sha256=atom_table_sha, attempt=attempt,
+                chapter_bytes=chapter_bytes, chapter_atoms=chapter_atoms, canon=canon,
+                retry_reason=retry_reason, meter_unit_index=index,
+                meter_attempt_ordinal=attempt)
             _preflight_request(request, snapshot=snapshot, index=index, canon=canon)
             try:
                 async with semaphore:

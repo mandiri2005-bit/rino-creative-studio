@@ -48,6 +48,11 @@ consequently not evidence on this path, and the engine's `_binding_ok` is told
 nothing to the contrary: `content_sha256` and `canon_sha256` remain substantive,
 computed by the extractor from the candidate bytes it was actually given, and they
 are what would catch an answer about the wrong text or the wrong canon.
+
+Meter identity is separate from this semantic mini-snapshot identity. Initial extraction
+uses units 0..399; repair re-extraction uses 1000+real_chapter_index and the repair
+iteration ordinal. Reusing unit 0/attempt 1 caused a durable-row replay followed by a
+second physical call, then `resolve_cost_conflict` when its usage differed.
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ log = logging.getLogger("narasi")
 
 __all__ = [
     "L3_REPAIR_PHASE",
+    "L3_REEXTRACT_UNIT_BASE",
     "MAX_SESSION_CALLS",
     "SessionBudgetExhausted",
     "L3AssistSession",
@@ -75,6 +81,11 @@ L3_REPAIR_PHASE = "canon_lite_l3_repair"
 #: Absolute ceiling on provider calls this session may make, of either kind. A
 #: backstop far above any real job — the per-chapter bound does the real work.
 MAX_SESSION_CALLS = 64
+
+L3_REEXTRACT_UNIT_BASE = 1000
+if L3_REEXTRACT_UNIT_BASE <= _cl.MAX_CHAPTERS - 1 \
+        or L3_REEXTRACT_UNIT_BASE + _cl.MAX_CHAPTERS - 1 >= 10_000:
+    raise RuntimeError("l3_reextract_meter_namespace_invalid")
 
 
 class SessionBudgetExhausted(RuntimeError):
@@ -189,6 +200,7 @@ class L3AssistSession:
 
     async def extract_chapter(
         self, *, chapter_index: int, chapter_id: str, block_bytes: bytes, canon: Any,
+        attempt: int,
     ) -> _l2.ChapterClaimsV1:
         """Re-extract ONE candidate chapter through the job's existing QC session."""
         self._spend("extract")
@@ -211,10 +223,14 @@ class L3AssistSession:
             # something other than the candidate.
             raise ValueError("l3 extract: candidate bytes did not survive framing")
 
+        atoms, atom_sha = _l2.build_chapter_atom_table(mini.block_bytes(0))
         request = _ext.ExtractionRequestV1(
             chapter_index=0, chapter_id=block.chapter_id,
             content_sha256=block.content_sha256, canon_sha256=canon.canon_sha256,
-            attempt=1, chapter_bytes=mini.block_bytes(0), canon=canon)
+            atom_table_sha256=atom_sha, attempt=1,
+            chapter_bytes=mini.block_bytes(0), chapter_atoms=atoms, canon=canon,
+            meter_unit_index=L3_REEXTRACT_UNIT_BASE + chapter_index,
+            meter_attempt_ordinal=attempt)
         try:
             _ext._preflight_request(request, snapshot=mini, index=0, canon=canon)
             raw = await self._metered(request)
@@ -227,7 +243,7 @@ class L3AssistSession:
             # 🔴 THIS SITE WAS THE UNNAMED HALF OF `provider_failed`. Live canary
             #    `19444d6`'s L3 record showed `unresolved_reasons: {'provider_failed': 3}`
             #    on ALL THREE chapters after QC extraction itself had already succeeded
-            #    on attempt 1 (no timeout, no quote_ambiguous) — meaning the failure was
+            #    on attempt 1 (no timeout, no parser rejection) — meaning the failure was
             #    NOT in the repair generation call (`repair_provider` above logs its own
             #    `l3_repair_generation_error` and did not fire) but in THIS re-verification
             #    pass, and canon_lite_l3_repair.py's bare `except Exception` had nothing
@@ -235,7 +251,7 @@ class L3AssistSession:
             #    Reusing `canon_lite_extractor`'s own classifiers means a repair
             #    re-extraction failure is described in the EXACT SAME bounded vocabulary
             #    as a first-pass extraction failure — `qc_provider_timeout`,
-            #    `quote_ambiguous`, `schema_invalid`, etc. — instead of inventing a
+            #    `atom_index_out_of_range`, `schema_invalid`, etc. — instead of inventing a
             #    second, narrower one for this call site alone.
             _code = _ext._provider_error_code(exc) or _ext._extraction_reason_code(exc)
             log.warning("canon lite l3: repair re-extraction failed "

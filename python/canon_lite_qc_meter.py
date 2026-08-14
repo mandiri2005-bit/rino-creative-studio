@@ -95,6 +95,7 @@ RESET_PROCEDURE = (
 )
 
 _process_killed = False
+_process_latch_logged = False
 _cancelled_attempts = 0
 
 
@@ -592,11 +593,12 @@ class MeteredProvider:
             raise ReconciliationMismatch("attempt_count_mismatch")
 
     async def _arm(self, code: str, *, write_authority: bool = True) -> None:
-        global _process_killed
+        global _process_killed, _process_latch_logged
         if code not in _FAILURE_CODES:
             code = "inflight_counter_invalid"
         _mark_ineligible()
         _process_killed = True
+        _process_latch_logged = False
         client = self._redis()
         await _write_cache_arm(client)  # cache first
         if write_authority:
@@ -608,7 +610,14 @@ class MeteredProvider:
         _bounded_log(code)
 
     async def _killed(self) -> bool:
+        global _process_latch_logged
         if _process_killed:
+            # One bounded line per armed process. The latch intentionally survives every
+            # job in this worker, so logging every blocked retry would be noisy; logging
+            # none made two production canaries look like generic provider failures.
+            if not _process_latch_logged:
+                log.error("platform_qc_meter process_latch_blocking=1")
+                _process_latch_logged = True
             return True
         client = self._redis()
         if client is None:
@@ -662,8 +671,8 @@ class MeteredProvider:
             _mark_ineligible()
             raise MeteringBlocked("meter_killed")
 
-        unit_index = getattr(request, "chapter_index", None)
-        attempt_ordinal = getattr(request, "attempt", None)
+        unit_index = getattr(request, "meter_unit_index", None)
+        attempt_ordinal = getattr(request, "meter_attempt_ordinal", None)
         if type(unit_index) is not int or type(attempt_ordinal) is not int:
             await self._arm("begin_write_failed")
             raise MeteringBlocked("begin_write_failed")
@@ -687,6 +696,13 @@ class MeteredProvider:
             if outcome == "conflict":
                 await self._arm("begin_conflict")
                 raise MeteringBlocked("begin_conflict")
+            if outcome == "replay":
+                # A durable identity may describe at most one physical request. Reusing
+                # it and calling upstream again is exactly how a legitimate DB replay
+                # became resolve_cost_conflict when token usage differed.
+                _mark_ineligible()
+                log.warning("platform_qc_meter attempt_replay_blocking=1")
+                raise MeteringBlocked("attempt_replay")
 
             self._emitted_attempts += 1
             try:

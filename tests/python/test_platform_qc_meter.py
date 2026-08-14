@@ -24,6 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 @pytest.fixture(autouse=True)
 def _fresh_process_latch(monkeypatch):
     monkeypatch.setattr(meter, "_process_killed", False)
+    monkeypatch.setattr(meter, "_process_latch_logged", False)
     monkeypatch.setattr(meter, "_cancelled_attempts", 0)
 
 
@@ -125,6 +126,8 @@ def _request(index=0, attempt=1):
     return SimpleNamespace(
         chapter_index=index,
         attempt=attempt,
+        meter_unit_index=index,
+        meter_attempt_ordinal=attempt,
         chapter_bytes=b"TOP SECRET CHAPTER BYTES",
     )
 
@@ -378,6 +381,68 @@ async def test_success_records_lifecycle_and_cost_without_request_content(caplog
     wrapped.assert_reconciled(1)
     assert "TOP SECRET" not in caplog.text
     assert "TOP SECRET" not in repr(sink.calls)
+
+
+@pytest.mark.asyncio
+async def test_durable_replay_never_makes_a_second_physical_call(caplog):
+    redis = FakeRedis()
+    sink = FakeSink()
+    sink.begin_outcome = "replay"
+    provider_calls = []
+
+    async def provider(request):
+        provider_calls.append(request)
+        return {"coverage": [], "claims": []}
+
+    wrapped = _provider_wrapper(provider, sink, redis)
+    with caplog.at_level(logging.WARNING), pytest.raises(
+            meter.MeteringBlocked, match="attempt_replay"):
+        await wrapped(_request())
+
+    assert provider_calls == []
+    assert wrapped.emitted_attempts == 0
+    assert [call[0] for call in sink.calls] == ["is_armed", "begin"]
+    assert redis.values[meter.INFLIGHT_KEY] == "0"
+    assert "attempt_replay_blocking=1" in caplog.text
+    assert meter._process_killed is False
+
+
+@pytest.mark.asyncio
+async def test_meter_uses_explicit_identity_not_semantic_chapter_identity():
+    redis = FakeRedis()
+    sink = FakeSink()
+
+    async def provider(_request):
+        return {"coverage": [], "claims": []}
+
+    request = _request(index=0, attempt=1)
+    request.meter_unit_index = 1007
+    request.meter_attempt_ordinal = 2
+    await _provider_wrapper(provider, sink, redis)(request)
+    assert ("begin", "run-1", 1007, 2) in sink.calls
+
+
+@pytest.mark.asyncio
+async def test_process_latch_logs_once_and_performs_no_external_reads(caplog):
+    redis = FakeRedis()
+    sink = FakeSink()
+    provider_calls = []
+
+    async def provider(request):
+        provider_calls.append(request)
+        return {}
+
+    wrapped = _provider_wrapper(provider, sink, redis)
+    meter._process_killed = True
+    with caplog.at_level(logging.ERROR):
+        for _ in range(2):
+            with pytest.raises(meter.MeteringBlocked, match="meter_killed"):
+                await wrapped(_request())
+
+    assert provider_calls == []
+    assert sink.calls == []
+    assert redis.calls == []
+    assert caplog.text.count("platform_qc_meter process_latch_blocking=1") == 1
 
 
 @pytest.mark.asyncio

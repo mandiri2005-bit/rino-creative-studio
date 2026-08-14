@@ -11,7 +11,6 @@ whole construction path is dead.
 import ast
 import asyncio
 import sys
-import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -274,11 +273,9 @@ def test_semantic_predicate_with_authority_reports_incomplete_when_coverage_is_p
 # ===========================================================================
 
 def _claim_payload(snap, idx=0, canon=None, **over):
-    """DG-4: v2 payloads must name their canon. `canon` is threaded through rather than
-    defaulted to a constant, because the parser now checks BOTH directions — a payload
-    naming the wrong real hash is refused just as firmly as one naming UNKNOWN."""
+    """Build the strict v3 server-bound payload for one chapter."""
     block = snap.block_bytes(idx)
-    start, end = 0, min(8, len(block))
+    atoms, atom_sha = l2.build_chapter_atom_table(block)
     coverage = {
         predicate: l2.COVERAGE_NO_CLAIMS_FOUND
         for predicate in l2.SEMANTIC_PREDICATES
@@ -290,18 +287,17 @@ def _claim_payload(snap, idx=0, canon=None, **over):
         "chapter_id": snap.blocks[idx].chapter_id,
         "content_sha256": snap.blocks[idx].content_sha256,
         "canon_sha256": canon.canon_sha256 if canon is not None else cl.UNKNOWN,
+        "atom_table_sha256": atom_sha,
         "extractor_version": "test_v1",
         "model_version": "model_v1",
         "prompt_sha256": "d" * 64,
         "predicate_set_version": l2.PREDICATE_SET_VERSION,
         "coverage": coverage,
-        # The wire carries the evidence VERBATIM; the server locates it and derives the
-        # span and digest. Asking the model for offsets and a SHA-256 is what made every
-        # live attempt unparseable — see `_CLAIM_FIELDS` in canon_lite_l2.
         "claims": [{
             "claim_type": l2.CLAIM_ENTITY_MENTION,
             "canon_ref": "e1",
-            "quote": block[start:end].decode("utf-8"),
+            "atom_start": 0,
+            "atom_end": 0,
         }],
     }
     base.update(over)
@@ -312,6 +308,10 @@ def _payload_for_span(snap, *, idx, claim_type, canon_ref, evidence, canon=None)
     block = snap.block_bytes(idx)
     needle = evidence.encode("utf-8")
     start = block.index(needle)
+    end = start + len(needle)
+    atoms, _atom_sha = l2.build_chapter_atom_table(block)
+    atom_start = next(a.index for a in atoms if a.byte_start == start)
+    atom_end = next(a.index for a in atoms if a.byte_end == end)
     predicate = l2._CLAIM_PREDICATE[claim_type]
     coverage = {
         p: l2.COVERAGE_NO_CLAIMS_FOUND for p in l2.SEMANTIC_PREDICATES}
@@ -321,7 +321,8 @@ def _payload_for_span(snap, *, idx, claim_type, canon_ref, evidence, canon=None)
         claims=[{
             "claim_type": claim_type,
             "canon_ref": canon_ref,
-            "quote": evidence,
+            "atom_start": atom_start,
+            "atom_end": atom_end,
         }])
 
 
@@ -350,7 +351,7 @@ def test_extractor_invented_canon_id_is_rejected():
                                 canon=canon)
 
 
-def test_evidence_hash_that_does_not_bind_the_span_is_rejected():
+def test_model_supplied_evidence_hash_is_rejected():
     ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
@@ -362,292 +363,176 @@ def test_evidence_hash_that_does_not_bind_the_span_is_rejected():
                                 canon=canon)
 
 
-def test_a_quote_that_is_not_in_the_chapter_is_rejected():
-    """🔴 THE PROPERTY THIS PARSER EXISTS FOR: a fabricated citation.
+def _address_for_occurrence(block, text, occurrence=0):
+    needle = text.encode("utf-8")
+    cursor = -1
+    for _ in range(occurrence + 1):
+        cursor = block.find(needle, cursor + 1)
+        assert cursor >= 0, "test evidence must exist"
+    end = cursor + len(needle)
+    atoms, _digest = l2.build_chapter_atom_table(block)
+    start_atom = next(atom.index for atom in atoms if atom.byte_start == cursor)
+    end_atom = next(atom.index for atom in atoms if atom.byte_end == end)
+    return start_atom, end_atom
 
-    Under the old wire the model supplied offsets and a digest, and this test bounded the
-    "range outside the chapter" branch. Offsets are gone; the equivalent — and stronger —
-    property is that evidence the chapter does not contain can never become a claim. A
-    parser that located quotes leniently (nearest match, normalised whitespace, casefold)
-    would let an extractor cite text it invented.
-    """
+
+def test_atom_table_is_deterministic_exact_and_bound_to_original_bytes():
+    block = "Awal café — 東京.\n".encode("utf-8")
+    atoms_a, digest_a = l2.build_chapter_atom_table(block)
+    atoms_b, digest_b = l2.build_chapter_atom_table(block)
+    assert atoms_a == atoms_b
+    assert digest_a == digest_b
+    assert b"".join(block[a.byte_start:a.byte_end] for a in atoms_a) == block
+    assert all(a.text.encode("utf-8") == block[a.byte_start:a.byte_end]
+               for a in atoms_a)
+    changed = block.replace("café".encode(), "cafe\u0301".encode())
+    assert l2.build_chapter_atom_table(changed)[1] != digest_a
+
+
+def test_atom_table_version_is_part_of_the_digest(monkeypatch):
+    block = "Awal café — 東京.\n".encode("utf-8")
+    atoms_before, digest_before = l2.build_chapter_atom_table(block)
+    monkeypatch.setattr(l2, "ATOM_TABLE_VERSION", "chapter_atom_table_mutant")
+    atoms_after, digest_after = l2.build_chapter_atom_table(block)
+    assert atoms_after == atoms_before
+    assert digest_after != digest_before
+
+
+def test_a_well_formed_address_derives_original_byte_span_and_sha():
     ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
                            alias_source="none")
-    canon = _canon(2, entities=(ent,))
-    snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    payload = _claim_payload(snap, canon=canon)
-    payload["claims"][0]["quote"] = "kalimat yang tidak pernah ada di bab ini"
-    with pytest.raises(cl.CanonSchemaError, match="not found in the chapter block"):
-        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
-
-
-def test_nfc_equivalent_repeats_bind_to_the_earliest_span():
-    """When the relaxation falls through to NFC equivalence, the span it picks must be
-    the EARLIEST — a deterministic choice, not whichever the set happened to yield.
-    `_locate_unique_nfc` collects spans in a set, so returning an arbitrary member would
-    make provenance vary between runs for identical input."""
-    nfc = "caf\u00e9"
-    nfd = "cafe\u0301"
-    assert nfc != nfd and nfc.encode() != nfd.encode()
-
-    haystack = f"{nfd} lalu {nfd} lagi".encode("utf-8")
-    needle = nfc.encode("utf-8")
-    assert haystack.find(needle) == -1, "no exact match — the NFC path must be exercised"
-    assert l2._locate_unique_nfc(haystack, needle) is l2._AMBIGUOUS
-
-    span = l2._locate_first_equivalent(haystack, needle)
-    assert span == (0, len(nfd.encode("utf-8"))), "the earliest occurrence, not any other"
-    assert haystack[span[0]:span[1]] == nfd.encode("utf-8"), (
-        "the span is the ORIGINAL decomposed bytes, never the normalized form")
-    assert all(l2._locate_first_equivalent(haystack, needle) == span for _ in range(20)), \
-        "deterministic across repeated calls"
-
-
-def test_a_quote_appearing_twice_is_refused_for_one_time_event():
-    """Ambiguity is still a refusal WHERE IT CAN CHANGE THE ANSWER. For a one_time_event
-    the quote is a phrase evidencing that the event happened, and two occurrences can
-    evidence two different moments — so binding to the first would misreport WHICH span
-    is the evidence. `one_time_event` is deliberately absent from
-    `_OCCURRENCE_INVARIANT_CLAIMS` for exactly this reason."""
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
-                           alias_source="none")
-    ev = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1,
-                         label="Rina meninggalkan rumah")
-    canon = _canon(2, entities=(ent,), events=(ev,))
-    snap = l2.materialize_final_snapshot(
-        {"book": "## Bab 1\nRina pergi. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
-    assert snap.block_bytes(0).count(b"Rina pergi") == 2
-    payload = _claim_payload(snap, canon=canon,
-                             claims=[_claim("Rina pergi", canon_ref="ev1",
-                                            claim_type=l2.CLAIM_ONE_TIME_EVENT)])
-    with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
-        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
-
-
-@pytest.mark.parametrize("claim_type,ref", [
-    (l2.CLAIM_ENTITY_MENTION, "e1"),
-    (l2.CLAIM_FIXED_LITERAL, "a1"),
-])
-def test_a_repeated_quote_resolves_to_the_first_occurrence(claim_type, ref):
-    """🔴 REFUSING THIS BOUGHT NOTHING AND COST THE WHOLE CHAPTER. `evaluate_semantic`
-       compares only the evidence TEXT — `_norm_text(evidence).strip().casefold()` for an
-       entity, `_norm_text(evidence).strip()` for a literal. Every occurrence of one
-       needle carries that same text, so the verdict is identical whichever is bound;
-       ambiguity here was a refusal that could not change any answer.
-
-       A recurring character name has no unique form — this module's §6.2 note already
-       said so — and the fix at the time (make the MODEL supply a unique `context`) is
-       what failed in live canaries `gjpmhjzs` and `o2eeafh5`, taking `continuity_status`
-       to `unchecked` both times.
-
-       Provenance stays honest: the offsets point at a REAL occurrence of exactly this
-       text, and the digest is computed from those original bytes."""
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina pergi", aliases=(),
-                           alias_source="none")
-    anc = cl.CanonAnchorV1(anchor_id="a1", kind="time", literal="Rina pergi")
-    canon = _canon(2, entities=(ent,), anchors=(anc,))
-    snap = l2.materialize_final_snapshot(
-        {"book": "## Bab 1\nRina pergi. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
-    block = snap.block_bytes(0)
-    assert block.count(b"Rina pergi") == 2, "the quote must really repeat"
-
-    # coverage must name the predicate this claim_type maps to, or the artifact refuses
-    # the payload before the locator is ever reached
-    coverage = {pred: l2.COVERAGE_NO_CLAIMS_FOUND for pred in l2.SEMANTIC_PREDICATES}
-    coverage[l2._CLAIM_PREDICATE[claim_type]] = l2.COVERAGE_CHECKED
-    artifact = l2.parse_chapter_claims(
-        _claim_payload(snap, canon=canon, coverage=coverage,
-                       claims=[_claim("Rina pergi", canon_ref=ref,
-                                      claim_type=claim_type)]),
-        snapshot=snap, canon=canon)
-
-    claim = artifact.claims[0]
-    assert claim.evidence_start == block.find(b"Rina pergi"), "must be the FIRST occurrence"
-    evidence = block[claim.evidence_start:claim.evidence_end]
-    assert evidence == b"Rina pergi", "the span is exactly the cited text"
-    assert claim.evidence_sha256 == l2.sha256_hex(evidence)
-    # the invariance this relaxation rests on, asserted rather than argued
-    second = block.find(b"Rina pergi", claim.evidence_start + 1)
-    assert block[second:second + len(b"Rina pergi")] == evidence, (
-        "every occurrence carries identical bytes, so the verdict cannot depend on "
-        "which one was bound")
-
-
-def test_evidence_span_over_the_size_bound_is_rejected():
-    """And bound the size limit separately, so neither check can hide the other."""
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
-                           alias_source="none")
-    canon = _canon(2, entities=(ent,))
-    snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
-    payload = _claim_payload(snap, canon=canon)
-    # The bound still applies to the DERIVED span. A quote this long cannot be located in
-    # the chapter either, so the size check is reached only because it is evaluated inside
-    # `ObservedClaimV1.__post_init__` — before the parser searches. Keeping the row proves
-    # the bound survived the move from model-supplied offsets to a server-derived span.
-    payload["claims"][0]["quote"] = "x" * (l2.MAX_EVIDENCE_BYTES + 1)
-    with pytest.raises((cl.CanonBoundsError, cl.CanonSchemaError)):
-        l2.parse_chapter_claims(payload, snapshot=snap,
-                                canon=canon)
-
-
-def test_a_multibyte_quote_derives_the_correct_byte_span():
-    """The UTF-8 concern survived the contract change; only its shape moved.
-
-    A model can no longer hand over a range that splits a code point — it hands over text.
-    The risk is now the server's: locating a quote whose characters are multi-byte and
-    deriving a span that is off by the difference between characters and bytes. Indonesian
-    and Korean names are exactly where that would show, and a book of them is what this
-    system writes.
-
-    Asserted against `block.index(...)` computed independently in the test, so a parser
-    that used character offsets instead of byte offsets would fail here rather than
-    quietly cite the wrong span.
-    """
-    ent = cl.CanonEntityV1(
-        entity_id="e1", canonical_name="Rina", aliases=(), alias_source="none")
     canon = _canon(1, entities=(ent,))
     snap = l2.materialize_final_snapshot(
-        {"book": "## Bab 1\nSeoul—Itaewon. Namanya Rina di kota itu."}, canon=canon)
+        {"book": "## Bab 1\nSeoul—Itaewon. Namanya Rina."}, canon=canon)
     block = snap.block_bytes(0)
-    quote = "Rina"
-    # An em dash precedes the quote, so a character-indexed parser is off by two bytes.
-    assert b"\xe2\x80\x94" in block, "the multi-byte character under test is present"
-
+    atom_start, atom_end = _address_for_occurrence(block, "Rina")
     payload = _claim_payload(
         snap, canon=canon,
         claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
-                 "quote": quote}])
+                 "atom_start": atom_start, "atom_end": atom_end}])
     art = l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
-
     claim = art.claims[0]
-    expected_start = block.index(quote.encode("utf-8"))
-    assert claim.evidence_start == expected_start
-    assert claim.evidence_end == expected_start + len(quote.encode("utf-8"))
-    assert block[claim.evidence_start:claim.evidence_end].decode("utf-8") == quote
-    assert claim.evidence_sha256 == cl.sha256_hex(quote.encode("utf-8"))
+    expected = block.index(b"Rina")
+    assert (claim.evidence_start, claim.evidence_end) == (expected, expected + 4)
+    assert claim.evidence_sha256 == cl.sha256_hex(b"Rina")
+    assert art.atom_table_sha256 == l2.build_chapter_atom_table(block)[1]
 
 
-def _parse_single_entity_quote(*, chapter_text, quote, canonical_name="Rina",
-                               claim_type=None, canon_ref="e1"):
-    """`claim_type` defaults to entity_mention. Pass `one_time_event` for the cases that
-    must stay STRICT under `_OCCURRENCE_INVARIANT_CLAIMS` — see that constant."""
-    entity = cl.CanonEntityV1(
-        entity_id="e1", canonical_name=canonical_name, aliases=(), alias_source="none")
-    event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1,
-                            label="peristiwa uji sekali jalan")
-    canon = _canon(1, entities=(entity,), events=(event,))
-    snapshot = l2.materialize_final_snapshot(
-        {"book": f"## Bab 1\n{chapter_text}"}, canon=canon)
-    payload = _claim_payload(
-        snapshot, canon=canon,
-        claims=[{"claim_type": claim_type or l2.CLAIM_ENTITY_MENTION,
-                 "canon_ref": canon_ref, "quote": quote}],
-    )
-    return snapshot, l2.parse_chapter_claims(payload, snapshot=snapshot, canon=canon)
-
-
-def test_nfc_fallback_maps_to_original_bytes_and_hash_not_normalized_bytes():
-    original = "e\u0301"
-    quote = "é"
-    assert unicodedata.normalize("NFC", original) == quote
-    assert original.encode("utf-8") != quote.encode("utf-8")
-
-    snapshot, artifact = _parse_single_entity_quote(
-        chapter_text=f"Awal 前 {original} 後 akhir", quote=quote,
-        canonical_name=quote)
-    block = snapshot.block_bytes(0)
-    expected = original.encode("utf-8")
-    start = block.index(expected)
-    claim = artifact.claims[0]
-
-    assert claim.evidence_start == start
-    assert claim.evidence_end == start + len(expected)
-    assert block[claim.evidence_start:claim.evidence_end] == expected
-    assert claim.evidence_sha256 == cl.sha256_hex(expected)
-    assert claim.evidence_sha256 != cl.sha256_hex(quote.encode("utf-8"))
-
-
-def test_hangul_composed_quote_maps_to_original_decomposed_jamo_span():
-    original = "한"
-    quote = "한"
-    assert unicodedata.normalize("NFC", original) == quote
-
-    snapshot, artifact = _parse_single_entity_quote(
-        chapter_text=f"서울에서 {original} 사람을 만났다.", quote=quote,
-        canonical_name=quote)
-    block = snapshot.block_bytes(0)
-    expected = original.encode("utf-8")
-    claim = artifact.claims[0]
-    assert block[claim.evidence_start:claim.evidence_end] == expected
-    assert claim.evidence_end - claim.evidence_start == len(expected)
-    assert claim.evidence_sha256 == cl.sha256_hex(expected)
-
-
-def test_nfc_fallback_applies_to_both_context_and_quote_locator_doors():
-    original_quote = "Jose\u0301"
-    requested_quote = "José"
-    original_context = f"Cafe\u0301 menyapa {original_quote}."
-    requested_context = "Café menyapa José."
-    entity = cl.CanonEntityV1(
-        entity_id="e1", canonical_name=requested_quote,
-        aliases=(), alias_source="none")
-    canon = _canon(1, entities=(entity,))
-    snapshot = l2.materialize_final_snapshot(
-        {"book": f"## Bab 1\n{original_context} {original_quote} pergi."}, canon=canon)
-    payload = _claim_payload(
-        snapshot, canon=canon,
-        claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION,
-                 "canon_ref": "e1", "quote": requested_quote,
-                 "context": requested_context}],
-    )
-
-    artifact = l2.parse_chapter_claims(payload, snapshot=snapshot, canon=canon)
-    block = snapshot.block_bytes(0)
-    expected = original_quote.encode("utf-8")
-    claim = artifact.claims[0]
-    assert block[claim.evidence_start:claim.evidence_end] == expected
-    assert claim.evidence_sha256 == cl.sha256_hex(expected)
-
-
-@pytest.mark.parametrize("quote", ["東京", "北京"])
-def test_exact_japanese_and_mandarin_spans_are_unchanged(quote):
-    snapshot, artifact = _parse_single_entity_quote(
-        chapter_text=f"前置き—{quote}—後書き", quote=quote, canonical_name=quote)
-    block = snapshot.block_bytes(0)
-    expected = quote.encode("utf-8")
-    claim = artifact.claims[0]
-    assert claim.evidence_start == block.index(expected)
-    assert block[claim.evidence_start:claim.evidence_end] == expected
-    assert claim.evidence_sha256 == cl.sha256_hex(expected)
-
-
-def test_two_nfc_equivalent_original_spans_remain_ambiguous():
-    quote = "A\u0323\u0301"
-    first = "Ạ\u0301"
-    second = "Á\u0323"
-    assert quote not in (first, second)
-    assert len({unicodedata.normalize("NFC", x)
-                for x in (quote, first, second)}) == 1
-
-    # STRICT path only — one_time_event is not occurrence-invariant.
-    with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
-        _parse_single_entity_quote(
-            chapter_text=f"{first} lalu {second}", quote=quote,
-            canonical_name=unicodedata.normalize("NFC", quote),
-            claim_type=l2.CLAIM_ONE_TIME_EVENT, canon_ref="ev1")
+def test_repeated_text_is_disambiguated_by_address_not_copied_context():
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\nRina datang. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
+    block = snap.block_bytes(0)
+    atom_start, atom_end = _address_for_occurrence(block, "Rina", occurrence=1)
+    art = l2.parse_chapter_claims(
+        _claim_payload(
+            snap, canon=canon,
+            claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
+                     "atom_start": atom_start, "atom_end": atom_end}]),
+        snapshot=snap, canon=canon)
+    claim = art.claims[0]
+    assert claim.evidence_start == block.rindex(b"Rina")
+    assert block[claim.evidence_start:claim.evidence_end] == b"Rina"
 
 
 @pytest.mark.parametrize(
-    ("chapter_text", "quote"),
+    ("start", "end", "code"),
     [
-        ("Rina datang", "rina"),
-        ("Rina datang", "Rina  datang"),
-        ("Rina datang.", "Rina datang!"),
+        (-1, 0, l2.EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE),
+        (0, 10_000, l2.EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE),
+        (3, 2, l2.EXTRACT_REASON_ATOM_SPAN_INVERTED),
     ],
 )
-def test_nfc_fallback_does_not_fold_case_whitespace_or_punctuation(chapter_text, quote):
-    with pytest.raises(cl.CanonSchemaError, match="not found"):
-        _parse_single_entity_quote(chapter_text=chapter_text, quote=quote)
+def test_invalid_atom_addresses_refuse_with_bounded_codes(start, end, code):
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
+    payload = _claim_payload(snap, canon=canon)
+    payload["claims"][0].update(atom_start=start, atom_end=end)
+    with pytest.raises(cl.CanonSchemaError) as exc:
+        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+    assert exc.value.reason_code == code
+
+
+@pytest.mark.parametrize("bad", [True, 1.0, "1", None])
+def test_non_integer_atom_addresses_are_schema_violations(bad):
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
+    payload = _claim_payload(snap, canon=canon)
+    payload["claims"][0]["atom_start"] = bad
+    with pytest.raises(cl.CanonSchemaError) as exc:
+        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+    assert exc.value.reason_code == l2.EXTRACT_REASON_SCHEMA_INVALID
+
+
+def test_atom_table_digest_mismatch_refuses_before_claim_resolution():
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
+    payload = _claim_payload(snap, canon=canon)
+    payload["atom_table_sha256"] = "f" * 64
+    with pytest.raises(cl.CanonSchemaError) as exc:
+        l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+    assert exc.value.reason_code == l2.EXTRACT_REASON_ATOM_TABLE_MISMATCH
+
+
+def test_address_preserves_decomposed_unicode_bytes_without_normalization():
+    original = "Jose\u0301"
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="José", aliases=(),
+                           alias_source="none")
+    canon = _canon(1, entities=(ent,))
+    snap = l2.materialize_final_snapshot(
+        {"book": f"## Bab 1\nAwal 前 {original} 後 akhir"}, canon=canon)
+    block = snap.block_bytes(0)
+    atom_start, atom_end = _address_for_occurrence(block, original)
+    art = l2.parse_chapter_claims(
+        _claim_payload(
+            snap, canon=canon,
+            claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
+                     "atom_start": atom_start, "atom_end": atom_end}]),
+        snapshot=snap, canon=canon)
+    claim = art.claims[0]
+    evidence = block[claim.evidence_start:claim.evidence_end]
+    assert evidence == original.encode("utf-8")
+    assert claim.evidence_sha256 == cl.sha256_hex(evidence)
+    assert claim.evidence_sha256 != cl.sha256_hex("José".encode("utf-8"))
+
+
+def test_address_range_over_evidence_bound_is_rejected():
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    long_run = "x" * (l2.MAX_EVIDENCE_BYTES + 50)
+    snap = l2.materialize_final_snapshot(
+        {"book": f"## Bab 1\n{long_run}\n## Bab 2\nlain"}, canon=canon)
+    block = snap.block_bytes(0)
+    atom_start, atom_end = _address_for_occurrence(block, long_run)
+    with pytest.raises(cl.CanonBoundsError):
+        l2.parse_chapter_claims(
+            _claim_payload(
+                snap, canon=canon,
+                claims=[{"claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
+                         "atom_start": atom_start, "atom_end": atom_end}]),
+            snapshot=snap, canon=canon)
+
+
+def test_model_cannot_smuggle_quote_or_context_fields():
+    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
+                           alias_source="none")
+    canon = _canon(2, entities=(ent,))
+    snap = l2.materialize_final_snapshot({"book": NO_PREFIX}, canon=canon)
+    for field in ("quote", "context", "evidence_start", "evidence_sha256"):
+        payload = _claim_payload(snap, canon=canon)
+        payload["claims"][0][field] = "invented"
+        with pytest.raises(cl.CanonSchemaError) as exc:
+            l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
+        assert exc.value.reason_code == l2.EXTRACT_REASON_SCHEMA_INVALID
 
 
 def test_unknown_field_in_extractor_output_is_rejected():
@@ -1487,231 +1372,57 @@ def test_every_closed_vocabulary_is_actually_closed():
 
 
 # ===========================================================================
-# The locator is not the evidence — repeated names, repeated literals, overlap
+# Addressed repeated evidence and closed refusal reasons
 # ===========================================================================
-#
-# 🔴 THE DEFECT THESE ROWS EXIST FOR. A first version of the quote contract required the
-#    quote itself to be unique in the chapter. That silently broke the evaluator, which
-#    compares the evidence span against `{canonical_name, *aliases}`: a name appearing
-#    twice then had NO valid representation. "Rina" was refused as ambiguous, and "Rina
-#    datang" — widened until unique — was compared whole against the canon and reported as
-#    an `entity_name_contradiction` the manuscript never committed. A repeated name is the
-#    ordinary case in a novel, so the contract was wrong for most real chapters.
-#
-#    `context` locates; `quote` is evaluated. These rows hold that separation from both
-#    sides: the claim must parse, AND it must not manufacture a violation.
 
-def _claim(quote, *, canon_ref="e1", claim_type=None, context=None):
-    claim = {"claim_type": claim_type or l2.CLAIM_ENTITY_MENTION,
-             "canon_ref": canon_ref, "quote": quote}
-    if context is not None:
-        claim["context"] = context
-    return claim
-
-
-def test_a_repeated_entity_name_is_located_by_context_and_evaluates_clean():
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
-                           alias_source="none")
-    canon = _canon(2, entities=(ent,))
-    text = "## Bab 1\nRina datang. Rina pergi.\n## Bab 2\nlain"
-    snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
-    assert snap.block_bytes(0).count(b"Rina") == 2, "the repeat under test is real"
-
-    art = l2.parse_chapter_claims(
-        _claim_payload(snap, canon=canon,
-                       claims=[_claim("Rina", context="Rina pergi")]),
-        snapshot=snap, canon=canon)
-
-    # the SPAN is the bare name, not the locator
-    block = snap.block_bytes(0)
-    c = art.claims[0]
-    assert block[c.evidence_start:c.evidence_end].decode("utf-8") == "Rina"
-    # and it is the SECOND occurrence — the one the context named
-    assert c.evidence_start == block.rindex(b"Rina")
-
-    # Chapter 2 must be represented too: a missing unit is PARTIAL coverage, which
-    # reports INCOMPLETE_EXTRACTION and would mask whether chapter 1 evaluated clean.
-    empty = l2.parse_chapter_claims(
-        _claim_payload(snap, idx=1, canon=canon, claims=[],
-                       coverage={p: l2.COVERAGE_NO_CLAIMS_FOUND
-                                 for p in l2.SEMANTIC_PREDICATES}),
-        snapshot=snap, canon=canon)
-    result = l2.evaluate_semantic(
-        l2.PREDICATE_ENTITY_NAME, snap, canon, {0: art, 1: empty})
-    # NO_VIOLATIONS_FOUND, not CHECKED: the server derives the predicate state as
-    # `CHECKED if violations else NO_VIOLATIONS_FOUND`, so "measured and clean" is
-    # precisely this value. Both are in `_PREDICATE_MEASURED`.
-    assert result.coverage_state == l2.COVERAGE_NO_VIOLATIONS_FOUND
-    assert result.coverage_state in l2._PREDICATE_MEASURED
-    assert result.violations == (), (
-        "a correctly located repeated name became a contradiction — the locator leaked "
-        "into the value the evaluator compares")
-
-
-def test_a_repeated_fixed_literal_is_located_by_context_and_evaluates_clean():
-    anchor = cl.CanonAnchorV1(anchor_id="a1", kind="time", literal="10:00")
-    canon = _canon(2, anchors=(anchor,))
-    text = "## Bab 1\nRapat 10:00 lalu 10:00 lagi\n## Bab 2\nlain"
-    snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
-    assert snap.block_bytes(0).count(b"10:00") == 2
-
-    art = l2.parse_chapter_claims(
-        _claim_payload(snap, canon=canon,
-                       coverage={**{p: l2.COVERAGE_NO_CLAIMS_FOUND
-                                    for p in l2.SEMANTIC_PREDICATES},
-                                 l2.PREDICATE_FIXED_LITERAL: l2.COVERAGE_CHECKED},
-                       claims=[_claim("10:00", canon_ref="a1",
-                                      claim_type=l2.CLAIM_FIXED_LITERAL,
-                                      context="lalu 10:00 lagi")]),
-        snapshot=snap, canon=canon)
-
-    block = snap.block_bytes(0)
-    c = art.claims[0]
-    assert block[c.evidence_start:c.evidence_end].decode("utf-8") == "10:00"
-    result = l2.evaluate_semantic(l2.PREDICATE_FIXED_LITERAL, snap, canon, {0: art})
-    assert result.violations == ()
-
-
-def test_an_overlapping_second_occurrence_is_seen_as_ambiguous():
-    """🔴 `bytes.count()` COUNTS NON-OVERLAPPING MATCHES. `b"aaaa".count(b"aaa")` is 1,
-    while "aaa" genuinely starts at offsets 0 and 1. A uniqueness check built on `count()`
-    accepts this quote and binds it to the first offset — a silent mis-location that looks
-    exactly like a correct one."""
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="aaa", aliases=(),
-                           alias_source="none")
-    ev = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1, label="peristiwa aaa")
-    canon = _canon(2, entities=(ent,), events=(ev,))
-    snap = l2.materialize_final_snapshot(
-        {"book": "## Bab 1\naaaa\n## Bab 2\nlain"}, canon=canon)
-    block = snap.block_bytes(0)
-    assert block.count(b"aaa") == 1, "count() under-reports, which is the bug"
-    assert block.find(b"aaa", block.find(b"aaa") + 1) != -1, "but it truly repeats"
-
-    # Asserted on the STRICT claim type: entity_mention now resolves a repeat to its
-    # first occurrence, so the overlap guard must be witnessed where it still refuses.
-    with pytest.raises(cl.CanonSchemaError, match="ambiguous"):
-        l2.parse_chapter_claims(
-            _claim_payload(snap, canon=canon,
-                           claims=[_claim("aaa", canon_ref="ev1",
-                                          claim_type=l2.CLAIM_ONE_TIME_EVENT)]),
-            snapshot=snap, canon=canon)
-
-
-def test_a_context_that_does_not_contain_the_quote_is_rejected():
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
-                           alias_source="none")
-    canon = _canon(2, entities=(ent,))
-    snap = l2.materialize_final_snapshot(
-        {"book": "## Bab 1\nRina datang. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
-    with pytest.raises(cl.CanonSchemaError, match="context does not contain the quote"):
-        l2.parse_chapter_claims(
-            _claim_payload(snap, canon=canon,
-                           claims=[_claim("Rina", context="datang.")]),
-            snapshot=snap, canon=canon)
-
-
-def test_an_ambiguous_context_is_rejected_rather_than_resolved():
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
-                           alias_source="none")
-    canon = _canon(2, entities=(ent,))
-    snap = l2.materialize_final_snapshot(
-        {"book": "## Bab 1\nRina pergi. Rina pergi.\n## Bab 2\nlain"}, canon=canon)
-    with pytest.raises(cl.CanonSchemaError, match="context is ambiguous"):
-        l2.parse_chapter_claims(
-            _claim_payload(snap, canon=canon,
-                           claims=[_claim("Rina", context="Rina pergi")]),
-            snapshot=snap, canon=canon)
-
-
-def test_the_evidence_size_bound_is_actually_reached():
-    """The bound must be hit by a quote that IS in the chapter.
-
-    An earlier version used `"x" * (MAX + 1)`, which is absent from the chapter, so the
-    parse died at `quote not found` and `MAX_EVIDENCE_BYTES` was never exercised — a
-    vacuous row whose comment claimed otherwise. The quote here is real text from the
-    block, so the size check is the only thing left to fail.
-    """
-    ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
-                           alias_source="none")
-    canon = _canon(2, entities=(ent,))
-    long_run = "x" * (l2.MAX_EVIDENCE_BYTES + 50)
-    snap = l2.materialize_final_snapshot(
-        {"book": f"## Bab 1\n{long_run}\n## Bab 2\nlain"}, canon=canon)
-    assert long_run.encode("utf-8") in snap.block_bytes(0), "the quote is really present"
-
-    with pytest.raises(cl.CanonBoundsError):
-        l2.parse_chapter_claims(
-            _claim_payload(snap, canon=canon, claims=[_claim(long_run)]),
-            snapshot=snap, canon=canon)
-
-
-# ===========================================================================
-# one_time_event quote semantics — P1 audit finding, 2026-08-13
-# ===========================================================================
-# The prompt used to define "quote" as "the name or literal ALONE" for every claim_type.
-# True for entity_mention/fixed_literal; false for one_time_event — evaluate_semantic never
-# reads a one_time_event claim's evidence text (see its `else` branch above), and
-# CanonEventV1 carries no literal to compare it against in the first place. Quote semantics
-# are now defined per claim_type (canon_lite_qc_provider's QC_SYSTEM_TEMPLATE): for events,
-# the shortest verbatim phrase that shows the event happened. These rows prove the parser
-# accepts a phrase-shaped quote through the same mechanism a name already uses, and that
-# the evaluator genuinely does not care what that phrase says.
-
-def test_one_time_event_quote_can_be_a_phrase_located_by_context():
-    """Unlike entity_mention/fixed_literal, an event's quote is not a bare name — the
-    contract defines it as the shortest verbatim phrase that shows the event happened. The
-    parser's quote+context mechanism is claim-type-agnostic, so a multi-word phrase must
-    locate exactly the way a repeated name already does."""
+def test_one_time_event_can_address_the_second_repeated_phrase():
     event = cl.CanonEventV1(event_id="ev1", occurs_chapter_order=1, label="pintu pecah")
     canon = _canon(2, events=(event,))
-    text = ("## Bab 1\npintu itu pecah. Lalu pintu itu pecah lagi dalam mimpinya.\n"
-            "## Bab 2\nlain")
-    snap = l2.materialize_final_snapshot({"book": text}, canon=canon)
+    snap = l2.materialize_final_snapshot(
+        {"book": "## Bab 1\npintu pecah. Lalu pintu pecah lagi.\n## Bab 2\nlain"},
+        canon=canon)
     block = snap.block_bytes(0)
-    assert block.count("pintu itu pecah".encode("utf-8")) == 2, \
-        "the repeat under test is real"
-
+    atom_start, atom_end = _address_for_occurrence(block, "pintu pecah", occurrence=1)
+    coverage = {p: l2.COVERAGE_NO_CLAIMS_FOUND for p in l2.SEMANTIC_PREDICATES}
+    coverage[l2.PREDICATE_ONE_TIME_EVENT] = l2.COVERAGE_CHECKED
     art = l2.parse_chapter_claims(
         _claim_payload(
-            snap, canon=canon,
-            coverage={**{p: l2.COVERAGE_NO_CLAIMS_FOUND for p in l2.SEMANTIC_PREDICATES},
-                      l2.PREDICATE_ONE_TIME_EVENT: l2.COVERAGE_CHECKED},
-            claims=[_claim("pintu itu pecah", canon_ref="ev1",
-                           claim_type=l2.CLAIM_ONE_TIME_EVENT,
-                           context="Lalu pintu itu pecah lagi")]),
+            snap, canon=canon, coverage=coverage,
+            claims=[{"claim_type": l2.CLAIM_ONE_TIME_EVENT, "canon_ref": "ev1",
+                     "atom_start": atom_start, "atom_end": atom_end}]),
         snapshot=snap, canon=canon)
-
-    c = art.claims[0]
-    assert block[c.evidence_start:c.evidence_end].decode("utf-8") == "pintu itu pecah"
-    assert c.evidence_start == block.rindex("pintu itu pecah".encode("utf-8")), \
-        "must bind to the occurrence the context named, not the first one"
+    claim = art.claims[0]
+    assert claim.evidence_start == block.rindex(b"pintu pecah")
+    assert block[claim.evidence_start:claim.evidence_end] == b"pintu pecah"
 
 
 def test_claim_rejections_carry_distinct_closed_reason_codes():
-    """§10.3 / P2 audit finding: canon_lite_extractor's telemetry narrows
-    `INVALID_EXTRACTOR_OUTPUT` using `.reason_code`, set here. Prove it at the source:
-    three genuinely different claims-loop rejections must carry three different codes, not
-    one shared code reused regardless of cause."""
     ent = cl.CanonEntityV1(entity_id="e1", canonical_name="Rina", aliases=(),
                            alias_source="none")
     canon = _canon(2, entities=(ent,))
     snap = l2.materialize_final_snapshot(
         {"book": "## Bab 1\nRina pergi\n## Bab 2\nlain"}, canon=canon)
 
-    def _raised(**claim_kwargs):
+    def _raised(claim):
         with pytest.raises(cl.CanonSchemaError) as exc:
             l2.parse_chapter_claims(
-                _claim_payload(snap, canon=canon, claims=[_claim(**claim_kwargs)]),
+                _claim_payload(snap, canon=canon, claims=[claim]),
                 snapshot=snap, canon=canon)
         return exc.value
 
-    not_found = _raised(quote="ABSENT_FROM_THE_CHAPTER")
-    bad_ref = _raised(quote="Rina", canon_ref="not-a-real-id")
-    ctx_not_found = _raised(quote="Rina", context="ABSENT CONTEXT")
+    out_of_range = _raised({
+        "claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
+        "atom_start": 9999, "atom_end": 9999})
+    inverted = _raised({
+        "claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
+        "atom_start": 3, "atom_end": 2})
+    bad_ref = _raised({
+        "claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "not-a-real-id",
+        "atom_start": 0, "atom_end": 0})
 
-    assert not_found.reason_code == l2.EXTRACT_REASON_QUOTE_NOT_FOUND
+    assert out_of_range.reason_code == l2.EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE
+    assert inverted.reason_code == l2.EXTRACT_REASON_ATOM_SPAN_INVERTED
     assert bad_ref.reason_code == l2.EXTRACT_REASON_CANON_REF_INVALID
-    assert ctx_not_found.reason_code == l2.EXTRACT_REASON_CONTEXT_NOT_FOUND
-    codes = {not_found.reason_code, bad_ref.reason_code, ctx_not_found.reason_code}
-    assert len(codes) == 3, "three distinct causes must not collapse into fewer codes"
+    codes = {out_of_range.reason_code, inverted.reason_code, bad_ref.reason_code}
+    assert len(codes) == 3
     assert codes <= set(l2.EXTRACT_REASON_CODES)

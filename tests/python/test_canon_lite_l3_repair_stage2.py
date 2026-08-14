@@ -96,6 +96,7 @@ def _claims_for(block_bytes, *, index, chapter_id, canon, needle,
         schema_version=l2.CLAIMS_SCHEMA_VERSION, chapter_index=index,
         chapter_id=chapter_id, content_sha256=cl.sha256_hex(block_bytes),
         canon_sha256=(canon.canon_sha256 if canon is not None else cl.UNKNOWN),
+        atom_table_sha256=l2.build_chapter_atom_table(block_bytes)[1],
         extractor_version=cl.L2_EXTRACTOR_VERSION, model_version="m1",
         prompt_sha256="c" * 64, predicate_set_version=l2.PREDICATE_SET_VERSION,
         coverage=_coverage(coverage_state), claims=claims)
@@ -128,7 +129,7 @@ class _Extractor:
         self._coverage = coverage_state
         self._override = override or {}
 
-    async def __call__(self, *, chapter_index, chapter_id, block_bytes, canon):
+    async def __call__(self, *, chapter_index, chapter_id, block_bytes, canon, attempt):
         self.calls.append(chapter_index)
         needle = self._needle if self._needle.encode() in block_bytes else BAD_NAME
         art = _claims_for(block_bytes, index=chapter_index, chapter_id=chapter_id,
@@ -254,7 +255,7 @@ def test_a_candidate_that_introduces_a_new_violation_is_rejected():
     fixed = _fixed_block(snap)
 
     class _Breaking(_Extractor):
-        async def __call__(self, *, chapter_index, chapter_id, block_bytes, canon):
+        async def __call__(self, *, chapter_index, chapter_id, block_bytes, canon, attempt):
             self.calls.append(chapter_index)
             base = _claims_for(block_bytes, index=chapter_index,
                                chapter_id=chapter_id, canon=canon, needle=GOOD_NAME)
@@ -660,6 +661,7 @@ def _multi_claims(block_bytes, *, index, chapter_id, canon, specs):
         schema_version=l2.CLAIMS_SCHEMA_VERSION, chapter_index=index,
         chapter_id=chapter_id, content_sha256=cl.sha256_hex(block_bytes),
         canon_sha256=(canon.canon_sha256 if canon is not None else cl.UNKNOWN),
+        atom_table_sha256=l2.build_chapter_atom_table(block_bytes)[1],
         extractor_version=cl.L2_EXTRACTOR_VERSION, model_version="m1",
         prompt_sha256="c" * 64, predicate_set_version=l2.PREDICATE_SET_VERSION,
         coverage=coverage, claims=tuple(claims))
@@ -672,7 +674,7 @@ class _Scripted:
         self.calls = []
         self._script = script
 
-    async def __call__(self, *, chapter_index, chapter_id, block_bytes, canon):
+    async def __call__(self, *, chapter_index, chapter_id, block_bytes, canon, attempt):
         self.calls.append(chapter_index)
         return self._script[chapter_index](block_bytes, chapter_id, canon)
 

@@ -81,6 +81,8 @@ class _MeteredSpy:
         start = body.find(GOOD_NAME.encode("utf-8"))
         assert start >= 0, "the candidate handed to re-extraction was not repaired"
         end = start + len(GOOD_NAME.encode("utf-8"))
+        atom_start = next(a.index for a in request.chapter_atoms if a.byte_start == start)
+        atom_end = next(a.index for a in request.chapter_atoms if a.byte_end == end)
         # 🔴 RAW PROVIDER SHAPE, NOT THE TYPED ARTEFACT. `_coverage()` from the stage-2
         #    helpers builds the TUPLE that goes inside a `ChapterClaimsV1`; what crosses
         #    this boundary is the provider's JSON, where coverage is a MAPPING keyed by
@@ -98,7 +100,8 @@ class _MeteredSpy:
             "claims": [{
                 "claim_type": l2.CLAIM_ENTITY_MENTION,
                 "canon_ref": "e1",
-                "quote": GOOD_NAME,
+                "atom_start": atom_start,
+                "atom_end": atom_end,
             }],
         }
 

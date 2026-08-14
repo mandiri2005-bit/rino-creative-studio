@@ -17,6 +17,8 @@ import os
 import subprocess
 import sys
 import types
+from decimal import Decimal
+from uuid import UUID
 
 import pytest
 
@@ -25,6 +27,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python")
 import canon_lite as cl                       # noqa: E402
 import canon_lite_l2 as l2                    # noqa: E402
 import canon_lite_l3_adapter as ad            # noqa: E402
+import canon_lite_extractor as ext             # noqa: E402
+import canon_lite_qc_meter as meter            # noqa: E402
 
 from test_canon_lite_l3_repair_stage2 import (  # noqa: E402
     BAD_NAME, BOOK, GOOD_NAME, _claims_for, _entity_canon)
@@ -41,12 +45,14 @@ class _Metered:
         self.requests.append(request)
         raw = request.chapter_bytes
         needle = (self._needle if self._needle.encode() in raw else BAD_NAME)
+        start = raw.index(needle.encode("utf-8"))
+        end = start + len(needle.encode("utf-8"))
+        atom_start = next(a.index for a in request.chapter_atoms if a.byte_start == start)
+        atom_end = next(a.index for a in request.chapter_atoms if a.byte_end == end)
         return {
-            # The wire carries the evidence verbatim; the server locates it and derives
-            # the span and digest.
             "claims": [{
                 "claim_type": l2.CLAIM_ENTITY_MENTION, "canon_ref": "e1",
-                "quote": needle,
+                "atom_start": atom_start, "atom_end": atom_end,
             }],
             "coverage": {
                 p: (l2.COVERAGE_CHECKED if p == l2.PREDICATE_ENTITY_NAME
@@ -82,9 +88,116 @@ def test_the_extractor_rides_the_provider_it_was_given():
     session = _session(metered)
     canon = _entity_canon()
     asyncio.run(session.extract_chapter(
-        chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon))
+        chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon, attempt=1))
     assert len(metered.requests) == 1, \
         "the re-extraction did not go through the job's metered provider"
+
+
+def test_reextraction_uses_a_disjoint_deterministic_meter_identity():
+    metered = _Metered()
+    session = _session(metered)
+    canon = _entity_canon()
+    asyncio.run(session.extract_chapter(
+        chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon, attempt=2))
+    request = metered.requests[0]
+    assert request.chapter_index == 0 and request.attempt == 1  # mini snapshot identity
+    assert request.meter_unit_index == ad.L3_REEXTRACT_UNIT_BASE + 1
+    assert request.meter_attempt_ordinal == 2
+    assert request.meter_unit_index > cl.MAX_CHAPTERS - 1
+
+
+def test_repair_after_an_already_metered_chapter_never_reresolves_one_attempt_id(
+        monkeypatch):
+    """Integrated witness for the production conflict: one initial extraction and one
+    L3 re-extraction share the real MeteredProvider but resolve distinct durable rows."""
+    class _Redis:
+        def __init__(self):
+            self.values = {}
+
+        async def get(self, key):
+            return self.values.get(key)
+
+        async def set(self, key, value, **_kwargs):
+            self.values[key] = str(value)
+
+        async def incr(self, key):
+            self.values[key] = str(int(self.values.get(key, "0")) + 1)
+            return int(self.values[key])
+
+        async def decr(self, key):
+            self.values[key] = str(int(self.values.get(key, "0")) - 1)
+            return int(self.values[key])
+
+    class _Sink:
+        def __init__(self):
+            self.ids = {}
+            self.resolves = []
+
+        async def is_armed(self):
+            return False
+
+        async def begin(self, context, *, unit_index, attempt_ordinal):
+            key = (context.run_id, unit_index, attempt_ordinal)
+            if key in self.ids:
+                return {"attempt_id": self.ids[key], "outcome": "replay"}
+            attempt_id = f"attempt-{len(self.ids) + 1}"
+            self.ids[key] = attempt_id
+            return {"attempt_id": attempt_id, "outcome": "inserted"}
+
+        async def finish(self, attempt_id, state):
+            return {"attempt_id": attempt_id, "state": state}
+
+        async def resolve(self, attempt_id, usage):
+            self.resolves.append((attempt_id, usage.tokens_in, usage.tokens_out))
+            return {"attempt_id": attempt_id, "outcome": "applied"}
+
+        async def arm(self, reason_code):
+            raise AssertionError(f"kill latch armed: {reason_code}")
+
+    monkeypatch.setattr(meter, "_process_killed", False)
+    monkeypatch.setattr(meter, "_process_latch_logged", False)
+    canon = _entity_canon()
+    snapshot = l2.materialize_final_snapshot({"book": BOOK})
+    raw_provider = _Metered()
+    sink = _Sink()
+    redis = _Redis()
+    usage_count = 0
+
+    def _usage(_raw):
+        nonlocal usage_count
+        usage_count += 1
+        return meter.ProviderUsage(
+            tokens_in=100 + usage_count, tokens_out=10 + usage_count,
+            provider_reported_cost_usd=None)
+
+    context = meter.AttemptContext(
+        run_id="run-integrated", job_uuid=UUID("11111111-1111-4111-8111-111111111111"),
+        job_external_id="job-integrated", phase="canon_lite_l2_extract",
+        provider="fake", model_upstream="fake", pricing_version="test-v1",
+        rate_in_usd_per_m=Decimal("0.3"), rate_out_usd_per_m=Decimal("2.5"),
+        attempt_timeout_s=Decimal("30"))
+    metered = meter.MeteredProvider(
+        raw_provider, sink=sink, context=context, usage_reader=_usage,
+        max_inflight=8, redis_getter=lambda: redis)
+
+    first_bytes = snapshot.block_bytes(0)
+    first_atoms, first_atom_sha = l2.build_chapter_atom_table(first_bytes)
+    first_request = ext.ExtractionRequestV1(
+        chapter_index=0, chapter_id=snapshot.blocks[0].chapter_id,
+        content_sha256=snapshot.blocks[0].content_sha256,
+        canon_sha256=canon.canon_sha256, atom_table_sha256=first_atom_sha,
+        attempt=1, chapter_bytes=first_bytes, chapter_atoms=first_atoms, canon=canon)
+    asyncio.run(metered(first_request))
+
+    session = _session(metered)
+    asyncio.run(session.extract_chapter(
+        chapter_index=0, chapter_id=snapshot.blocks[0].chapter_id,
+        block_bytes=first_bytes, canon=canon, attempt=2))
+
+    assert set(sink.ids) == {("run-integrated", 0, 1),
+                             ("run-integrated", ad.L3_REEXTRACT_UNIT_BASE, 2)}
+    assert len({attempt_id for attempt_id, _tin, _tout in sink.resolves}) == 2
+    assert len(sink.resolves) == 2
 
 
 def test_the_runner_hands_its_metered_session_out_exactly_once():
@@ -136,7 +249,8 @@ def test_reextraction_failure_is_classified_with_the_extractors_own_vocabulary(c
     with caplog.at_level("WARNING"):
         with pytest.raises(_KnownFault):
             asyncio.run(session.extract_chapter(
-                chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon))
+                chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon,
+                attempt=1))
 
     lines = [r.getMessage() for r in caplog.records
              if "repair re-extraction failed" in r.getMessage()]
@@ -162,7 +276,8 @@ def test_reextraction_failure_falls_back_to_other_when_unclassifiable(caplog):
     with caplog.at_level("WARNING"):
         with pytest.raises(TimeoutError):
             asyncio.run(session.extract_chapter(
-                chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon))
+                chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon,
+                attempt=1))
 
     lines = [r.getMessage() for r in caplog.records
              if "repair re-extraction failed" in r.getMessage()]
@@ -177,11 +292,13 @@ def test_the_session_budget_is_independent_of_the_engine_bound():
     assert session.calls_remaining == 2
     for _ in range(2):
         asyncio.run(session.extract_chapter(
-            chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon))
+            chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon,
+            attempt=1))
     assert session.calls_remaining == 0
     with pytest.raises(ad.SessionBudgetExhausted):
         asyncio.run(session.extract_chapter(
-            chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon))
+            chapter_index=1, chapter_id="ch2", block_bytes=_block(), canon=canon,
+            attempt=1))
 
 
 def test_an_exhausted_budget_declines_a_repair_rather_than_faulting():
@@ -213,7 +330,7 @@ def test_index_and_id_are_stamped_but_the_hashes_are_measured():
     block = _block()
     session = _session()
     art = asyncio.run(session.extract_chapter(
-        chapter_index=1, chapter_id="ch2", block_bytes=block, canon=canon))
+        chapter_index=1, chapter_id="ch2", block_bytes=block, canon=canon, attempt=1))
 
     assert art.chapter_index == 1 and art.chapter_id == "ch2"      # stamped
     assert art.content_sha256 == cl.sha256_hex(block)              # measured
@@ -233,7 +350,8 @@ def test_a_candidate_that_is_not_one_block_is_refused():
                 b"## Bab 2\nsatu\n\n## Bab 3\ndua\n"):
         with pytest.raises(ValueError, match="one chapter block"):
             asyncio.run(session.extract_chapter(
-                chapter_index=1, chapter_id="ch2", block_bytes=bad, canon=canon))
+                chapter_index=1, chapter_id="ch2", block_bytes=bad, canon=canon,
+                attempt=1))
 
 
 # ── 4. mode isolation, proven in a clean interpreter ────────────────────────

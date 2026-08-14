@@ -200,7 +200,8 @@ class ChapterExtractor(Protocol):
     """
 
     def __call__(self, *, chapter_index: int, chapter_id: str, block_bytes: bytes,
-                 canon: Optional[_cl.CanonLiteV1]) -> Awaitable[_l2.ChapterClaimsV1]: ...
+                 canon: Optional[_cl.CanonLiteV1],
+                 attempt: int) -> Awaitable[_l2.ChapterClaimsV1]: ...
 
 
 # ===========================================================================
@@ -646,7 +647,7 @@ async def repair_manuscript(
             try:
                 fresh = await extract_chapter(
                     chapter_index=index, chapter_id=block.chapter_id,
-                    block_bytes=candidate, canon=canon)
+                    block_bytes=candidate, canon=canon, attempt=attempt)
             except Exception:  # noqa: BLE001 - the adapter already logged a bounded
                 # code for WHY (error_code=l3_repair_reextraction_error); this engine
                 # stays provider-agnostic and records only WHICH phase failed.

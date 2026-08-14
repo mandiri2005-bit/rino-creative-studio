@@ -16,6 +16,7 @@ import hashlib
 import json
 import socket
 import sys
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -30,67 +31,18 @@ import canon_lite_qc_meter as meter        # noqa: E402
 import canon_lite_qc_contract as qcc       # noqa: E402
 import canon_lite_qc_provider as qc        # noqa: E402
 
-# 🔴 MOVED DELIBERATELY, 2026-08-13 — the request contract changed, so this pin had to.
-#    Was 64efaaaf…829807, which pinned a contract that asked the model for
-#    `evidence_start`, `evidence_end` and `evidence_sha256`. A language model can compute
-#    none of those, and `parse_chapter_claims` recomputed the digest and compared it to
-#    the model's, so every attempt was rejected AFTER the provider had answered and been
-#    billed (live canaries `wbkc80eq`, `p64wz5kp`: 3 units, 9 attempts, 0 usable claims).
-#    The contract now asks for the evidence VERBATIM and the server derives the span and
-#    the digest from the delivered bytes.
-#
-#    This constant exists so the contract cannot drift SILENTLY. Updating it is not a
-#    formality: a diff that moves this line is asserting that the wire contract changed on
-#    purpose, and reviewing it means reading why.
-#
-# 🔴 MOVED AGAIN, SAME DAY — Rino's code audit of the move above found two more P1s before
-#    any canary spent money on them: (1) "quote" was defined as "the name or literal
-#    ALONE" for every claim_type, which is simply false for one_time_event — CanonEventV1
-#    carries no literal, and evaluate_semantic never reads a one_time_event claim's
-#    evidence text, only its canon_ref. Quote semantics are now defined PER claim_type. (2)
-#    a non-ASCII event description could reach `_event_id` with no legible slug at all;
-#    unrelated to this prompt's bytes directly, but fixed alongside since both changes
-#    landed in the same audit round — see canon_lite_semantic_source.py's `_event_id`.
-#
-# 🔴 MOVED A THIRD TIME, same day, same reason as the second: a further review round found
-#    the one_time_event wording above was itself wrong. It told the model "only canon_ref
-#    identity is checked, NEVER the quote text" — true of `evaluate_semantic`, but FALSE of
-#    `parse_chapter_claims`, which still requires the quote to occur verbatim exactly once
-#    (or carry a `context`), decode as UTF-8, and fit `MAX_EVIDENCE_BYTES`. Combined with
-#    "shortest phrase", that invited quotes too short to locate — rejected attempts on a
-#    METERED path. The line now says the quote is not compared but must still be found.
-#
-# 🔴 MOVED A FOURTH TIME. `CanonEventV1` gained a `label` — the whole justification for
-#    that field is "QC is handed this projection, so it can match a passage to the
-#    row" — and the template never mentioned it. The field travelled on the wire while
-#    the model was told nothing about what it is or how to use it, so the benefit was
-#    asserted only in a Python comment the model never sees. The template now names
-#    `label` and says to match on it, then cite that event's identifier.
-#
-# 🔴 MOVED A FIFTH TIME — and this one is a CONTRACT-BYTES move, not a template move, so
-#    `RATIFIED_TEMPLATE_SHA256` below is deliberately UNCHANGED. `QC_CANON_PROJECTION_RULE`
-#    was still the string `canon_lite_v1.to_canonical_obj(include_hash=True)` after the
-#    projection it names had gained an event `label`, i.e. it described a shape that no
-#    longer existed. It had stayed safe only by accident — the template moved in the same
-#    diff, which moved this hash anyway. The rule now carries the artifact's real version
-#    AND an explicit `rev=` (`QC_CANON_PROJECTION_REVISION`), and `SCHEMA_VERSION` itself
-#    went `canon_lite_v1` -> `canon_lite_v2` because `CanonEventV1`'s own fields changed.
-#    ⚠️ `prompt_sha256` is a `CLAIM_CACHE_KEY_FIELDS` member, so this re-pays extraction on
-#    the first assist run after deploy — a cost the fourth move had already committed in
-#    this same UNDEPLOYED diff, which is exactly why it was done now rather than later.
-#
-# 🔴 MOVED A SIXTH TIME. Attempts 2-3 used to drop the JSON schema while the adapter still
-#    required the exact JSON shape, and retry requests were byte-identical at temperature
-#    zero. All three attempts now retain the schema and carry bounded retry feedback. This
-#    is a deliberate cache-key move: the first post-deploy run repays every chapter.
+# v6 replaces quote/context transcription with a deterministic lexical atom table and
+# address-only claims. Moving this pin is deliberate: prompt_sha256 is cache identity, so
+# the first post-deploy extraction is repaid under the new wire rather than reusing v5
+# evidence whose address table did not exist.
 RATIFIED_PROMPT_SHA256 = \
-    "93be577d1fa091ec62fc275508b76742e2880ad55e6c04c02f69b178d0aed456"
+    "c9e9bf792d4923e1d400dc8599f692bf069d8d0f37e8f9541e9b3ce1dc8ba5dc"
 # Moved with the prompt pin above and for the same reason: the system template embeds the
 # claim contract, so changing what a claim carries necessarily changes these bytes. The
 # round-trip property this constant guards — template -> JSON -> template, byte-exact — is
 # unchanged and still asserted below.
 RATIFIED_TEMPLATE_SHA256 = \
-    "6d9f3e358c446833fd0136d70ae1674c42630d9c125f5f332ede6d831c118ede"
+    "1ac7791f19151c84381cf03c4a1bcfe8ea8923ede377c77f5b1d24b53b9521f2"
 
 BOOK = "## Bab 1\nRatna pergi pagi\n## Bab 2\nRatna pulang malam"
 
@@ -125,14 +77,22 @@ def _snapshot():
     return l2.materialize_final_snapshot({"book": BOOK})
 
 
+def _atom_request_fields(snapshot, index):
+    atoms, atom_sha = l2.build_chapter_atom_table(snapshot.block_bytes(index))
+    return {"atom_table_sha256": atom_sha, "chapter_atoms": atoms}
+
+
 def _request(*, attempt=1, canon=None, snapshot=None, index=0):
     snapshot = snapshot or _snapshot()
     canon = canon if canon is not None else _authoritative_canon()
     block = snapshot.blocks[index]
+    chapter_bytes = snapshot.block_bytes(index)
+    atoms, atom_sha = l2.build_chapter_atom_table(chapter_bytes)
     return ext.ExtractionRequestV1(
         chapter_index=index, chapter_id=block.chapter_id,
         content_sha256=block.content_sha256, canon_sha256=canon.canon_sha256,
-        attempt=attempt, chapter_bytes=snapshot.block_bytes(index), canon=canon)
+        atom_table_sha256=atom_sha, attempt=attempt, chapter_bytes=chapter_bytes,
+        chapter_atoms=atoms, canon=canon)
 
 
 # ---- fake transport: records every call, opens no socket ------------------
@@ -312,6 +272,15 @@ def test_8_8_every_attempt_sends_the_same_closed_json_schema():
         assert rf["json_schema"]["strict"] is True
         sent.append(rf)
     assert sent[1] == sent[0] == sent[2]
+
+
+def test_8_8b_claim_wire_is_address_only():
+    item = qc.QC_RESPONSE_SCHEMA["properties"]["claims"]["items"]
+    assert item["additionalProperties"] is False
+    assert item["required"] == ["claim_type", "canon_ref", "atom_start", "atom_end"]
+    assert set(item["properties"]) == set(item["required"])
+    assert "quote" not in json.dumps(item)
+    assert "context" not in json.dumps(item)
 
 
 def test_8_8a_response_format_out_of_range_refuses_without_index_error():
@@ -623,11 +592,24 @@ def test_8_19_no_syntactic_placeholders():
                 assert "____" not in value and value != "…", name
 
 
-def test_8_20_chapter_byte_round_trip():
+def test_8_20_chapter_atom_round_trip():
     req = _request()
     content = qc.build_user_content(req)
     parsed = json.loads(content)
-    assert parsed["chapter_text"].encode("utf-8") == req.chapter_bytes
+    assert parsed["atom_table_version"] == l2.ATOM_TABLE_VERSION
+    assert parsed["atom_table_sha256"] == req.atom_table_sha256
+    assert b"".join(text.encode("utf-8") for _index, text in parsed["chapter_atoms"]) \
+        == req.chapter_bytes
+    assert [index for index, _text in parsed["chapter_atoms"]] \
+        == list(range(len(req.chapter_atoms)))
+
+
+def test_8_20b_request_refuses_an_atom_table_from_different_bytes():
+    req = _request()
+    wrong_atoms, _wrong_digest = l2.build_chapter_atom_table(
+        req.chapter_bytes + b" altered")
+    with pytest.raises(cl.CanonSchemaError, match="do not bind chapter_bytes"):
+        replace(req, chapter_atoms=wrong_atoms)
 
 
 def test_8_21_no_semantic_placeholder():
@@ -644,10 +626,13 @@ def test_8_21_no_semantic_placeholder():
 # §8.22 - §8.28  Canon binding, cache identity, schema v2
 # ===========================================================================
 
-def test_8_22_chapter_claims_carries_canon_sha256():
+def test_8_22_chapter_claims_carries_canon_and_atom_table_sha256():
     assert "canon_sha256" in l2._CLAIMS_PAYLOAD_FIELDS
     assert "canon_sha256" in {f for f in l2.ChapterClaimsV1.__dataclass_fields__}
     assert "canon_sha256" in l2.CLAIM_CACHE_KEY_FIELDS
+    assert "atom_table_sha256" in l2._CLAIMS_PAYLOAD_FIELDS
+    assert "atom_table_sha256" in l2.ChapterClaimsV1.__dataclass_fields__
+    assert "atom_table_sha256" in l2.CLAIM_CACHE_KEY_FIELDS
     canon = _authoritative_canon()
     snap = _snapshot()
     art = _run(ext.extract_all(
@@ -666,7 +651,7 @@ def test_8_23_serializer_contract_mutation_changes_the_digest():
         # contract moved to v4 while the probe still said v4.
         ("json_separators", [", ", ": "]),
         ("contract_version", "qc_request_contract_vPROBE"),
-        ("dynamic_field_order", ["canon", "chapter_text"]),
+        ("dynamic_field_order", ["canon", "chapter_atoms"]),
         ("canon_projection_rule", "something_else"),
     ):
         mutated = dict(base)
@@ -701,24 +686,25 @@ def test_8_25_canon_projection_parity():
 def test_8_26_cache_key_tuple_and_order():
     assert l2.CLAIM_CACHE_KEY_FIELDS == (
         "schema_version", "chapter_index", "chapter_id", "content_sha256",
-        "canon_sha256", "extractor_version", "model_version", "prompt_sha256",
-        "predicate_set_version")
-    assert len(l2.CLAIM_CACHE_KEY_FIELDS) == 9
+        "canon_sha256", "atom_table_sha256", "extractor_version", "model_version",
+        "prompt_sha256", "predicate_set_version")
+    assert len(l2.CLAIM_CACHE_KEY_FIELDS) == 10
     canon = _authoritative_canon()
     run = _run(ext.extract_all(
         _snapshot(), canon, provider=_ok_provider(),
         model_version=qc.QC_MODEL_UPSTREAM, prompt_sha256=qc.PROMPT_SHA256,
         max_concurrency=1))
     key = l2.claim_cache_key(run.claims[0])
-    assert len(key) == 9
+    assert len(key) == 10
     assert key[4] == canon.canon_sha256
+    assert key[5] == run.claims[0].atom_table_sha256
 
 
-def test_8_27_v1_payload_rejected_after_the_bump():
-    assert l2.CLAIMS_SCHEMA_VERSION == "chapter_claims_v2"
+def test_8_27_pre_atom_payload_rejected_after_the_bump():
+    assert l2.CLAIMS_SCHEMA_VERSION == "chapter_claims_v3"
     snap, canon = _snapshot(), _authoritative_canon()
     payload = _valid_payload(snap, canon)
-    payload["schema_version"] = "chapter_claims_v1"
+    payload["schema_version"] = "chapter_claims_v2"
     with pytest.raises(cl.CanonSchemaError):
         l2.parse_chapter_claims(payload, snapshot=snap, canon=canon)
 
@@ -840,7 +826,8 @@ def test_8_32_content_hash_mismatch_blocks_before_http_and_metering():
         chapter_index=0, chapter_id=block.chapter_id,
         content_sha256="c" * 64,                        # does not bind the bytes
         canon_sha256=canon.canon_sha256, attempt=1,
-        chapter_bytes=snap.block_bytes(0), canon=canon)
+        chapter_bytes=snap.block_bytes(0), canon=canon,
+        **_atom_request_fields(snap, 0))
     with pytest.raises(cl.CanonSchemaError) as e:
         ext._preflight_request(bad, snapshot=snap, index=0, canon=canon)
     assert "extractor_request_content_hash_mismatch" in str(e.value)
@@ -852,7 +839,8 @@ def test_8_33_identity_mismatch_blocks_before_http_and_metering():
     bad = ext.ExtractionRequestV1(
         chapter_index=1, chapter_id=block.chapter_id,
         content_sha256=block.content_sha256, canon_sha256=canon.canon_sha256,
-        attempt=1, chapter_bytes=snap.block_bytes(1), canon=canon)
+        attempt=1, chapter_bytes=snap.block_bytes(1), canon=canon,
+        **_atom_request_fields(snap, 1))
     with pytest.raises(cl.CanonSchemaError) as e:
         ext._preflight_request(bad, snapshot=snap, index=0, canon=canon)  # wrong index
     assert "extractor_request_identity_mismatch" in str(e.value)
@@ -871,7 +859,8 @@ def test_8_33a_request_canon_parity_three_conjuncts_independently():
         base = dict(chapter_index=0, chapter_id=block.chapter_id,
                     content_sha256=block.content_sha256,
                     canon_sha256=canon.canon_sha256, attempt=1,
-                    chapter_bytes=snap.block_bytes(0), canon=canon)
+                    chapter_bytes=snap.block_bytes(0), canon=canon,
+                    **_atom_request_fields(snap, 0))
         base.update(over)
         return ext.ExtractionRequestV1(**base)
 
@@ -971,6 +960,7 @@ def test_8_36_unknown_is_conditional():
             schema_version=l2.CLAIMS_SCHEMA_VERSION, chapter_index=0,
             chapter_id=snap.blocks[0].chapter_id,
             content_sha256=snap.blocks[0].content_sha256, canon_sha256=cl.UNKNOWN,
+            atom_table_sha256=l2.build_chapter_atom_table(snap.block_bytes(0))[1],
             extractor_version=ext.EXTRACTOR_VERSION,
             model_version=qc.QC_MODEL_UPSTREAM, prompt_sha256=qc.PROMPT_SHA256,
             predicate_set_version=l2.PREDICATE_SET_VERSION,
@@ -1025,7 +1015,8 @@ def test_8_39_extractor_codes_are_extractor_owned():
     bad = ext.ExtractionRequestV1(
         chapter_index=0, chapter_id=snap.blocks[0].chapter_id,
         content_sha256="c" * 64, canon_sha256=canon.canon_sha256, attempt=1,
-        chapter_bytes=snap.block_bytes(0), canon=canon)
+        chapter_bytes=snap.block_bytes(0), canon=canon,
+        **_atom_request_fields(snap, 0))
     with pytest.raises(cl.CanonSchemaError):
         ext._preflight_request(bad, snapshot=snap, index=0, canon=canon)
 
@@ -1036,7 +1027,7 @@ def test_8_39_extractor_codes_are_extractor_owned():
 
 def test_8_40_contract_has_one_source_of_truth():
     source = Path(qc.__file__).read_text(encoding="utf-8")
-    assert source.count('"qc_request_contract_v5"') == 1
+    assert source.count('"qc_request_contract_v6"') == 1
     rebuilt = dict(qc._QC_REQUEST_CONTRACT_OBJ)
     rebuilt["temperature"] = "0.9"
     text = json.dumps(rebuilt, ensure_ascii=False, sort_keys=True,
@@ -1814,12 +1805,14 @@ def _ok_provider():
 
 def _valid_payload(snapshot, canon, index=0):
     block = snapshot.blocks[index]
+    _atoms, atom_sha = l2.build_chapter_atom_table(snapshot.block_bytes(index))
     return {
         "schema_version": l2.CLAIMS_SCHEMA_VERSION,
         "chapter_index": index,
         "chapter_id": block.chapter_id,
         "content_sha256": block.content_sha256,
         "canon_sha256": canon.canon_sha256,
+        "atom_table_sha256": atom_sha,
         "extractor_version": ext.EXTRACTOR_VERSION,
         "model_version": qc.QC_MODEL_UPSTREAM,
         "prompt_sha256": qc.PROMPT_SHA256,
@@ -1989,49 +1982,51 @@ def test_8_19_a_failing_attempt_logs_exactly_one_bounded_line(caplog):
             assert leak not in msg
 
 
-def test_8_19c_a_quote_rejection_names_the_specific_rule(caplog):
+def test_8_19c_an_invalid_atom_address_names_the_specific_rule(caplog):
     """The gap §8.19 left open: this parser-side rejection used to log the same coarse
     `INVALID_EXTRACTOR_OUTPUT` as every other one. It now names WHICH rule — still without
-    the quote itself, or the exception, ever reaching the line."""
+    the address itself, or the exception, ever reaching the line."""
     import logging
 
-    async def _unfindable_quote(request):
+    async def _invalid_address(request):
         return {
             "coverage": {**{p: "NO_CLAIMS_FOUND" for p in l2.SEMANTIC_PREDICATES},
                         l2.PREDICATE_ENTITY_NAME: "CHECKED"},
             "claims": [{"claim_type": l2.CLAIM_ENTITY_MENTION,
-                       "canon_ref": "e1", "quote": "NOPE_NOT_IN_THE_CHAPTER"}],
+                       "canon_ref": "e1", "atom_start": 9999, "atom_end": 9999}],
         }
 
     snap = l2.materialize_final_snapshot({"book": "## Bab 1\nRatna pergi pagi"})
     canon = _authoritative_canon()
     with caplog.at_level(logging.WARNING, logger="canon-lite-extractor"):
         _run(ext.extract_all(
-            snap, canon, provider=_unfindable_quote, model_version=qc.QC_MODEL_UPSTREAM,
+            snap, canon, provider=_invalid_address, model_version=qc.QC_MODEL_UPSTREAM,
             prompt_sha256=qc.PROMPT_SHA256, max_concurrency=1, max_attempts=1))
 
     lines = [r for r in caplog.records if r.name == "canon-lite-extractor"]
     assert len(lines) == 1
     msg = lines[0].getMessage()
     code = msg.split("error_code=")[1].rstrip(")")
-    assert code == l2.EXTRACT_REASON_QUOTE_NOT_FOUND
+    assert code == l2.EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE
     assert code != l2.COVERAGE_INVALID_EXTRACTOR_OUTPUT, (
         "narrowed code must not just repeat the coarse coverage constant")
-    assert "NOPE_NOT_IN_THE_CHAPTER" not in msg
+    assert "9999" not in msg
 
 
-def test_8_19d_a_canon_ref_rejection_gets_a_different_code_than_a_quote_rejection(caplog):
+def test_8_19d_a_canon_ref_rejection_differs_from_an_address_rejection(caplog):
     """🔴 THE ACTUAL PROOF OF NON-COLLAPSE. Same closed vocabulary, a genuinely different
     cause — §8.19c alone could pass even if every rejection mapped to one hardcoded
     constant; this row is what makes that a lie."""
     import logging
 
     async def _unknown_canon_ref(request):
+        ratna = next(a.index for a in request.chapter_atoms if a.text == "Ratna")
         return {
             "coverage": {**{p: "NO_CLAIMS_FOUND" for p in l2.SEMANTIC_PREDICATES},
                         l2.PREDICATE_ENTITY_NAME: "CHECKED"},
             "claims": [{"claim_type": l2.CLAIM_ENTITY_MENTION,
-                       "canon_ref": "not_a_real_canon_id", "quote": "Ratna"}],
+                       "canon_ref": "not_a_real_canon_id",
+                       "atom_start": ratna, "atom_end": ratna}],
         }
 
     snap = l2.materialize_final_snapshot({"book": "## Bab 1\nRatna pergi pagi"})
@@ -2046,7 +2041,7 @@ def test_8_19d_a_canon_ref_rejection_gets_a_different_code_than_a_quote_rejectio
     msg = lines[0].getMessage()
     code = msg.split("error_code=")[1].rstrip(")")
     assert code == l2.EXTRACT_REASON_CANON_REF_INVALID
-    assert code != l2.EXTRACT_REASON_QUOTE_NOT_FOUND, (
+    assert code != l2.EXTRACT_REASON_ATOM_INDEX_OUT_OF_RANGE, (
         "two distinct parser-side rejections collapsed into the same error_code")
     assert "not_a_real_canon_id" not in msg
 
@@ -2075,7 +2070,7 @@ def test_8_19e_provider_code_survives_without_provider_text(caplog):
     assert all(secret not in line for line in lines)
 
 
-def test_8_19f_quote_retry_changes_request_bytes_and_becomes_measured():
+def test_8_19f_address_retry_changes_request_bytes_and_becomes_measured():
     """Attempt 2 receives bounded feedback and can recover a rejected first response."""
     canon = _canon(
         n_chapters=1,
@@ -2095,7 +2090,8 @@ def test_8_19f_quote_retry_changes_request_bytes_and_becomes_measured():
                     l2.PREDICATE_ENTITY_NAME: "CHECKED",
                 },
                 "claims": [{"claim_type": l2.CLAIM_ENTITY_MENTION,
-                            "canon_ref": "e1", "quote": "BUKAN TEKS BAB"}],
+                            "canon_ref": "e1", "atom_start": 9999,
+                            "atom_end": 9999}],
             }
         return {"coverage": {p: "NO_CLAIMS_FOUND"
                              for p in l2.SEMANTIC_PREDICATES}, "claims": []}
@@ -2109,11 +2105,11 @@ def test_8_19f_quote_retry_changes_request_bytes_and_becomes_measured():
     assert run.claims[0].measured is True
     assert [r.retry_reason for r in seen] == [
         qcc.QC_RETRY_REASON_NONE,
-        qcc.QC_RETRY_REASON_QUOTE_NOT_FOUND,
+        qcc.QC_RETRY_REASON_ADDRESS_INVALID,
     ]
     request_bytes = [qc.build_user_content(r).encode("utf-8") for r in seen]
     assert request_bytes[0] != request_bytes[1]
-    assert json.loads(request_bytes[1])["retry_reason"] == "quote_not_found"
+    assert json.loads(request_bytes[1])["retry_reason"] == "address_invalid"
 
 
 def test_8_19b_a_successful_extraction_logs_nothing(caplog):
