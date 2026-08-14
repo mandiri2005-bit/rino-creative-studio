@@ -311,8 +311,9 @@ def build_dynamic_block(
     Order (top → bottom):
       1. RETRIEVED REFERENCES   — this chapter's RAG passages (per-chapter retrieval)
       2. STORY SO FAR           — trimmed tail of prior chapters (continuity)
-      3. CONTINUITY CONTRACT    — position-aware past/current/future ownership
-      4. THIS CHAPTER           — title/summary/word target — the actual ask, LAST
+      3. THIS CHAPTER           — title/summary/word target
+      4. CONTINUITY CONTRACT    — planned prev/current/next packet, near the boundary
+      5. RESPONSE SHAPE         — the actual output ask, LAST
     """
     lang_label = resolve_language(language)
     parts: list[str] = []
@@ -326,9 +327,6 @@ def build_dynamic_block(
 
     if prev_tail and prev_tail.strip():
         parts.append("STORY SO FAR (the immediately preceding narration — continue from here, do not repeat it):\n" + prev_tail.strip())
-
-    if chapter_scope and chapter_scope.strip():
-        parts.append("CHAPTER CONTINUITY CONTRACT:\n" + chapter_scope.strip())
 
     pos = ""
     if chapter.total:
@@ -356,11 +354,17 @@ def build_dynamic_block(
         f"  Target: {chapter.word_target} words "
         f"(range {chapter.word_min}–{chapter.word_max})."
     )
-    scope.append(
-        f"Write EXACTLY about {chapter.word_target} words in {lang_label}. "
-        f"Do NOT include the chapter title or number. Return ONLY the chapter body text."
-    )
     parts.append("\n".join(scope))
+
+    if chapter_scope and chapter_scope.strip():
+        parts.append("CHAPTER CONTINUITY CONTRACT:\n" + chapter_scope.strip())
+
+    parts.append(
+        "RESPONSE SHAPE: "
+        f"Write EXACTLY about {chapter.word_target} words in {lang_label}. "
+        "Do NOT include the chapter title or number. Return ONLY the complete chapter "
+        "body text — never notes, analysis, an outline, or only the passage you changed."
+    )
 
     return "\n\n".join(parts).strip() + "\n"
 

@@ -96,7 +96,7 @@ def _gate(text: str, lang: str = "en") -> str:
 log = logging.getLogger("orchestrator.static")
 
 
-def _build_narrative_authority_packet(ctx: SharedContext) -> Optional[dict[str, str]]:
+def _build_narrative_authority_packet(ctx: SharedContext) -> Optional[dict[str, Any]]:
     """Freeze the exact outline/Bible authority the MAP is about to consume.
 
     This is in-process transit, not product output.  Hashes make the hand-off
@@ -108,10 +108,18 @@ def _build_narrative_authority_packet(ctx: SharedContext) -> Optional[dict[str, 
         return None
     outline = ctx.outline()
     bible = str(ctx.canonical_facts or "")
+    execution = ctx.outline_packet_bundle()
     return {
         "text": text,
         "outline_sha256": hashlib.sha256(outline.encode("utf-8")).hexdigest(),
         "bible_sha256": hashlib.sha256(bible.encode("utf-8")).hexdigest(),
+        "outline_packet_contract_version": str(execution["contract_version"]),
+        "outline_packet_bundle_sha256": str(execution["bundle_sha256"]),
+        # Private in-process payload.  Later structural repair needs the exact
+        # chapter packet the worker saw; the whole authority object is stripped
+        # before persistence by narration_api.
+        "outline_packets_by_chapter": execution["packets_by_chapter"],
+        "outline_packet_sha256_by_chapter": execution["packet_sha256_by_chapter"],
     }
 
 
@@ -495,6 +503,15 @@ async def _write_chapter(
     # CC v3: scale the per-chapter timeout to the target so big chapters (≤8k words)
     # aren't killed by the flat default while small ones keep the tight bound.
     timeout = _scaled_timeout(timeout, word_target)
+    _outline_execution = ctx.outline_packet_bundle()
+    _outline_packet_key = str(no + 1)
+
+    def _bind_outline_packet_identity(result: dict[str, Any]) -> None:
+        # Bounded attribution only; exact packet prose stays in the private authority
+        # envelope and dynamic user turn.
+        result["outline_packet_contract_version"] = _outline_execution["contract_version"]
+        result["outline_packet_sha256"] = _outline_execution["packet_sha256_by_chapter"][_outline_packet_key]
+        result["outline_packet_bundle_sha256"] = _outline_execution["bundle_sha256"]
 
     if not _COMPOSE_OK or compose is None:
         # Assembler unavailable: degrade to a minimal direct prompt so the
@@ -503,10 +520,11 @@ async def _write_chapter(
             f"{ctx.brief_block()}\n\n"
             "AUTHORITATIVE FULL OUTLINE (immutable; this wins every conflict):\n"
             f"{ctx.outline()}\n\n"
-            f"CHAPTER CONTINUITY CONTRACT:\n{ctx.scope_for(no)}\n\n"
-            f"Write chapter {no + 1} of {total}: \"{ch.get('title','')}\". "
+            f"THIS CHAPTER: write chapter {no + 1} of {total}: \"{ch.get('title','')}\". "
             f"Target ~{word_target} words. Do not exceed {word_max} words. "
-            "Return ONLY the chapter body."
+            f"\n\nCHAPTER CONTINUITY CONTRACT:\n{ctx.scope_for(no)}\n\n"
+            "RESPONSE SHAPE: Return ONLY the complete chapter body; do not include "
+            "the chapter title or number, notes, analysis, an outline, or a fragment."
         )
         worker = Worker(
             name=f"ch{no + 1}", role="worker", phase="worker", model=worker_model,
@@ -518,6 +536,7 @@ async def _write_chapter(
         if res.get("output"):
             res["output"] = _scrub_chapter_leaks(res["output"], task_id=f"ch{no + 1}")
         res["no"] = no
+        _bind_outline_packet_identity(res)
         return res
 
     # The whole point of WS-4/WS-5: outline + facts + style ride the CACHED prefix;
@@ -581,6 +600,7 @@ async def _write_chapter(
         res["output"] = _scrub_chapter_leaks(res["output"], task_id=f"ch{no + 1}")
     res["no"] = no
     res["cache_key"] = composed.cache_key
+    _bind_outline_packet_identity(res)
     if canon_text:
         import canon_lite as _cl_h
         # 🔴 THE TWO MEASURED VALUES — recomputed here from what this worker was
@@ -1728,9 +1748,12 @@ async def narrate_chapters(
     if _narrative_authority:
         log.info(
             "narrate_chapters: narrative authority frozen outline_sha256=%s "
-            "bible_sha256=%s",
+            "bible_sha256=%s outline_packet_contract=%s "
+            "outline_packet_bundle_sha256=%s",
             _narrative_authority["outline_sha256"],
             _narrative_authority["bible_sha256"],
+            _narrative_authority["outline_packet_contract_version"],
+            _narrative_authority["outline_packet_bundle_sha256"],
         )
 
     # 2) MAP — bounded parallel fan-out. Semaphore caps concurrency at max_parallel

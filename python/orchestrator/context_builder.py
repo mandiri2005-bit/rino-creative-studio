@@ -78,6 +78,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from narasi_outline_packet import (
+    OUTLINE_PACKET_CONTRACT_VERSION,
+    outline_packet_bundle as _outline_packet_bundle,
+    render_outline_execution_packet,
+)
+
 log = logging.getLogger("orchestrator.context")
 
 
@@ -301,114 +307,12 @@ class SharedContext:
 
     # -- per-worker scope -------------------------------------------------
     def scope_for(self, no: int) -> str:
-        """Build the position-aware contract for chapter index `no` (0-based).
+        """Render the V5 planned prev/current/next packet for one MAP worker."""
+        return render_outline_execution_packet(self.chapters, no)
 
-        The whole outline, including every full summary, is already in the cacheable
-        system prefix. This variable USER-turn block assigns temporal ownership without
-        duplicating those summaries: earlier chapters are committed, this chapter is the
-        only current assignment, and later chapters are reserved.
-        """
-        n = len(self.chapters)
-        if not self.chapters or no < 0 or no >= n:
-            return ""
-        mine = self.chapters[no]
-        mine_title = str(mine.get("title", "") or "").strip() or f"Chapter {no + 1}"
-        mine_desc = str(mine.get("summary", mine.get("description", "")) or "").strip()
-
-        lines = [
-            "OUTLINE PRECEDENCE — the AUTHORITATIVE FULL OUTLINE above is immutable and "
-            "outranks the STORY BIBLE. If they conflict, follow the outline.",
-        ]
-
-        if no == 0:
-            lines.append("PAST COMMITMENTS — none; this chapter opens the book.")
-        else:
-            lines.append(
-                "PAST COMMITMENTS — the following chapters have already happened. Treat "
-                "their full outlined summaries as established; do not retell, reset, or "
-                "contradict them:"
-            )
-            for i, ch in enumerate(self.chapters[:no]):
-                t = str(ch.get("title", "") or "").strip() or f"Chapter {i + 1}"
-                lines.append(f"  - Chapter {i + 1}: \"{t}\"")
-
-        lines.append(
-            f"CURRENT ASSIGNMENT — write ONLY chapter {no + 1} of {n}: \"{mine_title}\"."
-        )
-        if mine_desc:
-            # Leak fix (2026-07): mine_desc is planning text (sometimes phrased as
-            # "Scene N — ..." per STRUCTURAL MANDATES in dynamic.py) — flag it as
-            # reference-only so the writer-model doesn't copy it in verbatim.
-            # AUDIT NOTE: intentionally left unconditional (no flag), unlike this round's
-            # other new checks — this is a defect scrub for the confirmed "Scene N--" leak
-            # (see _scrub_chapter_leaks in static.py), not a new gate. It only ever REMOVES
-            # an instruction to copy internal planning text verbatim, so it has no plausible
-            # downside; gating a confirmed leak-fix behind a default-OFF flag would leave the
-            # leak live by default. Confirmed intentional — not an oversight, do not re-flag.
-            lines.append(
-                "What this chapter covers (internal planning note — do not copy "
-                f"this literally or as a scene list; render it as flowing prose): {mine_desc}"
-            )
-        lines.append(
-            "BEAT SEQUENCE — execute the CURRENT ASSIGNMENT's beats in the exact order "
-            "written. Treat sentence order and ordered clauses as story order unless the "
-            "outline explicitly labels a flashback, parallel action, or another chronology. "
-            "Do not move a later threat, reveal, decision, or resolution ahead of an earlier one."
-        )
-        if no == 0:
-            lines.append(
-                "STORY CLOCK START — establish the opening position of any duration or deadline "
-                "the outline makes important; later chapters must be able to advance it visibly."
-            )
-        else:
-            prev = self.chapters[no - 1]
-            prev_title = (str(prev.get("title", "") or "").strip()
-                          or f"Chapter {no}")
-            lines.append(
-                f"ON-PAGE HANDOFF — begin from Chapter {no}, \"{prev_title}\", as already "
-                "completed. Before this chapter's first new set-piece, supply the brief causal, "
-                "location, and elapsed-time bridge needed to reach it. Never assume an off-page "
-                "decision, journey, reconciliation, or large time jump that neither adjacent "
-                "outline summary establishes."
-            )
-        lines.append(
-            "STORY CLOCK — if the premise, title, contract, countdown, or deadline fixes a total "
-            "span, state enough elapsed-time progress in this chapter to keep that span legible. "
-            "Never announce that it expired or completed unless the intervening time has been "
-            "accounted for on-page; a concise marker such as days/weeks later is sufficient."
-        )
-
-        if no == n - 1:
-            lines.append("FUTURE RESERVED — none; this chapter closes the book.")
-        else:
-            lines.append(
-                "FUTURE RESERVED — the following chapters have not happened yet. Their full "
-                "outlined summaries are context, not permission: do not execute their events, "
-                "reveal their answers, or treat their new entities as already known. Foreshadow "
-                "only when this chapter's own summary requires it:"
-            )
-            for i, ch in enumerate(self.chapters[no + 1:], no + 1):
-                t = str(ch.get("title", "") or "").strip() or f"Chapter {i + 1}"
-                lines.append(f"  - Chapter {i + 1}: \"{t}\"")
-
-        # Position-aware continuity nudge (no overlap with neighbours).
-        if no == 0:
-            lines.append(
-                "You open the book: set the voice and hook, but leave room — later "
-                "chapters build on you, so do not pre-empt their material."
-            )
-        elif no == n - 1:
-            lines.append(
-                "You close the book: assume everything above is already told; land the "
-                "payoff without re-summarising prior chapters."
-            )
-        else:
-            lines.append(
-                "You are a middle chapter: pick up cleanly from what precedes you and "
-                "hand off cleanly to what follows — no recap and no early execution of "
-                "another chapter's reveal."
-            )
-        return "\n".join(lines)
+    def outline_packet_bundle(self) -> dict[str, Any]:
+        """Bind every dynamic packet without exposing its prose to telemetry."""
+        return _outline_packet_bundle(self.chapters)
 
     # -- cached-prefix payload -------------------------------------------
     def brief_block(self) -> str:
@@ -895,4 +799,5 @@ __all__ = [
     "extract_canonical_facts",
     "COHERENCE_RULES",
     "DEFAULT_STYLE_GUIDE",
+    "OUTLINE_PACKET_CONTRACT_VERSION",
 ]

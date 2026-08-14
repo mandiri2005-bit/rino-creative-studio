@@ -7,11 +7,22 @@ past/current/future assignment in its variable user turn.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 from orchestrator import dynamic
 from orchestrator import static
 from orchestrator.context_builder import SharedContext
+from narasi_outline_packet import (
+    OUTLINE_PACKET_CONTRACT_VERSION,
+    outline_packet_bundle,
+    split_ordered_outline_beats,
+)
 from pakem.assembler import compose
 
 
@@ -74,14 +85,20 @@ def test_middle_worker_reads_past_current_and_future_but_owns_only_current():
     user = _compose_for(ctx, 1).dynamic_block
 
     assert "CHAPTER CONTINUITY CONTRACT:" in user
-    assert "PAST COMMITMENTS" in user
+    assert f"OUTLINE PACKET CONTRACT: {OUTLINE_PACKET_CONTRACT_VERSION}" in user
+    assert "PREVIOUS OUTLINE COMMITMENT:" in user
     assert 'Chapter 1: "Title 1"' in user
-    assert 'CURRENT ASSIGNMENT — write ONLY chapter 2 of 20: "Title 2"' in user
-    assert "FUTURE RESERVED" in user
+    assert "SYNOPSIS_1_EXACT" in user
+    assert "CURRENT ORDERED OUTLINE BEATS:" in user
+    assert 'Chapter 2: "Title 2"' in user
+    assert "NEXT RESERVED OUTLINE STATE:" in user
     assert 'Chapter 3: "Title 3"' in user
-    assert 'Chapter 20: "Title 20"' in user
+    assert "SYNOPSIS_3_EXACT" in user
+    assert 'Chapter 20: "Title 20"' not in user
     assert "SYNOPSIS_2_EXACT" in user
     assert "STORY SO FAR" not in user
+    assert user.index("THIS CHAPTER") < user.index("CHAPTER CONTINUITY CONTRACT")
+    assert user.index("CHAPTER CONTINUITY CONTRACT") < user.index("RESPONSE SHAPE")
 
 
 def test_rooftop_worker_locks_intra_chapter_beat_order_and_visible_story_clock():
@@ -115,13 +132,34 @@ def test_rooftop_worker_locks_intra_chapter_beat_order_and_visible_story_clock()
     )
     user = _compose_for(ctx, 1).dynamic_block
 
-    assert "BEAT SEQUENCE — execute the CURRENT ASSIGNMENT's beats in the exact order" in user
-    assert "Do not move a later threat, reveal, decision, or resolution" in user
-    assert 'ON-PAGE HANDOFF — begin from Chapter 1, "A Blanket of Stars and Rust"' in user
-    assert "Never assume an off-page decision, journey, reconciliation, or large time jump" in user
-    assert "STORY CLOCK — if the premise, title, contract, countdown, or deadline" in user
-    assert "never declare it expired without accounting for the intervening time" in user
+    assert "CURRENT ORDERED OUTLINE BEATS:" in user
+    assert "ON-PAGE HANDOFF (chapter 2+)" in user
+    assert "elapsed interval, the causal change or decision, and the opening location" in user
+    assert "A time label alone is insufficient" in user
+    assert "STORY CLOCK: advance any bounded duration monotonically" in user
     assert user.index("MIDPOINT: Eun-soo proves") < user.index("THEN Min-jae threatens")
+    assert user.index("THEN Min-jae threatens") < user.index("FINALLY they")
+
+
+def test_rooftop_chapter_three_ledger_pins_surrender_before_recording_and_deposition():
+    chapters = [
+        {"title": "Setup", "summary": "The contract begins."},
+        {"title": "Exposure", "summary": "The theft is exposed."},
+        {
+            "title": "Rooftop Reckoning",
+            "summary": (
+                "PRESENT: Tae-jun surrenders the rooftop rights. "
+                "LEGAL REALISM: The recordings are ruled inadmissible. "
+                "DEPOSITION: Eun-soo's deposition closes the proof chain."
+            ),
+        },
+    ]
+    packet = SharedContext(topic="roof", chapters=chapters).scope_for(2)
+
+    surrender = "PRESENT: Tae-jun surrenders the rooftop rights."
+    recording = "LEGAL REALISM: The recordings are ruled inadmissible."
+    deposition = "DEPOSITION: Eun-soo's deposition closes the proof chain."
+    assert packet.index(surrender) < packet.index(recording) < packet.index(deposition)
 
 
 def test_assembler_keeps_order_and_clock_rules_when_no_shared_context_scope_exists():
@@ -139,12 +177,13 @@ def test_first_and_last_worker_have_correct_boundary_semantics():
     first = _compose_for(ctx, 0).dynamic_block
     last = _compose_for(ctx, 2).dynamic_block
 
-    assert "PAST COMMITMENTS — none; this chapter opens the book." in first
-    assert 'CURRENT ASSIGNMENT — write ONLY chapter 1 of 3: "Title 1"' in first
-    assert 'Chapter 3: "Title 3"' in first
-    assert 'Chapter 1: "Title 1"' in last
-    assert 'CURRENT ASSIGNMENT — write ONLY chapter 3 of 3: "Title 3"' in last
-    assert "FUTURE RESERVED — none; this chapter closes the book." in last
+    assert "PREVIOUS OUTLINE COMMITMENT:\nNONE — this chapter opens the book." in first
+    assert 'CURRENT ORDERED OUTLINE BEATS:\nChapter 1: "Title 1"' in first
+    assert 'Chapter 2: "Title 2"' in first
+    assert 'Chapter 3: "Title 3"' not in first
+    assert 'Chapter 2: "Title 2"' in last
+    assert 'CURRENT ORDERED OUTLINE BEATS:\nChapter 3: "Title 3"' in last
+    assert "NEXT RESERVED OUTLINE STATE:\nNONE — this chapter closes the book." in last
 
 
 def test_real_sequential_tail_and_parallel_scope_remain_separate():
@@ -156,7 +195,57 @@ def test_real_sequential_tail_and_parallel_scope_remain_separate():
     assert "ACTUAL_PREVIOUS_NARRATION_SENTINEL" in user
     assert "CHAPTER CONTINUITY CONTRACT:" in user
     assert user.index("STORY SO FAR") < user.index("CHAPTER CONTINUITY CONTRACT")
+    assert user.index("THIS CHAPTER") < user.index("CHAPTER CONTINUITY CONTRACT")
+    assert user.index("CHAPTER CONTINUITY CONTRACT") < user.index("RESPONSE SHAPE")
     assert "ACTUAL_PREVIOUS_NARRATION_SENTINEL" not in item.static_prefix
+
+
+def test_outline_packet_split_is_conservative_verbatim_and_ordered():
+    summary = (
+        "PRESENT: Board confrontation. B-PLOT CLIMAX: Family audit. "
+        "LEGAL REALISM: Recordings are inadmissible; Tae-jun chooses deposition. "
+        "A-PLOT RESOLUTION: They remain together."
+    )
+    beats = split_ordered_outline_beats(summary)
+
+    assert beats == (
+        "PRESENT: Board confrontation.",
+        "B-PLOT CLIMAX: Family audit.",
+        "LEGAL REALISM: Recordings are inadmissible; Tae-jun chooses deposition.",
+        "A-PLOT RESOLUTION: They remain together.",
+    )
+    assert all(beat in summary for beat in beats)
+    assert split_ordered_outline_beats(
+        "An unlabelled dense paragraph stays intact. It is not guessed into semantics."
+    ) == ("An unlabelled dense paragraph stays intact. It is not guessed into semantics.",)
+
+
+def test_outline_packet_bundle_binds_exact_rendered_bytes_in_book_order():
+    ctx = _ctx(3)
+    bundle = outline_packet_bundle(ctx.chapters)
+    packet_hashes = {
+        str(index + 1): hashlib.sha256(ctx.scope_for(index).encode("utf-8")).hexdigest()
+        for index in range(3)
+    }
+    identity = [[index, packet_hashes[str(index + 1)]] for index in range(3)]
+    expected_bundle = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    assert bundle["contract_version"] == OUTLINE_PACKET_CONTRACT_VERSION
+    assert bundle["packet_sha256_by_chapter"] == packet_hashes
+    assert bundle["bundle_sha256"] == expected_bundle
+    assert bundle["packets_by_chapter"]["2"] == ctx.scope_for(1)
+    # Golden renderer pin: any label/order/split/placement byte change must bump
+    # the contract version and deliberately update these values together.
+    assert OUTLINE_PACKET_CONTRACT_VERSION == "outline_packet_v1"
+    assert bundle["packet_sha256_by_chapter"] == {
+        "1": "ba81b7fd93d99e3a174912e916dea4cff9788649ea6c6325c73e05ae363e00ca",
+        "2": "3f6ff67d3f0b6d98bcb081ad95ec8c279f9583472fc2e0da361f55c632e83509",
+        "3": "f62a773a591f282d98ea51323641f619cd8f04f07129b1b6da9761db5bfe4ab7",
+    }
+    assert bundle["bundle_sha256"] == \
+        "1fc49f571830447f8a2949a11ff436426de8c3aede528737fd54a19bd044d884"
 
 
 def test_chapter_scope_is_a_falsifiable_user_only_cache_isolation_witness():
@@ -227,7 +316,7 @@ def test_production_map_wires_scope_without_forging_a_previous_tail(monkeypatch)
     monkeypatch.setattr(static, "run_worker", fake_run_worker)
     monkeypatch.setattr(static, "_apply_word_gate", fake_word_gate)
 
-    asyncio.run(static._write_chapter(
+    result = asyncio.run(static._write_chapter(
         ctx=ctx,
         ch=ctx.chapters[1],
         no=1,
@@ -243,3 +332,67 @@ def test_production_map_wires_scope_without_forging_a_previous_tail(monkeypatch)
 
     assert captured["chapter_scope"] == ctx.scope_for(1)
     assert "prev_tail" not in captured
+    bundle = outline_packet_bundle(ctx.chapters)
+    assert result["outline_packet_contract_version"] == bundle["contract_version"]
+    assert result["outline_packet_sha256"] == bundle["packet_sha256_by_chapter"]["2"]
+    assert result["outline_packet_bundle_sha256"] == bundle["bundle_sha256"]
+
+
+def test_fallback_uses_identical_packet_bytes_version_and_hash(monkeypatch):
+    ctx = _ctx(3)
+    captured = {}
+
+    async def fake_run_worker(worker, prompt, **kwargs):
+        captured["prompt"] = prompt
+        return {"ok": True, "output": "Complete fallback body."}
+
+    async def fake_word_gate(result, **kwargs):
+        return result
+
+    monkeypatch.setattr(static, "_COMPOSE_OK", False)
+    monkeypatch.setattr(static, "run_worker", fake_run_worker)
+    monkeypatch.setattr(static, "_apply_word_gate", fake_word_gate)
+
+    result = asyncio.run(static._write_chapter(
+        ctx=ctx, ch=ctx.chapters[1], no=1, total=3,
+        style="storytelling", language="id", mode="text",
+        job_id="fallback-packet-witness", worker_model="test-model",
+        timeout=20, telemetry_sink=None,
+    ))
+    bundle = outline_packet_bundle(ctx.chapters)
+    exact_packet = bundle["packets_by_chapter"]["2"]
+
+    assert f"CHAPTER CONTINUITY CONTRACT:\n{exact_packet}\n\nRESPONSE SHAPE" in captured["prompt"]
+    assert result["outline_packet_contract_version"] == bundle["contract_version"]
+    assert result["outline_packet_sha256"] == hashlib.sha256(exact_packet.encode()).hexdigest()
+    assert result["outline_packet_bundle_sha256"] == bundle["bundle_sha256"]
+
+
+def test_rooftop_beat_order_mutation_is_killed_without_pattern_miss(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    source_path = root / "python" / "narasi_outline_packet.py"
+    source = source_path.read_text(encoding="utf-8")
+    old = 'lines.extend(f"  {number}. {beat}" for number, beat in enumerate(beats, 1))'
+    new = 'lines.extend(f"  {number}. {beat}" for number, beat in enumerate(reversed(beats), 1))'
+    assert source.count(old) == 1, "PATTERN-MISS: beat-order mutation no longer applies exactly once"
+    (tmp_path / "narasi_outline_packet.py").write_text(source.replace(old, new), encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(root / "python")))
+    witness = (
+        "from narasi_outline_packet import render_outline_execution_packet as render\n"
+        "chapters=[{'title':'Setup','summary':'The contract begins.'},"
+        "{'title':'Exposure','summary':'The theft is exposed.'},"
+        "{'title':'Rooftop','summary':'PRESENT: Tae-jun surrenders the rooftop rights. "
+        "LEGAL REALISM: The recordings are ruled inadmissible. "
+        "DEPOSITION: Eun-soo closes the proof chain.'}]\n"
+        "packet=render(chapters,2)\n"
+        "assert packet.index('PRESENT:') < packet.index('LEGAL REALISM:') < packet.index('DEPOSITION:')\n"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", witness],
+        cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=30, check=False,
+    )
+    assert run.returncode != 0 and "AssertionError" in run.stdout, \
+        f"SURVIVED rooftop beat-order mutation:\n{run.stdout}"
