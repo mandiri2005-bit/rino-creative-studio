@@ -703,6 +703,14 @@ def _numeric_drifts(referents: list) -> list[dict]:
             _s = str(_raw).lower().strip()
             _s = " ".join(_words.get(w, w) for w in _re.split(r"[\s-]+", _s))
             _s = _re.sub(r"[,\s]", "", _s)
+            # The extractor is instructed to return plain numbers, but the v6 rooftop
+            # canary returned the bare unit "hours" for "expiry date just hours away".
+            # Treating that as a second VALUE beside the contract's 30 days manufactured
+            # duration=['30','hours'] and sent a false repair into the final rewrite.  A
+            # numeric ledger must fail closed on nonnumeric payloads; relative-date phrases
+            # have already been handled by the dedicated branch above.
+            if not _re.search(r"\d", _s):
+                continue
             if _s and _s not in vals:
                 vals.append(_s)
         if len(vals) >= 2:
@@ -3451,8 +3459,9 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # if the chunk split itself fails — while critic, register-gate, and canon-diff's
     # NARASI_CANON_DIFF_REVISE path all go through the _narasi_consistency_revise DISPATCHER
     # (phase="canon_diff_revise" always; model=NARASI_CRITIQUE_MODEL-or-body.model-or-
-    # DALANG_CHEAP_MODEL; chunked only when NARASI_REVISE_CHUNKED / the auto-chunk word
-    # threshold says so, else whole-book, with a chunked-raises→whole-book fallback net).
+    # DALANG_CHEAP_MODEL; chunked when NARASI_REVISE_CHUNKED / the auto-chunk word threshold
+    # says so OR an authority-structural finding requires chapter-scoped repair, else whole-book,
+    # with a chunked-raises→whole-book fallback net).
     # The single merged call below goes through that same dispatcher — the majority
     # convention (3 of 4 mechanisms already use it), so THEIR routing/model-selection/
     # fallback-safety is byte-for-byte unchanged. The two mechanisms whose revise dispatch
@@ -3504,7 +3513,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _cq, _cqc = await _narasi_consistency_critique(
                     _cbk, style, language, model=_cmodel,
                     tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                    canonical_facts=(result.get("canonical_facts") or ""), credit_row=False)
+                    canonical_facts=(result.get("canonical_facts") or ""), credit_row=False,
+                    authority_text=_authority_text)
                 _t_crit = time.monotonic() - _t_crit0
                 # P0A: hand the ALREADY-elapsed critic timer to the caller. A plain dict
                 # store — no await, no I/O, no new timer inside the gate phase, and the

@@ -8522,7 +8522,8 @@ async def _narasi_revise(client, model, resolved_model, safe_max, _msgs, text, c
 #    that can catch the narasi-3 notebook-provenance hole + the silent one-week→three-week drift;
 #    no deterministic scanner reaches it. Report-only unless NARASI_CRITIQUE_REVISE=1.
 def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
-                             epistemic_check: bool = False) -> str:
+                             epistemic_check: bool = False,
+                             authority_aware: bool = False) -> str:
     """Whole-book critic system prompt. Checks 1-6 (pure consistency) apply to ALL narasi.
     Check 7 (DROPPED PREMISE HOOK / F10) is FICTION-ONLY and emitted here only when is_fiction:
     a nonfiction/factual piece may legitimately leave a real question open (an unsolved case, an
@@ -8638,6 +8639,23 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
                 "do not let a story assign an instrument a measurement outside its real physical "
                 "capability. Flag any rendering that exceeds the tool's or institution's real "
                 "capability.\n")
+    _authority_checks = (
+        "A. OUTLINE EXECUTION (NARRATIVE AUTHORITY supplied) — compare EACH chapter's prose "
+        "against that chapter's authoritative outline summary. Report type 'outline_beat_order' "
+        "when two or more outlined beats occur in a different order; sentence and ordered-clause "
+        "order in the outline is story order unless it explicitly marks flashback or parallel "
+        "action. Report type 'outline_missing_beat' when an outlined reveal, decision, consequence, "
+        "or final resolution never occurs on-page; a proposal or unanswered invitation is not the "
+        "same as the outline's completed mutual choice.\n"
+        "B. AUTHORITY-BOUND HANDOFF AND CLOCK — report type 'chapter_boundary_break' against the "
+        "LATER chapter when its opening assumes an off-page decision, journey, reconciliation, "
+        "arrival, or other causal/location transition from the preceding chapter. Report type "
+        "'story_clock_progression' when a bounded duration or deadline jumps from an early vague "
+        "position to nearly expired/expired without a concrete elapsed interval (for example, "
+        "'three weeks later' or 'day 29'). Merely saying 'days passed' and later 'nearing its end' "
+        "does not account for a 30-day span. For EVERY finding in A or B, include `chapter` as the "
+        "1-based chapter number whose prose must be repaired; for a seam, use the later chapter.\n"
+        if authority_aware else "")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
     # CANON CONFORMANCE (check 0) — only when a CANONICAL FACT SHEET (story bible) is supplied in
@@ -8676,6 +8694,9 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         if canon_aware else "")
     if canon_aware:
         _enum = "canon_fork|" + _enum
+    if authority_aware:
+        _enum = ("outline_beat_order|outline_missing_beat|chapter_boundary_break|"
+                 "story_clock_progression|" + _enum)
     # Round-6 (NARASI_QUOTE_GROUNDING_CHECK): a quote+em-dash attribution presented as verbatim
     # dialogue with NO earlier grounding anywhere in the book (fabricated/misattributed quote) —
     # confirmed real instance this session. Applies to fiction AND nonfiction alike (misattribution
@@ -8749,7 +8770,7 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "story you did NOT write. Judge whole-draft CONSISTENCY" + _extra + " but NEVER prose "
         "taste. Read the entire book, then hunt for contradictions each chapter hides because it "
         "reads fine on its own. Check, in order:\n"
-        + _check0 +
+        + _check0 + _authority_checks +
         "1. OBJECT/PROP PROVENANCE — an item is present somewhere it could not be, or was "
         "placed/hidden before it could exist there (a diary hidden under a house's floor when the "
         "narrator bought the house only months ago; a letter predating the meeting it describes).\n"
@@ -8771,7 +8792,9 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
         '{"score": <0-10>, "violations": [{"type": "' + _enum + '", "severity": '
         '"critical|high|medium|low", "evidence": "<short quote(s)>", '
-        '"fix": "<one-line directive>"}], "summary": "<1-2 sentences>"}'
+        '"fix": "<one-line directive>"'
+        + (', "chapter": <1-based integer>' if authority_aware else '') +
+        '}], "summary": "<1-2 sentences>"}'
     )
 
 
@@ -8793,7 +8816,8 @@ def _narasi_normalize_critique(v) -> dict:
 
 async def _narasi_consistency_critique(full_text, style, language, *, model,
                                        tenant_id, user_id, job_uuid,
-                                       canonical_facts: str = "", credit_row: bool = True):
+                                       canonical_facts: str = "", credit_row: bool = True,
+                                       authority_text: str = ""):
     """Fresh-eyes whole-draft consistency critic → (verdict, cr). verdict =
     {score: float|None, violations: list[dict], summary: str}. Runs a capable model
     (NARASI_CRITIQUE_MODEL, else the chapter model, else the cheap model) over the FULL book
@@ -8838,16 +8862,22 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
         _regime_raw = "strict"
     _regime_norm = "fictional" if _regime_raw == "fiction" else _regime_raw
     _epistemic_scope = _regime_norm != "fictional"
-    _sys = _consistency_critic_sys(_is_fic, canon_aware=_use_canon, epistemic_check=_epistemic_scope)
+    _authority = str(authority_text or "").strip()
+    _sys = _consistency_critic_sys(
+        _is_fic, canon_aware=_use_canon, epistemic_check=_epistemic_scope,
+        authority_aware=bool(_authority))
+    _sections = []
+    if _authority:
+        _sections.append(
+            "[NARRATIVE AUTHORITY — highest priority; exact outline order and required "
+            "resolutions]\n" + _authority[:NARASI_CRITIQUE_MAX_CHARS])
     if _use_canon:
-        _cf = (canonical_facts or "").strip()[:8000]
-        _u = ("[CANONICAL FACT SHEET — the single agreed truth every chapter must obey]\n"
-              + _cf + "\n\n"
-              + f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
-              + f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
-    else:
-        _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n"
-              f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
+        _sections.append(
+            "[CANONICAL FACT SHEET — the single agreed truth every chapter must obey]\n"
+            + (canonical_facts or "").strip()[:8000])
+    _sections.append(f"[STYLE] {style} · [LANGUAGE] {language}")
+    _sections.append(f"[FULL BOOK]\n{(full_text or '')[:NARASI_CRITIQUE_MAX_CHARS]}")
+    _u = "\n\n".join(_sections)
     # MODEL FAILOVER: the critic (default opus-4-6) is the slowest stage and can hang a degraded
     # provider window — on primary timeout, fail over to the fast failover WORKER model so we still
     # get a verdict instead of a silent skip. opus stays the default; flash only runs when opus is
@@ -9073,6 +9103,20 @@ def _revise_authority_suffix(authority_text: str) -> str:
     )
 
 
+_AUTHORITY_STRUCTURAL_VIOLATIONS = frozenset({
+    "outline_beat_order",
+    "outline_missing_beat",
+    "chapter_boundary_break",
+    "story_clock_progression",
+})
+
+
+def _is_authority_structural_violation(violation) -> bool:
+    return (isinstance(violation, dict)
+            and str(violation.get("type") or "").strip().lower()
+            in _AUTHORITY_STRUCTURAL_VIOLATIONS)
+
+
 def _revise_min_severities():
     """Which violation severities the #53 revise acts on. The critic has no strict severity rubric and
     routinely rates name/label drift MEDIUM — the single most common LOCATABLE class — so the default
@@ -9091,8 +9135,10 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
     so it NEVER lands (violations ship unfixed). This scales to the 40k-word max and completes.
     Fail-safe: any chapter that errors / times out / would be gutted keeps its ORIGINAL text (worst
-    case == no change). Structural violations whose evidence can't be located (e.g. dropped_hook)
-    are simply not applied — they stay report-only. Returns (new_text, total_cr).
+    case == no change). Authority-bound structural findings may instead use their validated,
+    schema-level 1-based `chapter` locator; other violations whose evidence can't be located
+    (e.g. dropped_hook) are simply not applied — they stay report-only. Returns
+    (new_text, total_cr).
 
     Chapter TARGETING is BEST-EFFORT by design: the critic's evidence is ambiguous about which chapter
     actually errs (a two-name drift quotes both the wrong and the correct name; the discriminating token
@@ -9139,6 +9185,15 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     for _v in viol:
         _sps = _spans(_v.get("evidence"))
         _chnos = _chn_locators(_v.get("evidence"))
+        # Authority-aware critic findings carry a schema-level 1-based chapter number.
+        # Keep it independent of prose quoting: beat-order/missing-beat findings can require
+        # two distant excerpts, and the boundary prose may have changed after MAP.  Only the
+        # closed structural vocabulary may use this field, so an arbitrary critic `chapter`
+        # cannot silently redirect an unrelated factual rewrite.
+        if authority_text and _is_authority_structural_violation(_v):
+            _declared_ch = _v.get("chapter")
+            if type(_declared_ch) is int and _declared_ch > 0 and _declared_ch not in _chnos:
+                _chnos.append(_declared_ch)
         _vspans.append((_v, _sps, _chnos))
     # Split into [preamble?, chapter, chapter, …] on the UNION of BOTH heading styles in ONE pass
     # (lookahead, no chars consumed → ''.join(parts) reconstructs the original EXACTLY). ONE shared
@@ -9203,6 +9258,11 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         _s = str(v.get("severity", "") or "").strip().lower()
         return _s if _s in ("critical", "high", "medium", "low") else "medium"
     _vspans = [(v, sps, chnos) for (v, sps, chnos) in _vspans if _sevof(v) in _sev]
+    if authority_text:
+        # Per-chapter prompts include at most eight directives. Put immutable-outline repairs
+        # before style/ledger/thread noise so the exact reason this rewrite was forced into the
+        # safer chapter-scoped lane can never be truncated out of its own request.
+        _vspans.sort(key=lambda item: 0 if _is_authority_structural_violation(item[0]) else 1)
 
     def _occ(s, txt):
         # Locate a span in a chapter. WORD-BOUNDARY match for ASCII-alphanumeric-bounded spans so a short
@@ -9623,7 +9683,9 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
     if not viol:
         return full_text, 0
     rev_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
-    # CHUNKED revise (env-gated, DEFAULT OFF now the whole-book path has a 128K ceiling). Set
+    # CHUNKED revise (env-gated, DEFAULT OFF now the whole-book path has a 128K ceiling). Authority-
+    # structural findings are the exception: they force this safer chapter-scoped lane so a
+    # whole-book rewrite cannot fix one seam by moving other outlined beats. Otherwise, set
     # NARASI_REVISE_CHUNKED=1 to revise ONLY the chapters with a located violation — bounded output
     # per chapter, robust to a provider that caps output below the book size. Any internal error
     # raises → we fall through to the whole-book path below (never-raises contract preserved).
@@ -9635,8 +9697,16 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
         _auto_w = int(str(os.getenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")).strip() or "0")
     except Exception:
         _auto_w = 0
+    _force_authority_chunked = bool(
+        str(authority_text or "").strip()
+        and any(_is_authority_structural_violation(v) for v in viol))
+    if _force_authority_chunked:
+        import logging as _lgac
+        _lgac.getLogger("narasi").info(
+            "consistency revise: authority-structural finding forces chapter-scoped repair")
     if (os.getenv("NARASI_REVISE_CHUNKED", "0").strip().lower() in ("1", "true", "yes", "on")
-            or (_auto_w > 0 and len((full_text or "").split()) >= _auto_w)):
+            or (_auto_w > 0 and len((full_text or "").split()) >= _auto_w)
+            or _force_authority_chunked):
         try:
             return await _narasi_revise_chunked(
                 full_text, viol, style, language, rev_model,
@@ -9645,6 +9715,14 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                 authority_text=authority_text)
         except Exception as _ce:
             import logging as _lg
+            if _force_authority_chunked:
+                # The whole-book lane is precisely what authority-structural repair avoids:
+                # it can fix one seam by moving or deleting a different outlined beat.  If the
+                # safer chapter splitter cannot operate, preserve the original and report the
+                # still-unresolved violation instead of risking another authority regression.
+                _lg.getLogger("narasi").warning(
+                    "authority-structural chunked revise error (%s) — original preserved", _ce)
+                return full_text, 0
             _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
     directives = "\n".join(
         f"- [{x.get('severity', '?')}/{x.get('type', '?')}] {str(x.get('evidence', ''))[:420]} "
@@ -12938,7 +13016,8 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             )
             _cq, _cqc = await _narasi_consistency_critique(
                 _full_book, style, language, model=model,
-                tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid)
+                tenant_id=_narasi_tenant, user_id=_narasi_user, job_uuid=_narasi_job_uuid,
+                authority_text=_narrative_authority)
             _meter_actual += _cqc
             _critique_payload = _cq
             _crit_bad = [v for v in (_cq.get("violations") or [])

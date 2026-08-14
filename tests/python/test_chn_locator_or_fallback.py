@@ -200,3 +200,57 @@ class TestMismatchedDoubleTarget:
         _run(viol)
         targeted = _targeted_chapter_headings(_patched.calls)
         assert targeted == {1, 2}, f"expected both chapters targeted on mismatch, got {targeted}"
+
+
+class TestAuthorityStructuralChapterLocator:
+    """Authority findings use the critic's schema-level chapter field, so a missing-beat
+    repair does not depend on inventing a literal quote for prose that is absent by definition."""
+
+    def test_unquoted_structural_finding_routes_by_declared_chapter(self, _patched):
+        viol = [{
+            "type": "outline_missing_beat",
+            "severity": "high",
+            "chapter": 2,
+            "evidence": "Eun-soo never makes the outlined final mutual choice on-page.",
+            "fix": "Show her completed choice in chapter two.",
+        }]
+        asyncio.run(laozhang_api._narasi_revise_chunked(
+            FULL_TEXT, viol, style="test-style", language="en",
+            rev_model="gemini-2.5-flash", tenant_id="t1", user_id="u1",
+            job_uuid="job-1", authority_text="AUTHORITATIVE FULL OUTLINE"))
+        assert _targeted_chapter_headings(_patched.calls) == {2}
+
+    def test_declared_chapter_is_inert_without_authority(self, _patched):
+        viol = [{
+            "type": "outline_missing_beat",
+            "severity": "high",
+            "chapter": 2,
+            "evidence": "No literal manuscript quote is available.",
+            "fix": "Do not trust an unbound chapter field.",
+        }]
+        _run(viol)
+        assert _patched.calls == []
+
+    def test_structural_directive_is_not_truncated_behind_eight_noise_items(self, _patched):
+        noise = [{
+            "type": "timeline",
+            "severity": "high",
+            "evidence": '"old lighthouse keeper"',
+            "fix": f"Noise fix {i}.",
+        } for i in range(8)]
+        structural = {
+            "type": "outline_beat_order",
+            "severity": "high",
+            "chapter": 2,
+            "evidence": "the surrender precedes the required audit",
+            "fix": "Restore the authoritative beat order.",
+        }
+        asyncio.run(laozhang_api._narasi_revise_chunked(
+            FULL_TEXT, noise + [structural], style="test-style", language="en",
+            rev_model="gemini-2.5-flash", tenant_id="t1", user_id="u1",
+            job_uuid="job-1", authority_text="AUTHORITATIVE FULL OUTLINE"))
+
+        assert _targeted_chapter_headings(_patched.calls) == {2}
+        prompt = _patched.calls[0]["messages"][1]["content"]
+        assert "[high/outline_beat_order]" in prompt
+        assert "Noise fix 7." not in prompt

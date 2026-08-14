@@ -231,6 +231,7 @@ def test_gate_forwards_the_private_authority_to_consistency_revise(monkeypatch):
     live_lz = sys.modules.get("laozhang_api", lz)
 
     async def critique(*args, **kwargs):
+        captured["critic_authority_text"] = kwargs.get("authority_text")
         return ({"violations": [{
             "type": "timeline", "severity": "high", "evidence": '"Alpha"',
             "description": "timeline", "fix": "Correct it.", "chapter": 1,
@@ -269,7 +270,28 @@ def test_gate_forwards_the_private_authority_to_consistency_revise(monkeypatch):
         result, body, tenant_id="t", user_id="u", job_uuid=None,
         sink=None, job_id="authority-gate"))
 
+    assert captured["critic_authority_text"] == _authority()
     assert captured["authority_text"] == _authority()
+
+
+def test_authority_aware_critic_contract_names_the_canary_failure_classes():
+    legacy = lz._consistency_critic_sys(
+        is_fiction=True, canon_aware=False, epistemic_check=False)
+    bound = lz._consistency_critic_sys(
+        is_fiction=True, canon_aware=False, epistemic_check=False,
+        authority_aware=True)
+
+    for token in (
+        "outline_beat_order",
+        "outline_missing_beat",
+        "chapter_boundary_break",
+        "story_clock_progression",
+    ):
+        assert token not in legacy
+        assert token in bound
+    assert "include `chapter` as the 1-based chapter number" in bound
+    assert "unanswered invitation is not" in bound
+    assert "Merely saying 'days passed'" in bound
 
 
 def test_private_authority_never_enters_the_durable_payload():
@@ -342,6 +364,71 @@ def test_whole_book_and_chunked_revise_receive_the_same_authority(monkeypatch):
     assert captured[-1]["messages"][0]["content"].endswith(_authority())
 
 
+def test_authority_structural_finding_forces_chapter_scoped_repair(monkeypatch):
+    monkeypatch.setenv("NARASI_REVISE_CHUNKED", "0")
+    monkeypatch.setenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")
+    captured: dict = {}
+
+    async def fake_chunked(full_text, violations, *args, **kwargs):
+        captured["full_text"] = full_text
+        captured["violations"] = violations
+        captured.update(kwargs)
+        return full_text, 0
+
+    monkeypatch.setattr(lz, "_narasi_revise_chunked", fake_chunked)
+    book = (
+        "## Chapter 1: Return\nAlpha sentence.\n\n"
+        "## Chapter 2: Reveal\nBeta sentence."
+    )
+    finding = {
+        "severity": "high",
+        "type": "outline_beat_order",
+        "chapter": 2,
+        "evidence": "the rights surrender precedes the family audit",
+        "fix": "Restore the chapter-two outline order.",
+    }
+    revised, credits = asyncio.run(lz._narasi_consistency_revise(
+        book, {"violations": [finding]}, "storytelling", "en",
+        model="test-model", tenant_id="t", user_id="u", job_uuid=None,
+        authority_text=_authority()))
+
+    assert revised == book
+    assert credits == 0
+    assert captured["violations"] == [finding]
+    assert captured["authority_text"] == _authority()
+
+
+def test_authority_structural_chunk_failure_never_falls_back_to_whole_book(monkeypatch):
+    monkeypatch.setenv("NARASI_REVISE_CHUNKED", "0")
+    monkeypatch.setenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")
+
+    async def broken_chunked(*args, **kwargs):
+        raise RuntimeError("unsupported heading shape")
+
+    def forbidden_client(*args, **kwargs):
+        raise AssertionError("authority repair must not enter whole-book rewrite")
+
+    monkeypatch.setattr(lz, "_narasi_revise_chunked", broken_chunked)
+    monkeypatch.setattr(lz, "make_narasi_client", forbidden_client)
+    book = (
+        "## Chapter 1: Return\nAlpha sentence.\n\n"
+        "## Chapter 2: Reveal\nBeta sentence."
+    )
+    revised, credits = asyncio.run(lz._narasi_consistency_revise(
+        book, {"violations": [{
+            "severity": "high",
+            "type": "chapter_boundary_break",
+            "chapter": 2,
+            "evidence": "the journey happened off-page",
+            "fix": "Add the causal and location bridge.",
+        }]}, "storytelling", "en", model="test-model",
+        tenant_id="t", user_id="u", job_uuid=None,
+        authority_text=_authority()))
+
+    assert revised == book
+    assert credits == 0
+
+
 def test_authority_bound_whole_book_revise_rejects_restructure_and_replacement(monkeypatch):
     monkeypatch.setenv("NARASI_REVISE_CHUNKED", "0")
     monkeypatch.setenv("NARASI_REVISE_CHUNKED_AUTO_WORDS", "0")
@@ -407,6 +494,19 @@ def test_classic_final_revise_is_wired_to_its_exact_outline_authority():
     assert isinstance(authority_kw, ast.Name)
     assert authority_kw.id == "_narrative_authority"
 
+    critique_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_narasi_consistency_critique"
+    ]
+    assert len(critique_calls) == 1
+    critic_authority_kw = next(
+        (kw.value for kw in critique_calls[0].keywords
+         if kw.arg == "authority_text"), None)
+    assert isinstance(critic_authority_kw, ast.Name)
+    assert critic_authority_kw.id == "_narrative_authority"
+
 
 def test_boundary_detector_and_repair_cover_unbridged_time_progression():
     detector = inspect.getsource(static.narrate_chapters)
@@ -416,6 +516,27 @@ def test_boundary_detector_and_repair_cover_unbridged_time_progression():
     assert "bounded duration/deadline suddenly expires" in detector
     assert "make the causal decision, location" in actuator
     assert "Preserve this " in actuator and "chapter's outlined beat order" in actuator
+
+
+def test_numeric_ledger_ignores_unit_only_duration_payload():
+    malformed = [{
+        "name": "co-habitation agreement duration",
+        "intentional_contrast": False,
+        "values": [
+            {"value": "30", "chapter": 1},
+            {"value": "hours", "chapter": 3},
+        ],
+    }]
+    assert na._numeric_drifts(malformed) == []
+
+    actual_conflict = [{
+        **malformed[0],
+        "values": [
+            {"value": "30", "chapter": 1},
+            {"value": "20", "chapter": 3},
+        ],
+    }]
+    assert len(na._numeric_drifts(actual_conflict)) == 1
 
 
 def test_classic_final_revise_rejects_same_length_total_replacement(monkeypatch):
