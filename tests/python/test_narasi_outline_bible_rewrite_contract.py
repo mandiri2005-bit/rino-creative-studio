@@ -405,7 +405,16 @@ def test_authority_structural_chunk_failure_never_falls_back_to_whole_book(monke
     async def broken_chunked(*args, **kwargs):
         raise RuntimeError("unsupported heading shape")
 
+    # A RAISING tripwire cannot witness this on its own: the whole-book path wraps its
+    # provider call in `except Exception`, and AssertionError is an Exception — so the
+    # guard's own alarm is swallowed and that path then returns (full_text, 0), which is
+    # byte-identical to the guarded outcome. Both trailing asserts therefore pass with or
+    # without the production guard. Record entry in a flag SET BEFORE the raise, which no
+    # exception handler can undo.
+    entered = {"whole_book": False}
+
     def forbidden_client(*args, **kwargs):
+        entered["whole_book"] = True
         raise AssertionError("authority repair must not enter whole-book rewrite")
 
     monkeypatch.setattr(lz, "_narasi_revise_chunked", broken_chunked)
@@ -425,6 +434,7 @@ def test_authority_structural_chunk_failure_never_falls_back_to_whole_book(monke
         tenant_id="t", user_id="u", job_uuid=None,
         authority_text=_authority()))
 
+    assert entered["whole_book"] is False
     assert revised == book
     assert credits == 0
 
