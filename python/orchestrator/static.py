@@ -480,7 +480,10 @@ async def _write_chapter(
         # Assembler unavailable: degrade to a minimal direct prompt so the
         # strategy still functions (never crash the job).
         prompt = (
-            f"{ctx.brief_block()}\n\n{ctx.scope_for(no)}\n\n"
+            f"{ctx.brief_block()}\n\n"
+            "AUTHORITATIVE FULL OUTLINE (immutable; this wins every conflict):\n"
+            f"{ctx.outline()}\n\n"
+            f"CHAPTER CONTINUITY CONTRACT:\n{ctx.scope_for(no)}\n\n"
             f"Write chapter {no + 1} of {total}: \"{ch.get('title','')}\". "
             f"Target ~{word_target} words. Do not exceed {word_max} words. "
             "Return ONLY the chapter body."
@@ -498,7 +501,7 @@ async def _write_chapter(
         return res
 
     # The whole point of WS-4/WS-5: outline + facts + style ride the CACHED prefix;
-    # the per-chapter scope + RAG passages land in the variable user turn.
+    # the per-chapter continuity contract + RAG passages land in the variable user turn.
     composed = compose(
         style=style or "creative non-fiction",
         language=language,
@@ -520,7 +523,7 @@ async def _write_chapter(
             "word_min": int(word_target * 0.9),
             "word_max": word_max,
         },
-        prev_tail=ctx.scope_for(no),      # anti-collision scope (per chapter, NOT cached)
+        chapter_scope=ctx.scope_for(no), # past/current/future contract (NOT cached)
         rag_passages=ctx.passages,        # retrieved ONCE in build_shared_context, reused
         job_id=job_id,
         model=worker_model,

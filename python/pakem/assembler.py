@@ -2,7 +2,7 @@
 """pakem.assembler — the cache-aware narration prompt assembler (Project Dalang WS-4).
 
 This is the ONE place that turns (style, language, mode, outline, brief, chapter,
-prev_tail, rag_passages) into the chat `messages` we send upstream. It deliberately
+chapter_scope, prev_tail, rag_passages) into the chat `messages` we send upstream. It deliberately
 inverts the ordering used by the legacy chapter assembly in
 `laozhang_api._narasi_generate_impl` (per the repo map, that path PREPENDS the
 per-chapter rag_context + prev_context to the prompt, so the variable part sits at
@@ -24,7 +24,7 @@ The static prefix is composed PURELY from pakem (WS-2): GENERATION_PREAMBLE +
 style_rules_core (+ VIDEO_MODIFIER in video mode) + FACTUAL_INTEGRITY (non-fiction
 only) + LANGUAGE_DIRECTIVE + the NARRATIVE BRIEF + the FULL outline + the per-style
 RAG framing. It depends only on (style, language, mode, brief, outline) — NOT on the
-chapter index, prev_tail, or retrieved passages — so it is identical for every chapter
+chapter index, chapter_scope, prev_tail, or retrieved passages — so it is identical for every chapter
 of a job. `compose()` asserts this invariant indirectly; `smoke_assembler.py` asserts
 it directly (byte-for-byte across N chapters).
 
@@ -286,7 +286,10 @@ def build_static_prefix(
 
     outline_str = _outline_text(outline)
     if outline_str:
-        parts.append("FULL OUTLINE (the whole book — for cross-chapter consistency):\n" + outline_str)
+        parts.append(
+            "AUTHORITATIVE FULL OUTLINE (immutable story specification; if any other "
+            "prompt block conflicts with it, this outline wins):\n" + outline_str
+        )
 
     # Single newline-join with one blank line between blocks → deterministic bytes.
     return "\n\n".join(p for p in parts if p).strip() + "\n"
@@ -299,15 +302,17 @@ def build_dynamic_block(
     *,
     language: str,
     chapter: Chapter,
+    chapter_scope: str,
     prev_tail: str,
     rag_passages: Any,
 ) -> str:
-    """Compose the per-chapter user message: scope + story-so-far + passages.
+    """Compose the per-chapter user message: references + tail + contract + assignment.
 
     Order (top → bottom):
       1. RETRIEVED REFERENCES   — this chapter's RAG passages (per-chapter retrieval)
       2. STORY SO FAR           — trimmed tail of prior chapters (continuity)
-      3. THIS CHAPTER           — title/summary/word target — the actual ask, LAST
+      3. CONTINUITY CONTRACT    — position-aware past/current/future ownership
+      4. THIS CHAPTER           — title/summary/word target — the actual ask, LAST
     """
     lang_label = resolve_language(language)
     parts: list[str] = []
@@ -321,6 +326,9 @@ def build_dynamic_block(
 
     if prev_tail and prev_tail.strip():
         parts.append("STORY SO FAR (the immediately preceding narration — continue from here, do not repeat it):\n" + prev_tail.strip())
+
+    if chapter_scope and chapter_scope.strip():
+        parts.append("CHAPTER CONTINUITY CONTRACT:\n" + chapter_scope.strip())
 
     pos = ""
     if chapter.total:
@@ -433,6 +441,7 @@ def compose(
     prev_tail: str = "",
     rag_passages: Any = None,
     *,
+    chapter_scope: str = "",
     job_id: str = "",
     model: Optional[str] = None,
     prev_tail_token_budget: Optional[int] = None,
@@ -447,7 +456,7 @@ def compose(
            # cache_control=True). OpenAI-style providers ignore it and benefit
            # from the implicit identical-prefix cache instead.
            "cache_control": {"type": "ephemeral"}},
-          {"role": "user", "content": <DYNAMIC: passages + story-so-far + scope>},
+          {"role": "user", "content": <DYNAMIC: passages + story-so-far + continuity + scope>},
         ]
 
     Args:
@@ -460,6 +469,8 @@ def compose(
       chapter:      the chapter to generate (Chapter or dict).
       prev_tail:    'story so far' — tail of prior chapters; trimmed to budget.
       rag_passages: this chapter's retrieved passages (string or list).
+      chapter_scope: position-aware continuity contract for this worker. Keyword-only;
+                    lives only in the variable user block, never the cached prefix.
       job_id:       job id — part of the cache key so each job has its own family.
       model:        model alias to budget against (defaults to env worker model).
       prev_tail_token_budget: explicit token cap for prev_tail. If None, derived
@@ -490,9 +501,12 @@ def compose(
     # --- Budgeter: trim prev_tail so the dynamic block fits the input budget. ---
     if prev_tail_token_budget is None:
         # Give the variable block roughly the model's output ceiling worth of
-        # input headroom, minus a reserve for the chapter scope + RAG passages.
+        # input headroom, minus the explicit continuity contract + RAG passages.
         passages_tokens = estimate_tokens(_passages_text(rag_passages))
-        budget = max(0, out_ceiling - _USER_OVERHEAD_TOKENS - passages_tokens)
+        scope_tokens = estimate_tokens(chapter_scope or "")
+        budget = max(
+            0, out_ceiling - _USER_OVERHEAD_TOKENS - passages_tokens - scope_tokens
+        )
     else:
         budget = max(0, int(prev_tail_token_budget))
 
@@ -504,6 +518,7 @@ def compose(
     dynamic_block = build_dynamic_block(
         language=language,
         chapter=ch,
+        chapter_scope=chapter_scope,
         prev_tail=trimmed_tail,
         rag_passages=rag_passages,
     )

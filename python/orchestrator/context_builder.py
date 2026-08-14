@@ -26,7 +26,7 @@ job) and a VARIABLE user block (per chapter). SharedContext is built to slot int
         feed via `compose(brief=ctx.brief_block())`  (rides the byte-stable prefix that
         is paid for once per job, exactly like the narrative brief WS-4 already caches).
   * scope_for(no) + RAG passages           -> the per-chapter USER turn
-        feed via `compose(prev_tail=ctx.scope_for(no), rag_passages=ctx.passages)`.
+        feed via `compose(chapter_scope=ctx.scope_for(no), rag_passages=ctx.passages)`.
 
 CRITICAL: RAG retrieval happens EXACTLY ONCE per job (`build_shared_context`), not once
 per chapter. The retrieved passages + extracted canonical facts are reused for every
@@ -55,7 +55,7 @@ ROUTER-INTEGRATION EXAMPLE (how a /narration runtime wires it together)
                 outline=ctx.outline(),                 # whole-book structure (static)
                 brief=ctx.brief_block(),               # facts + style_guide + RULES (cached)
                 chapter=ch,
-                prev_tail=ctx.scope_for(ch["index"]),  # "you do NOT own ..." (per chapter)
+                chapter_scope=ctx.scope_for(ch["index"]),  # past/current/future contract
                 rag_passages=ctx.passages,             # retrieved ONCE, reused
             )
             return await run_worker(
@@ -164,11 +164,11 @@ COHERENCE_RULES = """COHERENCE CONTRACT (you are ONE writer among several workin
 
 1. NO REPETITION. Do NOT re-tell an anecdote, re-use a hook/opening device, or repeat an example that belongs to another chapter. Each scene, image, and turn of phrase appears in this book exactly once — and it is not yours unless it is in YOUR scope below.
 
-2. NO RE-INTRODUCTION. Any person, place, term, or concept named in CANONICAL FACTS has ALREADY been introduced earlier in the book. Refer to it as already-known (no "a man named…", no first-time definitions). Introduce ONLY what is genuinely new to your scope.
+2. INTRODUCTION FOLLOWS THE OUTLINE. CANONICAL FACTS / STORY BIBLE describe the whole book; presence there does NOT mean a person, place, term, or concept has already appeared. Use the AUTHORITATIVE FULL OUTLINE and your CHAPTER CONTINUITY CONTRACT to determine first introduction: do not know a FUTURE RESERVED entity early, introduce an entity in the chapter that first owns it, and treat it as already-known only in later chapters.
 
 3. NO TONE DRIFT. Hold the exact register, person, and tense fixed in STYLE GUIDE for every sentence. Do not relax into a different voice as the chapter goes on. When unsure how something should sound, match the STYLE GUIDE, not your own default.
 
-4. NO CONTRADICTION. State a name, date, number, place, or quote ONLY if it appears in CANONICAL FACTS below (or is uncontroversial common knowledge you are certain of). If you need a specific fact that is NOT in CANONICAL FACTS, do NOT invent it — write a literal placeholder "[VERIFY: what you need]" and keep the narration flowing around it. A placeholder is always better than a fabricated fact that contradicts another chapter.
+4. NO CONTRADICTION. The AUTHORITATIVE FULL OUTLINE is immutable and outranks the STORY BIBLE / CANONICAL FACTS. Use the bible only where it is compatible with the outline; never let it add, remove, move, or reinterpret an outlined plot beat. State a name, date, number, place, or quote ONLY if it appears in the compatible CANONICAL FACTS below (or is uncontroversial common knowledge you are certain of). If you need a specific fact that is NOT established, do NOT invent it — write a literal placeholder "[VERIFY: what you need]" and keep the narration flowing around it. A placeholder is always better than a fabricated fact that contradicts another chapter.
 """
 
 
@@ -196,8 +196,8 @@ class SharedContext:
         ground on the SAME facts — kills contradiction & re-introduction).
       * style_guide     -> goes into the cached SYSTEM prefix (one register for
         the whole book — kills tone drift).
-      * scope_for(no)   -> goes into the per-chapter USER turn (tells each worker
-        what it does NOT own — kills repetition & lane-crossing).
+      * scope_for(no)   -> goes into `chapter_scope` in the per-chapter USER turn
+        (marks past/current/future ownership — kills repetition & lane-crossing).
     """
     topic: str = ""
     chapters: list[dict] = field(default_factory=list)
@@ -253,10 +253,12 @@ class SharedContext:
 
     # -- per-worker scope -------------------------------------------------
     def scope_for(self, no: int) -> str:
-        """Tell worker for chapter index `no` (0-based) what it OWNS and, crucially,
-        what it does NOT own — the neighbouring chapters whose material it must not
-        poach or re-introduce. This is the anti-collision instruction; it goes in
-        the per-chapter USER turn (it differs per chapter, so it is NOT cacheable).
+        """Build the position-aware contract for chapter index `no` (0-based).
+
+        The whole outline, including every full summary, is already in the cacheable
+        system prefix. This variable USER-turn block assigns temporal ownership without
+        duplicating those summaries: earlier chapters are committed, this chapter is the
+        only current assignment, and later chapters are reserved.
         """
         n = len(self.chapters)
         if not self.chapters or no < 0 or no >= n:
@@ -266,8 +268,25 @@ class SharedContext:
         mine_desc = str(mine.get("summary", mine.get("description", "")) or "").strip()
 
         lines = [
-            f"YOUR SCOPE — you are writing ONLY chapter {no + 1} of {n}: \"{mine_title}\".",
+            "OUTLINE PRECEDENCE — the AUTHORITATIVE FULL OUTLINE above is immutable and "
+            "outranks the STORY BIBLE. If they conflict, follow the outline.",
         ]
+
+        if no == 0:
+            lines.append("PAST COMMITMENTS — none; this chapter opens the book.")
+        else:
+            lines.append(
+                "PAST COMMITMENTS — the following chapters have already happened. Treat "
+                "their full outlined summaries as established; do not retell, reset, or "
+                "contradict them:"
+            )
+            for i, ch in enumerate(self.chapters[:no]):
+                t = str(ch.get("title", "") or "").strip() or f"Chapter {i + 1}"
+                lines.append(f"  - Chapter {i + 1}: \"{t}\"")
+
+        lines.append(
+            f"CURRENT ASSIGNMENT — write ONLY chapter {no + 1} of {n}: \"{mine_title}\"."
+        )
         if mine_desc:
             # Leak fix (2026-07): mine_desc is planning text (sometimes phrased as
             # "Scene N — ..." per STRUCTURAL MANDATES in dynamic.py) — flag it as
@@ -283,20 +302,18 @@ class SharedContext:
                 f"this literally or as a scene list; render it as flowing prose): {mine_desc}"
             )
 
-        # What you do NOT own: every OTHER chapter, named so this worker can steer clear.
-        not_owned: list[str] = []
-        for i, ch in enumerate(self.chapters):
-            if i == no:
-                continue
-            t = str(ch.get("title", "") or "").strip() or f"Chapter {i + 1}"
-            where = "earlier" if i < no else "later"
-            not_owned.append(f"  - Chapter {i + 1} ({where}): \"{t}\" — NOT yours.")
-        if not_owned:
+        if no == n - 1:
+            lines.append("FUTURE RESERVED — none; this chapter closes the book.")
+        else:
             lines.append(
-                "You do NOT own these chapters. Do not tell their stories, re-use their "
-                "hooks, or re-introduce what they establish:"
+                "FUTURE RESERVED — the following chapters have not happened yet. Their full "
+                "outlined summaries are context, not permission: do not execute their events, "
+                "reveal their answers, or treat their new entities as already known. Foreshadow "
+                "only when this chapter's own summary requires it:"
             )
-            lines.extend(not_owned)
+            for i, ch in enumerate(self.chapters[no + 1:], no + 1):
+                t = str(ch.get("title", "") or "").strip() or f"Chapter {i + 1}"
+                lines.append(f"  - Chapter {i + 1}: \"{t}\"")
 
         # Position-aware continuity nudge (no overlap with neighbours).
         if no == 0:
@@ -312,8 +329,8 @@ class SharedContext:
         else:
             lines.append(
                 "You are a middle chapter: pick up cleanly from what precedes you and "
-                "hand off cleanly to what follows — no recap, no foreshadowing another "
-                "chapter's reveal."
+                "hand off cleanly to what follows — no recap and no early execution of "
+                "another chapter's reveal."
             )
         return "\n".join(lines)
 
@@ -515,12 +532,13 @@ class SharedContext:
         except Exception:  # noqa: BLE001
             pass
         if self.facts_are_bible and self.canonical_facts and self.canonical_facts.strip():
-            # Fiction STORY BIBLE: the specifics are INVENTED but now FIXED. Writers must
-            # obey them exactly (no renaming, no re-measuring, no relocating) yet stay free
-            # to invent NEW concrete detail — the opposite of the [VERIFY] nonfiction stance.
+            # Fiction STORY BIBLE: derived continuity specifics are fixed only within the
+            # accepted outline. The outline remains the higher authority if generation drift
+            # ever leaves the two in conflict.
             parts.append(
-                "STORY BIBLE (canonical facts FIXED for the entire book — every chapter MUST "
-                "obey these exactly: do not rename a character, re-measure or re-identify the "
+                "STORY BIBLE (derived canonical facts for the entire book — obey these only "
+                "where compatible with the AUTHORITATIVE FULL OUTLINE, which always wins any "
+                "conflict. Do not rename a character, re-measure or re-identify the "
                 "central subject, move a location, or shift the timeline. You may invent NEW "
                 "concrete detail, but it must never contradict anything listed here. If the bible "
                 "states a fixed population count or total, QUOTE that number directly — do not "
