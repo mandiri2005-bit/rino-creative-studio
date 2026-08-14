@@ -620,6 +620,45 @@ def test_invalid_candidate_pre_subtype_maps_one_to_one_to_validator_branch(caplo
     assert all(GOOD_NAME not in row and BAD_NAME not in row for row in rows)
 
 
+def test_invalid_candidate_stage_vocabulary_is_closed():
+    with pytest.raises(AssertionError, match="unknown invalid-candidate stage"):
+        rp._log_invalid_candidate(
+            "post.typo", chapter_index=0, attempt=1,
+            original=b"## Bab 1\ntext.\n", candidate=b"## Bab 1\nchanged.\n")
+
+
+@pytest.mark.parametrize(
+    "stage", ["post.materialize", "post.block_count", "post.chapter_identity"])
+def test_invalid_candidate_post_subtypes_map_to_real_materialization_branches(
+        monkeypatch, caplog, stage):
+    snap, canon, claims, result = _setup()
+    real_materialize = rp._l2.materialize_final_snapshot
+
+    def bad_materialize(*args, **kwargs):
+        if stage == "post.materialize":
+            raise ValueError("bounded synthetic failure")
+        staged = real_materialize(*args, **kwargs)
+        assert staged is not None
+        if stage == "post.block_count":
+            return types.SimpleNamespace(blocks=staged.blocks[:-1])
+        wrong = tuple(
+            types.SimpleNamespace(chapter_id=f"wrong-{index}")
+            for index, _block in enumerate(staged.blocks)
+        )
+        return types.SimpleNamespace(blocks=wrong)
+
+    monkeypatch.setattr(rp._l2, "materialize_final_snapshot", bad_materialize)
+    with caplog.at_level("WARNING", logger="canon_lite_l3_repair"):
+        run = _run(
+            snap, canon, claims, result,
+            _Provider(lambda _b: _fixed_block(snap)), _Extractor())
+    assert run.chapters[0].last_reason == rp.REASON_INVALID_CANDIDATE
+    assert not run.changed
+    rows = [record.message for record in caplog.records
+            if "l3 invalid candidate" in record.message]
+    assert rows and all(f"stage={stage}" in row for row in rows)
+
+
 # ── 11. bookkeeping that must not be able to lie ────────────────────────────
 def test_a_rejected_chapter_reports_a_zero_edit_ratio():
     """A non-zero ratio on a rejected repair would describe an edit that never

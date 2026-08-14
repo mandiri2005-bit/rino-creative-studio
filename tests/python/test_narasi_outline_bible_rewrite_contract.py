@@ -320,6 +320,15 @@ def test_structural_patch_summary_persists_only_when_revise_published_it():
     assert "structural_patch" not in without_summary
 
 
+def test_classic_job_result_uses_the_same_top_level_structural_summary_path():
+    summary = lz._narasi_structural_patch_summary(
+        structural_violations=1, targeted=1, attempted=1, accepted=0)
+    result = {"markdown": "Text."}
+    critique = {"violations": [], "structural_patch": summary}
+    lz._narasi_copy_structural_patch_summary(result, critique)
+    assert result["structural_patch"] is summary
+
+
 class _FakeCompletions:
     def __init__(self, output: str, captured: list[dict]):
         self.output = output

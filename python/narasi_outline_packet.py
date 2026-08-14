@@ -13,7 +13,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 
-OUTLINE_PACKET_CONTRACT_VERSION = "outline_packet_v1"
+OUTLINE_PACKET_CONTRACT_VERSION = "outline_packet_v2"
 
 _LABEL_RX = re.compile(
     r"(?<!\S)(?P<label>[A-Z][A-Z0-9 &/\-'’]{1,64}:)(?=\s|$)"
@@ -21,9 +21,7 @@ _LABEL_RX = re.compile(
 
 
 def _summary(chapter: Mapping[str, Any]) -> str:
-    return str(
-        chapter.get("summary", chapter.get("description", "")) or ""
-    ).strip()
+    return str(chapter.get("summary") or chapter.get("description") or "").strip()
 
 
 def _title(chapter: Mapping[str, Any], index: int) -> str:
@@ -71,6 +69,8 @@ def render_outline_execution_packet(
         f"OUTLINE PACKET CONTRACT: {OUTLINE_PACKET_CONTRACT_VERSION}",
         "The states below are accepted-outline commitments, not observations of "
         "another parallel worker's prose.",
+        "The numbered beats are internal planning references. Render them as flowing "
+        "prose; never copy their numbering or Scene N / Chapter N planning labels.",
         "",
         "PREVIOUS OUTLINE COMMITMENT:",
     ]
@@ -103,18 +103,29 @@ def render_outline_execution_packet(
             _summary(following) or "(No synopsis text supplied.)",
         ])
 
+    lines.append("")
+    if chapter_index == 0:
+        lines.append(
+            "STORY CLOCK START: establish the opening position of every bounded "
+            "duration or deadline that the outline makes important."
+        )
+    else:
+        lines.append(
+            "ON-PAGE HANDOFF: before the first new set-piece, show the elapsed interval, "
+            "the causal change or decision, and the opening location. A time label alone "
+            "is insufficient. Do not execute the NEXT RESERVED state."
+        )
     lines.extend([
-        "",
-        "ON-PAGE HANDOFF (chapter 2+): before the first new set-piece, show the "
-        "elapsed interval, the causal change or decision, and the opening location. "
-        "A time label alone is insufficient. Do not execute the NEXT RESERVED state.",
-        "STORY CLOCK: advance any bounded duration monotonically. Do not invent an "
+        "STORY CLOCK: along the forward timeline, advance any bounded duration "
+        "monotonically. An explicitly labelled flashback or parallel track may narrate "
+        "an earlier point without moving the forward clock backward. Do not invent an "
         "absolute date absent from the outline or declare a deadline complete before "
         "the intervening time is accounted for on-page.",
         "FINAL EXECUTION CHECKLIST: satisfy every current outline event in source "
-        "order; do not complete a future event early; keep person and tense stable. "
-        "Callbacks may recur, but an outlined event must not be re-staged as a second "
-        "contradictory occurrence.",
+        "order unless the outline explicitly labels a flashback, parallel action, or "
+        "another chronology; do not complete a future event early; keep person and "
+        "tense stable. Callbacks may recur, but an outlined event must not be re-staged "
+        "as a second contradictory occurrence.",
         "Priority: accepted outline > Bible/canonical facts > critique > prose.",
     ])
     return "\n".join(lines).strip()

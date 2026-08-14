@@ -170,7 +170,7 @@ COHERENCE_RULES = """COHERENCE CONTRACT (you are ONE writer among several workin
 
 1. NO REPETITION. Do NOT re-tell an anecdote, re-use a hook/opening device, or repeat an example that belongs to another chapter. Each scene, image, and turn of phrase appears in this book exactly once — and it is not yours unless it is in YOUR scope below.
 
-2. INTRODUCTION FOLLOWS THE OUTLINE. CANONICAL FACTS / STORY BIBLE describe the whole book; presence there does NOT mean a person, place, term, or concept has already appeared. Use the AUTHORITATIVE FULL OUTLINE and your CHAPTER CONTINUITY CONTRACT to determine first introduction: do not know a FUTURE RESERVED entity early, introduce an entity in the chapter that first owns it, and treat it as already-known only in later chapters.
+2. INTRODUCTION FOLLOWS THE OUTLINE. CANONICAL FACTS / STORY BIBLE describe the whole book; presence there does NOT mean a person, place, term, or concept has already appeared. Use the AUTHORITATIVE FULL OUTLINE and the NEXT RESERVED OUTLINE STATE in your CHAPTER CONTINUITY CONTRACT to determine first introduction: do not know a reserved future entity early, introduce an entity in the chapter that first owns it, and treat it as already-known only in later chapters.
 
 3. NO TONE DRIFT. Hold the exact register, person, and tense fixed in STYLE GUIDE for every sentence. Do not relax into a different voice as the chapter goes on. When unsure how something should sound, match the STYLE GUIDE, not your own default.
 

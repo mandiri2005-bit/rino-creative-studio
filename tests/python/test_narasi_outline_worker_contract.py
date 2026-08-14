@@ -133,10 +133,12 @@ def test_rooftop_worker_locks_intra_chapter_beat_order_and_visible_story_clock()
     user = _compose_for(ctx, 1).dynamic_block
 
     assert "CURRENT ORDERED OUTLINE BEATS:" in user
-    assert "ON-PAGE HANDOFF (chapter 2+)" in user
+    assert "ON-PAGE HANDOFF:" in user
     assert "elapsed interval, the causal change or decision, and the opening location" in user
     assert "A time label alone is insufficient" in user
-    assert "STORY CLOCK: advance any bounded duration monotonically" in user
+    assert "STORY CLOCK: along the forward timeline" in user
+    assert "explicitly labelled flashback or parallel track" in user
+    assert "unless the outline explicitly labels a flashback" in user
     assert user.index("MIDPOINT: Eun-soo proves") < user.index("THEN Min-jae threatens")
     assert user.index("THEN Min-jae threatens") < user.index("FINALLY they")
 
@@ -238,14 +240,27 @@ def test_outline_packet_bundle_binds_exact_rendered_bytes_in_book_order():
     assert bundle["packets_by_chapter"]["2"] == ctx.scope_for(1)
     # Golden renderer pin: any label/order/split/placement byte change must bump
     # the contract version and deliberately update these values together.
-    assert OUTLINE_PACKET_CONTRACT_VERSION == "outline_packet_v1"
+    assert OUTLINE_PACKET_CONTRACT_VERSION == "outline_packet_v2"
     assert bundle["packet_sha256_by_chapter"] == {
-        "1": "ba81b7fd93d99e3a174912e916dea4cff9788649ea6c6325c73e05ae363e00ca",
-        "2": "3f6ff67d3f0b6d98bcb081ad95ec8c279f9583472fc2e0da361f55c632e83509",
-        "3": "f62a773a591f282d98ea51323641f619cd8f04f07129b1b6da9761db5bfe4ab7",
+        "1": "e3b4fb7edb85cd2a392ebdfa239d3fd6fb7670dd2c481948419b61a33e8b0fb7",
+        "2": "bfb273992b4bbc74a8dd562af1d9a0924a8710dc3680a773c92d8a21c55fa077",
+        "3": "bca009c6682f23a67a7f72b435c64e098da7faf873b78f477c51070f9e680000",
     }
     assert bundle["bundle_sha256"] == \
-        "1fc49f571830447f8a2949a11ff436426de8c3aede528737fd54a19bd044d884"
+        "11d722a06fe01cce513d17e5500de8d526871960ea45bc524fe7acd27f542f8a"
+
+
+def test_packet_restores_planning_leak_guard_and_first_chapter_clock_start():
+    chapters = [
+        {"title": "Open", "summary": None, "description": "Scene 1 — establish day one."},
+        {"title": "Next", "summary": "Continue."},
+    ]
+    packet = SharedContext(topic="clock", chapters=chapters).scope_for(0)
+    assert "Scene 1 — establish day one." in packet
+    assert "internal planning references" in packet
+    assert "never copy their numbering or Scene N / Chapter N planning labels" in packet
+    assert "STORY CLOCK START:" in packet
+    assert "ON-PAGE HANDOFF:" not in packet
 
 
 def test_chapter_scope_is_a_falsifiable_user_only_cache_isolation_witness():

@@ -496,6 +496,8 @@ def _validate_candidate(original: bytes, candidate: Any) -> Optional[bytes]:
 def _log_invalid_candidate(stage: str, *, chapter_index: int, attempt: int,
                            original: bytes, candidate: Any) -> None:
     """Bounded observability only: no prose, raw exception, hash, or request id."""
+    if stage not in _INVALID_CANDIDATE_STAGES:
+        raise AssertionError("unknown invalid-candidate stage")
     output_bytes = len(candidate) if isinstance(candidate, (bytes, bytearray)) else 0
     _LOG.warning(
         "l3 invalid candidate stage=%s chapter_index=%d attempt=%d input_bytes=%d output_bytes=%d",

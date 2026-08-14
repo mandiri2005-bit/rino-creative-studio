@@ -9160,10 +9160,46 @@ def _revise_min_severities():
     return set(_order[:_i + 1])
 
 
+def _narasi_violation_severity(violation):
+    """Normalize critic severity exactly as the legacy revise gate does."""
+    value = str((violation or {}).get("severity", "") or "").strip().lower()
+    return value if value in ("critical", "high", "medium", "low") else "medium"
+
+
+def _narasi_evidence_spans(evidence):
+    """Return bounded quoted manuscript spans used by chapter-scoped routing."""
+    text = str(evidence or "")
+    spans = _re.findall(r'["“”‘’\']([^"“”‘’\']{1,120}?)["“”‘’\']', text)
+    return [
+        span.strip() for span in spans
+        if span.strip() and _re.search(r'\w', span)
+        and not _re.fullmatch(
+            r'(?i)(vs|and|then|or|but|to|the|a|an)', span.strip())
+    ]
+
+
+def _narasi_evidence_chapter_numbers(evidence):
+    """Parse deterministic machine-authored ``@chN`` locators."""
+    return [
+        int(value) for value in _re.findall(
+            r'@ch(\d+)', str(evidence or ""), flags=_re.IGNORECASE)
+        if int(value) > 0
+    ]
+
+
+def _narasi_span_occurs(span, text):
+    """Match one evidence span with the legacy ASCII-boundary semantics."""
+    if (span[:1].isascii() and span[:1].isalnum()
+            and span[-1:].isascii() and span[-1:].isalnum()):
+        return bool(_re.search(r'\b' + _re.escape(span) + r'\b', text))
+    return span in text
+
+
 async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                                  tenant_id, user_id, job_uuid, phase="revise",
                                  credit_row: bool = True, authority_text: str = "",
-                                 excluded_chapter_numbers=None):
+                                 excluded_chapter_numbers=None,
+                                 max_chapters_override=None):
     """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
     violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
@@ -9195,13 +9231,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     def _spans(ev):
         # Pull the quoted book-text out of a violation's evidence (straight + curly quotes); the
         # inner text is searched as a plain substring so the quote style doesn't matter.
-        ev = str(ev or "")
-        # Non-greedy so adjacent quotes don't merge (e.g. "Bo" vs "Bob" must yield Bo/Bob, not "vs").
-        sp = _re.findall(r'["“”‘’\']([^"“”‘’\']{1,120}?)["“”‘’\']', ev)
-        # Keep only spans with a real word char; drop pure connectors captured BETWEEN two quotes.
-        sp = [s.strip() for s in sp if s.strip() and _re.search(r'\w', s)
-              and not _re.fullmatch(r'(?i)(vs|and|then|or|but|to|the|a|an)', s.strip())]
-        return sp   # NO prose fallback → un-quotable structural violations stay UNMAPPED (report-only)
+        return _narasi_evidence_spans(ev)
 
     def _chn_locators(ev):
         # DETERMINISTIC CHAPTER-LOCATOR BYPASS (2026-07-17): numeric_drift / numeric_arithmetic's
@@ -9209,7 +9239,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # quotable manuscript text, so _spans() legitimately finds nothing. But the chapter numbers
         # in that string ARE reliable (code-generated, not LLM free-form) — parse them directly. This
         # is deterministic PARSING, not fuzzy text search, so it needs no _occ() substring match.
-        return [int(n) for n in _re.findall(r'@ch(\d+)', str(ev or ""), flags=_re.IGNORECASE)]
+        return _narasi_evidence_chapter_numbers(ev)
 
     # 3-tuple (violation, quoted_spans, chapter_locator_numbers). chnos is computed unconditionally
     # (independent of sps) so a violation whose evidence carries BOTH a real quote AND an @chN
@@ -9286,14 +9316,15 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             return True
         return bool(chnos) and _part_chnums[p_idx] in chnos
 
-    _max_ch = _envint("NARASI_REVISE_MAX_CHAPTERS", 4)
+    _max_ch = (_envint("NARASI_REVISE_MAX_CHAPTERS", 4)
+               if max_chapters_override is None
+               else max(0, int(max_chapters_override)))
     _sev = _revise_min_severities()
     # A violation with a MISSING / blank / unrecognized severity must NOT be silently dropped — the
     # critic occasionally omits the field on a real, locatable violation. Default unknown → "medium"
     # (its dominant label, and in the default gate) so the fix still runs under default settings.
     def _sevof(v):
-        _s = str(v.get("severity", "") or "").strip().lower()
-        return _s if _s in ("critical", "high", "medium", "low") else "medium"
+        return _narasi_violation_severity(v)
     _vspans = [(v, sps, chnos) for (v, sps, chnos) in _vspans if _sevof(v) in _sev]
     if authority_text:
         # Per-chapter prompts include at most eight directives. Put immutable-outline repairs
@@ -9306,9 +9337,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # Latin name ("Bo") is not found inside longer words / sentence openers ("Both", "Bonnie"); CJK /
         # Japanese / Thai are scriptio-continua (no \b between Han/kana chars, so \b小明\b matches nowhere)
         # and punctuation-edged spans fall back to plain substring, else their fixes could never locate.
-        if (s[:1].isascii() and s[:1].isalnum() and s[-1:].isascii() and s[-1:].isalnum()):
-            return bool(_re.search(r'\b' + _re.escape(s) + r'\b', txt))
-        return s in txt
+        return _narasi_span_occurs(s, txt)
     # NO count-based "common word" span filter. It could not distinguish a violation's DISCRIMINATING
     # recurring locator (a protagonist name in many chapters — the true locator for a name-swap /
     # continuity fix) from a stopword, so it dropped the real locator while a low-count detail span
@@ -9773,16 +9802,13 @@ def _narasi_publish_structural_patch_summary(critique, summary):
     )
 
 
-def _narasi_violation_chapter_number(violation):
-    """Return one validated 1-based locator, without fuzzy prose inference."""
-    if not isinstance(violation, dict):
-        return None
-    declared = violation.get("chapter")
-    if type(declared) is int and declared > 0:
-        return declared
-    matches = _re.findall(r"@ch(\d+)", str(violation.get("evidence") or ""), flags=_re.IGNORECASE)
-    numbers = {int(value) for value in matches if int(value) > 0}
-    return next(iter(numbers)) if len(numbers) == 1 else None
+def _narasi_copy_structural_patch_summary(result, critique):
+    """Copy the public summary to the job result's canonical top-level path."""
+    if not isinstance(result, dict) or not isinstance(critique, dict):
+        return
+    summary = critique.get("structural_patch")
+    if isinstance(summary, dict):
+        result["structural_patch"] = summary
 
 
 def _narasi_split_patch_chapters(full_text):
@@ -9800,6 +9826,36 @@ def _narasi_split_patch_chapters(full_text):
     return output
 
 
+def _narasi_violation_target_chapters(full_text, violation, *, include_declared=False):
+    """Resolve one violation with the same exact signals as the legacy lane.
+
+    Free-form ``chapter`` is accepted only for structural findings.  Machine-authored
+    ``@chN`` locators and quoted manuscript evidence remain independent OR signals,
+    restoring the quote-only coverage the pre-patch structural route had.
+    """
+    parts = _narasi_split_patch_chapters(full_text)
+    available = {
+        number for number, part in parts
+        if number is not None and part.strip()
+    }
+    targets = {
+        number for number in _narasi_evidence_chapter_numbers(
+            (violation or {}).get("evidence"))
+        if number in available
+    }
+    if include_declared:
+        declared = (violation or {}).get("chapter")
+        if type(declared) is int and declared in available:
+            targets.add(declared)
+    spans = _narasi_evidence_spans((violation or {}).get("evidence"))
+    if spans:
+        for number, part in parts:
+            if number is not None and any(
+                    _narasi_span_occurs(span, part) for span in spans):
+                targets.add(number)
+    return targets
+
+
 async def _narasi_structural_patch_revise(full_text, violations, style, language, rev_model, *,
                                            tenant_id, user_id, job_uuid, credit_row=True,
                                            authority_text="", outline_packets=None):
@@ -9815,19 +9871,42 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
     parts = _narasi_split_patch_chapters(full_text)
     by_number = {number: index for index, (number, part) in enumerate(parts) if number and part.strip()}
     violations_by_chapter = {}
+    eligible_severities = _revise_min_severities()
+    unresolved_locators = 0
     for violation in violations:
-        number = _narasi_violation_chapter_number(violation)
-        if number in by_number:
+        if _narasi_violation_severity(violation) not in eligible_severities:
+            continue
+        numbers = _narasi_violation_target_chapters(
+            full_text, violation, include_declared=True)
+        if not numbers:
+            unresolved_locators += 1
+            import logging as _target_log
+            _target_log.getLogger("narasi").warning(
+                "structural patch: unresolved chapter locator type=%s",
+                str((violation or {}).get("type") or "unknown")[:64])
+        for number in numbers:
             violations_by_chapter.setdefault(number, []).append(violation)
     targeted_numbers = sorted(violations_by_chapter)
     max_chapters = max(0, _envint("NARASI_REVISE_MAX_CHAPTERS", 4))
     reason_counts = {}
+    rejected_reason_counts = {}
     attempted = accepted = total_cr = 0
     resolved = MODELS.get(rev_model, rev_model)
     output_parts = [part for _number, part in parts]
 
     def _not_attempted(reason):
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    def _rejected(reason, chapter_number, input_words, output_words=None):
+        bounded_reason = str(reason or "unknown")[:64]
+        rejected_reason_counts[bounded_reason] = \
+            rejected_reason_counts.get(bounded_reason, 0) + 1
+        import logging as _reject_log
+        _reject_log.getLogger("narasi").warning(
+            "structural patch REJECTED chapter=%d attempt=1 reason=%s words=%d->%s",
+            chapter_number, bounded_reason, input_words,
+            "?" if output_words is None else str(output_words),
+        )
 
     for target_position, chapter_number in enumerate(targeted_numbers):
         if target_position >= max_chapters:
@@ -9841,6 +9920,7 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
         part = output_parts[part_index]
         trail = part[len(part.rstrip()):]
         original_chapter = part.rstrip()
+        original_words = len(original_chapter.split())
         try:
             segmented = segment_chapter(original_chapter)
         except PatchValidationError:
@@ -9885,22 +9965,43 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
                 timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
             )
         except Exception:
+            _rejected("provider_error", chapter_number, original_words)
             continue
         if not getattr(response, "choices", None):
+            _rejected("response_empty", chapter_number, original_words)
             continue
-        total_cr += int(await _log_narasi_usage(
-            tenant_id, user_id, rev_model, response, job_id=job_uuid, credit_row=credit_row) or 0)
+        try:
+            total_cr += int(await _log_narasi_usage(
+                tenant_id, user_id, rev_model, response, job_id=job_uuid,
+                credit_row=credit_row) or 0)
+        except Exception:
+            _rejected("metering_error", chapter_number, original_words)
+            continue
         raw_patch = _resp_content(response) or ""
         try:
             patched = apply_addressed_patch(segmented, raw_patch)
-        except PatchValidationError:
+        except PatchValidationError as patch_error:
+            _rejected(patch_error.code, chapter_number, original_words)
             continue
-        original_words = len(original_chapter.split())
         patched_words = len(patched.text.split())
         floor, ceil = int(original_words * 0.9), int(original_words * 1.4)
         if not (floor <= patched_words <= ceil):
+            _rejected("word_band", chapter_number, original_words, patched_words)
             continue
         if not (int(len(original_chapter) * 0.75) <= len(patched.text) <= int(len(original_chapter) * 1.5)):
+            _rejected("byte_band", chapter_number, original_words, patched_words)
+            continue
+        import difflib as _patch_difflib
+        fidelity = _patch_difflib.SequenceMatcher(
+            None, original_chapter.split(), patched.text.split()).ratio()
+        try:
+            min_fidelity = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+        except Exception:
+            min_fidelity = 0.55
+        min_fidelity = min(1.0, max(0.0, min_fidelity))
+        if fidelity < min_fidelity:
+            _rejected("fidelity_below_minimum", chapter_number,
+                      original_words, patched_words)
             continue
         output_parts[part_index] = patched.text + trail
         accepted += 1
@@ -9913,6 +10014,8 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
             "attempted": attempted,
             "accepted": accepted,
             "not_attempted_reason_counts": reason_counts,
+            "rejected_reason_counts": rejected_reason_counts,
+            "unresolved_locator_count": unresolved_locators,
             "owned_chapter_numbers": set(targeted_numbers),
         },
     )
@@ -9934,15 +10037,30 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             critique, _narasi_structural_patch_summary())
         return full_text, 0
     rev_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
-    structural = [item for item in viol if _is_authority_structural_violation(item)]
-    if structural:
+    all_structural = [item for item in viol if _is_authority_structural_violation(item)]
+    if all_structural:
+        eligible_severities = _revise_min_severities()
+        structural = [
+            item for item in all_structural
+            if _narasi_violation_severity(item) in eligible_severities
+        ]
         nonstructural = [item for item in viol if not _is_authority_structural_violation(item)]
         try:
-            patched_text, patch_cr, patch_stats = await _narasi_structural_patch_revise(
-                full_text, structural, style, language, rev_model,
-                tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                credit_row=credit_row, authority_text=authority_text,
-                outline_packets=outline_packets)
+            if structural:
+                patched_text, patch_cr, patch_stats = await _narasi_structural_patch_revise(
+                    full_text, structural, style, language, rev_model,
+                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+                    credit_row=credit_row, authority_text=authority_text,
+                    outline_packets=outline_packets)
+            else:
+                patched_text, patch_cr = full_text, 0
+                patch_stats = {
+                    "targeted": 0, "attempted": 0, "accepted": 0,
+                    "not_attempted_reason_counts": {},
+                    "rejected_reason_counts": {},
+                    "unresolved_locator_count": 0,
+                    "owned_chapter_numbers": set(),
+                }
         except Exception as patch_error:
             import logging as _splog
             _splog.getLogger("narasi").warning(
@@ -9954,6 +10072,8 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                 "attempted": 0,
                 "accepted": 0,
                 "not_attempted_reason_counts": {},
+                "rejected_reason_counts": {},
+                "unresolved_locator_count": 0,
                 "owned_chapter_numbers": set(),
             }
             patched_text = full_text
@@ -9962,10 +10082,16 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
         deferred_by_chapter = {}
         legacy_violations = []
         for item in nonstructural:
-            chapter_number = _narasi_violation_chapter_number(item)
-            if chapter_number in owned:
-                deferred_by_chapter[chapter_number] = deferred_by_chapter.get(chapter_number, 0) + 1
-            else:
+            target_numbers = _narasi_violation_target_chapters(
+                full_text, item, include_declared=False)
+            owned_targets = target_numbers & owned
+            if _narasi_violation_severity(item) in eligible_severities:
+                for chapter_number in owned_targets:
+                    deferred_by_chapter[chapter_number] = \
+                        deferred_by_chapter.get(chapter_number, 0) + 1
+            # Keep any violation that can still target an unowned chapter.  A free-form
+            # non-structural `chapter` field never removes it from the legacy lane.
+            if not target_numbers or target_numbers - owned:
                 legacy_violations.append(item)
 
         legacy_cr = 0
@@ -9979,7 +10105,12 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                     tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
                     phase="canon_diff_revise", credit_row=credit_row,
                     authority_text=authority_text,
-                    excluded_chapter_numbers=owned)
+                    excluded_chapter_numbers=owned,
+                    # Preserve the operator knob's pre-V5 meaning as one chapter-call
+                    # ceiling for the whole pass, not an independent cap per lane.
+                    max_chapters_override=max(
+                        0, _envint("NARASI_REVISE_MAX_CHAPTERS", 4)
+                        - int(patch_stats["attempted"])))
             except Exception as legacy_error:
                 import logging as _mixlog
                 _mixlog.getLogger("narasi").warning(
@@ -9987,7 +10118,7 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                     type(legacy_error).__name__)
 
         summary = _narasi_structural_patch_summary(
-            structural_violations=len(structural),
+            structural_violations=len(all_structural),
             targeted=patch_stats["targeted"],
             attempted=patch_stats["attempted"],
             accepted=patch_stats["accepted"],
@@ -13424,6 +13555,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             # #53: whole-draft consistency critic payload (score + violations [+ revised flag]).
             if _critique_payload is not None:
                 _result["critique"] = _critique_payload
+                _narasi_copy_structural_patch_summary(_result, _critique_payload)
             await db.finish_narasi_job(_narasi_tenant, job_id, "done", result=_result)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)

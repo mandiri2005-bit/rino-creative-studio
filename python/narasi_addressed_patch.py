@@ -201,6 +201,7 @@ def _validated_operations(
     edit_targets: set[str] = set()
     replacement_targets: set[str] = set()
     move_targets: set[str] = set()
+    move_anchors: set[str] = set()
     insert_anchors: set[str] = set()
     move_edges: dict[str, set[str]] = {}
     validated: list[dict[str, str]] = []
@@ -252,6 +253,7 @@ def _validated_operations(
                 raise PatchValidationError("operation_overlap")
             edit_targets.add(unit_id)
             move_targets.add(unit_id)
+            move_anchors.add(anchor)
             before, after = ((unit_id, anchor) if anchor_key == "before_id" else (anchor, unit_id))
             move_edges.setdefault(before, set()).add(after)
             validated.append({"op": kind, "unit_id": unit_id, anchor_key: anchor})
@@ -260,6 +262,11 @@ def _validated_operations(
         raise PatchValidationError("unknown_operation")
 
     if insert_anchors & edit_targets:
+        raise PatchValidationError("operation_overlap")
+    # A replace and a move that uses the replaced unit as its anchor describe the
+    # same intent regardless of array order.  Check the complete operation set so
+    # [move, replace] cannot be accepted while [replace, move] is rejected.
+    if replacement_targets & move_anchors:
         raise PatchValidationError("operation_overlap")
     if _has_cycle(move_edges):
         raise PatchValidationError("move_cycle")
@@ -289,6 +296,22 @@ def _assemble(segmented: SegmentedChapter, operations: Sequence[Mapping[str, str
             order.remove(unit_id)
             anchor_index = order.index(anchor)
             order.insert(anchor_index if anchor_key == "before_id" else anchor_index + 1, unit_id)
+
+    # Validation treats every move as a declarative ordering relation over the
+    # original ID table (not as an imperative edit whose meaning changes with its
+    # array position).  Sequential assembly is allowed only when its final order
+    # satisfies every declared relation jointly; otherwise reject the whole patch.
+    final_position = {unit_id: index for index, unit_id in enumerate(order)}
+    for op in operations:
+        if op["op"] != "move":
+            continue
+        unit_position = final_position[op["unit_id"]]
+        if "before_id" in op:
+            relation_holds = unit_position < final_position[op["before_id"]]
+        else:
+            relation_holds = unit_position > final_position[op["after_id"]]
+        if not relation_holds:
+            raise PatchValidationError("move_unsatisfiable")
 
     rendered: list[str] = []
     for unit_id in order:
