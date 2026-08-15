@@ -1296,6 +1296,211 @@ def render_canon(canon: CanonLiteV1) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ===========================================================================
+# Generation-leak containment (F1, BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md)
+#
+# Canary v9 delivered `[anc1]`..`[anc4]` verbatim into customer prose. `render_canon()`
+# above is unchanged and stays QC/L3's contract (it needs ids to address spans). A
+# chapter WRITER never needs an id — only the literal/canonical_name/label — so this
+# section adds a separate, id-free projection for that injection point, plus a
+# scrub/detect pair as the backstop for whatever the projection misses (a provider
+# that echoes structure it was never shown, a future caller that reintroduces
+# `render_canon()` at an injection site, content generated before this existed).
+#
+# `chapter_id` (CanonChapterV1) is only PARTLY in the closed set below (2026-08-15
+# re-audit REJECT finding, refined from the original all-or-nothing exclusion): a
+# chapter whose id is exactly its own decimal order number ("1" for chapter 1, "2" for
+# chapter 2, ...) is the common, human-facing shape `_canonical_outline_chapters` falls
+# back to by default — bracket-matching THAT would false-positive on any legitimate
+# numbered reference or footnote in generated prose ("[1]"), so it stays excluded, same
+# as before. An id that is anything else — a custom outline-supplied slug
+# ("private-chapter-alpha"), a UUID-like id, or the generated "ch{n}" fallback
+# `_canonical_outline_chapters` uses when an outline id fails `_ID_RE` — is exactly as
+# opaque as an entity/anchor/event/reveal/exception id and was reaching generation with
+# no closed-set coverage to catch it if it ever leaked. No prefix guessing: the test is
+# an exact string comparison against this chapter's own `order`, nothing else.
+# ===========================================================================
+
+def canon_bound_marker_ids(canon: CanonLiteV1) -> frozenset[str]:
+    """The closed set of opaque internal ids bound into THIS canon instance.
+
+    Every id-bearing field across the five component types that carry one, PLUS any
+    chapter id that is not simply its own order number written out (see comment above)
+    — never a prefix guess, never borrowed from another canon, never a bare regex. An id
+    is "bound" for a run if and only if it is the literal id of a row this exact canon
+    instance carries.
+    """
+    if not isinstance(canon, CanonLiteV1):
+        raise CanonSchemaError("canon_bound_marker_ids: expected a CanonLiteV1")
+    ids: set[str] = set()
+    ids.update(c.chapter_id for c in canon.chapters if c.chapter_id != str(c.order))
+    ids.update(e.entity_id for e in canon.entities)
+    ids.update(a.anchor_id for a in canon.anchors)
+    ids.update(ev.event_id for ev in canon.one_time_events)
+    ids.update(r.reveal_id for r in canon.reveals)
+    ids.update(f.exception_id for f in canon.flashback_exceptions)
+    return frozenset(ids)
+
+
+def _bound_marker_rx(bound_ids: frozenset[str]) -> Optional["re.Pattern[str]"]:
+    if not bound_ids:
+        return None
+    alternation = "|".join(re.escape(i) for i in sorted(bound_ids, key=len, reverse=True))
+    # IGNORECASE (adversarial-audit finding, 2026-08-14 night): bound ids are always
+    # lowercase (_ID_RE), but a model echoing one into prose can trivially capitalize
+    # it via ordinary sentence-initial auto-capitalization ("[Anc1]") -- both this
+    # function's callers (scrub AND detect, the delivery gate's actual authority)
+    # shared this one blind spot, so fixing it here fixes both at once.
+    return re.compile(r"\[(?:" + alternation + r")\]", re.IGNORECASE)
+
+
+def scrub_bound_markers(text: str, canon: Optional[CanonLiteV1]) -> tuple[str, int]:
+    """Remove every `[<id>]` bracket token whose id is bound in `canon` — nothing else.
+
+    A bracket that does not exactly match a bound id of THIS canon — a legitimate
+    `[Tuesday]`, a footnote `[1]`, an id that belongs to some OTHER canon instance —
+    is left untouched byte for byte. Only the bracket token itself is removed (never
+    adjacent characters). A doubled space/tab created BY a removal is collapsed to
+    one — but ONLY at the boundary of a marker (or a back-to-back RUN of markers)
+    that was actually removed; whitespace elsewhere in the string, however doubled
+    or indented, is never touched (adversarial-audit finding, 2026-08-14 night: the
+    prior whole-string collapse mangled verse indentation, a deliberate double space,
+    and a markdown hard-break, anywhere in the text, whenever ANY marker was removed
+    anywhere else in it). Pure, deterministic, no I/O.
+
+    This is prevention's BACKSTOP, not the primary defence — `render_canon_for_generation`
+    is what should stop an id ever reaching a chapter prompt. A caller MUST still verify
+    with `detect_bound_markers` after scrubbing — that is the function a delivery gate
+    should trust, not this one's return count, so a scrub bug can never fool the gate.
+    """
+    if not text or canon is None:
+        return text, 0
+    rx = _bound_marker_rx(canon_bound_marker_ids(canon))
+    if rx is None:
+        return text, 0
+    matches = list(rx.finditer(text))
+    if not matches:
+        return text, 0
+
+    # Group back-to-back matches (no characters between them, e.g. "[anc1][anc2]")
+    # into one run -- each marker alone only sees ONE of its two neighbouring
+    # spaces, so treating them separately collapses only one side and leaves a
+    # doubled space (this exact shape has its own regression test).
+    runs: list[tuple[int, int]] = []
+    run_start, run_end = matches[0].start(), matches[0].end()
+    for m in matches[1:]:
+        if m.start() == run_end:
+            run_end = m.end()
+        else:
+            runs.append((run_start, run_end))
+            run_start, run_end = m.start(), m.end()
+    runs.append((run_start, run_end))
+
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in runs:
+        pieces.append(text[cursor:start])
+        cursor = end
+        has_leading_ws = bool(pieces[-1]) and pieces[-1][-1] in " \t"
+        has_trailing_ws = cursor < len(text) and text[cursor] in " \t"
+        if has_leading_ws and has_trailing_ws:
+            # space + marker(s) + space -> collapse to the one leading space
+            # already emitted; drop the one trailing space, localized to THIS run.
+            cursor += 1
+        elif start == 0 and has_trailing_ws:
+            # marker(s) at the very start of the string -> no stray leading space.
+            cursor += 1
+    pieces.append(text[cursor:])
+    return "".join(pieces), len(matches)
+
+
+def detect_bound_markers(text: str, canon: Optional[CanonLiteV1]) -> tuple[str, ...]:
+    """The independent verification half — the ONLY function a delivery gate may trust.
+
+    Returns the bound ids (deduplicated, first-seen order, always lowercase-canonical
+    regardless of how the echo was actually cased) still present as a `[id]` token in
+    `text`. An empty tuple is the only value that means clear. Reports bare ids, never
+    surrounding prose — ids are opaque structural tokens, not canonical names or
+    literals, so this respects the same privacy discipline `telemetry_digest` enforces
+    (C12): counts and bounded tokens only, never prose.
+    """
+    if not text or canon is None:
+        return ()
+    rx = _bound_marker_rx(canon_bound_marker_ids(canon))
+    if rx is None:
+        return ()
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for m in rx.finditer(text):
+        token = m.group(0)[1:-1].lower()
+        if token not in seen_set:
+            seen_set.add(token)
+            seen.append(token)
+    return tuple(seen)
+
+
+GENERATION_PROJECTION_VERSION = "canon_lite_generation_v1"
+
+
+def render_canon_for_generation(canon: CanonLiteV1) -> str:
+    """Render the canon for a chapter-writer prompt WITHOUT any opaque internal id.
+
+    `render_canon()` stays PROMPT MATERIAL for QC/L3 exactly as it is — do not touch
+    it, do not change `canon_sha256`, do not change what QC/L3 receive. A chapter
+    writer never needs an id, only a literal/canonical_name/label; rendering the id
+    anyway is what let a model echo `[anc3]` straight into prose. This projection is
+    deliberately a DIFFERENT text with its own version constant
+    (`GENERATION_PROJECTION_VERSION`, never conflated with `SCHEMA_VERSION`) — a
+    caller that hashes this rendering gets a hash that means "generation projection
+    identity", distinct from `canon.canon_sha256` (untouched content identity) and
+    from a hash of `render_canon()`'s own output.
+
+    Deterministic and byte-stable under the same rule `render_canon()` follows.
+    """
+    if not isinstance(canon, CanonLiteV1):
+        raise CanonSchemaError("render_canon_for_generation: expected a CanonLiteV1")
+    _validate_canon_instance(canon)
+    lines: list[str] = [
+        f"CANON {GENERATION_PROJECTION_VERSION} {canon.canon_sha256}",
+        f"language={canonical_bytes(canon.target_language).decode('utf-8')}",
+        f"fact_source_policy={canonical_bytes(canon.fact_source_policy).decode('utf-8')}",
+        f"chapters={canon.chapter_count}",
+        "",
+        "[CHAPTERS]",
+    ]
+    for c in canon.chapters:
+        # 2026-08-15 re-audit REJECT finding: this used to call `c.to_canonical_obj()`,
+        # which carries `chapter_id` — the one component type this function forgot to
+        # re-project id-free (every other loop below already omits its opaque id). A
+        # chapter writer needs `order`/`expected_title` only, never the id.
+        lines.append(canonical_bytes(
+            {"order": c.order, "expected_title": c.expected_title}
+        ).decode("utf-8"))
+    lines += ["", "[ENTITIES]"]
+    for e in canon.entities:
+        lines.append(canonical_bytes(
+            {"canonical_name": e.canonical_name, "aliases": list(e.aliases)}
+        ).decode("utf-8"))
+    lines += ["", "[ANCHORS]"]
+    for a in canon.anchors:
+        lines.append(canonical_bytes({"kind": a.kind, "literal": a.literal}).decode("utf-8"))
+    lines += ["", "[ONE_TIME_EVENTS]"]
+    for ev in canon.one_time_events:
+        lines.append(canonical_bytes(
+            {"occurs_chapter_order": ev.occurs_chapter_order, "label": ev.label}
+        ).decode("utf-8"))
+    lines += ["", "[REVEALS]"]
+    for r in canon.reveals:
+        lines.append(canonical_bytes(
+            {"planned_chapter_order": r.planned_chapter_order}).decode("utf-8"))
+    lines += ["", "[FLASHBACK_EXCEPTIONS]"]
+    for f in canon.flashback_exceptions:
+        lines.append(canonical_bytes(
+            {"chapter_order": f.chapter_order, "reason_code": f.reason_code}
+        ).decode("utf-8"))
+    return "\n".join(lines) + "\n"
+
+
 def telemetry_digest(canon: Optional[CanonLiteV1], *, canon_status: str) -> dict[str, Any]:
     """The ONLY observable projection of a canon: hashes, counts, bounded labels.
 

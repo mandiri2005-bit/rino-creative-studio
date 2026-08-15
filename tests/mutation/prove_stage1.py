@@ -35,19 +35,19 @@ BREAKS = [
     # ── injection identity ───────────────────────────────────────────────
     ("no injection — canon never reaches the worker",
      STATIC,
-     r"                canon_text=_cl_canon_text, canon_prompt_sha=_cl_prompt_sha,\n",
+     r"                canon_text=_cl_canon_text, canon_prompt_sha=_cl_gen_prompt_sha,\n",
      "",
      "test_every_worker_receives_identical_canon_bytes_and_hash"),
     ("hash decoupled from the bytes actually sent",
      STATIC,
-     r'_cl_prompt_sha = _cl\.sha256_hex\(_cl_canon_text\.encode\("utf-8"\)\)',
-     '_cl_prompt_sha = _cl.sha256_hex(b"not-the-canon")',
+     r'_cl_gen_prompt_sha = _cl\.sha256_hex\(_cl_canon_text\.encode\("utf-8"\)\)',
+     '_cl_gen_prompt_sha = _cl.sha256_hex(b"not-the-canon")',
      "test_every_worker_receives_identical_canon_bytes_and_hash"),
     ("worker echoes the dispatched prompt hash instead of measuring",
      STATIC,
-     r'        res\["canon_prompt_sha256"\] = _cl_h\.sha256_hex\(\n'
+     r'        res\["canon_generation_prompt_sha256_seen"\] = _cl_h\.sha256_hex\(\n'
      r'            _system\[:len\(canon_text\)\]\.encode\("utf-8"\)\)',
-     '        res["canon_prompt_sha256"] = canon_prompt_sha',
+     '        res["canon_generation_prompt_sha256_seen"] = canon_prompt_sha',
      "test_real_write_chapter_prepends_canon_and_hashes_delivered_bytes"),
     ("worker echoes the dispatched context digest instead of measuring",
      STATIC,
@@ -157,11 +157,52 @@ BREAKS = [
 ]
 
 BACKUPS = {p: p.read_bytes() for p in (STATIC, CANON, NAPI)}
+def _classify(proc):
+    """What pytest ACTUALLY said: ("pass"|"fail", None) or (None, reason).
+
+    🔴 `returncode != 0` IS NOT "THE TEST FAILED". It is equally true of a missing
+       test file, a mistyped node id, a collection error and a usage error — so a
+       harness scoring kills that way reports a perfect score while running nothing
+       at all (demonstrated 2026-08-15 on this file's sibling: every test path
+       pointed at a nonexistent file still printed "9/9 mutants killed"). Only exit
+       0 and exit 1, each corroborated by its own summary line, are verdicts.
+    """
+    out = proc.stdout + proc.stderr
+    if proc.returncode == 5 or "no tests ran" in out:
+        return None, "no tests collected (missing file or wrong node id?)"
+    if proc.returncode == 4:
+        return None, "pytest usage error"
+    if proc.returncode in (2, 3):
+        return None, f"pytest aborted (exit {proc.returncode})"
+    if re.search(r"\b\d+ errors?\b", out):
+        return None, "collection/setup error, not a test failure"
+    if proc.returncode == 1:
+        return ("fail", None) if re.search(r"\b\d+ failed\b", out) else (
+            None, "exit 1 with no 'N failed' summary")
+    if proc.returncode == 0:
+        return ("pass", None) if re.search(r"\b\d+ passed\b", out) else (
+            None, "exit 0 with no 'N passed' summary")
+    return None, f"unrecognized pytest exit {proc.returncode}"
+
+
+def _run_node(test):
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=no",
+         "-p", "no:cacheprovider", "-p", "no:warnings"],
+        cwd=str(WT), capture_output=True, text=True)
+
+
 ok = True
 try:
     for label, target, pat, rep, test in BREAKS:
         for p, data in BACKUPS.items():        # always mutate a pristine tree
             p.write_bytes(data)
+        # The node must exist and be GREEN before it can be evidence of anything.
+        _v, _why = _classify(_run_node(test))
+        if _v != "pass":
+            print(f"!! BASELINE NOT GREEN ({_why or _v}) for: {label} -> {test}")
+            ok = False
+            continue
         broken, n = re.subn(pat, rep, target.read_text())
         if n != 1:
             print(f"!! PATTERN-MISS ({n}) for: {label}")
@@ -175,15 +216,19 @@ try:
         #    Every same-size mutation in this table would report a false pass.
         for cache in WT.rglob("__pycache__"):
             shutil.rmtree(cache, ignore_errors=True)
-        r = subprocess.run(
-            [sys.executable, "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=no",
-             "-p", "no:cacheprovider", "-p", "no:warnings"],
-            cwd=str(WT), capture_output=True, text=True)
-        caught = r.returncode != 0
+        verdict, why = _classify(_run_node(test))
+        if verdict is None:
+            print(f"!! INCONCLUSIVE ({why})  {label}  -> {test}")
+            ok = False
+            continue
+        caught = (verdict == "fail")
         print(f"{'   caught  ' if caught else '!! SURVIVED'}  {label}  -> {test}")
         ok = ok and caught
 finally:
     for p, data in BACKUPS.items():
         p.write_bytes(data)
+        if p.read_bytes() != data:
+            print(f"!! RESTORE FAILED for {p} — tree is now dirty")
+            ok = False
     print("restored")
 sys.exit(0 if ok else 1)

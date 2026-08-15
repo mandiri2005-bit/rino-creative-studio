@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 import canon_lite as _cl
+import chapter_heading_patterns as _chp
 from canon_lite import (  # strict foundation — do not re-implement these here
     UNKNOWN,
     CanonLiteV1,
@@ -272,15 +273,29 @@ class SnapshotError(CanonLiteL2Error):
 # §6.3 FinalChapterSnapshotV1 — the exact delivered bytes
 # ===========================================================================
 
-#: Shared with `orchestrator.static._POLISH_CHAPTER_SPLIT_RX`. A chapter block starts at a
-#: line beginning `## `. Kept as its own constant so a change here is visible in review
-#: rather than inherited silently from a module with a different purpose.
-_CHAPTER_SPLIT_RX = re.compile(r"(?m)(?=^## )")
+#: `chapter_heading_patterns.chapter_split_rx_for` picks the right regex for a given
+#: manuscript — see that module's docstring for the full "why", including the 2026-08-15
+#: adversarial review that found the first version of this fix (a single always-broadened
+#: regex, no `laozhang_api._NARASI_HEADER_LABELS` diff, `(?i)` and `\b` both present) let a
+#: bare-word false match land inside an already-"## "-marked manuscript's body prose and
+#: corrupt positional `chapter_id` binding downstream. `chapter_split_rx_for` structurally
+#: prevents that: the permissive fallback only ever runs on a document already proven to
+#: contain zero "## " markers, never as a supplement within one that does.
 
 #: Deliberately mirrors `orchestrator.static._CH_HEADER_NUM_RX`, INCLUDING its r16 audit
 #: fix: the negative lookahead stops "Chapter 3a"/"Chapter 3.5" from collapsing into plain
 #: "Chapter 3". That bug once deleted genuinely distinct chapters as false duplicates; a
 #: fresh regex here would reintroduce it.
+#:
+#: KNOWN GAP, not fixed here: still requires literal "## ", unlike
+#: `chapter_heading_patterns.BARE_WORD_RX`. A block that only matched the split via a
+#: bare-word opener (no "## ") always parses as `heading_number=-1` (unknown) — every
+#: downstream reader already treats -1 as "skip this check" (see `-1, not 0` below and the
+#: callers that guard on `>= 0`), so this is inert, not silently wrong, but the
+#: ordering/duplicate-number cross-check is effectively disabled for such a manuscript.
+#: Extending it needs a per-opener digit *position* (before the word for ko, between two
+#: word-halves for ja/zh, after for everything else including "## "), which is more than the
+#: "prove read-as-N" scope this pass covers. Left as an explicit follow-up.
 _CH_HEADER_NUM_RX = re.compile(r"^##\s+\D*?(\d+)(?![a-z.])")
 
 
@@ -467,8 +482,12 @@ def materialize_final_snapshot(
 
     # Split on the *string* so the regex semantics match the delivery path exactly, then
     # convert each piece to a byte range by encoding the prefix walked so far.
-    pieces = _CHAPTER_SPLIT_RX.split(text)
-    prefix_text = pieces[0] if pieces and not pieces[0].startswith("## ") else ""
+    _split_rx = _chp.chapter_split_rx_for(text)
+    pieces = _split_rx.split(text)
+    # `_split_rx.match(...)` (not `.startswith("## ")`) so this correctly recognizes
+    # pieces[0] as a real chapter 1 (not front matter) under EITHER regime — the bare-word
+    # fallback's pieces[0] can legitimately start with "Chapter 1" instead of "## ".
+    prefix_text = pieces[0] if pieces and not _split_rx.match(pieces[0]) else ""
     chapter_texts = pieces[1:] if prefix_text else [p for p in pieces if p]
 
     if len(chapter_texts) > MAX_CHAPTERS:

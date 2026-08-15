@@ -145,7 +145,7 @@ class Recorder:
     async def __call__(self, **kw):
         self.calls.append({"no": kw["no"], "canon_text": kw.get("canon_text")})
         return {"ok": True, "output": f"teks {kw['no']}", "no": kw["no"], "model": "m",
-                **({"canon_prompt_sha256":
+                **({"canon_generation_prompt_sha256_seen":
                     cl.sha256_hex(kw["canon_text"].encode("utf-8")),
                     "context_sha256_seen": cl.context_digest(kw["ctx"]),
                     "canon_sha256": kw.get("canon_sha256"),
@@ -1434,6 +1434,156 @@ def test_the_mutation_is_killed(tmp_path, mutant):
         f"{proc.stderr[-2000:]}")
     assert "error" not in proc.stdout.splitlines()[-1].lower(), (
         f"{mutant['id']} ended in errors, not failures:\n{proc.stdout[-2000:]}")
+
+
+# ===========================================================================
+# F1 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md) — driven through the REAL
+# `_run_narration_job_after_parity`, not just the standalone `scrub_and_verify_
+# generation_leak` function. An adversarial audit of F1 found the call-site wiring
+# had ZERO integration coverage: deleting the whole 15-line block from this
+# function left the full suite green. These two tests close that gap and, in the
+# same motion, prove the HIGH-severity mode-gate fix (F1 must be assist-only —
+# shadow's own canon can share an id with a bracket that coincidentally appears in
+# prose shadow never injected, and shadow's one promise is to never change what a
+# user receives).
+# ===========================================================================
+
+def _leaking_canon():
+    outline = _outline(1)
+    cfg = cl.build_job_config_snapshot(outline_chapters=outline, target_language="id",
+                                       narration_style="kdrama_serial")
+    return cl.build_canon_lite_v1(outline_chapters=outline, job_config=cfg, anchors=[
+        cl.CanonAnchorV1("anc1", "time", "five years"),
+    ])
+
+
+def test_f1_blocks_delivery_through_the_real_call_site_when_assist_leaks_a_marker(
+        monkeypatch, env, metered_host):
+    """`[anc1]` is a well-formed match for a bound id, so `scrub_bound_markers` alone
+    would clean it up and delivery would correctly proceed (verified separately: the
+    PRIMARY mechanism works end-to-end through this same real call site). To observe
+    the DEFENSE-IN-DEPTH half — detect blocking delivery when scrub could not do its
+    job — neuter `scrub_bound_markers` to a no-op here, exactly as the standalone
+    seam-function tests already do; `detect_bound_markers` stays real."""
+    env()  # mode=assist, tenant=CANARY armed
+    canon = _leaking_canon()
+    finalize_calls = []
+    monkeypatch.setattr(cl, "scrub_bound_markers", lambda text, _c: (text, 0))
+
+    async def _gen(req, **kwargs):
+        return {"ok": True, "book": "## Bab 1\nechoed [anc1] into prose\n",
+                "chapters": [{"no": 1, "content": "echoed [anc1] into prose"}],
+                "_canon_lite_canon": canon, "_canon_lite_canon_status": "present"}
+
+    async def _finalize_spy(job_id, job_uuid, tenant_id, *, status, result, error):
+        finalize_calls.append({"status": status, "error": error})
+
+    monkeypatch.setattr(na, "generate_narration", _gen)
+    monkeypatch.setattr(na, "_cancel_watcher", lambda *a, **k: asyncio.sleep(3600))
+    monkeypatch.setattr(na, "_finalize", _finalize_spy)
+    for name in ("_set_status", "_safe_progress", "_settle", "_refund",
+                 "_apply_v3_gates", "_reconcile_checkboxes", "_persist_chapters"):
+        monkeypatch.setattr(na, name, _anoop)
+    monkeypatch.setattr(na, "credits_lib", types.SimpleNamespace(touch_hold=_anoop))
+    monkeypatch.setattr(na, "db", types.SimpleNamespace(
+        get_known_bad_claims=_anoop, get_known_good_claims=_anoop, log_usage=_anoop,
+        checkpoint_narasi_meter=_anoop))
+
+    async def drive():
+        await na._run_narration_job_after_parity(
+            body={"chapters": [{"word_target": 400}]}, job_id="j-f1-leak", job_uuid=None,
+            tenant_id=CANARY, user_id="u", total=1, meter_op=None, model="m",
+            executor="narration_worker")
+
+    asyncio.run(drive())
+    assert finalize_calls, "the real call site never reached _finalize at all"
+    assert finalize_calls[-1]["status"] == na._STATUS_FAILED
+    assert finalize_calls[-1]["error"] == "internal_marker_leak"
+
+
+def test_f1_scrubs_the_leak_cleanly_and_delivers_normally_through_the_real_call_site(
+        monkeypatch, env, metered_host):
+    """The PRIMARY mechanism, unmodified — no monkeypatching of scrub — driven
+    through the real call site. `[anc1]` is well-formed, so `scrub_bound_markers`
+    removes it and delivery proceeds as `done`, never reaching the fail-closed
+    branch at all. This is the common case F1 is FOR: catching the leak so quietly
+    the customer never sees a failure, not just refusing to ship a leaking book."""
+    env()  # mode=assist, tenant=CANARY armed
+    canon = _leaking_canon()
+    finalize_calls = []
+
+    async def _gen(req, **kwargs):
+        return {"ok": True, "book": "## Bab 1\nechoed [anc1] into prose\n",
+                "chapters": [{"no": 1, "content": "echoed [anc1] into prose"}],
+                "_canon_lite_canon": canon, "_canon_lite_canon_status": "present"}
+
+    async def _finalize_spy(job_id, job_uuid, tenant_id, *, status, result, error):
+        finalize_calls.append({"status": status, "error": error, "result": result})
+
+    monkeypatch.setattr(na, "generate_narration", _gen)
+    monkeypatch.setattr(na, "_cancel_watcher", lambda *a, **k: asyncio.sleep(3600))
+    monkeypatch.setattr(na, "_finalize", _finalize_spy)
+    for name in ("_set_status", "_safe_progress", "_settle", "_refund",
+                 "_apply_v3_gates", "_reconcile_checkboxes", "_persist_chapters"):
+        monkeypatch.setattr(na, name, _anoop)
+    monkeypatch.setattr(na, "credits_lib", types.SimpleNamespace(touch_hold=_anoop))
+    monkeypatch.setattr(na, "db", types.SimpleNamespace(
+        get_known_bad_claims=_anoop, get_known_good_claims=_anoop, log_usage=_anoop,
+        checkpoint_narasi_meter=_anoop))
+
+    async def drive():
+        await na._run_narration_job_after_parity(
+            body={"chapters": [{"word_target": 400}]}, job_id="j-f1-clean", job_uuid=None,
+            tenant_id=CANARY, user_id="u", total=1, meter_op=None, model="m",
+            executor="narration_worker")
+
+    asyncio.run(drive())
+    assert finalize_calls
+    assert finalize_calls[-1]["status"] == na._STATUS_DONE
+    assert finalize_calls[-1]["error"] is None
+    assert "[anc1]" not in finalize_calls[-1]["result"].get("markdown", "")
+
+
+def test_f1_does_not_block_shadow_mode_on_the_same_colliding_bracket(
+        monkeypatch, env, metered_host):
+    """Mirror of the test above, mode=shadow instead of assist: the SAME [anc1]
+    bracket and the SAME canon (which shadow's own build could equally produce)
+    must NOT block delivery — shadow never injects a canon into a chapter prompt,
+    so a matching bracket is coincidence, not a leak."""
+    env({cl.MODE_ENV_VAR: "shadow"})
+    canon = _leaking_canon()
+    finalize_calls = []
+
+    async def _gen(req, **kwargs):
+        return {"ok": True, "book": "## Bab 1\ncoincidental [anc1] text\n",
+                "chapters": [{"no": 1, "content": "coincidental [anc1] text"}],
+                "_canon_lite_canon": canon, "_canon_lite_canon_status": "present"}
+
+    async def _finalize_spy(job_id, job_uuid, tenant_id, *, status, result, error):
+        finalize_calls.append({"status": status, "error": error})
+
+    monkeypatch.setattr(na, "generate_narration", _gen)
+    monkeypatch.setattr(na, "_cancel_watcher", lambda *a, **k: asyncio.sleep(3600))
+    monkeypatch.setattr(na, "_finalize", _finalize_spy)
+    for name in ("_set_status", "_safe_progress", "_settle", "_refund",
+                 "_apply_v3_gates", "_reconcile_checkboxes", "_persist_chapters"):
+        monkeypatch.setattr(na, name, _anoop)
+    monkeypatch.setattr(na, "credits_lib", types.SimpleNamespace(touch_hold=_anoop))
+    monkeypatch.setattr(na, "db", types.SimpleNamespace(
+        get_known_bad_claims=_anoop, get_known_good_claims=_anoop, log_usage=_anoop,
+        checkpoint_narasi_meter=_anoop))
+
+    async def drive():
+        await na._run_narration_job_after_parity(
+            body={"chapters": [{"word_target": 400}]}, job_id="j-f1-shadow", job_uuid=None,
+            tenant_id=CANARY, user_id="u", total=1, meter_op=None, model="m",
+            executor="narration_worker")
+
+    asyncio.run(drive())
+    assert finalize_calls, "the real call site never reached _finalize at all"
+    assert finalize_calls[-1]["error"] != "internal_marker_leak", (
+        "shadow mode must never be blocked by F1 — it never injected the canon "
+        "that could leak in the first place")
 
 
 def test_the_mutation_harness_itself_can_fail(tmp_path):

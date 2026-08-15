@@ -33,9 +33,37 @@ _WRAPPER_RX = re.compile(
 class PatchValidationError(ValueError):
     """Bounded validation failure safe to expose as an internal reason code."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, received: Any = None):
         super().__init__(code)
         self.code = code
+        # Optional raw value behind the error, e.g. an unrecognized "op" string.
+        # Never part of the public reason code; callers must bucket it through
+        # bounded_operation_subtype() before it touches a log line, and must
+        # never widen the accepted vocabulary or the reason code itself.
+        self.received = received
+
+
+_OPERATION_SUBTYPE_BUCKETS = ("insert", "delete", "rewrite", "update")
+
+
+def bounded_operation_subtype(received: Any) -> str:
+    """Classify an ``unknown_operation``'s raw ``op`` value into a closed bucket.
+
+    Observability only (F4a). Never widens the accepted operation vocabulary
+    and never changes the public ``unknown_operation`` reason code -- this
+    bucket is the safe substitute a caller logs instead of the raw value.
+    Matches by case-insensitive substring, so verbose model output such as
+    ``"delete_paragraph"`` still buckets sensibly. First match wins in the
+    fixed order above; anything with no match -- including non-string or
+    empty values -- is ``"other"``.
+    """
+    if not isinstance(received, str) or not received.strip():
+        return "other"
+    lowered = received.lower()
+    for bucket in _OPERATION_SUBTYPE_BUCKETS:
+        if bucket in lowered:
+            return bucket
+    return "other"
 
 
 @dataclass(frozen=True)
@@ -188,6 +216,32 @@ def _has_cycle(edges: Mapping[str, set[str]]) -> bool:
     return any(visit(node) for node in edges)
 
 
+_KNOWN_OP_VERBS = frozenset({"insert_before", "insert_after", "replace", "move"})
+
+
+def _normalize_verb_as_key_operation(raw_op: Any) -> Any:
+    """F4b: unwrap a model response that put the verb in the WRAPPING KEY instead of
+    the "op" field's value -- e.g. ``{"replace": {"unit_id": "u006", "text": "..."}}``
+    instead of the spec'd ``{"op": "replace", "unit_id": "u006", "text": "..."}``.
+    Grounded in a live targeted probe (2026-08-14, model=gemini-3.5-flash via vertex,
+    phase=canon_diff_revise) that returned exactly this shape; NOT a vocabulary
+    alias/typo guess -- see BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md, F4b, on why
+    a speculative alias is refused but this unambiguous structural unwrap is not.
+
+    Fires ONLY when `raw_op` has EXACTLY one key, that key is one of the four closed
+    operation verbs, its value is itself a mapping, and that mapping does not already
+    carry its own "op" key (which would make the wrapping ambiguous/malformed on its
+    face -- refuse rather than guess which "op" wins). Returns the original `raw_op`
+    unchanged in every other case, including an unrecognized wrapping key (e.g.
+    "delete") -- that stays an unknown_operation for the caller to classify."""
+    if not isinstance(raw_op, Mapping) or len(raw_op) != 1:
+        return raw_op
+    (verb, fields), = raw_op.items()
+    if verb not in _KNOWN_OP_VERBS or not isinstance(fields, Mapping) or "op" in fields:
+        return raw_op
+    return {"op": verb, **fields}
+
+
 def _validated_operations(
     segmented: SegmentedChapter, raw: str | Mapping[str, Any]
 ) -> list[dict[str, str]]:
@@ -209,7 +263,26 @@ def _validated_operations(
     for raw_op in operations:
         if not isinstance(raw_op, Mapping):
             raise PatchValidationError("operation_type")
+        raw_op = _normalize_verb_as_key_operation(raw_op)
         kind = raw_op.get("op")
+        received_for_telemetry = kind
+        if kind is None and len(raw_op) == 1:
+            (_only_key, _only_val), = raw_op.items()
+            if isinstance(_only_val, Mapping):
+                # Always surface the attempted wrapping key for unknown_operation's
+                # F4a telemetry (e.g. "delete"), even when it can't be dispatched.
+                received_for_telemetry = _only_key
+                # But only ADOPT it as the dispatch `kind` when it is NOT one of the
+                # four closed verbs. A known verb reaching here (adversarial-audit
+                # finding, 2026-08-14 night) means the normalization above saw an
+                # AMBIGUOUS shape (its inner mapping already carried its own "op")
+                # and correctly refused to unwrap it -- dispatching on the wrapping
+                # key anyway would route it into that verb's OWN shape-check branch
+                # instead of unknown_operation, silently skipping F4a's telemetry
+                # (gated strictly on code == "unknown_operation") and reclassifying
+                # which rejected_reason_counts bucket the rejection lands in.
+                if _only_key not in _KNOWN_OP_VERBS:
+                    kind = _only_key
         if kind in ("insert_before", "insert_after"):
             if set(raw_op) != {"op", "anchor_id", "text"}:
                 raise PatchValidationError("operation_shape")
@@ -259,7 +332,7 @@ def _validated_operations(
             validated.append({"op": kind, "unit_id": unit_id, anchor_key: anchor})
             continue
 
-        raise PatchValidationError("unknown_operation")
+        raise PatchValidationError("unknown_operation", received=received_for_telemetry)
 
     if insert_anchors & edit_targets:
         raise PatchValidationError("operation_overlap")
@@ -365,5 +438,6 @@ __all__ = [
     "PatchValidationError",
     "SegmentedChapter",
     "apply_addressed_patch",
+    "bounded_operation_subtype",
     "segment_chapter",
 ]

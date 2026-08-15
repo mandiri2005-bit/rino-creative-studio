@@ -140,6 +140,125 @@ def _wq(s, n: int = 110) -> str:
     return f'"{s}"' if s else ""
 
 
+def _v3g_violation_chapter(violation: dict) -> "int | None":
+    """Best-effort chapter number for a violation dict, for dedup only -- NOT the
+    authoritative resolver (that's laozhang_api._narasi_violation_target_chapters,
+    which also does quote-span matching against the manuscript; unaffected by this).
+    Structured `chapter` key first (critic/register/canon_diff shape); else the
+    thread-tracker convention of an `@chN` suffix on `evidence`; else None -- a
+    violation with no resolvable chapter is NEVER deduped against another (safe
+    default: unknown chapter never collapses two findings that might target
+    different chapters)."""
+    chapter = violation.get("chapter")
+    if isinstance(chapter, int) and not isinstance(chapter, bool):
+        return chapter
+    import re
+    match = re.search(r"@ch(\d+)\s*$", str(violation.get("evidence") or ""))
+    return int(match.group(1)) if match else None
+
+
+def _v3g_dedup_violations(violations: list) -> list:
+    """Collapse EXACT duplicates (same type + chapter + normalized evidence) before
+    budgeting -- the four independent v3-gate detectors (critic/register/canon_diff/
+    thread_tracker) can each surface the identical finding, and each survivor
+    consumes a separate repair-budget slot downstream (chapter attempt caps etc.).
+    Deliberately EXACT-match only, never fuzzy/LLM similarity -- matching this
+    file's own dedup precedent in the thread-tracker multipass extraction above
+    (chapter_introduced, thread_type, normalized description) -- so two DIFFERENT
+    findings are never silently merged away: that failure mode (dropping a real,
+    distinct violation from repair) is worse than the one this fixes (wasting
+    budget on a literal repeat). `type` is part of the key, so this can NEVER fold
+    a specific type (e.g. outline_missing_beat, which routes to the structural-
+    patch lane) into a generic one (e.g. unresolved_thread, which doesn't) -- they
+    simply never share a key. First occurrence wins, preserving _v3g_merged's
+    existing source order (critic, register, canon_diff, thread_tracker -- most-
+    authoritative first). F5, BRIEF-FOR-CODEX-2026-08-14 fecd3dcb5f9b85f81b7079
+    0736c5304a1dbcf29fad9780fb6c1dc904d4fc20b5."""
+    import re
+    seen: set = set()
+    deduped: list = []
+    for violation in violations:
+        if not isinstance(violation, dict):
+            deduped.append(violation)
+            continue
+        vtype = str(violation.get("type") or "").strip().lower()
+        chapter = _v3g_violation_chapter(violation)
+        evidence_key = re.sub(r"@ch\d+\s*$", "", str(violation.get("evidence") or ""))
+        evidence_key = " ".join(evidence_key.lower().split())
+        key = (vtype, chapter if chapter is not None else id(violation), evidence_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(violation)
+    return deduped
+
+
+def _ledger_hit_is_exempt(term: str, topic: str, bible: str) -> bool:
+    """A lane-ledger-banned name/number is exempt from becoming a repair violation
+    when it's premise-supplied (in the user's own topic/goal/brief) OR when it's
+    established by the story's own outline/bible. The lane ledger bans terms that
+    were overused ACROSS OTHER stories in this lane; a name/number THIS story's
+    own canon legitimately owns is not a lane-repetition tic, and telling repair
+    to rename/renumber it would corrupt this story's own canon once repair lands
+    (F5, BRIEF-FOR-CODEX-2026-08-14 fecd3dcb...)."""
+    return bool(term) and (
+        _premise_term_in_topic(term, topic)
+        or _premise_term_in_topic(term, bible))
+
+
+_GO_NO_GO_ANY_SEVERITY_BLOCKERS = frozenset({"outline_missing_beat", "pov"})
+_GO_NO_GO_HIGH_SEVERITY_ONLY_BLOCKERS = frozenset({"chapter_boundary_break"})
+
+
+def _narasi_go_no_go_verdict(*, raw_model_score: "float | None", violations: list,
+                              marker_leak_detected: bool) -> dict:
+    """F6b: hard predicates decide GO/NO-GO, never the model's own
+    whole_draft_consistency score. Report-only, non-authoritative -- this does NOT
+    gate delivery itself (F1's marker-leak check already does that, unchanged,
+    independently); it exists so a canary reviewer never has to trust a score the
+    model itself may be miscalibrated on.
+
+    Hard blockers, per BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md F6b:
+      - an internal marker leak (F1), always, regardless of any violation list;
+      - `chapter_boundary_break`, but ONLY at severity high/critical (the brief's
+        own wording qualifies this one specifically: "boundary break severity
+        high" -- a low-severity boundary note is not itself blocking);
+      - `outline_missing_beat` (F6 case 3, the final-beat-never-answered class)
+        and `pov` (F6 case 1 tense drift -- check 6's combined POV/PERSON/TENSE
+        wording reports both under this one type token), at ANY severity -- the
+        brief names these two with no severity qualifier at all.
+    Any other violation type is not a hard blocker for this verdict (it may still
+    be a real, revise-worthy finding elsewhere in the pipeline; this function's
+    job is narrowly the GO/NO-GO reporting signal).
+
+    `score_verdict_mismatch` is true only when the model's OWN score is high
+    (>= 9) despite a real blocker being present -- "skor tinggi bertentangan
+    dengan adanya blocker" is the brief's own exact framing, deliberately
+    one-directional (a low score alongside a real blocker is not a "mismatch",
+    the score already agrees something is wrong)."""
+    blockers: set[str] = set()
+    if marker_leak_detected:
+        blockers.add("internal_marker_leak")
+    for violation in violations or []:
+        if not isinstance(violation, dict):
+            continue
+        vtype = str(violation.get("type") or "").strip().lower()
+        vseverity = str(violation.get("severity") or "").strip().lower()
+        if vtype in _GO_NO_GO_ANY_SEVERITY_BLOCKERS:
+            blockers.add(vtype)
+        elif vtype in _GO_NO_GO_HIGH_SEVERITY_ONLY_BLOCKERS and vseverity in ("high", "critical"):
+            blockers.add(vtype)
+    score = raw_model_score if isinstance(raw_model_score, (int, float)) else None
+    score_is_number = score is not None and score == score  # excludes NaN (score != score)
+    mismatch = bool(blockers) and score_is_number and score >= 9
+    return {
+        "verdict": "NO-GO" if blockers else "GO",
+        "raw_model_score": raw_model_score,   # passed through as-is, telemetry only
+        "score_verdict_mismatch": mismatch,
+        "blockers": sorted(blockers),
+    }
+
+
 def _narrative_authority_packet(result: dict) -> dict:
     """Read the private MAP authority packet without widening the public result."""
     packet = result.get("_narrative_authority") if isinstance(result, dict) else None
@@ -1916,6 +2035,25 @@ def _l3_sync_chapter_records(result: dict, run, before_snap, after_snap) -> bool
     return True
 
 
+def _l3_record_l3_scrub_count(result: dict, session: Any) -> None:
+    """F1: carry the session's repair-candidate scrub count onto `result`.
+
+    Recorded on EVERY exit from the repair block, including the fault path — a
+    candidate whose marker was scrubbed before the run then failed for an unrelated
+    reason still had that scrub performed, and dropping the count would make
+    `f1_scrub_operations_count` under-report exactly when something already went wrong.
+    This subtotal counts CANDIDATE attempts, not delivered repairs: a candidate the
+    validator later rejects still contributes here, which is why the operations count
+    it feeds is named for operations rather than for markers in the shipped book.
+    Never raises: telemetry may not be the thing that breaks delivery."""
+    if session is None:
+        return
+    try:
+        result["f1_l3_candidate_markers_removed"] = int(session.markers_scrubbed)
+    except Exception:  # noqa: BLE001 - a counter must never break the seam
+        pass
+
+
 async def _canon_lite_l3_assist_repair(
     result: dict,
     *,
@@ -2007,6 +2145,10 @@ async def _canon_lite_l3_assist_repair(
                     "(error_code=l3_metered_wave_error)")
 
     provider, extractor = _L3_REPAIR_PROVIDER, _L3_CHAPTER_EXTRACTOR
+    # F1 (2026-08-15 re-audit round 2): the session, when there is one, is the only
+    # thing that knows how many markers its repair candidates carried. Bound here so
+    # the count survives the `finally`-less early returns below.
+    _l3_session = None
     if provider is None or extractor is None:
         metered = session_holder.get("metered")
         if metered is None:
@@ -2027,6 +2169,7 @@ async def _canon_lite_l3_assist_repair(
             return _l3_record_outcome(result, outcome=L3_OUTCOME_UNCHECKED,
                                       stage="no_session")
         provider, extractor = session.repair_provider, session.extract_chapter
+        _l3_session = session
 
     try:
         run = await _cl3.repair_manuscript(
@@ -2037,8 +2180,10 @@ async def _canon_lite_l3_assist_repair(
     except Exception:  # noqa: BLE001 - a repair fault must not break delivery
         log.warning("canon lite l3: repair unavailable (error_code=l3_repair_error)")
         # `unchecked`, not `clean`: the repair pass did not conclude anything.
+        _l3_record_l3_scrub_count(result, _l3_session)
         return _l3_record_outcome(result, outcome=L3_OUTCOME_UNCHECKED,
                                   stage="repair_error")
+    _l3_record_l3_scrub_count(result, _l3_session)
 
     # 🔴 SUBSTITUTE ONLY WHEN A REPAIR WAS ACCEPTED. `repaired_manuscript` equals the
     #    original bytes when nothing was accepted, so writing it back would be a
@@ -2559,6 +2704,64 @@ async def _run_narration_job_after_parity(
             log.warning(
                 "canon lite l3: repair seam unavailable "
                 "(error_code=l3_seam_error)")
+    # F1 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md): the last point the manuscript
+    # is mutable before anything a customer can read gets written below. Runs
+    # UNCONDITIONALLY, OUTSIDE the try/except above — that except intentionally never
+    # re-raises ("repair may never break delivery"), so an exception in the repair
+    # seam must not skip this check.
+    #
+    # 🔴 EXPLICITLY GATED ON `_cl_l2_mode == "assist"`, NOT JUST "canon is present".
+    #    `_cl_l2_canon` is non-None whenever EITHER shadow's or assist's canon build
+    #    succeeded (orchestrator/static.py forwards `_canon_lite_canon` for both
+    #    modes) — but only assist's generation injection ever renders a canon into a
+    #    chapter prompt (`if _cl_assist:` at orchestrator/static.py, gating
+    #    `render_canon_for_generation`). Shadow never does, so a bracket token that
+    #    happens to collide with one of shadow's OWN entity/anchor/event ids is a
+    #    coincidence, not a leak — shadow's one architectural promise is that it
+    #    "may never change what the user gets" (this file's own comments, repeatedly),
+    #    and a false positive here would block delivery of an observation-only job
+    #    over a fact it never told any worker.
+    _f1_clear, _f1_leaked = (
+        scrub_and_verify_generation_leak(result, _cl_l2_canon)
+        if _cl_l2_mode == "assist" else (True, ()))
+    # F6b: report-only GO/NO-GO by hard predicates, never the critic's own score --
+    # purely additive telemetry, does NOT change the marker-leak block below (that
+    # remains F1's own independent, unconditional hard gate). Computed here because
+    # this is the first point BOTH signals this verdict needs are available:
+    # result["critique"] (score + violations, set earlier by _apply_v3_gates) and
+    # the marker-leak outcome just above.
+    _critique_payload = result.get("critique") or {}
+    # `marker_leak_detected` is specifically about RESIDUAL markers, so it reads
+    # `_f1_leaked` rather than `_f1_clear`: the seam can now also refuse for a
+    # late-mutation invariant failure, where the scrub SUCCEEDED and no marker
+    # survives — reporting that as a marker leak would misname it in the verdict.
+    result["narasi_verdict"] = _narasi_go_no_go_verdict(
+        raw_model_score=_critique_payload.get("score"),
+        violations=_critique_payload.get("violations"),
+        marker_leak_detected=bool(_f1_leaked))
+    if not _f1_clear:
+        # Two distinct refusals share this gate, and the telemetry has to say which:
+        # residual markers (the scrub could not clean the text) versus a late mutation
+        # that invalidated L3's proof (the scrub worked, but nothing re-verified the
+        # bytes now being delivered — brief §C.3). Naming both `internal_marker_leak`
+        # would send an operator hunting for a marker that is not there.
+        if _f1_leaked:
+            _f1_error = "internal_marker_leak"
+            log.error(
+                "narration job %s: internal marker(s) survived scrub, delivery BLOCKED "
+                "(count=%d)", job_id, len(_f1_leaked))
+        else:
+            _f1_error = "l3_proof_invalidated_late_mutation"
+            log.error(
+                "narration job %s: the manuscript changed AFTER L3 verified it; the "
+                "continuity proof no longer describes the delivered bytes and nothing "
+                "re-proved them — delivery BLOCKED", job_id)
+        await _finalize(
+            job_id, job_uuid, tenant_id, status=_STATUS_FAILED,
+            result=_result_payload(result), error=_f1_error)
+        await _refund(meter_op, tenant_id, job_id)
+        await _p0a_flush("failed")
+        return
     # Private prompt material must not cross the persistence boundary. The bounded
     # result payload already ignores unknown keys; the explicit pop also prevents a
     # future broad serializer or chapter persistence refactor from leaking the raw
@@ -3544,6 +3747,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         _mctrs = (result.get("counter_report") or {}).get("counters") or {}
                         import re as _mre
                         _mtopic = str(body.get("topic") or body.get("goal") or body.get("brief") or "")
+                        # F5: a name/number this story's OWN outline/bible already establishes is
+                        # not a lane-repetition tic -- exempt it too, not just premise-supplied
+                        # terms, or repair would be told to rename/renumber this story's own canon.
+                        _mbible = str(result.get("canonical_facts") or "")
                         _mvdem = os.environ.get("NARASI_LEDGER_VALUE_DEMOTE", "0").strip().lower() in ("1", "true", "yes", "on")
                         for h in ((_mctrs.get("ledger_hits") or {}).get("hits") or [])[:8]:
                             if h.get("where") != "manuscript":
@@ -3551,7 +3758,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             if _mvdem and str(h.get("term") or "").startswith("floor:"):
                                 continue
                             _mterm = str(h.get("term") or "").split(":", 1)[-1]
-                            if _mterm and _premise_term_in_topic(_mterm, _mtopic):
+                            if _ledger_hit_is_exempt(_mterm, _mtopic, _mbible):
                                 continue
                             _mech.append({
                                 "type": "ledger_hit", "severity": "high",
@@ -5027,7 +5234,9 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     _crit_out, _register_out, _canon_out, _tt_out = await asyncio.gather(
         _v3g_critic_detect(), _v3g_register_detect(), _v3g_canon_diff_detect(), _v3g_thread_tracker_detect())
 
-    _v3g_merged = (
+    # F5: dedup BEFORE budgeting -- four independent detectors can each surface the
+    # identical finding, and each survivor otherwise consumes its own repair-budget slot.
+    _v3g_merged = _v3g_dedup_violations(
         list(_crit_out.get("eligible") or [])
         + list(_register_out.get("eligible") or [])
         + list(_canon_out.get("eligible") or [])
@@ -5048,6 +5257,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 outline_packets=_outline_packets)
             if isinstance(_v3g_revise_request.get("structural_patch"), dict):
                 result["structural_patch"] = _v3g_revise_request["structural_patch"]
+            # F2: the legacy chapter-revise accounting rides the SAME local request dict
+            # and is lost with it unless copied out here — the classic path has its own
+            # copy helper, this (narration/L3) route does not go through it.
+            if isinstance(_v3g_revise_request.get("legacy_revise"), dict):
+                result["legacy_revise"] = _v3g_revise_request["legacy_revise"]
             _v3g_t_rev = time.monotonic() - _v3g_t_rev0
             # P0A: recorded HERE, inside the branch that actually ran a revise — reading
             # the variable after the block would report the 0.0 initialiser as a
@@ -5279,6 +5493,11 @@ def _result_payload(result: dict) -> dict:
         # summary, per _narasi_normalize_critique). Absent when the critic didn't run.
         # Persisted so a low score can be classified post-hoc (violations were log-only).
         "critique": result.get("critique"),
+        # F6b: report-only GO/NO-GO by hard predicates (marker leak / boundary break
+        # high+ / missing final beat / tense drift), independent of the critic's own
+        # score -- see _narasi_go_no_go_verdict. Always present (computed
+        # unconditionally in _run_narration_job_after_parity).
+        "narasi_verdict": result.get("narasi_verdict"),
         # Canon-diff verdict (Phase 2b, bounded: <=20 forks). Absent unless NARASI_CANON_DIFF ran.
         "canon_diff": result.get("canon_diff"),
         # Unresolved-thread tracker verdict (bounded: <=8 threads checked/flagged). Absent
@@ -5296,6 +5515,14 @@ def _result_payload(result: dict) -> dict:
     _structural_patch = result.get("structural_patch")
     if _structural_patch:
         payload["structural_patch"] = _structural_patch
+    # F2: bounded legacy chapter-revise accounting (eight integer counters, a `lane`
+    # label, and a pinned schema_version — ten keys, no free text).
+    # Same present-only rule as its neighbours — this payload is an
+    # explicit allowlist, so a block built and published upstream is DROPPED here unless
+    # it is named, which is exactly how it went missing from the narration/L3 route.
+    _legacy_revise = result.get("legacy_revise")
+    if _legacy_revise:
+        payload["legacy_revise"] = _legacy_revise
     # 🔴 L3-ASSIST: ADDED ONLY WHEN THERE IS ONE. Listing it beside the keys above
     #    would put `canon_lite_binding: null` on every off/shadow job's persisted
     #    payload — a shape change to jobs that never ran assist, which is exactly
@@ -5309,6 +5536,15 @@ def _result_payload(result: dict) -> dict:
     _cl_l3 = result.get("canon_lite_l3")
     if _cl_l3:
         payload["canon_lite_l3"] = _cl_l3
+    # F1 (brief §D): a bounded count only (never the marker/prose it was found in,
+    # C12) — present only when the seam actually ran against a real canon (same
+    # "added only when there is one" rule as the two blocks above). `0` is a real,
+    # meaningful value here (the common/good case), so this checks key PRESENCE,
+    # not truthiness — `0 in result` must still surface `0`, not be treated as absent.
+    for _k in ("f1_scrub_operations_count", "f1_generation_markers_removed",
+               "f1_l3_candidate_markers_removed", "f1_final_seam_markers_removed"):
+        if _k in result:
+            payload[_k] = result[_k]
     return payload
 
 
@@ -5340,6 +5576,170 @@ async def _reconcile_checkboxes(job_id: str, result: dict, total: int) -> None:
         await r.expire(key, _CHAPTERS_TTL)
     except Exception as e:  # noqa: BLE001
         log.debug("reconcile_checkboxes(%s) failed: %s", job_id, e)
+
+
+def _scrub_and_detect_recursive(obj: Any, canon: Any, _cl: Any, leaked: set[str],
+                                removed_count: list[int]) -> Any:
+    """Walk any JSON-shaped value, scrub every string it contains, and accumulate
+    whatever `detect_bound_markers` still finds afterward into `leaked`. Recurses
+    through dicts and lists/tuples; every other type (int, bool, None, ...) passes
+    through untouched. Returns the (possibly rebuilt) value.
+
+    Deliberately schema-agnostic: an adversarial audit of F1 found a leaked id could
+    reach a customer through `fact_report`/`phantom_name_report` — quality-gate
+    report fields the seam's original field-by-field version never knew to look at,
+    populated earlier in the same job by `_apply_v3_gates` from raw, pre-scrub
+    sentence excerpts. Naming fields one at a time is exactly the shape that keeps
+    recurring in this codebase (a rule enforced at one door, absent at the next
+    field someone adds later) — walking every string closes the door structurally
+    instead of by enumeration.
+
+    `removed_count` is a 1-element list used as a plain mutable int accumulator (no
+    `nonlocal` across the recursive calls) — brief §D: how many marker TOKENS were
+    actually removed, a SEPARATE number from `leaked` (what a rescan still finds).
+    A repaired marker increments this; it is never, by itself, evidence of failure —
+    only `leaked` (checked by the caller) gates delivery.
+    """
+    if isinstance(obj, str):
+        if not obj:
+            return obj
+        scrubbed, _n = _cl.scrub_bound_markers(obj, canon)
+        removed_count[0] += _n
+        leaked.update(_cl.detect_bound_markers(scrubbed, canon))
+        return scrubbed
+    if isinstance(obj, dict):
+        for k in list(obj.keys()):
+            obj[k] = _scrub_and_detect_recursive(obj[k], canon, _cl, leaked, removed_count)
+        return obj
+    if isinstance(obj, list):
+        for i in range(len(obj)):
+            obj[i] = _scrub_and_detect_recursive(obj[i], canon, _cl, leaked, removed_count)
+        return obj
+    if isinstance(obj, tuple):
+        return tuple(_scrub_and_detect_recursive(v, canon, _cl, leaked, removed_count)
+                    for v in obj)
+    return obj
+
+
+def _delivery_representations(result: dict, _cl2: Any) -> tuple:
+    """Every representation of the delivered text, as one comparable value.
+
+    🔴 THE ASSEMBLED BOOK IS NOT THE ONLY COPY, and comparing only it is how a
+       chapter-row-only change slipped past the proof check. `_persist_chapters`
+       writes `narasi_chapters` from `chapters[*]["content"]` independently of the
+       book string, `_l3_sync_chapter_records` rewrites both as ONE all-or-nothing
+       unit precisely because they must agree, and a reader can open either. Both are
+       the delivery; a change to either invalidates a proof taken before it.
+    """
+    key = _cl2.resolve_manuscript_key(result)
+    manuscript = result.get(key) if key else None
+    chapters = result.get("chapters")
+    rows = (tuple(c.get("content") if isinstance(c, dict) else None for c in chapters)
+            if isinstance(chapters, list) else ())
+    return (manuscript, rows)
+
+
+def scrub_and_verify_generation_leak(result: dict, canon: Optional[Any]) -> tuple[bool, tuple[str, ...]]:
+    """F1 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md): remove any opaque canon id
+    that leaked into generated prose, then verify independently before delivery.
+
+    Mutates `result` IN PLACE, RECURSIVELY — every string reachable anywhere inside
+    it: the assembled book, every `result["chapters"][*]["content"]`
+    (`_persist_chapters` writes narasi_chapters from that list independently of the
+    assembled book string), and every quality-gate report field
+    (`fact_report`/`phantom_name_report`/`gate_report`/`register_gate`/
+    `counter_report`/...) that `_apply_v3_gates` populates BEFORE this seam runs and
+    that `_result_payload()` forwards to the customer verbatim. A field-by-field
+    version of this function shipped first and was found, by adversarial audit, to
+    miss exactly those report fields — this version does not enumerate fields at
+    all, so a report type added after this comment is written is covered anyway.
+
+    Returns `(clear, leaked_ids)`. `clear` is True ONLY when an INDEPENDENT rescan —
+    never scrub's own return count — finds nothing left; that is the one value a
+    caller may treat as safe to deliver. `leaked_ids` is always the rescan's own
+    result (bare ids, never surrounding prose — C12), so a caller never has to trust
+    scrub's side effect to decide GO/NO-GO.
+    """
+    import canon_lite as _cl
+    if not isinstance(canon, _cl.CanonLiteV1):
+        return True, ()
+    # 2026-08-15 re-audit REJECT finding: `_canon_lite_l3_assist_repair` (the ONLY
+    # writer of `result["canon_lite_l3"]`, via `_l3_record_outcome`) runs and records
+    # `delivery_binding`/`manuscript_sha256` BEFORE this seam does — this is the last
+    # point the manuscript is mutable, by design (comment at the caller). If the scrub
+    # below actually changes the manuscript field, that recorded binding now describes
+    # bytes nobody is about to deliver: a stale MATCH. Capture the pre-scrub identity of
+    # THAT SPECIFIC field (not "did anything anywhere change") so a leak scrubbed out of
+    # some other string (a report, a chapter row) that leaves the manuscript itself
+    # byte-identical does not trigger this — see resolve_manuscript_key's own docstring
+    # for why "book" else "output" is the delivery path's own choice, mirrored here.
+    import canon_lite_l2 as _cl2
+    _manuscript_key = _cl2.resolve_manuscript_key(result)
+    _delivery_before = _delivery_representations(result, _cl2)
+    leaked: set[str] = set()
+    # Brief §D: a count, bounded and separate from `leaked` — never the marker/prose
+    # itself (C12). A marker that WAS removed is not, by itself, evidence of anything
+    # wrong; only `leaked` (below) gates delivery. Recorded on `result` so it survives
+    # to whatever calls this (observability), the same way `canon_lite_l3` does.
+    _removed_count = [0]
+    for k in list(result.keys()):
+        result[k] = _scrub_and_detect_recursive(result[k], canon, _cl, leaked, _removed_count)
+    # 🔴 THIS IS A COUNT OF SCRUB OPERATIONS, AND THE NAME NOW SAYS SO. It was called
+    #    `f1_scrub_removed_count` and described as the "delivered total", which it is
+    #    not and cannot cheaply be made into:
+    #      · the L3 subtotal counts markers scrubbed out of repair CANDIDATES, and a
+    #        candidate may then be rejected by the validator — the scrub happened, the
+    #        text never shipped;
+    #      · this seam walks every string under `result`, so one leaked marker that
+    #        appears in both the assembled book and its chapter row is two operations,
+    #        not two markers.
+    #    Reporting that sum as "markers in the delivered book" would mislead exactly
+    #    the canary reader it exists for. Counting only truly-delivered markers would
+    #    mean threading acceptance state back out of the repair engine and de-duplicating
+    #    across representations — real work, and not F1's. So: name it what it measures,
+    #    and publish the three subtotals beside it so the number can be decomposed
+    #    rather than over-read. Only the GENERATION subtotal is filtered to delivered
+    #    chapters (orchestrator/static.py), because there the filter is free and the
+    #    unfiltered number would be plainly wrong.
+    #    Read with `.get(...) or 0`: both upstream keys are absent on any path that did
+    #    not run (shadow/off, or assist with no L3 session).
+    result["f1_final_seam_markers_removed"] = _removed_count[0]
+    result["f1_scrub_operations_count"] = (
+        int(result.get("f1_generation_markers_removed") or 0)
+        + int(result.get("f1_l3_candidate_markers_removed") or 0)
+        + _removed_count[0])
+    _invariant_ok = True
+    if _delivery_representations(result, _cl2) != _delivery_before:
+        _l3_telemetry = result.get("canon_lite_l3")
+        if isinstance(_l3_telemetry, dict) and _l3_telemetry.get(
+                "delivery_binding") == _cl2.BINDING_MATCH:
+            # 🔴 THE VERIFIER'S HASH IS EVIDENCE, NOT A SCRATCH FIELD — DO NOT TOUCH IT.
+            #    `manuscript_sha256` is `run.manuscript_sha256_after`: the hash of the
+            #    bytes the continuity verdict was actually computed over. An earlier
+            #    round of this fix overwrote it with the post-scrub hash, producing
+            #    telemetry that contradicted itself — a hash presented as the verified
+            #    one, sitting next to a binding saying nothing was verified. The
+            #    post-scrub bytes get their OWN field; the evidence stays as recorded.
+            _l3_telemetry["delivered_manuscript_sha256"] = _cl.sha256_hex(
+                (result.get(_manuscript_key) or "").encode("utf-8"))
+            # UNPROVED, not MISMATCH: not "checked and found to disagree" (MISMATCH's
+            # established meaning here — a real verification failure), but "the earlier
+            # proof no longer covers the current bytes, and nothing re-proved them".
+            _l3_telemetry["delivery_binding"] = _cl2.BINDING_UNPROVED
+            # And the outcome follows the binding. `resolved` beside `UNPROVED` is the
+            # same contradiction one level up: the repair may have been computed
+            # correctly, but this run did not resolve THIS book.
+            _l3_telemetry["outcome"] = L3_OUTCOME_UNRESOLVED
+            # 🔴 AND DELIVERY STOPS. Brief §C.3: a late manuscript mutation is an
+            #    invariant failure, not a repair — block unless the verifier is genuinely
+            #    re-run against the final bytes, which this deterministic scrub does not
+            #    do. Reaching here at all means BOTH earlier defences (the per-worker
+            #    scrub and the L3 candidate scrub) failed to catch a marker, so the
+            #    healthy path never sees this; a clean rescan is not licence to ship a
+            #    book whose proof no longer describes it.
+            result["f1_late_mutation_after_verification"] = True
+            _invariant_ok = False
+    return (not leaked and _invariant_ok), tuple(sorted(leaked))
 
 
 async def _persist_chapters(tenant_id: str, job_uuid: Optional[str], result: dict) -> None:

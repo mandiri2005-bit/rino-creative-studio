@@ -92,6 +92,20 @@ class SessionBudgetExhausted(RuntimeError):
     """Raised by the extractor when the session's call budget is spent."""
 
 
+def _split_trailing_frame(data: bytes) -> tuple[bytes, bytes]:
+    """Split a chapter block into (core, trailing_frame) at its own trailing
+    whitespace boundary — F3, BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md.
+
+    `trailing_frame` is whatever whitespace this SPECIFIC block already carried
+    after its last non-whitespace byte — typically the blank line before the next
+    chapter's `## ` heading (`\\n\\n`), or a single trailing `\\n` (or none at all)
+    for the last chapter in a manuscript. Never a constant: the exact bytes are
+    read off the block itself, so nothing generic is ever manufactured.
+    """
+    core = data.rstrip()
+    return core, data[len(core):]
+
+
 def _repair_instruction(canon_text: str, codes: tuple[str, ...], language: str) -> str:
     """The repair turn. Bounded, and explicit about what must NOT change."""
     findings = ", ".join(codes) or "continuity"
@@ -112,7 +126,8 @@ class L3AssistSession:
     """Built ONCE per job. Hands the engine its two callables."""
 
     __slots__ = ("_metered", "_qc", "_canon_text", "_language", "_worker_model",
-                 "_telemetry_sink", "_timeout", "_calls", "_max_calls")
+                 "_telemetry_sink", "_timeout", "_calls", "_max_calls",
+                 "_markers_scrubbed")
 
     def __init__(
         self,
@@ -141,6 +156,11 @@ class L3AssistSession:
         self._timeout = float(timeout)
         self._calls = 0
         self._max_calls = int(max_calls)
+        # F1: markers this session removed from repair candidates. Safe as plain
+        # session state — `repair_provider` is awaited from one sequential per-chapter
+        # loop in canon_lite_l3_repair.py (no gather/create_task), so there is no
+        # concurrent increment to race.
+        self._markers_scrubbed = 0
 
     # -- budget ------------------------------------------------------------
     @property
@@ -150,6 +170,14 @@ class L3AssistSession:
     @property
     def calls_remaining(self) -> int:
         return max(0, self._max_calls - self._calls)
+
+    @property
+    def markers_scrubbed(self) -> int:
+        """F1: how many bound markers this session removed from repair CANDIDATES —
+        read by the seam so `f1_scrub_operations_count` covers every scrub point, not
+        just the last one. Candidate attempts, not delivered repairs: a candidate the
+        validator later rejects still counted here."""
+        return self._markers_scrubbed
 
     def _spend(self, kind: str) -> None:
         if self._calls >= self._max_calls:
@@ -168,6 +196,22 @@ class L3AssistSession:
         raise as a provider FAULT and stops the chapter, while a decline is an
         ordinary rejected candidate. Running out of budget is neither a fault nor a
         reason to hide that the chapter went unrepaired.
+
+        F3 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md): `_rebuild()`
+        (canon_lite_l3_repair.py) joins accepted blocks with `b"".join(...)` — no
+        separator of its own — so each block's OWN trailing bytes (the blank line
+        before the NEXT chapter's `## ` heading) are what keep the whole-manuscript
+        re-split able to see that heading as a heading at all. An ordinary LLM
+        completion routinely `.strip()`s trailing whitespace it was never asked to
+        preserve; proven live in canary v9 as `stage=post.block_count` — the
+        symptom (a candidate that mysteriously changes the manuscript's block
+        count) rather than the cause (a lost separator). Split the ORIGINAL block
+        into a core and its own exact trailing frame BEFORE sending it to the
+        model; send only the core; reattach the ORIGINAL's own exact trailing
+        bytes to whatever the model returns, regardless of what the model itself
+        did with whitespace. Never a generic `"\\n\\n"` — only bytes the original
+        block already had, so a last chapter with no trailing separator at all
+        gets none manufactured for it either.
         """
         try:
             self._spend("repair")
@@ -176,6 +220,7 @@ class L3AssistSession:
             return None
         from orchestrator.static import Worker, run_worker
 
+        core, trailing_frame = _split_trailing_frame(block_bytes)
         worker = Worker(
             name=f"l3repair-ch{chapter_index + 1}", role="worker",
             phase=L3_REPAIR_PHASE, model=self._worker_model,
@@ -186,7 +231,7 @@ class L3AssistSession:
                 worker,
                 _repair_instruction(self._canon_text, tuple(violation_codes),
                                     self._language)
-                + "\n\n" + block_bytes.decode("utf-8", errors="strict"),
+                + "\n\n" + core.decode("utf-8", errors="strict"),
                 timeout=self._timeout,
                 task_id=f"l3repair-ch{chapter_index + 1}-a{attempt}")
         except Exception:  # noqa: BLE001 - a decline, not a fault
@@ -196,7 +241,31 @@ class L3AssistSession:
         text = (res or {}).get("output")
         if not isinstance(text, str) or not text.strip():
             return None
-        return text.encode("utf-8")
+        # F1 (2026-08-14/2026-08-15 re-audit): the repair PROVIDER is its own LLM
+        # call — as capable of echoing a bracket token as the original
+        # chapter-generation worker was (canary v9's actual failure mode). Scrub the
+        # CORE now, before re-extraction/validation/whole-book staging or any hash
+        # sees it, so a repaired chapter can never reintroduce a marker the original
+        # didn't have. `canon` is this call's own parameter — no import/threading
+        # needed. Deliberately best-effort (never raises): the final narration_api.py
+        # seam is still the independent backstop authority if this ever misses.
+        if canon is not None:
+            try:
+                import canon_lite as _cl
+                text, _n = _cl.scrub_bound_markers(text, canon)
+                self._markers_scrubbed += _n
+            except Exception:  # noqa: BLE001 - a scrub bug must never break repair
+                log.warning("canon lite l3: repair candidate marker scrub failed "
+                            "(error_code=l3_repair_scrub_error)")
+        # `.rstrip()` only — never `.lstrip()`/`.strip()` on the leading edge. A
+        # wrapper preamble ("Sure, here's the revised chapter:\n\n## ...") ahead
+        # of the real heading is a DIFFERENT failure `pre.heading` exists to
+        # catch; silently trimming leading text here would mask it instead of
+        # exposing it.
+        candidate_core = text.rstrip().encode("utf-8")
+        if not candidate_core:
+            return None
+        return candidate_core + trailing_frame
 
     async def extract_chapter(
         self, *, chapter_index: int, chapter_id: str, block_bytes: bytes, canon: Any,

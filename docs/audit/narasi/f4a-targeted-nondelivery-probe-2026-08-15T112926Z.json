@@ -1,0 +1,42 @@
+{
+  "cost": {
+    "completion_tokens": 199,
+    "credit_row_written": false,
+    "estimated_usd_micros": 2332,
+    "estimator": "laozhang_api._calc_cost",
+    "prompt_tokens": 361,
+    "total_tokens": 560
+  },
+  "counts": {
+    "chapters_attempted": 1,
+    "chapters_targeted": 1,
+    "provider_calls_observed": 1,
+    "provider_calls_reported": 1
+  },
+  "delivery": {
+    "persisted": false,
+    "returned_to_user": false
+  },
+  "executed_at_utc": "2026-08-15T11:29:26Z",
+  "observation": {
+    "operation_source": "unreadable",
+    "subtype": "other",
+    "token_length": 0,
+    "token_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "validator_outcome": "unknown_operation"
+  },
+  "primary_raw_evidence_available": true,
+  "probe_kind": "targeted_non_delivery",
+  "provider": {
+    "model_alias": "gemini-3.5-flash",
+    "phase": "canon_diff_revise",
+    "resolved_model": "gemini-3.5-flash"
+  },
+  "recording_mode": "live",
+  "schema_version": "narasi_f4a_probe_artifact_v1",
+  "source": {
+    "head": "a6711e02ea70faf5f41c60c5ff702aa953bad183",
+    "laozhang_api_sha256": "5e6f7301d7d258720072243bc0eea80b6dd63b65276be456ccab569953320443",
+    "narasi_addressed_patch_sha256": "08ea984ee1b2d1a03fa795b2375d747deee79d74f98daf4902130d2540cf3ada"
+  }
+}

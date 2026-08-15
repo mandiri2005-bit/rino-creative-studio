@@ -14,6 +14,7 @@ from narasi_addressed_patch import (
     PATCH_SCHEMA_VERSION,
     PatchValidationError,
     apply_addressed_patch,
+    bounded_operation_subtype,
     segment_chapter,
 )
 import laozhang_api as lz
@@ -131,6 +132,151 @@ def test_rejection_matrix_is_atomic(raw, code):
         apply_addressed_patch(segmented, raw)
     assert exc.value.code == code
     assert segmented.original == before
+
+
+def test_patch_validation_error_received_defaults_to_none_and_leaves_code_untouched():
+    exc = PatchValidationError("some_code")
+    assert exc.code == "some_code"
+    assert exc.received is None
+    carrying = PatchValidationError("unknown_operation", received="delete")
+    assert carrying.code == "unknown_operation"
+    assert carrying.received == "delete"
+
+
+def test_unknown_operation_preserves_raw_received_value_for_telemetry():
+    segmented = segment_chapter(CHAPTER)
+    with pytest.raises(PatchValidationError) as exc:
+        apply_addressed_patch(
+            segmented, _payload({"op": "delete_paragraph", "unit_id": "u001"}))
+    assert exc.value.code == "unknown_operation"
+    assert exc.value.received == "delete_paragraph"
+
+
+@pytest.mark.parametrize(
+    ("received", "bucket"),
+    [
+        ("delete", "delete"),
+        ("Delete", "delete"),
+        ("delete_paragraph", "delete"),
+        ("insert", "insert"),
+        ("REWRITE_UNIT", "rewrite"),
+        ("update", "update"),
+        ("swap", "other"),
+        ("", "other"),
+        ("   ", "other"),
+        (None, "other"),
+        (123, "other"),
+        (["delete"], "other"),
+        ("insert_and_delete", "insert"),
+    ],
+)
+def test_bounded_operation_subtype_classifies_into_closed_set(received, bucket):
+    assert bounded_operation_subtype(received) == bucket
+
+
+# ---------------------------------------------------------------------------
+# F4b — narrow, unambiguous verb-as-key normalization (BRIEF-FOR-CODEX-2026-08-14
+# -POST-CANARY-V9.md, sha256 fecd3dcb5f9b85f81b70790736c5304a1dbcf29fad9780fb6c1
+# dc904d4fc20b5, F4b). Grounded in a live targeted probe (2026-08-14,
+# model=gemini-3.5-flash via vertex, phase=canon_diff_revise): the raw provider
+# content was exactly
+#   {"schema_version":"narasi_addressed_patch_v1","operations":
+#    [{"replace":{"unit_id":"u006","text":"..."}}]}
+# -- the verb became the WRAPPING KEY instead of the "op" field's value. NOT a
+# vocabulary alias/typo -- a structural JSON-shape variant, unwrapped losslessly.
+# ---------------------------------------------------------------------------
+
+def test_normalize_verb_as_key_unwraps_the_exact_probe_observed_shape():
+    raw_op = {"replace": {"unit_id": "u006", "text": "Condensed bridge text."}}
+    assert patch_core._normalize_verb_as_key_operation(raw_op) == {
+        "op": "replace", "unit_id": "u006", "text": "Condensed bridge text."}
+
+
+@pytest.mark.parametrize("verb", ["insert_before", "insert_after", "replace", "move"])
+def test_normalize_verb_as_key_covers_all_four_closed_operations(verb):
+    raw_op = {verb: {"anchor_id": "u001", "text": "x"}}
+    assert patch_core._normalize_verb_as_key_operation(raw_op) == {
+        "op": verb, "anchor_id": "u001", "text": "x"}
+
+
+def test_normalize_verb_as_key_leaves_a_wellformed_operation_untouched():
+    raw_op = {"op": "replace", "unit_id": "u001", "text": "x"}
+    assert patch_core._normalize_verb_as_key_operation(raw_op) is raw_op
+
+
+def test_normalize_verb_as_key_never_fires_for_an_unrecognized_verb():
+    # "delete" is not one of the four closed operations -- this must stay
+    # unrecognized (routes to unknown_operation), never speculatively accepted.
+    raw_op = {"delete": {"unit_id": "u001"}}
+    assert patch_core._normalize_verb_as_key_operation(raw_op) is raw_op
+
+
+def test_normalize_verb_as_key_never_fires_for_a_multi_key_mapping():
+    raw_op = {"replace": {"unit_id": "u001", "text": "x"}, "extra": 1}
+    assert patch_core._normalize_verb_as_key_operation(raw_op) is raw_op
+
+
+def test_normalize_verb_as_key_never_fires_when_the_value_is_not_a_mapping():
+    raw_op = {"replace": "u001"}
+    assert patch_core._normalize_verb_as_key_operation(raw_op) is raw_op
+
+
+def test_normalize_verb_as_key_never_fires_when_the_inner_dict_already_has_op():
+    # Ambiguous/malformed on its face -- refuse rather than guess which "op" wins.
+    raw_op = {"replace": {"op": "move", "unit_id": "u001", "text": "x"}}
+    assert patch_core._normalize_verb_as_key_operation(raw_op) is raw_op
+
+
+def test_addressed_patch_accepts_the_exact_probe_observed_verb_as_key_shape():
+    segmented = segment_chapter(CHAPTER)
+    raw = json.dumps({"schema_version": PATCH_SCHEMA_VERSION, "operations": [
+        {"replace": {"unit_id": "u002",
+                     "text": "Ia menyerahkan seluruh haknya sebelum rekaman diputar."}},
+    ]})
+    result = apply_addressed_patch(segmented, raw)
+    assert "seluruh haknya" in result.text
+
+
+def test_addressed_patch_still_rejects_a_genuinely_unrecognized_verb_as_key():
+    segmented = segment_chapter(CHAPTER)
+    with pytest.raises(PatchValidationError) as exc:
+        apply_addressed_patch(
+            segmented, _payload({"delete": {"unit_id": "u001"}}))
+    assert exc.value.code == "unknown_operation"
+    assert exc.value.received == "delete"
+
+
+def test_addressed_patch_rejects_an_ambiguously_nested_known_verb_as_unknown_operation():
+    # Adversarial-audit finding (2026-08-14 night): a known verb ("replace") used as
+    # the wrapping key, whose inner mapping ALSO carries its own "op" key, is
+    # ambiguous on its face -- _normalize_verb_as_key_operation correctly refuses to
+    # unwrap it. The kind-extraction fallback must NOT then adopt "replace" as the
+    # dispatch `kind` anyway (it previously did, since it only checked "is this a
+    # single-key mapping", not "is the wrapping key itself unrecognized") -- doing so
+    # routed the operation into replace's OWN shape-check branch, raising
+    # operation_shape instead of unknown_operation, silently skipping F4a's bounded-
+    # subtype telemetry (gated strictly on code == "unknown_operation") and
+    # reclassifying which rejected_reason_counts bucket the rejection lands in.
+    segmented = segment_chapter(CHAPTER)
+    with pytest.raises(PatchValidationError) as exc:
+        apply_addressed_patch(
+            segmented,
+            _payload({"replace": {"op": "move", "unit_id": "u001", "text": "x"}}))
+    assert exc.value.code == "unknown_operation"
+    assert exc.value.received == "replace", (
+        "the ambiguous wrapping key is still useful telemetry, even though it must "
+        "never be dispatched as a real replace attempt")
+
+
+@pytest.mark.parametrize("verb", ["insert_before", "insert_after", "move"])
+def test_addressed_patch_rejects_ambiguously_nested_known_verb_for_every_closed_op(verb):
+    segmented = segment_chapter(CHAPTER)
+    with pytest.raises(PatchValidationError) as exc:
+        apply_addressed_patch(
+            segmented,
+            _payload({verb: {"op": "replace", "unit_id": "u001", "text": "x"}}))
+    assert exc.value.code == "unknown_operation"
+    assert exc.value.received == verb
 
 
 @pytest.mark.parametrize("replacement_first", [False, True])
@@ -361,13 +507,56 @@ def test_unresolvable_structural_locator_is_bounded_and_visible(monkeypatch, cap
     assert "unresolved chapter locator type=outline_missing_beat" in caplog.text
 
 
+def test_unknown_operation_logs_bounded_subtype_and_never_the_raw_string(monkeypatch, caplog):
+    patch = _payload({"op": "delete_paragraph", "unit_id": "u001"})
+
+    class _Completions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=patch), finish_reason="stop")],
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+            )
+
+    async def _usage(*args, **kwargs):
+        return 5
+
+    monkeypatch.setattr(
+        lz, "make_narasi_client",
+        lambda *args, **kwargs: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
+    )
+    monkeypatch.setattr(lz, "_log_narasi_usage", _usage)
+    monkeypatch.setattr(lz, "_narasi_revise_timeout", lambda *args: 2.0)
+
+    finding = {
+        "severity": "high", "type": "outline_beat_order", "chapter": 3,
+        "evidence": "Surrender must precede the ruling.", "fix": "Restore the outlined order.",
+    }
+    revised, credits, stats = asyncio.run(lz._narasi_structural_patch_revise(
+        CHAPTER, [finding], "storytelling", "id", "test-model",
+        tenant_id="t", user_id="u", job_uuid=None,
+        authority_text="AUTHORITY", outline_packets={"3": "PACKET"},
+    ))
+
+    assert revised == CHAPTER
+    assert credits == 5
+    assert stats["targeted"] == stats["attempted"] == 1
+    assert stats["accepted"] == 0
+    assert stats["rejected_reason_counts"] == {"unknown_operation": 1}
+    assert stats["not_attempted_reason_counts"] == {}
+    assert "unknown_operation" in caplog.text
+    assert "subtype=delete" in caplog.text
+    assert "len=16" in caplog.text  # len("delete_paragraph") == 16, bounded not raw
+    assert "delete_paragraph" not in caplog.text
+
+
 def test_mixed_routing_defers_owned_nonstructural_and_excludes_owned_chapter(monkeypatch):
     changed = CHAPTER.replace("seluruh haknya", "semua haknya") if "seluruh haknya" in CHAPTER else CHAPTER.replace("haknya", "seluruh haknya", 1)
     captured = {}
 
     async def _patch(*args, **kwargs):
         return changed, 3, {
-            "targeted": 1, "attempted": 1, "accepted": 1,
+            "targeted": 1, "attempted": 1, "provider_calls": 1, "accepted": 1,
             "not_attempted_reason_counts": {}, "owned_chapter_numbers": {3},
         }
 
@@ -397,11 +586,12 @@ def test_mixed_routing_defers_owned_nonstructural_and_excludes_owned_chapter(mon
     assert captured["excluded"] == {3}
     assert [item["type"] for item in captured["violations"]] == ["provenance"]
     assert critique["structural_patch"] == {
-        "schema_version": "structural_patch_summary_v1",
+        "schema_version": "structural_patch_summary_v2",
         "status": "accepted",
         "structural_violations": 1,
         "chapters_targeted": 1,
         "chapters_attempted": 1,
+        "provider_calls": 1,
         "chapters_accepted": 1,
         "not_attempted_reason_counts": {},
         "deferred_nonstructural_total": 1,
@@ -453,7 +643,7 @@ def test_nonstructural_declared_chapter_never_overrides_quote_and_deferral_is_co
 
     async def patch(*_args, **_kwargs):
         return book, 1, {
-            "targeted": 1, "attempted": 1, "accepted": 0,
+            "targeted": 1, "attempted": 1, "provider_calls": 1, "accepted": 0,
             "not_attempted_reason_counts": {}, "owned_chapter_numbers": {1},
         }
 
@@ -497,7 +687,11 @@ def test_rejected_structural_attempts_preserve_success_cap_and_debit_retry_headr
 
     async def patch(*_args, **_kwargs):
         return book, 4, {
-            "targeted": 4, "attempted": 4, "accepted": 0,
+            # F4a: the legacy lane is now debited with PHYSICAL calls. This lane shape
+            # is one call per attempted chapter, so the debit is unchanged here — the
+            # divergent case (2 calls for 1 attempt) is pinned in
+            # test_narasi_f4a_provider_calls.py.
+            "targeted": 4, "attempted": 4, "provider_calls": 4, "accepted": 0,
             "not_attempted_reason_counts": {},
             "rejected_reason_counts": {"response_not_json": 4},
             "unresolved_locator_count": 0,
@@ -585,6 +779,10 @@ def test_structural_summary_four_state_contract(targeted, attempted, accepted, s
         structural_violations=targeted,
         targeted=targeted,
         attempted=attempted,
+        # F4a: one physical call per attempted chapter is the CURRENT lane's shape.
+        # Stated explicitly rather than defaulted — `accepted <= provider_calls` is an
+        # invariant now, so an accept with a defaulted zero call count is refused.
+        provider_calls=attempted,
         accepted=accepted,
         not_attempted_reason_counts=(
             {"attempt_cap": targeted - attempted} if targeted > attempted else {}),
@@ -595,8 +793,8 @@ def test_structural_summary_four_state_contract(targeted, attempted, accepted, s
 def test_structural_summary_rejects_accepted_without_manuscript_change():
     with pytest.raises(AssertionError, match="accepted-without-change"):
         lz._narasi_structural_patch_summary(
-            structural_violations=1, targeted=1, attempted=1, accepted=1,
-            manuscript_changed=False,
+            structural_violations=1, targeted=1, attempted=1, provider_calls=1,
+            accepted=1, manuscript_changed=False,
         )
 
 

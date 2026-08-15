@@ -105,7 +105,8 @@ class _Recorder:
         if not self._bind or not kw.get("canon_text"):
             return {}
         return {
-            "canon_prompt_sha256": cl.sha256_hex(kw["canon_text"].encode("utf-8")),
+            "canon_generation_prompt_sha256_seen":
+                cl.sha256_hex(kw["canon_text"].encode("utf-8")),
             "context_sha256_seen": cl.context_digest(kw["ctx"]),
             "canon_sha256": kw.get("canon_sha256"),
             "context_sha256": kw.get("context_sha256"),
@@ -244,7 +245,8 @@ def test_the_persisted_payload_gains_the_key_ONLY_when_assist_ran():
     import narration_api as na
 
     binding = {"mode": "assist", "canon_sha256": "a" * 64,
-               "canon_prompt_sha256": "b" * 64, "context_sha256": "c" * 64,
+               "canon_generation_prompt_sha256": "b" * 64, "context_sha256": "c" * 64,
+               "canon_generation_projection_version": cl.GENERATION_PROJECTION_VERSION,
                "chapters_bound": 3}
     with_assist = na._result_payload({"book": "isi", "canon_lite_binding": binding})
     without = na._result_payload({"book": "isi"})
@@ -266,11 +268,49 @@ def test_binding_is_reported_on_the_result_for_persistence():
     assert binding, "assist returned no durable binding"
     assert binding["mode"] == "assist"
     assert binding["chapters_bound"] == 3
-    for key in ("canon_sha256", "canon_prompt_sha256", "context_sha256"):
+    for key in ("canon_sha256", "canon_prompt_sha256",
+                "canon_generation_prompt_sha256", "context_sha256"):
         assert len(binding[key]) == 64, (key, binding[key])
+    assert binding["canon_generation_projection_version"] == cl.GENERATION_PROJECTION_VERSION
     # C12/§10: hashes and counts only — no prose may ride to persistence here.
     assert set(binding) == {"mode", "canon_sha256", "canon_prompt_sha256",
+                            "canon_generation_prompt_sha256",
+                            "canon_generation_projection_version",
                             "context_sha256", "chapters_bound"}
+
+
+def test_the_legacy_canonical_prompt_hash_still_means_render_canon(monkeypatch):
+    """🔴 THE CONTRACT F1 MUST NOT REDEFINE. At a6711e0 `canon_prompt_sha256` was
+    `sha256(render_canon(canon))` — the canonical, ID-BEARING render QC/L3 address
+    spans with. F1 changed what gets INJECTED into a chapter prompt (to the id-free
+    generation projection); it may not change what that older field means, and it may
+    not delete it either. Both identities are published, and this pins each one to the
+    renderer it actually describes — a swap between them would pass any test that only
+    checked "is it a 64-char hex string"."""
+    canon_seen = {}
+
+    async def _capture(**kw):
+        canon_seen.setdefault("canon", kw.get("canon"))
+        return {"ok": True, "output": f"teks {kw['no']}", "no": kw["no"], "model": "m",
+                "canon_generation_prompt_sha256_seen":
+                    cl.sha256_hex(kw["canon_text"].encode("utf-8")),
+                "context_sha256_seen": cl.context_digest(kw["ctx"]),
+                "canon_sha256": kw.get("canon_sha256"),
+                "context_sha256": kw.get("context_sha256")}
+
+    res, _ = asyncio.run(_run("assist", n=3, stub=_capture))
+    binding = res["canon_lite_binding"]
+    canon = canon_seen["canon"]
+    assert canon is not None, "assist did not hand the canon to its workers"
+
+    assert binding["canon_prompt_sha256"] == \
+        cl.sha256_hex(cl.render_canon(canon).encode("utf-8"))
+    assert binding["canon_generation_prompt_sha256"] == \
+        cl.sha256_hex(cl.render_canon_for_generation(canon).encode("utf-8"))
+    # And they are genuinely different values — a canon with ids renders differently
+    # from one projected without them, so a test that passed with the two swapped
+    # would prove nothing.
+    assert binding["canon_prompt_sha256"] != binding["canon_generation_prompt_sha256"]
 
 
 @pytest.mark.parametrize("mode", [None, "shadow"])
@@ -547,7 +587,9 @@ def test_enforce_is_still_refused_before_any_work():
 
 @pytest.mark.parametrize("attr,boom,code", [
     ("build_canon_lite_v1", True, "canon_lite_assist_canon_unavailable"),
-    ("render_canon", True, "canon_lite_assist_arming_failed"),
+    # F1: the assist injection point now renders via render_canon_for_generation
+    # (canon_lite.py), not render_canon — see orchestrator/static.py's assist arming.
+    ("render_canon_for_generation", True, "canon_lite_assist_arming_failed"),
     ("SharedContextFreeze", True, "canon_lite_assist_arming_failed"),
 ])
 def test_assist_refuses_before_any_worker_when_arming_fails(monkeypatch, attr, boom, code):
@@ -598,14 +640,14 @@ def test_assist_refuses_when_the_rendering_is_empty(monkeypatch):
     identically everywhere, so the census agrees with itself perfectly while no
     canon reached anyone. Consistency is not the property; presence is.
     """
-    monkeypatch.setattr(cl, "render_canon", lambda _c: "")
+    monkeypatch.setattr(cl, "render_canon_for_generation", lambda _c: "")
     res, rec = asyncio.run(_run("assist", n=3))
     assert res.get("ok") is False, res
     assert res.get("error") == "canon_lite_assist_arming_failed"
     assert rec.calls == []
 
 
-@pytest.mark.parametrize("attr", ["build_canon_lite_v1", "render_canon",
+@pytest.mark.parametrize("attr", ["build_canon_lite_v1", "render_canon_for_generation",
                                   "SharedContextFreeze"])
 def test_shadow_still_degrades_where_assist_refuses(monkeypatch, attr):
     """The behavioural split, stated as its own control.
@@ -646,7 +688,7 @@ def test_one_chapter_with_a_foreign_canon_hash_fails_the_job():
         def _report(self, kw):
             rep = super()._report(kw)
             if kw["no"] == 1:
-                rep["canon_prompt_sha256"] = "f" * 64
+                rep["canon_generation_prompt_sha256_seen"] = "f" * 64
             return rep
 
     res, _ = asyncio.run(_run("assist", n=4, stub=_OneOdd()))
@@ -664,7 +706,7 @@ def test_all_chapters_agreeing_on_the_WRONG_canon_still_fails():
     class _AllOdd(_Recorder):
         def _report(self, kw):
             rep = super()._report(kw)
-            rep["canon_prompt_sha256"] = "a" * 64
+            rep["canon_generation_prompt_sha256_seen"] = "a" * 64
             return rep
 
     res, _ = asyncio.run(_run("assist", n=4, stub=_AllOdd()))
@@ -855,19 +897,187 @@ def test_real_write_chapter_prepends_canon_and_hashes_delivered_bytes(monkeypatc
     assert system.startswith(canon_text), system[:120]
     # The reported hash is the hash of the bytes actually delivered — NOT the
     # value it was handed.
-    assert res["canon_prompt_sha256"] == prompt_sha
-    assert res["canon_prompt_sha256"] != "9" * 64, \
+    assert res["canon_generation_prompt_sha256_seen"] == prompt_sha
+    assert res["canon_generation_prompt_sha256_seen"] != "9" * 64, \
         "the prompt hash was copied from the parameter, not recomputed"
-    assert res["canon_prompt_sha256"] == \
+    assert res["canon_generation_prompt_sha256_seen"] == \
         hashlib.sha256(system[:len(canon_text)].encode("utf-8")).hexdigest()
     # Same for the context digest: measured on the object it actually read.
     assert res["context_sha256_seen"] == cl.context_digest(ctx)
     assert res["context_sha256_seen"] != "d" * 64, \
         "the context digest was copied from the parameter, not recomputed"
     # The dispatched values are still carried through, unaltered, for the census.
-    assert res["canon_prompt_expected"] == "9" * 64
+    assert res["canon_generation_prompt_expected"] == "9" * 64
     assert res["canon_sha256"] == "c" * 64
     assert res["context_sha256"] == "d" * 64
+
+
+# ── 2026-08-15 re-audit REJECT finding (brief §C, golden test "a") ──────────
+# F1's marker scrub previously existed ONLY at the final narration_api.py seam, AFTER
+# L3 had already computed and recorded `manuscript_sha256`/`delivery_binding=MATCH`
+# for the pre-scrub bytes — a scrub that later removed a marker made that binding
+# stale. The fix sanitizes chapter output at its EARLIEST possible point — here, the
+# instant a worker's raw text exists, before assembly/L2/L3 ever sees it — so the
+# common case never needs the late seam to change anything, and MATCH stays honest.
+def test_real_write_chapter_scrubs_a_bound_marker_before_returning(monkeypatch):
+    """A worker that echoes `[anc1]` (canary v9's exact failure) must never have that
+    marker survive in `res["output"]` — this is the earliest point in the whole
+    pipeline text leaves the provider boundary. Driven in the REAL assist shape:
+    `canon` AND the `canon_text` that was actually injected, because the scrub is
+    deliberately conditioned on the injection, not on a canon merely existing (see
+    the shadow test above)."""
+    async def _fake_run_worker(worker, user_turn, **_kw):
+        return {"ok": True, "output": "Ia mengingat [anc1] dengan jelas.", "model": "m"}
+
+    async def _passthrough_gate(res, **_kw):
+        return res
+
+    monkeypatch.setattr(st, "run_worker", _fake_run_worker)
+    monkeypatch.setattr(st, "_apply_word_gate", _passthrough_gate)
+
+    chapters = _outline(2)
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=chapters,
+        job_config=cl.build_job_config_snapshot(
+            outline_chapters=chapters, target_language="id",
+            narration_style="kdrama_serial"),
+        anchors=[cl.CanonAnchorV1("anc1", "time", "five years of absence")])
+    canon_text = cl.render_canon_for_generation(canon)
+
+    res = asyncio.run(st._write_chapter(
+        ctx=SharedContext(topic="topik", chapters=chapters), ch=chapters[0], no=0,
+        total=2, style="creative non-fiction", language="id", mode="text",
+        job_id="j-1", worker_model="m", timeout=5.0, telemetry_sink=None,
+        canon=canon, canon_text=canon_text,
+        canon_prompt_sha="p" * 64, canon_sha256="c" * 64, context_sha256="x" * 64))
+
+    assert res.get("ok"), res
+    assert "[anc1]" not in res["output"]
+    assert "Ia mengingat" in res["output"] and "dengan jelas" in res["output"], \
+        "the surrounding prose must survive -- only the marker token is removed"
+    assert res["f1_markers_removed"] == 1, \
+        "the worker must report its own removal count for job-level aggregation"
+
+
+def test_shadow_mode_never_scrubs_a_marker_out_of_user_visible_output():
+    """🔴 SHADOW IS OBSERVATION-ONLY, AND THAT IS NOT NEGOTIABLE. The first version of
+    this early-scrub fix passed `canon` to `_write_chapter` for shadow as well as
+    assist, on the reasoning that scrubbing an opaque token is harmless either way.
+    It is not: shadow's ONE architectural promise is that it may never change what the
+    user gets, and only assist ever injects a canon into a generation prompt — so under
+    shadow a bracket colliding with one of its own ids is a coincidence in text that
+    was never shown the canon, not a leak. Byte-identical, always."""
+    async def _fake_run_worker(worker, user_turn, **_kw):
+        return {"ok": True, "output": "Text [anc1] remains.", "model": "m"}
+
+    async def _passthrough_gate(res, **_kw):
+        return res
+
+    import unittest.mock as _mock
+    chapters = _outline(2)
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=chapters,
+        job_config=cl.build_job_config_snapshot(
+            outline_chapters=chapters, target_language="id",
+            narration_style="kdrama_serial"),
+        anchors=[cl.CanonAnchorV1("anc1", "time", "five years of absence")])
+
+    with _mock.patch.object(st, "run_worker", _fake_run_worker), \
+         _mock.patch.object(st, "_apply_word_gate", _passthrough_gate):
+        # Shadow's shape at the call site: a real canon exists (shadow builds one for
+        # its own projection report) but NOTHING was injected -- `canon_text=None`.
+        res = asyncio.run(st._write_chapter(
+            ctx=SharedContext(topic="topik", chapters=chapters), ch=chapters[0], no=0,
+            total=2, style="creative non-fiction", language="id", mode="text",
+            job_id="j-1", worker_model="m", timeout=5.0, telemetry_sink=None,
+            canon=canon, canon_text=None))
+    assert res["output"] == "Text [anc1] remains.", \
+        "shadow mutated user-visible output -- observation-only was violated"
+
+
+def test_shadow_narrate_chapters_end_to_end_never_rewrites_the_book(monkeypatch):
+    """The CALL-SITE half of the shadow guard, driven through the real
+    `narrate_chapters` -> real `_write_chapter` path (every other test in this file
+    stubs `_write_chapter`, so none of them can see what the call site passes).
+
+    🔴 NON-VACUOUS BY CONSTRUCTION, AND THAT TOOK CARE. A shadow canon built from a
+       plain outline carries no entities/anchors at all — its closed marker set is
+       EMPTY, so a `[anc1]` fixture would survive here no matter how broken the gate
+       was. The outline below gives chapter 1 an opaque id instead: chapter ids come
+       from the outline alone, so they are bound even in shadow, and an id that is not
+       simply its own order number is in the closed set. Break the gate and this book
+       really does get rewritten."""
+    async def _fake_run_worker(worker, user_turn, **_kw):
+        return {"ok": True, "output": "Teks [private-chapter-alpha] tetap utuh.",
+                "model": "m"}
+
+    async def _passthrough_gate(res, **_kw):
+        return res
+
+    monkeypatch.setattr(st, "run_worker", _fake_run_worker)
+    monkeypatch.setattr(st, "_apply_word_gate", _passthrough_gate)
+    monkeypatch.setenv("NARASI_CANON_LITE_MODE", "shadow")
+
+    chapters = _outline(2)
+    chapters[0] = {**chapters[0], "id": "private-chapter-alpha"}
+    res = asyncio.run(st.narrate_chapters(
+        "topik", chapters, polish="none", max_parallel=2,
+        shared_context=SharedContext(topic="topik", chapters=chapters),
+        tenant_id=CANARY_TENANT))
+
+    assert res.get("ok"), res
+    # Sanity: the id really is bound for this canon, so a broken gate WOULD scrub it.
+    canon = res.get("_canon_lite_canon")
+    assert canon is not None and "private-chapter-alpha" in cl.canon_bound_marker_ids(canon)
+    assert "[private-chapter-alpha]" in res["book"], \
+        "shadow rewrote the delivered book -- observation-only was violated"
+
+
+def test_the_generation_subtotal_counts_only_delivered_chapters():
+    """A FAILED worker's prose is replaced wholesale by `_placeholder(...)` and never
+    reaches the reader — but the scrub still ran on it before it was discarded.
+    Counting that inflates a number an operator reads as "what we had to clean out of
+    the book". Same delivered-only predicate the assist census uses for `_used`."""
+    calls = {"n": 0}
+
+    async def _one_good_one_failed(**kw):
+        calls["n"] += 1
+        if kw["no"] == 0:
+            return {"ok": True, "output": "isi bersih", "no": 0, "model": "m",
+                    "f1_markers_removed": 3,
+                    "canon_generation_prompt_sha256_seen":
+                        cl.sha256_hex(kw["canon_text"].encode("utf-8")),
+                    "context_sha256_seen": cl.context_digest(kw["ctx"]),
+                    "canon_sha256": kw.get("canon_sha256"),
+                    "context_sha256": kw.get("context_sha256")}
+        # a failed chapter that nonetheless had markers scrubbed out of its dead text
+        return {"ok": False, "output": "", "no": kw["no"], "model": "m",
+                "error": "boom", "f1_markers_removed": 99}
+
+    res, _ = asyncio.run(_run("assist", n=2, stub=_one_good_one_failed))
+    assert res["f1_generation_markers_removed"] == 3, \
+        "the failed chapter's 99 scrubs were counted -- that text was never delivered"
+
+
+def test_real_write_chapter_with_no_canon_argument_is_unaffected():
+    """`canon` is a new, optional parameter -- every existing caller that does not
+    pass it (off/shadow, or any caller predating this fix) must behave exactly as
+    before: no scrub attempted, no crash from a missing canon."""
+    async def _fake_run_worker(worker, user_turn, **_kw):
+        return {"ok": True, "output": "teks [not-a-real-marker] biasa", "model": "m"}
+
+    async def _passthrough_gate(res, **_kw):
+        return res
+
+    import unittest.mock as _mock
+    with _mock.patch.object(st, "run_worker", _fake_run_worker), \
+         _mock.patch.object(st, "_apply_word_gate", _passthrough_gate):
+        chapters = _outline(2)
+        res = asyncio.run(st._write_chapter(
+            ctx=SharedContext(topic="topik", chapters=chapters), ch=chapters[0], no=0,
+            total=2, style="creative non-fiction", language="id", mode="text",
+            job_id="j-1", worker_model="m", timeout=5.0, telemetry_sink=None))
+        assert res["output"] == "teks [not-a-real-marker] biasa"
 
 
 def test_real_write_chapter_reports_nothing_when_no_canon_is_given(monkeypatch):
@@ -886,8 +1096,8 @@ def test_real_write_chapter_reports_nothing_when_no_canon_is_given(monkeypatch):
         ctx=SharedContext(topic="topik", chapters=chapters), ch=chapters[0], no=0,
         total=2, style="creative non-fiction", language="id", mode="text",
         job_id="j-1", worker_model="m", timeout=5.0, telemetry_sink=None))
-    for key in ("canon_prompt_sha256", "context_sha256_seen", "canon_sha256",
-                "context_sha256"):
+    for key in ("canon_generation_prompt_sha256_seen", "context_sha256_seen",
+                "canon_sha256", "context_sha256"):
         assert key not in res, key
 
 

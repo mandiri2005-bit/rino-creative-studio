@@ -411,3 +411,280 @@ def test_rooftop_beat_order_mutation_is_killed_without_pattern_miss(tmp_path):
     )
     assert run.returncode != 0 and "AssertionError" in run.stdout, \
         f"SURVIVED rooftop beat-order mutation:\n{run.stdout}"
+
+
+# ---------------------------------------------------------------------------
+# _apply_word_gate's undershoot-continuation counter ("continued") -- adversarial
+# audit follow-up (2026-08-14 night, task_8ff0d0dc): the same round-counted-
+# before-the-discard-check bookkeeping bug already fixed this session for the
+# F6 ceiling-trim counter ("trimmed"/_trim_applied below) also affects this
+# SIBLING, PRE-EXISTING counter -- and unlike "trimmed" (unreachable at its
+# default), this one IS reachable at DALANG_MAX_CHAPTER_RETRIES's shipped
+# default of 2.
+# ---------------------------------------------------------------------------
+
+def test_word_gate_continued_count_reflects_only_rounds_that_actually_landed(monkeypatch):
+    # word_target=1000 -> floor=900. Initial output is well under the floor, so
+    # continuation triggers. Round 1's worker returns real additional text
+    # (still under the floor afterward, so the loop tries again). Round 2's
+    # worker returns empty output and breaks. Only round 1 actually appended
+    # text -- res["continued"] must report 1, not the 2 attempted rounds.
+    calls = []
+
+    async def _land_then_empty_worker(worker, task, *, timeout, task_id):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"output": ("word " * 250).strip() + " More.",
+                    "telemetry": {"finish_reason": "stop"}}
+        return {"output": "", "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _land_then_empty_worker)
+    initial_output = ("word " * 400).strip() + " Start."
+    res = {"ok": True, "output": initial_output, "telemetry": {"finish_reason": "stop"}}
+
+    out = asyncio.run(static._apply_word_gate(
+        res, worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+
+    assert len(calls) == 2                       # both rounds were attempted
+    assert out["continued"] == 1                 # only round 1 actually landed
+    assert out["output"] == initial_output.rstrip() + "\n\n" + ("word " * 250).strip() + " More."
+
+
+def test_word_gate_leaves_res_untouched_when_the_first_round_fails_immediately(monkeypatch):
+    # A stricter corollary of the same fix: if round 1 itself returns empty output,
+    # `applied` stays 0, so `res` must come back COMPLETELY unmodified -- no
+    # "continued" key at all, no output replacement -- not "continued: 1" for a
+    # round that changed nothing (the pre-fix `if rounds:` guard would have set
+    # continued=1 here since `rounds` was already incremented to 1).
+    async def _always_empty_worker(worker, task, *, timeout, task_id):
+        return {"output": "", "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _always_empty_worker)
+    initial_output = ("word " * 400).strip() + " Start."
+    res = {"ok": True, "output": initial_output, "telemetry": {"finish_reason": "stop"}}
+
+    out = asyncio.run(static._apply_word_gate(
+        dict(res), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+
+    assert "continued" not in out
+    assert out["output"] == initial_output
+
+
+# ---------------------------------------------------------------------------
+# F6 case 5 — chapter word-ceiling: report-only today ("Bab 2 di atas plafon"
+# never fails and never regenerates); bounded regeneration behind a new,
+# default-OFF flag. (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md, sha256
+# fecd3dcb5f9b85f81b70790736c5304a1dbcf29fad9780fb6c1dc904d4fc20b5, F6.)
+# ---------------------------------------------------------------------------
+
+def _over_ceiling_res(words: int = 1400) -> dict:
+    return {"ok": True, "output": ("word " * words).strip() + ".",
+            "telemetry": {"finish_reason": "stop"}}
+
+
+def test_word_ceiling_is_report_only_by_default(monkeypatch):
+    # The ceiling try/except is deliberately non-fatal (matches the surrounding
+    # "never fatal" contract), so a spy that RAISES would be silently swallowed and
+    # this test would pass vacuously either way. Use a call-counter instead.
+    monkeypatch.delenv("NARASI_WORDGATE_CEILING_ENFORCE", raising=False)
+    calls = []
+
+    async def _spy_run_worker(*_a, **_k):
+        calls.append(1)
+        return {"ok": True, "output": "should never be used",
+                "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _spy_run_worker)
+    res = _over_ceiling_res()
+    out = asyncio.run(static._apply_word_gate(
+        dict(res), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+    assert calls == []                         # run_worker never invoked for a trim
+    assert out["output"] == res["output"]
+    assert "trimmed" not in out
+
+
+def test_word_ceiling_enforce_trims_toward_the_prompt_ceiling(monkeypatch):
+    monkeypatch.setenv("NARASI_WORDGATE_CEILING_ENFORCE", "1")
+    trimmed = ("word " * 1100).strip() + "."
+
+    async def _trim_worker(worker, task, **_kw):
+        return {"ok": True, "output": trimmed, "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _trim_worker)
+    out = asyncio.run(static._apply_word_gate(
+        _over_ceiling_res(), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+    assert out["output"] == trimmed
+    assert out["trimmed"] == 1
+
+
+def test_word_ceiling_enforce_discards_a_trim_that_undershoots_the_floor(monkeypatch):
+    monkeypatch.setenv("NARASI_WORDGATE_CEILING_ENFORCE", "1")
+    gutted = ("word " * 500).strip() + "."   # below 0.9 x 1000 = 900
+
+    async def _gutted_worker(worker, task, **_kw):
+        return {"ok": True, "output": gutted, "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _gutted_worker)
+    res = _over_ceiling_res()
+    out = asyncio.run(static._apply_word_gate(
+        dict(res), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+    assert out["output"] == res["output"]     # kept the over-ceiling original
+    assert "trimmed" not in out
+
+
+def test_word_ceiling_enforce_discards_a_truncated_trim(monkeypatch):
+    monkeypatch.setenv("NARASI_WORDGATE_CEILING_ENFORCE", "1")
+
+    async def _truncated_worker(worker, task, **_kw):
+        return {"ok": True, "output": ("word " * 1100).strip() + ".",
+                "telemetry": {"finish_reason": "length"}}
+
+    monkeypatch.setattr(static, "run_worker", _truncated_worker)
+    res = _over_ceiling_res()
+    out = asyncio.run(static._apply_word_gate(
+        dict(res), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+    assert out["output"] == res["output"]
+    assert "trimmed" not in out
+
+
+def test_word_ceiling_enforce_discards_an_empty_trim(monkeypatch):
+    monkeypatch.setenv("NARASI_WORDGATE_CEILING_ENFORCE", "1")
+
+    async def _empty_worker(worker, task, **_kw):
+        return {"ok": True, "output": "", "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _empty_worker)
+    res = _over_ceiling_res()
+    out = asyncio.run(static._apply_word_gate(
+        dict(res), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+    assert out["output"] == res["output"]
+    assert "trimmed" not in out
+
+
+def test_word_ceiling_enforce_is_bounded_by_the_retry_cap(monkeypatch):
+    monkeypatch.setenv("NARASI_WORDGATE_CEILING_ENFORCE", "1")
+    # NARASI_WORDGATE_CEILING_RETRIES is read once at import time (same pattern as the
+    # pre-existing _WORDGATE_RETRIES) -- monkeypatch the resolved constant directly,
+    # not the env var, to vary it for this test.
+    monkeypatch.setattr(static, "_WORDGATE_CEILING_RETRIES", 2)
+    calls = []
+
+    async def _still_over_worker(worker, task, **_kw):
+        # Every round returns something still above the trim target (1150) but
+        # comfortably above the floor (900) -- proves the loop actually STOPS at
+        # the retry cap rather than looping until it succeeds or hangs.
+        calls.append(1)
+        return {"ok": True, "output": ("word " * 1200).strip() + ".",
+                "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _still_over_worker)
+    out = asyncio.run(static._apply_word_gate(
+        _over_ceiling_res(), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+    assert len(calls) == 2
+    assert out["trimmed"] == 2
+    assert len(out["output"].split()) == 1200   # kept the last (still over-target) attempt
+
+
+def test_word_ceiling_trimmed_count_reflects_only_rounds_that_actually_landed(monkeypatch):
+    # Adversarial-audit finding (2026-08-14 night): the round counter incremented
+    # BEFORE the accept/discard checks, so a round that landed (round 1) followed by
+    # a round that was discarded (round 2, undershoots the floor) reported trimmed=2
+    # even though only round 1's text survived into the output.
+    monkeypatch.setenv("NARASI_WORDGATE_CEILING_ENFORCE", "1")
+    monkeypatch.setattr(static, "_WORDGATE_CEILING_RETRIES", 2)
+    calls = []
+
+    async def _land_then_undershoot_worker(worker, task, **_kw):
+        calls.append(1)
+        if len(calls) == 1:
+            # still above the 1150 trim target, but a real, landable improvement.
+            return {"ok": True, "output": ("word " * 1200).strip() + ".",
+                    "telemetry": {"finish_reason": "stop"}}
+        # round 2: undershoots the 900 floor -- must be discarded.
+        return {"ok": True, "output": ("word " * 500).strip() + ".",
+                "telemetry": {"finish_reason": "stop"}}
+
+    monkeypatch.setattr(static, "run_worker", _land_then_undershoot_worker)
+    out = asyncio.run(static._apply_word_gate(
+        _over_ceiling_res(), worker=SimpleNamespace(), word_target=1000, timeout=1.0, task_id="t1"))
+    assert len(calls) == 2                      # both rounds were attempted
+    assert out["trimmed"] == 1                  # only round 1 actually landed
+    assert len(out["output"].split()) == 1200   # round 1's text, not round 2's discard
+
+
+# ---------------------------------------------------------------------------
+# `chapter_heading_patterns.chapter_split_rx_for` (both this module and canon_lite_l2.py now
+# import it — see that module's docstring): production chapter headings can read "Chapter N:
+# Title" with no "## " marker at all (confirmed directly against the v9 canary artifact that
+# triggered L3-Assist). Before this existed, a manuscript shaped that way matched zero times
+# here too, so `_split_into_chunks` silently treated the whole book as ONE unsplit blob
+# regardless of `chunk_words` — the polish pass never got a chapter-aligned chunk for such a
+# manuscript.
+# `_dedup_chapter_blocks` is NOT fully covered here: it also needs `_CH_HEADER_NUM_RX` (a
+# separate, still-"## "-only regex) to parse a heading *number* out of each part, and
+# extending that needs a per-language digit *position*, not just a boundary fix — left as a
+# documented, deliberately deferred follow-up next to that regex's definition in both files.
+# It IS covered for the false-positive-leak class below, which needed only the boundary fix.
+NO_MARKDOWN_BOOK = (
+    "Chapter 1: Opening\nisi satu\n\n"
+    "Chapter 2: Middle\nisi dua\n\n"
+    "Chapter 3: Ending\nisi tiga\n"
+)
+
+
+def test_split_into_chunks_is_chapter_aligned_for_bare_word_headings_too():
+    chunks = static._split_into_chunks(NO_MARKDOWN_BOOK, chunk_words=1)
+    assert len(chunks) == 3
+    assert "".join(chunks[i] + ("\n\n" if i < 2 else "")
+                    for i in range(3)).strip() == NO_MARKDOWN_BOOK.strip()
+
+
+def test_split_into_chunks_still_treats_prose_with_no_real_heading_as_one_blob():
+    prose = "Dia bilang begitu.\nBab pertama dalam hidupnya baru saja dimulai.\n"
+    assert static._split_into_chunks(prose, chunk_words=1) == [prose]
+
+
+def test_split_into_chunks_does_not_break_mid_chapter_on_a_markdown_books_incidental_line():
+    """2026-08-15 adversarial review: a real "## " chapter's own body prose containing an
+    incidental bare-heading-shaped line ("Chapter 11 filings rose sharply...") used to create
+    a spurious chunk boundary mid-chapter, reproduced against this exact function — falsifying
+    its own docstring's "never mid-chapter" promise and letting a chapter's polish pass split
+    across two seam-blind LLM calls. Two-phase selection makes this unreachable once the book
+    has any "## " marker."""
+    book = ("## Chapter 1: Real\nsome words here padding this out nicely so it counts.\n"
+            "Chapter 11 filings rose sharply that year, unrelated to anything in this book.\n"
+            "more of chapter one continues right here without any real break at all.\n\n"
+            "## Chapter 2: Real\nchapter two content that must stay together as one unit.\n")
+    chunks = static._split_into_chunks(book, chunk_words=1)
+    assert len(chunks) == 2
+    assert "Chapter 11 filings" in chunks[0]
+    assert "chapter one continues" in chunks[0]
+
+
+def test_dedup_chapter_blocks_no_longer_leaks_an_orphaned_stale_duplicate_fragment():
+    """2026-08-15 adversarial review, the single most severe finding: `_CH_HEADER_NUM_RX`
+    stays "## "-only by design (see KNOWN GAP comment on it), so a bare-word false split
+    inside a genuinely-duplicated (round-16-class) stale chapter's body used to get n=None,
+    which the dedup "fails safe" rule always kept — leaking the orphaned tail of a chapter
+    that was SUPPOSED to be entirely removed into the delivered book. Reproduced against this
+    exact function during review. Two-phase selection fixes it: with "## " present anywhere
+    in the book, the bare-word fallback never runs, so the false split inside the stale
+    duplicate's body never happens in the first place."""
+    # Both chapter-5 occurrences are deliberately word-count-BALANCED (the "keep last" default
+    # only applies when the last occurrence isn't "drastically shorter" than the best earlier
+    # one — see the AUDIT FIX (r16) comment above _dedup_chapter_blocks; an imbalanced fixture
+    # would exercise that *different*, also-correct override path instead of this one).
+    book = (
+        "## Chapter 4\nIsi bab empat sederhana saja di sini untuk padding kata secukupnya.\n\n"
+        "## Chapter 5\nSTALEMARKER versi pertama dari bab lima ini sengaja dibuat panjang "
+        "kata-katanya supaya seimbang.\n"
+        "Chapter 11 filings rose sharply that quarter, an unrelated aside sentence embedded "
+        "here.\n\n"
+        "## Chapter 5\nFINALMARKER versi kedua yang benar dari bab lima ini juga sengaja "
+        "dibuat panjang kata-katanya supaya seimbang.\n"
+    )
+    deduped, n_removed = static._dedup_chapter_blocks(book)
+    assert n_removed == 1
+    assert "STALEMARKER" not in deduped            # stale head correctly dropped
+    assert "Chapter 11 filings" not in deduped      # its tail must NOT leak either
+    assert "FINALMARKER" in deduped                 # the correct, final chapter 5 survives

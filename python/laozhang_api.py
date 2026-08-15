@@ -1656,7 +1656,8 @@ def _apply_phase_provider_gate(chain: list[tuple[str, str, str, str, str]], mode
 
 
 def _fal_llm_create(model: str, messages: list, max_tokens: int, timeout: float,
-                    temperature: Optional[float] = None, response_json: bool = False) -> "_AdaptedResp":
+                    temperature: Optional[float] = None, response_json: bool = False,
+                    _reserve=None) -> "_AdaptedResp":
     """Call FAL's fal-ai/any-llm via the async queue protocol (submit -> poll status_url -> GET
     response_url) — FAL has no synchronous LLM REST endpoint. Auth is "Authorization: Key
     <FAL_API_KEY>" (NOT Bearer), which is why this can't reuse the plain OpenAI-SDK "openai"
@@ -1700,6 +1701,8 @@ def _fal_llm_create(model: str, messages: list, max_tokens: int, timeout: float,
             # `timeout` can be well under 30s, and a fixed 30s submit call could keep this thread
             # alive past the outer t.join(timeout) deadline below.
             sub_timeout = min(30.0, max(1.0, float(timeout)))
+            # SUBMIT is the billable request; the later status polls are not.
+            _narasi_check_reserve(_reserve, "fal_queue")
             r = _requests.post("https://queue.fal.run/fal-ai/any-llm", headers=headers, json=payload, timeout=sub_timeout)
             r.raise_for_status()
             sub = r.json() or {}
@@ -1761,7 +1764,7 @@ def _response_format_schema(response_format) -> Optional[dict]:
 
 def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
                           timeout: float, temperature=None, response_json: bool = False,
-                          response_schema: Optional[dict] = None):
+                          response_schema: Optional[dict] = None, _reserve=None):
     """Call Vertex Gemini via google.genai OAuth. Translates the OpenAI messages
     format to Vertex `contents` (system role hoisted to system_instruction, remaining
     roles concatenated) and wraps the reply in _AdaptedResp so the rest of the
@@ -1868,6 +1871,7 @@ def _vertex_gemini_create(model: str, messages: list, max_tokens: int,
     result: dict = {"resp": None, "err": None}
     def _run() -> None:
         try:
+            _narasi_check_reserve(_reserve, "vertex_genai")
             result["resp"] = client.models.generate_content(
                 model=model, contents=contents, config=cfg)
         except Exception as _e:
@@ -1948,7 +1952,8 @@ class _AdaptedResp:
         self.usage = _AdaptedResp._Usage(tin, tout)
 
 
-def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout, temperature=None):
+def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout, temperature=None,
+                               _reserve=None):
     """POST to an Anthropic-native Messages endpoint (e.g. KIE https://api.kie.ai/claude/v1/messages)
     and adapt the reply to the OpenAI shape. Splits any `system` role out to the top-level system
     param (Anthropic requirement). Raises on transport failure / timeout so the caller advances the chain.
@@ -1988,6 +1993,7 @@ def _anthropic_messages_create(url, key, model_id, messages, max_tokens, timeout
         conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=float(timeout),
                                            context=ssl.create_default_context())
         try:
+            _narasi_check_reserve(_reserve, "anthropic")
             conn.request("POST", u.path or "/v1/messages", json.dumps(body),
                          {"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
             resp = conn.getresponse()
@@ -2151,31 +2157,51 @@ class _NarasiFailoverClient:
                     for _sk in ("temperature", "top_p", "top_k"):
                         call_kw.pop(_sk, None)
                 try:
+                    # EVERY local preflight completes first; `_narasi_reserve_upstream()`
+                    # is then the last statement before the transport, so the reservation
+                    # cannot outlive a local failure and cannot be overtaken by a timeout.
+                    _msgs = call_kw.get("messages") or []
+                    _mtok = call_kw.get("max_tokens") or 4000
+                    _temp = call_kw.get("temperature")
+                    # Bound HERE, in the rung's own context, and handed to the helper:
+                    # the helper reserves at its true transport line, after ITS own
+                    # client/payload preflight — and two of the three dispatch on a raw
+                    # thread that would never see a ContextVar.
+                    _reserver = _narasi_upstream_reserver()
+                    # Passed only when a ledger is actually installed: outside a
+                    # structural run there is nothing to reserve, and forcing the kwarg
+                    # on every caller would break helper doubles that never asked for it.
+                    _rkw = {} if _reserver is None else {"_reserve": _reserver}
                     if proto == "anthropic":
                         resp = _anthropic_messages_create(endpoint, key, model_id,
-                                                          call_kw.get("messages") or [],
-                                                          call_kw.get("max_tokens") or 4000, rung_timeout,
-                                                          temperature=call_kw.get("temperature"))
+                                                          _msgs, _mtok, rung_timeout,
+                                                          temperature=_temp, **_rkw)
                     elif proto == "vertex_genai":
                         # `response_json` stays a bool (it gates the mime type); the SCHEMA
-                        # travels separately and uncoerced. `bool(response_format)` alone
-                        # discarded the shape here — the defect the 2026-08-13 canary hit.
-                        resp = _vertex_gemini_create(model_id,
-                                                      call_kw.get("messages") or [],
-                                                      call_kw.get("max_tokens") or 4000, rung_timeout,
-                                                      temperature=call_kw.get("temperature"),
-                                                      response_json=bool(call_kw.get("response_format")),
-                                                      response_schema=_response_format_schema(
-                                                          call_kw.get("response_format")))
+                        # travels separately and uncoerced. Built BEFORE the reservation:
+                        # a schema builder that raises must not leave a counted request
+                        # that was never sent.
+                        _rjson = bool(call_kw.get("response_format"))
+                        _rschema = _response_format_schema(call_kw.get("response_format"))
+                        resp = _vertex_gemini_create(model_id, _msgs, _mtok, rung_timeout,
+                                                     temperature=_temp,
+                                                     response_json=_rjson,
+                                                     response_schema=_rschema, **_rkw)
                     elif proto == "fal_queue":
-                        resp = _fal_llm_create(model_id,
-                                               call_kw.get("messages") or [],
-                                               call_kw.get("max_tokens") or 4000, rung_timeout,
-                                               temperature=call_kw.get("temperature"),
-                                               response_json=bool(call_kw.get("response_format")))
+                        _fjson = bool(call_kw.get("response_format"))
+                        resp = _fal_llm_create(model_id, _msgs, _mtok, rung_timeout,
+                                               temperature=_temp, response_json=_fjson,
+                                               **_rkw)
                     else:
                         cli = OpenAI(api_key=key, base_url=endpoint, timeout=rung_timeout, max_retries=0)
-                        resp = cli.chat.completions.create(**call_kw)
+                        _oai_create = cli.chat.completions.create
+                        # Constructed AND bound before reserving: a client that fails to
+                        # build, however slowly, never sent anything.
+                        if not _narasi_reserve_upstream():
+                            errors.append(f"{name}:refused (abandoned or cap)")
+                            rung_last_err = "upstream_refused"
+                            break
+                        resp = _oai_create(**call_kw)
                     if _resp_content(resp) is None:
                         # Empty 200 (choices=None / no content). Treat as a rung failure —
                         # retry within same rung until we've spent _NARASI_RUNG_ATTEMPTS,
@@ -8646,7 +8672,11 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "order in the outline is story order unless it explicitly marks flashback or parallel "
         "action. Report type 'outline_missing_beat' when an outlined reveal, decision, consequence, "
         "or final resolution never occurs on-page; a proposal or unanswered invitation is not the "
-        "same as the outline's completed mutual choice.\n"
+        "same as the outline's completed mutual choice. A character STATING they will do "
+        "something (\"I will give a deposition\") is a promise, not the beat — flag it if the "
+        "outline requires the act itself, and ALSO flag it if a LATER passage treats that "
+        "promised act's consequence as already in effect (resolving the plot as though the act "
+        "had already happened) before the act is ever shown occurring.\n"
         "B. AUTHORITY-BOUND HANDOFF AND CLOCK — report type 'chapter_boundary_break' against the "
         "LATER chapter when its opening assumes an off-page decision, journey, reconciliation, "
         "arrival, or other causal/location transition from the preceding chapter. Report type "
@@ -8781,11 +8811,15 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "someone acting on information they were never given).\n"
         "4. ENTITY/LABEL DRIFT — the same person or object named two ways ('the notebook' vs 'the "
         "diary'), or two distinct entities left confusably alike.\n"
-        "5. SPATIAL/CONTINUITY — props that appear or vanish; geography that contradicts itself.\n"
+        "5. SPATIAL/CONTINUITY — props that appear or vanish; geography that contradicts itself; a "
+        "character shown in one location, then a scene break cuts to OTHER characters somewhere "
+        "else (e.g. \"Meanwhile, across town...\"), then the narrative returns to the first "
+        "character as if no time passed — flag the impossible or unaccounted-for simultaneity.\n"
         "6. POV/PERSON/TENSE — the narrative person (first 'I' / second 'you' / third 'he/she') "
-        "and tense stay consistent across the WHOLE book. Flag a chapter that switches (a "
-        "second-person book with one first-person chapter; a present-tense book with a past-tense "
-        "chapter) — cite the chapter and the switched pronoun/tense.\n"
+        "and tense stay consistent across the WHOLE book. Flag ANY chapter whose person or tense "
+        "differs from the rest, in EITHER direction (a mostly-past-tense book with one chapter "
+        "written entirely in present tense is the SAME violation as a present-tense book with one "
+        "past-tense chapter) — cite the chapter and the switched pronoun/tense.\n"
         + _check7 + _ext + _check16 + _check17 +
         "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
         "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
@@ -9199,7 +9233,8 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                                  tenant_id, user_id, job_uuid, phase="revise",
                                  credit_row: bool = True, authority_text: str = "",
                                  excluded_chapter_numbers=None,
-                                 attempts_already_spent=0):
+                                 attempts_already_spent=0,
+                                 stats_out: Optional[dict] = None):
     """Per-CHAPTER consistency revise: rewrite ONLY the chapters whose text contains a flagged
     violation's quoted evidence, bounded output per chapter. The whole-book revise regenerates the
     ENTIRE book on opus — it times out and, for books over ~12k words, exceeds the output-token cap,
@@ -9209,6 +9244,12 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     schema-level 1-based `chapter` locator; other violations whose evidence can't be located
     (e.g. dropped_hook) are simply not applied — they stay report-only. Returns
     (new_text, total_cr).
+
+    The public return stays a 2-tuple. Pass `stats_out={}` to additionally receive the
+    bounded `legacy_revise_stats_v1` accounting block (see _narasi_legacy_revise_stats):
+    targeting, physical calls, validation, byte-level change and resolution are separate
+    counters because the manuscript alone cannot tell an UNRESOLVED chapter from an
+    INEFFECTIVE one from one that was never attempted — all three leave identical bytes.
 
     Chapter TARGETING is BEST-EFFORT by design: the critic's evidence is ambiguous about which chapter
     actually errs (a two-name drift quotes both the wrong and the correct name; the discriminating token
@@ -9228,6 +9269,26 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     resolved = MODELS.get(rev_model, rev_model)
     _excluded_chapter_numbers = frozenset(excluded_chapter_numbers or ())
     _attempts_already_spent = max(0, int(attempts_already_spent))
+
+    def _finalize_stats(**counters):
+        """Publish the accounting block into the caller's sink, on EVERY return path.
+
+        Telemetry must never break a repair: a violated counter invariant is logged and
+        the sink is left EMPTY (the fail-closed signal the dispatcher checks) rather than
+        raised into the revise path, where the dispatcher's except would read it as a
+        lane failure and discard a manuscript that is actually fine."""
+        if stats_out is None:
+            return
+        try:
+            _block = _narasi_legacy_revise_stats(**counters)
+        except Exception:
+            stats_out.clear()
+            import logging as _stlog
+            _stlog.getLogger("narasi").warning(
+                "legacy revise stats: counter invariant failed — block NOT published")
+            return
+        stats_out.clear()
+        stats_out.update(_block)
 
     def _spans(ev):
         # Pull the quoted book-text out of a violation's evidence (straight + curly quotes); the
@@ -9358,12 +9419,32 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     #    headroom, still capped at serial's 2*_max_ch attempt budget. ≤ _max_ch chapters accepted, in
     #    part order (same set serial accepts). Fail-safe identical: error/timeout/reject keeps ORIGINAL. ──
     _rev_par = _envint("NARASI_REVISE_PARALLEL", 0)
-    if _rev_par >= 2:
+    # 🔴 SHARED-HEADROOM ROUTING (F2 round 2). An equal cost cap is NOT equal semantics.
+    # The parallel lane admits BREADTH-first: every worker in a wave takes its slot
+    # before any of them has a verdict. Once an earlier lane has already spent part of
+    # the shared 2*_max_ch budget, a full wave can consume the entire remainder on FIRST
+    # attempts and every corrective retry is then refused — the cap holds while the
+    # mechanism that makes a no-op recoverable is silently switched off. Measured
+    # (_max_ch=4, spent=4, four targeted chapters, provider no-op then repair): serial
+    # repairs 2 chapters in 4 calls, parallel x4 repairs 0 in the same 4 calls.
+    # This guard is not a band-aid, it covers the defect exactly: with nothing spent,
+    # wave 1 is capped at _max_ch parts against a 2*_max_ch budget — precisely 2 slots
+    # per admitted chapter, so starvation is arithmetically impossible and the lane keeps
+    # its concurrency. Only spent > 0 shrinks the headroom below that, and that case now
+    # runs the deterministic depth-first lane, which is parity by construction.
+    # Trade-off, deliberate: a MIXED structural+legacy run loses the concurrency win on
+    # its legacy tail (bounded by the same remaining budget). Correct repair over speed.
+    # The fuller alternative — admission bounded by remaining headroom rather than by
+    # wave size — preserves both and is the follow-up if that latency ever bites.
+    if _rev_par >= 2 and _attempts_already_spent == 0:
         _parallel_attempts = 0
+        _par_validated = 0
+        _par_ineffective = 0
 
         async def _revise_one_part(_p, _vs):
-            nonlocal _parallel_attempts
-            # EXACT MIRROR of the serial per-part body below — KEEP IN SYNC. Returns (text_or_None, cr).
+            nonlocal _parallel_attempts, _par_validated, _par_ineffective
+            # EXACT MIRROR of the serial per-part body below — KEEP IN SYNC.
+            # Returns (text_or_None, cr, made_a_physical_call).
             # Never raises (any exception → keep original chapter, like the serial except: branch).
             _directives = "\n".join(
                 f"- [{v.get('severity', '?')}/{v.get('type', '?')}] {str(v.get('evidence', ''))[:420]} "
@@ -9404,14 +9485,20 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             # the SAME acceptance checks, and a second rejection falls back to the original chapter.
             _part_cr = 0
             _corrective = None
+            _called = False
             for _attempt_no in (1, 2):
-                # Mixed routing shares the serial 2*_max_ch attempt headroom with
-                # the structural patch lane.  Pure-legacy parallel retains its
-                # pre-existing two-wave behavior when no earlier lane spent attempts.
-                if (_attempts_already_spent > 0
-                        and _parallel_attempts + _attempts_already_spent >= 2 * _max_ch):
-                    return None, _part_cr
+                # ONE attempt budget for BOTH lanes: physical calls + attempts already
+                # spent by an earlier lane may never exceed 2*_max_ch. This used to be
+                # gated on `_attempts_already_spent > 0`, so a PURE-legacy parallel run
+                # (the common case: nothing spent yet) skipped the cap entirely and each
+                # of its two waves could fire a per-part corrective retry — 4*_max_ch
+                # calls, double what serial spends on the identical input. The slot is
+                # RESERVED here, before the call, so a timeout or a raise still costs its
+                # slot and concurrency cannot overshoot (no await between test and take).
+                if _parallel_attempts + _attempts_already_spent >= 2 * _max_ch:
+                    return None, _part_cr, _called
                 _parallel_attempts += 1
+                _called = True
                 _u_send = _u if _corrective is None else f"{_u}\n\n[CORRECTION]\n{_corrective}"
                 try:
                     _resp = await asyncio.wait_for(asyncio.to_thread(
@@ -9421,9 +9508,9 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                             temperature=0.2, max_tokens=_c, stream=False, timeout=_narasi_revise_timeout(rev_model, phase))),
                         timeout=_narasi_revise_timeout(rev_model, phase))
                 except Exception:
-                    return None, _part_cr            # incl. TimeoutError → keep original chapter
+                    return None, _part_cr, _called            # incl. TimeoutError → keep original chapter
                 if not getattr(_resp, "choices", None):
-                    return None, _part_cr
+                    return None, _part_cr, _called
                 try:
                     _finish = str(getattr(_resp.choices[0], "finish_reason", "") or "").strip().lower()
                 except Exception:
@@ -9432,7 +9519,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                 _part_cr += int(await _log_narasi_usage(tenant_id, user_id, rev_model, _resp, job_id=job_uuid,
                                                         credit_row=credit_row) or 0)
                 if not _new:
-                    return None, _part_cr
+                    return None, _part_cr, _called
                 _nl = _new.lstrip()                            # strip a wrapping ``` code fence if present
                 if _nl.startswith("```"):
                     _nl = _re.sub(r'^```[a-zA-Z]*\n?', '', _nl)
@@ -9463,21 +9550,39 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                     _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
                 except Exception:
                     _min_fid = 0.55
+                _par_validated += 1                  # reached the acceptance gate
+                # F2 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md): a candidate byte-
+                # identical to the ORIGINAL part passes every check above (band, heads,
+                # wrapper, fidelity 1.0) and used to be accepted as `revised` — the sixth
+                # occurrence this session of a rule enforced at one door (the patch core
+                # already rejects this as `ineffective`) and absent at another.
+                # The comparison is made on the RECONSTRUCTED candidate — `_new + _trail`,
+                # the exact bytes `_accepted`/`out.append` would ship — against `_p`, the
+                # exact bytes they fall back to on rejection. Comparing the stripped `_new`
+                # directly against `_p` is the bug this guards: every part whose stored
+                # bytes carry a trailing frame would then read as a change on an echo.
+                # (`(_new + _trail) == _p` and `_new == _body` are the SAME predicate, since
+                # `_p == _body + _trail` by construction; the reconstructed form is used
+                # because it names what actually ships. Verified, not assumed.)
+                _is_noop = (_new + _trail) == _p
+                if _is_noop:
+                    _par_ineffective += 1
                 if (_floor <= _nw <= _ceil
                         and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
                         and not _truncated and not _tail_unterminated
-                        and _fid >= _min_fid):
-                    return _new + _trail, _part_cr
+                        and _fid >= _min_fid and not _is_noop):
+                    return _new + _trail, _part_cr, _called
                 import logging as _lg
                 _lg.getLogger("narasi").warning(
                     "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
                     "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, truncated=%s(finish=%s), "
-                    "tail_unterminated=%s, fidelity=%.2f (min %.2f)",
+                    "tail_unterminated=%s, fidelity=%.2f (min %.2f), noop=%s",
                     _ow, _nw, _floor, _ceil, _heads_ok, _no_wrapper,
-                    _starts_ok, _tail_meta, _truncated, _finish or "?", _tail_unterminated, _fid, _min_fid)
+                    _starts_ok, _tail_meta, _truncated, _finish or "?", _tail_unterminated, _fid, _min_fid,
+                    _is_noop)
                 _band_bad = not (_floor <= _nw <= _ceil)
                 if (_attempt_no == 1 and _fid >= _min_fid
-                        and (_band_bad or _truncated or _tail_unterminated or _tail_meta)):
+                        and (_band_bad or _truncated or _tail_unterminated or _tail_meta or _is_noop)):
                     _reasons = []
                     if _band_bad:
                         _reasons.append(f"it was {_nw} words but MUST be between {_floor} and {_ceil} words")
@@ -9485,17 +9590,19 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                         _reasons.append("it was cut off before the chapter's final sentence")
                     if _tail_meta:
                         _reasons.append("it ended with notes/commentary instead of the chapter's last prose line")
+                    if _is_noop:
+                        _reasons.append("it was returned byte-identical to the original — no fix was applied")
                     _corrective = ("Your previous attempt was rejected: " + "; ".join(_reasons) +
                                    ". Return the FULL corrected chapter — every original sentence preserved "
                                    "verbatim except the specific fixes, ending with the chapter's last prose "
                                    "line, with no notes or commentary.")
                     _lg.getLogger("narasi").warning(
                         "chunked revise: retrying part after rejection (words %d -> band %d-%d, "
-                        "truncated=%s, tail_unterminated=%s, tail_meta=%s)",
-                        _nw, _floor, _ceil, _truncated, _tail_unterminated, _tail_meta)
+                        "truncated=%s, tail_unterminated=%s, tail_meta=%s, noop=%s)",
+                        _nw, _floor, _ceil, _truncated, _tail_unterminated, _tail_meta, _is_noop)
                     continue
-                return None, _part_cr
-            return None, _part_cr                    # defensive: loop exhausted without return
+                return None, _part_cr, _called
+            return None, _part_cr, _called           # defensive: loop exhausted without return
 
         # Plan targeted parts in ORDER (pure, same predicate as the serial loop).
         _plan = []
@@ -9508,28 +9615,49 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
 
         async def _guarded(_i, _p, _vs):
             async with _sem:
-                _txt, _cr = await _revise_one_part(_p, _vs)
-            return _i, _txt, _cr
+                _txt, _cr, _called = await _revise_one_part(_p, _vs)
+            return _i, _txt, _cr, _called
 
         # Fire in up to TWO concurrent waves so the COMMON case (drafts accept) costs exactly _max_ch
         # LLM calls — the SAME as serial — instead of eagerly firing all 2*_max_ch. Wave 1 = the first
         # _max_ch targeted chapters; ONLY if fewer than _max_ch land (rejections/timeouts) does wave 2
         # fire the headroom (next up to _max_ch), preserving serial's retry resilience. ⚠ COST BOUND
-        # (audit 2026-07-18): with the per-part corrective retry, each part can fire up to 2 calls, so
-        # the PURE-LEGACY parallel worst case under MASS rejection is 4*_max_ch calls (vs serial's
-        # shared 2*_max_ch attempt budget). A mixed structural+legacy run additionally debits the
-        # structural attempts and stays within 2*_max_ch total calls. Acceptance stays first-_max_ch-successes in
-        # PART ORDER → the exact chapter set serial accepts; untargeted/over-budget parts keep original.
+        # (audit 2026-07-18, CORRECTED F2 2026-08-15): each part can fire up to 2 calls, so this used
+        # to reach 4*_max_ch on a PURE-LEGACY run under mass rejection — the cap was gated on an
+        # earlier lane having spent attempts, which pure-legacy never has. That gate is gone: BOTH
+        # lanes now reserve every physical call against the SAME 2*_max_ch budget, so wave 2 finds the
+        # budget already exhausted after a fully-retried wave 1 and costs nothing. Acceptance stays
+        # first-_max_ch-successes in PART ORDER → the exact chapter set serial accepts;
+        # untargeted/over-budget parts keep original.
         _accepted, _p_total_cr, _p_revised = {}, 0, 0
+        _par_attempted = 0                                   # unique chapters that got ≥1 call
+        _par_changed = 0                                     # landed AND byte-different
+        _par_unresolved = 0                                  # attempted, nothing changed landed
         for _wave in (_plan[:_max_ch], _plan[_max_ch: 2 * _max_ch]):
             if _p_revised >= _max_ch or not _wave:
                 break                                        # enough landed → don't fire the headroom
             _wave_res = await asyncio.gather(*[_guarded(_i, _p, _vs) for (_i, _p, _vs) in _wave])
-            for _i, _txt, _cr in sorted(_wave_res, key=lambda t: t[0]):   # accept in PART ORDER
+            for _i, _txt, _cr, _called in sorted(_wave_res, key=lambda t: t[0]):  # accept in PART ORDER
                 _p_total_cr += int(_cr or 0)
+                if _called:
+                    _par_attempted += 1
+                _landed_changed = False
                 if _txt is not None and _p_revised < _max_ch:            # first _max_ch successes only
                     _accepted[_i] = _txt
                     _p_revised += 1
+                    _landed_changed = _txt != parts[_i]
+                # Counted independently of `_par_changed` rather than derived from it, so the
+                # builder's `unresolved == attempted - changed` assertion stays a real cross-check
+                # instead of a tautology. A success DROPPED by the success cap is unresolved too:
+                # the delivered manuscript still carries the original bytes for that chapter.
+                if _landed_changed:
+                    _par_changed += 1
+                elif _called:
+                    _par_unresolved += 1
+        _finalize_stats(lane="parallel", targeted=len(_plan), attempted=_par_attempted,
+                        provider_calls=_parallel_attempts, candidates_validated=_par_validated,
+                        chapters_changed=_par_changed, ineffective=_par_ineffective,
+                        unresolved=_par_unresolved)
         import logging as _lgp
         _lgp.getLogger("narasi").log(
             (20 if _accepted else 30),
@@ -9549,6 +9677,11 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
     _n_revised = 0
     _n_targeted = 0
     _n_attempts = 0
+    _n_attempted_chapters = 0                    # unique chapters that got ≥1 physical call
+    _n_validated = 0                             # candidates that reached the acceptance gate
+    _n_ineffective = 0                           # candidate attempts identical after reconstruction
+    _n_changed = 0                               # chapters whose delivered bytes actually differ
+    _n_unresolved = 0                            # attempted chapters that changed nothing
     out = []
     for _pi, _p in enumerate(parts):
         _vs = [v for (v, sps, chnos) in _vspans
@@ -9602,9 +9735,16 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         # the SAME acceptance checks, and a second rejection falls back to the original chapter.
         _accepted_txt = None
         _corrective = None
+        _chapter_called = False
         for _attempt_no in (1, 2):
+            # Per-ATTEMPT reservation, the same rule the parallel lane applies. The per-chapter
+            # check above is coarse: a chapter admitted at 2*_max_ch-1 spent attempts would still
+            # fire BOTH of its own, overshooting the shared budget by one call.
+            if _n_attempts + _attempts_already_spent >= 2 * _max_ch:
+                break
             _u_send = _u if _corrective is None else f"{_u}\n\n[CORRECTION]\n{_corrective}"
             _n_attempts += 1                     # count every LLM call (incl. timeouts) → bounds cost
+            _chapter_called = True
             try:
                 _resp = await asyncio.wait_for(asyncio.to_thread(
                     lambda _b=_u_send, _s=_sys, _c=_cap: make_narasi_client(rev_model, phase=phase).chat.completions.create(
@@ -9686,13 +9826,23 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                 _min_fid = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
             except Exception:
                 _min_fid = 0.55
+            _n_validated += 1                    # reached the acceptance gate
             # Accept ONLY a clean single-chapter rewrite: word count in [90%,140%] (rejects gutted AND grossly
             # inflated), every chapter heading line byte-identical (no renumber/reword/re-case/echo/drop), no
             # wrapper preamble, and the body close to the original (no wholesale rewrite/swap). Else keep.
+            # F2 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md): mirrors the parallel lane's
+            # `_is_noop` above — a candidate byte-identical to `_p` used to pass every check
+            # and be accepted as `revised`. The comparison is on the RECONSTRUCTED candidate
+            # (`_new + _trail`, what `out.append` ships) against `_p` (what it falls back to);
+            # comparing the stripped `_new` straight against `_p` is the bug being guarded.
+            # KEEP IN SYNC with `_revise_one_part`'s mirror.
+            _is_noop = (_new + _trail) == _p
+            if _is_noop:
+                _n_ineffective += 1
             if (_floor <= _nw <= _ceil
                     and _heads_ok and _no_wrapper and _starts_ok and not _tail_meta
                     and not _truncated and not _tail_unterminated
-                    and _fid >= _min_fid):
+                    and _fid >= _min_fid and not _is_noop):
                 _accepted_txt = _new + _trail
                 break
             # 4 consecutive prod runs landed nothing with zero diagnostics — name the
@@ -9701,12 +9851,13 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
             _lg.getLogger("narasi").warning(
                 "chunked revise: chapter rewrite REJECTED — words %d→%d (band %d-%d), "
                 "heads_ok=%s, wrapper_free=%s, starts_ok=%s, tail_meta=%s, truncated=%s(finish=%s), "
-                "tail_unterminated=%s, fidelity=%.2f (min %.2f)",
+                "tail_unterminated=%s, fidelity=%.2f (min %.2f), noop=%s",
                 _ow, _nw, _floor, _ceil, _heads_ok, _no_wrapper,
-                _starts_ok, _tail_meta, _truncated, _finish or "?", _tail_unterminated, _fid, _min_fid)
+                _starts_ok, _tail_meta, _truncated, _finish or "?", _tail_unterminated, _fid, _min_fid,
+                _is_noop)
             _band_bad = not (_floor <= _nw <= _ceil)
             if (_attempt_no == 1 and _fid >= _min_fid
-                    and (_band_bad or _truncated or _tail_unterminated or _tail_meta)):
+                    and (_band_bad or _truncated or _tail_unterminated or _tail_meta or _is_noop)):
                 _reasons = []
                 if _band_bad:
                     _reasons.append(f"it was {_nw} words but MUST be between {_floor} and {_ceil} words")
@@ -9714,22 +9865,32 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                     _reasons.append("it was cut off before the chapter's final sentence")
                 if _tail_meta:
                     _reasons.append("it ended with notes/commentary instead of the chapter's last prose line")
+                if _is_noop:
+                    _reasons.append("it was returned byte-identical to the original — no fix was applied")
                 _corrective = ("Your previous attempt was rejected: " + "; ".join(_reasons) +
                                ". Return the FULL corrected chapter — every original sentence preserved "
                                "verbatim except the specific fixes, ending with the chapter's last prose "
                                "line, with no notes or commentary.")
                 _lg.getLogger("narasi").warning(
                     "chunked revise: retrying part after rejection (words %d -> band %d-%d, "
-                    "truncated=%s, tail_unterminated=%s, tail_meta=%s)",
-                    _nw, _floor, _ceil, _truncated, _tail_unterminated, _tail_meta)
+                    "truncated=%s, tail_unterminated=%s, tail_meta=%s, noop=%s)",
+                    _nw, _floor, _ceil, _truncated, _tail_unterminated, _tail_meta, _is_noop)
                 continue
             break
+        if _chapter_called:
+            _n_attempted_chapters += 1
         if _accepted_txt is not None:
             out.append(_accepted_txt)
             changed = True
             _n_revised += 1
         else:
             out.append(_p)                       # error/timeout/reject (both attempts) → keep original
+        # Counted independently rather than derived from each other, so the builder's
+        # `unresolved == attempted - changed` assertion stays a real cross-check.
+        if _accepted_txt is not None and _accepted_txt != _p:
+            _n_changed += 1
+        elif _chapter_called:
+            _n_unresolved += 1
     import logging as _lg
     _lg.getLogger("narasi").log(
         (20 if changed else 30),   # INFO when something landed, WARNING on a full no-op
@@ -9743,12 +9904,124 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
         _lg.getLogger("narasi").warning(
             "chunked revise: UNMAPPED evidence heads: %s",
             [str((v or {}).get("evidence") or "")[:70] for v in viol[:5]])
+    _finalize_stats(lane="serial", targeted=_n_targeted, attempted=_n_attempted_chapters,
+                    provider_calls=_n_attempts, candidates_validated=_n_validated,
+                    chapters_changed=_n_changed, ineffective=_n_ineffective,
+                    unresolved=_n_unresolved)
     if not changed:
         return full_text, total_cr
     return "".join(out), total_cr
 
 
-_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v1"
+#: F4a — ONE control object for the three decisions that must never disagree:
+#: has the caller abandoned this attempt, is there budget left, and did this request
+#: get counted. Splitting them across a sink dict, a separate abort flag and a probe-side
+#: wrapper left gaps between check and dispatch that were all reproducible:
+#:   · a rung read `aborted=False`, the caller then timed out, and the retry still went;
+#:   · a slow client constructor outlived the timeout and dispatched afterwards;
+#:   · the probe's cap refused requests 2-4 AFTER production had already counted them.
+#: One lock, one atomic `reserve()`, and reserving IS counting.
+
+
+class _NarasiUpstreamLedger:
+    """Thread-safe ledger of physical upstream requests for one structural run."""
+
+    __slots__ = ("_lock", "_count", "_cap", "_abandoned")
+
+    def __init__(self, cap=None):
+        import threading as _t
+        self._lock = _t.Lock()
+        self._count = 0
+        self._cap = None if cap is None else max(0, int(cap))
+        self._abandoned = set()
+
+    def reserve(self, generation) -> bool:
+        """May this request be sent? Decided and COUNTED under one lock, so there is no
+        window between "allowed" and "counted" for a timeout or a cap to slip into."""
+        with self._lock:
+            if generation in self._abandoned:
+                return False
+            if self._cap is not None and self._count >= self._cap:
+                return False
+            self._count += 1
+            return True
+
+    def abandon(self, generation) -> None:
+        """The caller for `generation` gave up. Requests already reserved stay counted
+        (they are on the wire); no further request for that attempt may be sent."""
+        with self._lock:
+            self._abandoned.add(generation)
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return self._count
+
+
+_NARASI_UPSTREAM_LEDGER: ContextVar = ContextVar(
+    "_narasi_upstream_ledger", default=None)
+#: Identifies WHICH attempt the running worker belongs to. Set immediately before
+#: `asyncio.to_thread`, so the worker's copied context pins its own generation and a
+#: later attempt cannot un-abandon an older one still in flight.
+_NARASI_UPSTREAM_GENERATION: ContextVar = ContextVar(
+    "_narasi_upstream_generation", default=0)
+#: Optional hard cap, set by the non-delivery probe so "at most N billable requests" is
+#: enforced by the SAME object production counts with, not by an outside wrapper that
+#: can only refuse after the fact.
+_NARASI_UPSTREAM_CAP: ContextVar = ContextVar(
+    "_narasi_upstream_cap", default=None)
+
+
+class _NarasiUpstreamRefused(RuntimeError):
+    """A reservation was refused: the caller abandoned this attempt, or the cap is
+    spent. Its own type, so an observer can tell "no request was made" apart from
+    "a request was made and failed" — the two are opposite facts about cost."""
+
+
+def _narasi_upstream_reserver():
+    """Bind the CURRENT ledger and generation into a plain callable.
+
+    🔴 PASSED EXPLICITLY, NEVER INHERITED. Two provider helpers dispatch their request
+    on a raw `threading.Thread`, which does NOT carry ContextVars — a reservation that
+    relied on propagation would simply not run at the place it matters. Returns None
+    when no ledger is installed, i.e. outside a structural run."""
+    try:
+        ledger = _NARASI_UPSTREAM_LEDGER.get()
+        if not isinstance(ledger, _NarasiUpstreamLedger):
+            return None
+        generation = _NARASI_UPSTREAM_GENERATION.get()
+        return lambda: ledger.reserve(generation)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _narasi_check_reserve(reserve, label: str) -> None:
+    """Last statement before a physical transport. Raises rather than returning so a
+    helper cannot accidentally proceed on a refusal."""
+    if reserve is not None and not reserve():
+        raise _NarasiUpstreamRefused(f"{label}: upstream refused (abandoned or cap)")
+
+
+def _narasi_reserve_upstream() -> bool:
+    """Atomically reserve (and thereby count) one physical upstream request.
+
+    MUST be called after EVERY local preflight — client construction, payload and
+    schema building, callable binding — and immediately before the transport. Anything
+    still able to fail after this point turns the reservation into a phantom request.
+    Never raises; with no ledger installed it allows the call and counts nothing."""
+    try:
+        ledger = _NARASI_UPSTREAM_LEDGER.get()
+        if not isinstance(ledger, _NarasiUpstreamLedger):
+            return True
+        return ledger.reserve(_NARASI_UPSTREAM_GENERATION.get())
+    except Exception:  # noqa: BLE001
+        return True
+
+
+# F4a bumped this to v2 rather than adding `provider_calls` quietly: this block is
+# PERSISTED on the jobs row, so a consumer reading v1 would otherwise start seeing a
+# field its contract never promised, with no way to tell the two shapes apart.
+_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v2"
 _STRUCTURAL_PATCH_NOT_ATTEMPTED_REASONS = frozenset({
     "attempt_cap",
     "outline_packet_missing",
@@ -9757,11 +10030,16 @@ _STRUCTURAL_PATCH_NOT_ATTEMPTED_REASONS = frozenset({
 
 
 def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
-                                     attempted=0, accepted=0,
+                                     attempted=0, provider_calls=0, accepted=0,
                                      not_attempted_reason_counts=None,
                                      deferred_by_chapter=None,
                                      manuscript_changed=None):
-    """Build and assert the bounded four-state mixed-routing summary."""
+    """Build and assert the bounded four-state mixed-routing summary.
+
+    `provider_calls` (F4a) is PHYSICAL calls, deliberately not derived from
+    `attempted`: `provider_calls > attempted` is legal and expected once a bounded
+    retry exists, and `provider_calls < attempted` is legal when a client factory
+    raises before any request leaves the process."""
     reasons = {
         str(key): int(value)
         for key, value in (not_attempted_reason_counts or {}).items()
@@ -9773,6 +10051,15 @@ def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
         if int(chapter_no) > 0 and int(count) > 0
     ]
     targeted, attempted, accepted = int(targeted), int(attempted), int(accepted)
+    provider_calls = int(provider_calls)
+    if provider_calls < 0:
+        raise AssertionError("structural patch provider_calls invariant")
+    if attempted == 0 and provider_calls != 0:
+        # A chapter that was never attempted never reached the provider.
+        raise AssertionError("structural patch calls-without-attempt invariant")
+    if accepted > provider_calls:
+        # Every accepted patch is the product of a call that was actually made.
+        raise AssertionError("structural patch accept-without-call invariant")
     if targeted == 0:
         status = "not_targeted"
     elif attempted == 0:
@@ -9795,6 +10082,7 @@ def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
         "structural_violations": int(structural_violations),
         "chapters_targeted": targeted,
         "chapters_attempted": attempted,
+        "provider_calls": provider_calls,
         "chapters_accepted": accepted,
         "not_attempted_reason_counts": reasons,
         "deferred_nonstructural_total": sum(item["count"] for item in deferred),
@@ -9819,6 +10107,81 @@ def _narasi_copy_structural_patch_summary(result, critique):
     summary = critique.get("structural_patch")
     if isinstance(summary, dict):
         result["structural_patch"] = summary
+
+
+_LEGACY_REVISE_STATS_VERSION = "legacy_revise_stats_v1"
+
+
+def _narasi_legacy_revise_stats(*, lane, targeted=0, attempted=0, provider_calls=0,
+                                candidates_validated=0, chapters_changed=0,
+                                ineffective=0, unresolved=0):
+    """Build and assert the bounded legacy chapter-revise accounting block.
+
+    The legacy lane's only observable used to be the manuscript itself, which cannot
+    separate a chapter that was never attempted from one whose two attempts both came
+    back byte-identical — all three leave the same bytes. These counters separate
+    TARGETING from PHYSICAL CALLS from VALIDATION from CHANGE from RESOLUTION, and the
+    invariants below are cross-checks (every counter is accumulated independently at
+    the site it describes, never derived from another one).
+
+    Bounded integers only — C12: no prose, evidence, chapter text, id, or exception."""
+    if lane not in ("serial", "parallel"):
+        raise AssertionError("legacy revise lane")
+    targeted, attempted = int(targeted), int(attempted)
+    provider_calls, candidates_validated = int(provider_calls), int(candidates_validated)
+    chapters_changed = int(chapters_changed)
+    ineffective, unresolved = int(ineffective), int(unresolved)
+    if not (0 <= chapters_changed <= attempted <= targeted):
+        raise AssertionError("legacy revise chapter counter invariant")
+    if attempted > provider_calls:
+        raise AssertionError("legacy revise attempted-without-call invariant")
+    if not (0 <= candidates_validated <= provider_calls):
+        raise AssertionError("legacy revise validated invariant")
+    if not (0 <= ineffective <= candidates_validated):
+        raise AssertionError("legacy revise ineffective invariant")
+    if unresolved != attempted - chapters_changed:
+        raise AssertionError("legacy revise unresolved invariant")
+    return {
+        "schema_version": _LEGACY_REVISE_STATS_VERSION,
+        "lane": lane,
+        "chapters_targeted": targeted,
+        "chapters_attempted": attempted,
+        "provider_calls": provider_calls,
+        "candidates_validated": candidates_validated,
+        "chapters_changed": chapters_changed,
+        # F2 measures repair DELIVERY, not violation resolution. A chapter whose bytes
+        # changed is NOT evidence the finding is gone — proving that needs a post-repair
+        # verifier, which is F6's and does not exist yet. This stays a literal 0 and must
+        # NEVER be aliased to chapters_changed: naming a counter for something it does not
+        # measure is exactly what f1_scrub_removed_count was corrected for.
+        "violations_verified_resolved": 0,
+        "ineffective_count": ineffective,
+        "unresolved_count": unresolved,
+    }
+
+
+def _narasi_publish_legacy_revise_stats(critique, stats):
+    """Publish the legacy accounting block. An EMPTY sink means the lane never produced
+    one (it raised before any return path, or an invariant failed) — publish nothing
+    rather than a misleading all-zero block."""
+    if not isinstance(stats, dict) or not stats:
+        return
+    if isinstance(critique, dict):
+        critique["legacy_revise"] = stats
+    import logging as _llog
+    _llog.getLogger("narasi").info(
+        "legacy revise stats: %s",
+        json.dumps(stats, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _narasi_copy_legacy_revise_stats(result, critique):
+    """Copy the public block to the job result's canonical top-level path."""
+    if not isinstance(result, dict) or not isinstance(critique, dict):
+        return
+    stats = critique.get("legacy_revise")
+    if isinstance(stats, dict):
+        result["legacy_revise"] = stats
 
 
 def _narasi_split_patch_chapters(full_text):
@@ -9866,7 +10229,24 @@ def _narasi_violation_target_chapters(full_text, violation, *, include_declared=
     return targets
 
 
-async def _narasi_structural_patch_revise(full_text, violations, style, language, rev_model, *,
+async def _narasi_structural_patch_revise(*args, **kwargs):
+    """Public entry. Owns the upstream-call sink's lifetime.
+
+    Scoped here rather than inside the implementation so the sink is guaranteed to be
+    torn down on EVERY exit, including an exception: the dispatcher runs the legacy
+    lane immediately afterwards through the same failover client, and a leaked sink
+    would silently bill legacy's upstream requests to the structural lane."""
+    ledger = _NarasiUpstreamLedger(cap=_NARASI_UPSTREAM_CAP.get())
+    token = _NARASI_UPSTREAM_LEDGER.set(ledger)
+    try:
+        return await _narasi_structural_patch_revise_impl(
+            *args, _upstream_ledger=ledger, **kwargs)
+    finally:
+        _NARASI_UPSTREAM_LEDGER.reset(token)
+
+
+async def _narasi_structural_patch_revise_impl(full_text, violations, style, language, rev_model, *,
+                                               _upstream_ledger=None,
                                            tenant_id, user_id, job_uuid, credit_row=True,
                                            authority_text="", outline_packets=None):
     """Classic-only provider adapter over the pure addressed-patch core."""
@@ -9874,6 +10254,7 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
         PATCH_SCHEMA_VERSION,
         PatchValidationError,
         apply_addressed_patch,
+        bounded_operation_subtype,
         segment_chapter,
     )
 
@@ -9901,6 +10282,11 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
     reason_counts = {}
     rejected_reason_counts = {}
     attempted = accepted = total_cr = 0
+    # F4a: PHYSICAL provider calls, counted separately from chapter attempts. The two
+    # coincide only while every attempted chapter costs exactly one call; a bounded
+    # retry makes one attempt cost two, and a client factory that raises makes an
+    # attempt cost none. Deriving either from the other is wrong in both directions.
+    provider_calls = 0
     resolved = MODELS.get(rev_model, rev_model)
     output_parts = [part for _number, part in parts]
 
@@ -9916,6 +10302,24 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
             "structural patch REJECTED chapter=%d attempt=1 reason=%s words=%d->%s",
             chapter_number, bounded_reason, input_words,
             "?" if output_words is None else str(output_words),
+        )
+
+    def _unknown_operation_observed(chapter_number, received):
+        # F4a telemetry: bucket the raw model "op" value into a closed,
+        # bounded subtype for observability -- never log it verbatim, never
+        # widen the public "unknown_operation" reason code, and never feed
+        # not_attempted_reason_counts (that invariant is sum(reasons) ==
+        # targeted - attempted, unrelated to this already-attempted/rejected
+        # chapter).
+        subtype = bounded_operation_subtype(received)
+        token = received if isinstance(received, str) else ""
+        import hashlib as _unknown_op_hash
+        token_hash = _unknown_op_hash.sha256(
+            token.encode("utf-8", errors="replace")).hexdigest()[:16]
+        import logging as _unknown_op_log
+        _unknown_op_log.getLogger("narasi").warning(
+            "structural patch unknown_operation chapter=%d subtype=%s len=%d hash=%s",
+            chapter_number, subtype, len(token), token_hash,
         )
 
     for target_position, chapter_number in enumerate(targeted_numbers):
@@ -9960,23 +10364,69 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
             "[RESPONSE SHAPE]\nReturn strict JSON only. Apply the smallest sufficient patch."
         )
         attempted += 1
+
+        def _invoke_provider(_s=system, _u=user):
+            # Resolve the client and BIND `.create` first: a factory that raises
+            # (missing credential, unknown model, import fault) never put a request on
+            # the wire, and billing it would both over-report spend and wrongly debit
+            # the legacy lane's shared budget.
+            _client = make_narasi_client(rev_model, phase="canon_diff_revise")
+            if not isinstance(_client, _NarasiFailoverClient):
+                try:
+                    # ONE reservation must mean ONE request. The OpenAI SDK retries
+                    # twice by default, so a plain-client reservation was silently
+                    # covering up to three HTTP attempts.
+                    _client = _client.with_options(max_retries=0)
+                except Exception:  # noqa: BLE001
+                    pass
+            _create = _client.chat.completions.create
+            # EVERY argument built before the reservation — `_narasi_revise_timeout`
+            # used to be evaluated inside the call's own argument list, i.e. after it.
+            _call_kwargs = dict(
+                model=resolved,
+                messages=[{"role": "system", "content": _s}, {"role": "user", "content": _u}],
+                temperature=0.1,
+                max_tokens=min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 2400),
+                response_format={"type": "json_object"},
+                stream=False,
+                timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
+            )
+            # ONE door. An earlier version also carried a separate `_StructuralCallSlot`
+            # that refused to dispatch after abandonment — but the ledger's `reserve()`
+            # already refuses on the same condition, under the same lock, so the slot
+            # could be removed without changing a single outcome. Two mechanisms
+            # enforcing one rule mean neither can be proved: each hides the other's
+            # removal from every test.
+            if not isinstance(_client, _NarasiFailoverClient):
+                # PLAIN client: this `.create` IS the upstream request. Reserved here,
+                # after every local step. The failover client reserves per rung —
+                # reserving here too would double-count it.
+                if not _narasi_reserve_upstream():
+                    raise _NarasiUpstreamRefused(
+                        "structural attempt refused (abandoned or cap)")
+            return _create(**_call_kwargs)
+
+        # Fresh per attempt, set immediately before the thread starts so the worker's
+        # copied context pins THIS attempt's generation.
+        _generation = target_position + 1
+        _gen_token = _NARASI_UPSTREAM_GENERATION.set(_generation)
         try:
-            response = await asyncio.wait_for(asyncio.to_thread(
-                lambda _s=system, _u=user: make_narasi_client(
-                    rev_model, phase="canon_diff_revise").chat.completions.create(
-                        model=resolved,
-                        messages=[{"role": "system", "content": _s}, {"role": "user", "content": _u}],
-                        temperature=0.1,
-                        max_tokens=min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 2400),
-                        response_format={"type": "json_object"},
-                        stream=False,
-                        timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
-                    )),
+            response = await asyncio.wait_for(
+                asyncio.to_thread(_invoke_provider),
                 timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
             )
         except Exception:
+            # Decided here and now, atomically — no waiting, no grace window. Either
+            # the worker had already dispatched or it is now forbidden to. Either way
+            # the failover walk (if one is underway) must stop issuing NEW requests:
+            # the request in flight is already counted, the next one would be billed
+            # against stats this coroutine has finished writing.
+            if _upstream_ledger is not None:
+                _upstream_ledger.abandon(_generation)
             _rejected("provider_error", chapter_number, original_words)
             continue
+        finally:
+            _NARASI_UPSTREAM_GENERATION.reset(_gen_token)
         if not getattr(response, "choices", None):
             _rejected("response_empty", chapter_number, original_words)
             continue
@@ -9987,34 +10437,56 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
         except Exception:
             _rejected("metering_error", chapter_number, original_words)
             continue
-        raw_patch = _resp_content(response) or ""
+        # F4a: everything from here on runs AFTER a billed provider call. An
+        # unexpected fault used to propagate out of this function, and the dispatcher
+        # then replaced the whole stats block with zeros — publishing `not_targeted`
+        # over a chapter that was targeted, attempted AND paid for, and handing the
+        # legacy lane the full shared budget on top. A post-call fault is a REJECTED
+        # candidate like any other; it must never erase the accounting behind it.
         try:
-            patched = apply_addressed_patch(segmented, raw_patch)
-        except PatchValidationError as patch_error:
-            _rejected(patch_error.code, chapter_number, original_words)
-            continue
-        patched_words = len(patched.text.split())
-        floor, ceil = int(original_words * 0.9), int(original_words * 1.4)
-        if not (floor <= patched_words <= ceil):
-            _rejected("word_band", chapter_number, original_words, patched_words)
-            continue
-        if not (int(len(original_chapter) * 0.75) <= len(patched.text) <= int(len(original_chapter) * 1.5)):
-            _rejected("byte_band", chapter_number, original_words, patched_words)
-            continue
-        import difflib as _patch_difflib
-        fidelity = _patch_difflib.SequenceMatcher(
-            None, original_chapter.split(), patched.text.split()).ratio()
-        try:
-            min_fidelity = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+            raw_patch = _resp_content(response) or ""
+            try:
+                patched = apply_addressed_patch(segmented, raw_patch)
+            except PatchValidationError as patch_error:
+                if patch_error.code == "unknown_operation":
+                    _unknown_operation_observed(chapter_number, patch_error.received)
+                _rejected(patch_error.code, chapter_number, original_words)
+                continue
+            patched_words = len(patched.text.split())
+            floor, ceil = int(original_words * 0.9), int(original_words * 1.4)
+            if not (floor <= patched_words <= ceil):
+                _rejected("word_band", chapter_number, original_words, patched_words)
+                continue
+            if not (int(len(original_chapter) * 0.75) <= len(patched.text) <= int(len(original_chapter) * 1.5)):
+                _rejected("byte_band", chapter_number, original_words, patched_words)
+                continue
+            import difflib as _patch_difflib
+            fidelity = _patch_difflib.SequenceMatcher(
+                None, original_chapter.split(), patched.text.split()).ratio()
+            try:
+                min_fidelity = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+            except Exception:
+                min_fidelity = 0.55
+            min_fidelity = min(1.0, max(0.0, min_fidelity))
+            if fidelity < min_fidelity:
+                _rejected("fidelity_below_minimum", chapter_number,
+                          original_words, patched_words)
+                continue
+            output_parts[part_index] = patched.text + trail
         except Exception:
-            min_fidelity = 0.55
-        min_fidelity = min(1.0, max(0.0, min_fidelity))
-        if fidelity < min_fidelity:
-            _rejected("fidelity_below_minimum", chapter_number,
-                      original_words, patched_words)
+            # A post-call fault is a rejected candidate, never an erased ledger.
+            _rejected("internal_error", chapter_number, original_words)
             continue
-        output_parts[part_index] = patched.text + trail
         accepted += 1
+
+    # THE SINK IS THE ONLY SOURCE OF TRUTH. It used to be `max(sink, outer_invocations)`,
+    # with the outer count as a "floor" — but an adapter invocation is not evidence of a
+    # request: a failover chain that fails while being BUILT calls no transport at all,
+    # and the floor then reported 1 physical call against 0 real ones. Both the plain
+    # client and every failover rung now record themselves at their own transport
+    # boundary, so the floor has nothing left to cover and inventing one only lies.
+    # Read LAST so a rung that landed while a later chapter ran is still included.
+    provider_calls = 0 if _upstream_ledger is None else int(_upstream_ledger.count)
 
     return (
         "".join(output_parts),
@@ -10022,6 +10494,7 @@ async def _narasi_structural_patch_revise(full_text, violations, style, language
         {
             "targeted": len(targeted_numbers),
             "attempted": attempted,
+            "provider_calls": provider_calls,
             "accepted": accepted,
             "not_attempted_reason_counts": reason_counts,
             "rejected_reason_counts": rejected_reason_counts,
@@ -10065,7 +10538,7 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             else:
                 patched_text, patch_cr = full_text, 0
                 patch_stats = {
-                    "targeted": 0, "attempted": 0, "accepted": 0,
+                    "targeted": 0, "attempted": 0, "provider_calls": 0, "accepted": 0,
                     "not_attempted_reason_counts": {},
                     "rejected_reason_counts": {},
                     "unresolved_locator_count": 0,
@@ -10080,6 +10553,7 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             patch_stats = {
                 "targeted": 0,
                 "attempted": 0,
+                "provider_calls": 0,
                 "accepted": 0,
                 "not_attempted_reason_counts": {},
                 "rejected_reason_counts": {},
@@ -10105,6 +10579,7 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                 legacy_violations.append(item)
 
         legacy_cr = 0
+        legacy_stats = {}
         final_text = patched_text
         if legacy_violations:
             try:
@@ -10118,7 +10593,12 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                     excluded_chapter_numbers=owned,
                     # Preserve legacy's success cap while sharing only its attempt
                     # headroom with calls already spent by the structural patch lane.
-                    attempts_already_spent=int(patch_stats["attempted"]))
+                    # F4a: debit the shared repair budget with PHYSICAL calls, not
+                    # attempted chapters. Under a bounded structural retry the two
+                    # diverge, and debiting attempts would hand the legacy lane
+                    # headroom the structural lane had already spent.
+                    attempts_already_spent=int(patch_stats["provider_calls"]),
+                    stats_out=legacy_stats)
             except Exception as legacy_error:
                 import logging as _mixlog
                 _mixlog.getLogger("narasi").warning(
@@ -10129,12 +10609,17 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             structural_violations=len(all_structural),
             targeted=patch_stats["targeted"],
             attempted=patch_stats["attempted"],
+            # Bracket access, never `.get(..., attempted)`: a default that silently
+            # falls back to the attempt count would hide exactly the call site this
+            # change exists to fix.
+            provider_calls=patch_stats["provider_calls"],
             accepted=patch_stats["accepted"],
             not_attempted_reason_counts=patch_stats["not_attempted_reason_counts"],
             deferred_by_chapter=deferred_by_chapter,
             manuscript_changed=(patched_text != full_text),
         )
         _narasi_publish_structural_patch_summary(critique, summary)
+        _narasi_publish_legacy_revise_stats(critique, legacy_stats)
         return final_text, int(patch_cr or 0) + int(legacy_cr or 0)
 
     _narasi_publish_structural_patch_summary(
@@ -10163,12 +10648,13 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
     if (os.getenv("NARASI_REVISE_CHUNKED", "0").strip().lower() in ("1", "true", "yes", "on")
             or (_auto_w > 0 and len((full_text or "").split()) >= _auto_w)
             or _force_authority_chunked):
+        _legacy_stats = {}
         try:
-            return await _narasi_revise_chunked(
+            _legacy_text, _legacy_cr = await _narasi_revise_chunked(
                 full_text, viol, style, language, rev_model,
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
                 phase="canon_diff_revise", credit_row=credit_row,
-                authority_text=authority_text)
+                authority_text=authority_text, stats_out=_legacy_stats)
         except Exception as _ce:
             import logging as _lg
             if _force_authority_chunked:
@@ -10180,6 +10666,12 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                     "authority-structural chunked revise error (%s) — original preserved", _ce)
                 return full_text, 0
             _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
+        else:
+            # Only on a clean return: an exception leaves the sink empty and nothing is
+            # published, so the whole-book fallback below is never mislabelled as a
+            # chapter-scoped repair that ran.
+            _narasi_publish_legacy_revise_stats(critique, _legacy_stats)
+            return _legacy_text, _legacy_cr
     directives = "\n".join(
         f"- [{x.get('severity', '?')}/{x.get('type', '?')}] {str(x.get('evidence', ''))[:420]} "
         f"→ FIX: {str(x.get('fix', ''))[:420]}"
@@ -13564,6 +14056,7 @@ async def _narasi_generate_impl(body: dict, job_id: str, _narasi_tenant, _narasi
             if _critique_payload is not None:
                 _result["critique"] = _critique_payload
                 _narasi_copy_structural_patch_summary(_result, _critique_payload)
+                _narasi_copy_legacy_revise_stats(_result, _critique_payload)
             await db.finish_narasi_job(_narasi_tenant, job_id, "done", result=_result)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("finish_narasi_job failed (non-fatal): %s", _e)

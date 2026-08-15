@@ -47,10 +47,18 @@ class _FakeResp:
 
 
 class _EchoClient:
-    """Fake LLM client: echoes back the SAME chapter body it was given (extracted from the
-    prompt), so the accept-gate (word-band / heading-sequence / fidelity) always trivially
-    passes and every call is recorded — letting the test assert purely on ROUTING (which
-    chapter(s) got an LLM call at all), independent of the accept/reject mechanics."""
+    """Fake LLM client: near-echoes the chapter body it was given (extracted from the
+    prompt) — content, word count and heading line all preserved, so the accept-gate
+    (word-band / heading-sequence / fidelity) always trivially passes and every call
+    is recorded — letting the test assert purely on ROUTING (which chapter(s) got an
+    LLM call at all), independent of the accept/reject mechanics.
+
+    F2 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md): a byte-IDENTICAL echo is no
+    longer accepted on attempt 1 — `_narasi_revise_chunked` now retries a no-op
+    candidate exactly like any other rejection, which would silently double the call
+    count this file's tests assert on. This client flips the case of one letter in
+    the body (never on the heading line, which `_heads_ok` requires byte-identical)
+    so the response is a real, trivial, single-attempt-accepted change again."""
 
     def __init__(self):
         self.calls = []
@@ -61,7 +69,12 @@ class _EchoClient:
             user_content = kw["messages"][1]["content"]
             idx = user_content.index(MARKER) + len(MARKER)
             body = user_content[idx:]
-            return _FakeResp(body)
+            heading, _sep, rest = body.partition("\n")
+            for i, ch in enumerate(rest):
+                if ch.isalpha():
+                    rest = rest[:i] + (ch.lower() if ch.isupper() else ch.upper()) + rest[i + 1:]
+                    break
+            return _FakeResp(heading + "\n" + rest)
 
         comp.create = create
         self.chat = type("Chat", (), {"completions": comp})()

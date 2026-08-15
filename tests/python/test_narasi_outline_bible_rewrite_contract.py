@@ -299,6 +299,19 @@ def test_authority_aware_critic_contract_names_the_canary_failure_classes():
     assert "include `chapter` as the 1-based chapter number" in bound
     assert "unanswered invitation is not" in bound
     assert "Merely saying 'days passed'" in bound
+    # F6 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md, fecd3dcb...): checks 5/6 are NOT
+    # gated on authority_aware, so both variants must carry the strengthened wording.
+    for prompt in (legacy, bound):
+        # case 2 (teleport): check 5 previously covered only props/static geography, not
+        # a character's whereabouts across a same-chapter scene break.
+        assert "unaccounted-for simultaneity" in prompt
+        # case 1 (tense drift): the OLD example was inverted relative to v9's real failure
+        # (a past-tense book with one present-tense chapter) -- must read direction-agnostic.
+        assert "EITHER direction" in prompt
+        assert "mostly-past-tense book with one chapter" in prompt
+    # case 4 (beat promised, not executed): a stated intent is not the beat, and a later
+    # passage must not treat its consequence as already in effect.
+    assert "is a promise, not the beat" in bound
 
 
 def test_private_authority_never_enters_the_durable_payload():
@@ -422,7 +435,7 @@ def test_authority_structural_finding_forces_addressed_patch_repair(monkeypatch)
         captured["violations"] = violations
         captured.update(kwargs)
         return full_text, 0, {
-            "targeted": 1, "attempted": 0, "accepted": 0,
+            "targeted": 1, "attempted": 0, "provider_calls": 0, "accepted": 0,
             "not_attempted_reason_counts": {"outline_packet_missing": 1},
             "owned_chapter_numbers": {2},
         }

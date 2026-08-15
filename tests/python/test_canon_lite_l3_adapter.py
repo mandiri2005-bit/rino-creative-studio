@@ -319,6 +319,106 @@ def test_the_budget_ceiling_is_bounded_at_construction(bad):
         _session(max_calls=bad)
 
 
+# ── 2026-08-15 re-audit REJECT finding (brief §C.2) ──────────────────────────
+# The repair PROVIDER is an LLM call — as capable of echoing a bracket token as the
+# original chapter-generation worker was (canary v9's actual failure). Scrubbing must
+# happen on the candidate's CORE, before the original block's exact trailing frame is
+# reattached, so the clean bytes are what reaches re-extraction/validation/staging and
+# whatever hashes L3 computes over the candidate.
+def test_repair_provider_scrubs_a_bound_marker_from_the_candidate_core(monkeypatch):
+    import orchestrator.static as ostatic
+
+    async def _fake_run_worker(worker, prompt, **_kw):
+        return {"ok": True, "output": "## Bab 1\nIa mengingat [anc1] dengan jelas.\n\n"}
+
+    monkeypatch.setattr(ostatic, "run_worker", _fake_run_worker)
+
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=[{"id": 1, "title": "Bab 1", "summary": "x"}],
+        job_config=cl.build_job_config_snapshot(
+            outline_chapters=[{"id": 1, "title": "Bab 1", "summary": "x"}],
+            target_language="id", narration_style="kdrama_serial"),
+        anchors=[cl.CanonAnchorV1("anc1", "time", "five years of absence")])
+
+    session = _session()
+    got = asyncio.run(session.repair_provider(
+        chapter_index=0, chapter_id="ch1", block_bytes=_block(),
+        violation_codes=(l2.VIOLATION_ENTITY_NAME,), canon=canon, attempt=1))
+
+    assert got is not None
+    text = got.decode("utf-8")
+    assert b"[anc1]" not in got, text
+    assert "Ia mengingat" in text and "dengan jelas" in text, \
+        "surrounding prose must survive -- only the marker token is removed"
+
+
+def test_repair_provider_accumulates_its_scrub_count_on_the_session(monkeypatch):
+    """F1 count aggregation: the session is the only thing that knows how many
+    markers ITS candidates carried, and the seam reads it to build the delivered
+    total. A per-call count that nothing accumulates would vanish."""
+    import orchestrator.static as ostatic
+
+    async def _fake_run_worker(worker, prompt, **_kw):
+        return {"ok": True, "output": "## Bab 1\nDua [anc1] penanda [anc1] di sini.\n\n"}
+
+    monkeypatch.setattr(ostatic, "run_worker", _fake_run_worker)
+
+    canon = cl.build_canon_lite_v1(
+        outline_chapters=[{"id": 1, "title": "Bab 1", "summary": "x"}],
+        job_config=cl.build_job_config_snapshot(
+            outline_chapters=[{"id": 1, "title": "Bab 1", "summary": "x"}],
+            target_language="id", narration_style="kdrama_serial"),
+        anchors=[cl.CanonAnchorV1("anc1", "time", "five years of absence")])
+
+    session = _session(max_calls=4)
+    assert session.markers_scrubbed == 0
+    asyncio.run(session.repair_provider(
+        chapter_index=0, chapter_id="ch1", block_bytes=_block(),
+        violation_codes=(l2.VIOLATION_ENTITY_NAME,), canon=canon, attempt=1))
+    assert session.markers_scrubbed == 2
+    # a SECOND attempt accumulates rather than overwriting
+    asyncio.run(session.repair_provider(
+        chapter_index=0, chapter_id="ch1", block_bytes=_block(),
+        violation_codes=(l2.VIOLATION_ENTITY_NAME,), canon=canon, attempt=2))
+    assert session.markers_scrubbed == 4
+
+
+def test_repair_provider_scrub_preserves_the_original_trailing_frame_exactly():
+    """The scrub must not interfere with F3's own trailing-frame contract: the bytes
+    reattached after the core are still the ORIGINAL block's exact trailing bytes,
+    never a generic one, regardless of what scrubbing changed in the core."""
+    import orchestrator.static as ostatic
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    try:
+        async def _fake_run_worker(worker, prompt, **_kw):
+            return {"ok": True, "output": "## Bab 1\nIsi [anc1] bersih.\n\n\n"}
+        mp.setattr(ostatic, "run_worker", _fake_run_worker)
+
+        canon = cl.build_canon_lite_v1(
+            outline_chapters=[{"id": 1, "title": "Bab 1", "summary": "x"},
+                               {"id": 2, "title": "Bab 2", "summary": "y"}],
+            job_config=cl.build_job_config_snapshot(
+                outline_chapters=[{"id": 1, "title": "Bab 1", "summary": "x"},
+                                   {"id": 2, "title": "Bab 2", "summary": "y"}],
+                target_language="id", narration_style="kdrama_serial"),
+            anchors=[cl.CanonAnchorV1("anc1", "time", "five years of absence")])
+
+        book = "## Bab 1\nasli isi satu.\n\n## Bab 2\nasli isi dua.\n"
+        original_block = _block(book=book, index=0)
+        _core, original_trailing = ad._split_trailing_frame(original_block)
+
+        session = _session()
+        got = asyncio.run(session.repair_provider(
+            chapter_index=0, chapter_id="ch1", block_bytes=original_block,
+            violation_codes=(l2.VIOLATION_ENTITY_NAME,), canon=canon, attempt=1))
+        assert got is not None
+        assert got.endswith(original_trailing)
+        assert b"[anc1]" not in got
+    finally:
+        mp.undo()
+
+
 # ── 3. what is stamped, and what is not ─────────────────────────────────────
 def test_index_and_id_are_stamped_but_the_hashes_are_measured():
     """🔴 THE HONEST HALF OF THE BINDING. A one-block request is index 0 by

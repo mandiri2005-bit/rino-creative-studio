@@ -129,6 +129,50 @@ def test_r16_suffixed_headings_are_unknown_never_collapsed_to_the_bare_number():
     assert [b.heading_number for b in snap.blocks] == [3, -1, -1]
 
 
+# Same shape as `NO_MARKDOWN_PREFIX` below but every heading is bare "Chapter N: Title" —
+# no "## " marker. This is the delivered-artifact shape (verified directly against the
+# canary y1b503pf artifact that triggered L3-Assist: real chapter lines read "Chapter 1:
+# ...", never "## Chapter 1: ..."), not a hypothetical. Content is synthetic placeholder
+# text — brief §1 forbids storing the real manuscript in a fixture.
+NO_MARKDOWN_PREFIX = (
+    "Chapter 1: Opening\nisi satu\n\n"
+    "Chapter 2: Middle\nisi dua\n\n"
+    "Chapter 3: Ending\nisi tiga\n"
+)
+
+
+def test_headings_without_the_markdown_marker_still_split_into_separate_chapters():
+    """Production headings are language-word + number ("Chapter N", "Bab N", ...); the "## "
+    marker is an internal assembly convention (`laozhang_api._chapter_label` call sites), not
+    something every manuscript is proven to carry by the time it reaches L3 — brief §4's "F6
+    opening" asked this to be proven either way. Before `chapter_heading_patterns` existed,
+    un-marked headings fell through the old "## "-only regex entirely, so `.split()` found no
+    boundary at all: the whole three-chapter book read as ZERO chapters (all of it
+    misclassified as pre-chapter-1 front matter), not even one — silently disabling every
+    chapter-scoped repair and word-band check for that manuscript, not just chapter framing."""
+    snap = l2.materialize_final_snapshot({"book": NO_MARKDOWN_PREFIX})
+    assert snap is not None
+    assert snap.chapter_count == 3
+
+
+def test_a_bare_word_shaped_line_inside_a_markdown_chapters_body_does_not_corrupt_chapter_id():
+    """2026-08-15 adversarial review of the first version of this fix: a mid-body line that
+    merely LOOKS like a bare chapter heading ("Chapter 11 filings rose sharply...") used to
+    spuriously split, shifting every later block's POSITIONAL chapter_id binding by one —
+    reproduced against this exact function, real chapter 2 content ended up bound to the
+    wrong chapter_id (or UNKNOWN). `chapter_heading_patterns.chapter_split_rx_for` fixes this
+    structurally: once a book has ANY "## " marker, the bare-word fallback never runs on it at
+    all, so an incidental in-body line can no longer manufacture a spurious block."""
+    book = ("## Chapter 1: Real\nMaya found the old journal that night.\n"
+            "Chapter 11 filings rose sharply that year, unrelated to anything here.\n\n"
+            "## Chapter 2: Real\nMore text that belongs to chapter two.\n")
+    canon = _canon(n_chapters=2)
+    snap = l2.materialize_final_snapshot({"book": book}, canon=canon)
+    assert snap is not None
+    assert snap.chapter_count == 2
+    assert [b.chapter_id for b in snap.blocks] == ["ch1", "ch2"]
+
+
 def test_manuscript_over_the_byte_bound_is_rejected_not_truncated():
     huge = "## Bab 1\n" + ("x" * (l2.MAX_MANUSCRIPT_BYTES + 1))
     with pytest.raises(cl.CanonBoundsError):

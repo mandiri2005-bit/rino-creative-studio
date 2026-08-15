@@ -48,6 +48,8 @@ import re
 import time
 from typing import Any, Optional, Sequence
 
+import chapter_heading_patterns as _chp
+
 from .core import (
     Worker,
     run_worker,
@@ -334,6 +336,18 @@ _WORDGATE_CEILING_FACTOR = 1.3
 # matches pakem.assembler.Chapter's own pre-existing 1.15x default so both code paths (the
 # fallback prompt below and the compose() chapter dict) agree on one real ceiling.
 _WORDGATE_PROMPT_CEILING_FACTOR = 1.15
+# F6 case 5 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md, fecd3dcb...): the ceiling
+# check above was report-only ("never fails, never regenerates"). Bounded regeneration
+# is now available behind its OWN default-OFF flag -- ADDITIVE, does not touch the
+# report-only warning or the undershoot/floor path above. Trims DOWN to the tighter
+# 1.15x prompt ceiling (never the loose 1.3x alarm factor -- see that constant's own
+# comment on why reusing it here would be the identical mistake caught 2026-07-16).
+_WORDGATE_CEILING_RETRIES = int(os.environ.get("NARASI_WORDGATE_CEILING_RETRIES", "1"))
+
+
+def _wordgate_ceiling_enforce_on() -> bool:
+    return str(os.environ.get("NARASI_WORDGATE_CEILING_ENFORCE", "0")).strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 def _res_truncated(r: Any) -> bool:
@@ -386,13 +400,18 @@ async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
     coherence contract) with the full model output ceiling, so a follow-up round can
     never itself be length-starved for targets under the admission cap.
 
-    Also runs a report-only CEILING check on the final word count (independent of the
-    NARASI_WORDGATE on/off flag — this is pure defect-visibility, not a new gate): if the
-    chapter is 30%+ OVER word_target, logs a warning. Never mutates output for this."""
+    Also runs a CEILING check on the final word count (independent of the NARASI_WORDGATE
+    on/off flag): if the chapter is 30%+ OVER word_target, logs a warning. By default this
+    is pure defect-visibility and never mutates output — but behind NARASI_WORDGATE_
+    CEILING_ENFORCE=1 (F6, default OFF) it also attempts a bounded condense-and-replace of
+    `res["output"]` (see below); with that flag unset, the "never mutates" guarantee still
+    holds exactly as before (adversarial-audit finding, 2026-08-14 night: this docstring's
+    older unqualified "Never mutates output for this" predates that flag and was stale)."""
     if _wordgate_on() and res.get("ok") and res.get("output"):
         floor = int(int(word_target) * 0.9)
         text = str(res["output"])
-        rounds = 0
+        rounds = 0     # total ATTEMPTED rounds -- bounds the loop
+        applied = 0     # rounds that actually appended text
         last = res  # the result whose truncation flag we track as the tail grows
         # Continue while the chapter is UNDER the floor, OR the last call was truncated by the
         # model's output ceiling, OR the text's own tail isn't terminated (deterministic
@@ -419,10 +438,16 @@ async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
                 break
             text = text.rstrip() + "\n\n" + add
             last = cres
-        if rounds:
+            applied += 1
+        if applied:
+            # applied, not rounds -- adversarial-audit follow-up (2026-08-14 night,
+            # task_8ff0d0dc): a round that was ATTEMPTED but produced no usable
+            # output (and broke the loop) must not inflate the reported count of
+            # rounds that actually appended text. Same pattern as the sibling
+            # trimmed/_trim_applied fix a few lines below in this same file.
             log.info("%s: word-gate continued %d round(s) → %d words (target %d, truncated_tail=%s)",
-                     task_id, rounds, len(text.split()), word_target, _res_truncated(last))
-            res = {**res, "output": text, "continued": rounds}
+                     task_id, applied, len(text.split()), word_target, _res_truncated(last))
+            res = {**res, "output": text, "continued": applied}
 
     try:
         if res.get("ok") and res.get("output"):
@@ -433,6 +458,54 @@ async def _apply_word_gate(res: dict, *, worker: Any, word_target: int,
                     "%s: chapter word count %d exceeds ceiling %d (target %d words, +%.0f%% over target)",
                     task_id, _final_wc, _ceiling, word_target,
                     ((_final_wc / word_target) - 1.0) * 100.0)
+                if _wordgate_ceiling_enforce_on():
+                    _trim_original = str(res["output"])
+                    _trim_text = _trim_original
+                    _trim_floor = int(int(word_target) * 0.9)
+                    _trim_target = int(int(word_target) * _WORDGATE_PROMPT_CEILING_FACTOR)
+                    _trim_rounds = 0    # total ATTEMPTED rounds -- bounds the loop
+                    _trim_applied = 0   # rounds that actually changed _trim_text
+                    while (len(_trim_text.split()) > _trim_target
+                           and _trim_rounds < _WORDGATE_CEILING_RETRIES):
+                        _trim_rounds += 1
+                        _excess = len(_trim_text.split()) - _trim_target
+                        _trim_task = (
+                            "You are condensing YOUR OWN chapter draft, which overshot its "
+                            "target length. The chapter so far:\n\n---\n" + _trim_text +
+                            "\n---\n\nReturn the SAME chapter, condensed by roughly "
+                            f"{_excess} words -- tighten prose, cut redundant description or "
+                            "repeated beats, but keep every plot event, all dialogue content, "
+                            "and the chapter's heading and ending intact. Do NOT summarize "
+                            "away any story beat. Return ONLY the condensed chapter, "
+                            "complete, beginning at its heading line."
+                        )
+                        _tres = await run_worker(worker, _trim_task, timeout=timeout,
+                                                 task_id=f"{task_id}:trim{_trim_rounds}")
+                        _tout = (_tres.get("output") or "").strip() if isinstance(_tres, dict) else ""
+                        if not _tout or _res_truncated(_tres):
+                            log.warning(
+                                "%s: word-ceiling trim round %d produced no usable output "
+                                "(empty=%s truncated=%s) -- keeping the prior draft",
+                                task_id, _trim_rounds, not _tout, _res_truncated(_tres))
+                            break
+                        if len(_tout.split()) < _trim_floor:
+                            log.warning(
+                                "%s: word-ceiling trim round %d undershot the floor (%d < %d) "
+                                "-- discarding, keeping the prior draft",
+                                task_id, _trim_rounds, len(_tout.split()), _trim_floor)
+                            break
+                        _trim_text = _tout
+                        _trim_applied += 1
+                    if _trim_text != _trim_original:
+                        # _trim_applied, not _trim_rounds -- adversarial-audit finding
+                        # (2026-08-14 night): a round that was ATTEMPTED but then
+                        # discarded (empty/truncated/undershot-floor) must not inflate
+                        # the reported count of rounds that actually changed the text.
+                        log.info(
+                            "%s: word-ceiling trimmed %d round(s) -> %d words "
+                            "(target %d, ceiling %d)",
+                            task_id, _trim_applied, len(_trim_text.split()), word_target, _ceiling)
+                        res = {**res, "output": _trim_text, "trimmed": _trim_applied}
     except Exception as _wce:  # noqa: BLE001
         log.warning("%s: word-ceiling check failed (non-fatal): %s", task_id, _wce)
 
@@ -468,6 +541,43 @@ def _scrub_chapter_leaks(text: str, *, task_id: str) -> str:
     return scrubbed
 
 
+def _scrub_generation_markers(text: str, canon: Optional[Any], *,
+                              task_id: str) -> tuple[str, int]:
+    """F1 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md), applied at its EARLIEST
+    possible point (2026-08-15 re-audit REJECT finding): the instant a chapter
+    worker's raw text exists, before it enters assembly, L2 extraction, a checkpoint,
+    or L3. `render_canon_for_generation` should mean a worker never SEES an opaque
+    canon id to begin with — this is the backstop for a provider that echoes
+    structure it was never shown. Distinct from `_scrub_chapter_leaks` above (an
+    unrelated, older defect class — leaked outline-planning residue, not canon ids).
+
+    🔴 SCRUBS ONLY WHAT WAS ACTUALLY INJECTED — the caller passes `canon` only when it
+       also injected that canon into this worker's prompt. The first version of this
+       fix scrubbed whenever a canon merely EXISTED, which under `shadow` (where a
+       canon is built for the projection report but nothing is ever injected) silently
+       rewrote user-visible output. Shadow's one architectural promise is that it may
+       never change what the user gets, and a bracket colliding with an id in text
+       that was never shown the canon is a coincidence, not a leak. The call site
+       gates on the mode; this signature makes a future caller unable to reintroduce
+       the same bug by passing a canon it did not inject.
+
+    Returns `(text, removed_count)` — the count is aggregated per job by
+    `narrate_chapters` so the final telemetry reflects removals at EVERY seam, not
+    just the last one. Never raises, matching every other best-effort scrub here."""
+    if not text or canon is None:
+        return text, 0
+    try:
+        import canon_lite as _cl
+        scrubbed, n = _cl.scrub_bound_markers(text, canon)
+        if n:
+            log.warning("%s: scrubbed %d bound marker(s) from raw generation output",
+                        task_id, n)
+        return scrubbed, n
+    except Exception as _se:  # noqa: BLE001 - a scrub bug must never break generation
+        log.warning("%s: generation marker scrub failed (non-fatal): %s", task_id, _se)
+        return text, 0
+
+
 async def _write_chapter(
     *,
     ctx: SharedContext,
@@ -481,6 +591,7 @@ async def _write_chapter(
     worker_model: str,
     timeout: float,
     telemetry_sink: Optional[Any],
+    canon: Optional[Any] = None,
     canon_text: Optional[str] = None,
     canon_prompt_sha: Optional[str] = None,
     canon_sha256: Optional[str] = None,
@@ -494,6 +605,13 @@ async def _write_chapter(
 
     Returns a dict tagged with `no` so the MAP can be sorted back into book order.
     """
+    # F1 (2026-08-15 re-audit round 2): scrub ONLY what this worker was actually shown.
+    # `canon_text` is the injected prefix and exists under assist alone; shadow builds a
+    # canon for its own projection report and injects nothing, and the no-compose
+    # fallback path below injects nothing either. Deriving the scrub's canon from the
+    # INJECTION rather than from "a canon object was passed" is what keeps shadow
+    # byte-identical no matter what a caller hands in.
+    _scrub_canon = canon if canon_text else None
     word_target = int(ch.get("word_target", ch.get("words", 800)) or 800)
     # Firm ceiling companion to word_target — stated in the prompt itself so the model
     # treats the target as a ceiling too, not just a floor (2026-07-15: a book shipped
@@ -535,6 +653,9 @@ async def _write_chapter(
                                      timeout=timeout, task_id=f"ch{no + 1}")
         if res.get("output"):
             res["output"] = _scrub_chapter_leaks(res["output"], task_id=f"ch{no + 1}")
+            res["output"], _n_scrubbed = _scrub_generation_markers(
+                res["output"], _scrub_canon, task_id=f"ch{no + 1}")
+            res["f1_markers_removed"] = _n_scrubbed
         res["no"] = no
         _bind_outline_packet_identity(res)
         return res
@@ -598,6 +719,12 @@ async def _write_chapter(
                                  timeout=timeout, task_id=f"ch{no + 1}")
     if res.get("output"):
         res["output"] = _scrub_chapter_leaks(res["output"], task_id=f"ch{no + 1}")
+        res["output"], _n_scrubbed = _scrub_generation_markers(
+            res["output"], _scrub_canon, task_id=f"ch{no + 1}")
+        # Per-worker count, carried on this worker's OWN result dict. Deliberately not
+        # a shared counter the fan-out mutates concurrently: `narrate_chapters` sums
+        # these after the MAP, so the arithmetic never depends on scheduling order.
+        res["f1_markers_removed"] = _n_scrubbed
     res["no"] = no
     res["cache_key"] = composed.cache_key
     _bind_outline_packet_identity(res)
@@ -608,7 +735,14 @@ async def _write_chapter(
         #    the downstream census a tautology: it would compare the dispatch
         #    value with itself and pass however badly the prefix had been mangled
         #    or the context moved.
-        res["canon_prompt_sha256"] = _cl_h.sha256_hex(
+        # 2026-08-15 re-audit REJECT finding: this field used to be named
+        # `canon_prompt_sha256` — the SAME name the legacy meaning "hash of
+        # render_canon()'s own (id-bearing, QC/L3-only) output" would suggest, even
+        # though this hashes the GENERATION projection prefix instead
+        # (`render_canon_for_generation`'s output). Renamed to say so explicitly;
+        # `_seen` matches the sibling `context_sha256_seen` field two lines down —
+        # both are "what THIS worker measured", not what was dispatched.
+        res["canon_generation_prompt_sha256_seen"] = _cl_h.sha256_hex(
             _system[:len(canon_text)].encode("utf-8"))
         # The context digest AS THIS WORKER SAW IT. The post-MAP freeze verify()
         # compares start against end and so cannot see a mutation that was made
@@ -619,7 +753,7 @@ async def _write_chapter(
         # binding was complete and identical for every chapter, and so a
         # checkpoint can be written against the binding it was really produced
         # under. These are echoes, not evidence — the two above are the evidence.
-        res["canon_prompt_expected"] = canon_prompt_sha
+        res["canon_generation_prompt_expected"] = canon_prompt_sha
         res["canon_sha256"] = canon_sha256
         res["context_sha256"] = context_sha256
     return res
@@ -1515,7 +1649,16 @@ async def narrate_chapters(
     _cl_canon = None
     _cl_status = "absent"
     _cl_canon_text: Optional[str] = None
-    _cl_prompt_sha: Optional[str] = None
+    # TWO prompt hashes, deliberately distinct (2026-08-15 re-audit round 2). The
+    # generation one identifies the prefix workers are actually injected with; the
+    # canonical one is the LEGACY `canon_prompt_sha256` contract — the hash of
+    # `render_canon()`, id-bearing, which QC/L3 still use. F1 changed the injection
+    # from `render_canon()` to `render_canon_for_generation()` and, for one round,
+    # kept publishing the result under the old field name — silently redefining what
+    # that field meant. Keeping both, under names that say which is which, is what
+    # lets the injection change without the older contract changing under anyone.
+    _cl_gen_prompt_sha: Optional[str] = None
+    _cl_canonical_prompt_sha: Optional[str] = None
     _cl_canon_sha: Optional[str] = None
     _cl_ctx_sha: Optional[str] = None
     _cl_assist = (_cl_mode == "assist")
@@ -1680,14 +1823,28 @@ async def narrate_chapters(
             _cl_freeze = _cl.SharedContextFreeze(ctx, hard=_cl_assist)
 
             # ASSIST: render ONCE, hash the rendering, and hand the whole binding
-            # to every worker. `render_canon` is byte-stable — two canons with the
-            # same `canon_sha256` render identically — which is what makes the hash
-            # of the RENDERING a sound identity for the injected prefix. All of it
-            # is computed here, before any task exists, so there is exactly one
-            # value of each and no worker can produce its own.
+            # to every worker. `render_canon_for_generation` is byte-stable the same
+            # way `render_canon` is — two canons with the same `canon_sha256` render
+            # identically — which is what makes the hash of the RENDERING a sound
+            # identity for the injected prefix. All of it is computed here, before
+            # any task exists, so there is exactly one value of each and no worker
+            # can produce its own.
+            # F1 (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md): this is the
+            # GENERATION injection every chapter worker reads as its prefix, not the
+            # QC/L3 addressing render — `render_canon()` put `{"anchor_id":"anc3",...}`
+            # into that prefix, and canary v9 showed a worker echo `[anc3]` straight
+            # into delivered prose. A writer needs the literal, never the id;
+            # `render_canon_for_generation` carries the former and omits the latter.
+            # QC/L3 still call `render_canon()` directly (narration_api.py) — untouched.
             if _cl_assist:
-                _cl_canon_text = _cl.render_canon(_cl_canon)
-                _cl_prompt_sha = _cl.sha256_hex(_cl_canon_text.encode("utf-8"))
+                _cl_canon_text = _cl.render_canon_for_generation(_cl_canon)
+                _cl_gen_prompt_sha = _cl.sha256_hex(_cl_canon_text.encode("utf-8"))
+                # The LEGACY contract, preserved unchanged: the hash of the canonical,
+                # id-bearing `render_canon()` — exactly what `canon_prompt_sha256`
+                # meant at a6711e0 and still means. Only the hash is kept; the render
+                # itself is prompt material that may never reach a log or payload.
+                _cl_canonical_prompt_sha = _cl.sha256_hex(
+                    _cl.render_canon(_cl_canon).encode("utf-8"))
                 _cl_canon_sha = _cl_canon.canon_sha256
                 # The freeze baseline IS the context identity: the digest of the
                 # state every worker is about to read, taken at the instant it
@@ -1699,8 +1856,10 @@ async def narrate_chapters(
                     # downstream check by being consistently absent.
                     raise ValueError("assist canon rendering is empty")
                 log.info("canon lite: assist injection armed canon_sha256=%s "
-                         "prompt_sha256=%s context_sha256=%s",
-                         _cl_canon_sha, _cl_prompt_sha, _cl_ctx_sha)
+                         "generation_prompt_sha256=%s canonical_prompt_sha256=%s "
+                         "context_sha256=%s",
+                         _cl_canon_sha, _cl_gen_prompt_sha,
+                         _cl_canonical_prompt_sha, _cl_ctx_sha)
         except Exception as _cle2:  # noqa: BLE001
             log.warning(
                 "canon lite: shadow instrumentation skipped "
@@ -1823,7 +1982,16 @@ async def narrate_chapters(
                 style=style, language=language, mode=mode, job_id=job_id,
                 worker_model=w_model, timeout=worker_timeout,
                 telemetry_sink=telemetry_sink,
-                canon_text=_cl_canon_text, canon_prompt_sha=_cl_prompt_sha,
+                # F1: ASSIST ONLY. `_cl_canon` is non-None under shadow too (shadow
+                # builds one for its own projection report), and an earlier version of
+                # this line passed it unconditionally — which made the early scrub
+                # rewrite user-visible output on shadow jobs, breaking the one promise
+                # shadow makes. Only assist injects a canon into a generation prompt,
+                # so only assist can leak one. `_write_chapter` derives its scrub from
+                # `canon_text` as well, so this gate and that one both have to fail
+                # before shadow could mutate anything.
+                canon=(_cl_canon if _cl_assist else None),
+                canon_text=_cl_canon_text, canon_prompt_sha=_cl_gen_prompt_sha,
                 canon_sha256=_cl_canon_sha, context_sha256=_cl_ctx_sha,
             )
         if _resume_on and _ckpt_uuid and res.get("ok") and res.get("output"):
@@ -1910,9 +2078,10 @@ async def narrate_chapters(
             _used = [r for r in raw if r.get("ok") and r.get("output")]
             _n_missing = sum(
                 1 for r in _used
-                if not r.get("canon_prompt_sha256") or not r.get("canon_sha256")
+                if not r.get("canon_generation_prompt_sha256_seen")
+                or not r.get("canon_sha256")
                 or not r.get("context_sha256_seen"))
-            _p_seen = {r.get("canon_prompt_sha256") for r in _used}
+            _p_seen = {r.get("canon_generation_prompt_sha256_seen") for r in _used}
             _c_seen = {r.get("canon_sha256") for r in _used}
             _x_seen = {r.get("context_sha256_seen") for r in _used}
             for _s in (_p_seen, _c_seen, _x_seen):
@@ -1927,7 +2096,10 @@ async def narrate_chapters(
                           "binding — assist cannot account for them",
                           _n_missing, len(_used))
                 _cl_fail_code = "canon_lite_assist_binding_missing"
-            elif (_p_seen - {_cl_prompt_sha}) or (_c_seen - {_cl_canon_sha}):
+            # The census compares the GENERATION hash: that is what was injected and
+            # what each worker re-measured off its own prefix. The canonical hash is
+            # not part of this comparison — nothing injects it, so no worker sees it.
+            elif (_p_seen - {_cl_gen_prompt_sha}) or (_c_seen - {_cl_canon_sha}):
                 # Exact, and against the DISPATCHED value: "all workers agree with
                 # each other" is satisfied by every worker being wrong the same way.
                 log.error("canon lite: delivered chapters do not all carry the "
@@ -1942,8 +2114,9 @@ async def narrate_chapters(
             else:
                 _cl_bound_n = len(_used)
                 log.info("canon lite: assist census PASS — %d delivered chapter(s) "
-                         "canon_sha256=%s prompt_sha256=%s context_sha256=%s",
-                         _cl_bound_n, _cl_canon_sha, _cl_prompt_sha, _cl_ctx_sha)
+                         "canon_sha256=%s generation_prompt_sha256=%s "
+                         "context_sha256=%s",
+                         _cl_bound_n, _cl_canon_sha, _cl_gen_prompt_sha, _cl_ctx_sha)
     finally:
         # Cancellation/error must not leave the context frozen for a retry or caller.
         if _cl_freeze is not None:
@@ -1987,6 +2160,21 @@ async def narrate_chapters(
         })
 
     n_ok = sum(1 for c in chapter_records if c["ok"])
+
+    # F1: markers removed at GENERATION time, from chapters whose text is actually
+    # DELIVERED. Summed here, from each worker's own reported count, AFTER the MAP has
+    # been gathered and sorted — never a counter the concurrent fan-out mutates, so
+    # the arithmetic cannot depend on scheduling order.
+    #
+    # 🔴 THE `ok`/`output` FILTER IS THE POINT, NOT A TIDY-UP. A failed worker's text
+    #    is replaced wholesale by `_placeholder(...)` a few lines above and never
+    #    reaches the reader; counting a scrub performed on prose that was then thrown
+    #    away would inflate a number an operator reads as "this is what we had to
+    #    clean out of the book". Same predicate the assist census uses for `_used`,
+    #    for the same reason: delivered is the honest denominator.
+    _f1_generation_removed = sum(
+        int(r.get("f1_markers_removed") or 0)
+        for r in raw if r.get("ok") and r.get("output"))
 
     # POST-MAP CHAPTER-BOUNDARY CONTINUITY CHECK (NARASI_CHAPTER_BOUNDARY_CHECK, default
     # OFF): chapters MAP in genuine parallel (asyncio.ensure_future, gathered via
@@ -2172,16 +2360,33 @@ async def narrate_chapters(
         **({"_canon_lite_canon": _cl_canon,
             "_canon_lite_canon_status": _cl_status}
            if _cl_mode in ("shadow", "assist") else {}),
+        # F1: generation-time removal subtotal, ASSIST ONLY (nothing is scrubbed under
+        # shadow/off, so the key would be a meaningless 0 there). narration_api folds
+        # the L3-candidate and final-seam counts in beside it to publish
+        # `f1_scrub_operations_count`. This subtotal alone is filtered to DELIVERED
+        # chapters — see the sum above for why that filter is load-bearing here.
+        **({"f1_generation_markers_removed": _f1_generation_removed}
+           if _cl_assist else {}),
         # ASSIST ONLY — the durable canon binding of this job. Persisted through
         # `_result_payload`, so the binding survives even when chapter checkpoints
         # are off (NARRATION_RESUME_ENABLED=0) and nothing else would record what
         # this book was written against. Present only under assist: flag-off must
         # keep returning the shape-identical legacy dict (C11).
         # Hashes and one count — no name, title, literal or prose (C12/§10).
+        # BOTH prompt identities, under names that say which is which (2026-08-15
+        # re-audit round 2). `canon_prompt_sha256` keeps its ORIGINAL a6711e0 meaning:
+        # the hash of the canonical, id-bearing `render_canon()`, which QC/L3 still
+        # use. F1 changed what gets INJECTED (to the id-free generation projection)
+        # and an earlier round published that new hash under the old field's name,
+        # silently redefining a contract nobody was told had changed — then a later
+        # round "fixed" it by deleting the old field outright, which is the same
+        # break in the other direction. Both are published, neither is redefined.
         **({"canon_lite_binding": {
             "mode": "assist",
             "canon_sha256": _cl_canon_sha,
-            "canon_prompt_sha256": _cl_prompt_sha,
+            "canon_prompt_sha256": _cl_canonical_prompt_sha,
+            "canon_generation_prompt_sha256": _cl_gen_prompt_sha,
+            "canon_generation_projection_version": _cl.GENERATION_PROJECTION_VERSION,
             "context_sha256": _cl_ctx_sha,
             "chapters_bound": _cl_bound_n,
         }} if _cl_assist else {}),
@@ -2252,13 +2457,31 @@ def _polish_system(authority_text: str) -> str:
     )
 
 
-_POLISH_CHAPTER_SPLIT_RX = re.compile(r"(?m)(?=^## )")
+# `chapter_heading_patterns.chapter_split_rx_for` (imported as `_chp` above) picks the right
+# regex for a given book — see that module's docstring for the full "why", including the
+# 2026-08-15 adversarial review that found the first version of this fix (a single always-
+# broadened regex shared with `canon_lite_l2._CHAPTER_SPLIT_RX` by hand-copy, `(?i)` and `\b`
+# both present, no two-phase selection) let a bare-word false match land inside an already-
+# "## "-marked manuscript's body prose, leaking an orphaned fragment of a genuinely-duplicated
+# chapter past `_dedup_chapter_blocks` below, and letting `_split_into_chunks` cut a real
+# chapter's polish pass across two seam-blind chunks. `chapter_split_rx_for` structurally
+# prevents both: the permissive fallback only ever runs on a book already proven to contain
+# zero "## " markers, never as a supplement within one that does.
+
 # AUDIT FIX (r16): the bare `(\d+)` capture collapsed "Chapter 3a"/"Chapter 3.5" into the
 # SAME key as plain "Chapter 3" — a genuinely distinct chapter would then be silently DELETED
 # as a false "duplicate". The negative lookahead rejects a match immediately followed by a
 # lowercase letter or a decimal point, so "3a"/"3.5" no longer match at all (nums[i]=None,
 # which the "fails safe" branch below always KEEPS) while plain "Chapter 3:"/"Chapter 3 —"
 # still match normally.
+#
+# KNOWN GAP, not fixed here: still requires literal "## ", unlike
+# `chapter_heading_patterns.BARE_WORD_RX`. Same deferred follow-up as
+# canon_lite_l2._CH_HEADER_NUM_RX (different digit *position* per language, more than this
+# pass's split-only scope). A part that only matched the split via a bare-word opener always
+# parses as `None` here, and `None` is already the documented "fails safe, never a false
+# duplicate" case below, so this is inert for such a manuscript, not silently wrong — dedup
+# just does not fire on it yet.
 _CH_HEADER_NUM_RX = re.compile(r"^##\s+\D*?(\d+)(?![a-z.])")
 
 
@@ -2270,13 +2493,12 @@ def _dedup_chapter_blocks(book: str) -> tuple[str, int]:
     — a stale resume, or anything else). Splits on the same '^## ' boundary _split_into_chunks
     already trusts, so behavior stays consistent with the chunker. Preserves original relative
     order (a pure filter, never a re-sort), so a correctly-ordered book is byte-identical.
-    _CH_HEADER_NUM_RX matches a leading non-digit run then a digit run, which covers every
-    language template in laozhang_api._NARASI_HEADER_LABELS ("Chapter {n}", "Bab {n}", "第{n}章",
-    "{n}장", ...) since they all interpolate a plain digit run into the heading; a part with no
-    matching digit (None) is always kept (fails safe — never mistaken for a duplicate). Never
-    raises; returns (book, 0) when every heading number is already unique or none are found."""
+    _CH_HEADER_NUM_RX still requires literal "## " (see its own KNOWN GAP comment above), so a
+    part that only split via the bare-word fallback always parses as None here — fails safe,
+    never mistaken for a duplicate. Never raises; returns (book, 0) when every heading number
+    is already unique or none are found."""
     try:
-        parts = [p for p in _POLISH_CHAPTER_SPLIT_RX.split(book) if p.strip()]
+        parts = [p for p in _chp.chapter_split_rx_for(book).split(book) if p.strip()]
         if len(parts) <= 1:
             return book, 0
         nums: list[Optional[int]] = []
@@ -2320,9 +2542,12 @@ def _dedup_chapter_blocks(book: str) -> tuple[str, int]:
 
 def _split_into_chunks(book: str, chunk_words: int):
     """Split the assembled book into chapter-aligned chunks each <= chunk_words words. Splits
-    ONLY at '## ' chapter headings (never mid-chapter); a single chapter larger than chunk_words
-    becomes its own oversized chunk. Returns [book] when there is nothing to split."""
-    parts = [p for p in _POLISH_CHAPTER_SPLIT_RX.split(book) if p.strip()]
+    only at real chapter headings (`chapter_heading_patterns.chapter_split_rx_for` — "## " if
+    the book has any, the bare-word fallback only if it has none; never both within one book,
+    which is what keeps this "never mid-chapter" for a book that already uses "## "); a single
+    chapter larger than chunk_words becomes its own oversized chunk. Returns [book] when there
+    is nothing to split."""
+    parts = [p for p in _chp.chapter_split_rx_for(book).split(book) if p.strip()]
     if len(parts) <= 1:
         return [book]
     chunks, cur, cur_w = [], [], 0

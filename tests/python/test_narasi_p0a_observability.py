@@ -2036,3 +2036,297 @@ def test_module_has_no_import_time_side_effect():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          timeout=120)
     assert "MODS False" in out.stdout, out.stdout + out.stderr
+
+
+# ---------------------------------------------------------------------------
+# F5 — ledger-hit outline/bible exemption + cross-gate violation dedup before
+# budgeting (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md, sha256 fecd3dcb5f9b
+# 85f81b70790736c5304a1dbcf29fad9780fb6c1dc904d4fc20b5, section F5).
+# ---------------------------------------------------------------------------
+
+def test_ledger_hit_is_exempt_when_term_is_in_the_topic():
+    assert na._ledger_hit_is_exempt("Tae-jun", "a story about Tae-jun's return", "") is True
+
+
+def test_ledger_hit_is_exempt_when_term_is_in_the_bible():
+    assert na._ledger_hit_is_exempt(
+        "Tae-jun", "a K-drama about a rooftop lease",
+        "Kang Tae-jun is the protagonist, an architect.") is True
+
+
+def test_ledger_hit_is_not_exempt_when_term_is_in_neither():
+    assert na._ledger_hit_is_exempt(
+        "Tae-jun", "a K-drama about a rooftop lease", "The protagonist is an architect.") is False
+
+
+def test_ledger_hit_is_not_exempt_for_empty_term():
+    assert na._ledger_hit_is_exempt("", "anything", "anything") is False
+
+
+def test_ledger_hit_is_exempt_matches_numbers_cross_language_via_the_bible():
+    # premise_term_in_topic's own cross-language number matcher (en "eleven" <-> a
+    # bible stating "11") must fire through the bible argument too -- proves this
+    # reuses the SAME matcher as the existing topic check, not a weaker one.
+    assert na._ledger_hit_is_exempt("11", "a story", "Chapter eleven is the finale.") is True
+
+
+def test_v3g_violation_chapter_reads_the_structured_key():
+    assert na._v3g_violation_chapter({"chapter": 3, "evidence": "no tag here"}) == 3
+
+
+def test_v3g_violation_chapter_reads_the_thread_tracker_at_ch_suffix():
+    assert na._v3g_violation_chapter({"evidence": '"a quoted line" @ch5'}) == 5
+
+
+def test_v3g_violation_chapter_returns_none_when_unresolvable():
+    assert na._v3g_violation_chapter({"evidence": "no chapter signal at all"}) is None
+    assert na._v3g_violation_chapter({}) is None
+
+
+def test_v3g_dedup_violations_collapses_an_exact_cross_source_duplicate():
+    critic_v = {"type": "timeline", "severity": "high",
+                "evidence": '"the clock read noon" @ch2', "fix": "fix A"}
+    thread_v = {"type": "timeline", "severity": "high",
+                "evidence": '"the clock read noon" @ch2', "fix": "fix B (different wording)"}
+    out = na._v3g_dedup_violations([critic_v, thread_v])
+    assert out == [critic_v]                      # first occurrence wins
+
+
+def test_v3g_dedup_violations_keeps_distinct_findings_in_the_same_chapter():
+    a = {"type": "timeline", "severity": "high", "evidence": '"clock read noon" @ch2', "fix": "f"}
+    b = {"type": "timeline", "severity": "high", "evidence": '"door was locked" @ch2', "fix": "f"}
+    assert na._v3g_dedup_violations([a, b]) == [a, b]
+
+
+def test_v3g_dedup_violations_never_folds_outline_missing_beat_into_unresolved_thread():
+    # F5 guardrail: even with IDENTICAL chapter + evidence text, a specific
+    # outline_missing_beat (routes to the structural-patch lane, see
+    # laozhang_api._AUTHORITY_STRUCTURAL_VIOLATIONS) must never be replaced by /
+    # collapsed into a generic unresolved_thread (does not route there) -- type is
+    # part of the dedup key, so the two can never share one.
+    beat = {"type": "outline_missing_beat", "severity": "high",
+            "evidence": '"Stay?" he asked @ch3', "fix": "show the deposition"}
+    thread = {"type": "unresolved_thread", "severity": "high",
+              "evidence": '"Stay?" he asked @ch3', "fix": "resolve the thread"}
+    out = na._v3g_dedup_violations([beat, thread])
+    assert out == [beat, thread]                  # both survive, distinctly
+    from laozhang_api import _is_authority_structural_violation as is_structural
+    assert is_structural(out[0]) is True
+    assert is_structural(out[1]) is False
+
+
+def test_v3g_dedup_violations_treats_unresolvable_chapter_as_always_unique():
+    a = {"type": "register", "severity": "high", "evidence": "required move not executed: x", "fix": "f"}
+    b = {"type": "register", "severity": "high", "evidence": "required move not executed: x", "fix": "f"}
+    # identical type+evidence, but NEITHER has a resolvable chapter -- the
+    # conservative default keeps both rather than guessing they're the same finding.
+    assert na._v3g_dedup_violations([a, b]) == [a, b]
+
+
+def test_v3g_dedup_violations_passes_through_non_dict_entries_unchanged():
+    assert na._v3g_dedup_violations(["not-a-dict", 42]) == ["not-a-dict", 42]
+
+
+def _fake_ledger_scan(*_a, **_k):
+    """Stand-in for narasi_counters.scan_manuscript: _apply_v3_gates runs the REAL
+    scan (behind `if book and entry is not None`) and overwrites result["counter_report"]
+    with its return value BEFORE the ledger-enforce block reads it -- pre-seeding
+    result["counter_report"] in a test is clobbered. Stub the scan itself instead."""
+    return {"over_budget": [], "counters": {"ledger_hits": {
+        "status": "FLAG", "bible_hits": 0, "hits": [
+            {"term": "name:Tae-jun", "where": "manuscript", "count": 3,
+             "snippet": "Tae-jun said nothing."},
+        ]}}}
+
+
+def _ledger_enforce_env(monkeypatch, canonical_facts):
+    import laozhang_api as lz
+    import narasi_counters as nc_mod
+    result, body = _gate_inputs()
+    result["canonical_facts"] = canonical_facts
+    monkeypatch.setenv("NARASI_LEDGER_ENFORCE", "1")
+    monkeypatch.setattr(nc_mod, "scan_manuscript", _fake_ledger_scan)
+    captured = {}
+
+    async def critique(*a, **k):
+        return ({"violations": []}, 0)
+
+    async def revise(*a, **k):
+        captured["violations"] = a[1].get("violations")
+        return ("REVISED", 0)
+
+    monkeypatch.setattr(lz, "_narasi_consistency_critique", critique)
+    monkeypatch.setattr(lz, "_narasi_consistency_revise", revise)
+    return result, body, captured
+
+
+def test_ledger_enforce_injects_a_violation_when_the_term_is_not_bible_owned(gate_env, monkeypatch):
+    result, body, captured = _ledger_enforce_env(
+        monkeypatch, "The protagonist is an unnamed architect.")   # does NOT own the name
+
+    asyncio.run(na._apply_v3_gates(result, body, tenant_id="t", user_id="u",
+                                   job_uuid=None, sink=None, job_id="j"))
+    assert [v["type"] for v in captured["violations"]] == ["ledger_hit"]
+    assert "Tae-jun" in captured["violations"][0]["evidence"]
+
+
+def test_ledger_enforce_exempts_a_bible_owned_name_end_to_end(gate_env, monkeypatch):
+    result, body, captured = _ledger_enforce_env(
+        monkeypatch, "Kang Tae-jun is the protagonist, an architect.")   # OWNS the name
+
+    asyncio.run(na._apply_v3_gates(result, body, tenant_id="t", user_id="u",
+                                   job_uuid=None, sink=None, job_id="j"))
+    assert not captured.get("violations")     # revise never saw a Tae-jun rename instruction
+
+
+def test_v3g_merge_dedups_before_reaching_revise(gate_env, monkeypatch):
+    result, body = _gate_inputs()
+
+    import laozhang_api as lz
+    captured = {}
+
+    async def critique(*a, **k):
+        return ({"violations": [
+            {"type": "timeline", "severity": "high",
+             "evidence": '"the clock read noon" @ch2', "fix": "fix A"},
+            {"type": "timeline", "severity": "high",
+             "evidence": '"the clock read noon" @ch2', "fix": "fix A duplicate"},
+            {"type": "timeline", "severity": "high",
+             "evidence": '"the door was locked" @ch2', "fix": "fix B"},
+        ]}, 0)
+
+    async def revise(*a, **k):
+        captured["violations"] = a[1].get("violations")
+        return ("REVISED", 0)
+
+    monkeypatch.setattr(lz, "_narasi_consistency_critique", critique)
+    monkeypatch.setattr(lz, "_narasi_consistency_revise", revise)
+
+    asyncio.run(na._apply_v3_gates(result, body, tenant_id="t", user_id="u",
+                                   job_uuid=None, sink=None, job_id="j"))
+    assert len(captured["violations"]) == 2
+    assert captured["violations"][0]["fix"] == "fix A"          # first occurrence kept
+    assert captured["violations"][1]["fix"] == "fix B"
+
+
+# ---------------------------------------------------------------------------
+# F6b — non-authoritative score: hard predicates decide GO/NO-GO, never the
+# model's own score. Report-only, parallel to the main repair path -- does not
+# gate delivery itself (F1's marker-leak block already does that, unchanged).
+# (BRIEF-FOR-CODEX-2026-08-14-POST-CANARY-V9.md, F6b, and the 2026-08-14 night
+# expanded closed-loop brief's own F6b section.)
+# ---------------------------------------------------------------------------
+
+def test_go_no_go_is_go_with_no_signals_at_all():
+    v = na._narasi_go_no_go_verdict(raw_model_score=9.0, violations=[], marker_leak_detected=False)
+    assert v == {"verdict": "GO", "raw_model_score": 9.0,
+                 "score_verdict_mismatch": False, "blockers": []}
+
+
+def test_go_no_go_marker_leak_always_blocks_regardless_of_score():
+    v = na._narasi_go_no_go_verdict(raw_model_score=10.0, violations=[], marker_leak_detected=True)
+    assert v["verdict"] == "NO-GO"
+    assert v["blockers"] == ["internal_marker_leak"]
+    assert v["score_verdict_mismatch"] is True
+
+
+@pytest.mark.parametrize("severity", ["high", "critical"])
+def test_go_no_go_boundary_break_blocks_only_at_high_or_critical_severity(severity):
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=7.0,
+        violations=[{"type": "chapter_boundary_break", "severity": severity, "evidence": "e"}],
+        marker_leak_detected=False)
+    assert v["verdict"] == "NO-GO"
+    assert v["blockers"] == ["chapter_boundary_break"]
+
+
+@pytest.mark.parametrize("severity", ["medium", "low"])
+def test_go_no_go_boundary_break_does_not_block_below_high_severity(severity):
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=7.0,
+        violations=[{"type": "chapter_boundary_break", "severity": severity, "evidence": "e"}],
+        marker_leak_detected=False)
+    assert v["verdict"] == "GO"
+    assert v["blockers"] == []
+
+
+@pytest.mark.parametrize("vtype", ["outline_missing_beat", "pov"])
+@pytest.mark.parametrize("severity", ["critical", "high", "medium", "low"])
+def test_go_no_go_missing_beat_and_pov_tense_block_at_any_severity(vtype, severity):
+    # F6 case 3 (final beat) and case 1 (tense drift, reported as type "pov" per
+    # check 6's combined POV/PERSON/TENSE wording) -- the brief names these two
+    # WITHOUT a severity qualifier, unlike boundary_break's explicit "severity high".
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=7.0,
+        violations=[{"type": vtype, "severity": severity, "evidence": "e"}],
+        marker_leak_detected=False)
+    assert v["verdict"] == "NO-GO"
+    assert v["blockers"] == [vtype]
+
+
+def test_go_no_go_ignores_a_violation_type_that_is_not_one_of_the_named_blockers():
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=7.0,
+        violations=[{"type": "entity_drift", "severity": "critical", "evidence": "e"}],
+        marker_leak_detected=False)
+    assert v["verdict"] == "GO"
+    assert v["blockers"] == []
+
+
+def test_go_no_go_golden_high_score_plus_blocker_is_still_no_go_and_flags_mismatch():
+    # The brief's own explicit golden test: payload with score=9.0 PLUS one
+    # blocker must still yield NO-GO, and score_verdict_mismatch=true.
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=9.0,
+        violations=[{"type": "outline_missing_beat", "severity": "high",
+                     "evidence": '"Stay?" he asked, no reply.'}],
+        marker_leak_detected=False)
+    assert v["verdict"] == "NO-GO"
+    assert v["score_verdict_mismatch"] is True
+
+
+def test_go_no_go_mismatch_requires_score_nine_or_above():
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=8.9,
+        violations=[{"type": "outline_missing_beat", "severity": "high", "evidence": "e"}],
+        marker_leak_detected=False)
+    assert v["verdict"] == "NO-GO"
+    assert v["score_verdict_mismatch"] is False, \
+        "the brief scopes mismatch to a HIGH score contradicting a blocker, not any blocked case"
+
+
+def test_go_no_go_low_score_with_a_real_blocker_is_not_a_mismatch():
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=2.0,
+        violations=[{"type": "outline_missing_beat", "severity": "high", "evidence": "e"}],
+        marker_leak_detected=False)
+    assert v["verdict"] == "NO-GO"
+    assert v["score_verdict_mismatch"] is False
+
+
+def test_go_no_go_missing_or_non_numeric_score_never_claims_a_mismatch():
+    for bad_score in (None, "9.0", float("nan")):
+        v = na._narasi_go_no_go_verdict(
+            raw_model_score=bad_score,
+            violations=[{"type": "outline_missing_beat", "severity": "high", "evidence": "e"}],
+            marker_leak_detected=False)
+        assert v["verdict"] == "NO-GO"          # the blocker itself is still real
+        assert v["score_verdict_mismatch"] is False, f"bad_score={bad_score!r}"
+
+
+def test_go_no_go_deduplicates_and_sorts_blockers():
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=5.0,
+        violations=[
+            {"type": "pov", "severity": "high", "evidence": "e1"},
+            {"type": "pov", "severity": "medium", "evidence": "e2"},
+            {"type": "outline_missing_beat", "severity": "critical", "evidence": "e3"},
+        ],
+        marker_leak_detected=False)
+    assert v["blockers"] == ["outline_missing_beat", "pov"]
+
+
+def test_go_no_go_ignores_non_dict_violation_entries():
+    v = na._narasi_go_no_go_verdict(
+        raw_model_score=9.0, violations=[None, "not a dict", 42], marker_leak_detected=False)
+    assert v["verdict"] == "GO"

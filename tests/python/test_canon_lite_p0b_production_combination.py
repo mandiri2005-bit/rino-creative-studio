@@ -70,7 +70,8 @@ class Recorder:
         report = {}
         if kw.get("canon_text"):
             report = {
-                "canon_prompt_sha256": cl.sha256_hex(kw["canon_text"].encode("utf-8")),
+                "canon_generation_prompt_sha256_seen":
+                    cl.sha256_hex(kw["canon_text"].encode("utf-8")),
                 "context_sha256_seen": cl.context_digest(kw["ctx"]),
                 "canon_sha256": kw.get("canon_sha256"),
                 "context_sha256": kw.get("context_sha256"),
