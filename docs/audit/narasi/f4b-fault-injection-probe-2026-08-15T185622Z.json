@@ -1,0 +1,135 @@
+{
+  "cost": {
+    "completion_tokens": 163,
+    "credit_row_written": false,
+    "estimated_usd_micros": 3386,
+    "estimator": "laozhang_api._calc_cost",
+    "prompt_tokens": 1279,
+    "responses_with_complete_usage": 2,
+    "total_tokens": 1442,
+    "usage_source": "provider_reported"
+  },
+  "counts": {
+    "adapter_invocations_observed": 2,
+    "chapters_accepted": 1,
+    "chapters_attempted": 1,
+    "chapters_targeted": 1,
+    "provider_calls_observed": 2,
+    "provider_calls_reported": 2,
+    "responses_observed": 2,
+    "schema_retry_accepted": 1,
+    "schema_retry_chapters": 1,
+    "schema_retry_exhausted": 0,
+    "upstream_request_cap": 2
+  },
+  "delivery": {
+    "persisted": false,
+    "returned_to_user": false
+  },
+  "dod": {
+    "checks": {
+      "fault_injection_after_metering": true,
+      "fault_injection_applied": true,
+      "fault_injection_target_is_first_response": true,
+      "heading_identical": true,
+      "manuscript_changed": true,
+      "no_credit_row": true,
+      "not_delivered": true,
+      "one_chapter_accepted": true,
+      "only_expected_units_changed": true,
+      "reported_equals_observed": true,
+      "retry_accepted_once": true,
+      "retry_entered_once": true,
+      "retry_not_exhausted": true,
+      "trailing_frame_identical": true,
+      "two_physical_calls": true,
+      "unit_counts_match": true,
+      "untouched_units_identical": true,
+      "usage_recorded_for_every_response": true,
+      "within_upstream_cap": true
+    },
+    "met": true
+  },
+  "executed_at_utc": "2026-08-15T18:56:22Z",
+  "fault_injection": {
+    "applied": true,
+    "applied_after_metering": true,
+    "class": "unknown_operation_unreadable",
+    "event_sequence": [
+      "metered:1",
+      "injected:1",
+      "metered:2"
+    ],
+    "injected_payload_sha256": "48f81145561b0ffe124ab1337843087b4425aa556360fd4c5c6b2d98ebeead00",
+    "requested": true,
+    "target_response_index": 1
+  },
+  "manuscript": {
+    "after_sha256": "5d454383c7fffe80ba9e1487549be540b0cc22f11f4cea47a7b51bdc218d67f7",
+    "all_original_bodies_present": true,
+    "before_sha256": "8162c5ba7e927e964eaa53daadaef78b6dd991f53c5456c2b22f408873d6134d",
+    "changed_unit_positions": [
+      1
+    ],
+    "expected_changed_positions": [
+      1
+    ],
+    "heading_identical": true,
+    "manuscript_changed": true,
+    "only_expected_units_changed": true,
+    "trailing_frame_identical": true,
+    "unit_count_after": 4,
+    "unit_count_before": 4,
+    "unit_counts_match": true,
+    "units_changed": 1,
+    "untouched_units_identical": true
+  },
+  "primary_response_observed": true,
+  "probe_kind": "deterministic_fault_injection",
+  "provider": {
+    "model_alias": "gemini-3.5-flash",
+    "phase": "canon_diff_revise",
+    "resolved_model": "gemini-3.5-flash"
+  },
+  "recording_mode": "live",
+  "responses": [
+    {
+      "completion_tokens": 78,
+      "index": 1,
+      "observation": {
+        "operation_source": "unreadable",
+        "subtype": "other",
+        "token_length": 0,
+        "token_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "validator_outcome": "unknown_operation"
+      },
+      "prompt_tokens": 549,
+      "served_by": "vertex",
+      "served_model": "gemini-3.5-flash",
+      "usage_metadata": "complete"
+    },
+    {
+      "completion_tokens": 85,
+      "index": 2,
+      "observation": {
+        "operation_source": "op_field",
+        "subtype": "other",
+        "token_length": 7,
+        "token_sha256": "7ab3778776cde4fa728a162a53ad3abcc967d1bd7361039e0942888240c4ce86",
+        "validator_outcome": "accepted"
+      },
+      "prompt_tokens": 730,
+      "served_by": "vertex",
+      "served_model": "gemini-3.5-flash",
+      "usage_metadata": "complete"
+    }
+  ],
+  "schema_version": "narasi_f4b_probe_artifact_v2",
+  "source": {
+    "head": "5ab690053a66c211bdef80da2f02f06105108695",
+    "laozhang_api_sha256": "90b06cce6ac3eccfd388da9b4112830e8ed879ba908e94de9de391bcc37f39c2",
+    "narasi_addressed_patch_sha256": "08ea984ee1b2d1a03fa795b2375d747deee79d74f98daf4902130d2540cf3ada",
+    "narasi_f4a_probe_sha256": "90ab12d4d5cd5267a6591b62c89abcb4788f52526f1d9fecd3e4fb6dadbb57a9",
+    "narasi_f4b_probe_sha256": "a6044fac629d4b1b94b4e14bad7caf73ffaa3c96b6bbde31de5a4c393e58cc83"
+  }
+}

@@ -15,9 +15,11 @@ Override the checkout with PROVE_WT=/path/to/worktree.
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _harness import IsolationError, isolated_run, restore_guard  # noqa: E402
 
 # The repo this harness belongs to, derived from its own location. It used to be a
 # hard-coded scratchpad path, which meant the proof lived outside the branch it was
@@ -156,7 +158,9 @@ BREAKS = [
      "test_shadow_still_degrades_where_assist_refuses"),
 ]
 
-BACKUPS = {p: p.read_bytes() for p in (STATIC, CANON, NAPI)}
+SOURCES = (STATIC, CANON, NAPI)
+
+
 def _classify(proc):
     """What pytest ACTUALLY said: ("pass"|"fail", None) or (None, reason).
 
@@ -186,49 +190,52 @@ def _classify(proc):
 
 
 def _run_node(test):
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=no",
-         "-p", "no:cacheprovider", "-p", "no:warnings"],
-        cwd=str(WT), capture_output=True, text=True)
+    with isolated_run() as env:
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=no",
+             "-p", "no:cacheprovider", "-p", "no:warnings"],
+            cwd=str(WT), capture_output=True, text=True, env=env)
 
 
 ok = True
 try:
-    for label, target, pat, rep, test in BREAKS:
-        for p, data in BACKUPS.items():        # always mutate a pristine tree
-            p.write_bytes(data)
-        # The node must exist and be GREEN before it can be evidence of anything.
-        _v, _why = _classify(_run_node(test))
-        if _v != "pass":
-            print(f"!! BASELINE NOT GREEN ({_why or _v}) for: {label} -> {test}")
-            ok = False
-            continue
-        broken, n = re.subn(pat, rep, target.read_text())
-        if n != 1:
-            print(f"!! PATTERN-MISS ({n}) for: {label}")
-            ok = False
-            continue
-        target.write_text(broken)
-        # 🔴 A SAME-SIZE MUTATION IS INVISIBLE TO PYTHON'S BYTECODE CACHE.
-        #    Invalidation keys on (mtime_seconds, size); `= 2` -> `= 3` changes
-        #    neither when the rewrite lands inside the same second, so the stale
-        #    .pyc is reused and the mutation "survives" without ever running.
-        #    Every same-size mutation in this table would report a false pass.
-        for cache in WT.rglob("__pycache__"):
-            shutil.rmtree(cache, ignore_errors=True)
-        verdict, why = _classify(_run_node(test))
-        if verdict is None:
-            print(f"!! INCONCLUSIVE ({why})  {label}  -> {test}")
-            ok = False
-            continue
-        caught = (verdict == "fail")
-        print(f"{'   caught  ' if caught else '!! SURVIVED'}  {label}  -> {test}")
-        ok = ok and caught
-finally:
-    for p, data in BACKUPS.items():
-        p.write_bytes(data)
-        if p.read_bytes() != data:
-            print(f"!! RESTORE FAILED for {p} — tree is now dirty")
-            ok = False
+    # 🔴 A SAME-SIZE MUTATION IS INVISIBLE TO PYTHON'S BYTECODE CACHE: invalidation
+    #    keys on (mtime_seconds, size), and `= 2` -> `= 3` changes neither when the
+    #    rewrite lands inside one tick, so a stale `.pyc` is reused and the mutation
+    #    "survives" without ever running. This file used to answer that by deleting
+    #    every `__pycache__` in the checkout after each mutation — a second mechanism
+    #    that hid the gaps in the first. It is now ONE mechanism, owned by `_harness`:
+    #    `_run_node` gives each subprocess its own empty cache prefix, so no run can
+    #    read what another compiled, and `restore_guard` restores bytes, mode and
+    #    mtime_ns and verifies them.
+    with restore_guard(*SOURCES) as _originals:
+        pristine = dict(zip(SOURCES, _originals))
+        for label, target, pat, rep, test in BREAKS:
+            for p, data in pristine.items():        # always mutate a pristine tree
+                p.write_bytes(data)
+            # The node must exist and be GREEN before it can be evidence of anything.
+            _v, _why = _classify(_run_node(test))
+            if _v != "pass":
+                print(f"!! BASELINE NOT GREEN ({_why or _v}) for: {label} -> {test}")
+                ok = False
+                continue
+            broken, n = re.subn(pat, rep, target.read_text())
+            if n != 1:
+                print(f"!! PATTERN-MISS ({n}) for: {label}")
+                ok = False
+                continue
+            target.write_text(broken)
+            verdict, why = _classify(_run_node(test))
+            if verdict is None:
+                print(f"!! INCONCLUSIVE ({why})  {label}  -> {test}")
+                ok = False
+                continue
+            caught = (verdict == "fail")
+            print(f"{'   caught  ' if caught else '!! SURVIVED'}  {label}  -> {test}")
+            ok = ok and caught
+except IsolationError as exc:
+    print(f"!! {exc}")
+    ok = False
+else:
     print("restored")
 sys.exit(0 if ok else 1)

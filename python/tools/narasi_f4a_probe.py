@@ -205,14 +205,25 @@ def run_probe(*, allow_network: bool, out_dir: pathlib.Path, now_utc: str,
         client.chat.completions.create = _c
         return client
 
+    def _offline_client():
+        """The dry-run stand-in for `make_client(model) -> OpenAI`.
+
+        It must answer `with_options`: since F4b Phase 0 the structural lane refuses to
+        dispatch on a plain client whose SDK retries it cannot switch off, so a stub
+        without the method would make every offline probe report `provider_error` and
+        zero cost — a green-looking artifact that never exercised the lane at all."""
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+            create=lambda **_kw: SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=offline_response),
+                    finish_reason="stop")],
+                usage=SimpleNamespace(prompt_tokens=120, completion_tokens=45)))))
+        client.with_options = lambda **_kw: client
+        return client
+
     def _counting_factory(*args, **kwargs):
         client = (real_factory(*args, **kwargs) if allow_network
-                  else SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
-                      create=lambda **_kw: SimpleNamespace(
-                          choices=[SimpleNamespace(
-                              message=SimpleNamespace(content=offline_response),
-                              finish_reason="stop")],
-                          usage=SimpleNamespace(prompt_tokens=120, completion_tokens=45))))))
+                  else _offline_client())
         inner = client.chat.completions.create
 
         _is_failover = isinstance(client, lz._NarasiFailoverClient)

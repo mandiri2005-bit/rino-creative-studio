@@ -26,6 +26,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _harness import IsolationError, isolated_run, restore_guard  # noqa: E402
+
 WT = pathlib.Path(os.environ.get(
     "PROVE_WT", str(pathlib.Path(__file__).resolve().parents[2])))
 AD = WT / "python/canon_lite_l3_adapter.py"
@@ -69,10 +72,11 @@ BREAKS = [
 
 
 def _pytest(test_file, test_name):
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", f"{test_file}::{test_name}",
-         "-q", "-p", "no:cacheprovider", "--no-header"],
-        cwd=WT, capture_output=True, text=True)
+    with isolated_run() as env:
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", f"{test_file}::{test_name}",
+             "-q", "-p", "no:cacheprovider", "--no-header"],
+            cwd=WT, capture_output=True, text=True, env=env)
 
 
 def _classify(proc):
@@ -104,14 +108,17 @@ def run(label, edits, test_file, test_name):
         print(f"  !! BASELINE NOT GREEN ({why or verdict}) — {label}")
         return False
 
-    backups = {}
-    try:
+    targets = list(dict.fromkeys(path for path, _p, _r in edits))
+    for path in targets:
+        if not path.exists():
+            print(f"  !! SOURCE MISSING {path} — {label}")
+            return False
+
+    # 3. The tree must be byte-identical afterwards — bytes, mode AND mtime_ns.
+    #    Restoring the bytes alone leaves the BYTECODE poisoned while `git diff`
+    #    reports clean. `restore_guard` restores and re-verifies all three.
+    with restore_guard(*targets):
         for path, pattern, repl in edits:
-            if path not in backups:
-                if not path.exists():
-                    print(f"  !! SOURCE MISSING {path} — {label}")
-                    return False
-                backups[path] = path.read_text(encoding="utf-8")
             src = path.read_text(encoding="utf-8")
             # 🔴 LITERAL REPLACEMENT, VIA A CALLABLE. `re.sub` processes escapes in a
             #    STRING template: a replacement carrying `\n` (as any mutant that
@@ -135,13 +142,6 @@ def run(label, edits, test_file, test_name):
         killed = (verdict == "fail")
         print(f"  {'KILLED ' if killed else 'SURVIVED'} — {label}")
         return killed
-    finally:
-        # 3. The tree must be byte-identical afterwards.
-        for path, original in backups.items():
-            path.write_text(original, encoding="utf-8")
-            if path.read_text(encoding="utf-8") != original:
-                print(f"  !! RESTORE FAILED for {path} — tree is now dirty")
-                raise SystemExit(2)
 
 
 def selftest():
@@ -172,9 +172,13 @@ def selftest():
 
 
 if __name__ == "__main__":
-    if "--selftest" in sys.argv:
-        sys.exit(0 if selftest() else 2)
-    print("Mutation proof: F3 trailing-frame / landed-repair controls\n")
-    results = [run(*b) for b in BREAKS]
+    try:
+        if "--selftest" in sys.argv:
+            sys.exit(0 if selftest() else 2)
+        print("Mutation proof: F3 trailing-frame / landed-repair controls\n")
+        results = [run(*b) for b in BREAKS]
+    except IsolationError as exc:
+        print(f"\n!! {exc}")
+        sys.exit(2)
     print(f"\n{sum(results)}/{len(results)} mutants killed")
     sys.exit(0 if all(results) else 1)

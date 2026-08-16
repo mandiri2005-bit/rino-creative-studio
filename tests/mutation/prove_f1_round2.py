@@ -6,14 +6,20 @@ Override the checkout with PROVE_WT=/path/to/worktree.
 
 Each entry breaks ONE control and names the test that must go red. A control whose
 test still passes when the control is removed is not a control.
+
+Isolation is delegated to `_harness`: every subprocess gets its own empty bytecode
+cache prefix, and the source is restored through `restore_guard` (bytes + mode +
+mtime_ns, verified). This file owns NO second cache-invalidation mechanism.
 """
+import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 
-import os
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _harness import IsolationError, isolated_run, restore_guard  # noqa: E402
+
 WT = pathlib.Path(os.environ.get(
     "PROVE_WT", str(pathlib.Path(__file__).resolve().parents[2])))
 STATIC = WT / "python/orchestrator/static.py"
@@ -98,10 +104,11 @@ BREAKS = [
 
 
 def _pytest(test_file, test_name):
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", f"{test_file}::{test_name}",
-         "-q", "-p", "no:cacheprovider", "--no-header"],
-        cwd=WT, capture_output=True, text=True)
+    with isolated_run() as env:
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", f"{test_file}::{test_name}",
+             "-q", "-p", "no:cacheprovider", "--no-header"],
+            cwd=WT, capture_output=True, text=True, env=env)
 
 
 def _classify(proc):
@@ -147,11 +154,14 @@ def run(label, edits, test_file, test_name):
         print(f"  !! BASELINE NOT GREEN ({why or verdict}) — {label}")
         return False
 
-    backups = {}
-    try:
+    # 3. The tree must be byte-identical afterwards — bytes, mode AND mtime_ns. A
+    #    harness that leaves a mutation behind poisons every later run; one that
+    #    restores the bytes but not the timestamp poisons the BYTECODE instead, which
+    #    is worse because `git diff` then reports clean. `restore_guard` restores and
+    #    re-verifies all three, and raises if it cannot.
+    targets = list(dict.fromkeys(path for path, _p, _r in edits))
+    with restore_guard(*targets):
         for path, pattern, repl in edits:
-            if path not in backups:
-                backups[path] = path.read_text(encoding="utf-8")
             mutated, n = re.subn(pattern, repl, path.read_text(encoding="utf-8"), count=1)
             if n != 1:
                 print(f"  !! PATTERN NOT FOUND — {label}")
@@ -167,17 +177,13 @@ def run(label, edits, test_file, test_name):
         killed = (verdict == "fail")
         print(f"  {'KILLED ' if killed else 'SURVIVED'} — {label}")
         return killed
-    finally:
-        # 3. And the tree must be byte-identical afterwards. A harness that leaves a
-        #    mutation behind poisons every later run, including the full suite.
-        for path, original in backups.items():
-            path.write_text(original, encoding="utf-8")
-            if path.read_text(encoding="utf-8") != original:
-                print(f"  !! RESTORE FAILED for {path} — tree is now dirty")
-                raise SystemExit(2)
 
 
 print("Mutation proof: F1 re-audit round 2 controls\n")
-results = [run(*b) for b in BREAKS]
+try:
+    results = [run(*b) for b in BREAKS]
+except IsolationError as exc:
+    print(f"\n!! {exc}")
+    sys.exit(2)
 print(f"\n{sum(results)}/{len(results)} mutants killed")
 sys.exit(0 if all(results) else 1)

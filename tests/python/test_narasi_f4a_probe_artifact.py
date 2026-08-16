@@ -377,7 +377,13 @@ def test_a_probe_with_no_transport_observer_is_not_live(monkeypatch, tmp_path):
                            now_utc="2026-08-15T00:00:00Z", model_alias="opus-4-6")
     doc = json.loads(path.read_text(encoding="utf-8"))
 
-    assert doc["counts"]["adapter_invocations_observed"] == 1
+    # TWO since F4b: `"{}"` fails the response contract (`schema_shape`), which is
+    # retryable, so the lane enters the failover ADAPTER a second time. The cap is what
+    # holds the money line — the retry's per-rung reservation is refused inside the
+    # chain, so nothing is spent and `provider_calls_observed` stays 0. The plain-client
+    # path never gets this far: there the reservation sits above `.create`, so a refused
+    # retry does not enter the adapter at all.
+    assert doc["counts"]["adapter_invocations_observed"] == 2
     assert doc["counts"]["provider_calls_observed"] == 0, (
         "nothing was observed at a transport boundary")
     assert doc["recording_mode"] == "failed_probe", (

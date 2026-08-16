@@ -31,6 +31,9 @@ import pathlib
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _harness import IsolationError, isolated_run, restore_guard  # noqa: E402
+
 WT = pathlib.Path(os.environ.get(
     "PROVE_WT", str(pathlib.Path(__file__).resolve().parents[2])))
 CORE = WT / "python/orchestrator/core.py"
@@ -269,21 +272,31 @@ TWO_PART = (
 
 
 def _run(test_file, test_name):
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", str(WT / test_file), "-q", "--no-header",
-         "-p", "no:warnings", "--tb=no", "-k", test_name.split("[")[0]],
-        cwd=str(WT), capture_output=True, text=True)
+    # 🔴 THIS HARNESS ISOLATED NOTHING AT ALL. A mutation the same length as the text
+    #    it replaces, written inside one mtime tick, is invisible to CPython's
+    #    (size, mtime) cache key — so the run could import the PRE-mutation bytecode
+    #    and score a mutant SURVIVED that never executed. Every subprocess now gets
+    #    its own empty cache prefix from `_harness`, which no other run can read.
+    with isolated_run() as env:
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", str(WT / test_file), "-q", "--no-header",
+             "-p", "no:warnings", "--tb=no", "-k", test_name.split("[")[0]],
+            cwd=str(WT), capture_output=True, text=True, env=env)
 
 
 def _apply(path, pairs):
-    original = path.read_text(encoding="utf-8")
-    mutated = original
+    """Write the mutation. Returns the mutated text, or None if an anchor missed.
+
+    Restoration is NOT this function's business: `restore_guard` in the caller owns
+    it, and owns the verification too."""
+    mutated = original = path.read_text(encoding="utf-8")
     for find, repl in pairs:
         if mutated.count(find) != 1:
-            return original, None
+            return None
         mutated = mutated.replace(find, repl, 1)
-    path.write_text(mutated, encoding="utf-8")
-    return original, mutated
+    if mutated != original:
+        path.write_text(mutated, encoding="utf-8")
+    return mutated
 
 
 def main() -> int:
@@ -293,16 +306,15 @@ def main() -> int:
 
     killed = survived = missed = 0
     for label, path, pairs, test_file, test_name in cases:
-        original, mutated = _apply(path, pairs)
-        if mutated is None:
-            print(f"PATTERN-MISS  {label}\n              anchor no longer matches {path.name} "
-                  f"— the control was NEVER exercised; check the source before assuming drift")
-            missed += 1
-            continue
-        try:
+        # `restore_guard` puts bytes, mode AND mtime_ns back and verifies all three;
+        # the old `finally` here wrote the text back and checked nothing.
+        with restore_guard(path):
+            if _apply(path, pairs) is None:
+                print(f"PATTERN-MISS  {label}\n              anchor no longer matches {path.name} "
+                      f"— the control was NEVER exercised; check the source before assuming drift")
+                missed += 1
+                continue
             res = _run(test_file, test_name)
-        finally:
-            path.write_text(original, encoding="utf-8")
         # 🔴 A NON-ZERO EXIT IS NOT A KILL. pytest exits 4 when a node path is bad and 5
         #    when `-k` matches nothing — both non-zero, and both would have been counted as
         #    KILLED here while proving nothing at all. The embedded harness grew this guard
@@ -341,4 +353,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except IsolationError as exc:
+        print(f"\n!! {exc}")
+        sys.exit(2)

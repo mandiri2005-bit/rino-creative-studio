@@ -28,6 +28,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _harness import IsolationError, isolated_run, restore_guard  # noqa: E402
+
 WT = pathlib.Path(os.environ.get(
     "PROVE_WT", str(pathlib.Path(__file__).resolve().parents[2])))
 LZ = WT / "python/laozhang_api.py"
@@ -41,7 +44,7 @@ BREAKS = [
     # bare pattern would match both — the harness refused it, correctly.
     ("1. the plain-client upstream increment is dropped",
      [(LZ, r"(?m)^                if not _narasi_reserve_upstream\(\):$", "                if False:")],
-     T, "test_unknown_operation_is_one_attempt_and_one_physical_call"),
+     T, "test_unknown_operation_is_one_attempt_and_two_physical_calls"),
 
     ("2. provider_calls hardcoded to the attempt count in the returned stats",
      [(LZ, r'(?m)^            "provider_calls": provider_calls,$',
@@ -52,7 +55,7 @@ BREAKS = [
      [(LZ, r'(?m)^        "provider_calls": provider_calls,\n'
            r'        "chapters_accepted": accepted,$',
        '        "chapters_accepted": accepted,')],
-     T, "test_the_summary_is_exactly_the_v2_shape"),
+     T, "test_the_summary_is_exactly_the_v3_shape"),
 
     ("4. the legacy budget is debited with attempts again (the cost defect)",
      [(LZ, r'(?m)^                    attempts_already_spent=int\(patch_stats\["provider_calls"\]\),$',
@@ -65,9 +68,9 @@ BREAKS = [
      T, "test_the_raw_operation_token_never_reaches_logs_or_the_summary"),
 
     ("6. the schema version is left at v1 after the field was added",
-     [(LZ, r'(?m)^_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v2"$',
-       '_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v1"')],
-     T, "test_the_summary_is_exactly_the_v2_shape"),
+     [(LZ, r'(?m)^_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v3"$',
+       '_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v2"')],
+     T, "test_the_summary_is_exactly_the_v3_shape"),
 
     # ── the four defects the first six mutants did NOT cover (audit reject) ──
     ("7. the abandon guard is removed — a written-off attempt dispatches anyway",
@@ -80,7 +83,8 @@ BREAKS = [
      T, "test_a_failover_that_dies_while_being_built_costs_nothing"),
 
     ("7d. the rung loop stops honouring the caller's abandonment",
-     [(LZ, r"(?m)^                _upstream_ledger\.abandon\(_generation\)$", "                pass")],
+     [(LZ, r"(?m)^                    _upstream_ledger\.abandon\(_generation\)$",
+       "                    pass")],
      T, "test_a_failover_retry_is_forbidden_once_the_caller_has_given_up"),
 
     ("7e. the vertex reservation moves OUT of the helper, back above its own preflight",
@@ -93,8 +97,8 @@ BREAKS = [
      T, "test_the_fal_helper_refuses_at_submit_not_at_polling"),
 
     ("7h. the plain structural client stops forcing max_retries=0",
-     [(LZ, r"(?m)^                    _client = _client\.with_options\(max_retries=0\)$",
-       "                    pass")],
+     [(LZ, r"(?m)^                _client = _client\.with_options\(max_retries=0\)$",
+       "                pass")],
      T, "test_the_plain_structural_client_disables_sdk_retries"),
 
     ("7i. the probe re-invents its independent observation from adapter entries",
@@ -117,8 +121,8 @@ BREAKS = [
      T, "test_the_anthropic_helper_refuses_at_its_own_transport_line"),
 
     ("8. a post-call fault propagates again and the zero-fallback erases the ledger",
-     [(LZ, r'(?m)^            _rejected\("internal_error", chapter_number, original_words\)\n'
-           r"            continue$",
+     [(LZ, r'(?m)^            _rejected\("internal_error", chapter_number, original_words,\n'
+           r'                      final_source="internal_error"\)$',
        "            raise")],
      T, "test_a_fault_after_the_call_keeps_the_accounting"),
 
@@ -141,10 +145,11 @@ BREAKS = [
 
 
 def _pytest(test_file, test_name):
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", f"{test_file}::{test_name}",
-         "-q", "-p", "no:cacheprovider", "--no-header"],
-        cwd=WT, capture_output=True, text=True)
+    with isolated_run() as env:
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", f"{test_file}::{test_name}",
+             "-q", "-p", "no:cacheprovider", "--no-header"],
+            cwd=WT, capture_output=True, text=True, env=env)
 
 
 def _classify(proc):
@@ -175,14 +180,14 @@ def run(label, edits, test_file, test_name):
         print(f"  !! BASELINE NOT GREEN ({why or verdict}) — {label}")
         return False
 
-    backups = {}
-    try:
+    targets = list(dict.fromkeys(path for path, _p, _r in edits))
+    for path in targets:
+        if not path.exists():
+            print(f"  !! SOURCE MISSING {path} — {label}")
+            return False
+
+    with restore_guard(*targets):
         for path, pattern, repl in edits:
-            if path not in backups:
-                if not path.exists():
-                    print(f"  !! SOURCE MISSING {path} — {label}")
-                    return False
-                backups[path] = path.read_text(encoding="utf-8")
             src = path.read_text(encoding="utf-8")
             mutated, n = re.subn(pattern, lambda _m, _r=repl: _r, src)
             if n != 1:
@@ -197,12 +202,6 @@ def run(label, edits, test_file, test_name):
         killed = (verdict == "fail")
         print(f"  {'KILLED ' if killed else 'SURVIVED'} — {label}")
         return killed
-    finally:
-        for path, original in backups.items():
-            path.write_text(original, encoding="utf-8")
-            if path.read_text(encoding="utf-8") != original:
-                print(f"  !! RESTORE FAILED for {path} — tree is now dirty")
-                raise SystemExit(2)
 
 
 def selftest():
@@ -212,13 +211,13 @@ def selftest():
         ("missing test file",
          ("1. increment removed", good,
           "tests/python/test_this_file_does_not_exist.py",
-          "test_unknown_operation_is_one_attempt_and_one_physical_call")),
+          "test_unknown_operation_is_one_attempt_and_two_physical_calls")),
         ("wrong node id",
          ("1. increment removed", good, T, "test_no_such_test_name_at_all")),
         ("pattern miss (e.g. after an innocent rename)",
          ("pattern that no longer exists",
           [(LZ, r"(?m)^            _THIS_SYMBOL_WAS_RENAMED \+= 1$", "            pass")],
-          T, "test_unknown_operation_is_one_attempt_and_one_physical_call")),
+          T, "test_unknown_operation_is_one_attempt_and_two_physical_calls")),
     ]
     ok = True
     for name, args in cases:
@@ -231,9 +230,13 @@ def selftest():
 
 
 if __name__ == "__main__":
-    if "--selftest" in sys.argv:
-        sys.exit(0 if selftest() else 2)
-    print("Mutation proof: F4a physical provider-call controls\n")
-    results = [run(*b) for b in BREAKS]
+    try:
+        if "--selftest" in sys.argv:
+            sys.exit(0 if selftest() else 2)
+        print("Mutation proof: F4a physical provider-call controls\n")
+        results = [run(*b) for b in BREAKS]
+    except IsolationError as exc:
+        print(f"\n!! {exc}")
+        sys.exit(2)
     print(f"\n{sum(results)}/{len(results)} mutants killed")
     sys.exit(0 if all(results) else 1)

@@ -30,7 +30,7 @@ from types import SimpleNamespace
 import laozhang_api as lz
 import narasi_addressed_patch as ap
 
-from test_narasi_addressed_patch import CHAPTER, _payload  # noqa: E402
+from test_narasi_addressed_patch import CHAPTER, _payload, plain_client  # noqa: E402
 
 
 _ACCEPTED_PATCH = _payload({
@@ -62,8 +62,7 @@ def _install(monkeypatch, *, create, client_factory=None):
         calls["factory_entered"] += 1
         if client_factory is not None:
             return client_factory()
-        return SimpleNamespace(chat=SimpleNamespace(
-            completions=SimpleNamespace(create=_create)))
+        return plain_client(SimpleNamespace(create=_create))
 
     async def _usage(*_a, **_k):
         return 1
@@ -94,18 +93,24 @@ def _run(monkeypatch, *, chapter=CHAPTER, findings=None, packets=None):
 
 # ── the four quadrants of attempted-vs-billed ──────────────────────────────
 
-def test_unknown_operation_is_one_attempt_and_one_physical_call(monkeypatch):
-    """The canary v9 shape: the call was made and paid for, the patch was refused."""
+def test_unknown_operation_is_one_attempt_and_two_physical_calls(monkeypatch):
+    """The canary v9 shape: the call was made and paid for, the patch was refused.
+
+    🔴 THIS IS THE DIVERGENCE F4a's COUNTER WAS BUILT FOR, now real rather than
+    hypothetical. `unknown_operation` is a broken response contract, so F4b spends one
+    corrective call on it: ONE attempted chapter, TWO physical calls. Every consumer
+    that derived calls from attempts would report 1 here and under-bill by half — and
+    would hand the legacy lane a slot the structural lane had already spent."""
     seam = _install(monkeypatch, create=_ok_response(_UNKNOWN_OP_PATCH))
     revised, _credits, stats = _run(monkeypatch)
 
     assert revised == CHAPTER, "a refused patch must leave the chapter untouched"
     assert stats["targeted"] == 1
     assert stats["attempted"] == 1
-    assert stats["provider_calls"] == 1
+    assert stats["provider_calls"] == 2
     assert stats["accepted"] == 0
     assert stats["rejected_reason_counts"] == {"unknown_operation": 1}
-    assert seam["create_entered"] == 1
+    assert seam["create_entered"] == 2
 
 
 def test_an_accepted_patch_is_one_attempt_and_one_physical_call(monkeypatch):
@@ -212,7 +217,7 @@ def test_the_summary_can_represent_two_calls_for_one_attempted_chapter():
         structural_violations=1, targeted=1, attempted=1, provider_calls=2, accepted=0,
         not_attempted_reason_counts={}, manuscript_changed=False)
 
-    assert summary["schema_version"] == "structural_patch_summary_v2"
+    assert summary["schema_version"] == "structural_patch_summary_v3"
     assert summary["chapters_attempted"] == 1
     assert summary["provider_calls"] == 2
     assert summary["chapters_accepted"] == 0
@@ -235,16 +240,19 @@ def test_the_summary_refuses_more_accepts_than_calls():
             accepted=1, not_attempted_reason_counts={}, manuscript_changed=True)
 
 
-def test_the_summary_is_exactly_the_v2_shape():
+def test_the_summary_is_exactly_the_v3_shape():
     summary = lz._narasi_structural_patch_summary()
     assert summary == {
-        "schema_version": "structural_patch_summary_v2",
+        "schema_version": "structural_patch_summary_v3",
         "status": "not_targeted",
         "structural_violations": 0,
         "chapters_targeted": 0,
         "chapters_attempted": 0,
         "provider_calls": 0,
         "chapters_accepted": 0,
+        "schema_retry_chapters": 0,
+        "schema_retry_accepted": 0,
+        "schema_retry_exhausted": 0,
         "not_attempted_reason_counts": {},
         "deferred_nonstructural_total": 0,
         "deferred_nonstructural_by_chapter": [],
@@ -276,8 +284,7 @@ def test_an_attempt_abandoned_before_dispatch_is_forbidden_to_dispatch(monkeypat
                     message=SimpleNamespace(content=_ACCEPTED_PATCH),
                     finish_reason="stop")],
                 usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1))
-        return SimpleNamespace(chat=SimpleNamespace(
-            completions=SimpleNamespace(create=_create)))
+        return plain_client(SimpleNamespace(create=_create))
 
     async def _usage(*_a, **_k):
         return 0
@@ -311,8 +318,7 @@ def test_a_call_already_dispatched_when_the_timeout_fires_is_still_counted(monke
                     message=SimpleNamespace(content=_ACCEPTED_PATCH),
                     finish_reason="stop")],
                 usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1))
-        return SimpleNamespace(chat=SimpleNamespace(
-            completions=SimpleNamespace(create=_create)))
+        return plain_client(SimpleNamespace(create=_create))
 
     async def _usage(*_a, **_k):
         return 0
@@ -566,14 +572,14 @@ def test_classic_path_carries_provider_calls_to_the_persisted_payload(monkeypatc
 
     assert "seluruh haknya" in revised
     summary = critique["structural_patch"]
-    assert summary["schema_version"] == "structural_patch_summary_v2"
+    assert summary["schema_version"] == "structural_patch_summary_v3"
     assert summary["provider_calls"] == 1
     assert summary["chapters_accepted"] == 1
 
     result = {"book": revised}
     lz._narasi_copy_structural_patch_summary(result, critique)
     payload = na._result_payload(result)
-    assert payload["structural_patch"]["schema_version"] == "structural_patch_summary_v2"
+    assert payload["structural_patch"]["schema_version"] == "structural_patch_summary_v3"
     assert payload["structural_patch"]["provider_calls"] == 1
 
 
@@ -613,7 +619,7 @@ def test_narration_gate_path_carries_provider_calls_to_the_persisted_payload(mon
     asyncio.run(na._apply_v3_gates(result, {"chapters": result["chapters"]},
                                    tenant_id=None, user_id=None, job_uuid=None))
 
-    assert result["structural_patch"]["schema_version"] == "structural_patch_summary_v2"
+    assert result["structural_patch"]["schema_version"] == "structural_patch_summary_v3"
     assert result["structural_patch"]["provider_calls"] == 2
     payload = na._result_payload(result)
     assert payload["structural_patch"]["provider_calls"] == 2
@@ -639,6 +645,8 @@ def test_the_legacy_budget_is_debited_with_physical_calls_not_attempts(monkeypat
     async def _structural(*_a, **_k):
         return book, 0, {
             "targeted": 1, "attempted": 1, "provider_calls": 2, "accepted": 0,
+            "schema_retry_chapters": 1, "schema_retry_accepted": 0,
+            "schema_retry_exhausted": 1,
             "not_attempted_reason_counts": {},
             "rejected_reason_counts": {"response_not_json": 1},
             "unresolved_locator_count": 0,
@@ -701,11 +709,16 @@ def test_the_raw_operation_token_never_reaches_logs_or_the_summary(monkeypatch, 
         structural_violations=1, targeted=stats["targeted"],
         attempted=stats["attempted"], provider_calls=stats["provider_calls"],
         accepted=stats["accepted"],
+        schema_retry_chapters=stats["schema_retry_chapters"],
+        schema_retry_accepted=stats["schema_retry_accepted"],
+        schema_retry_exhausted=stats["schema_retry_exhausted"],
         not_attempted_reason_counts=stats["not_attempted_reason_counts"],
         manuscript_changed=False)
 
     assert stats["rejected_reason_counts"] == {"unknown_operation": 1}
-    assert stats["provider_calls"] == 1
+    # Two calls: F4b answered the broken contract once. The sentinel must not have
+    # ridden along into the corrective prompt either — pinned in the F4b suite.
+    assert stats["provider_calls"] == 2
     for blob in (caplog.text, json.dumps(summary), repr(stats), revised):
         assert sentinel not in blob, "the raw model verb escaped its bounded subtype"
     assert "subtype=other" in caplog.text

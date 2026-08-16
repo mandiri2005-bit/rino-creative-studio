@@ -8,9 +8,11 @@ Override the checkout with PROVE_WT=/path/to/worktree.
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _harness import IsolationError, isolated_run, restore_guard  # noqa: E402
 
 # The repo this harness belongs to, derived from its own location. It used to be a
 # hard-coded scratchpad path, which meant the proof lived outside the branch it was
@@ -205,34 +207,40 @@ BREAKS = [
      "test_verify_applied_is_what_proves_the_repair_was_delivered"),
 ]
 
-BACKUPS = {p: p.read_bytes() for p in (REPAIR, L2)}
+SOURCES = (REPAIR, L2)
 ok = True
 try:
-    for label, target, pat, rep, test in BREAKS:
-        for p, data in BACKUPS.items():
-            p.write_bytes(data)
-        broken, n = re.subn(pat, rep, target.read_text())
-        if n != 1:
-            print(f"!! PATTERN-MISS ({n}) for: {label}")
-            ok = False
-            continue
-        target.write_text(broken)
-        # 🔴 A SAME-SIZE MUTATION IS INVISIBLE TO PYTHON'S BYTECODE CACHE.
-        #    Invalidation keys on (mtime_seconds, size); `= 2` -> `= 3` changes
-        #    neither when the rewrite lands inside the same second, so the stale
-        #    .pyc is reused and the mutation "survives" without ever running.
-        #    Every same-size mutation in this table would report a false pass.
-        for cache in WT.rglob("__pycache__"):
-            shutil.rmtree(cache, ignore_errors=True)
-        r = subprocess.run(
-            [sys.executable, "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=no",
-             "-p", "no:cacheprovider", "-p", "no:warnings"],
-            cwd=str(WT), capture_output=True, text=True)
-        caught = r.returncode != 0
-        print(f"{'   caught  ' if caught else '!! SURVIVED'}  {label}")
-        ok = ok and caught
-finally:
-    for p, data in BACKUPS.items():
-        p.write_bytes(data)
+    # 🔴 A SAME-SIZE MUTATION IS INVISIBLE TO PYTHON'S BYTECODE CACHE: invalidation
+    #    keys on (mtime_seconds, size), and `= 2` -> `= 3` changes neither when the
+    #    rewrite lands inside one tick, so a stale `.pyc` is reused and the mutation
+    #    "survives" without ever running. This file used to answer that by deleting
+    #    every `__pycache__` in the checkout after each mutation — a second mechanism
+    #    that hid the gaps in the first. It is now ONE mechanism, owned by `_harness`:
+    #    each subprocess gets its own empty cache prefix, and `restore_guard` restores
+    #    bytes, mode and mtime_ns and VERIFIES them (the old `finally` here restored
+    #    without ever checking that the restore worked).
+    with restore_guard(*SOURCES) as _originals:
+        pristine = dict(zip(SOURCES, _originals))
+        for label, target, pat, rep, test in BREAKS:
+            for p, data in pristine.items():
+                p.write_bytes(data)
+            broken, n = re.subn(pat, rep, target.read_text())
+            if n != 1:
+                print(f"!! PATTERN-MISS ({n}) for: {label}")
+                ok = False
+                continue
+            target.write_text(broken)
+            with isolated_run() as env:
+                r = subprocess.run(
+                    [sys.executable, "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=no",
+                     "-p", "no:cacheprovider", "-p", "no:warnings"],
+                    cwd=str(WT), capture_output=True, text=True, env=env)
+            caught = r.returncode != 0
+            print(f"{'   caught  ' if caught else '!! SURVIVED'}  {label}")
+            ok = ok and caught
+except IsolationError as exc:
+    print(f"!! {exc}")
+    ok = False
+else:
     print("restored")
 sys.exit(0 if ok else 1)

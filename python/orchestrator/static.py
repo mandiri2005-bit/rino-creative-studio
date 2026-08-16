@@ -759,6 +759,41 @@ async def _write_chapter(
     return res
 
 
+def _f5_unowned_ledger_terms(terms, *, topic: str = "", outline: str = "") -> list:
+    """F5: keep only the lane-ledger terms that accepted authority does NOT own.
+
+    🔴 THE SIGNATURE IS THE GUARANTEE. It takes the user's topic and the ACCEPTED
+    outline — and deliberately nothing else. At Bible-pin the candidate bible has not
+    been accepted yet; passing it in would make every term it just invented self-exempt
+    and switch this enforcement off entirely. There is no `bible` parameter to pass by
+    accident.
+
+    Extracted as a named helper so the decision is reachable from a test without
+    driving the whole bible-build path: the first version of this filter lived inline,
+    and the end-to-end test written for it never reached the branch at all — it asserted
+    "no enforcement call" in a run where enforcement never ran for an unrelated reason,
+    and a mutation run caught it surviving.
+
+    Canary v9 is the case: the accepted outline establishes `Tae-jun`, the bible
+    correctly adopts it, and the lane ledger flags it only because OTHER stories in this
+    lane overused it. Ordering a rewrite there corrupts this story's own canon."""
+    from narasi_counters import (authority_owns_term as _owns,
+                                 build_authority_ownership as _build)
+    ownership = _build(topic=str(topic or ""), outline=str(outline or ""), bible="")
+    kept = []
+    for raw in (terms or []):
+        if not raw:
+            continue
+        # `category:value` arrives intact; both halves reach the decision, and the
+        # BARE value is what enforcement quotes back downstream.
+        category, _, rest = str(raw).partition(":")
+        value = rest if rest else str(raw)
+        category = category.strip().lower() if rest else ""
+        if not _owns(value, ownership, category=category):
+            kept.append(value)
+    return kept
+
+
 def _is_fiction_style(style: Optional[str]) -> bool:
     """True ONLY for FICTION styles — the sole regime that should receive an INVENTED story
     bible. Nonfiction/history (natgeo, journalistic, true_crime, babad, sejarah) ground on
@@ -1391,7 +1426,11 @@ async def narrate_chapters(
                                     # rewrite the story's load-bearing address. Demote the floor
                                     # category to WARN-only; names/foods/numbers stay enforced.
                                     _vdem = str(os.environ.get("NARASI_LEDGER_VALUE_DEMOTE", "0")).strip().lower() in ("1", "true", "yes", "on")
-                                    _terms_all = sorted({str(h.get("term", "")).split(":", 1)[-1]
+                                    # F5: keep `category:value` INTACT here. Splitting
+                                    # the category off before ownership let a value
+                                    # owned in one category exempt the same value
+                                    # reported under another.
+                                    _terms_all = sorted({str(h.get("term", ""))
                                                          for h in _lrep.get("hits") or []
                                                          if h.get("where") == "bible"
                                                          and not (_vdem and str(h.get("term", "")).startswith("floor:"))})
@@ -1404,9 +1443,23 @@ async def narrate_chapters(
                                     # ROUND-10: cross-language exemption (the injection path got this
                                     # in r8; the bible-level filter here kept chasing «11»/«19» on a
                                     # premise that wrote «sebelas» — roll-13 surgical burn).
-                                    from narasi_counters import premise_term_in_topic as _ptt
-                                    _terms = [t for t in _terms_all
-                                              if t and not _ptt(t, topic or "")][:12]
+                                    # F5: the ACCEPTED OUTLINE owns its terms too.
+                                    # Filtering on the topic alone let canary v9's
+                                    # `Tae-jun` — established by the outline, never
+                                    # written verbatim in the topic — trigger a surgical
+                                    # rewrite or a full re-roll of the bible that had
+                                    # just correctly adopted it.
+                                    # 🔴 `bible=""` ON PURPOSE: the candidate is not an
+                                    # authority until it is pinned. Passing it here would
+                                    # make every term it just invented self-exempt and
+                                    # switch this enforcement off entirely.
+                                    try:
+                                        _f5outline = ctx.outline()
+                                    except Exception:  # noqa: BLE001
+                                        _f5outline = ""
+                                    _terms = _f5_unowned_ledger_terms(
+                                        _terms_all, topic=topic or "",
+                                        outline=_f5outline)[:12]
                                     if not _terms:
                                         log.info("ledger-enforce: all %d bible hit(s) premise-supplied (%s) — re-roll skipped",
                                                  len(_terms_all), ", ".join(_terms_all[:6]))

@@ -157,12 +157,260 @@ def _v3g_violation_chapter(violation: dict) -> "int | None":
     return int(match.group(1)) if match else None
 
 
+#: Severity ordering for the merge. Rino's correction (2026-08-15): the survivor of a
+#: merged claim keeps the HIGHEST severity, never the first occurrence's — a `low`
+#: sighting that happens to arrive first must not silently downgrade a `critical` one
+#: describing the same claim.
+_V3G_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+#: Types bound to accepted narrative authority. They outrank a generic classification of
+#: the SAME claim, because they carry routing the generic one does not:
+#: `outline_missing_beat` goes to the structural addressed-patch lane.
+_V3G_AUTHORITY_SPECIFIC_TYPES = frozenset({"outline_missing_beat"})
+#: Generic fallbacks that may be displaced by an authority-specific type describing the
+#: same claim. Kept deliberately small: displacement is only safe between a KNOWN
+#: specific/generic pair, never between two arbitrary types that merely co-occur.
+_V3G_GENERIC_TYPES = frozenset({"unresolved_thread"})
+#: Structured keys, in priority order, that identify WHICH semantic claim a violation is
+#: about. Read only when present — a violation carrying none has no safe identity and is
+#: never merged with anything.
+#:
+#: 🔴 NONE OF THESE IS EMITTED BY PRODUCTION. This tuple was written against a shape no
+#: detector publishes: the critic returns type/severity/evidence/fix/chapter, the
+#: register gate has no `move` key, canon-diff no `event`/`field`, the thread tracker no
+#: `thread`. The semantic path therefore never ran outside its own golden test, which
+#: supplied `beat=` by hand. The production identity is the SERVER-BUILT `_f5_claim`
+#: sidecar (see `_f5_claim_token` and `_v3g_claim_identity`), attached at each detector's
+#: emission point from data this process already owns and never parsed out of model
+#: prose. These keys remain as the fallback for a detector that publishes one directly.
+_V3G_CLAIM_KEYS = ("beat", "authority_beat", "beat_id", "thread", "thread_id",
+                   "event", "term", "counter", "move")
+
+
+def _f5_claim_token(kind: str, *parts) -> str:
+    """Build the server-owned `_f5_claim` token for one detector finding.
+
+    The token is `kind:part|part`, whitespace-collapsed and lowercased so that two
+    sightings of one claim produce byte-identical tokens. `kind` is what the SERVER
+    knows the claim to be about — a register move, a canon event+field, a thread id —
+    and it is part of the token, so a thread id can never collide with a move that
+    happens to share its spelling.
+
+    Returns "" when no part carries content. An empty token is never attached, which
+    leaves the finding with no identity and therefore unmergeable — the conservative
+    direction, because dropping a real distinct violation is the worse error."""
+    kind = " ".join(str(kind or "").split()).lower()
+    cleaned = [" ".join(str(part or "").split()).lower() for part in parts]
+    if not kind or not any(cleaned):
+        return ""
+    return f"{kind}:{'|'.join(cleaned)}"
+
+
+def _f5_outline_beats(packet: str) -> list:
+    """The ordered beats the accepted outline packet publishes for its chapter.
+
+    A deterministic read of a packet THIS process rendered (`narasi_outline_packet`
+    writes `  N. <beat>` under CURRENT ORDERED OUTLINE BEATS). ONE parser: the brief
+    handed to the detectors and the bound checked against their answer must agree about
+    what the beats are, and two readers of one format eventually disagree."""
+    import re
+    text = str(packet or "")
+    start = text.find("CURRENT ORDERED OUTLINE BEATS:")
+    if start < 0:
+        return []
+    section = text[start:]
+    end = section.find("\n\n")
+    return [b.strip() for b in
+            re.findall(r"(?m)^\s+\d+\.\s+(.*)$", section[:end] if end >= 0 else section)]
+
+
+def _f5_outline_beat_count(packet: str) -> int:
+    """How many beats the accepted outline has for this chapter — the bound an ordinal
+    from a model must fall inside."""
+    return len(_f5_outline_beats(packet))
+
+
+def _f5_outline_beat_brief(outline_packets, limit: int = 14) -> str:
+    """Render the accepted outline's beats as the reference vocabulary a detector cites.
+
+    Only the thread tracker needs this: the critic is already shown the outline packets
+    as its authority, while the tracker's pass 2 sees threads and an ending and nothing
+    else. Empty when there are no packets, which keeps the prompt byte-identical on
+    every path that has no accepted outline to point at."""
+    if not isinstance(outline_packets, dict) or not outline_packets:
+        return ""
+    lines = []
+    for key in sorted(outline_packets,
+                      key=lambda k: int(k) if str(k).isdigit() else 0):
+        for index, beat in enumerate(_f5_outline_beats(outline_packets.get(key) or ""), 1):
+            lines.append(f"ch{key} beat{index}: {str(beat)[:120]}")
+    return (". OUTLINE BEATS: " + " | ".join(lines[:limit])) if lines else ""
+
+
+def _f5_outline_beat_claim(source, outline_packets) -> str:
+    """The SHARED identity of an outlined beat: `outline_beat:<chapter>|<ordinal>`.
+
+    🔴 THIS IS WHAT MAKES THE FINAL-CHOICE PAIR ONE TARGET. The critic reports the
+    missing beat as `outline_missing_beat`; the thread tracker reports the same silence
+    as `unresolved_thread`. Both fold into the `authority_beat` family, so one repair
+    slot should cover them — but only if they name the same claim, and until they did,
+    the pair burned two targets and the specific type's routing never ran.
+
+    They cannot be matched by their prose, and nothing in either detector's own
+    vocabulary is shared: a thread id is a slug the model invented, and the chapters
+    differ (the tracker's is where the thread OPENS, the critic's is where the prose
+    must be repaired). What IS shared is the accepted outline both are judged against,
+    so both detectors are asked for a BOUNDED reference into it — `outline_chapter`
+    plus `outline_beat` — and this function is the single place that turns such a
+    reference into a token.
+
+    🔴 BOUNDED MEANS CHECKED, NOT TRUSTED. The reference arrives from a model, so it is
+    admitted only when the accepted outline actually has that beat: both values must be
+    integers, and the ordinal must fall inside 1..N for that chapter's packet, where N
+    is counted from the packet THIS process rendered. Anything else — absent, a string,
+    a bool, out of range, an unknown chapter — yields "", which leaves the finding
+    unmergeable. Merging on a number nobody verified would drop a real, distinct
+    violation, and that is the worse error of the two."""
+    if not isinstance(source, dict) or not isinstance(outline_packets, dict):
+        return ""
+    chapter = source.get("outline_chapter")
+    beat = source.get("outline_beat")
+    if (not isinstance(chapter, int) or isinstance(chapter, bool) or chapter < 1
+            or not isinstance(beat, int) or isinstance(beat, bool) or beat < 1):
+        return ""
+    total = _f5_outline_beat_count(outline_packets.get(str(chapter)) or "")
+    if not total or beat > total:
+        return ""
+    return _f5_claim_token("outline_beat", chapter, beat)
+
+
+def _v3g_claim_identity(violation: dict) -> "tuple | None":
+    """The semantic identity of the CLAIM a violation makes, or None when it cannot be
+    determined safely.
+
+    🔴 EVIDENCE IS A PRESENTATION, NOT AN IDENTITY. Four detectors describe one defect
+    in four wordings; keying dedup on the text dedups wordings and still bills four
+    repair slots. The identity is instead `(chapter, family, claim)` where `claim` comes
+    from a STRUCTURED field the detector already publishes — never from prose, never
+    from fuzzy similarity, never from an extra model call.
+
+    `family` folds a known specific/generic pair onto one identity so the specificity
+    rule below can pick a winner; every other type keeps its own family, so two
+    unrelated types are never merged just because they landed in the same chapter.
+
+    Returns None — meaning "never merge this one" — when the chapter is unknown or no
+    structured claim key is present. Dropping a real, distinct violation is the worse
+    error of the two."""
+    if not isinstance(violation, dict):
+        return None
+    vtype = str(violation.get("type") or "").strip().lower()
+    if not vtype:
+        return None
+    family = ("authority_beat" if vtype in _V3G_AUTHORITY_SPECIFIC_TYPES
+              or vtype in _V3G_GENERIC_TYPES else vtype)
+
+    # 🔴 A SERVER-BUILT TOKEN IS ITS OWN LOCATOR; A MODEL-PUBLISHED KEY IS NOT.
+    # The chapter guard below exists because a key like `beat="final_choice"` says
+    # nothing about WHERE, so two findings carrying it might target different
+    # chapters. `_f5_claim` is assembled here from what the claim is about AND, where
+    # the chapter distinguishes two repairs, from the chapter itself
+    # (`canon_event:...|3`, `canon_fork:3|...`, `outline_beat:3|2`). Requiring a
+    # resolvable chapter ON TOP of it would close the semantic path for exactly the
+    # detectors that own their identity best: the register gate publishes no chapter
+    # because its finding is book-level ("execute this move at least once in the
+    # book"), and canon-fork carries its chapter in prose rather than in the `@chN`
+    # locator. Both would have kept burning one repair slot per sighting.
+    server_claim = violation.get("_f5_claim")
+    if isinstance(server_claim, str) and server_claim.strip():
+        return (family, None, "claim" if family == "authority_beat" else "_f5_claim",
+                server_claim.strip().lower())
+
+    chapter = _v3g_violation_chapter(violation)
+    if chapter is None:
+        return None
+    for key in _V3G_CLAIM_KEYS:
+        value = violation.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
+            value = str(value).strip().lower()
+            if value:
+                return (family, chapter, key if family != "authority_beat" else "claim",
+                        value)
+    return None
+
+
+def _f5_strip_server_keys(items):
+    """Drop every server-owned `_f5*` key, returning NEW dicts.
+
+    🔴 ONE DOOR FOR "THE SIDECAR IS INTERNAL". `_f5_claim` exists to be read by the
+    merge point and by nothing else; it must reach neither a provider prompt nor a
+    payload the job publishes. There are two exits — the merged list handed to the
+    revise, and the thread tracker's own `result["thread_tracker"]` report — and the
+    first shipped with the strip inlined while the second had none, so the sidecar rode
+    out into the job result. Both exits go through this function now: a second copy of
+    the rule is how one of them ends up not having it."""
+    return [{k: v for k, v in item.items() if not str(k).startswith("_f5")}
+            if isinstance(item, dict) else item
+            for item in items]
+
+
+def _v3g_merge_claim(winner: dict, other: dict) -> dict:
+    """Fold `other` into `winner`, returning a NEW dict.
+
+    Never mutates either input: the same violation objects feed report and telemetry
+    elsewhere in this module, and rewriting them in place would change what those
+    publish.
+
+    The survivor's TYPE (and therefore its routing) follows the specificity rule. Its
+    SEVERITY, EVIDENCE and FIX all come from whichever occurrence judged the claim most
+    seriously — they travel together, because a `critical` label attached to the mild
+    finding's wording describes nothing a reader or a repair prompt can act on."""
+    rank = _V3G_SEVERITY_RANK
+    win_sev = str(winner.get("severity") or "").strip().lower()
+    other_sev = str(other.get("severity") or "").strip().lower()
+    if rank.get(other_sev, 0) > rank.get(win_sev, 0):
+        # 🔴 SEVERITY, EVIDENCE AND FIX TRAVEL TOGETHER. The TYPE (and therefore the
+        # routing) stays the authority-specific one, but the description a reader and a
+        # repair prompt see must belong to the occurrence that judged the claim most
+        # seriously. Lifting only the severity number left `critical` attached to the
+        # `low` finding's wording — a severity that no longer describes its own text.
+        merged = dict(other)
+        merged["type"] = winner.get("type")
+        if "chapter" in winner:
+            merged["chapter"] = winner.get("chapter")
+    else:
+        merged = dict(winner)
+    return merged
+
+
+def _v3g_prefer(a: dict, b: dict) -> "tuple[dict, dict]":
+    """Which of two same-claim findings decides ROUTING? Authority-specific type first,
+    otherwise the earlier arrival.
+
+    Severity is deliberately NOT considered here — `_v3g_merge_claim` decides severity,
+    evidence and fix. An earlier version sorted by severity here as well, and a mutation
+    run showed either mechanism could be deleted with every test still green, each
+    covering the other. One door."""
+    a_type = str(a.get("type") or "").strip().lower()
+    b_type = str(b.get("type") or "").strip().lower()
+    a_specific = a_type in _V3G_AUTHORITY_SPECIFIC_TYPES
+    b_specific = b_type in _V3G_AUTHORITY_SPECIFIC_TYPES
+    if a_specific != b_specific:
+        return (a, b) if a_specific else (b, a)
+    # 🔴 NO SEVERITY ORDERING HERE. It used to also sort by severity, restating what
+    # `_v3g_merge_claim` already does — and a mutation run showed either could be
+    # deleted with every test still green, each covering the other. The merge decides
+    # severity/evidence/fix; this function decides ROUTING only. One door.
+    return (a, b)
+
+
 def _v3g_dedup_violations(violations: list) -> list:
     """Collapse EXACT duplicates (same type + chapter + normalized evidence) before
     budgeting -- the four independent v3-gate detectors (critic/register/canon_diff/
     thread_tracker) can each surface the identical finding, and each survivor
     consumes a separate repair-budget slot downstream (chapter attempt caps etc.).
-    Deliberately EXACT-match only, never fuzzy/LLM similarity -- matching this
+    Two paths: a SEMANTIC claim identity when the detector publishes a structured one,
+    and an exact-evidence fallback otherwise. Both paths merge through the same
+    `_v3g_prefer`/`_v3g_merge_claim` rules, so a duplicate can never keep the first
+    occurrence's severity on either. Never fuzzy/LLM similarity -- matching this
     file's own dedup precedent in the thread-tracker multipass extraction above
     (chapter_introduced, thread_type, normalized description) -- so two DIFFERENT
     findings are never silently merged away: that failure mode (dropping a real,
@@ -170,16 +418,25 @@ def _v3g_dedup_violations(violations: list) -> list:
     budget on a literal repeat). `type` is part of the key, so this can NEVER fold
     a specific type (e.g. outline_missing_beat, which routes to the structural-
     patch lane) into a generic one (e.g. unresolved_thread, which doesn't) -- they
-    simply never share a key. First occurrence wins, preserving _v3g_merged's
-    existing source order (critic, register, canon_diff, thread_tracker -- most-
+    simply never share a key. Source order is preserved for findings that do NOT merge, keeping _v3g_merged's (critic, register, canon_diff, thread_tracker -- most-
     authoritative first). F5, BRIEF-FOR-CODEX-2026-08-14 fecd3dcb5f9b85f81b7079
     0736c5304a1dbcf29fad9780fb6c1dc904d4fc20b5."""
     import re
-    seen: set = set()
+    seen: dict = {}
     deduped: list = []
+    claim_slot: dict = {}          # claim identity -> index into `deduped`
     for violation in violations:
         if not isinstance(violation, dict):
             deduped.append(violation)
+            continue
+        # F5: SEMANTIC identity first. Two detectors describing one claim in different
+        # words collapse here; the literal-repeat key below still catches the case where
+        # no structured identity is published.
+        claim = _v3g_claim_identity(violation)
+        if claim is not None and claim in claim_slot:
+            index = claim_slot[claim]
+            winner, loser = _v3g_prefer(deduped[index], violation)
+            deduped[index] = _v3g_merge_claim(winner, loser)
             continue
         vtype = str(violation.get("type") or "").strip().lower()
         chapter = _v3g_violation_chapter(violation)
@@ -187,10 +444,19 @@ def _v3g_dedup_violations(violations: list) -> list:
         evidence_key = " ".join(evidence_key.lower().split())
         key = (vtype, chapter if chapter is not None else id(violation), evidence_key)
         if key in seen:
+            # 🔴 THE FALLBACK MUST MERGE TOO. This used to `continue`, dropping the
+            # duplicate outright — so an exact literal repeat kept the FIRST
+            # occurrence's severity and a `low` arriving before a `critical` silently
+            # downgraded the claim. The same merge rules apply on both paths.
+            index = seen[key]
+            winner, loser = _v3g_prefer(deduped[index], violation)
+            deduped[index] = _v3g_merge_claim(winner, loser)
             continue
-        seen.add(key)
+        seen[key] = len(deduped)
+        if claim is not None:
+            claim_slot[claim] = len(deduped)
         deduped.append(violation)
-    return deduped
+    return _f5_strip_server_keys(deduped)
 
 
 def _ledger_hit_is_exempt(term: str, topic: str, bible: str) -> bool:
@@ -204,6 +470,37 @@ def _ledger_hit_is_exempt(term: str, topic: str, bible: str) -> bool:
     return bool(term) and (
         _premise_term_in_topic(term, topic)
         or _premise_term_in_topic(term, bible))
+
+
+def _ledger_hit_is_exempt_for_result(term: str, topic: str, result: dict,
+                                     category: str = "") -> bool:
+    """F5: the post-generation exemption, reading the FULL pinned authority.
+
+    `_ledger_hit_is_exempt` above sees only topic + `canonical_facts`. That misses the
+    accepted OUTLINE, which is where canary v9's `Tae-jun` actually lived — the topic
+    never wrote it and the fact-sheet did not repeat it, so the ledger was free to order
+    repair to rename this story's own protagonist. Now that F4b makes repair LAND, that
+    instruction would corrupt the canon rather than merely waste a slot.
+
+    Authority read here, all already ACCEPTED at this point: the user's topic, the
+    pinned bible (`canonical_facts`), and the private narrative-authority packet (the
+    accepted outline). 🔴 The authority text is used INTERNALLY and only to answer this
+    boolean — it never enters a violation, a log line, a prompt, the result payload or
+    an artifact, and this function does not mutate `result`."""
+    import narasi_counters as _f5nc
+    ownership = _f5nc.build_authority_ownership(
+        topic=str(topic or ""),
+        outline=_narrative_authority_text(result if isinstance(result, dict) else {}),
+        bible=str((result or {}).get("canonical_facts") or "")
+        if isinstance(result, dict) else "",
+        # 🔴 `_canon_lite_canon`, NOT `canon_registry`. The latter is an advisory
+        # sidecar with no canonical_name/aliases table at all, so pointing at it made
+        # the "canon names, aliases and bound literals are owned" claim simply untrue.
+        # The accepted Canon Lite is still on `result` here: `_apply_v3_gates` runs
+        # before the `result.pop("_canon_lite_canon", …)` further down the job.
+        canon=(result or {}).get("_canon_lite_canon") if isinstance(result, dict) else None,
+    )
+    return _f5nc.authority_owns_term(term, ownership, category=category)
 
 
 _GO_NO_GO_ANY_SEVERITY_BLOCKERS = frozenset({"outline_missing_beat", "pov"})
@@ -3757,8 +4054,17 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 continue
                             if _mvdem and str(h.get("term") or "").startswith("floor:"):
                                 continue
-                            _mterm = str(h.get("term") or "").split(":", 1)[-1]
-                            if _ledger_hit_is_exempt(_mterm, _mtopic, _mbible):
+                            # F5: the ledger's own CATEGORY survives to the decision.
+                            # Splitting it off first meant a `number:` hit could be
+                            # exempted by a `name:` that happened to read the same.
+                            _mraw = str(h.get("term") or "")
+                            _mcat, _, _mrest = _mraw.partition(":")
+                            _mterm = _mrest if _mrest else _mraw
+                            _mcat = _mcat.strip().lower() if _mrest else ""
+                            # The FULL pinned authority — topic + bible + accepted
+                            # outline + canon names/aliases/bound literals.
+                            if _ledger_hit_is_exempt_for_result(_mterm, _mtopic, result,
+                                                                category=_mcat):
                                 continue
                             _mech.append({
                                 "type": "ledger_hit", "severity": "high",
@@ -4058,7 +4364,16 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     if len(_cq_rev["violations"]) != len(_cq.get("violations") or []):
                         log.info("revise input filtered: %d → %d violation(s) (canon_fork report-only / retracted dropped)",
                                  len(_cq.get("violations") or []), len(_cq_rev["violations"]))
-                    _eligible = _cq_rev["violations"]
+                    # The critic's outlined-beat reference is admitted only when the
+                    # accepted outline has that beat; when it refuses, the dict passes
+                    # through UNCHANGED and keeps falling to the exact-evidence path.
+                    # A COPY is taken when a claim is attached: these same dicts are the
+                    # objects `_out["cq"]` publishes, and the sidecar is server-internal.
+                    _eligible = []
+                    for _cv_one in _cq_rev["violations"]:
+                        _cv_claim = _f5_outline_beat_claim(_cv_one, _outline_packets)
+                        _eligible.append({**_cv_one, "_f5_claim": _cv_claim}
+                                         if _cv_claim else _cv_one)
                 _out.update({"ran": True, "cq": _cq, "cpay": _cpay, "t_crit": _t_crit, "cmodel": _cmodel,
                              "nch": _nch, "crit_on": _crit_on, "cbk": _cbk, "eligible": _eligible})
             else:
@@ -4172,8 +4487,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                     style_key, counts, banned)
                         if str(os.environ.get("NARASI_REGISTER_GATE_ENFORCE", "0")).strip().lower() in ("1", "true", "yes", "on"):
                             try:
+                                # The move name and the banned tell are this gate's OWN
+                                # vocabulary — server-side constants, never model prose —
+                                # so they identify the claim exactly.
                                 _rv = [{"type": "register", "severity": "high",
                                         "evidence": f"required move not executed: {m}",
+                                        "_f5_claim": _f5_claim_token("register_move", m),
                                         "fix": f"execute the '{m}' move at least once in the book"}
                                        for m in moves if counts.get(m, 0) < 1]
 
@@ -4183,6 +4502,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                     return _wq(_rc) if _rc and _rc.lower() == t.lower() else f"banned phrasing present: {t}"
                                 _rv += [{"type": "register", "severity": "high",
                                          "evidence": _bp_ev(t),
+                                         "_f5_claim": _f5_claim_token("register_tell", t),
                                          "fix": f"remove the banned phrasing '{t}'"} for t in banned]
                                 if _rv and book:
                                     _eligible = _rv
@@ -4938,6 +5258,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                         _nrviol.append({
                                             "type": "canon_attribution", "severity": "high",
                                             "evidence": _ev[:200],
+                                            # event+field come from the accepted fact sheet,
+                                            # not from the chapter prose: the same pinned
+                                            # field re-reported is the same claim. The
+                                            # chapter is IN the token — two chapters that
+                                            # each contradict one pinned field are two
+                                            # repairs, and must not collapse into one.
+                                            "_f5_claim": _f5_claim_token(
+                                                "canon_event", f.get("event"), f.get("field"), _chn),
                                             "fix": (f"The fact sheet pins event «{f.get('event')}» {f.get('field')} "
                                                     f"differently than this chapter states — align the chapter to "
                                                     f"the fact sheet's version; change nothing else.")})
@@ -4948,6 +5276,12 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 _cv = [{"type": "canon_fork", "severity": "high",
                                         "evidence": "Bab %s renders %s as '%s'; canon = '%s'" % (
                                             _fk.get("chapter"), _fk.get("field"), _fk.get("found"), _fk.get("expected")),
+                                        # chapter+field+expected are all canon-side: the
+                                        # SAME field forked in the SAME chapter is one claim
+                                        # however the found-text is worded.
+                                        "_f5_claim": _f5_claim_token(
+                                            "canon_fork", _fk.get("chapter"), _fk.get("field"),
+                                            _fk.get("expected")),
                                         "fix": "align this chapter's rendering to the canonical value"}
                                        for _fk in _forks] if _cbook else []
                             except Exception as _e:  # noqa: BLE001
@@ -5140,6 +5474,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     if _tt_threads:
                         _tt_tail_n = int(os.environ.get("NARASI_THREAD_TRACKER_TAIL_CHARS", "15000"))
                         _tt_tail = _ttbook[-_tt_tail_n:]
+                        _tt_outline_brief = _f5_outline_beat_brief(_outline_packets)
                         _tt_sys2 = (
                             "You are given a list of THREADS extracted from earlier in a manuscript, "
                             "and the manuscript's ENDING (final chapter(s) only). For each thread, "
@@ -5167,9 +5502,24 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             + json.dumps([{"id": t.get("id"), "thread_type": t.get("thread_type"),
                                            "description": t.get("description")} for t in _tt_threads],
                                          ensure_ascii=False)
+                            # 🔴 THE SHARED VOCABULARY. The consistency critic reports the
+                            # same silence as a missing outlined beat, and the two findings
+                            # can only be recognised as ONE claim if both point into the
+                            # accepted outline the same way. Handing the beats over here is
+                            # what makes that reference possible; the server then checks it
+                            # against the outline rather than trusting it.
+                            + _tt_outline_brief
                             + ". Return ONLY JSON: {\"unresolved\":[{\"id\":\"<thread id from the list "
-                            "above>\",\"why\":\"<one-line: what the ending fails to address>\"}]} — "
-                            "empty list if the ending accounts for every thread.")
+                            "above>\",\"why\":\"<one-line: what the ending fails to address>\""
+                            + (",\"outline_chapter\":<1-based chapter from OUTLINE BEATS>,"
+                               "\"outline_beat\":<1-based beat number within that chapter>"
+                               if _tt_outline_brief else "")
+                            + "}]} — "
+                            + ("name the outlined beat this thread leaves undelivered; cite one "
+                               "the list above actually has, and OMIT both fields rather than "
+                               "guessing when no outlined beat covers it. "
+                               if _tt_outline_brief else "")
+                            + "empty list if the ending accounts for every thread.")
                         try:
                             _tt_max_tok2 = int(os.environ.get("NARASI_THREAD_TRACKER_MAX_TOKENS2", "1500"))
                             _tt_raw2, _tt_cc2 = await _narasi_cheap_call(_tt_sys2, _tt_tail,
@@ -5201,12 +5551,25 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                         _tt_violations.append({
                             "type": "unresolved_thread", "severity": "high",
                             "evidence": _tt_ev,
+                            # 🔴 THE OUTLINED BEAT FIRST, THE THREAD ID ONLY AS FALLBACK.
+                            # An outlined-beat reference validated against the accepted
+                            # outline is the identity the CRITIC also produces, so it is
+                            # what lets one repair slot cover both readings of the same
+                            # silence. The thread id identifies the claim just as well
+                            # for the tracker alone, but no other detector can ever
+                            # produce it — so it can only dedup the tracker against
+                            # itself, never the pair.
+                            "_f5_claim": (_f5_outline_beat_claim(_u, _outline_packets)
+                                          or _f5_claim_token("thread", _t.get("id"))),
                             "fix": (f"Chapter {_t.get('chapter_introduced')} raises "
                                     f"{str(_t.get('thread_type') or '').replace('_', ' ')} "
                                     f"({_t.get('description')}) but the ending never addresses it — "
                                     f"{_u.get('why')}. Add a brief beat in the final chapter(s) that "
                                     f"resolves or explicitly closes this thread.")})
-                    result["thread_tracker"] = {"threads_checked": len(_tt_threads), "violations": _tt_violations}
+                    # The report is a PUBLISHED payload; `_eligible` below keeps the
+                    # sidecar because the merge point is the one thing meant to read it.
+                    result["thread_tracker"] = {"threads_checked": len(_tt_threads),
+                                                "violations": _f5_strip_server_keys(_tt_violations)}
                     _eligible = []
                     if _tt_violations:
                         log.warning("thread-tracker: %d unresolved thread(s) flagged for job %s (report-only): %s",

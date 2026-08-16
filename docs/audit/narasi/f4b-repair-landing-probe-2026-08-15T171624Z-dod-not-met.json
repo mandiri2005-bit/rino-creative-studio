@@ -1,0 +1,104 @@
+{
+  "cost": {
+    "completion_tokens": 85,
+    "credit_row_written": false,
+    "estimated_usd_micros": 1588,
+    "estimator": "laozhang_api._calc_cost",
+    "prompt_tokens": 549,
+    "responses_with_complete_usage": 1,
+    "total_tokens": 634,
+    "usage_source": "provider_reported"
+  },
+  "counts": {
+    "adapter_invocations_observed": 1,
+    "chapters_accepted": 1,
+    "chapters_attempted": 1,
+    "chapters_targeted": 1,
+    "provider_calls_observed": 1,
+    "provider_calls_reported": 1,
+    "responses_observed": 1,
+    "schema_retry_accepted": 0,
+    "schema_retry_chapters": 0,
+    "schema_retry_exhausted": 0,
+    "upstream_request_cap": 2
+  },
+  "delivery": {
+    "persisted": false,
+    "returned_to_user": false
+  },
+  "dod": {
+    "checks": {
+      "heading_identical": true,
+      "manuscript_changed": true,
+      "no_credit_row": true,
+      "not_delivered": true,
+      "one_chapter_accepted": true,
+      "only_expected_units_changed": true,
+      "reported_equals_observed": true,
+      "retry_accepted_once": false,
+      "retry_entered_once": false,
+      "retry_not_exhausted": true,
+      "trailing_frame_identical": true,
+      "two_physical_calls": false,
+      "unit_counts_match": true,
+      "untouched_units_identical": true,
+      "usage_recorded_for_every_response": true,
+      "within_upstream_cap": true
+    },
+    "met": false
+  },
+  "executed_at_utc": "2026-08-15T17:16:24Z",
+  "manuscript": {
+    "after_sha256": "df04bf79126fca91df4214733dbd6f0635fb7a7cfe0d273b70d6b45e2f371d9d",
+    "all_original_bodies_present": true,
+    "before_sha256": "8162c5ba7e927e964eaa53daadaef78b6dd991f53c5456c2b22f408873d6134d",
+    "changed_unit_positions": [
+      1
+    ],
+    "expected_changed_positions": [
+      1
+    ],
+    "heading_identical": true,
+    "manuscript_changed": true,
+    "only_expected_units_changed": true,
+    "trailing_frame_identical": true,
+    "unit_count_after": 4,
+    "unit_count_before": 4,
+    "unit_counts_match": true,
+    "units_changed": 1,
+    "untouched_units_identical": true
+  },
+  "primary_response_observed": true,
+  "probe_kind": "targeted_non_delivery_repair_landing",
+  "provider": {
+    "model_alias": "gemini-3.5-flash",
+    "phase": "canon_diff_revise",
+    "resolved_model": "gemini-3.5-flash"
+  },
+  "recording_mode": "live",
+  "responses": [
+    {
+      "completion_tokens": 85,
+      "index": 1,
+      "observation": {
+        "operation_source": "single_wrapper_key",
+        "subtype": "other",
+        "token_length": 7,
+        "token_sha256": "7ab3778776cde4fa728a162a53ad3abcc967d1bd7361039e0942888240c4ce86",
+        "validator_outcome": "accepted"
+      },
+      "prompt_tokens": 549,
+      "served_by": "vertex",
+      "served_model": "gemini-3.5-flash",
+      "usage_metadata": "complete"
+    }
+  ],
+  "schema_version": "narasi_f4b_probe_artifact_v1",
+  "source": {
+    "head": "5ab690053a66c211bdef80da2f02f06105108695",
+    "laozhang_api_sha256": "90b06cce6ac3eccfd388da9b4112830e8ed879ba908e94de9de391bcc37f39c2",
+    "narasi_addressed_patch_sha256": "08ea984ee1b2d1a03fa795b2375d747deee79d74f98daf4902130d2540cf3ada",
+    "narasi_f4a_probe_sha256": "90ab12d4d5cd5267a6591b62c89abcb4788f52526f1d9fecd3e4fb6dadbb57a9",
+    "narasi_f4b_probe_sha256": "3f18ccbd830ca892af65030908be59a32dad6aa8608b1b4a9f49c8054b56d78c"
+  }
+}

@@ -8685,6 +8685,13 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "'three weeks later' or 'day 29'). Merely saying 'days passed' and later 'nearing its end' "
         "does not account for a 30-day span. For EVERY finding in A or B, include `chapter` as the "
         "1-based chapter number whose prose must be repaired; for a seam, use the later chapter.\n"
+        "C. WHICH OUTLINED BEAT — for EVERY finding in A or B, also include "
+        "`outline_chapter` (the 1-based chapter of the outline the beat belongs to) and "
+        "`outline_beat` (the 1-based position of that beat inside THAT chapter's ordered "
+        "outline beats, counting from 1 in the order the outline writes them). These two "
+        "point at the outlined commitment the finding is about, which is not always the "
+        "chapter whose prose you are asking to repair. Cite a beat the outline actually "
+        "has; if you cannot point at one, OMIT both fields rather than guessing.\n"
         if authority_aware else "")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
@@ -8827,7 +8834,8 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         '{"score": <0-10>, "violations": [{"type": "' + _enum + '", "severity": '
         '"critical|high|medium|low", "evidence": "<short quote(s)>", '
         '"fix": "<one-line directive>"'
-        + (', "chapter": <1-based integer>' if authority_aware else '') +
+        + (', "chapter": <1-based integer>, "outline_chapter": <1-based integer, omit if unsure>,'
+           ' "outline_beat": <1-based integer, omit if unsure>' if authority_aware else '') +
         '}], "summary": "<1-2 sentences>"}'
     )
 
@@ -10021,16 +10029,103 @@ def _narasi_reserve_upstream() -> bool:
 # F4a bumped this to v2 rather than adding `provider_calls` quietly: this block is
 # PERSISTED on the jobs row, so a consumer reading v1 would otherwise start seeing a
 # field its contract never promised, with no way to tell the two shapes apart.
-_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v2"
+# F4b bumps it again for exactly the same reason. The bounded corrective retry makes
+# one attempted chapter cost two calls, and a retry left to hide inside
+# `provider_calls` is indistinguishable from a failover rung — same number, different
+# cause, different fix. Three counters make the retry path answerable on its own.
+_STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v3"
 _STRUCTURAL_PATCH_NOT_ATTEMPTED_REASONS = frozenset({
     "attempt_cap",
     "outline_packet_missing",
     "segmentation_failure",
 })
+#: F4b: the ONLY rejections a corrective retry may answer. Every member is a failure to
+#: obey the RESPONSE CONTRACT — what came back is not a well-formed addressed patch —
+#: which restating that contract can plausibly fix.
+#:
+#: 🔴 NOTHING SEMANTIC IS HERE, and that boundary is the whole design. `unknown_id`,
+#: `self_reference`, `operation_overlap`, `ambiguous_insert_order`, `move_cycle`,
+#: `move_unsatisfiable`, the four `prose_*` codes, `ineffective`, `word_band`,
+#: `byte_band` and `fidelity_below_minimum` all describe a patch that was UNDERSTOOD
+#: and then judged unfit. Asking again buys a second opinion on a verdict, not a
+#: corrected shape — it turns a guard into a negotiation, which is precisely how a
+#: word band or a fidelity floor stops being a floor. `provider_error`,
+#: `response_empty` and `metering_error` are transport/accounting faults with no
+#: candidate to correct, and the heading/post-assembly guards fire after assembly on a
+#: patch whose shape was already accepted.
+_STRUCTURAL_SCHEMA_RETRYABLE = frozenset({
+    "response_not_json",
+    "schema_shape",
+    "schema_version",
+    "operations_type",
+    "operations_empty",
+    "operations_cap",
+    "operation_type",
+    "operation_shape",
+    "unknown_operation",
+})
+
+
+#: F4b: WHICH artifact produced a chapter's final verdict. An ordinal could not say
+#: this and lied on the path that matters most: when the ledger refuses the retry above
+#: the transport there is no second candidate at all, yet the log still read
+#: `attempt=2` — naming a provider answer that was never received. The mirror case was
+#: equally wrong, a fault while judging the SECOND candidate printing `attempt=1`.
+#: Closed and server-owned, so no branch can invent a source a reader cannot enumerate.
+_STRUCTURAL_FINAL_SOURCES = frozenset({
+    "first_exchange",     # call 1 returned no candidate (transport/empty/metering)
+    "first_candidate",    # call 1's candidate was judged unfit; no retry was eligible
+    "initial_schema",     # a retry was entered but returned no candidate to judge
+    "retry_candidate",    # the retry answered and ITS candidate was judged unfit
+    "internal_error",     # a fault while judging, after a billed call
+})
+
+
+def _narasi_structural_corrective_user(original_user, reason, schema_version):
+    """Server-authored corrective prompt for the ONE bounded schema retry (F4b).
+
+    🔴 CARRIES NO PART OF THE REJECTED RESPONSE. Only the bounded reason code crosses
+    back to the provider. Echoing the rejected candidate would feed unvalidated model
+    output into a prompt — and from there into request logs, traces and any artifact
+    built from them — which is the exact leak F4a's bounded telemetry exists to
+    prevent. The reason codes are a closed server-owned set, so nothing model-authored
+    rides along.
+
+    `original_user` is reused VERBATIM: same chapter, same `uNNN` address table, same
+    outline packet, same directives. The retry therefore addresses the ORIGINAL unit
+    table, never anything the first candidate proposed — a corrective prompt rebuilt
+    from the first response's view of the chapter would let a malformed candidate
+    redefine the addresses its own replacement is validated against."""
+    return (
+        f"{original_user}\n\n"
+        "[CORRECTION — YOUR PREVIOUS RESPONSE WAS REJECTED]\n"
+        f"Previous response rejected for bounded reason: {str(reason)[:64]}\n\n"
+        "Return exactly:\n"
+        "{\n"
+        f'  "schema_version": "{schema_version}",\n'
+        '  "operations": [...]\n'
+        "}\n\n"
+        "Allowed exact operations:\n"
+        "insert_before: op, anchor_id, text\n"
+        "insert_after:  op, anchor_id, text\n"
+        "replace:       op, unit_id, text\n"
+        "move:          op, unit_id, exactly one of before_id/after_id\n\n"
+        "Rules:\n"
+        "- 1-4 operations\n"
+        "- op must be a string with one of the four exact names\n"
+        "- no verb-as-wrapper-key\n"
+        "- no aliases\n"
+        "- no delete\n"
+        "- no markdown fence\n"
+        "- no prose outside JSON\n"
+        "- addresses must come from the original table\n"
+    )
 
 
 def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
                                      attempted=0, provider_calls=0, accepted=0,
+                                     schema_retry_chapters=0, schema_retry_accepted=0,
+                                     schema_retry_exhausted=0,
                                      not_attempted_reason_counts=None,
                                      deferred_by_chapter=None,
                                      manuscript_changed=None):
@@ -10039,7 +10134,13 @@ def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
     `provider_calls` (F4a) is PHYSICAL calls, deliberately not derived from
     `attempted`: `provider_calls > attempted` is legal and expected once a bounded
     retry exists, and `provider_calls < attempted` is legal when a client factory
-    raises before any request leaves the process."""
+    raises before any request leaves the process.
+
+    The three `schema_retry_*` counters (F4b) report the bounded corrective retry as
+    its own quantity. They are ORTHOGONAL to `provider_calls`: a retry and a failover
+    rung both add a physical call, so that number alone cannot say whether the lane is
+    paying for an unreachable provider or for a model that will not obey the response
+    contract. Each is counted at its own site — none is derived from another."""
     reasons = {
         str(key): int(value)
         for key, value in (not_attempted_reason_counts or {}).items()
@@ -10060,6 +10161,30 @@ def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
     if accepted > provider_calls:
         # Every accepted patch is the product of a call that was actually made.
         raise AssertionError("structural patch accept-without-call invariant")
+    retry_chapters = int(schema_retry_chapters)
+    retry_accepted = int(schema_retry_accepted)
+    retry_exhausted = int(schema_retry_exhausted)
+    if retry_exhausted < 0 or not (0 <= retry_accepted <= retry_chapters <= attempted):
+        raise AssertionError("structural patch retry counter invariant")
+    if retry_accepted + retry_exhausted != retry_chapters:
+        # Every chapter that ENTERED the retry path also LEFT it, exactly once, either
+        # with an applied patch or without one. A partition that does not close means a
+        # chapter is being counted twice or dropped on some branch.
+        raise AssertionError("structural patch retry partition invariant")
+    if retry_accepted > accepted:
+        # A retry-accepted chapter is a SUBSET of the accepted chapters, never a
+        # separate population added on top of them.
+        #
+        # 🔴 THIS LINE ALSO CARRIES `schema_retry_accepted > 0 => manuscript_changed`,
+        # and deliberately so. Written as its own check that rule could never fire:
+        # `retry_accepted <= accepted` makes `retry_accepted > 0` imply `accepted > 0`,
+        # which the accepted-without-change invariant below already refuses on the
+        # identical condition. A second mechanism enforcing one rule means neither can
+        # be proved — each hides the other's removal from every test — and a mutation
+        # run said exactly that: the duplicate survived because its twin caught the
+        # case first. The property is proved by composition instead, and BOTH halves
+        # have their own mutant (prove_f4b 12 and 12b).
+        raise AssertionError("structural patch retry accept invariant")
     if targeted == 0:
         status = "not_targeted"
     elif attempted == 0:
@@ -10084,6 +10209,9 @@ def _narasi_structural_patch_summary(*, structural_violations=0, targeted=0,
         "chapters_attempted": attempted,
         "provider_calls": provider_calls,
         "chapters_accepted": accepted,
+        "schema_retry_chapters": retry_chapters,
+        "schema_retry_accepted": retry_accepted,
+        "schema_retry_exhausted": retry_exhausted,
         "not_attempted_reason_counts": reasons,
         "deferred_nonstructural_total": sum(item["count"] for item in deferred),
         "deferred_nonstructural_by_chapter": deferred,
@@ -10287,20 +10415,36 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
     # retry makes one attempt cost two, and a client factory that raises makes an
     # attempt cost none. Deriving either from the other is wrong in both directions.
     provider_calls = 0
+    # F4b: the bounded corrective retry, counted at its own three sites. `chapters`
+    # increments where the retry path is ENTERED, `accepted`/`exhausted` where it is
+    # left — never derived from each other or from `provider_calls`, which cannot tell
+    # a retry apart from a failover rung.
+    schema_retry_chapters = schema_retry_accepted = schema_retry_exhausted = 0
     resolved = MODELS.get(rev_model, rev_model)
     output_parts = [part for _number, part in parts]
 
     def _not_attempted(reason):
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
-    def _rejected(reason, chapter_number, input_words, output_words=None):
+    def _rejected(reason, chapter_number, input_words, output_words=None,
+                  final_source="first_candidate"):
+        """Record the chapter's FINAL verdict. Called at most once per chapter: an
+        initial schema rejection that a corrective retry then answers is not a rejected
+        chapter, it is a repaired one, and counting both would make
+        `rejected_reason_counts` describe candidates rather than chapters.
+
+        `final_source` names WHICH artifact the verdict came from. It replaced an
+        attempt ordinal that could not express that and fabricated one where no second
+        candidate existed — see `_STRUCTURAL_FINAL_SOURCES`."""
         bounded_reason = str(reason or "unknown")[:64]
         rejected_reason_counts[bounded_reason] = \
             rejected_reason_counts.get(bounded_reason, 0) + 1
+        source = (final_source if final_source in _STRUCTURAL_FINAL_SOURCES
+                  else "first_candidate")
         import logging as _reject_log
         _reject_log.getLogger("narasi").warning(
-            "structural patch REJECTED chapter=%d attempt=1 reason=%s words=%d->%s",
-            chapter_number, bounded_reason, input_words,
+            "structural patch REJECTED chapter=%d final_source=%s reason=%s words=%d->%s",
+            chapter_number, source, bounded_reason, input_words,
             "?" if output_words is None else str(output_words),
         )
 
@@ -10365,27 +10509,34 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
         )
         attempted += 1
 
-        def _invoke_provider(_s=system, _u=user):
+        def _invoke_provider(_s, _u, _temperature):
             # Resolve the client and BIND `.create` first: a factory that raises
             # (missing credential, unknown model, import fault) never put a request on
             # the wire, and billing it would both over-report spend and wrongly debit
             # the legacy lane's shared budget.
             _client = make_narasi_client(rev_model, phase="canon_diff_revise")
             if not isinstance(_client, _NarasiFailoverClient):
-                try:
-                    # ONE reservation must mean ONE request. The OpenAI SDK retries
-                    # twice by default, so a plain-client reservation was silently
-                    # covering up to three HTTP attempts.
-                    _client = _client.with_options(max_retries=0)
-                except Exception:  # noqa: BLE001
-                    pass
+                # ONE reservation must mean ONE request. The OpenAI SDK retries twice
+                # by default, so a plain-client reservation was silently covering up to
+                # three HTTP attempts.
+                #
+                # 🔴 NOT FAIL-OPEN (F4b Phase 0). This used to be wrapped in
+                # `except Exception: pass`, which meant the one case the guard exists
+                # for — a client whose retries CANNOT be disabled — was also the one
+                # case it silently waved through, leaving SDK retries active behind a
+                # single reservation. A raise here propagates BEFORE the reservation
+                # and before the transport: the attempt is refused, no request leaves
+                # the process, and `provider_calls` stays honest at 0. The plain path
+                # is always `make_client(model) -> OpenAI`, so this method exists in
+                # production; it going missing is a contract break worth failing on.
+                _client = _client.with_options(max_retries=0)
             _create = _client.chat.completions.create
             # EVERY argument built before the reservation — `_narasi_revise_timeout`
             # used to be evaluated inside the call's own argument list, i.e. after it.
             _call_kwargs = dict(
                 model=resolved,
                 messages=[{"role": "system", "content": _s}, {"role": "user", "content": _u}],
-                temperature=0.1,
+                temperature=_temperature,
                 max_tokens=min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS), 2400),
                 response_format={"type": "json_object"},
                 stream=False,
@@ -10407,35 +10558,94 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
             return _create(**_call_kwargs)
 
         # Fresh per attempt, set immediately before the thread starts so the worker's
-        # copied context pins THIS attempt's generation.
+        # copied context pins THIS attempt's generation. The F4b corrective retry
+        # deliberately REUSES it: a retry is the same chapter attempt costing a second
+        # call, so one `abandon` must forbid both. A fresh generation for the retry
+        # would let a caller that has already written this chapter off still pay for it.
         _generation = target_position + 1
-        _gen_token = _NARASI_UPSTREAM_GENERATION.set(_generation)
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(_invoke_provider),
-                timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
-            )
-        except Exception:
-            # Decided here and now, atomically — no waiting, no grace window. Either
-            # the worker had already dispatched or it is now forbidden to. Either way
-            # the failover walk (if one is underway) must stop issuing NEW requests:
-            # the request in flight is already counted, the next one would be billed
-            # against stats this coroutine has finished writing.
-            if _upstream_ledger is not None:
-                _upstream_ledger.abandon(_generation)
-            _rejected("provider_error", chapter_number, original_words)
-            continue
-        finally:
-            _NARASI_UPSTREAM_GENERATION.reset(_gen_token)
-        if not getattr(response, "choices", None):
-            _rejected("response_empty", chapter_number, original_words)
-            continue
-        try:
-            total_cr += int(await _log_narasi_usage(
-                tenant_id, user_id, rev_model, response, job_id=job_uuid,
-                credit_row=credit_row) or 0)
-        except Exception:
-            _rejected("metering_error", chapter_number, original_words)
+
+        async def _exchange(_s, _u, _temperature):
+            """ONE physical provider exchange: dispatch under the F4a ledger, record
+            the call at the transport boundary, meter the response — and only THEN hand
+            back its raw text for judgement.
+
+            Returns `(raw_text, None)` or `(None, bounded_reason)`. Accounting is never
+            conditional on the candidate being usable: every path that returns a reason
+            has already counted whatever call it made and metered whatever response it
+            received. Validation lives deliberately OUTSIDE this helper so the retry
+            reuses this exact accounting path instead of a parallel one that could
+            drift from it — the second call is metered by the same lines as the first."""
+            nonlocal total_cr
+            _gen_token = _NARASI_UPSTREAM_GENERATION.set(_generation)
+            try:
+                _response = await asyncio.wait_for(
+                    asyncio.to_thread(_invoke_provider, _s, _u, _temperature),
+                    timeout=_narasi_revise_timeout(rev_model, "canon_diff_revise"),
+                )
+            except Exception:
+                # Decided here and now, atomically — no waiting, no grace window.
+                # Either the worker had already dispatched or it is now forbidden to.
+                # Either way the failover walk (if one is underway) must stop issuing
+                # NEW requests: the request in flight is already counted, the next one
+                # would be billed against stats this coroutine has finished writing.
+                if _upstream_ledger is not None:
+                    _upstream_ledger.abandon(_generation)
+                return None, "provider_error"
+            finally:
+                _NARASI_UPSTREAM_GENERATION.reset(_gen_token)
+            # 🔴 METER FIRST, JUDGE SECOND. A response that ARRIVED is billable whether
+            # or not it is usable: the provider's error-as-200 is HTTP 200 carrying real
+            # token usage and no choices, and it has already been charged for. Checking
+            # `choices` first made that response free in our ledger while the provider
+            # billed it — on a call `provider_calls` was already counting, so the two
+            # numbers disagreed by construction. F4b doubles the exposure, because the
+            # retry is a second chance to receive exactly this shape.
+            try:
+                total_cr += int(await _log_narasi_usage(
+                    tenant_id, user_id, rev_model, _response, job_id=job_uuid,
+                    credit_row=credit_row) or 0)
+            except Exception:
+                return None, "metering_error"
+            if not getattr(_response, "choices", None):
+                return None, "response_empty"
+            return (_resp_content(_response) or ""), None
+
+        def _evaluate(_raw):
+            """The validator and the Classic word/byte/fidelity guards over ONE
+            candidate. Returns `(text, None, out_words)` when it is fit to land, else
+            `(None, bounded_reason, out_words)`.
+
+            Pure judgement: no accounting, no state change, nothing chapter-scoped
+            mutated. The retry's candidate therefore meets exactly the guards the first
+            one met — a second call buys another candidate, never a softer verdict."""
+            try:
+                _patched = apply_addressed_patch(segmented, _raw)
+            except PatchValidationError as _patch_error:
+                if _patch_error.code == "unknown_operation":
+                    _unknown_operation_observed(chapter_number, _patch_error.received)
+                return None, _patch_error.code, None
+            _patched_words = len(_patched.text.split())
+            floor, ceil = int(original_words * 0.9), int(original_words * 1.4)
+            if not (floor <= _patched_words <= ceil):
+                return None, "word_band", _patched_words
+            if not (int(len(original_chapter) * 0.75) <= len(_patched.text) <= int(len(original_chapter) * 1.5)):
+                return None, "byte_band", _patched_words
+            import difflib as _patch_difflib
+            _fidelity = _patch_difflib.SequenceMatcher(
+                None, original_chapter.split(), _patched.text.split()).ratio()
+            try:
+                _min_fidelity = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
+            except Exception:
+                _min_fidelity = 0.55
+            _min_fidelity = min(1.0, max(0.0, _min_fidelity))
+            if _fidelity < _min_fidelity:
+                return None, "fidelity_below_minimum", _patched_words
+            return _patched.text, None, _patched_words
+
+        raw_patch, exchange_reason = await _exchange(system, user, 0.1)
+        if exchange_reason is not None:
+            _rejected(exchange_reason, chapter_number, original_words,
+                      final_source="first_exchange")
             continue
         # F4a: everything from here on runs AFTER a billed provider call. An
         # unexpected fault used to propagate out of this function, and the dispatcher
@@ -10443,41 +10653,62 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
         # over a chapter that was targeted, attempted AND paid for, and handing the
         # legacy lane the full shared budget on top. A post-call fault is a REJECTED
         # candidate like any other; it must never erase the accounting behind it.
+        _retried = False
+        _final_source = "first_candidate"
         try:
-            raw_patch = _resp_content(response) or ""
-            try:
-                patched = apply_addressed_patch(segmented, raw_patch)
-            except PatchValidationError as patch_error:
-                if patch_error.code == "unknown_operation":
-                    _unknown_operation_observed(chapter_number, patch_error.received)
-                _rejected(patch_error.code, chapter_number, original_words)
+            candidate, reason, out_words = _evaluate(raw_patch)
+            if reason is not None and reason in _STRUCTURAL_SCHEMA_RETRYABLE:
+                # F4b: EXACTLY ONE corrective retry, and only against a broken response
+                # CONTRACT. Deterministic (temperature 0.0) because the goal is a
+                # corrected SHAPE, not a fresh sample from the same distribution — a
+                # warm retry is just a second lottery ticket on the same failure.
+                _retried = True
+                schema_retry_chapters += 1
+                _initial_reason = reason
+                import logging as _retry_log
+                retry_raw, retry_exchange_reason = await _exchange(
+                    system,
+                    _narasi_structural_corrective_user(
+                        user, _initial_reason, PATCH_SCHEMA_VERSION),
+                    0.0)
+                if retry_exchange_reason is not None:
+                    # No second candidate came back, so there is no second verdict. The
+                    # chapter's final reason stays the ORIGINAL schema rejection:
+                    # naming the transport fault here would report a provider verdict
+                    # the retry never returned, and when the refusal came from the cap
+                    # or an abandon it would name a call that was never made at all.
+                    _final_source = "initial_schema"
+                    _retry_log.getLogger("narasi").warning(
+                        "structural patch schema retry chapter=%d unavailable=%s initial=%s",
+                        chapter_number, str(retry_exchange_reason)[:64],
+                        str(_initial_reason)[:64])
+                else:
+                    candidate, reason, out_words = _evaluate(retry_raw)
+                    _final_source = "retry_candidate"
+                    _retry_log.getLogger("narasi").warning(
+                        "structural patch schema retry chapter=%d initial=%s final=%s",
+                        chapter_number, str(_initial_reason)[:64],
+                        "accepted" if reason is None else str(reason)[:64])
+            if reason is not None:
+                _rejected(reason, chapter_number, original_words, out_words,
+                          final_source=_final_source)
+                if _retried:
+                    schema_retry_exhausted += 1
                 continue
-            patched_words = len(patched.text.split())
-            floor, ceil = int(original_words * 0.9), int(original_words * 1.4)
-            if not (floor <= patched_words <= ceil):
-                _rejected("word_band", chapter_number, original_words, patched_words)
-                continue
-            if not (int(len(original_chapter) * 0.75) <= len(patched.text) <= int(len(original_chapter) * 1.5)):
-                _rejected("byte_band", chapter_number, original_words, patched_words)
-                continue
-            import difflib as _patch_difflib
-            fidelity = _patch_difflib.SequenceMatcher(
-                None, original_chapter.split(), patched.text.split()).ratio()
-            try:
-                min_fidelity = float(os.getenv("NARASI_REVISE_MIN_FIDELITY", "0.55"))
-            except Exception:
-                min_fidelity = 0.55
-            min_fidelity = min(1.0, max(0.0, min_fidelity))
-            if fidelity < min_fidelity:
-                _rejected("fidelity_below_minimum", chapter_number,
-                          original_words, patched_words)
-                continue
-            output_parts[part_index] = patched.text + trail
+            output_parts[part_index] = candidate + trail
         except Exception:
             # A post-call fault is a rejected candidate, never an erased ledger.
-            _rejected("internal_error", chapter_number, original_words)
+            _rejected("internal_error", chapter_number, original_words,
+                      final_source="internal_error")
+            # ...and a chapter that ENTERED the retry path must still be recorded as
+            # leaving it, or the partition `accepted + exhausted == chapters` silently
+            # stops closing and the summary's own invariant would refuse to build.
+            if _retried:
+                schema_retry_exhausted += 1
             continue
         accepted += 1
+        if _retried:
+            schema_retry_accepted += 1
 
     # THE SINK IS THE ONLY SOURCE OF TRUTH. It used to be `max(sink, outer_invocations)`,
     # with the outer count as a "floor" — but an adapter invocation is not evidence of a
@@ -10496,6 +10727,9 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
             "attempted": attempted,
             "provider_calls": provider_calls,
             "accepted": accepted,
+            "schema_retry_chapters": schema_retry_chapters,
+            "schema_retry_accepted": schema_retry_accepted,
+            "schema_retry_exhausted": schema_retry_exhausted,
             "not_attempted_reason_counts": reason_counts,
             "rejected_reason_counts": rejected_reason_counts,
             "unresolved_locator_count": unresolved_locators,
@@ -10539,6 +10773,8 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                 patched_text, patch_cr = full_text, 0
                 patch_stats = {
                     "targeted": 0, "attempted": 0, "provider_calls": 0, "accepted": 0,
+                    "schema_retry_chapters": 0, "schema_retry_accepted": 0,
+                    "schema_retry_exhausted": 0,
                     "not_attempted_reason_counts": {},
                     "rejected_reason_counts": {},
                     "unresolved_locator_count": 0,
@@ -10555,6 +10791,9 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                 "attempted": 0,
                 "provider_calls": 0,
                 "accepted": 0,
+                "schema_retry_chapters": 0,
+                "schema_retry_accepted": 0,
+                "schema_retry_exhausted": 0,
                 "not_attempted_reason_counts": {},
                 "rejected_reason_counts": {},
                 "unresolved_locator_count": 0,
@@ -10614,6 +10853,12 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             # change exists to fix.
             provider_calls=patch_stats["provider_calls"],
             accepted=patch_stats["accepted"],
+            # Bracket access for the same reason as `provider_calls` above: a missing
+            # retry counter must be a loud KeyError at the seam, not a silent 0 that
+            # reports "no retry happened" for a lane that in fact retried and paid.
+            schema_retry_chapters=patch_stats["schema_retry_chapters"],
+            schema_retry_accepted=patch_stats["schema_retry_accepted"],
+            schema_retry_exhausted=patch_stats["schema_retry_exhausted"],
             not_attempted_reason_counts=patch_stats["not_attempted_reason_counts"],
             deferred_by_chapter=deferred_by_chapter,
             manuscript_changed=(patched_text != full_text),

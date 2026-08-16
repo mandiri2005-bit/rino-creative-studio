@@ -3006,6 +3006,299 @@ def premise_term_in_topic(term: str, topic: str) -> bool:
     return False
 
 
+def build_authority_ownership(*, topic: str = "", outline: str = "", bible: str = "",
+                              canon=None) -> dict:
+    """F5: the deterministic set of terms this story's ACCEPTED authority owns.
+
+    Lives here, not in `narration_api`, for the same reason `premise_term_in_topic`
+    does: `orchestrator.static` needs it at Bible-pin time and cannot import that
+    module. One implementation, two call sites — duplicating it would be the
+    "two mechanisms for one rule" trap this workstream has already paid for four times.
+
+    Sources, all optional, all ACCEPTED-only:
+      · `topic`   — the user's own premise/goal/brief;
+      · `outline` — the accepted chapter outline;
+      · `bible`   — the PINNED story bible (post-generation only, never the candidate);
+      · `canon`   — a Canon Lite registry: entity `canonical_name` + every accepted
+                    alias, and every anchor `literal` (numbers, durations, dates,
+                    addresses).
+
+    🔴 THE CANDIDATE BIBLE IS NOT AN AUTHORITY. At pin time it has not been accepted;
+    feeding it in would make every term it just invented self-exempt and switch ledger
+    enforcement off entirely. Callers pass `bible=""` there — see the Bible-pin site."""
+    texts = tuple(str(t) for t in (topic, outline, bible) if str(t or "").strip())
+    terms: set[str] = set()
+
+    def _fields(obj, name):
+        value = getattr(obj, name, None)
+        if value is None and isinstance(obj, dict):
+            value = obj.get(name)
+        return value
+
+    by_category: dict = {}
+
+    def _register(category: str, value) -> None:
+        value = str(value or "").strip().lower()
+        if not value:
+            return
+        terms.add(value)
+        by_category.setdefault(category, set()).add(value)
+
+    for entity in (_fields(canon, "entities") or ()):
+        _register("name", _fields(entity, "canonical_name"))
+        aliases = _fields(entity, "aliases") or ()
+        if isinstance(aliases, str):
+            aliases = (aliases,)
+        for alias in aliases:
+            _register("name", alias)
+    for anchor in (_fields(canon, "anchors") or ()):
+        # The anchor's own kind IS its category (number/duration/date/address/…), so a
+        # `number:` ledger hit can never be exempted by a NAME that happens to read the
+        # same, and vice versa.
+        _register(str(_fields(anchor, "kind") or "literal").strip().lower(),
+                  _fields(anchor, "literal"))
+    return {"texts": texts, "terms": frozenset(terms),
+            "by_category": {k: frozenset(v) for k, v in by_category.items()}}
+
+
+#: Ledger categories that may be satisfied by a registry entry of a DIFFERENT category.
+#: Deliberately empty: a `number:` hit is not excused by a `name:` that reads the same.
+_F5_CATEGORY_ALIASES: dict = {}
+#: Categories whose VALUE must itself be a number. The free-text authorities (topic,
+#: outline, bible) carry no categories at all, so without this a `number:Soo` hit was
+#: owned the moment an outline sentence said "Soo accepts the offer" — the text match
+#: cannot tell which category it is answering. A numeric category answered by a
+#: non-numeric value is incoherent on its face, so it is refused before the text
+#: fallback ever runs.
+#: Narrowed deliberately. `date` and `duration` were in this set and produced a
+#: FALSE NEGATIVE in the other direction — an outline that legitimately says "Tuesday"
+#: stopped owning `date:Tuesday`, which is worse than the leak it was closing. Only
+#: categories whose ledger value is ALWAYS a bare numeral stay.
+#:
+def _f5_value_is_numeric(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if lowered.isdigit() or lowered in _NUM_WORDS_XL:
+        return True
+    # A bound literal like "30 days" is numeric when any whole token is.
+    return any(part.isdigit() or part in _NUM_WORDS_XL for part in lowered.split())
+
+
+#: Weekday and month vocabulary, id + en. A `date:` value is a date when it says one.
+_F5_DATE_WORDS = frozenset({
+    "senin", "selasa", "rabu", "kamis", "jumat", "jum'at", "sabtu", "minggu", "ahad",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "januari", "februari", "maret", "april", "mei", "juni", "juli", "agustus",
+    "september", "oktober", "november", "desember",
+    "january", "february", "march", "may", "june", "july", "august", "october",
+    "december",
+})
+#: Time units that turn a numeral into a span.
+_F5_DURATION_UNITS = frozenset({
+    "detik", "menit", "jam", "hari", "minggu", "bulan", "tahun", "windu", "dekade",
+    "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days",
+    "week", "weeks", "month", "months", "year", "years", "decade", "decades",
+})
+_F5_DATE_RX = re.compile(r"^\d{1,4}[-/.]\d{1,2}([-/.]\d{1,4})?$")
+
+
+def _f5_proper_noun_occurrence(value: str, text: str) -> bool:
+    """Does `value` occur in `text` as a standalone CAPITALISED token?
+
+    The weakest claim a free-text authority can actually support: this string is used
+    as a proper name here. It cannot say WHICH kind of proper name, which is why only
+    `name` is satisfied by it and `place`/`food`/`organisation` are not."""
+    for match in re.finditer(r"(?<!\w)" + re.escape(str(value or "")) + r"(?!\w)",
+                             str(text or ""), re.IGNORECASE):
+        if match.group(0)[:1].isupper():
+            return True
+    return False
+
+
+def _f5_surname_occurrence(value: str, text: str) -> bool:
+    """`value` occurs as a capitalised token ADJACENT to another capitalised token.
+
+    🔴 THIS IS THE ROUND-4 LESSON, KEPT. A surname the user's own premise supplies —
+    `Han` out of `Han Seo-jin` — is not a lane tic and must never be re-rolled away.
+    What makes it a surname is that it sits inside a multi-token proper name, and that
+    is checkable. `Soo` in "Soo accepts the offer" is followed by a lowercase word, so
+    the same rule refuses it — which is exactly the `surname:Soo` leak."""
+    text = str(text or "")
+    for match in re.finditer(r"(?<!\w)" + re.escape(str(value or "")) + r"(?!\w)",
+                             text, re.IGNORECASE):
+        if not match.group(0)[:1].isupper():
+            continue
+        after = re.match(r"[ \t]+([^\W\d_]\S*)", text[match.end():])
+        before = re.search(r"([^\W\d_]\S*)[ \t]+$", text[:match.start()])
+        if (after and after.group(1)[:1].isupper()) or \
+                (before and before.group(1)[:1].isupper()):
+            return True
+    return False
+
+
+def _f5_date_value(value: str, _text: str) -> bool:
+    lowered = str(value or "").strip().lower()
+    if not lowered:
+        return False
+    if _F5_DATE_RX.match(lowered):
+        return True
+    return any(part.strip(".,") in _F5_DATE_WORDS for part in lowered.split())
+
+
+def _f5_duration_value(value: str, _text: str) -> bool:
+    parts = [p.strip(".,") for p in str(value or "").strip().lower().split()]
+    return (any(p in _F5_DURATION_UNITS for p in parts)
+            and any(p.isdigit() or p in _NUM_WORDS_XL for p in parts))
+
+
+def _f5_numeric_category_value(value: str, _text: str) -> bool:
+    return _f5_value_is_numeric(value)
+
+
+#: 🔴 WHICH CATEGORIES FREE TEXT CAN PROVE, AND NOTHING ELSE CAN BE ASSUMED.
+#: `ownership["texts"]` — topic, outline, pinned bible — is prose with no categories in
+#: it. A bare occurrence of a string proves the VALUE appears; it proves nothing about
+#: the SENSE. Treating occurrence as proof of category is what let an outline sentence
+#: "Soo accepts the offer" own `food:Soo`, `place:Soo` and `surname:Soo` as readily as
+#: `name:Soo` — three real lane-repetition tics that stopped reaching repair.
+#:
+#: A category is provable only when a deterministic validator can corroborate it from
+#: the value, the way it is written, or both. A category with NO validator here is not
+#: provable from prose and therefore never exempts: the registry's exact match remains
+#: its only route to ownership. Silence is refusal, not permission.
+#:
+#: 🔴 AND THE FALSE NEGATIVES THIS MUST NOT REINTRODUCE. `date`/`duration` once went
+#: into a blanket numeric rule and an outline that legitimately said "Tuesday" stopped
+#: owning `date:Tuesday`. Typed validators separate the two cases the blanket rule
+#: could not: `date:Tuesday` is a date and is owned; `duration:Tuesday` is not a span
+#: and is not. The premise-supplied `surname:Han` from "Han Seo-jin" survives for the
+#: same reason — it is checkable, so it is checked rather than guessed at.
+_F5_CATEGORY_VALIDATORS = {
+    "name": _f5_proper_noun_occurrence,
+    "surname": _f5_surname_occurrence,
+    "date": _f5_date_value,
+    "duration": _f5_duration_value,
+    "number": _f5_numeric_category_value,
+    "floor": _f5_numeric_category_value,
+    "count": _f5_numeric_category_value,
+    "year": _f5_numeric_category_value,
+    "age": _f5_numeric_category_value,
+}
+
+
+def _f5_free_text_may_prove(value: str, category: str, text: str) -> bool:
+    """May this free-text authority be read as answering THIS category?
+
+    An uncategorised ledger hit is unchanged — there is no category to prove, and the
+    deterministic matcher decides alone, exactly as before."""
+    if not category:
+        return True
+    validator = _F5_CATEGORY_VALIDATORS.get(category)
+    if validator is None:
+        return False
+    return bool(validator(value, text))
+
+
+def _f5_category_conflict(lowered: str, category: str, by_category) -> bool:
+    """Does the registry place this exact value under a DIFFERENT category?
+
+    ⚠️ PRECONDITION: the value is NOT registered under `category` itself. The single
+    door for that is `authority_owns_term`'s exact-match return, which fires long
+    before this is reached. This function guarded it a second time ("if it IS this
+    category, no conflict") and a mutation run scored that guard SURVIVED — because it
+    was unreachable, not because the test was weak. Two mechanisms for one rule is the
+    failure this workstream has now paid for seven times; the guard is gone and the
+    early return is the only door.
+
+    🔴 THE LEAK THIS CLOSES. `ownership["texts"]` — topic, outline, pinned bible — is
+    free prose carrying no categories at all, so the text fallback can only ever prove
+    that a VALUE appears, never that the authority used it in the sense the ledger is
+    asking about. An outline sentence "Soo accepts the offer" therefore owned
+    `food:Soo`, `surname:Soo` and `place:Soo` just as readily as `name:Soo`, and every
+    one of those is a real lane-repetition tic that stopped reaching repair.
+
+    The registry is the one authority here that IS categorised, so it is what answers.
+    When it records this value under some other category, it has already said what the
+    value is, and prose that merely contains the word cannot overrule it.
+
+    🔴 AND WHY THIS IS NOT "REFUSE WHENEVER THE CATEGORY IS UNPROVEN". That was tried in
+    the value-shape rule above: putting `date`/`duration` into the numeric set made an
+    outline that legitimately says "Tuesday" stop owning `date:Tuesday` — a false
+    NEGATIVE, which sends a legitimately-established term to repair. Refusal here is
+    driven by positive evidence of a DIFFERENT category, never by absence of evidence,
+    so a value the registry has never heard of is left exactly as it was.
+
+    Residual, deliberately: when no registry entry exists for the value at all, free
+    text remains the only authority and `food:Soo` is still owned by an outline that
+    says "Soo". Nothing structured exists to contradict it, and refusing on silence is
+    the `date:Tuesday` failure again."""
+    if not category or not by_category:
+        return False
+    aliases = set(_F5_CATEGORY_ALIASES.get(category, ()))
+    return any(lowered in (values or ())
+               for other, values in by_category.items()
+               if other != category and other not in aliases)
+
+
+def authority_owns_term(term, ownership, category: str = "") -> bool:
+    """Does the accepted authority own `term`? Category-and-value, never free substring.
+
+    🔴 THE FALSE EXEMPTION IS THE DANGEROUS DIRECTION. Every term wrongly called "owned"
+    is a real lane-repetition tic that stops reaching repair, so matching is deliberately
+    narrow:
+      · a registered canon term matches EXACTLY (case-insensitively) — `Jun` is owned
+        only when `Jun` is itself a registered alias, never because it sits inside a
+        registered `Jun-ho`;
+      · a NUMERIC term may additionally match word-bounded INSIDE a registered literal,
+        which is what lets the bound literal `30 days` own `30` without letting a name
+        own a longer name;
+      · the free-text authorities use the existing deterministic matcher, including its
+        cross-language numerics (its coverage is the limit — see the suite's pinned
+        note on Indonesian tens)."""
+    text = str(term or "").strip()
+    if not text or not isinstance(ownership, dict):
+        return False
+    category = str(category or "").strip().lower()
+    by_category = ownership.get("by_category") or {}
+    if category and by_category:
+        # 🔴 CATEGORY IS PART OF THE VALUE. The ledger reports `name:Tae-jun`,
+        # `number:11`, `floor:6`. Dropping the category before the check let a value
+        # owned in ONE category exempt the same value in another — "match category and
+        # value" was the claim, and without this it was only "match value".
+        registered = by_category.get(category) or frozenset()
+        for alias_of in _F5_CATEGORY_ALIASES.get(category, ()):
+            registered = registered | (by_category.get(alias_of) or frozenset())
+    else:
+        registered = ownership.get("terms") or frozenset()
+    if text.lower() in registered:
+        return True
+    lowered = text.lower()
+    is_numeric = lowered.isdigit() or lowered in _NUM_WORDS_XL
+    if is_numeric and registered:
+        # The literal set as one blob, so the shared matcher's cross-language numeric
+        # equivalence applies to bound literals too.
+        if premise_term_in_topic(text, "\n".join(sorted(registered))):
+            return True
+    if _f5_category_conflict(lowered, category, by_category):
+        # The registry already places this value in another category, so the free-text
+        # fallback below — which cannot tell WHICH category a sentence is answering —
+        # must not be allowed to overrule it.
+        return False
+    for authority_text in ownership.get("texts") or ():
+        # 🔴 OCCURRENCE IS NOT PROOF OF CATEGORY. The matcher below only ever answers
+        # "does this VALUE appear in this prose". Asking it a categorised question
+        # without this gate is what made `food:Soo` owned by a sentence about a person
+        # named Soo. The old gate here was a single numeric-shape rule; it could not
+        # tell `date:Tuesday` (owned) from `duration:Tuesday` (not), so it is replaced
+        # by the typed validator table rather than joined to it.
+        if not _f5_free_text_may_prove(text, category, authority_text):
+            continue
+        if premise_term_in_topic(text, authority_text):
+            return True
+    return False
+
+
 def _lev_le1(a: str, b: str) -> bool:
     """Edit distance <= 1 (round-8: Hanshin≈Hanjin — the model orbited the
     BLOCKLIST itself one roll after Hanjin was banned)."""

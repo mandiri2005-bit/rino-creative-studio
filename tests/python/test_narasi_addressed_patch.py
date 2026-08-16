@@ -33,6 +33,19 @@ def _payload(*operations):
     return json.dumps({"schema_version": PATCH_SCHEMA_VERSION, "operations": list(operations)})
 
 
+def plain_client(completions):
+    """A stand-in for the PLAIN structural client, i.e. `make_client(model) -> OpenAI`.
+
+    🔴 IT MUST ANSWER `with_options`. Since F4b Phase 0 the structural lane refuses to
+    dispatch on a plain client whose SDK-level retries it cannot switch off — one
+    reservation would otherwise cover up to three HTTP attempts. A double without the
+    method models a client production never builds, and before Phase 0 it was the
+    swallowed `except Exception: pass` that made such a double look like it worked."""
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    client.with_options = lambda **_kwargs: client
+    return client
+
+
 def test_golden_patch_applies_to_complete_chapter_and_preserves_untouched_units_byte_exact():
     segmented = segment_chapter(CHAPTER)
     result = apply_addressed_patch(
@@ -347,7 +360,7 @@ def test_classic_structural_adapter_applies_golden_patch_and_records_real_attemp
 
     monkeypatch.setattr(
         lz, "make_narasi_client",
-        lambda *args, **kwargs: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
+        lambda *args, **kwargs: plain_client(_Completions()),
     )
     monkeypatch.setattr(lz, "_log_narasi_usage", _usage)
     monkeypatch.setattr(lz, "_narasi_revise_timeout", lambda *args: 2.0)
@@ -405,8 +418,7 @@ def _install_structural_patch_response(monkeypatch, raw_response):
 
     monkeypatch.setattr(
         lz, "make_narasi_client",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            chat=SimpleNamespace(completions=_Completions())),
+        lambda *_args, **_kwargs: plain_client(_Completions()),
     )
     monkeypatch.setattr(lz, "_log_narasi_usage", _usage)
     monkeypatch.setattr(lz, "_narasi_revise_timeout", lambda *_args: 2.0)
@@ -444,7 +456,11 @@ def test_structural_adapter_refuses_bad_shape_or_size_atomically(
         monkeypatch, caplog, raw_response, reason):
     revised, credits, stats = _run_structural_patch(monkeypatch, raw_response)
     assert revised == CHAPTER
-    assert credits == 1
+    # 🔴 THE F4b LINE, VISIBLE AS COST. `response_not_json` is a broken response
+    # CONTRACT and buys one corrective call (2 credits). `word_band` is a SEMANTIC
+    # verdict on a patch that was understood — retrying it would shop for a softer
+    # ruling, so it still costs exactly 1.
+    assert credits == (2 if reason == "response_not_json" else 1)
     assert stats["attempted"] == 1
     assert stats["accepted"] == 0
     assert stats["rejected_reason_counts"] == {reason: 1}
@@ -523,7 +539,7 @@ def test_unknown_operation_logs_bounded_subtype_and_never_the_raw_string(monkeyp
 
     monkeypatch.setattr(
         lz, "make_narasi_client",
-        lambda *args, **kwargs: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
+        lambda *args, **kwargs: plain_client(_Completions()),
     )
     monkeypatch.setattr(lz, "_log_narasi_usage", _usage)
     monkeypatch.setattr(lz, "_narasi_revise_timeout", lambda *args: 2.0)
@@ -539,9 +555,16 @@ def test_unknown_operation_logs_bounded_subtype_and_never_the_raw_string(monkeyp
     ))
 
     assert revised == CHAPTER
-    assert credits == 5
+    # 10, not 5: `unknown_operation` is a broken response CONTRACT, so F4b spends a
+    # second corrective call — and BOTH responses are metered at 5 apiece. A retry
+    # whose usage went unmetered would be free repair the ledger never saw.
+    assert credits == 10
     assert stats["targeted"] == stats["attempted"] == 1
     assert stats["accepted"] == 0
+    assert stats["schema_retry_chapters"] == 1
+    assert stats["schema_retry_accepted"] == 0
+    assert stats["schema_retry_exhausted"] == 1
+    # ONE final verdict for the chapter, not one per candidate.
     assert stats["rejected_reason_counts"] == {"unknown_operation": 1}
     assert stats["not_attempted_reason_counts"] == {}
     assert "unknown_operation" in caplog.text
@@ -557,6 +580,8 @@ def test_mixed_routing_defers_owned_nonstructural_and_excludes_owned_chapter(mon
     async def _patch(*args, **kwargs):
         return changed, 3, {
             "targeted": 1, "attempted": 1, "provider_calls": 1, "accepted": 1,
+            "schema_retry_chapters": 0, "schema_retry_accepted": 0,
+            "schema_retry_exhausted": 0,
             "not_attempted_reason_counts": {}, "owned_chapter_numbers": {3},
         }
 
@@ -586,13 +611,16 @@ def test_mixed_routing_defers_owned_nonstructural_and_excludes_owned_chapter(mon
     assert captured["excluded"] == {3}
     assert [item["type"] for item in captured["violations"]] == ["provenance"]
     assert critique["structural_patch"] == {
-        "schema_version": "structural_patch_summary_v2",
+        "schema_version": "structural_patch_summary_v3",
         "status": "accepted",
         "structural_violations": 1,
         "chapters_targeted": 1,
         "chapters_attempted": 1,
         "provider_calls": 1,
         "chapters_accepted": 1,
+        "schema_retry_chapters": 0,
+        "schema_retry_accepted": 0,
+        "schema_retry_exhausted": 0,
         "not_attempted_reason_counts": {},
         "deferred_nonstructural_total": 1,
         "deferred_nonstructural_by_chapter": [{"chapter_index": 2, "count": 1}],
@@ -644,6 +672,8 @@ def test_nonstructural_declared_chapter_never_overrides_quote_and_deferral_is_co
     async def patch(*_args, **_kwargs):
         return book, 1, {
             "targeted": 1, "attempted": 1, "provider_calls": 1, "accepted": 0,
+            "schema_retry_chapters": 0, "schema_retry_accepted": 0,
+            "schema_retry_exhausted": 0,
             "not_attempted_reason_counts": {}, "owned_chapter_numbers": {1},
         }
 
@@ -692,6 +722,8 @@ def test_rejected_structural_attempts_preserve_success_cap_and_debit_retry_headr
             # divergent case (2 calls for 1 attempt) is pinned in
             # test_narasi_f4a_provider_calls.py.
             "targeted": 4, "attempted": 4, "provider_calls": 4, "accepted": 0,
+            "schema_retry_chapters": 0, "schema_retry_accepted": 0,
+            "schema_retry_exhausted": 0,
             "not_attempted_reason_counts": {},
             "rejected_reason_counts": {"response_not_json": 4},
             "unresolved_locator_count": 0,

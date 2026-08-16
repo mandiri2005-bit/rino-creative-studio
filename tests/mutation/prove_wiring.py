@@ -11,9 +11,11 @@ Override the checkout with PROVE_WT=/path/to/worktree.
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _harness import IsolationError, isolated_run, restore_guard  # noqa: E402
 
 WT = pathlib.Path(os.environ.get(
     "PROVE_WT", str(pathlib.Path(__file__).resolve().parents[2])))
@@ -225,29 +227,37 @@ BREAKS = [
      f"{ADAPTER_T}::test_a_non_assist_job_imports_no_l3_module_and_spends_nothing[shadow]"),
 ]
 
-BACKUPS = {p: p.read_bytes() for p in (NAPI, STATIC, ADAPTER, RUNNER, CANON, METER)}
+SOURCES = (NAPI, STATIC, ADAPTER, RUNNER, CANON, METER)
 ok = True
 try:
-    for label, target, pat, rep, test in BREAKS:
-        for p, data in BACKUPS.items():
-            p.write_bytes(data)
-        broken, n = re.subn(pat, rep, target.read_text())
-        if n != 1:
-            print(f"!! PATTERN-MISS ({n}) for: {label}")
-            ok = False
-            continue
-        target.write_text(broken)
-        for cache in WT.rglob("__pycache__"):
-            shutil.rmtree(cache, ignore_errors=True)
-        r = subprocess.run(
-            [sys.executable, "-m", "pytest", test, "-q", "--tb=no",
-             "-p", "no:cacheprovider", "-p", "no:warnings"],
-            cwd=str(WT), capture_output=True, text=True)
-        caught = r.returncode != 0
-        print(f"{'   caught  ' if caught else '!! SURVIVED'}  {label}")
-        ok = ok and caught
-finally:
-    for p, data in BACKUPS.items():
-        p.write_bytes(data)
+    # 🔴 ONE MECHANISM FOR THE BYTECODE RULE. Deleting every `__pycache__` after each
+    #    mutation was this file's local answer to CPython's (size, mtime) cache key
+    #    being blind to a same-size rewrite. It is replaced — not joined — by
+    #    `_harness`: each subprocess gets its own empty cache prefix, so no run can
+    #    read what another compiled, and `restore_guard` restores bytes, mode and
+    #    mtime_ns and VERIFIES them (the old `finally` restored without checking).
+    with restore_guard(*SOURCES) as _originals:
+        pristine = dict(zip(SOURCES, _originals))
+        for label, target, pat, rep, test in BREAKS:
+            for p, data in pristine.items():
+                p.write_bytes(data)
+            broken, n = re.subn(pat, rep, target.read_text())
+            if n != 1:
+                print(f"!! PATTERN-MISS ({n}) for: {label}")
+                ok = False
+                continue
+            target.write_text(broken)
+            with isolated_run() as env:
+                r = subprocess.run(
+                    [sys.executable, "-m", "pytest", test, "-q", "--tb=no",
+                     "-p", "no:cacheprovider", "-p", "no:warnings"],
+                    cwd=str(WT), capture_output=True, text=True, env=env)
+            caught = r.returncode != 0
+            print(f"{'   caught  ' if caught else '!! SURVIVED'}  {label}")
+            ok = ok and caught
+except IsolationError as exc:
+    print(f"!! {exc}")
+    ok = False
+else:
     print("restored")
 sys.exit(0 if ok else 1)

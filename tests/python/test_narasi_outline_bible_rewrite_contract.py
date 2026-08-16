@@ -436,6 +436,8 @@ def test_authority_structural_finding_forces_addressed_patch_repair(monkeypatch)
         captured.update(kwargs)
         return full_text, 0, {
             "targeted": 1, "attempted": 0, "provider_calls": 0, "accepted": 0,
+            "schema_retry_chapters": 0, "schema_retry_accepted": 0,
+            "schema_retry_exhausted": 0,
             "not_attempted_reason_counts": {"outline_packet_missing": 1},
             "owned_chapter_numbers": {2},
         }
