@@ -526,6 +526,7 @@ def test_v3_gates_copy_the_legacy_block_onto_the_result(monkeypatch):
     #    off makes the test hermetic without weakening what it proves.
     for _flag in ("NARASI_REGISTER_GATE", "NARASI_CANON_DIFF", "NARASI_THREAD_TRACKER",
                   "NARASI_CRITIQUE_ENABLED", "NARASI_CRITIQUE_REVISE",
+                  "NARASI_F6_ENABLED",
                   "NARASI_CANON_REGISTRY_EXTRACT"):
         monkeypatch.setenv(_flag, "0")
     # Belt and braces: if a detector still reaches for a provider, fail loudly here

@@ -1975,10 +1975,326 @@ _NARRATOR_OPENING_FORMULAS: dict[str, list[str]] = {
 
 # Chapter-heading splitter (permissive multi-lang): Dutch, English, Indonesian,
 # Spanish/Portuguese, German, French, CJK numbered chapter markers.
-_CHAPTER_SPLIT_RX = re.compile(
-    r"(?im)^\s*(?:Hoofdstuk|Chapter|Bab|Cap[íi]tulo|Kapitel|Chapitre|"
-    r"第\s*\S+\s*章|제\s*\S+\s*장)\b[^\n]*$"
+#
+# 🔴 `#{0,3}` IS LOAD-BEARING, NOT COSMETIC. The assembled book is built by
+# `orchestrator/static.py::_chapter_md` as `## <label>[: <title>]`, and `#` is not
+# whitespace — so without this the pattern matched NOTHING on a real manuscript,
+# `re.split` found no boundary, and every scanner below measured the whole book as ONE
+# chapter. `narasi_counters` hit the identical class in audit r16 ("a bare 'Chapter N'
+# split never matched, making this scanner dead code on every real chaptered
+# manuscript") and settled on the same `#{0,3}\s*`; the gate splitter never got it.
+# 0-3 hashes, so a plain-text export with no markdown still matches too.
+#
+# 🔴 THE KEYWORD ANCHOR STAYS. `narasi_entities`/`narasi_proper_noun` split on `^##\s+`
+# — ANY h2 — which turns a mid-chapter section heading into a chapter boundary. This
+# pattern must recognise CHAPTER headings specifically, so the hashes are optional
+# decoration in front of a required keyword, never a separator of their own.
+#: ONE vocabulary, shared by both patterns below. Two copies of a keyword list is how the
+#: scanning splitter and the block splitter end up disagreeing about what a chapter is.
+_CHAPTER_HEADING_KEYWORDS = (
+    r"Hoofdstuk|Chapter|Bab|Cap[íi]tulo|Kapitel|Chapitre"
 )
+
+#: 🔴 A KEYWORD IS NOT A HEADING — IT NEEDS AN ORDINAL. The grammar used to ask for the keyword
+#: and then accept free text (`\b[^\n]*$`), so `"Bab ini dimulai dengan tenang."` — an ordinary
+#: Indonesian sentence — matched, and a chapter split in half at that line. Every chapter count,
+#: every census index and every repair target after it then pointed at the wrong chapter, which
+#: is the same class of failure the `#{0,3}` fix existed to close, from the other direction.
+#:
+#: The ordinal requirement is not invented here: `chapter_heading_patterns.BARE_WORD_RX` — the
+#: canonical splitter this repo already uses in `canon_lite_l2` — has always demanded
+#: `<keyword>[ \t]*[0-9]`, and production emits exactly `## <label> <n>[: title]`
+#: (`orchestrator/static.py::_chapter_md`). The CJK forms carry their own digits for the same
+#: reason, so they are spelled with `[0-9]+` here rather than `\S+`.
+_CHAPTER_HEADING_CORE = (
+    rf"(?:(?:{_CHAPTER_HEADING_KEYWORDS})[^\S\n]+[0-9]{{1,4}}"
+    rf"|第[^\S\n]*[0-9]{{1,4}}[^\S\n]*章"
+    rf"|제[^\S\n]*[0-9]{{1,4}}[^\S\n]*장)"
+)
+
+_CHAPTER_SPLIT_RX = re.compile(
+    rf"(?im)^\s*#{{0,3}}\s*{_CHAPTER_HEADING_CORE}\b[^\n]*$"
+)
+
+#: Same heading grammar, but anchored with horizontal whitespace only (`[^\S\n]`) so a match
+#: can never begin on an earlier blank line and swallow the separator that precedes it. That
+#: matters only for the byte-preserving splitter below, where a block must begin EXACTLY at
+#: its heading.
+_CHAPTER_BLOCK_RX = re.compile(
+    rf"(?im)^[^\S\n]*#{{0,3}}[^\S\n]*{_CHAPTER_HEADING_CORE}\b[^\n]*$"
+)
+
+#: The ordinal itself, captured. One grammar, two readers is how a splitter and a numberer end
+#: up disagreeing about which chapter is which, so this is built from the SAME core.
+_CHAPTER_ORDINAL_RX = re.compile(
+    rf"(?i)^[^\S\n]*#{{0,3}}[^\S\n]*(?:(?:{_CHAPTER_HEADING_KEYWORDS})[^\S\n]+([0-9]{{1,4}})"
+    rf"|第[^\S\n]*([0-9]{{1,4}})[^\S\n]*章"
+    rf"|제[^\S\n]*([0-9]{{1,4}})[^\S\n]*장)"
+)
+
+
+def split_chapter_blocks(text: str) -> list[str]:
+    """Split an assembled book into chapter blocks WITHOUT losing a byte.
+
+    🔴 WHY THIS EXISTS BESIDE `_CHAPTER_SPLIT_RX`. That one is used with `re.split` on a
+    non-capturing pattern, so it DROPS every heading: fine for counting and scanning, useless
+    for repair. F6 has to hand one chapter to a repair call and then prove that the other
+    chapters, their headings and the server-owned `\\n\\n` separators came back byte-identical
+    — which is impossible if the splitter already threw the headings away.
+
+    Each block starts at its own heading and runs to the next one, so
+    ``"".join(split_chapter_blocks(t)) == t`` holds for ANY input, including text with a
+    preamble before the first heading. A book with no recognisable heading is one block."""
+    if not text:
+        return []
+    starts = [m.start() for m in _CHAPTER_BLOCK_RX.finditer(text)]
+    if not starts:
+        return [text]
+    blocks = []
+    if starts[0] > 0:
+        blocks.append(text[:starts[0]])          # preamble, kept rather than discarded
+    bounds = starts + [len(text)]
+    blocks.extend(text[bounds[i]:bounds[i + 1]] for i in range(len(starts)))
+    return blocks
+
+
+def chapter_heading_line(block: str) -> str:
+    """The heading line of a block exactly as written, or "" when the block has none."""
+    match = _CHAPTER_BLOCK_RX.match(block)
+    return match.group(0) if match else ""
+
+
+#: The closed vocabulary a per-chapter tense report may use. Anything else is a malformed
+#: answer, never "some other tense".
+_TENSE_VALUES = frozenset({"past", "present", "mixed"})
+#: A census longer than this is a runaway model answer, not a book.
+_TENSE_CENSUS_MAX_CHAPTERS = 200
+
+
+def tense_census(tense_by_chapter, *, chapter_count: "int | None" = None) -> dict:
+    """Turn a per-chapter tense report into a majority and a list of outlier chapters.
+
+    🔴 THE SERVER DOES THE JUDGEMENT, THE MODEL ONLY OBSERVES. Asking a critic "is there tense
+    drift?" gets prose that names no target; asking it for the dominant tense of each chapter
+    gets an observation the server can do arithmetic on. The arithmetic is here so it is
+    deterministic, testable without a provider, and immune to prompt drift.
+
+    🔴 CONSERVATIVE WHERE IT CANNOT TELL. An outlier is only reported against a STRICT majority
+    (more than half). Two chapters split one-and-one have no minority to repair, and picking
+    one would send a correct chapter to a rewrite — the same "touching a good one is the worse
+    error" rule the dedup path already follows.
+
+    Returns ``{"valid", "per_chapter", "majority", "outliers", "reason"}`` where `outliers` are
+    1-BASED chapter numbers, matching every other finding's `chapter`. `outliers` is empty
+    whenever `valid` is False — a census that cannot be trusted targets nothing."""
+    empty = {"valid": False, "per_chapter": [], "majority": None, "outliers": [],
+             "reason": "absent"}
+    if not isinstance(tense_by_chapter, list) or not tense_by_chapter:
+        return empty
+    if len(tense_by_chapter) > _TENSE_CENSUS_MAX_CHAPTERS:
+        return {**empty, "reason": "too_many_chapters"}
+
+    per_chapter: list[str] = []
+    for value in tense_by_chapter:
+        if not isinstance(value, str):
+            return {**empty, "reason": "invalid_value"}
+        normalized = value.strip().lower()
+        if normalized not in _TENSE_VALUES:
+            return {**empty, "reason": "invalid_value"}
+        per_chapter.append(normalized)
+
+    # The list IS the chapters, in order — index i is chapter i+1. If it does not cover them
+    # all, an index means nothing and targeting by it would point at the wrong chapter.
+    if chapter_count is not None and len(per_chapter) != int(chapter_count):
+        return {**empty, "reason": "chapter_count_mismatch"}
+
+    counts: dict[str, int] = {}
+    for value in per_chapter:
+        counts[value] = counts.get(value, 0) + 1
+    majority = next((v for v, n in counts.items() if n * 2 > len(per_chapter)), None)
+    if majority is None:
+        return {"valid": True, "per_chapter": per_chapter, "majority": None,
+                "outliers": [], "reason": "no_majority"}
+    return {"valid": True, "per_chapter": per_chapter, "majority": majority,
+            "outliers": [i for i, v in enumerate(per_chapter, 1) if v != majority],
+            "reason": "ok"}
+
+
+def chapter_ordinal_sequence(text: str) -> "list | None":
+    """The chapter numbers the headings actually carry, in the order they appear — or None when
+    any heading has none to read.
+
+    Returns None rather than a partial list: a book with one unreadable heading cannot be
+    indexed at all, and a caller handed `[1, 2]` for a three-heading book would silently be
+    reasoning about a different manuscript."""
+    sequence = []
+    for block in split_chapter_blocks(text or ""):
+        heading = chapter_heading_line(block)
+        if not heading:
+            continue
+        match = _CHAPTER_ORDINAL_RX.match(heading)
+        if not match:
+            return None
+        sequence.append(int(next(g for g in match.groups() if g)))
+    return sequence or None
+
+
+def chapter_headings_well_formed(text: str) -> bool:
+    """Do the headings run 1..N, in order, with no gaps and no repeats?
+
+    🔴 MISSING, EXTRA, DUPLICATED AND REORDERED ARE ONE FAILURE, NOT FOUR. Every F6 census is
+    indexed by position — entry N is chapter N — so a manuscript whose chapters are not a clean
+    1..N sequence makes every per-chapter verdict a statement about the wrong chapter. There is
+    no per-chapter repair for that, which is why it is reported as a structural fact about the
+    book rather than as a violation of any one chapter."""
+    sequence = chapter_ordinal_sequence(text)
+    return bool(sequence) and sequence == list(range(1, len(sequence) + 1))
+
+
+def chapter_word_counts(text: str) -> list:
+    """Words per chapter, 1-BASED: entry N is chapter N. No model involved at all.
+
+    🔴 THE ONE F6 OBSERVATION THAT NEEDS NOBODY'S OPINION. A chapter's length is arithmetic
+    over bytes this process holds, so `chapter_ceiling` is detected AND verified without
+    asking a provider anything — which is why it is the class that can prove the loop is not
+    merely "believe the model twice".
+
+    🔴 THE HEADING IS EXCLUDED FROM THE COUNT. The gates localise `## Chapter 2` to `## Bab 2`
+    for `language="id"`, and a heading whose word count differs between the snapshot and the
+    delivered bytes would move a chapter across its ceiling for a reason that has nothing to do
+    with its prose. Only the body is counted.
+
+    A block with no heading — the preamble, or the `> **Gaya:** …` metadata header the gates
+    prepend — is not a chapter and is not counted, exactly as `changed_chapters_from_blocks`
+    treats it."""
+    counts = []
+    for block in split_chapter_blocks(text or ""):
+        heading = chapter_heading_line(block)
+        if not heading:
+            continue
+        counts.append(len(block[len(heading):].split()))
+    return counts
+
+
+#: A book longer than this is a runaway answer, not a manuscript. Shared with the tense census
+#: bound deliberately: the two censuses describe the SAME chapters, so one limit governs both.
+_TELEPORT_CENSUS_MAX_CHAPTERS = _TENSE_CENSUS_MAX_CHAPTERS
+#: More untransitioned location changes than this in ONE chapter is a broken observation rather
+#: than a very broken chapter.
+_TELEPORT_MAX_PER_CHAPTER = 50
+
+
+def teleport_census(teleports_by_chapter, *, chapter_count: "int | None" = None) -> dict:
+    """Per-chapter count of UNTRANSITIONED location changes → a validated census.
+
+    🔴 A COUNT, NOT A LIST OF QUOTES. Asking a critic "where does a character teleport?" gets
+    prose that names no target and cannot be compared across a rewrite. Asking how MANY
+    untransitioned location changes each chapter contains gets an observation the server can do
+    arithmetic on: the defect is gone when the count reaches zero, and a repair that merely
+    moved it shows up as a count that rose somewhere else.
+
+    🔴 ZERO IS AN ANSWER; ABSENT IS NOT. A census that does not cover every chapter is refused
+    rather than padded, for the same reason `tense_census` refuses one: entry N has to be
+    chapter N or every target points at the wrong chapter.
+
+    Returns ``{"valid", "per_chapter", "offenders", "reason"}`` with `offenders` as 1-BASED
+    chapter numbers. `offenders` is empty whenever `valid` is False."""
+    empty = {"valid": False, "per_chapter": [], "offenders": [], "reason": "absent"}
+    if not isinstance(teleports_by_chapter, list) or not teleports_by_chapter:
+        return empty
+    if len(teleports_by_chapter) > _TELEPORT_CENSUS_MAX_CHAPTERS:
+        return {**empty, "reason": "too_many_chapters"}
+
+    # 🔴 THE LOCAL IS `counts`, NOT `per_chapter`, AND THAT IS DELIBERATE. `tense_census` above
+    # has a line-for-line equivalent of the coverage check below; two byte-identical lines in
+    # one file cannot be mutated independently, so a mutation harness pointed at either one
+    # matches twice and is refused. Distinct text keeps each census separately falsifiable.
+    counts: list = []
+    for value in teleports_by_chapter:
+        # 🔴 `True` IS NOT `1` HERE. A bool that survives into a count makes "one teleport" and
+        # "yes there is a problem" the same value, and the arithmetic below cannot tell a
+        # repaired chapter from an unmeasured one.
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return {**empty, "reason": "invalid_value"}
+        if value > _TELEPORT_MAX_PER_CHAPTER:
+            return {**empty, "reason": "implausible_count"}
+        counts.append(value)
+
+    if chapter_count is not None and len(counts) != int(chapter_count):
+        return {**empty, "reason": "chapter_count_mismatch"}
+    return {"valid": True, "per_chapter": counts,
+            "offenders": [i for i, v in enumerate(counts, 1) if v > 0],
+            "reason": "ok"}
+
+
+#: The closed vocabulary for how far an outlined beat got. Anything else is a malformed answer,
+#: never "some other state".
+_BEAT_STATES = frozenset({"absent", "promised", "executed"})
+#: A book with more outlined beats than this is a runaway answer.
+_BEAT_CENSUS_MAX_ENTRIES = 400
+
+
+def beat_census(beat_states, *, outline_sizes) -> dict:
+    """How far each ACCEPTED-OUTLINE beat got in the manuscript → a validated census.
+
+    🔴 THE DISTINCTION THE WHOLE `beat_execution` CLASS RESTS ON. "I will give a deposition" and
+    a deposition that has been given are the same beat in two different states, and a repair
+    that turns the second into the first is a regression the books must see. So the vocabulary
+    is three-valued — `absent` (never mentioned), `promised` (announced, intended, agreed) and
+    `executed` (it happened on the page) — and a promise is explicitly NOT an execution.
+
+    🔴 THE KEYS ARE SERVER-OWNED. `outline_sizes` maps chapter → beat count, counted from the
+    packet THIS process rendered (`_f5_outline_beats`). A beat the accepted outline does not
+    have cannot be observed, cannot be repaired and cannot be verified, so an entry naming one
+    invalidates the census rather than being skipped: a model inventing keys is a model that
+    was not reading the outline it was handed.
+
+    🔴 AND THE CENSUS MUST COVER ALL OF THEM. Partial coverage is how a missing beat hides —
+    the one class here that is ABOUT something being missing. An uncovered beat would read as
+    "not reported" and quietly leave the books.
+
+    Returns ``{"valid", "states", "reason"}`` where `states` maps `(chapter, beat)` → state."""
+    empty = {"valid": False, "states": {}, "reason": "absent"}
+    if not isinstance(outline_sizes, dict) or not outline_sizes:
+        return {**empty, "reason": "no_outline"}
+    expected = set()
+    for chapter, size in outline_sizes.items():
+        if (isinstance(chapter, bool) or not isinstance(chapter, int) or chapter < 1
+                or isinstance(size, bool) or not isinstance(size, int) or size < 1):
+            return {**empty, "reason": "invalid_outline"}
+        expected.update((chapter, beat) for beat in range(1, size + 1))
+    if len(expected) > _BEAT_CENSUS_MAX_ENTRIES:
+        return {**empty, "reason": "too_many_beats"}
+    if not isinstance(beat_states, list) or not beat_states:
+        return empty
+    if len(beat_states) > _BEAT_CENSUS_MAX_ENTRIES:
+        return {**empty, "reason": "too_many_entries"}
+
+    states: dict = {}
+    for entry in beat_states:
+        if not isinstance(entry, dict):
+            return {**empty, "reason": "invalid_entry"}
+        chapter, beat = entry.get("chapter"), entry.get("beat")
+        state = entry.get("state")
+        if (isinstance(chapter, bool) or not isinstance(chapter, int)
+                or isinstance(beat, bool) or not isinstance(beat, int)
+                or not isinstance(state, str)):
+            return {**empty, "reason": "invalid_entry"}
+        state = state.strip().lower()
+        if state not in _BEAT_STATES:
+            return {**empty, "reason": "invalid_state"}
+        key = (chapter, beat)
+        if key not in expected:
+            return {**empty, "reason": "unknown_beat"}
+        # 🔴 TWO ANSWERS FOR ONE BEAT IS NO ANSWER. Keeping either one lets the census say
+        # whatever the reader hopes; the honest reading of a self-contradicting observation is
+        # that it cannot be used.
+        if key in states and states[key] != state:
+            return {**empty, "reason": "contradictory_entry"}
+        states[key] = state
+    if set(states) != expected:
+        return {**empty, "reason": "incomplete_coverage"}
+    return {"valid": True, "states": states, "reason": "ok"}
 
 
 def narrator_opening_ratio_scan(text: str, lang: str = "en",

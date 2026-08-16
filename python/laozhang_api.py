@@ -8693,6 +8693,20 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "chapter whose prose you are asking to repair. Cite a beat the outline actually "
         "has; if you cannot point at one, OMIT both fields rather than guessing.\n"
         if authority_aware else "")
+    # 6d rides with the other censuses below, but only exists when there is an accepted outline
+    # to enumerate — with no NARRATIVE AUTHORITY the prompt stays byte-identical to before.
+    _beat_check = (
+        "6d. BEAT EXECUTION CENSUS — separately from any finding, report `beat_states`: ONE "
+        "entry per outlined beat, as {\"chapter\": <1-based outline chapter>, \"beat\": "
+        "<1-based position of that beat inside THAT chapter's ordered outline beats>, "
+        "\"state\": \"absent\"|\"promised\"|\"executed\"}. \"executed\" means the beat HAPPENS "
+        "on the page; \"promised\" means a character announces, agrees or intends it but it is "
+        "never shown occurring (\"I will give a deposition\" is promised, not executed); "
+        "\"absent\" means it never appears at all. Report the state every beat IS; do not "
+        "decide which one is wrong and do not omit a beat you consider correct — the list must "
+        "cover EVERY beat of EVERY outline chapter you were given. Omit the field entirely if "
+        "you cannot account for all of them.\n"
+        if authority_aware else "")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
              if is_fiction else "provenance|timeline|causality|entity_drift|spatial|pov")
     # CANON CONFORMANCE (check 0) — only when a CANONICAL FACT SHEET (story bible) is supplied in
@@ -8827,7 +8841,21 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "differs from the rest, in EITHER direction (a mostly-past-tense book with one chapter "
         "written entirely in present tense is the SAME violation as a present-tense book with one "
         "past-tense chapter) — cite the chapter and the switched pronoun/tense.\n"
-        + _check7 + _ext + _check16 + _check17 +
+        "6b. TENSE CENSUS — separately from any finding, report `tense_by_chapter`: ONE entry per "
+        "chapter, in chapter order, each exactly \"past\", \"present\" or \"mixed\", describing "
+        "that chapter's DOMINANT narration tense. Report what each chapter IS; do not decide "
+        "which one is wrong and do not omit a chapter you consider correct — the list must cover "
+        "every chapter in the book so entry N is chapter N. Omit the field entirely if you cannot "
+        "read every chapter.\n"
+        "6c. TELEPORT CENSUS — separately from any finding, report `teleports_by_chapter`: ONE "
+        "integer per chapter, in chapter order, counting the UNTRANSITIONED location changes in "
+        "that chapter — a character who is in one place and then simply is in another, with no "
+        "travel, no scene break and no line accounting for the move. Count the moves, not the "
+        "places: a chapter that carries the reader from one setting to the next counts 0 however "
+        "many settings it has. Report 0 for a clean chapter rather than omitting it — the list "
+        "must cover every chapter so entry N is chapter N. Omit the field entirely if you cannot "
+        "read every chapter.\n"
+        + _beat_check + _check7 + _ext + _check16 + _check17 +
         "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
         "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
         "whole_draft_consistency 0-10 (10 = no contradictions). Output ONLY JSON:\n"
@@ -8836,7 +8864,13 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         '"fix": "<one-line directive>"'
         + (', "chapter": <1-based integer>, "outline_chapter": <1-based integer, omit if unsure>,'
            ' "outline_beat": <1-based integer, omit if unsure>' if authority_aware else '') +
-        '}], "summary": "<1-2 sentences>"}'
+        '}], "tense_by_chapter": ["past"|"present"|"mixed", … one per chapter in order, '
+        'omit the field if unsure], "teleports_by_chapter": [<integer>, … one per chapter in '
+        'order, omit the field if unsure], '
+        + ('"beat_states": [{"chapter": <int>, "beat": <int>, "state": '
+           '"absent"|"promised"|"executed"}, … one per outlined beat, omit the field if '
+           'unsure], ' if authority_aware else '') +
+        '"summary": "<1-2 sentences>"}'
     )
 
 
@@ -8852,8 +8886,136 @@ def _narasi_normalize_critique(v) -> dict:
         _s = None
     viol = v.get("violations")
     viol = [x for x in viol if isinstance(x, dict)] if isinstance(viol, list) else []
-    return {"score": _s, "violations": viol[:20],
-            "summary": str(v.get("summary") or "")[:600]}
+    out = {"score": _s, "violations": viol[:20],
+           "summary": str(v.get("summary") or "")[:600]}
+    if "tense_by_chapter" in (v or {}):
+        out["tense_by_chapter"] = _bound_tense_census_payload(v.get("tense_by_chapter"))
+    if "teleports_by_chapter" in (v or {}):
+        out["teleports_by_chapter"] = _bound_teleport_census_payload(
+            v.get("teleports_by_chapter"))
+    if "beat_states" in (v or {}):
+        out["beat_states"] = _bound_beat_census_payload(v.get("beat_states"))
+    return out
+
+
+#: Payload bounds for the carried-through census. Values are single words ("past"/"present"/
+#: "mixed"), so 32 characters is generous; 200 entries is longer than any real book.
+_TENSE_CARRY_MAX_ENTRIES = 200
+_TENSE_CARRY_MAX_VALUE = 32
+
+
+def _bound_tense_census_payload(raw):
+    """Bound a model-supplied `tense_by_chapter` BEFORE it is stored or published.
+
+    🔴 THIS IS TRANSPORT HYGIENE, NOT SEMANTICS — and the distinction is why it is not a second
+    copy of the validation rule. `narasi_gate.tense_census` remains the ONLY place that decides
+    what a value MEANS: the closed vocabulary, the majority arithmetic, the chapter-count match.
+    This function decides only how many BYTES may cross into a payload that
+    `result["critique"]` persists.
+
+    The first version carried the field through untouched, and 201 entries totalling ~20.1M
+    characters travelled straight into the stored critique — while the helper downstream
+    advertised a 200-entry maximum it had no way to enforce here.
+
+    List LENGTH is preserved up to the cap and unusable entries are replaced rather than
+    dropped, because `tense_census` reads entry N as chapter N: silently shortening the list
+    would turn a malformed answer into a plausible one about a different book. A replaced entry
+    is `""`, which that validator rejects."""
+    # 🔴 EVERY NON-LIST IS REPLACED, NOT RETURNED. An earlier version bounded only lists and
+    # handed anything else back untouched, so `tense_by_chapter: "x" * 20_000_000` crossed
+    # whole into a persisted payload — 20MB escaping through the very field this bound exists
+    # to contain. A census that is not a list is a malformed answer, and the safe
+    # representation of a malformed answer is an empty, bounded one that the validator rejects.
+    if not isinstance(raw, list):
+        return []
+    bounded = []
+    for value in raw[:_TENSE_CARRY_MAX_ENTRIES]:
+        bounded.append(value[:_TENSE_CARRY_MAX_VALUE] if isinstance(value, str) else "")
+    return bounded
+
+
+#: An outlined book has far fewer beats than this; the cap is a runaway guard, not a limit any
+#: real answer meets. Kept in step with `narasi_gate._BEAT_CENSUS_MAX_ENTRIES`, which is the
+#: only place that decides what the entries MEAN.
+_BEAT_CARRY_MAX_ENTRIES = 400
+
+
+def _bound_teleport_census_payload(raw):
+    """Bound a model-supplied `teleports_by_chapter` before it is stored or published.
+
+    Transport hygiene only, exactly like `_bound_tense_census_payload`:
+    `narasi_gate.teleport_census` remains the only place that decides what a value MEANS.
+
+    🔴 LENGTH IS PRESERVED AND UNUSABLE ENTRIES ARE REPLACED, NOT DROPPED — entry N is chapter
+    N, so silently shortening the list turns a malformed answer into a plausible one about a
+    different book. The replacement is `-1`, which the validator refuses; `0` would have been
+    a lie in the safe-looking direction, reading as "this chapter is clean"."""
+    if not isinstance(raw, list):
+        return []
+    bounded = []
+    for value in raw[:_TENSE_CARRY_MAX_ENTRIES]:
+        usable = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        bounded.append(int(value) if usable else -1)
+    return bounded
+
+
+def _bound_beat_census_payload(raw):
+    """Bound a model-supplied `beat_states` before it is stored or published.
+
+    Only the three keys the census reads survive, and each is bounded: unbounded prose in a
+    `state` field is the same 20MB hazard the tense bound exists for. An entry that is not a
+    dict becomes `{}` rather than disappearing — `narasi_gate.beat_census` refuses the whole
+    census on a malformed entry, and dropping it would hide that refusal."""
+    if not isinstance(raw, list):
+        return []
+    bounded = []
+    for entry in raw[:_BEAT_CARRY_MAX_ENTRIES]:
+        if not isinstance(entry, dict):
+            bounded.append({})
+            continue
+        kept = {}
+        for key in ("chapter", "beat"):
+            value = entry.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                kept[key] = value
+        state = entry.get("state")
+        kept["state"] = state[:_TENSE_CARRY_MAX_VALUE] if isinstance(state, str) else ""
+        bounded.append(kept)
+    return bounded
+
+
+async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style: str,
+                                 language: str, tenant_id, user_id, job_uuid=None,
+                                 credit_row: bool = False):
+    """Rewrite ONE chapter shorter. Returns `(candidate_text, cr)`; never a whole book.
+
+    🔴 ONE CHAPTER IN, ONE CHAPTER OUT — AND THAT IS A SAFETY PROPERTY, NOT AN OPTIMISATION.
+    `chapter_ceiling` has to leave every other chapter byte-identical. Handing a whole
+    manuscript to a rewrite and hoping only one chapter comes back different is precisely the
+    collateral failure the accounting exists to catch; splicing a single block back into bytes
+    the server already holds makes the other chapters unreachable by construction.
+
+    The heading is not sent and the caller re-attaches its own, so a model cannot renumber or
+    translate it. This function does not judge the candidate: whether it is short enough,
+    long enough, or a chapter at all is decided by `narasi_f6.verify_ceiling_resolved` against
+    the delivered bytes."""
+    system = (
+        "You are a line editor. You will be given the BODY of one chapter and a word budget. "
+        "Rewrite it to fit the budget by tightening prose — cut redundancy, compress "
+        "description, merge sentences. Keep EVERY plot event, decision, reveal and line of "
+        "dialogue that carries information; keep the narration tense, the point of view, the "
+        "characters and the order things happen. Do NOT summarise, do NOT add a heading, do "
+        "NOT add commentary. Reply with the rewritten chapter body and nothing else."
+    )
+    user = (
+        f"STYLE: {style}\nLANGUAGE: {language}\n"
+        f"WORD BUDGET: at most {int(target_words)} words.\n\n"
+        f"CHAPTER BODY:\n{chapter_text}"
+    )
+    return await _narasi_cheap_call(
+        system, user, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+        max_tokens=max(800, int(target_words) * 3), temperature=0.2,
+        json_mode=False, credit_row=credit_row)
 
 
 async def _narasi_consistency_critique(full_text, style, language, *, model,

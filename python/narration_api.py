@@ -2953,6 +2953,9 @@ async def _run_narration_job_after_parity(
                             "chapter-heading block(s)", job_id, _dg_dropped)
     except Exception as _dge:  # noqa: BLE001 - a dedup bug must never break generation
         log.debug("narration job %s: post-gates dedup guard skipped (%s)", job_id, _dge)
+    # F6 verification and accounting do NOT happen here: the L3-assist repair and the F1
+    # scrub below both still mutate `result`. See the finalise call further down, which is
+    # the LAST thing before the delivery decision.
     # ── CANON LITE L2a — exact final-byte report, after EVERY text mutation ──────────
     # `static.narrate_chapters` may carry the validated canon here as a private
     # in-process object. Consume and remove it before persistence/default payload. The
@@ -3059,11 +3062,35 @@ async def _run_narration_job_after_parity(
         await _refund(meter_op, tenant_id, job_id)
         await _p0a_flush("failed")
         return
+    # ── F6 — verify and account against the bytes that are ACTUALLY delivered ────────
+    # 🔴 LAST, NOT MERELY LATE. An earlier version ran this right after the post-gates dedup
+    # guard, which is still four mutators too early: the canon-lite L3-assist repair replaces
+    # the manuscript, and the F1 scrub rewrites `result` again. Verified there, a book could
+    # be accounted `resolved` and then have the drift reintroduced before persistence — the
+    # exact defect F1's own `l3_proof_invalidated_late_mutation` exists to catch, reproduced
+    # one layer down. Nothing below this line may change the manuscript.
+    _f6_out = await _f6_finalize(result, body, tenant_id=tenant_id, user_id=user_id,
+                                 job_uuid=job_uuid, sink=sink, job_id=job_id)
+    # ── F6 HARD BLOCK — a detected violation that is not `resolved` is not delivered ──
+    # 🔴 THE SHAPE THIS FORBIDS: detected → repair failed / no-op → original still sent.
+    # Reuses the SAME refusal door F1 uses two blocks up (fail + refund + return) rather
+    # than inventing a second one; two mechanisms for one rule is how this workstream has
+    # repeatedly ended up with neither being provable.
+    if isinstance(_f6_out, dict) and _f6_out.get("delivery_blocked"):
+        log.error("narration job %s: F6 unresolved hard violation(s), delivery BLOCKED",
+                  job_id)
+        await _finalize(
+            job_id, job_uuid, tenant_id, status=_STATUS_FAILED,
+            result=_result_payload(result), error="f6_unresolved_hard_violation")
+        await _refund(meter_op, tenant_id, job_id)
+        await _p0a_flush("failed")
+        return
     # Private prompt material must not cross the persistence boundary. The bounded
     # result payload already ignores unknown keys; the explicit pop also prevents a
     # future broad serializer or chapter persistence refactor from leaking the raw
     # outline/Bible packet.
     result.pop("_narrative_authority", None)
+    result.pop("_f6_pending", None)
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -3082,6 +3109,369 @@ async def _run_narration_job_after_parity(
 # ---------------------------------------------------------------------------
 # CC v3 (Stop the Pendulum) — terminal gates for the ⚡ engine. All best-effort.
 # ---------------------------------------------------------------------------
+def _f6_scan(*, text: str, chapter_count: int, observation: dict, outline_sizes: dict,
+             bounds: dict, expected_chapters: int = 0) -> dict:
+    """Every F6 violation a book's observations describe, and every reason it cannot be read.
+
+    🔴 ONE SCANNER, RUN TWICE. The pre-repair detection and the post-repair FINAL SCAN are the
+    same question asked of two different books, so they are the same code. Two copies would
+    drift, and the copy that drifted would be the one nobody was watching — which is exactly how
+    "the repair introduced a defect of another class" survived: verification was per-VIOLATION,
+    so a class nobody had already flagged was never looked at again.
+
+    🔴 A BOOK WITH NO DOMINANT TENSE IS NOT A BOOK WITH NO DRIFT. `tense_census` reports no
+    outliers when the split is even — correctly, since there is no minority to name — and
+    reading that as "nothing wrong" delivered a book that is half past and half present. No
+    majority is UNPROVED here, and unproved blocks.
+
+    Returns `{"violations", "unproven", "tense", "teleports", "beats", "counts"}`."""
+    import narasi_gate as _ngate
+    import narasi_f6 as _nf6
+
+    obs = observation if isinstance(observation, dict) else {}
+    counts = _ngate.chapter_word_counts(text)
+    tense = _ngate.tense_census(obs.get("tense_by_chapter"), chapter_count=chapter_count)
+    teleports = _ngate.teleport_census(obs.get("teleports_by_chapter"),
+                                       chapter_count=chapter_count)
+    beats = _ngate.beat_census(obs.get("beat_states"), outline_sizes=outline_sizes)
+
+    unproven = []
+    # 🔴 THE HEADINGS THEMSELVES ARE A SERVER-OWNED FACT. Every census here is indexed by
+    # position, so a book whose chapters are not a clean 1..N sequence makes every per-chapter
+    # verdict a claim about the wrong chapter. There is no per-chapter repair for that.
+    if not _ngate.chapter_headings_well_formed(text):
+        unproven.append("chapter_headings_malformed")
+    if expected_chapters and chapter_count != int(expected_chapters):
+        unproven.append(
+            f"chapter_count_mismatch_expected_{int(expected_chapters)}_got_{chapter_count}")
+    if not tense.get("valid") or not tense.get("majority"):
+        unproven.append(f"tense_census_{tense.get('reason') or 'absent'}")
+    if not teleports.get("valid"):
+        unproven.append(f"teleport_census_{teleports.get('reason') or 'absent'}")
+    if outline_sizes and not beats.get("valid"):
+        unproven.append(f"beat_census_{beats.get('reason') or 'absent'}")
+    if len(counts) != chapter_count:
+        unproven.append("word_counts_chapter_count_mismatch")
+
+    violations = [{
+        "f6_class": "tense_drift", "chapter": _ch,
+        "type": "tense_drift", "severity": "high",
+        "evidence": (f"chapter {_ch} narrates in {tense['per_chapter'][_ch - 1]} while the "
+                     f"rest of the book is {tense['majority']}"),
+        "fix": (f"Rewrite chapter {_ch} in {tense['majority']} tense. Change nothing else: "
+                f"keep its heading, its events and every other chapter exactly as they are."),
+    } for _ch in (tense.get("outliers") or [])]
+
+    # 🔴 ONE VIOLATION PER COUNTED OCCURRENCE, DISCRIMINATED BY THE SERVER'S OWN ORDINAL.
+    # `class + chapter` collapsed two different teleports in chapter 2 into one, `detected`
+    # fell from two to one and resolving the first opened delivery (audit finding #2). The
+    # census reports a COUNT, so the server enumerates it: three moves in chapter 2 are three
+    # violations that stand or fall together, because the verifier demands the count reach
+    # zero. Nothing here is parsed from prose.
+    for _ch in (teleports.get("offenders") or []):
+        _tn = teleports["per_chapter"][_ch - 1]
+        for _tk in range(1, _tn + 1):
+            violations.append({
+                "f6_class": "teleport", "chapter": _ch,
+                "f6_claim": f"teleport_instance:{_ch}|{_tk}",
+                "type": "spatial", "severity": "high",
+                "evidence": (f"chapter {_ch} contains {_tn} location change(s) with no "
+                             f"transition on the page (occurrence {_tk} of {_tn})"),
+                "fix": (f"In chapter {_ch}, account for every location change: give the move "
+                        f"a line of travel, a scene break, or an explicit passage of time. "
+                        f"Change nothing else and keep its heading and every other chapter "
+                        f"exactly as they are."),
+            })
+
+    # 🔴 BEATS ARE DETECTED FROM THE SERVER'S OWN KEYSPACE, NOT FROM A FINDING. The census is
+    # validated to cover exactly the beats the accepted outline has, so `(chapter, beat)` IS
+    # the identity — there is no prose anywhere in it. `final_beat` is the outline's last
+    # commitment; every other unexecuted beat is a `beat_execution` failure, and a PROMISE
+    # counts as unexecuted, which is the whole distinction the class exists for.
+    _last_beat = None
+    if outline_sizes:
+        _last_ch = max(outline_sizes)
+        _last_beat = (_last_ch, outline_sizes[_last_ch])
+    for (_bch, _bno), _bstate in sorted((beats.get("states") or {}).items()):
+        if _bstate == "executed":
+            continue
+        violations.append({
+            "f6_class": "final_beat" if (_bch, _bno) == _last_beat else "beat_execution",
+            # 🔴 NEVER MOVE A BEAT TO A CHAPTER THE OUTLINE DID NOT NAME. This was
+            # `min(_bch, chapter_count)`, so an outline beat in chapter 4 of a three-chapter
+            # manuscript was filed against chapter 3 — and an edit to chapter 3 then RESOLVED
+            # it (`resolved_ids=['final_beat:3:outline_beat:4|1']`, status DONE). A beat lives
+            # where the outline puts it; if the manuscript has no such chapter the violation is
+            # unverifiable, and the accounting counts it as an orphan, which is unresolved.
+            "chapter": _bch,
+            "f6_claim": _nf6.outline_beat_claim(
+                {"outline_chapter": _bch, "outline_beat": _bno}, outline_sizes),
+            "outline_chapter": _bch, "outline_beat": _bno,
+            "type": "outline_missing_beat", "severity": "high",
+            "evidence": (f"outline beat {_bno} of chapter {_bch} is {_bstate} rather than "
+                         f"executed on the page"),
+            "fix": (f"Make outline beat {_bno} of chapter {_bch} actually HAPPEN on the page "
+                    f"— a stated intention or a promise is not the beat. Change nothing else "
+                    f"and keep every heading exactly as it is."),
+        })
+
+    # 🔴 THE ONE CLASS WITH NO MODEL IN ITS DETECTION EITHER. A chapter's length is arithmetic
+    # over bytes, measured against the `word_target × 1.1` contract the generator itself got.
+    for _ch, (_wlo, _whi) in sorted((bounds or {}).items()):
+        if _ch <= len(counts) and counts[_ch - 1] > _whi:
+            violations.append({
+                "f6_class": "chapter_ceiling", "chapter": _ch,
+                "type": "chapter_ceiling", "severity": "high",
+                "evidence": (f"chapter {_ch} runs {counts[_ch - 1]} words against a ceiling "
+                             f"of {_whi}"),
+                "fix": (f"Tighten chapter {_ch} to at most {_whi} words without losing an "
+                        f"event, a decision or a line of informative dialogue."),
+            })
+    return {"violations": violations, "unproven": unproven, "tense": tense,
+            "teleports": teleports, "beats": beats, "counts": counts}
+
+
+def _f6_refusal(reason: str, *, detected: int = 0) -> dict:
+    """A blocking accounting with the SHAPE every other one has.
+
+    🔴 ONE SHAPE FOR EVERY REFUSAL. The early returns used to publish three keys while the
+    ordinary path published twelve, so a consumer — an operator, a test, the durable payload —
+    had to know which kind of refusal it was looking at before it could read it. Every field is
+    present and honest: nothing was resolved, and what was detected is still on the books."""
+    return {"violations_detected": detected, "violations_targeted": 0,
+            "violations_resolved": 0, "violations_unresolved": detected,
+            "violations_unidentifiable": 0, "repair_attempts": 0, "provider_calls": 0,
+            "chapters_changed": 0, "collateral_chapters": [], "resolved_ids": [],
+            "unresolved_ids": [], "delivery_blocked": True, "unproven": str(reason)}
+
+
+#: Bounds for the F6 accounting on the DURABLE jobs row. Counters are always kept; the id lists
+#: are a capped, truncated sample, because "how many" is the operator's question and "which ones"
+#: is a hint. A 200-chapter book that broke everywhere must not write a 200-entry list here.
+_F6_PAYLOAD_MAX_IDS = 20
+_F6_PAYLOAD_MAX_ID_CHARS = 120
+_F6_PAYLOAD_MAX_REASON_CHARS = 200
+
+#: 🔴 ONE. A `chapter_ceiling` repair gets a single bounded reduction attempt; a failure is an
+#: unresolved violation that blocks delivery, never a retry ladder that spends the job's budget
+#: arguing with a model. Raising this is a product decision with a bill attached, so it is a
+#: named constant rather than a literal buried in a loop.
+_F6_CEILING_REDUCTION_ATTEMPTS = 1
+
+
+def _f6_enabled() -> bool:
+    """Is F6 enforcement on? DEFAULT-ON, and independent of the legacy critic flag.
+
+    🔴 THE ORIGINAL F6 FINDING WAS "ENFORCEMENT FLAG DEFAULT OFF". Reading the legacy
+    `NARASI_CRITIQUE_ENABLED` — which itself defaults to "0" — reproduced it exactly: on a
+    default configuration nothing detected, nothing blocked, and the gate looked implemented.
+    `NARASI_F6_ENABLED` is an emergency kill switch, so it must be set to "0" to turn F6 OFF;
+    absent means ON."""
+    return str(os.environ.get("NARASI_F6_ENABLED", "1")).strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None,
+                       job_uuid=None, sink=None, job_id=None) -> dict:
+    """Close F6 against the bytes that will ACTUALLY be delivered.
+
+    🔴 WHY THIS IS NOT INSIDE `_apply_v3_gates`. That function is not the last thing that
+    touches the manuscript: the post-gates dedup guard runs after it returns and can
+    collapse chapter blocks. A verdict computed inside the gates would describe a
+    manuscript nobody delivers — the same class as F1's `l3_proof_invalidated_late_mutation`,
+    which exists because exactly that happened once. This runs after every text mutation,
+    beside the L2a final-byte report, and reads `result` as it stands.
+
+    ONE bounded verification pass, and only when at least one chapter changed: re-reading
+    the census of an untouched book cannot tell anyone anything, and would be a provider
+    call spent to learn nothing. The call is counted before it is made.
+
+    Returns the accounting dict; also publishes it as `result["f6"]`. Never raises: a
+    failure here yields an accounting that BLOCKS delivery rather than one that permits it."""
+    pending = result.pop("_f6_pending", None)
+    # 🔴 THE SWITCH IS READ HERE TOO, AND FIRST. Off means F6 never ran at all — no pending
+    # state was recorded, nothing may be accounted, and nothing may be refused.
+    if not _f6_enabled():
+        return {}
+    # 🔴 "NOBODY MEASURED THIS BOOK" IS NOT "THIS BOOK IS CLEAN". With F6 ON, a missing
+    # pre-repair state means the detection seam never ran — the gates were skipped, replaced,
+    # or returned early — so there is no evidence about this manuscript at all. Returning an
+    # empty dict here published no `delivery_blocked`, so the job sailed past the hard block
+    # with no F6 proof whatsoever: the same fail-open the UNPROVED rule exists to close, one
+    # level up from where it was closed.
+    if not isinstance(pending, dict):
+        log.error("narration job %s: F6 has no pre-repair state — delivery BLOCKED", job_id)
+        accounting = {"violations_detected": 0, "violations_resolved": 0,
+                      "violations_unresolved": 0, "delivery_blocked": True,
+                      "unproven": "pending_state_missing"}
+        result["f6"] = accounting
+        return accounting
+    import narasi_f6 as _nf6
+    import narasi_gate as _ngate
+    # 🔴 UNPROVED BLOCKS. An absent or malformed census, or a detection that raised, means
+    # nobody knows whether the book is sound — and "we could not tell" is not "there was
+    # nothing wrong". Handled before the per-violation accounting because it is not a
+    # statement about any one violation.
+    unproven = pending.get("unproven")
+    if unproven:
+        log.error("narration job %s: F6 UNPROVED (%s) — delivery BLOCKED", job_id, unproven)
+        accounting = {"violations_detected": 0, "violations_resolved": 0,
+                      "violations_unresolved": 0, "delivery_blocked": True,
+                      "unproven": str(unproven)}
+        result["f6"] = accounting
+        return accounting
+    try:
+        detected = list(pending.get("detected") or ())
+        targeted = list(pending.get("targeted") or ())
+        chapter_count = int(pending.get("chapter_count") or 0)
+        attempts = int(pending.get("repair_attempts") or 0)
+        calls = int(pending.get("provider_calls") or 0)
+
+        _gk = "book" if result.get("book") else "output"
+        final_text = result.get(_gk) or ""
+        final_blocks = _ngate.split_chapter_blocks(final_text)
+        changed = _nf6.changed_chapters_from_blocks(pending.get("blocks_before"), final_blocks)
+        # Arithmetic over the delivered bytes — `chapter_ceiling` needs no observer at all.
+        counts_after = _ngate.chapter_word_counts(final_text)
+        outline_sizes = pending.get("outline_sizes") or {}
+        bounds = pending.get("bounds") or {}
+
+        # 🔴 A CHANGE SET THAT CANNOT BE DETERMINED IS A REFUSAL, NOT A HINT. `changed is None`
+        # means the delivered book's chapter structure no longer lines up with the snapshot —
+        # a chapter appeared or vanished, a heading moved, or something was prepended. Nothing
+        # about that is a statement about any ONE chapter, so no per-chapter verdict can carry
+        # it: with a violation detected it merely blocked as a side effect, and with NOTHING
+        # detected it blocked nothing at all. A clean three-chapter book plus a late mutator
+        # that appended a fourth finished DONE on `0 detected, 0 unresolved`. It is its own
+        # structural refusal now, before any verdict is computed.
+        if changed is None:
+            log.error("narration job %s: F6 cannot attribute the delivered structure — "
+                      "delivery BLOCKED", job_id)
+            accounting = _f6_refusal("structural_change_unattributable",
+                                     detected=len(detected))
+            result["f6"] = accounting
+            return accounting
+        # 🔴 A MODEL TOUCHED THE MANUSCRIPT ⇒ THE MANUSCRIPT GETS RE-READ. Not "a violation we
+        # already knew about was targeted" — that was the old trigger, and it is why a repair
+        # could introduce a defect of a class nobody had flagged and ship it.
+        mutated = bool(changed) or attempts >= 1
+        verdicts: dict = {}
+        final_scan = None
+        if mutated:
+            census_after = teleports_after = beats_after = None
+            # The one bounded verification pass. `_narasi_consistency_critique` is the same
+            # primitive the detection rode on, so the censuses come back in the same shape
+            # — and it is asked ONCE for all three, so they describe one read of one book.
+            from laozhang_api import _narasi_consistency_critique
+            calls += 1
+            _after, _cr = await _narasi_consistency_critique(
+                final_text, str(body.get("style") or ""),
+                str(body.get("language") or "id"),
+                model=(body.get("model") or ""), tenant_id=tenant_id, user_id=user_id,
+                job_uuid=job_uuid, credit_row=False,
+                # 🔴 WITHOUT THE AUTHORITY THE BEAT CENSUS IS NEVER ASKED FOR, so every
+                # beat violation would verify against an absent observation and block a
+                # repair that worked. The packet is still on `result` here; the job pops
+                # it after this call returns.
+                authority_text=_narrative_authority_text(result))
+            if sink is not None and _cr:
+                sink.credits += int(_cr)
+            _after = _after or {}
+            census_after = _after.get("tense_by_chapter")
+            teleports_after = _after.get("teleports_by_chapter")
+            beats_after = _after.get("beat_states")
+            # 🔴 THE FINAL SCAN — the SAME scanner detection ran, over the DELIVERED bytes and
+            # all five classes.
+            #
+            # 🔴 AND `chapter_count` IS THE SNAPSHOT'S, WHICH IS NOT A SHORTCUT. It used to
+            # recount the delivered headings, on the reasoning that a book which gained or lost
+            # a chapter must be measured as the book it actually is. It cannot get here in that
+            # state: `changed_chapters_from_blocks` returns None the moment the heading-block
+            # counts differ, and the structural rule above turns that into a refusal before the
+            # scan runs. Two ways to say one thing is the failure this workstream keeps paying
+            # for, so the recount is gone and the structural rule is the single door.
+            final_scan = _f6_scan(
+                text=final_text, chapter_count=chapter_count,
+                observation=_after, outline_sizes=outline_sizes, bounds=bounds,
+                expected_chapters=int(pending.get("expected_chapters") or 0))
+        for violation in targeted if mutated else ():
+            identity = _nf6.violation_identity(violation)
+            if identity is None:
+                continue
+            vclass = str(violation.get("f6_class") or "")
+            chapter = violation.get("chapter")
+            if vclass == "tense_drift":
+                proved = _nf6.verify_tense_resolved(
+                    pending.get("census_before"), census_after,
+                    chapter=chapter, chapter_count=chapter_count,
+                    changed_chapters=changed)
+            elif vclass == "teleport":
+                proved = _nf6.verify_teleport_resolved(
+                    pending.get("teleports_before"), teleports_after,
+                    chapter=chapter, chapter_count=chapter_count,
+                    changed_chapters=changed)
+            elif vclass in ("final_beat", "beat_execution"):
+                proved = _nf6.verify_beat_resolved(
+                    pending.get("beats_before"), beats_after,
+                    chapter=violation.get("outline_chapter"),
+                    beat=violation.get("outline_beat"),
+                    outline_sizes=outline_sizes,
+                    require_order=(vclass == "beat_execution"))
+            elif vclass == "chapter_ceiling":
+                proved = _nf6.verify_ceiling_resolved(
+                    pending.get("counts_before"), counts_after,
+                    chapter=chapter, bounds=bounds, chapter_count=chapter_count,
+                    changed_chapters=changed)
+            else:
+                # An F6 class with no verifier cannot be vouched for. Reaching this line
+                # means a class was added to `F6_CLASSES` and nowhere else, and the safe
+                # reading of "nothing checked it" is `unresolved`.
+                proved = False
+            verdicts[identity] = "resolved" if proved else "unresolved"
+
+        # 🔴 WHAT THE FINAL SCAN FOUND CANNOT BE READ, SO NOTHING CAN BE VOUCHED FOR. A census
+        # that came back unreadable ABOUT THE DELIVERED BOOK is the same "we could not tell"
+        # the pre-repair rule already treats as a refusal — and here it is worse, because a
+        # model has since rewritten the prose.
+        if final_scan is not None and final_scan["unproven"]:
+            reason = "final_scan_" + ", ".join(final_scan["unproven"])
+            log.error("narration job %s: F6 UNPROVED after repair (%s) — delivery BLOCKED",
+                      job_id, reason)
+            accounting = {"violations_detected": len(detected), "violations_resolved": 0,
+                          "violations_unresolved": len(detected), "delivery_blocked": True,
+                          "unproven": reason}
+            result["f6"] = accounting
+            return accounting
+        # 🔴 THE SCAN'S FINDINGS ENTER THE BOOKS AS DETECTED, AND NOTHING TARGETED THEM. A
+        # violation present in the delivered bytes gets no verdict, so the partition marks it
+        # UNRESOLVED and delivery is refused. One that WAS targeted and genuinely repaired is
+        # simply not found by the scan, so it does not appear here at all — and one that was
+        # targeted and is still there was already going to be unresolved on its own verdict,
+        # so the two can never disagree.
+        if final_scan is not None:
+            detected = detected + final_scan["violations"]
+        accounting = _nf6.resolution_accounting(
+            detected=detected, targeted=targeted, verdicts=verdicts,
+            repair_attempts=attempts, provider_calls=calls,
+            changed_chapters=changed, chapter_count=chapter_count,
+            co_targeted_chapters=pending.get("co_targeted") or ())
+    except Exception as _e:  # noqa: BLE001
+        # 🔴 FAIL CLOSED. An accounting that could not be computed is not an accounting that
+        # found nothing; the safe reading of "we could not tell" is "do not deliver".
+        log.error("narration job %s: F6 accounting failed — delivery BLOCKED (%s)", job_id, _e)
+        accounting = {"violations_detected": -1, "violations_resolved": 0,
+                      "violations_unresolved": -1, "delivery_blocked": True,
+                      "error": str(_e)[:200]}
+    result["f6"] = accounting
+    if accounting.get("delivery_blocked"):
+        log.error("narration job %s: F6 blocks delivery — %d unresolved of %d detected "
+                  "(unresolved=%s collateral=%s)", job_id,
+                  accounting.get("violations_unresolved"),
+                  accounting.get("violations_detected"),
+                  accounting.get("unresolved_ids"), accounting.get("collateral_chapters"))
+    return accounting
+
+
 async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=None, job_uuid=None,
                           sink: "Optional[_UsageSink]" = None, job_id: Optional[str] = None,
                           p0a_timings: Optional[dict] = None) -> None:
@@ -5605,6 +5995,131 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         + list(_canon_out.get("eligible") or [])
         + list(_tt_out.get("eligible") or []))
 
+    # ── F6: detect hard violations, route them, and record the PRE-repair state ──────
+    # 🔴 DETECTION HERE, VERDICT NOWHERE NEAR HERE. This function is not the last thing
+    # that touches the manuscript — the post-gates dedup guard in
+    # `_run_narration_job_after_parity` can still collapse blocks after it returns. So
+    # F6 only records what it found and what the book looked like BEFORE the repair;
+    # the change set, the verification and the accounting are computed against the
+    # FINAL bytes by `_f6_finalize`, after every mutation. A verdict taken here would
+    # describe a manuscript nobody delivers.
+    _f6_pending = None
+    # 🔴 THE KILL SWITCH WRAPS THE WHOLE LIFECYCLE, NOT ONE CALL INSIDE IT. It used to gate
+    # only F6's own census request, so with `NARASI_F6_ENABLED=0` detection still ran, the
+    # repair was still routed on F6's account, the ceiling reducer still spent provider
+    # calls and the finaliser still refused deliveries — an emergency switch that silenced
+    # part of the machine and left the part that blocks customers running. With no pending
+    # state the reduction below is skipped and `_f6_finalize` returns nothing to block on.
+    if _f6_enabled():
+        try:
+            import narasi_f6 as _nf6
+            _f6_blocks_before = _ngate.split_chapter_blocks(_gbook0)
+            _f6_n_ch = sum(1 for _b in _f6_blocks_before if _ngate.chapter_heading_line(_b))
+            _f6_cq = _crit_out.get("cq") if isinstance(_crit_out.get("cq"), dict) else {}
+            # 🔴 ALL THREE CENSUSES COME FROM ONE ANSWER. Reading the tense census from the critic
+            # and the other two from somewhere else would let them describe different reads of the
+            # book — and a verdict assembled from two different observations is not a verdict.
+            _f6_obs = _f6_cq
+            # 🔴 F6 OWNS ITS CENSUS SOURCE. It used to read whatever the legacy critic happened to
+            # leave behind, and `_narasi_critique_enabled()` defaults to "0" — so on a default
+            # configuration there was no census, no outlier, no violation and no block. "Detection
+            # flag default OFF" was the original F6 finding; inheriting the legacy flag reproduced
+            # it. When the critic did not run, F6 asks for its own census with ONE bounded call.
+            #
+            # 🔴 ONE CHAPTER IS A BOOK. This floor used to be `>= 2`, so a single-chapter job got no
+            # census, which is UNPROVED, which blocks — every one-chapter narration refused unless
+            # the legacy critic happened to be on. A one-chapter census is trivially its own
+            # majority and the arithmetic below handles it unchanged.
+            if _f6_cq.get("tense_by_chapter") is None and _f6_n_ch >= 1:
+                from laozhang_api import _narasi_consistency_critique as _f6_crit
+                _f6_own, _f6_cr = await _f6_crit(
+                    _gbook0, style, language, model=(body.get("model") or ""),
+                    tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid, credit_row=False,
+                    authority_text=_authority_text)
+                if sink is not None and _f6_cr:
+                    sink.credits += int(_f6_cr)
+                _f6_obs = _f6_own or {}
+                _f6_own_call = 1
+            else:
+                _f6_own_call = 0
+            # 🔴 THE OUTLINE SIZES ARE COUNTED FROM THE PACKET THIS PROCESS RENDERED, never from
+            # the answer. They are the keyspace the beat census is validated against, so a model
+            # that invents a beat cannot smuggle one in — and a book with NO accepted outline has
+            # no beats to execute, which is why an empty keyspace detects nothing rather than
+            # blocking: you cannot miss a commitment nobody made.
+            _f6_outline_sizes = {}
+            for _opk, _opv in (_outline_packets or {}).items():
+                try:
+                    _opn = int(_opk)
+                except (TypeError, ValueError):
+                    continue
+                _opc = _f5_outline_beat_count(_opv or "")
+                if _opn >= 1 and _opc >= 1:
+                    _f6_outline_sizes[_opn] = _opc
+            _f6_bounds = _nf6.chapter_word_bounds(body, _f6_n_ch)
+            # 🔴 HOW MANY CHAPTERS WERE ASKED FOR, AND PAID FOR. Nobody checked: a request for
+            # four chapters that came back with three had three clean censuses, `0 detected`,
+            # and finished DONE. The request copy is server-owned and is the only thing that
+            # knows what was ordered.
+            _f6_expected = len(body.get("chapters") or ()) if isinstance(
+                body.get("chapters"), list) else 0
+            # 🔴 CHAPTERS THE OTHER GATES ASKED FOR. F6 shares the merged revise with F1-F5, so
+            # their targets are legitimately-changed chapters; without them every such edit read
+            # as collateral and refused a job in which both repairs worked.
+            _f6_co_targeted = sorted({
+                _v.get("chapter") for _v in _v3g_merged
+                if isinstance(_v, dict) and isinstance(_v.get("chapter"), int)
+                and not isinstance(_v.get("chapter"), bool) and _v.get("chapter") >= 1})
+            # 🔴 THE SAME SCANNER THE FINALISER RUNS OVER THE DELIVERED BYTES. Detection and the
+            # final scan are one question asked of two books; two copies of it would drift.
+            _f6_seen = _f6_scan(text=_gbook0, chapter_count=_f6_n_ch, observation=_f6_obs,
+                                outline_sizes=_f6_outline_sizes, bounds=_f6_bounds,
+                                expected_chapters=_f6_expected)
+            _f6_detected = _f6_seen["violations"]
+            # `chapter_ceiling` does NOT ride the merged revise: it has its own bounded, per-chapter
+            # reduction below, which splices one block back into bytes the server already holds so
+            # the other chapters cannot be reached at all.
+            _f6_routed = [_v for _v in _f6_detected if _v["f6_class"] != "chapter_ceiling"]
+            if _f6_routed:
+                _v3g_merged = _v3g_merged + _f6_routed
+                log.warning("F6: %d hard violation(s) routed to repair (%s)", len(_f6_routed),
+                            sorted({_v["f6_class"] for _v in _f6_routed}))
+            _f6_pending = {
+                "detected": _f6_detected,
+                "targeted": list(_f6_detected),
+                "blocks_before": _f6_blocks_before,
+                "census_before": list(_f6_seen["tense"].get("per_chapter") or []),
+                "teleports_before": list(_f6_seen["teleports"].get("per_chapter") or []),
+                # Stored in the SHAPE THE VERIFIER RE-VALIDATES, not as the parsed dict: every
+                # `*_before` here goes back through its own census on the way out, so the pre-repair
+                # observation is checked by the same code that checks the post-repair one. A
+                # short-cut that trusted the parse on one side only is how a verifier ends up
+                # comparing two things that were never validated the same way.
+                "beats_before": [{"chapter": _bc, "beat": _bb, "state": _bs}
+                                 for (_bc, _bb), _bs in sorted(
+                                     (_f6_seen["beats"].get("states") or {}).items())],
+                "outline_sizes": dict(_f6_outline_sizes),
+                "bounds": dict(_f6_bounds),
+                "expected_chapters": _f6_expected,
+                "co_targeted": list(_f6_co_targeted),
+                "counts_before": list(_f6_seen["counts"]),
+                "chapter_count": _f6_n_ch,
+                "repair_attempts": 0,
+                "provider_calls": _f6_own_call,
+                "unproven": ", ".join(_f6_seen["unproven"]) or None,
+            }
+            result["_f6_pending"] = _f6_pending
+        except Exception as _f6e:  # noqa: BLE001
+            # 🔴 A DETECTION THAT FAILED IS NOT A BOOK WITH NO DEFECTS. This used to log
+            # "non-fatal" and continue, leaving no pending state at all — and no pending state
+            # means no accounting, which means delivery. The failure is recorded as UNPROVED so
+            # the finaliser blocks on it.
+            log.error("F6 detection FAILED — delivery will be blocked (%s)", _f6e)
+            _f6_pending = {"detected": [], "targeted": [], "blocks_before": None,
+                           "census_before": None, "chapter_count": 0, "repair_attempts": 0,
+                           "provider_calls": 0, "unproven": f"detection_error:{str(_f6e)[:80]}"}
+            result["_f6_pending"] = _f6_pending
+
     _v3g_changed = False
     _v3g_t_rev = 0.0
     if _v3g_merged:
@@ -5612,6 +6127,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             from laozhang_api import _narasi_consistency_revise
             _v3g_t_rev0 = time.monotonic()
             _v3g_revise_request = {"violations": _v3g_merged}
+            # Counted on the line before the call, not after it: a call that raises still
+            # happened, and an attempt that was never dispatched must not be counted.
+            if _f6_pending is not None:
+                _f6_pending["repair_attempts"] += 1
+                _f6_pending["provider_calls"] += 1
             _v3g_new, _v3g_cr = await _narasi_consistency_revise(
                 _gbook0, _v3g_revise_request, style, language,
                 model=(body.get("model") or ""),
@@ -5638,6 +6158,65 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _v3g_changed = True
         except Exception as _v3ge:  # noqa: BLE001
             log.warning("merged gate revise failed (non-fatal): %s", _v3ge)
+
+    # ── F6 `chapter_ceiling` — ONE bounded reduction attempt, spliced byte-exactly ──────
+    # 🔴 WHY THIS IS NOT PART OF THE MERGED REVISE. That call takes the whole manuscript and
+    # returns a whole manuscript, so "only chapter 4 changed" would be a hope. Here the server
+    # sends ONE chapter body, keeps its OWN heading, and puts the candidate back between the
+    # blocks it already holds — the other chapters are unreachable by construction rather than
+    # by inspection afterwards.
+    #
+    # 🔴 BOUNDED MEANS BOUNDED. One attempt per over-long chapter, no retry ladder: a reducer
+    # that came back empty, over-long or not at all leaves the violation UNRESOLVED, and
+    # unresolved blocks delivery. Looping until it succeeds is how a cost bound becomes a
+    # suggestion, and the candidate is judged by `verify_ceiling_resolved` against the
+    # delivered bytes either way.
+    _f6_ceiling_targets = [_v for _v in ((_f6_pending or {}).get("detected") or ())
+                           if _v.get("f6_class") == "chapter_ceiling"]
+    if _f6_ceiling_targets and _f6_pending is not None:
+        try:
+            from laozhang_api import _narasi_chapter_reduce
+            _f6_rk = "book" if result.get("book") else "output"
+            for _f6_ct in _f6_ceiling_targets:
+                _f6_cch = _f6_ct.get("chapter")
+                _f6_lim = (_f6_pending.get("bounds") or {}).get(_f6_cch)
+                if not _f6_lim:
+                    continue
+                for _f6_try in range(_F6_CEILING_REDUCTION_ATTEMPTS):
+                    _f6_blocks = _ngate.split_chapter_blocks(result.get(_f6_rk) or "")
+                    _f6_idx = [_i for _i, _b in enumerate(_f6_blocks)
+                               if _ngate.chapter_heading_line(_b)]
+                    if _f6_cch > len(_f6_idx):
+                        break
+                    _f6_at = _f6_idx[_f6_cch - 1]
+                    _f6_block = _f6_blocks[_f6_at]
+                    _f6_head = _ngate.chapter_heading_line(_f6_block)
+                    _f6_body = _f6_block[len(_f6_head):]
+                    # The whitespace on either side of the prose is server-owned framing: the
+                    # newline after the heading and the `\n\n` separator before the next block.
+                    # Re-attaching the ORIGINAL bytes is what keeps `chapter_heading_line`
+                    # identical and the neighbouring blocks intact.
+                    _f6_pre = _f6_body[:len(_f6_body) - len(_f6_body.lstrip())]
+                    _f6_post = _f6_body[len(_f6_body.rstrip()):]
+                    _f6_pending["repair_attempts"] += 1
+                    _f6_pending["provider_calls"] += 1
+                    _f6_cand, _f6_ccr = await _narasi_chapter_reduce(
+                        _f6_body.strip(), target_words=int(_f6_lim[1]), style=style,
+                        language=language, tenant_id=tenant_id, user_id=user_id,
+                        job_uuid=job_uuid, credit_row=False)
+                    if sink is not None and _f6_ccr:
+                        sink.credits += int(_f6_ccr)
+                    _f6_cand = str(_f6_cand or "").strip()
+                    if not _f6_cand:
+                        continue
+                    _f6_blocks[_f6_at] = _f6_head + _f6_pre + _f6_cand + _f6_post
+                    result[_f6_rk] = "".join(_f6_blocks)
+                    break
+        except Exception as _f6re:  # noqa: BLE001
+            # 🔴 ONE DOOR FOR "NO CANDIDATE". A reducer that raised produced no usable chapter,
+            # exactly like one that returned nothing — the chapter stays over its ceiling, the
+            # verifier refuses it and the finaliser blocks. Nothing here decides delivery.
+            log.error("F6 ceiling reduction failed — chapter(s) stay over ceiling (%s)", _f6re)
 
     _v3g_critic_finalize(_crit_out, _v3g_changed, _v3g_t_rev)
     _v3g_register_finalize(_register_out, _v3g_changed)
@@ -5899,6 +6478,35 @@ def _result_payload(result: dict) -> dict:
     _cl_l3 = result.get("canon_lite_l3")
     if _cl_l3:
         payload["canon_lite_l3"] = _cl_l3
+    # F6: the resolution accounting, BOUNDED. Same "added only when there is one" rule as its
+    # neighbours, so a flag-off job does not grow an `f6: null` on its persisted row.
+    #
+    # 🔴 IT WAS COMPUTED, LOGGED, AND THEN DROPPED. This payload is an explicit allowlist, so
+    # the accounting reached `result`, survived into `_persist_chapters`, and never made it to
+    # the jobs row — which is the row an operator reads when asking why a delivery was refused.
+    #
+    # 🔴 AND IT IS BOUNDED HERE RATHER THAN TRUSTED. The in-process accounting carries a list
+    # per verdict and one per collateral chapter; those are as long as the book is broken, and
+    # a pathological run must not put an unbounded list on a durable row. Counters are the
+    # answer to "what happened"; the id lists are a sample, capped and truncated.
+    _f6 = result.get("f6")
+    if isinstance(_f6, dict) and _f6:
+        _f6_out = {_k: _f6.get(_k) for _k in (
+            "violations_detected", "violations_targeted", "violations_resolved",
+            "violations_unresolved", "violations_unidentifiable", "repair_attempts",
+            "provider_calls", "chapters_changed", "delivery_blocked") if _k in _f6}
+        for _k in ("resolved_ids", "unresolved_ids"):
+            _v = _f6.get(_k)
+            if isinstance(_v, list):
+                _f6_out[_k] = [str(_i)[:_F6_PAYLOAD_MAX_ID_CHARS]
+                               for _i in _v[:_F6_PAYLOAD_MAX_IDS]]
+        _collateral = _f6.get("collateral_chapters")
+        if isinstance(_collateral, list):
+            _f6_out["collateral_chapters"] = _collateral[:_F6_PAYLOAD_MAX_IDS]
+        for _k in ("unproven", "error"):
+            if _f6.get(_k) is not None:
+                _f6_out[_k] = str(_f6.get(_k))[:_F6_PAYLOAD_MAX_REASON_CHARS]
+        payload["f6"] = _f6_out
     # F1 (brief §D): a bounded count only (never the marker/prose it was found in,
     # C12) — present only when the seam actually ran against a real canon (same
     # "added only when there is one" rule as the two blocks above). `0` is a real,

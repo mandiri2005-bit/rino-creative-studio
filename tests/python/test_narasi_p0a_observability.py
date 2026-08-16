@@ -1517,6 +1517,10 @@ def job_env(monkeypatch):
     monkeypatch.setattr(na, "_settle", settle)
     monkeypatch.setattr(na, "_refund", refund)
     monkeypatch.setattr(na, "_apply_v3_gates", gates)
+    # F6 is default-ON and fail-closed on a job with no pre-repair state; `_apply_v3_gates`
+    # is stubbed out below, so this job never records one. This suite is about a different
+    # seam, not F6.
+    monkeypatch.setenv("NARASI_F6_ENABLED", "0")
     monkeypatch.setattr(na, "_reconcile_checkboxes", _anoop)
     monkeypatch.setattr(na, "_persist_chapters", persist)
     monkeypatch.setattr(na, "credits_lib", types.SimpleNamespace(touch_hold=_anoop))

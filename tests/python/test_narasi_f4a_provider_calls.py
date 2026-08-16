@@ -602,6 +602,7 @@ def test_narration_gate_path_carries_provider_calls_to_the_persisted_payload(mon
 
     for flag in ("NARASI_REGISTER_GATE", "NARASI_CANON_DIFF", "NARASI_THREAD_TRACKER",
                  "NARASI_CRITIQUE_ENABLED", "NARASI_CRITIQUE_REVISE",
+                 "NARASI_F6_ENABLED",
                  "NARASI_CANON_REGISTRY_EXTRACT"):
         monkeypatch.setenv(flag, "0")
     # The module-level alias can be stale after test_middleware re-imports

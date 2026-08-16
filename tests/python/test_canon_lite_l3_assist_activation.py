@@ -228,6 +228,12 @@ def _drive_job(monkeypatch, *, tenant_id, result=None, gen=None, job_id="j-act")
     monkeypatch.setattr(na, "_settle", _anoop)
     monkeypatch.setattr(na, "_refund", _anoop)
     monkeypatch.setattr(na, "_apply_v3_gates", _anoop)
+    # 🔴 THIS DRIVER STUBS `_apply_v3_gates`, so F6 never records a pre-repair state.
+    #    F6 is default-ON and fail-closed on a missing one — a job that skipped the
+    #    detection seam has no evidence about its manuscript and must not deliver. This
+    #    suite is about a different seam, so it says so explicitly rather than relying on
+    #    F6 having been lenient about jobs that never ran it.
+    monkeypatch.setenv("NARASI_F6_ENABLED", "0")
     monkeypatch.setattr(na, "_reconcile_checkboxes", _anoop)
     monkeypatch.setattr(na, "_persist_chapters", _persist)
     monkeypatch.setattr(na, "credits_lib", types.SimpleNamespace(touch_hold=_anoop))
@@ -1481,6 +1487,10 @@ def test_f1_blocks_delivery_through_the_real_call_site_when_assist_leaks_a_marke
     monkeypatch.setattr(na, "generate_narration", _gen)
     monkeypatch.setattr(na, "_cancel_watcher", lambda *a, **k: asyncio.sleep(3600))
     monkeypatch.setattr(na, "_finalize", _finalize_spy)
+    # F6 is default-ON and fail-closed on a job with no pre-repair state; `_apply_v3_gates`
+    # is stubbed out below, so this job never records one. This suite is about a different
+    # seam, not F6.
+    monkeypatch.setenv("NARASI_F6_ENABLED", "0")
     for name in ("_set_status", "_safe_progress", "_settle", "_refund",
                  "_apply_v3_gates", "_reconcile_checkboxes", "_persist_chapters"):
         monkeypatch.setattr(na, name, _anoop)
@@ -1523,6 +1533,10 @@ def test_f1_scrubs_the_leak_cleanly_and_delivers_normally_through_the_real_call_
     monkeypatch.setattr(na, "generate_narration", _gen)
     monkeypatch.setattr(na, "_cancel_watcher", lambda *a, **k: asyncio.sleep(3600))
     monkeypatch.setattr(na, "_finalize", _finalize_spy)
+    # F6 is default-ON and fail-closed on a job with no pre-repair state; `_apply_v3_gates`
+    # is stubbed out below, so this job never records one. This suite is about a different
+    # seam, not F6.
+    monkeypatch.setenv("NARASI_F6_ENABLED", "0")
     for name in ("_set_status", "_safe_progress", "_settle", "_refund",
                  "_apply_v3_gates", "_reconcile_checkboxes", "_persist_chapters"):
         monkeypatch.setattr(na, name, _anoop)
@@ -1565,6 +1579,10 @@ def test_f1_does_not_block_shadow_mode_on_the_same_colliding_bracket(
     monkeypatch.setattr(na, "generate_narration", _gen)
     monkeypatch.setattr(na, "_cancel_watcher", lambda *a, **k: asyncio.sleep(3600))
     monkeypatch.setattr(na, "_finalize", _finalize_spy)
+    # F6 is default-ON and fail-closed on a job with no pre-repair state; `_apply_v3_gates`
+    # is stubbed out below, so this job never records one. This suite is about a different
+    # seam, not F6.
+    monkeypatch.setenv("NARASI_F6_ENABLED", "0")
     for name in ("_set_status", "_safe_progress", "_settle", "_refund",
                  "_apply_v3_gates", "_reconcile_checkboxes", "_persist_chapters"):
         monkeypatch.setattr(na, name, _anoop)

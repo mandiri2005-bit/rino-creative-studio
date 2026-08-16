@@ -44,6 +44,11 @@ _PROSE = "1. CHARACTERS\nRatna, seorang guru.\n2. TIMELINE\nTiga hari.\n"
 def _diff_on(monkeypatch):
     monkeypatch.setenv("NARASI_CANON_DIFF", "1")
     monkeypatch.setenv("NARASI_CANON_REGISTRY_EXTRACT", "1")
+    # 🔴 F6 IS A FIFTH DETECTOR ON THIS SEAM AND IT DEFAULTS ON. When the legacy critic has
+    # not run it asks for its own tense census — a real provider call this suite neither
+    # stubs nor wants, since its subject is the registry sidecar. Pinned off explicitly
+    # rather than relying on F6 to stay quiet.
+    monkeypatch.setenv("NARASI_F6_ENABLED", "0")
 
 
 def _spy(monkeypatch) -> list:

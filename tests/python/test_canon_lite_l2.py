@@ -1347,6 +1347,12 @@ def test_shared_real_job_body_consumes_private_canon_before_persist_and_finalize
     monkeypatch.setattr(na, "_safe_progress", noop)
     monkeypatch.setattr(na, "_reconcile_checkboxes", noop)
     monkeypatch.setattr(na, "_apply_v3_gates", noop)
+    # 🔴 THIS DRIVER STUBS `_apply_v3_gates`, so F6 never records a pre-repair state.
+    #    F6 is default-ON and fail-closed on a missing one — a job that skipped the
+    #    detection seam has no evidence about its manuscript and must not deliver. This
+    #    suite is about a different seam, so it says so explicitly rather than relying on
+    #    F6 having been lenient about jobs that never ran it.
+    monkeypatch.setenv("NARASI_F6_ENABLED", "0")
     monkeypatch.setattr(na, "_persist_chapters", persist)
     monkeypatch.setattr(na, "_finalize", finalize)
     monkeypatch.setattr(na, "_settle", noop)
