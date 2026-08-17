@@ -49,6 +49,9 @@ TORD = "tests/python/test_narasi_f6_ordering_behavioral.py"
 #: The FINAL SCAN suite: every row drives the real job and asks what it DELIVERED.
 TFS = "tests/python/test_narasi_f6_final_scan.py"
 TFCR = "tests/python/test_narasi_f6_cheap_claude_repair.py"
+#: The DEDICATED `beat_execution` actuator, driven through the real delivery path — the lane
+#: canary `7pucr0hs` proved the generic structural/chunked route could not do.
+TBA = "tests/python/test_narasi_f6_beat_actuator.py"
 
 BREAKS = [
     # ── framing: the root cause ────────────────────────────────────────────
@@ -1048,8 +1051,8 @@ BREAKS = [
      TFCR, "test_two_server_measured_teleports_force_a_cheap_chapter_repair"),
 
     ("101. teleport is duplicated into the mixed critic repair",
-     [(NA, r'(?m)^                if _v\["f6_class"\] not in \("chapter_ceiling", "teleport"\)\]$',
-       '                if _v["f6_class"] != "chapter_ceiling"]')],
+     [(NA, r'(?m)^                if _v\["f6_class"\] not in \("chapter_ceiling", "teleport", "beat_execution"\)\]$',
+       '                if _v["f6_class"] not in ("chapter_ceiling", "beat_execution")]')],
      TFS, "test_an_unrelated_critic_finding_cannot_take_teleport_off_its_own_lane"),
 
     ("102. the ceiling reducer loses the server-owned required beats",
@@ -1063,6 +1066,48 @@ BREAKS = [
        '    aim = floor + ((ceiling - floor) // 2)\n'
        '    required_beats = ""')],
      TFCR, "test_ceiling_reducer_sends_an_exact_mandatory_budget_to_cheap_claude"),
+
+    # ── the DEDICATED `beat_execution` actuator (canary `7pucr0hs`) ─────────
+    # 🔴 THE PRODUCTION FAILURE THIS LANE ANSWERS. One genuine finding —
+    # `beat_execution:2:outline_beat:2|2` — went to the generic structural patch lane, which
+    # answered `unknown_operation → prose_unterminated`; the chunked revise fallback returned
+    # two no-ops and one chapter truncated from 519 words to 45. Each mutant below re-creates
+    # one way back to that outcome.
+    ("104. beat_execution is routed back into the generic structural/chunked lane",
+     [(NA, r'(?m)^                if _v\["f6_class"\] not in \("chapter_ceiling", "teleport", "beat_execution"\)\]$',
+       '                if _v["f6_class"] not in ("chapter_ceiling", "teleport")]')],
+     TBA, "test_beat_execution_never_reaches_the_generic_revise_request"),
+
+    ("105. the beat actuator becomes an unbounded retry ladder",
+     [(NA, r"(?m)^_F6_BEAT_REPAIR_ATTEMPTS = 2$", "_F6_BEAT_REPAIR_ATTEMPTS = 5")],
+     TBA, "test_the_retry_cap_is_one_initial_attempt_plus_one_correction"),
+
+    ("106. the beat actuator defaults to the bare alias that answers 503",
+     [(LZ, r'(?m)^    return \(os\.getenv\("NARASI_F6_BEAT_REPAIR_MODEL", "claude-haiku-4-5-20251001"\)\.strip\(\)\n'
+           r'            or "claude-haiku-4-5-20251001"\)$',
+       '    return (os.getenv("NARASI_F6_BEAT_REPAIR_MODEL", "claude-haiku-4-5").strip()\n'
+       '            or "claude-haiku-4-5")')],
+     TFCR, "test_the_beat_actuator_defaults_to_the_full_dated_claude_id"),
+
+    ("107. the beat lane's attribution is folded into the structural lane's counters",
+     [(NA, r'(?m)^            result\["_f6_beat_repair"\] = \{$',
+       '            result["_f8_structural_counters"] = {')],
+     TBA, "test_the_lane_reports_on_its_own_channel"),
+
+    ("108. the beat repair is spliced into a chapter the outline never named",
+     [(NA, r"(?m)^                    _f6_bat = _f6_bidx\[_f6_bch - 1\]$",
+       "                    _f6_bat = _f6_bidx[0]")],
+     TBA, "test_only_the_target_chapter_changed"),
+
+    ("109. every candidate is admissible, so a truncated chapter is spliced",
+     [(NA, r"(?m)^                    _f6_breject = _f6_beat_candidate_reason\(\n"
+           r"                        _f6_bcand, original=_f6_borig, ceiling=_f6_ceil\)$",
+       '                    _f6_breject = ""')],
+     TBA, "test_the_corrective_retry_carries_the_reason_the_first_was_refused"),
+
+    ("110. the 519→45 truncation passes the word floor again",
+     [(NA, r"(?m)^    if words < int\(base_words \* _F6_BEAT_WORD_FLOOR\):$", "    if False:")],
+     TBA, "test_the_fixture_bodies_put_every_candidate_where_this_file_claims"),
 ]
 
 

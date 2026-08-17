@@ -139,3 +139,76 @@ def test_non_f6_revise_never_receives_the_mandatory_teleport_suffix():
     assert lz._f6_teleport_repair_suffix([
         {"type": "spatial", "severity": "high"}
     ]) == ""
+
+
+def test_the_beat_actuator_defaults_to_the_full_dated_claude_id(monkeypatch):
+    """🔴 THE BARE ALIAS IS A 503. `claude-haiku-4-5` has no channel on the production
+    provider, so an actuator pointed at it would fail every call and leave every missing beat
+    unresolved — a fail-closed gate refusing books because its actuator was unreachable."""
+    monkeypatch.delenv("NARASI_F6_BEAT_REPAIR_MODEL", raising=False)
+    assert lz._narasi_f6_beat_repair_model() == "claude-haiku-4-5-20251001"
+    monkeypatch.setenv("NARASI_F6_BEAT_REPAIR_MODEL", "   ")
+    assert lz._narasi_f6_beat_repair_model() == "claude-haiku-4-5-20251001"
+    monkeypatch.setenv("NARASI_F6_BEAT_REPAIR_MODEL", "claude-haiku-4-5-20251001-test")
+    assert lz._narasi_f6_beat_repair_model() == "claude-haiku-4-5-20251001-test"
+
+
+def test_the_beat_actuator_is_told_the_server_already_proved_the_beat_missing(monkeypatch):
+    """The canary's lane audited instead of writing. This prompt forbids that in the terms the
+    canary produced: no no-op, no summary, no diff, no heading."""
+    seen = {}
+
+    async def cheap(system, user, **kwargs):
+        seen.update(system=system, user=user, kwargs=kwargs)
+        return "Bab yang sudah memuat beat itu.", 4
+
+    monkeypatch.delenv("NARASI_F6_BEAT_REPAIR_MODEL", raising=False)
+    monkeypatch.setattr(lz, "_narasi_cheap_call", cheap)
+
+    text, credits = asyncio.run(lz._narasi_beat_execution_repair(
+        "Min-jae menunggu di lobi sepanjang sore itu.",
+        missing_beat="Tae-jun executes the deposition before a notary",
+        beat_number=2, chapter_number=2,
+        required_beats="  1. Min-jae waits\n  2. Tae-jun executes the deposition\n",
+        style="storytelling", language="id", tenant_id="t", user_id="u",
+        previous_tail="Eun-soo menutup pintu kantor itu.", word_ceiling=110))
+
+    assert (text, credits) == ("Bab yang sudah memuat beat itu.", 4)
+    assert seen["kwargs"]["model_override"] == "claude-haiku-4-5-20251001"
+    assert seen["kwargs"]["phase"] == "f6_beat_repair"
+    assert seen["kwargs"]["require_complete"] is True
+    assert seen["kwargs"]["json_mode"] is False
+    # the server has already proven it — the model writes, it does not re-audit
+    assert "server has already verified" in seen["system"]
+    assert "mandatory rewrite" in seen["system"]
+    assert "do not return it unchanged" in seen["system"]
+    assert "ENACT the missing beat" in seen["system"]
+    # the four shapes the canary produced, forbidden by name
+    assert "COMPLETE chapter body" in seen["system"]
+    for banned in ("a diff", "a summary", "a chapter heading", "only the new scene"):
+        assert banned in seen["system"], banned
+    # POV, tense and the chapter's own ending must survive
+    assert "point of view" in seen["system"] and "narration tense" in seen["system"]
+    assert "existing ending" in seen["system"]
+    # what it is handed
+    assert "Tae-jun executes the deposition before a notary" in seen["user"]
+    assert "beat 2 of chapter 2" in seen["user"]
+    assert "PRESERVATION AUTHORITY" in seen["user"]
+    assert "must not exceed 110 words" in seen["user"]
+    assert "READ-ONLY CONTEXT" in seen["user"]
+
+
+def test_the_beat_actuator_carries_the_correction_into_its_one_retry(monkeypatch):
+    seen = {}
+
+    async def cheap(_system, user, **_kwargs):
+        seen["user"] = user
+        return "ok.", 0
+
+    monkeypatch.setattr(lz, "_narasi_cheap_call", cheap)
+    asyncio.run(lz._narasi_beat_execution_repair(
+        "Min-jae menunggu.", missing_beat="Tae-jun signs", beat_number=2, chapter_number=2,
+        required_beats="", style="s", language="id", tenant_id="t", user_id="u",
+        correction="Rejected because it returned the chapter unchanged."))
+    assert "CORRECTION TO YOUR PREVIOUS ATTEMPT" in seen["user"]
+    assert "returned the chapter unchanged" in seen["user"]

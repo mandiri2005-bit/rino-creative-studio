@@ -338,13 +338,20 @@ BREAKS = [
      [(NA, '(?m)^_F8_SEAM_REPAIR_ATTEMPTS = 2$', '_F8_SEAM_REPAIR_ATTEMPTS = 1')],
      TD, 'test_an_inadmissible_seam_candidate_retries_then_stays_blocked'),
 
+    # 🔴 ANCHORED ON THE SEAM LANE'S OWN REFUSAL TEXT, exactly like 59 below. The dedicated
+    # `beat_execution` actuator (`_f6_beat_candidate_reason`) applies the same two guards, so a
+    # pattern on the condition ALONE matches twice and the harness — correctly — refuses to
+    # judge which control it disabled. The message line is what makes this the SEAM one.
     ('55. a byte-identical provider answer is admitted as a repair candidate',
-     [(NA, '(?m)^    if text == base:$', '    if False:')],
+     [(NA, '(?m)^    if text == base:\\n        return "it returned the chapter unchanged"$',
+       '    if False:\n        return "it returned the chapter unchanged"')],
      TD, 'test_the_server_rejects_each_unsafe_seam_candidate_for_its_own_reason'),
 
     ('56. a candidate carrying a chapter heading is admitted for body-only splice',
-     [(NA, '(?m)^    if any\\(_ngate\\.chapter_heading_line\\(_b\\) for _b in _ngate\\.split_chapter_blocks\\(text\\)\\):$',
-       '    if False:')],
+     [(NA, '(?m)^    if any\\(_ngate\\.chapter_heading_line\\(_b\\) for _b in _ngate\\.split_chapter_blocks\\(text\\)\\):\\n'
+           '        return "it contained a chapter heading instead of body-only prose"$',
+       '    if False:\n'
+       '        return "it contained a chapter heading instead of body-only prose"')],
      TD, 'test_the_server_rejects_each_unsafe_seam_candidate_for_its_own_reason'),
 
     ('57. a candidate that cuts away the chapter is admitted',

@@ -9146,6 +9146,93 @@ async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style:
         model_override=_narasi_f6_repair_model(), phase="f6_repair")
 
 
+#: F6 `beat_execution` repair is a narrow WRITING task on ONE chapter — enact a beat the server
+#: has already proven absent from the page — not a whole-book reasoning task. It gets its OWN
+#: variable so an operator can move it without touching the ceiling reducer, the seam actuator,
+#: or any unrelated cheap side-call.
+#:
+#: ⚠️ THE DEFAULT IS THE FULL DATED ID ON PURPOSE. The bare alias `claude-haiku-4-5` has no
+#:    channel on the production provider and comes back 503, which would make every beat repair
+#:    a failed call and every missing beat unresolved — a fail-closed gate refusing books
+#:    because its actuator could not be reached.
+def _narasi_f6_beat_repair_model() -> str:
+    return (os.getenv("NARASI_F6_BEAT_REPAIR_MODEL", "claude-haiku-4-5-20251001").strip()
+            or "claude-haiku-4-5-20251001")
+
+
+async def _narasi_beat_execution_repair(chapter_body: str, *, missing_beat: str,
+                                        beat_number: int, chapter_number: int,
+                                        required_beats: str, style: str, language: str,
+                                        tenant_id, user_id, job_uuid=None,
+                                        credit_row: bool = False, correction: str = "",
+                                        previous_tail: str = "", word_ceiling: int = 0):
+    """Rewrite ONE chapter so an outlined beat actually HAPPENS in it.
+
+    🔴 THE ACTUATOR IS NOT A SECOND VOTER. The server has ALREADY proven, against its own
+    validated beat census over its own outline keyspace, that this beat is `missing` or merely
+    `promised`. The model's job is to enact it, not to re-audit whether it is already there.
+    Production canary `7pucr0hs` is what the generic lane costs: `beat_execution:2:outline_beat:2|2`
+    went to the structural patch lane, which answered `unknown_operation → prose_unterminated`;
+    the chunked revise fallback then produced two no-ops and one chapter truncated from 519
+    words to 45. A general editor asked, in passing, to write a missing scene.
+
+    🔴 ONE CHAPTER IN, ONE CHAPTER OUT, HEADING NEVER SENT. The previous chapter's tail travels
+    as read-only context so the new material can be continuous with it; only this chapter's body
+    comes back, and the caller re-attaches the heading and separators it already holds. Every
+    other chapter is unreachable by construction, not by inspection afterwards.
+
+    Returns `(candidate_body, cr)`. The caller still owns every admissibility check, and the
+    FINAL BEAT CENSUS over the delivered bytes remains the only proof the beat is resolved."""
+    missing_beat = " ".join(str(missing_beat or "").split())[:600]
+    required_beats = str(required_beats or "").strip()[:6000]
+    tail = str(previous_tail or "").strip()[:1200]
+    words = max(1, len(str(chapter_body or "").split()))
+    ceiling = int(word_ceiling or 0)
+    system = (
+        "You are a narrative repair writer working on ONE chapter of a multi-chapter story. "
+        "The server has already verified, against its own structural census of the accepted "
+        "outline, that one required beat of this chapter never happens on the page — it is "
+        "absent, or it is only announced, intended or promised. This is a mandatory rewrite, "
+        "not a request to audit whether the beat is already present: do not reply that the "
+        "chapter is fine, and do not return it unchanged. "
+        "ENACT the missing beat as dramatised action inside this chapter: the event must "
+        "OCCUR, with the characters doing it on the page. A statement that it will happen, a "
+        "summary that it happened elsewhere, or a reference back to it later does NOT count. "
+        "Place it where the outline's order puts it, so the beats preceding it still happen "
+        "before it. "
+        "Keep every OTHER required beat of this chapter intact, in the same order, along with "
+        "its decisions, reveals and causal links. Preserve the chapter's point of view, its "
+        "narration tense, its characters and its existing ending — the chapter must still "
+        "close on the same final movement it closes on now. "
+        "Reply with the COMPLETE chapter body, from its first sentence to its final sentence. "
+        "Do NOT reply with only the new scene, a diff, a patch, an excerpt, a summary, notes, "
+        "a chapter heading, or any commentary. Finish the final sentence; never stop "
+        "mid-sentence."
+    )
+    user = f"STYLE: {style}\nLANGUAGE: {language}\n\n"
+    if tail:
+        user += ("END OF THE PREVIOUS CHAPTER — READ-ONLY CONTEXT, do not rewrite or repeat "
+                 f"it:\n{tail}\n\n")
+    user += (f"MISSING BEAT (server-verified: beat {int(beat_number)} of chapter "
+             f"{int(chapter_number)} never happens on the page):\n{missing_beat}\n\n")
+    if required_beats:
+        user += (f"ALL REQUIRED BEATS FOR THIS CHAPTER — PRESERVATION AUTHORITY, in order:\n"
+                 f"{required_beats}\n\n")
+    if ceiling >= 1:
+        user += (f"WORD BUDGET: the complete chapter body must not exceed {ceiling} words. "
+                 f"It currently has about {words}. If enacting the beat needs room, tighten "
+                 f"decorative texture elsewhere rather than dropping another beat.\n\n")
+    user += f"CHAPTER BODY TO REPAIR:\n{chapter_body}"
+    correction = " ".join(str(correction or "").split())[:400]
+    if correction:
+        user += f"\n\nCORRECTION TO YOUR PREVIOUS ATTEMPT: {correction}"
+    return await _narasi_cheap_call(
+        system, user, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+        max_tokens=max(900, (ceiling or words) * 4), temperature=0.2,
+        json_mode=False, credit_row=credit_row, require_complete=True,
+        model_override=_narasi_f6_beat_repair_model(), phase="f6_beat_repair")
+
+
 #: F8 seam repair is a narrow editing task on ONE chapter opening, not a whole-book reasoning
 #: task — the same argument that put F6 on its own cheap Claude route. It gets its OWN variable
 #: so an operator can move the seam actuator without touching F6's reducer or any unrelated

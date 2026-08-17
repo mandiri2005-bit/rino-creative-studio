@@ -3176,6 +3176,7 @@ async def _run_narration_job_after_parity(
     # outline/Bible packet.
     result.pop("_narrative_authority", None)
     result.pop("_f6_pending", None)
+    result.pop("_f6_beat_repair", None)
     # ── F8 — the chapter SEAM loop, closed against the same delivered bytes ─────────
     # 🔴 PLACED HERE, NOT BETWEEN F6'S REFUSAL AND THIS POP. Sitting in that gap silently
     # re-aimed `prove_f6` mutant 43 — its pattern anchors F6's hard block on the comment
@@ -3394,6 +3395,63 @@ def _f6_reduction_candidate_reason(candidate: str, *, floor: int, ceiling: int) 
     tail = text.rstrip().rstrip("\"'’”»)]")
     if not tail.endswith((".", "!", "?", "…", "—", "–", "--")):
         return "it did not finish with terminal punctuation"
+    return ""
+
+
+#: ONE initial attempt plus ONE corrective retry, exactly like the ceiling reducer. A beat the
+#: actuator cannot enact twice is an unresolved beat, and unresolved blocks — never a retry
+#: ladder that spends the job's budget arguing with a model.
+_F6_BEAT_REPAIR_ATTEMPTS = 2
+
+#: What a beat-execution candidate may do to the chapter it rewrites. Enacting a beat ADDS a
+#: scene, so the chapter may grow — but one that SHRANK is the production failure this lane
+#: exists for (canary `7pucr0hs`: 519 words came back as 45), and one that doubled the chapter
+#: or shares almost nothing with it is not the same chapter and must never be spliced.
+_F6_BEAT_WORD_FLOOR = 0.9
+_F6_BEAT_WORD_CEIL = 1.6
+_F6_BEAT_MIN_FIDELITY = 0.5
+
+
+def _f6_beat_candidate_reason(candidate: str, *, original: str, ceiling: int = 0) -> str:
+    """Return why a beat-execution candidate is unsafe to splice, or ``""`` when admissible.
+
+    🔴 EVERY CHECK HERE IS ABOUT THE BYTES, NOT ABOUT WHETHER THE BEAT IS NOW ON THE PAGE.
+    Whether the beat actually happens is the FINAL CENSUS's question, and this function must
+    never pre-empt it — a candidate that passes every check below is still unresolved until the
+    census says otherwise. What this refuses is the four shapes the canary produced: an empty
+    answer, an audit that returned the chapter unchanged, a heading leak, and a truncation."""
+    import difflib
+    import narasi_gate as _ngate
+    text = str(candidate or "").strip()
+    if not text:
+        return "the response was empty"
+    base = str(original or "").strip()
+    # 🔴 EACH LANE NAMES ITSELF IN ITS REFUSALS. The seam actuator's checks are the same shape,
+    # and identical wording made the two indistinguishable in a log — and made the mutation
+    # harness unable to tell which control it had disabled (`prove_f8` 55/56 matched twice).
+    if text == base:
+        return "it returned the chapter unchanged, so the beat was never enacted"
+    if any(_ngate.chapter_heading_line(_b) for _b in _ngate.split_chapter_blocks(text)):
+        return "it contained a chapter heading instead of the chapter body alone"
+    words, base_words = len(text.split()), max(1, len(base.split()))
+    if words < int(base_words * _F6_BEAT_WORD_FLOOR):
+        return (f"it had {words} words against {base_words} — the chapter was cut, not "
+                f"extended with the missing beat")
+    if words > int(base_words * _F6_BEAT_WORD_CEIL):
+        return f"it had {words} words against {base_words} — that is a rewrite, not a repair"
+    # 🔴 A CHAPTER PUSHED OVER ITS OWN CEILING IS A NEW F6 VIOLATION. The final scan runs every
+    # class over the delivered bytes, so a beat enacted by blowing the word contract trades
+    # `beat_execution` for `chapter_ceiling` and still blocks. Refuse it here, where a
+    # corrective retry can still fix it.
+    if int(ceiling or 0) >= 1 and words > int(ceiling):
+        return f"it had {words} words, above this chapter's {int(ceiling)}-word ceiling"
+    tail = text.rstrip().rstrip("\"'’”»)]")
+    if not tail.endswith((".", "!", "?", "…", "—", "–", "--")):
+        return "it did not finish with terminal punctuation"
+    # A repair that shares nothing with the chapter is a DIFFERENT chapter: the beats that must
+    # survive live in the prose that must survive, and a from-scratch answer discards them.
+    if difflib.SequenceMatcher(None, base.split(), text.split()).ratio() < _F6_BEAT_MIN_FIDELITY:
+        return "it kept too little of the original chapter to be the same chapter"
     return ""
 
 
@@ -3626,6 +3684,19 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
     Returns the accounting dict; also publishes it as `result["f6"]`. Never raises: a
     failure here yields an accounting that BLOCKS delivery rather than one that permits it."""
     pending = result.pop("_f6_pending", None)
+    # The DEDICATED beat actuator's own record, on its own channel so the two lanes stay
+    # distinguishable when one of them stops working.
+    #
+    # 🔴 IT IS TELEMETRY, NOT EVIDENCE. Nothing below reads it, and no `accepted` or
+    # `provider_calls` count can turn an unresolved beat into a resolved one — the final beat
+    # census over the DELIVERED bytes is the only thing that can. Popped here so the private
+    # channel can never reach the durable payload by accident.
+    beat_lane = result.pop("_f6_beat_repair", None)
+    if isinstance(beat_lane, dict):
+        log.warning("F6 beat actuator: %s beat(s) attempted, %s provider call(s), %s "
+                    "candidate(s) spliced (%s)", beat_lane.get("attempted"),
+                    beat_lane.get("provider_calls"), beat_lane.get("accepted"),
+                    beat_lane.get("accepted_ids"))
     # 🔴 THE SWITCH IS READ HERE TOO, AND FIRST. Off means F6 never ran at all — no pending
     # state was recorded, nothing may be accounted, and nothing may be refused.
     if not _f6_enabled():
@@ -3833,6 +3904,10 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
         accounting = {"violations_detected": -1, "violations_resolved": 0,
                       "violations_unresolved": -1, "delivery_blocked": True,
                       "error": str(_e)[:200]}
+    # 🔴 ATTACHED AFTER EVERY VERDICT IS ALREADY DECIDED, and read by nobody. An operator needs
+    # to see which lane spent what; a lane's own report must never be able to move a count.
+    if isinstance(beat_lane, dict):
+        accounting["beat_repair"] = dict(beat_lane)
     result["f6"] = accounting
     if accounting.get("delivery_blocked"):
         log.error("narration job %s: F6 blocks delivery — %d unresolved of %d detected "
@@ -6458,11 +6533,20 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             # `chapter_ceiling` has its bounded reducer below. Teleports likewise leave the
             # mixed gate revise: they use a dedicated cheap-Claude chapter lane so unrelated
             # critic findings cannot silently promote this mechanical repair back to Opus.
+            #
+            # 🔴 `beat_execution` LEAVES TOO, AND PRODUCTION IS WHY. Canary `7pucr0hs` routed
+            # `beat_execution:2:outline_beat:2|2` — a beat the census had PROVEN absent — into
+            # the generic structural patch lane, which answered `unknown_operation →
+            # prose_unterminated`; the chunked revise fallback then returned two no-ops and one
+            # chapter truncated from 519 words to 45, and the job blocked with "1 unresolved of
+            # 2 detected". Enacting a missing scene is writing, not structural editing, so it
+            # goes to its OWN actuator below. `final_beat` is deliberately NOT moved: it is
+            # verified differently (`require_order=False`) and has no canary against it.
             _f6_teleport_targets = [
                 _v for _v in _f6_detected if _v["f6_class"] == "teleport"]
             _f6_routed = [
                 _v for _v in _f6_detected
-                if _v["f6_class"] not in ("chapter_ceiling", "teleport")]
+                if _v["f6_class"] not in ("chapter_ceiling", "teleport", "beat_execution")]
             if _f6_routed:
                 _v3g_merged = _v3g_merged + _f6_routed
                 log.warning("F6: %d hard violation(s) routed to repair (%s)", len(_f6_routed),
@@ -6680,6 +6764,122 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             _f6_pending["provider_calls"] += 1
             log.error("F6 teleport repair failed — location change(s) stay unresolved (%s)",
                       _f6te)
+
+    # ── F6 `beat_execution` — DEDICATED actuator, one chapter in, one chapter out ────────
+    # 🔴 WHY THE GENERIC LANES ARE NOT ENOUGH, MEASURED IN PRODUCTION. Canary `7pucr0hs` had a
+    # sound census (the unknown-beat fix worked: 10 invented rows ignored, 9 more on the final
+    # read) and ONE genuine finding — `beat_execution:2:outline_beat:2|2`, an outline beat the
+    # server had proven never happens on the page. It was routed to the generic structural patch
+    # lane, which answered `unknown_operation → prose_unterminated`; the chunked revise fallback
+    # then produced two no-ops and one chapter truncated from 519 words to 45. Final verdict: "F6
+    # blocks delivery — 1 unresolved of 2 detected". A schema-valid patch operation is not a
+    # scene, and a compression editor asked to add one deletes instead.
+    #
+    # 🔴 THIS LANE DOES NOT DECIDE ANYTHING. It writes a candidate; `_f6_finalize` still runs the
+    # final beat census over the DELIVERED bytes and `verify_beat_resolved` still demands the
+    # beat read `executed` with every preceding beat executed too. A candidate spliced here is
+    # not a resolved beat — it is a chapter the verifier will judge.
+    #
+    # 🔴 IT RUNS BEFORE THE CEILING REDUCER ON PURPOSE. Enacting a beat adds words; the reducer
+    # is the lane that owns the word contract and is handed the outline packet as its
+    # preservation authority. Repairing in the other order would let this lane manufacture a
+    # fresh `chapter_ceiling` that nothing downstream is targeting.
+    _f6_beat_targets = [_v for _v in ((_f6_pending or {}).get("detected") or ())
+                        if isinstance(_v, dict) and _v.get("f6_class") == "beat_execution"]
+    if _f6_beat_targets and _f6_pending is not None:
+        _f6_beat_accepted: list = []
+        _f6_beat_attempted: set = set()
+        _f6_beat_calls = 0
+        try:
+            from laozhang_api import _narasi_beat_execution_repair
+            _f6_bk = "book" if result.get("book") else "output"
+            for _f6_bt in _f6_beat_targets:
+                _f6_bch = _f6_bt.get("outline_chapter")
+                _f6_bno = _f6_bt.get("outline_beat")
+                if not (isinstance(_f6_bch, int) and not isinstance(_f6_bch, bool)
+                        and isinstance(_f6_bno, int) and not isinstance(_f6_bno, bool)):
+                    continue
+                # 🔴 THE BEAT'S OWN TEXT COMES FROM THE ACCEPTED OUTLINE, never from the census
+                # row. The row is model prose about a beat; the packet IS the commitment, and
+                # the ordinal was already validated against its keyspace at detection.
+                _f6_packet = ""
+                if isinstance(_outline_packets, dict):
+                    _f6_packet = (_outline_packets.get(_f6_bch)
+                                  or _outline_packets.get(str(_f6_bch)) or "")
+                _f6_beats_all = _f5_outline_beats(_f6_packet or "")
+                if not (1 <= _f6_bno <= len(_f6_beats_all)):
+                    # No commitment text to enact means no repair anyone could verify. The
+                    # violation stays unresolved and the finaliser blocks.
+                    continue
+                _f6_missing = str(_f6_beats_all[_f6_bno - 1] or "")
+                _f6_lim = (_f6_pending.get("bounds") or {}).get(_f6_bch) or ()
+                _f6_ceil = int(_f6_lim[1]) if len(_f6_lim) == 2 else 0
+                _f6_bfeedback = ""
+                for _f6_btry in range(_F6_BEAT_REPAIR_ATTEMPTS):
+                    _f6_bblocks = _ngate.split_chapter_blocks(result.get(_f6_bk) or "")
+                    _f6_bidx = [_i for _i, _b in enumerate(_f6_bblocks)
+                                if _ngate.chapter_heading_line(_b)]
+                    if _f6_bch > len(_f6_bidx):
+                        break
+                    _f6_bat = _f6_bidx[_f6_bch - 1]
+                    _f6_bblock = _f6_bblocks[_f6_bat]
+                    _f6_bhead = _ngate.chapter_heading_line(_f6_bblock)
+                    _f6_bbody = _f6_bblock[len(_f6_bhead):]
+                    # Server-owned framing, re-attached byte-for-byte so the heading stays
+                    # identical and the neighbouring blocks are never touched.
+                    _f6_bpre = _f6_bbody[:len(_f6_bbody) - len(_f6_bbody.lstrip())]
+                    _f6_bpost = _f6_bbody[len(_f6_bbody.rstrip()):]
+                    _f6_borig = _f6_bbody.strip()
+                    _f6_btail = ""
+                    if _f6_bch >= 2:
+                        _f6_pblock = _f6_bblocks[_f6_bidx[_f6_bch - 2]]
+                        _f6_phead = _ngate.chapter_heading_line(_f6_pblock)
+                        _f6_btail = " ".join(_f6_pblock[len(_f6_phead):].split())[-1200:]
+                    if isinstance(_f6_bt.get("f6_claim"), str):
+                        _f6_beat_attempted.add(_f6_bt["f6_claim"])
+                    _f6_beat_calls += 1
+                    _f6_pending["repair_attempts"] += 1
+                    _f6_pending["provider_calls"] += 1
+                    _f6_bcand, _f6_bcr = await _narasi_beat_execution_repair(
+                        _f6_borig, missing_beat=_f6_missing, beat_number=_f6_bno,
+                        chapter_number=_f6_bch, required_beats=_f6_packet,
+                        style=style, language=language, tenant_id=tenant_id,
+                        user_id=user_id, job_uuid=job_uuid, credit_row=False,
+                        correction=_f6_bfeedback, previous_tail=_f6_btail,
+                        word_ceiling=_f6_ceil)
+                    if sink is not None and _f6_bcr:
+                        sink.credits += int(_f6_bcr)
+                    _f6_bcand = str(_f6_bcand or "").strip()
+                    _f6_breject = _f6_beat_candidate_reason(
+                        _f6_bcand, original=_f6_borig, ceiling=_f6_ceil)
+                    if _f6_breject:
+                        _f6_bfeedback = (
+                            f"Rejected because {_f6_breject}. Return the COMPLETE chapter "
+                            f"body with the missing beat dramatised inside it.")
+                        continue
+                    _f6_bblocks[_f6_bat] = _f6_bhead + _f6_bpre + _f6_bcand + _f6_bpost
+                    result[_f6_bk] = "".join(_f6_bblocks)
+                    if isinstance(_f6_bt.get("f6_claim"), str):
+                        _f6_beat_accepted.append(_f6_bt["f6_claim"])
+                    break
+        except Exception as _f6be:  # noqa: BLE001
+            # 🔴 ONE DOOR FOR "NO CANDIDATE". A lane that raised produced no usable chapter,
+            # exactly like one that returned nothing — the beat stays unexecuted, the verifier
+            # refuses it and the finaliser blocks. Nothing here decides delivery.
+            log.error("F6 beat repair failed — beat(s) stay unexecuted (%s)", _f6be)
+        # 🔴 PUBLISHED ON ITS OWN CHANNEL, NEVER FOLDED INTO THE STRUCTURAL OR LEGACY LANE'S.
+        # Two lanes that share one accounting slot cannot be told apart when one of them stops
+        # working — which is exactly the failure this whole lane exists to answer.
+        #
+        # 🔴 AND IT PROVES NOTHING. `accepted` means "spliced", not "resolved": the final beat
+        # census over the delivered bytes is the only thing that can say resolved.
+        if _f6_beat_attempted or _f6_beat_calls:
+            result["_f6_beat_repair"] = {
+                "accepted_ids": sorted(set(_f6_beat_accepted)),
+                "attempted": len(_f6_beat_attempted),
+                "provider_calls": _f6_beat_calls,
+                "accepted": len(set(_f6_beat_accepted)),
+            }
 
     # ── F6 `chapter_ceiling` — bounded reduction + corrective retry, byte-exact splice ──
     # 🔴 WHY THIS IS NOT PART OF THE MERGED REVISE. That call takes the whole manuscript and

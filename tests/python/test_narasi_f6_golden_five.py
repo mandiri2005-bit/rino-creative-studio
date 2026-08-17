@@ -126,11 +126,11 @@ def golden(monkeypatch):
             revise=_repair, reduce_to=SHORT1, revise_raises=False, reduce_raises=False,
             reduce_returns=None, reduce_sequence=None, book=None, tense_before=TENSE_DIRTY,
             tele_before=TELE_DIRTY, beats_before=BEATS_DIRTY, authority=AUTHORITY,
-            body=None):
+            body=None, beat_returns=None, beat_sequence=None, beat_raises=False):
         seen = {"finalize": [], "refund": 0, "persisted": None, "settle": 0,
                 "critique": 0, "revise": 0, "reduce": 0, "reduce_targets": [],
                 "reduce_corrections": [], "reduce_required_beats": [],
-                "final_book": None}
+                "beat": 0, "beat_calls": [], "final_book": None}
 
         async def _anoop(*_a, **_k):
             return None
@@ -196,6 +196,29 @@ def golden(monkeypatch):
                 return (reduce_returns, 0)
             return (reduce_to, 0)
 
+        async def _beat_repair(chapter_body, *, missing_beat, beat_number, chapter_number,
+                               required_beats="", correction="", previous_tail="",
+                               word_ceiling=0, **_k):
+            """Provider double for the DEDICATED `beat_execution` actuator.
+
+            🔴 NEVER A CANNED REPLY. It enacts the beat inside the body it was HANDED, so the
+            splice, the word band and the fidelity check are exercised against real bytes —
+            and so a lane that stopped passing the current chapter would be observable."""
+            seen["beat"] += 1
+            seen["beat_calls"].append({
+                "words": len(chapter_body.split()), "missing_beat": missing_beat,
+                "beat_number": beat_number, "chapter_number": chapter_number,
+                "required_beats": required_beats, "correction": correction,
+                "previous_tail": previous_tail, "word_ceiling": word_ceiling})
+            if beat_raises:
+                raise RuntimeError("beat actuator provider exploded")
+            if beat_sequence is not None:
+                return (beat_sequence[min(seen["beat"] - 1, len(beat_sequence) - 1)], 0)
+            if beat_returns is not None:
+                return (beat_returns, 0)
+            return (chapter_body.rstrip().rstrip(".")
+                    + " Tae-jun menandatangani deposisi itu di depan notaris.", 0)
+
         async def cheap(*_a, **_k):
             return ("{}", 0)
 
@@ -218,6 +241,7 @@ def golden(monkeypatch):
         monkeypatch.setattr(live_lz, "_narasi_consistency_critique", critique)
         monkeypatch.setattr(live_lz, "_narasi_consistency_revise", _revise)
         monkeypatch.setattr(live_lz, "_narasi_chapter_reduce", _reduce)
+        monkeypatch.setattr(live_lz, "_narasi_beat_execution_repair", _beat_repair)
         # 🔴 A SPY, NOT A SUBSTITUTE. The REAL finaliser runs and the real hard block reads its
         # real return value; this only records what it produced. Reading the accounting off the
         # persisted row instead would make every blocked case unobservable — a blocked job
@@ -362,15 +386,18 @@ def test_all_five_repaired_persists_and_finalises_DONE(golden):
 def test_the_positive_path_spends_exactly_one_verification_pass(golden):
     """One detection read and one bounded verification for all three censuses.
 
-    Repair itself now has two bounded dispatches: the mixed F6/F8 lane and the isolated cheap
-    Claude teleport lane.  Splitting the actuator must never multiply the expensive final read.
+    Repair itself now has three bounded dispatches: the mixed F6/F8 lane, the isolated cheap
+    Claude teleport lane, and the dedicated `beat_execution` actuator.  Splitting the actuator
+    must never multiply the expensive final read.
     """
     seen = golden()
     assert seen["critique"] == 2, "detection + verification, not one call per class"
     assert seen["revise"] == 2, "one mixed repair plus one cheap teleport repair"
     assert seen["reduce"] == 1
-    assert seen["f6"]["provider_calls"] == 4, \
-        "mixed repair + teleport repair + ceiling reduction + final verification"
+    assert seen["beat"] == 1, "one bounded dispatch for the one beat_execution violation"
+    assert seen["f6"]["provider_calls"] == 5, \
+        ("mixed repair + teleport repair + beat repair + ceiling reduction + "
+         "final verification")
 
 
 def test_the_untargeted_chapter_comes_back_byte_identical(golden):
@@ -500,6 +527,7 @@ def test_a_no_op_repair_blocks_every_class(golden):
     """🔴 v9's EXACT FAILURE, FIVE TIMES OVER. The lanes report a repair; the bytes are the
     original."""
     seen = golden(revise=lambda book: book, reduce_returns=LONG1,
+                  beat_returns=B4_PROMISE,
                   tense_after=TENSE_DIRTY, tele_after=TELE_DIRTY, beats_after=BEATS_DIRTY)
     assert seen["f6"]["chapters_changed"] == 0, seen["f6"]
     assert seen["f6"]["violations_resolved"] == 0
