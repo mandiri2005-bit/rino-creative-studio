@@ -5338,6 +5338,11 @@ function NarasiSection({settings,showToast}){
           },2000);
         });
         if(abortRef.current){ setGenerating(false); return; }
+        // A terminal job without a delivered manuscript must not leave the UI on the
+        // result panel: that panel legitimately has nothing to render, which looked like
+        // the whole application had gone blank. Keep the error/cancel toast above, then
+        // return the user to the intact outline so they can retry or edit it.
+        if(!finalOut) setStage("outline");
         // Orchestrator already assembled the book → render directly, no stitch.
         setNarasi(finalOut);
         try{ loadChapterRatings(jobId); }catch{}
