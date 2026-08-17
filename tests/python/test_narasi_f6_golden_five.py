@@ -358,13 +358,17 @@ def test_all_five_repaired_persists_and_finalises_DONE(golden):
 
 
 def test_the_positive_path_spends_exactly_one_verification_pass(golden):
-    """One detection read, one repair, one bounded verification — the three censuses come out
-    of ONE answer rather than one call each."""
+    """One detection read and one bounded verification for all three censuses.
+
+    Repair itself now has two bounded dispatches: the mixed F6/F8 lane and the isolated cheap
+    Claude teleport lane.  Splitting the actuator must never multiply the expensive final read.
+    """
     seen = golden()
     assert seen["critique"] == 2, "detection + verification, not one call per class"
-    assert seen["revise"] == 1
+    assert seen["revise"] == 2, "one mixed repair plus one cheap teleport repair"
     assert seen["reduce"] == 1
-    assert seen["f6"]["provider_calls"] == 3
+    assert seen["f6"]["provider_calls"] == 4, \
+        "mixed repair + teleport repair + ceiling reduction + final verification"
 
 
 def test_the_untargeted_chapter_comes_back_byte_identical(golden):

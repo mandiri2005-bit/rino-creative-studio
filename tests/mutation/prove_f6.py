@@ -48,6 +48,7 @@ TCLS = "tests/python/test_narasi_f6_classes.py"
 TORD = "tests/python/test_narasi_f6_ordering_behavioral.py"
 #: The FINAL SCAN suite: every row drives the real job and asks what it DELIVERED.
 TFS = "tests/python/test_narasi_f6_final_scan.py"
+TFCR = "tests/python/test_narasi_f6_cheap_claude_repair.py"
 
 BREAKS = [
     # ── framing: the root cause ────────────────────────────────────────────
@@ -678,8 +679,10 @@ BREAKS = [
      TS3, "TestCheapCall::test_require_complete_rejects_a_length_capped_response_but_keeps_cost"),
 
     ("62g2. the reducer stops requiring a complete cheap-call response",
-     [(LZ, r"(?m)^        json_mode=False, credit_row=credit_row, require_complete=True\)$",
-       "        json_mode=False, credit_row=credit_row, require_complete=False)")],
+     [(LZ, r'(?m)^        json_mode=False, credit_row=credit_row, require_complete=True,\n'
+           r'        model_override=_narasi_f6_repair_model\(\), phase="f6_repair"\)$',
+       '        json_mode=False, credit_row=credit_row, require_complete=False,\n'
+       '        model_override=_narasi_f6_repair_model(), phase="f6_repair")')],
      TS3, "TestChapterReducer::test_forwards_the_exact_range_correction_and_completeness_guard"),
 
     ("62h. the reducer is not told the server-owned floor",
@@ -996,6 +999,39 @@ BREAKS = [
      [(NA, r"(?m)^                authority_text=_narrative_authority_text\(result\)\)$",
        "                authority_text=\"\")")],
      TG, "test_all_five_repaired_persists_and_finalises_DONE"),
+
+    # ── cheap Claude actuator for the two live-canary failures ────────────
+    ("96. F6 repair silently defaults back to expensive Opus",
+     [(LZ, r'(?m)^    return \(os\.getenv\("NARASI_F6_REPAIR_MODEL", "claude-haiku-4-5"\)\.strip\(\)\n'
+           r'            or "claude-haiku-4-5"\)$',
+       '    return (os.getenv("NARASI_F6_REPAIR_MODEL", "claude-opus-4-6").strip()\n'
+       '            or "claude-opus-4-6")')],
+     TFCR, "test_ceiling_reducer_sends_an_exact_mandatory_budget_to_cheap_claude"),
+
+    ("97. the ceiling reducer ignores its call-scoped Claude model",
+     [(LZ, r"(?m)^    model    = str\(model_override or DALANG_CHEAP_MODEL\)\.strip\(\) or DALANG_CHEAP_MODEL$",
+       "    model    = DALANG_CHEAP_MODEL")],
+     TFCR, "test_cheap_primitive_honours_the_call_scoped_model_and_phase"),
+
+    ("98. the measured over-ceiling chapter becomes an optional edit again",
+     [(LZ, r'(?m)^        "mandatory reduction, not a request to audit whether shortening is needed\. Rewrite "$',
+       '        "suggested reduction; decide whether shortening is needed. Rewrite "')],
+     TFCR, "test_ceiling_reducer_sends_an_exact_mandatory_budget_to_cheap_claude"),
+
+    ("99. the teleport actuator may re-audit and ignore the server census again",
+     [(LZ, r"(?m)^    if not measured:\n        return \"\"$",
+       '    if True:\n        return ""')],
+     TFCR, "test_two_server_measured_teleports_force_a_cheap_chapter_repair"),
+
+    ("100. census-only teleport repair falls back to generic whole-book routing",
+     [(LZ, r"(?m)^    _force_f6_teleport_chunked = _only_f6_teleports$",
+       "    _force_f6_teleport_chunked = False")],
+     TFCR, "test_two_server_measured_teleports_force_a_cheap_chapter_repair"),
+
+    ("101. teleport is duplicated into the mixed critic repair",
+     [(NA, r'(?m)^                if _v\["f6_class"\] not in \("chapter_ceiling", "teleport"\)\]$',
+       '                if _v["f6_class"] != "chapter_ceiling"]')],
+     TFS, "test_an_unrelated_critic_finding_cannot_take_teleport_off_its_own_lane"),
 ]
 
 

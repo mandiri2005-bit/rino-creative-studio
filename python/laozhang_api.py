@@ -7966,6 +7966,12 @@ DALANG_HOLD_HEADROOM = float(os.getenv("DALANG_HOLD_HEADROOM", "1.5"))
 # cheap model for fact-extraction / rolling-summary side-calls (§3.1/§3.2). Both env-tunable.
 DALANG_MAX_CHAPTER_RETRIES = int(os.getenv("DALANG_MAX_CHAPTER_RETRIES", "2"))
 DALANG_CHEAP_MODEL         = os.getenv("DALANG_CHEAP_MODEL", "gemini-2.5-flash-lite").strip()
+# F6 repair is a narrow editing task, not a whole-book reasoning task. Keep it on a
+# dedicated inexpensive Claude model so an operator can tune it without moving every
+# unrelated cheap side-call (fact extraction, summaries, register checks) to another model.
+def _narasi_f6_repair_model() -> str:
+    return (os.getenv("NARASI_F6_REPAIR_MODEL", "claude-haiku-4-5").strip()
+            or "claude-haiku-4-5")
 # Slice 4: fresh-context critic (D3) — sample every K chapters for books longer than MIN,
 # gate at GATE/10 (below ⟹ one revise), plus a whole-book pass at job end. Env-tunable.
 DALANG_CRITIC_MIN_CHAPTERS = int(os.getenv("DALANG_CRITIC_MIN_CHAPTERS", "5"))
@@ -8310,20 +8316,23 @@ _NARASI_TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_len
 async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_uuid=None,
                              max_tokens: int = 800, temperature: float = 0.2,
                              json_mode: bool = False, credit_row: bool = True,
-                             require_complete: bool = False):
-    """Cheap narasi side-call (fact-extract / rolling-summary). Runs on DALANG_CHEAP_MODEL off
-    the event loop. Logs usage with charge=False and RETURNS (text, cr) so the caller folds cr
+                             require_complete: bool = False, model_override: str = "",
+                             phase: str = "cheap"):
+    """Cheap narasi side-call (fact-extract / rolling-summary). Runs on DALANG_CHEAP_MODEL,
+    or one explicit call-scoped override, off the event loop. Logs usage with charge=False and
+    RETURNS (text, cr) so the caller folds cr
     into the chapter's kept cost (settled via the umbrella hold → stays crash-safe). Never
     raises → ('', 0) on any error. credit_row=False (default True): forwarded to
     _log_narasi_usage — the real cr is still computed and RETURNED so the caller folds it into
     the umbrella hold, but this call's own usage_logs row is written with credits=0 (the caller
     is a GATES-phase site whose credits are already covered by the job's zero_usage_totals
     settle-time aggregate row, so a full-credits row here would double-count)."""
-    model    = DALANG_CHEAP_MODEL
+    model    = str(model_override or DALANG_CHEAP_MODEL).strip() or DALANG_CHEAP_MODEL
+    phase    = str(phase or "cheap").strip() or "cheap"
     resolved = MODELS.get(model, model)
     safe_max = min(int(max_tokens), MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS))
     try:
-        client = make_narasi_client(model, phase="cheap")
+        client = make_narasi_client(model, phase=phase)
         def _call(use_fmt):
             kw = dict(model=resolved,
                       messages=[{"role": "system", "content": system},
@@ -8349,7 +8358,7 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
         # (make_narasi_client(model, phase="cheap") -> _NarasiFailoverClient, same decision via
         # _narasi_will_chain), a single attempt can legitimately need up to the failover chain's
         # own ~930s budget, not just 60s.
-        resp = await asyncio.wait_for(_run(), timeout=_narasi_cheap_timeout(model, "cheap") * 2)
+        resp = await asyncio.wait_for(_run(), timeout=_narasi_cheap_timeout(model, phase) * 2)
         cr = (await _log_narasi_usage(tenant_id, user_id, model, resp, job_id=job_uuid,
                                       credit_row=credit_row) or 0)
         if _resp_content(resp) is None:
@@ -9087,17 +9096,22 @@ async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style:
     spliced into the book."""
     ceiling = max(1, int(target_words))
     floor = min(ceiling, max(1, int(minimum_words)))
+    aim = floor + ((ceiling - floor) // 2)
     system = (
         "You are a line editor. You will be given the BODY of one chapter and a word budget. "
-        "Rewrite it to fit the budget by tightening prose — cut redundancy, compress "
+        "The server has already measured this chapter above its hard ceiling: this is a "
+        "mandatory reduction, not a request to audit whether shortening is needed. Rewrite "
+        "it to fit the budget by tightening prose — cut redundancy, compress "
         "description, merge sentences. Keep EVERY plot event, decision, reveal and line of "
         "dialogue that carries information; keep the narration tense, the point of view, the "
-        "characters and the order things happen. Do NOT summarise, do NOT add a heading, do "
-        "NOT add commentary. Reply with the rewritten chapter body and nothing else."
+        "characters and the order things happen. Do NOT return the input unchanged. Do NOT "
+        "summarise, do NOT add a heading, do NOT add commentary. Reply with the COMPLETE "
+        "rewritten chapter body and nothing else."
     )
     user = (
         f"STYLE: {style}\nLANGUAGE: {language}\n"
         f"WORD RANGE: between {floor} and {ceiling} words, inclusive. "
+        f"Aim for approximately {aim} words so counting variance stays inside the range. "
         "Finish the final sentence; never stop mid-sentence.\n\n"
         f"CHAPTER BODY:\n{chapter_text}"
     )
@@ -9107,7 +9121,8 @@ async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style:
     return await _narasi_cheap_call(
         system, user, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
         max_tokens=max(800, ceiling * 3), temperature=0.2,
-        json_mode=False, credit_row=credit_row, require_complete=True)
+        json_mode=False, credit_row=credit_row, require_complete=True,
+        model_override=_narasi_f6_repair_model(), phase="f6_repair")
 
 
 async def _narasi_consistency_critique(full_text, style, language, *, model,
@@ -9396,6 +9411,30 @@ def _revise_authority_suffix(authority_text: str) -> str:
         "character, move an outlined beat to another chapter, change reveal timing, "
         "or invent chronology. If a requested fix conflicts with it, leave that prose "
         "unchanged.\n\n" + authority_text
+    )
+
+
+def _f6_teleport_repair_suffix(violations) -> str:
+    """Mandatory, count-bearing instruction for server-measured teleport repairs.
+
+    The generic consistency prompt tells the editor to ignore a problem it cannot
+    independently find.  That is correct for free-text critic guesses, but wrong for F6:
+    its teleport rows are a validated census and the model is the actuator, not a second
+    voter.  Keep this suffix narrow so every non-F6 revise prompt stays byte-identical.
+    """
+    measured = [v for v in (violations or ())
+                if isinstance(v, dict) and v.get("f6_class") == "teleport"]
+    if not measured:
+        return ""
+    count = len(measured)
+    noun = "location change" if count == 1 else "location changes"
+    return (
+        "\n\nF6 SERVER-MEASURED REPAIR — mandatory. The server has already verified "
+        f"{count} unbridged {noun} in this chapter. Do NOT re-audit, ignore, or return "
+        "the chapter unchanged. Repair EVERY measured occurrence in the prose using an "
+        "explicit travel action, a visible scene break, or an explicit passage of time. "
+        "Preserve the locations, events, order, heading, and all unrelated sentences; do "
+        "not invent a new destination."
     )
 
 
@@ -9734,6 +9773,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                     "preserving the original text, not by padding.")
             _sys += _revise_authority_suffix(authority_text)
             _sys += _revise_chapter_shape_tail(authority_text, _floor, _ceil)
+            _sys += _f6_teleport_repair_suffix(_vs)
             _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
                   f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
             _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
@@ -9984,6 +10024,7 @@ async def _narasi_revise_chunked(full_text, viol, style, language, rev_model, *,
                 "preserving the original text, not by padding.")
         _sys += _revise_authority_suffix(authority_text)
         _sys += _revise_chapter_shape_tail(authority_text, _floor, _ceil)
+        _sys += _f6_teleport_repair_suffix(_vs)
         _u = (f"[STYLE] {style} · [LANGUAGE] {language}\n\n[PROBLEMS IN THIS CHAPTER]\n{_directives}"
               f"\n\n[CHAPTER — return the corrected version, unchanged except for the fixes]\n{_body}")
         _cap = min(MODEL_MAX_TOKENS.get(resolved, DEFAULT_MAX_TOKENS),
@@ -11084,7 +11125,14 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
         _narasi_publish_structural_patch_summary(
             critique, _narasi_structural_patch_summary())
         return full_text, 0
-    rev_model = NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL
+    # A census-only teleport repair needs chapter editing, not another expensive whole-book
+    # opinion.  Isolate that exact case on the dedicated cheap Claude route; mixed critic/F6
+    # runs keep their established model and routing so this cannot silently downgrade other
+    # consistency work.
+    _only_f6_teleports = bool(viol) and all(
+        isinstance(item, dict) and item.get("f6_class") == "teleport" for item in viol)
+    rev_model = (_narasi_f6_repair_model() if _only_f6_teleports
+                 else (NARASI_CRITIQUE_MODEL or model or DALANG_CHEAP_MODEL))
     all_structural = [item for item in viol if _is_authority_structural_violation(item)]
     if all_structural:
         eligible_severities = _revise_min_severities()
@@ -11248,19 +11296,25 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
     _force_authority_chunked = bool(
         str(authority_text or "").strip()
         and any(_is_authority_structural_violation(v) for v in viol))
+    _force_f6_teleport_chunked = _only_f6_teleports
     if _force_authority_chunked:
         import logging as _lgac
         _lgac.getLogger("narasi").info(
             "consistency revise: authority-structural finding forces chapter-scoped repair")
+    if _force_f6_teleport_chunked:
+        import logging as _lgf6
+        _lgf6.getLogger("narasi").info(
+            "F6 teleport repair: cheap Claude chapter-scoped lane (%d finding(s))", len(viol))
     if (os.getenv("NARASI_REVISE_CHUNKED", "0").strip().lower() in ("1", "true", "yes", "on")
             or (_auto_w > 0 and len((full_text or "").split()) >= _auto_w)
-            or _force_authority_chunked):
+            or _force_authority_chunked or _force_f6_teleport_chunked):
         _legacy_stats = {}
         try:
             _legacy_text, _legacy_cr = await _narasi_revise_chunked(
                 full_text, viol, style, language, rev_model,
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-                phase="canon_diff_revise", credit_row=credit_row,
+                phase=("f6_repair" if _force_f6_teleport_chunked
+                       else "canon_diff_revise"), credit_row=credit_row,
                 authority_text=authority_text, stats_out=_legacy_stats)
         except Exception as _ce:
             import logging as _lg
@@ -11271,6 +11325,13 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                 # still-unresolved violation instead of risking another authority regression.
                 _lg.getLogger("narasi").warning(
                     "authority-structural chunked revise error (%s) — original preserved", _ce)
+                return full_text, 0
+            if _force_f6_teleport_chunked:
+                # The cheap F6 route is a cost boundary as well as a safety boundary.  A
+                # splitter/provider failure stays unresolved and lets F6 block; it must not
+                # spill into the expensive whole-book fallback behind the operator's back.
+                _lg.getLogger("narasi").warning(
+                    "F6 teleport chapter revise error (%s) — original preserved", _ce)
                 return full_text, 0
             _lg.getLogger("narasi").warning("chunked revise error (%s) — whole-book fallback", _ce)
         else:

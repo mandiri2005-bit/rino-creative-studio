@@ -98,7 +98,8 @@ def job(monkeypatch):
             f6_enabled=None, skip_gates=False, chapters_in_result=3,
             post_gates_mutation=None, critic_violations=()):
         seen = {"finalize": [], "refund": 0, "persisted": None, "settle": 0,
-                "critique": 0, "revise": 0, "reduce": 0, "f6": {}, "payload": None}
+                "critique": 0, "revise": 0, "revise_requests": [], "reduce": 0,
+                "f6": {}, "payload": None}
 
         async def _anoop(*_a, **_k):
             return None
@@ -142,6 +143,8 @@ def job(monkeypatch):
 
         async def _revise(text, _request, *_a, **_k):
             seen["revise"] += 1
+            seen["revise_requests"].append([
+                dict(v) for v in (_request.get("violations") or ())])
             return (revise(text), 0)
 
         async def _reduce(chapter_text, *, target_words, **_k):
@@ -269,6 +272,33 @@ def test_a_detected_defect_that_is_genuinely_repaired_still_delivers(job):
     seen = job(tele_before=[0, 0, 1], tele_after=TELE_OK,
                revise=lambda text: text.replace(B3, B3 + " Ia berjalan keluar."))
     assert seen["f6"]["violations_resolved"] == 1, seen["f6"]
+    assert seen["f6"]["delivery_blocked"] is False
+    _delivered(seen)
+
+
+def test_an_unrelated_critic_finding_cannot_take_teleport_off_its_own_lane(job):
+    """The live canary's census repair must stay cheap even when another gate also revises.
+
+    The mixed request runs first; the two server-owned teleport occurrences form a second,
+    census-only request.  `_narasi_consistency_revise` can therefore select Haiku for the
+    second call without downgrading or conflating the unrelated critic repair.
+    """
+    critic_finding = {
+        "type": "object_provenance", "severity": "high", "chapter": 2,
+        "evidence": f'"{B2.split()[0]} {B2.split()[1]}"',
+        "fix": "Clarify where the object came from."
+    }
+    seen = job(
+        tele_before=[0, 2, 0], tele_after=TELE_OK,
+        critic_violations=[critic_finding],
+        revise=lambda text: text.replace(B2, B2 + " Ia berjalan melalui lorong."))
+
+    assert seen["revise"] == 2
+    assert not any(v.get("f6_class") == "teleport"
+                   for v in seen["revise_requests"][0])
+    assert [v.get("f6_class") for v in seen["revise_requests"][1]] == [
+        "teleport", "teleport"]
+    assert seen["f6"]["violations_resolved"] == 2, seen["f6"]
     assert seen["f6"]["delivery_blocked"] is False
     _delivered(seen)
 

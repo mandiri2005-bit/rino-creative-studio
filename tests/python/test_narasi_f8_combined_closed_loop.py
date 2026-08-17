@@ -269,6 +269,7 @@ class Lanes:
         #: place the MERGE of F6's and F8's findings is observable without scripting the
         #: revise — which this file may not do.
         self.prompts: dict = {"structural": [], "legacy": [], "reduce": []}
+        self.systems: dict = {"legacy": []}
         self.repair_tense = repair_tense
         self.repair_teleport = repair_teleport
         self.repair_seam = repair_seam
@@ -287,7 +288,7 @@ class Lanes:
         if "WORD RANGE: between" in user and "CHAPTER BODY:\n" in user:
             return self._reduce(user)
         if _LEGACY_MARKER in user:
-            return self._legacy(user)
+            return self._legacy(user, kwargs["messages"][0]["content"])
         # Any other request belongs to a report-only gate. Answered with an empty object so
         # the gate degrades exactly as it does against a provider that says nothing useful,
         # and RECORDED so it can never be mistaken for one of the three lanes.
@@ -331,9 +332,10 @@ class Lanes:
         return _reply(json.dumps({"schema_version": PATCH_SCHEMA_VERSION,
                                   "operations": operations}))
 
-    def _legacy(self, prompt):
+    def _legacy(self, prompt, system):
         self.legacy += 1
         self.prompts["legacy"].append(prompt)
+        self.systems["legacy"].append(system)
         chapter = prompt.split(_LEGACY_MARKER, 1)[1].split("\n\n[CORRECTION]\n", 1)[0]
         if self.legacy == 1:
             # 🔴 SEQUENCE STEP 1 — a byte-identical no-op. F2 requires this be refused as
@@ -718,7 +720,8 @@ def test_every_initial_hard_finding_is_resolved_and_the_lanes_account_for_it(job
 
     # -- the mandated provider sequences actually ran ---------------------------
     assert lanes.structural == 2, "the invalid structural operation was never refused+retried"
-    assert lanes.legacy == 2, "the byte-identical legacy no-op was accepted instead of retried"
+    assert lanes.legacy == 4, \
+        "the mixed and cheap-teleport chapter lanes must each stay bounded to one retry"
     assert lanes.reduce == 1, "the bounded ceiling reduction is exactly one attempt"
 
     # -- F6: five classes detected, every one resolved --------------------------
@@ -750,7 +753,7 @@ def test_every_initial_hard_finding_is_resolved_and_the_lanes_account_for_it(job
 
     # -- a report-only gate's own cheap call is not one of the three lanes ------
     assert lanes.foreign >= 0
-    assert lanes.structural + lanes.legacy + lanes.reduce == 5
+    assert lanes.structural + lanes.legacy + lanes.reduce == 7
 
 
 # ---------------------------------------------------------------------------
@@ -876,28 +879,31 @@ def test_the_l3_arm_is_armed_by_the_real_preflight_and_lands_its_stripped_chapte
 
 
 def test_the_two_gates_share_one_bounded_post_repair_read(job):
-    """🔴 ONE DETECTION PASS, ONE MERGED REVISE, ONE VERIFICATION PASS — not one per gate.
+    """🔴 ONE DETECTION PASS, BOUNDED REPAIR LANES, ONE VERIFICATION PASS.
 
-    And counting the calls cannot see a merge that DROPPED one gate's findings on the way in,
-    so the assertion is on the DIRECTIVES each lane actually received. Nothing here scripts
-    the revise: these are the prompts the real dispatcher built."""
+    F6/F8 structural work remains merged. Teleport is deliberately isolated on cheap Claude,
+    so an unrelated critic finding cannot promote it to Opus or let a generic prompt ignore the
+    server census. The assertion is on the real directives each lane received."""
     seen = job()
     lanes = seen["lanes"]
 
     assert len(seen["critique"]) == 2, "F6 and F8 must share ONE post-repair read"
-    assert lanes.structural == 2 and lanes.legacy == 2, "one merged revise, two lanes"
+    assert lanes.structural == 2 and lanes.legacy == 4, \
+        "one mixed repair plus one independently bounded teleport repair"
 
     structural_prompt = lanes.prompts["structural"][-1]
-    legacy_prompt = lanes.prompts["legacy"][-1]
+    mixed_legacy_prompt = lanes.prompts["legacy"][1]
+    teleport_prompt = lanes.prompts["legacy"][-1]
 
     # F8's seam and F6's beats reached the SAME structural request.
     assert "chapter_boundary_break" in structural_prompt, \
         "F8's seam never reached the merged revise"
     assert "outline_missing_beat" in structural_prompt, \
         "F6's beat findings never reached the merged revise"
-    # ...and F6's per-chapter classes reached the legacy half of the same call.
-    assert "tense_drift" in legacy_prompt and "spatial" in legacy_prompt, \
-        "F6's tense/teleport findings never reached the merged revise"
+    # F6 tense remains in the mixed legacy half; teleport gets its own mandatory request.
+    assert "tense_drift" in mixed_legacy_prompt and "spatial" not in mixed_legacy_prompt
+    assert "spatial" in teleport_prompt and "tense_drift" not in teleport_prompt
+    assert "F6 SERVER-MEASURED REPAIR" in lanes.systems["legacy"][-1]
 
 
 def test_the_verifier_reads_the_repaired_bytes_not_the_call_counter(job):

@@ -6319,6 +6319,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # FINAL bytes by `_f6_finalize`, after every mutation. A verdict taken here would
     # describe a manuscript nobody delivers.
     _f6_pending = None
+    _f6_teleport_targets = []
     # 🔴 THE KILL SWITCH WRAPS THE WHOLE LIFECYCLE, NOT ONE CALL INSIDE IT. It used to gate
     # only F6's own census request, so with `NARASI_F6_ENABLED=0` detection still ran, the
     # repair was still routed on F6's account, the ceiling reducer still spent provider
@@ -6391,10 +6392,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                                 outline_sizes=_f6_outline_sizes, bounds=_f6_bounds,
                                 expected_chapters=_f6_expected)
             _f6_detected = _f6_seen["violations"]
-            # `chapter_ceiling` does NOT ride the merged revise: it has its own bounded, per-chapter
-            # reduction below, which splices one block back into bytes the server already holds so
-            # the other chapters cannot be reached at all.
-            _f6_routed = [_v for _v in _f6_detected if _v["f6_class"] != "chapter_ceiling"]
+            # `chapter_ceiling` has its bounded reducer below. Teleports likewise leave the
+            # mixed gate revise: they use a dedicated cheap-Claude chapter lane so unrelated
+            # critic findings cannot silently promote this mechanical repair back to Opus.
+            _f6_teleport_targets = [
+                _v for _v in _f6_detected if _v["f6_class"] == "teleport"]
+            _f6_routed = [
+                _v for _v in _f6_detected
+                if _v["f6_class"] not in ("chapter_ceiling", "teleport")]
             if _f6_routed:
                 _v3g_merged = _v3g_merged + _f6_routed
                 log.warning("F6: %d hard violation(s) routed to repair (%s)", len(_f6_routed),
@@ -6567,6 +6572,38 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _v3g_changed = True
         except Exception as _v3ge:  # noqa: BLE001
             log.warning("merged gate revise failed (non-fatal): %s", _v3ge)
+
+    # ── F6 `teleport` — cheap Claude, chapter-scoped, independently bounded ─────────
+    # Keep this separate from the mixed critic revise.  Otherwise one unrelated finding can
+    # select the expensive critic model for the whole batch and the generic "ignore if unsure"
+    # instruction can turn a validated F6 census into an unchanged chapter.  The dispatcher
+    # recognises this census-only request, forces its safe chunked lane and never falls through
+    # to a whole-book rewrite.
+    if _f6_teleport_targets and _f6_pending is not None:
+        try:
+            from laozhang_api import _narasi_consistency_revise as _f6_teleport_revise
+            _f6_tk = "book" if result.get("book") else "output"
+            _f6_treq = {"violations": list(_f6_teleport_targets)}
+            _f6_pending["repair_attempts"] += 1
+            _f6_tp_new, _f6_tp_cr = await _f6_teleport_revise(
+                result.get(_f6_tk) or "", _f6_treq, style, language,
+                model=(body.get("model") or ""), tenant_id=tenant_id, user_id=user_id,
+                job_uuid=job_uuid, credit_row=False, authority_text=_authority_text,
+                outline_packets=_outline_packets)
+            _f6_tp_stats = (_f6_treq.get("legacy_revise")
+                            if isinstance(_f6_treq.get("legacy_revise"), dict) else {})
+            _f6_pending["provider_calls"] += max(
+                1, int(_f6_tp_stats.get("provider_calls") or 0))
+            if sink is not None and _f6_tp_cr:
+                sink.credits += int(_f6_tp_cr)
+            if _f6_tp_new and _f6_tp_new != (result.get(_f6_tk) or ""):
+                result[_f6_tk] = _f6_tp_new
+        except Exception as _f6te:  # noqa: BLE001
+            # One attempted dispatch is still accounted.  No candidate means unchanged bytes;
+            # the final census keeps the violation unresolved and blocks delivery.
+            _f6_pending["provider_calls"] += 1
+            log.error("F6 teleport repair failed — location change(s) stay unresolved (%s)",
+                      _f6te)
 
     # ── F6 `chapter_ceiling` — bounded reduction + corrective retry, byte-exact splice ──
     # 🔴 WHY THIS IS NOT PART OF THE MERGED REVISE. That call takes the whole manuscript and
