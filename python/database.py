@@ -752,7 +752,34 @@ async def get_job_by_external(tenant_id, external_id) -> Optional[dict]:
 
 async def finish_narasi_job(tenant_id, external_id, status, result=None, error=None) -> None:
     """Terminal status for a narasi job (done/cancelled/error), by external id.
-    tenant= explicit — see get_job_by_external (worker-process RLS context)."""
+    tenant= explicit — see get_job_by_external (worker-process RLS context).
+
+    F7 — CHAPTER-BALANCE TELEMETRY, ATTACHED HERE AND NOWHERE ELSE.
+    `result["markdown"]` at this point is the manuscript actually being persisted and
+    delivered. The pre-F6 counter report is NOT a substitute: `_apply_v3_gates()` measures
+    before `_f6_finalize()`, and F6 repair may rewrite chapters afterwards, so a balance
+    measured there can describe a book that was never sent. Measuring at the last statement
+    before the write is what makes the number true of the delivered bytes.
+
+    It is telemetry only — one additive JSONB field, no schema change, no threshold, no
+    verdict, and no effect on what is delivered. A measurement that fails is logged as a fixed
+    code and dropped, because telemetry may never cost a delivery — the raw exception and the
+    manuscript are deliberately kept out of the log line.
+
+    🔴 THE GUARD IS A JOB DISCRIMINATOR, NOT JUST A STATUS CHECK. `finish_narasi_job` is shared:
+    the async OUTLINE path finishes `done` with a dict that has no manuscript in it. Keying
+    only on `done` therefore stamped `chapter_balance: UNMEASURED/no_markdown` onto payloads
+    that have nothing to do with chapters. Requiring a non-empty `markdown` is what makes
+    "this job delivered a book" the actual condition, and leaves every other payload
+    byte-identical. Failed and cancelled jobs never reach it for the same reason."""
+    _f7_markdown = (result or {}).get("markdown") if (
+        status == "done" and isinstance(result, dict)) else None
+    if isinstance(_f7_markdown, str) and _f7_markdown.strip():
+        try:
+            import narasi_f7 as _f7
+            result = _f7.attach_chapter_balance(result)
+        except Exception:
+            log.error("finish_narasi_job: f7_chapter_balance_unavailable")
     try:
         await _q_exec(
             """UPDATE jobs SET status=$3::job_status_enum,

@@ -8855,6 +8855,22 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "many settings it has. Report 0 for a clean chapter rather than omitting it — the list "
         "must cover every chapter so entry N is chapter N. Omit the field entirely if you cannot "
         "read every chapter.\n"
+        "6e. SEAM CENSUS — separately from any finding, report `seam_states`: ONE entry per "
+        "ADJACENT CHAPTER PAIR, in order, covering every seam so entry N is the transition from "
+        "chapter N to chapter N+1. Each entry is "
+        "{\"chapter_a\": <N>, \"chapter_b\": <N+1>, \"causal\": …, \"location\": …, "
+        "\"time\": …}. Judge the THREE dimensions separately, each exactly \"explicit\", "
+        "\"continuous\" or \"missing\": \"explicit\" = the transition is enacted or accounted "
+        "for on the page; \"continuous\" = nothing changed in that dimension, so no bridge is "
+        "needed; \"missing\" = the change happened off-page or is asserted without support. A "
+        "chapter that opens weeks later is NOT automatically broken: an interval the page "
+        "ACCOUNTS FOR — something happens that shows it passing — is \"explicit\". It is "
+        "\"missing\" only when the interval is merely asserted, or summarised in a line "
+        "that reports it instead of enacting it. Judge each dimension on its own: a "
+        "transition may account for time and still elide the cause or the move. "
+        "Report every seam "
+        "including the sound ones rather than only the broken ones. Omit the field entirely if "
+        "you cannot read every chapter.\n"
         + _beat_check + _check7 + _ext + _check16 + _check17 +
         "Give concrete textual evidence (short quotes) and a one-line fix for EACH real violation. "
         "Do NOT invent problems: if the draft is clean, return an empty list and a high score. Rate "
@@ -8866,6 +8882,10 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
            ' "outline_beat": <1-based integer, omit if unsure>' if authority_aware else '') +
         '}], "tense_by_chapter": ["past"|"present"|"mixed", … one per chapter in order, '
         'omit the field if unsure], "teleports_by_chapter": [<integer>, … one per chapter in '
+        'order, omit the field if unsure], '
+        '"seam_states": [{"chapter_a": <int>, "chapter_b": <int>, "causal": '
+        '"explicit"|"continuous"|"missing", "location": "explicit"|"continuous"|"missing", '
+        '"time": "explicit"|"continuous"|"missing"}, … one per ADJACENT CHAPTER PAIR in '
         'order, omit the field if unsure], '
         + ('"beat_states": [{"chapter": <int>, "beat": <int>, "state": '
            '"absent"|"promised"|"executed"}, … one per outlined beat, omit the field if '
@@ -8895,7 +8915,49 @@ def _narasi_normalize_critique(v) -> dict:
             v.get("teleports_by_chapter"))
     if "beat_states" in (v or {}):
         out["beat_states"] = _bound_beat_census_payload(v.get("beat_states"))
+    if "seam_states" in (v or {}):
+        out["seam_states"] = _bound_seam_census_payload(v.get("seam_states"))
     return out
+
+
+#: One over the chapter bound `narasi_f8.MAX_CHAPTERS` allows, so a runaway answer is still
+#: REFUSED by the validator rather than silently trimmed to a legal length here.
+_SEAM_CENSUS_MAX_ROWS = 201
+_SEAM_ROW_KEYS = ("chapter_a", "chapter_b", "causal", "location", "time")
+
+
+def _bound_seam_census_payload(value):
+    """Bound a model-supplied `seam_states` BEFORE it is stored, published or validated.
+
+    🔴 BOUNDING IS NOT REPAIR. This caps size and strips unknown keys; it never coerces a
+    malformed census into a legal one. A non-list becomes `{}` — still a non-list, so
+    `narasi_f8.seam_census()` refuses it as `not_a_list` rather than reading it as absent — and
+    an over-long list keeps one row more than the bound allows so `too_many_seams`/
+    `wrong_length` can still trip. The validator, not this function, decides what is usable.
+
+    🔴 THE HAZARD IS TRANSPORT, NOT SEMANTICS. `tense_by_chapter: "x" * 20_000_000` is why the
+    other censuses have one of these: whatever the model sends crosses a process boundary and
+    lands in a JSONB column, so it is bounded at the door."""
+    if not isinstance(value, list):
+        return {}
+    rows = []
+    for entry in value[:_SEAM_CENSUS_MAX_ROWS]:
+        if not isinstance(entry, dict):
+            rows.append(None)          # kept as an invalid ROW, not dropped
+            continue
+        bounded = {}
+        for key in _SEAM_ROW_KEYS:
+            if key not in entry:
+                continue
+            item = entry.get(key)
+            if isinstance(item, bool) or isinstance(item, int):
+                bounded[key] = item
+            elif isinstance(item, str):
+                bounded[key] = item[:32]
+            else:
+                bounded[key] = None    # unusable value, preserved as unusable
+        rows.append(bounded)
+    return rows
 
 
 #: Payload bounds for the carried-through census. Values are single words ("past"/"present"/
@@ -10196,6 +10258,11 @@ def _narasi_reserve_upstream() -> bool:
 # `provider_calls` is indistinguishable from a failover rung — same number, different
 # cause, different fix. Three counters make the retry path answerable on its own.
 _STRUCTURAL_PATCH_SUMMARY_VERSION = "structural_patch_summary_v3"
+
+#: The unit positions a chapter-boundary bridge is authorised to occupy. A seam repair
+#: belongs at the chapter OPENING; an accepted operation anywhere else in the chapter is
+#: some other repair, however successful, and must not attribute the seam.
+_F8_SEAM_OPENING_UNITS = frozenset({1})
 _STRUCTURAL_PATCH_NOT_ATTEMPTED_REASONS = frozenset({
     "attempt_cap",
     "outline_packet_missing",
@@ -10582,8 +10649,36 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
     # left — never derived from each other or from `provider_calls`, which cannot tell
     # a retry apart from a failover rung.
     schema_retry_chapters = schema_retry_accepted = schema_retry_exhausted = 0
+    # F8: WHICH chapters the STRUCTURAL lane accepted, not how many. The published
+    # `structural_patch_summary_v3` carries a COUNT, and a count cannot say whether the
+    # accepted operation landed at the seam F8 routed or somewhere else in the book — a
+    # legacy tense repair in the same chapter would satisfy a count-based check. Server-
+    # owned, bounded, and stripped before publication; the summary schema is untouched.
+    accepted_chapter_numbers = set()
+    # 🔴 PER-SEAM, NOT PER-CHAPTER. A chapter-level record says only that SOMETHING was
+    # accepted there; a second structural operation elsewhere in the same chapter would
+    # then attribute a seam repair that never happened. The accepted violation's own
+    # server-owned identity is what F8 needs.
+    accepted_violation_ids = set()
+    # 🔴 F8's OWN SUBSETS. The lane-wide `attempted` / `provider_calls` / `accepted`
+    # cover EVERY structural chapter, so comparing them against `seams_targeted` inflates
+    # F8's accounting the moment an unrelated structural finding rides along. These count
+    # only chapters that actually carry an F8 seam violation.
+    f8_targeted_ids, f8_attempted_ids = set(), set()
+    f8_calls = 0
+    # This lane processes chapters SEQUENTIALLY, so the ledger delta between one
+    # chapter's attempt and the next is exactly that chapter's physical exchanges —
+    # retries and failover rungs included, which is the point: an F8 target that cost
+    # two exchanges must not be reported as one.
+    _f8_call_base, _f8_base_is_f8 = None, False
     resolved = MODELS.get(rev_model, rev_model)
     output_parts = [part for _number, part in parts]
+
+    for _cn, _cvs in (violations_by_chapter or {}).items():
+        f8_targeted_ids |= {_v.get("seam") for _v in (_cvs or ())
+                            if isinstance(_v, dict)
+                            and _v.get("f8_class") == "chapter_seam"
+                            and isinstance(_v.get("seam"), str)}
 
     def _not_attempted(reason):
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
@@ -10670,6 +10765,14 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
             "[RESPONSE SHAPE]\nReturn strict JSON only. Apply the smallest sufficient patch."
         )
         attempted += 1
+        _f8_here = {_v.get("seam") for _v in (violations_by_chapter.get(chapter_number) or ())
+                    if isinstance(_v, dict) and _v.get("f8_class") == "chapter_seam"
+                    and isinstance(_v.get("seam"), str)}
+        f8_attempted_ids |= _f8_here
+        _f8_now = 0 if _upstream_ledger is None else int(_upstream_ledger.count)
+        if _f8_call_base is not None and _f8_base_is_f8:
+            f8_calls += max(0, _f8_now - _f8_call_base)
+        _f8_call_base, _f8_base_is_f8 = _f8_now, bool(_f8_here)
 
         def _invoke_provider(_s, _u, _temperature):
             # Resolve the client and BIND `.create` first: a factory that raises
@@ -10869,6 +10972,35 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
                 schema_retry_exhausted += 1
             continue
         accepted += 1
+        accepted_chapter_numbers.add(int(chapter_number))
+        # 🔴 ATTRIBUTION FOLLOWS THE ADDRESS THAT ACTUALLY CHANGED, NOT THE CHAPTER.
+        #    Recording every violation in an accepted chapter meant a patch that repaired the
+        #    outline order at the chapter's END attributed a seam repair at its OPENING — a
+        #    seam the provider never touched. The unit table is server-owned and the candidate
+        #    is server-held, so the changed positions are read from the BYTES rather than from
+        #    anything the provider claimed. `_F8_SEAM_OPENING_UNITS` is the authorised range:
+        #    a chapter-boundary bridge belongs at the opening, and an edit anywhere else is
+        #    some other repair however well it went.
+        try:
+            _after_units = [_u.text for _u in segment_chapter(candidate).units]
+        except Exception:  # noqa: BLE001 — a candidate we cannot segment attributes nothing
+            _after_units = None
+        _changed_positions = set()
+        if _after_units is not None:
+            _before_units = [_u.text for _u in segmented.units]
+            for _pos in range(1, max(len(_before_units), len(_after_units)) + 1):
+                _b = _before_units[_pos - 1] if _pos <= len(_before_units) else None
+                _a = _after_units[_pos - 1] if _pos <= len(_after_units) else None
+                if _b != _a:
+                    _changed_positions.add(_pos)
+        if _changed_positions & _F8_SEAM_OPENING_UNITS:
+            for _av in violations_by_chapter.get(chapter_number) or ():
+                _aid = _av.get("seam") if isinstance(_av, dict) else None
+                # `seam` exists only on F8 seam violations, so requiring it IS the class
+                # check — a second `f8_class` test beside it was one rule with two guards,
+                # and the redundant one could be deleted without any witness noticing.
+                if isinstance(_aid, str) and _aid:
+                    accepted_violation_ids.add(_aid[:64])
         if _retried:
             schema_retry_accepted += 1
 
@@ -10880,6 +11012,8 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
     # boundary, so the floor has nothing left to cover and inventing one only lies.
     # Read LAST so a rung that landed while a later chapter ran is still included.
     provider_calls = 0 if _upstream_ledger is None else int(_upstream_ledger.count)
+    if _f8_call_base is not None and _f8_base_is_f8:
+        f8_calls += max(0, provider_calls - _f8_call_base)
 
     return (
         "".join(output_parts),
@@ -10896,6 +11030,11 @@ async def _narasi_structural_patch_revise_impl(full_text, violations, style, lan
             "rejected_reason_counts": rejected_reason_counts,
             "unresolved_locator_count": unresolved_locators,
             "owned_chapter_numbers": set(targeted_numbers),
+            "accepted_chapter_numbers": set(accepted_chapter_numbers),
+            "accepted_violation_ids": set(accepted_violation_ids),
+            "f8_targeted_ids": set(f8_targeted_ids),
+            "f8_attempted_ids": set(f8_attempted_ids),
+            "f8_provider_calls": int(f8_calls),
         },
     )
 
@@ -10941,6 +11080,11 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                     "rejected_reason_counts": {},
                     "unresolved_locator_count": 0,
                     "owned_chapter_numbers": set(),
+                    "accepted_chapter_numbers": set(),
+                    "accepted_violation_ids": set(),
+                    "f8_targeted_ids": set(),
+                    "f8_attempted_ids": set(),
+                    "f8_provider_calls": 0,
                 }
         except Exception as patch_error:
             import logging as _splog
@@ -10960,6 +11104,11 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
                 "rejected_reason_counts": {},
                 "unresolved_locator_count": 0,
                 "owned_chapter_numbers": set(),
+                "accepted_chapter_numbers": set(),
+                "accepted_violation_ids": set(),
+                "f8_targeted_ids": set(),
+                "f8_attempted_ids": set(),
+                "f8_provider_calls": 0,
             }
             patched_text = full_text
 
@@ -11026,6 +11175,27 @@ async def _narasi_consistency_revise(full_text, critique, style, language, *, mo
             manuscript_changed=(patched_text != full_text),
         )
         _narasi_publish_structural_patch_summary(critique, summary)
+        # F8: bounded, server-owned, and PRIVATE — the job pops it before persistence.
+        # Kept off `structural_patch_summary_v3` deliberately: that schema is pinned by
+        # consumers and tests, and widening it to carry an internal attribution list
+        # would version a public contract for a private need.
+        if isinstance(critique, dict):
+            # 🔴 THE LANE'S OWN NUMBERS, NOT A GUESS DOWNSTREAM. `attempted`, physical
+            # `provider_calls` and `accepted` already exist here and already satisfy the
+            # summary's invariants. Recomputing them from the target list downstream reports
+            # one call for two targets, and keeps reporting success for targets that hit the
+            # cap or were never attempted at all.
+            critique["_f8_structural_accepted_ids"] = sorted(
+                str(_i)[:64] for _i in (patch_stats.get("accepted_violation_ids") or ()))[:200]
+            # 🔴 F8's SUBSETS, NOT THE LANE'S TOTALS. The chapter-level channel that used to
+            # ride here is gone: two attribution mechanisms for one rule is how the weaker one
+            # ends up being the one that answers.
+            critique["_f8_structural_counters"] = {
+                "targeted": len(patch_stats.get("f8_targeted_ids") or ()),
+                "attempted": len(patch_stats.get("f8_attempted_ids") or ()),
+                "provider_calls": int(patch_stats.get("f8_provider_calls") or 0),
+                "accepted": len(patch_stats.get("accepted_violation_ids") or ()),
+            }
         _narasi_publish_legacy_revise_stats(critique, legacy_stats)
         return final_text, int(patch_cr or 0) + int(legacy_cr or 0)
 

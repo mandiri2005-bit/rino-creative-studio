@@ -117,8 +117,16 @@ def job(monkeypatch, metered_host):
             seen["critique"] += 1
             census = _census_of(text)
             seen["observed"].append(list(census))
+            # F8: a clean SEAM census. These fixtures drive the real job, and F8 refuses a
+            # multi-chapter book whose seam census is absent — UNPROVED blocks, exactly as
+            # every other F6 census does. Declaring a sound census is what these rows always
+            # did for tense and teleports; F8 is simply the fourth of them.
             return ({"score": 8, "violations": [], "tense_by_chapter": census,
-                     "teleports_by_chapter": [0] * len(census)}, 0)
+                     "teleports_by_chapter": [0] * len(census),
+                     "seam_states": [{"chapter_a": _i, "chapter_b": _i + 1,
+                                      "causal": "explicit", "location": "continuous",
+                                      "time": "explicit"}
+                                     for _i in range(1, len(census))]}, 0)
 
         async def _revise(text, _request, *_a, **_k):
             return (text.replace(DRIFT2, PAST[1]), 0)

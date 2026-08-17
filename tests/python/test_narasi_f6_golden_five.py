@@ -148,7 +148,16 @@ def golden(monkeypatch):
         async def critique(*_a, authority_text="", **_k):
             seen["critique"] += 1
             first = seen["critique"] == 1
-            out = {"score": 8, "violations": []}
+            # F8: a clean SEAM census. These fixtures drive the real job, and F8 refuses a
+            # multi-chapter book whose seam census is absent — UNPROVED blocks, exactly as
+            # every other F6 census does. Declaring a sound census is what these rows always
+            # did for tense and teleports; F8 is simply the fourth of them.
+            _n_seams = max(len(tense_before or ()) - 1, 0)
+            out = {"score": 8, "violations": [],
+                   "seam_states": [{"chapter_a": _i, "chapter_b": _i + 1,
+                                    "causal": "explicit", "location": "continuous",
+                                    "time": "explicit"}
+                                   for _i in range(1, _n_seams + 1)]}
             for key, value in (("tense_by_chapter", tense_before if first else tense_after),
                                ("teleports_by_chapter", tele_before if first else tele_after),
                                ("beat_states", beats_before if first else beats_after)):

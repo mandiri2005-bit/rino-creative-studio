@@ -2244,6 +2244,80 @@ def _l3_ws_runs(text: str) -> tuple:
     return (text[:len(text) - len(text.lstrip())], text[len(text.rstrip()):])
 
 
+def _resync_chapter_records(result: dict) -> int:
+    """Re-derive `result["chapters"][*]["content"]` from the assembled book. All or nothing.
+
+    🔴 ONE BOOK, TWO LIVE COPIES, AND ONLY ONE OF THEM WAS BEING REPAIRED. `_persist_chapters`
+       writes the durable `narasi_chapters` rows from these records and a reader can open
+       either them or the assembled markdown. The gate phase rewrites the ASSEMBLED BOOK — the
+       merged consistency revise, the structural addressed patch, the bounded ceiling reduction
+       — and leaves the records exactly where generation left them. After any repair the two
+       therefore describe different books: the manuscript fixed, the stored chapters not.
+
+    🔴 AND THAT IS WHY THE L3 REPAIR COULD NEVER LAND ON A REPAIRED BOOK.
+       `_l3_sync_chapter_records` refuses to substitute unless EVERY record still corresponds
+       to its block — correctly, because writing into one of two disagreeing copies is worse
+       than writing into neither. Its own docstring names this as "the common case". So a job
+       whose earlier gates repaired anything at all got `stage=unsyncable`, and the semantic
+       repair it had already computed was discarded. Bringing the records back onto the book
+       here — at the last point before the L3 seam, after the post-gates dedup guard, and
+       before anything reads them — closes both the stale-row defect and that dead end.
+
+    The rule is the exact inverse of the assembler (`orchestrator.static._chapter_md`): a
+    block is `heading + wrapper + content.strip() + wrapper`, so the content is the block's
+    body stripped. Nothing is guessed: the framing is verified first and a book that does not
+    line up is left alone.
+
+    Returns how many records changed; 0 when nothing needed doing OR the shape could not be
+    verified. Never raises — a re-sync fault must not break delivery.
+    """
+    try:
+        import narasi_gate as _ngate
+        records = result.get("chapters")
+        if not isinstance(records, list) or not records:
+            return 0
+        key = "book" if result.get("book") else "output"
+        blocks = [_b for _b in _ngate.split_chapter_blocks(result.get(key) or "")
+                  if _ngate.chapter_heading_line(_b)]
+        # 🔴 THE RECORDS ARE 0-BASED AND MUST BE A CENSUS OVER THE BLOCKS THE BOOK HAS.
+        # `_l3_sync_chapter_records` reads them by `no` against `range(n)`; a duplicate, a
+        # gap, a non-int `no`, or a count that does not match the delivered blocks means the
+        # rows cannot be indexed, and re-deriving content for rows nobody can address would
+        # write prose into the wrong chapter. ONE check, not two: a separate
+        # `len(blocks) != len(records)` guard beside this is the same rule said twice — the
+        # set comparison below already refuses both directions — and the redundant one is
+        # the copy that can be deleted with no witness noticing.
+        by_index: dict = {}
+        for _rec in records:
+            if not isinstance(_rec, dict) or isinstance(_rec.get("no"), bool) \
+                    or not isinstance(_rec.get("no"), int):
+                return 0
+            if _rec["no"] in by_index:
+                return 0
+            by_index[_rec["no"]] = _rec
+        if set(by_index) != set(range(len(blocks))):
+            return 0
+        # 🔴 STAGED, THEN APPLIED. Writing as it walks leaves the rows half re-derived when a
+        # later block turns out to be unusable — the "all or nothing" this function promises,
+        # and the same discipline `_l3_sync_chapter_records` follows for the same reason.
+        staged = []
+        for _i, _block in enumerate(blocks):
+            _head = _ngate.chapter_heading_line(_block)
+            _content = _block[len(_head):].strip()
+            if not _content:
+                return 0                      # an empty body is not a re-derivation
+            staged.append((by_index[_i], _content))
+        changed = 0
+        for _rec, _content in staged:
+            if _rec.get("content") != _content:
+                _rec["content"] = _content
+                changed += 1
+        return changed
+    except Exception as _rse:  # noqa: BLE001 - a re-sync fault must not break delivery
+        log.warning("chapter record re-sync skipped (non-fatal): %s", _rse)
+        return 0
+
+
 def _l3_sync_chapter_records(result: dict, run, before_snap, after_snap) -> bool:
     """Rewrite the chapter records to match the repaired manuscript. All or nothing.
 
@@ -2953,6 +3027,17 @@ async def _run_narration_job_after_parity(
                             "chapter-heading block(s)", job_id, _dg_dropped)
     except Exception as _dge:  # noqa: BLE001 - a dedup bug must never break generation
         log.debug("narration job %s: post-gates dedup guard skipped (%s)", job_id, _dge)
+    # ── THE CHAPTER RECORDS COME BACK ONTO THE BOOK ─────────────────────────────────
+    # Placed HERE, after the dedup guard (which can collapse blocks and so change the
+    # framing the re-derivation depends on) and before the L3 seam, the F1 scrub and
+    # persistence — every reader of the records is downstream of this line. See
+    # `_resync_chapter_records`: the gates repair the assembled book and leave these rows
+    # carrying the pre-repair prose, which `_persist_chapters` then stores as the durable
+    # copy a customer can open.
+    _rs_n = _resync_chapter_records(result)
+    if _rs_n:
+        log.info("narration job %s: %d chapter record(s) re-synced to the repaired book",
+                 job_id, _rs_n)
     # F6 verification and accounting do NOT happen here: the L3-assist repair and the F1
     # scrub below both still mutate `result`. See the finalise call further down, which is
     # the LAST thing before the delivery decision.
@@ -3091,6 +3176,22 @@ async def _run_narration_job_after_parity(
     # outline/Bible packet.
     result.pop("_narrative_authority", None)
     result.pop("_f6_pending", None)
+    # ── F8 — the chapter SEAM loop, closed against the same delivered bytes ─────────
+    # 🔴 PLACED HERE, NOT BETWEEN F6'S REFUSAL AND THIS POP. Sitting in that gap silently
+    # re-aimed `prove_f6` mutant 43 — its pattern anchors F6's hard block on the comment
+    # above, so an insertion there made the mutant delete F8's `return` instead and F6's
+    # own block lost its witness. Nothing between the pop and here touches the manuscript,
+    # so F8 still verifies the delivered bytes after every mutator.
+    # ── F8 — the chapter SEAM loop, closed against the same delivered bytes ─────────
+    _f8_out = await _f8_finalize(result, job_id=job_id)
+    if isinstance(_f8_out, dict) and _f8_out.get("delivery_blocked"):
+        log.error("narration job %s: F8 unresolved seam(s), delivery BLOCKED", job_id)
+        await _finalize(
+            job_id, job_uuid, tenant_id, status=_STATUS_FAILED,
+            result=_result_payload(result), error="f8_unresolved_chapter_seam")
+        await _refund(meter_op, tenant_id, job_id)
+        await _p0a_flush("failed")
+        return
     await _persist_chapters(tenant_id, job_uuid, result)
     await _finalize(
         job_id, job_uuid, tenant_id, status=_STATUS_DONE,
@@ -3153,11 +3254,22 @@ def _f6_scan(*, text: str, chapter_count: int, observation: dict, outline_sizes:
     if len(counts) != chapter_count:
         unproven.append("word_counts_chapter_count_mismatch")
 
+    # 🔴 EVERY ROUTED F6 EVIDENCE CARRIES `@chN`, AND THAT IS NOT DECORATION. The legacy
+    # chunked lane routes a violation to a chapter by ONE of two signals: a quoted manuscript
+    # span, or a machine-authored `@chN` locator (`_narasi_evidence_chapter_numbers`); a
+    # violation with NEITHER is dropped before any chapter is targeted. F6's evidence is a
+    # server-authored SUMMARY, never a quote — so without this suffix `tense_drift` and
+    # `teleport` were detected, merged into the revise request, and then silently discarded by
+    # the lane ("UNMAPPED evidence heads"), leaving every one of them unresolved and every
+    # book carrying one refused. The free-text `chapter` field cannot substitute: the lane
+    # honours it only for the closed authority-structural vocabulary, which these two are not.
+    # F8's own `_evidence` has appended the same locator since it was written, for the same
+    # reason; this makes F6 say where it means in the one dialect the actuator reads.
     violations = [{
         "f6_class": "tense_drift", "chapter": _ch,
         "type": "tense_drift", "severity": "high",
         "evidence": (f"chapter {_ch} narrates in {tense['per_chapter'][_ch - 1]} while the "
-                     f"rest of the book is {tense['majority']}"),
+                     f"rest of the book is {tense['majority']} @ch{_ch}"),
         "fix": (f"Rewrite chapter {_ch} in {tense['majority']} tense. Change nothing else: "
                 f"keep its heading, its events and every other chapter exactly as they are."),
     } for _ch in (tense.get("outliers") or [])]
@@ -3176,7 +3288,7 @@ def _f6_scan(*, text: str, chapter_count: int, observation: dict, outline_sizes:
                 "f6_claim": f"teleport_instance:{_ch}|{_tk}",
                 "type": "spatial", "severity": "high",
                 "evidence": (f"chapter {_ch} contains {_tn} location change(s) with no "
-                             f"transition on the page (occurrence {_tk} of {_tn})"),
+                             f"transition on the page (occurrence {_tk} of {_tn}) @ch{_ch}"),
                 "fix": (f"In chapter {_ch}, account for every location change: give the move "
                         f"a line of travel, a scene break, or an explicit passage of time. "
                         f"Change nothing else and keep its heading and every other chapter "
@@ -3269,6 +3381,118 @@ def _f6_enabled() -> bool:
     absent means ON."""
     return str(os.environ.get("NARASI_F6_ENABLED", "1")).strip().lower() not in (
         "0", "false", "no", "off")
+
+
+async def _f8_finalize(result: dict, *, job_id=None) -> dict:
+    """Close F8 against the bytes that will ACTUALLY be delivered. Never raises.
+
+    🔴 RUNS AFTER F6, FOR THE SAME REASON F6 RUNS LAST. Nothing below this line may change the
+    manuscript. A seam verdict taken any earlier would describe a book that the post-gates dedup
+    guard, the L3-assist repair or the F1 scrub could still rewrite.
+
+    🔴 IT BUYS NOTHING. The after-census is the post-repair read F6 already paid for, stashed on
+    the private `_f8_post_observation` channel. Every private key is popped here, so none of them
+    can cross the persistence boundary.
+
+    Returns the bounded accounting and publishes it as `result["f8"]`. A failure yields an
+    accounting that BLOCKS delivery rather than one that permits it."""
+    import narasi_f8 as _nf8
+    import narasi_gate as _ngate
+    pending = result.pop("_f8_pending", None)
+    observation = result.pop("_f8_post_observation", None)
+    accepted_ids = result.pop("_f8_structural_accepted_ids", None)
+    counters = result.pop("_f8_structural_counters", None)
+    # No pending state means the detection seam never ran (F6's kill switch wraps F8 too), so
+    # there is nothing to account and nothing to refuse.
+    if not isinstance(pending, dict):
+        return {}
+    clean = {"resolved": [], "unresolved": [], "unproved": [], "collateral": [],
+             "new_defects": [], "blocked": False, "reason": "ok"}
+    try:
+        before = pending.get("census_before") or {}
+        targeted = [t for t in (pending.get("targeted") or []) if isinstance(t, dict)]
+        n_ch = int(pending.get("chapter_count") or 0)
+        if not before.get("applicable"):
+            out = _nf8.accounting(census_before=before, targeted=[], verdict=clean,
+                                  attempts=0, provider_calls=0, accepted_operations=0,
+                                  byte_changing=0)
+            result["f8"] = out
+            return out
+
+        _gk = "book" if result.get("book") else "output"
+        final_text = result.get(_gk) or ""
+        # 🔴 THE SAME BLOCK COMPARISON F6 USES, NOT A SECOND ONE. A hand-rolled length check
+        # here read the delivered bytes as structurally broken on every job: the gates prepend
+        # a `> **Gaya:** …` header, so the delivered text carries a preamble block the
+        # pre-repair snapshot does not. `changed_chapters_from_blocks` already knows that —
+        # and one rule with two implementations is the failure this workstream keeps paying
+        # for. It returns None when the chapter framing genuinely changed, which is UNPROVED.
+        import narasi_f6 as _nf6_cmp
+        changed = _nf6_cmp.changed_chapters_from_blocks(
+            pending.get("blocks_before"), _ngate.split_chapter_blocks(final_text))
+        structural_break = changed is None
+        changed = set(changed or ())
+
+        # 🔴 A SEAM THAT WAS SOUND AT DETECTION STILL HAS TO SURVIVE THE REPAIR. Returning
+        # clean here whenever nothing was detected meant F1-F7 could break a seam and F8 would
+        # never look: the post-census was fetched and discarded. The rule is the manuscript,
+        # not the finding list — if the bytes changed, the seams are re-read; if nothing
+        # changed, there is nothing a repair could have broken.
+        if not (before.get("missing") or {}) and not changed and not structural_break \
+                and not (pending.get("conflicts") or ()):
+            out = _nf8.accounting(census_before=before, targeted=[], verdict=clean,
+                                  attempts=0, provider_calls=0, accepted_operations=0,
+                                  byte_changing=0)
+            result["f8"] = out
+            return out
+
+        after = _nf8.seam_census((observation or {}).get("seam_states"), chapter_count=n_ch)
+        # 🔴 ATTRIBUTION IS THE STRUCTURAL LANE'S OWN PER-SEAM RECORD. A chapter-level record
+        # says only that SOMETHING was accepted in that chapter — a second structural
+        # operation, a legacy tense repair or an L3 rewrite would all satisfy it while the
+        # seam opening went untouched.
+        attribution = {str(_i) for _i in (accepted_ids or ()) if isinstance(_i, str)}
+        # 🔴 THE LANE'S OWN COUNTERS, NEVER DERIVED FROM THE TARGET LIST. `len(targeted)`
+        # attempts and one provider call is an assumption that is wrong the moment a target is
+        # capped, skipped or retried — and it reports work that was never done.
+        counts = counters if isinstance(counters, dict) else {}
+        n_attempts = int(counts.get("attempted") or 0)
+        n_calls = int(counts.get("provider_calls") or 0)
+        n_accepted = int(counts.get("accepted") or 0)
+        if pending.get("conflicts"):
+            # 🔴 THE CENSUS PARSED PERFECTLY — the two observations simply contradict each
+            # other. Calling that `before_not_a_row` reported a malformed row that did not
+            # exist and hid what actually happened.
+            verdict = {**clean, "blocked": True, "reason": _nf8.BOUNDARY_CONFLICT,
+                       "unresolved": sorted(before.get("missing") or {})}
+        elif structural_break:
+            verdict = {**clean, "blocked": True, "reason": "after_not_adjacent",
+                       "unresolved": sorted(before.get("missing") or {})}
+        else:
+            allowed = {_t.get("chapter_b") for _t in targeted
+                       if isinstance(_t.get("chapter_b"), int)}
+            allowed |= {_c for _c in (pending.get("authorised_chapters") or [])
+                        if isinstance(_c, int) and not isinstance(_c, bool)}
+            verdict = _nf8.verify(before=before, after=after, targeted=targeted,
+                                  changed_chapters=changed, allowed_chapters=allowed,
+                                  attribution=attribution)
+        byte_changing = len({f"seam:{_t['chapter_a']}|{_t['chapter_b']}" for _t in targeted
+                             if _t.get("chapter_b") in changed
+                             and f"seam:{_t.get('chapter_a')}|{_t.get('chapter_b')}"
+                             in attribution})
+        out = _nf8.accounting(
+            census_before=before, targeted=targeted, verdict=verdict,
+            attempts=n_attempts, provider_calls=n_calls,
+            accepted_operations=min(n_accepted, len(attribution)),
+            byte_changing=byte_changing)
+    except Exception as _f8e:  # noqa: BLE001
+        # A verification that failed is not a book with sound seams.
+        log.error("narration job %s: F8 verification FAILED — delivery blocked (%s)",
+                  job_id, type(_f8e).__name__)
+        out = {"schema_version": _nf8.SCHEMA_VERSION, "applicable": True,
+               "census_valid": False, "reason": "census_unproved", "delivery_blocked": True}
+    result["f8"] = out
+    return out
 
 
 async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None,
@@ -3377,6 +3601,9 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
             if sink is not None and _cr:
                 sink.credits += int(_cr)
             _after = _after or {}
+            # F8 verifies against the SAME post-repair read F6 just paid for. Private;
+            # `_f8_finalize` pops it before anything is persisted.
+            result["_f8_post_observation"] = _after
             census_after = _after.get("tense_by_chapter")
             teleports_after = _after.get("teleports_by_chapter")
             beats_after = _after.get("beat_states")
@@ -6084,6 +6311,83 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _v3g_merged = _v3g_merged + _f6_routed
                 log.warning("F6: %d hard violation(s) routed to repair (%s)", len(_f6_routed),
                             sorted({_v["f6_class"] for _v in _f6_routed}))
+            # ── F8 — the chapter SEAM census, on the SAME observation ─────────
+            # 🔴 F8 BUYS NO PROVIDER CALL OF ITS OWN. `seam_states` comes back in the
+            # same bounded answer as the tense, teleport and beat censuses, so all four
+            # describe ONE read of ONE book. Living inside this block also gives F8 a
+            # default-ON lifecycle under F6's own kill switch — it deliberately does NOT
+            # inherit the report-only `NARASI_CHAPTER_BOUNDARY_ENFORCE` default-off flag
+            # that left the old free-text boundary finding unenforced for its whole life.
+            import narasi_f8 as _nf8
+            _f8_before = _nf8.seam_census(_f6_obs.get("seam_states"),
+                                          chapter_count=_f6_n_ch)
+            # 🔴 THE ACTUATOR NEEDS A LOCATOR IT CAN MATCH. `_narasi_structural_patch_revise`
+            # builds its prompt from `evidence` + `fix` and nothing else, so a violation
+            # without them arrives as an empty directive. The opening of the chapter being
+            # repaired is real manuscript text already in scope — the preceding chapter's
+            # tail is NOT injected, which the routing constraints forbid.
+            _f8_openings = {}
+            _f8_n = 0
+            for _b in _f6_blocks_before:
+                _h = _ngate.chapter_heading_line(_b)
+                if not _h:
+                    continue
+                _f8_n += 1
+                _f8_openings[_f8_n] = " ".join(_b[len(_h):].split())[:180]
+            _f8_detected = _nf8.detect(_f8_before, openings=_f8_openings)
+            # 🔴 ONE AUTHORITY PER SEAM. The pre-existing free-text
+            # `chapter_boundary_break` and the structured census describe the SAME
+            # defect. Side by side they budget one repair twice and let a half-repair
+            # report a success, so once the census is usable the server-owned seam
+            # identity wins and the free-text copies are dropped rather than merged.
+            # 🔴 DEDUP REMOVES A DUPLICATE, NEVER A DISAGREEMENT. Dropping every free-text
+            # `chapter_boundary_break` whenever the census parsed made the census the only
+            # voice — so a census that said "clean" silently deleted a hard finding that said
+            # "broken", and the clean path then permitted delivery. A free-text finding whose
+            # chapter matches a DETECTED seam is the same defect said twice and is dropped;
+            # one that names a seam the census calls sound is a CONFLICT, and two observations
+            # that disagree about the same book are UNPROVED, not resolved in the census's
+            # favour.
+            _f8_conflicts = []
+            if _f8_before.get("valid") and _f8_before.get("applicable"):
+                _f8_broken_ch = {_v["chapter_b"] for _v in _f8_detected}
+                _f8_kept = []
+                for _v in _v3g_merged:
+                    if not (isinstance(_v, dict)
+                            and _v.get("type") == "chapter_boundary_break"
+                            and _v.get("f8_class") != "chapter_seam"):
+                        _f8_kept.append(_v)
+                        continue
+                    _vc = _v.get("chapter")
+                    if isinstance(_vc, int) and not isinstance(_vc, bool) \
+                            and _vc in _f8_broken_ch:
+                        continue                      # canonical duplicate — one budget item
+                    _f8_conflicts.append(f"free_text_ch{_vc}")
+                _v3g_merged = _f8_kept
+            if _f8_detected:
+                _v3g_merged = _v3g_merged + _f8_detected
+                log.warning("F8: %d broken seam(s) routed to repair (%s)",
+                            len(_f8_detected), [_v["seam"] for _v in _f8_detected])
+            result["_f8_pending"] = {
+                "census_before": _f8_before,
+                "targeted": [{"chapter_a": _v["chapter_a"], "chapter_b": _v["chapter_b"]}
+                             for _v in _f8_detected],
+                # 🔴 THE AUTHORISATION SET IS EVERY CHAPTER SOME LANE WAS ROUTED TO, taken
+                # AFTER both merges. `_f6_co_targeted` is computed before F6 adds its own
+                # violations, so using it alone made F6's legitimate repairs read as
+                # collateral and refused jobs in which every gate had worked. The ceiling
+                # class never rides the merged revise but IS repaired by its own reducer, so
+                # F6's full detected set is folded in too.
+                "authorised_chapters": sorted(
+                    {_c for _c in (
+                        [_v.get("chapter") for _v in _v3g_merged if isinstance(_v, dict)]
+                        + [_v.get("chapter") for _v in _f6_detected if isinstance(_v, dict)]
+                        + list(_f6_co_targeted))
+                     if isinstance(_c, int) and not isinstance(_c, bool) and _c >= 1}),
+                "conflicts": list(_f8_conflicts),
+                "blocks_before": list(_f6_blocks_before),
+                "chapter_count": _f6_n_ch,
+            }
             _f6_pending = {
                 "detected": _f6_detected,
                 "targeted": list(_f6_detected),
@@ -6138,6 +6442,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
                 credit_row=False, authority_text=_authority_text,
                 outline_packets=_outline_packets)
+            if isinstance(_v3g_revise_request.get("_f8_structural_accepted_ids"), list):
+                # The per-SEAM identities — the only attribution F8 will accept as evidence
+                # that the operation landed at the transition it routed.
+                result["_f8_structural_accepted_ids"] = list(
+                    _v3g_revise_request["_f8_structural_accepted_ids"])
+            if isinstance(_v3g_revise_request.get("_f8_structural_counters"), dict):
+                # The lane's OWN attempted / physical-call / accepted counts.
+                result["_f8_structural_counters"] = dict(
+                    _v3g_revise_request["_f8_structural_counters"])
             if isinstance(_v3g_revise_request.get("structural_patch"), dict):
                 result["structural_patch"] = _v3g_revise_request["structural_patch"]
             # F2: the legacy chapter-revise accounting rides the SAME local request dict
@@ -6507,6 +6820,10 @@ def _result_payload(result: dict) -> dict:
             if _f6.get(_k) is not None:
                 _f6_out[_k] = str(_f6.get(_k))[:_F6_PAYLOAD_MAX_REASON_CHARS]
         payload["f6"] = _f6_out
+    # F8 accounting is already bounded and closed-vocabulary by construction.
+    _f8 = result.get("f8")
+    if isinstance(_f8, dict) and _f8:
+        payload["f8"] = dict(_f8)
     # F1 (brief §D): a bounded count only (never the marker/prose it was found in,
     # C12) — present only when the seam actually ran against a real canon (same
     # "added only when there is one" rule as the two blocks above). `0` is a real,
