@@ -977,6 +977,16 @@ async def lifespan(application):
     # ⚠️ DEPLOY PREREQ: CLERK_JWT_ISSUER MUST be set in prod (it is — real Clerk logins resolve to
     # real tenants, so the issuer is configured), else the python service refuses to boot.
     _require_prod_auth()
+    # 🔴 ANNOUNCED INSIDE lifespan, BEFORE THE `yield` THAT LETS THIS APP SERVE. The runbook step
+    # after opening the gate is "confirm the service resolved `observe`", and the environment
+    # alone cannot corroborate itself. Not at module import: that fires in every test and CLI
+    # that imports this module, and says nothing about what a serving process resolved.
+    try:
+        from narration_api import log_f6_config
+        log_f6_config("python")
+    except Exception as _cfg_e:  # noqa: BLE001 - never block boot on an announcement
+        import logging as _lg
+        _lg.getLogger("narasi").error("F6 config announcement failed (non-fatal): %s", _cfg_e)
     # NARASI_EXECUTOR_THREADS (env): widen the event loop's default ThreadPoolExecutor.
     # EVERY blocking LLM call in the app runs through asyncio.to_thread (narasi chapters,
     # the ⚡ orchestrator's run_worker, outlines, failover, TTS…) and they ALL share this

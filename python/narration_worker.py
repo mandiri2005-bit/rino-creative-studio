@@ -195,6 +195,17 @@ async def main() -> None:
 
     from bullmq import Worker  # official package; add `bullmq` to requirements
 
+    # 🔴 ANNOUNCED BEFORE `Worker(...)`, WHICH IS THE MOMENT THIS PROCESS BECOMES ABLE TO TAKE A
+    # JOB. A configuration line printed after that point cannot be trusted to describe the
+    # config the first job ran under. Not at module import either: the environment is what the
+    # PROCESS resolved at boot, and an import-time line would also fire in every test and tool
+    # that merely imports this module.
+    try:
+        from narration_api import log_f6_config
+        log_f6_config("narration-worker")
+    except Exception as _cfg_e:  # noqa: BLE001 - never block boot on an announcement
+        log.error("F6 config announcement failed (non-fatal): %s", _cfg_e)
+
     stop_event = asyncio.Event()
 
     worker = Worker(

@@ -3635,6 +3635,70 @@ def _f6_observe_sampled(job_uuid, *, rate: "Optional[float]" = None) -> bool:
     return (int(digest[:13], 16) / float(1 << 52)) < rate
 
 
+#: Where a deployment stamps its own revision. Read in order; the first non-empty one wins. Nothing
+#: else from the environment is ever read here.
+_F6_REVISION_ENV = ("RAILWAY_GIT_COMMIT_SHA", "RAILWAY_DEPLOYMENT_ID",
+                    "GIT_COMMIT_SHA", "SOURCE_COMMIT")
+
+
+def _f6_deployment_revision() -> "Optional[str]":
+    for name in _F6_REVISION_ENV:
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value[:40]
+    return None
+
+
+def log_f6_config(service: str) -> dict:
+    """Announce the RESOLVED F6 configuration once, at an entry point, before work is accepted.
+
+    🔴 WITHOUT THIS LINE THE ACTIVATION RUNBOOK IS CIRCULAR. The step after opening the gate is
+    "confirm the service is actually in `observe`" — and the only evidence available was the very
+    environment variables that step exists to corroborate independently. This is the independent
+    witness: what the PROCESS resolved, not what someone believes they typed.
+
+    🔴 IT LIVES BESIDE `_f6_mode()` ON PURPOSE. A logger that re-derived the mode could drift from
+    the resolver and then reassure an operator about a configuration the job path never saw.
+
+    🔴 AND IT PRINTS EXACTLY SIX FIELDS. An operator debugging a gate does not need — and a log
+    sink must not accumulate — the rest of the environment.
+
+    Returns the record so a caller (and a test) can assert on it. Never raises."""
+    try:
+        raw_enabled = os.environ.get("NARASI_F6_ENABLED")
+        raw_mode = os.environ.get("NARASI_F6_MODE")
+        resolved = _f6_mode()
+        record = {
+            "service": str(service or "unknown")[:40],
+            "raw_enabled": raw_enabled,
+            "raw_mode": raw_mode,
+            "resolved_mode": resolved,
+            "effective_sample_rate": _f6_observe_sample_rate(),
+            "deployment_revision": _f6_deployment_revision(),
+        }
+        # The brake is off when it is explicitly off; ABSENT means ON, which is what makes the
+        # warning below matter — an operator who set nothing at all is in `enforce`.
+        brake_shut = str(raw_enabled if raw_enabled is not None else "1").strip().lower() in (
+            "0", "false", "no", "off")
+        mode_text = str(raw_mode or "").strip()
+        if mode_text and mode_text.lower() not in _F6_MODES:
+            log.error("F6 config: INVALID mode — resolved to 'off' (a typo must never start "
+                      "blocking deliveries) %s", record)
+        elif not brake_shut and not mode_text:
+            # 🔴 THE TRAP THIS WHOLE LINE EXISTS TO CATCH. `ENABLED=1` with no mode is `enforce`
+            # by the legacy-compatibility rule — so a deployment meaning to observe, whose mode
+            # variable never landed (wrong service, misspelt NAME rather than value), refuses
+            # customer deliveries and looks configured.
+            log.warning("F6 config: gate is ON with NO mode set — falling back to ENFORCE "
+                        "(repairs and blocks). Set NARASI_F6_MODE to choose. %s", record)
+        else:
+            log.info("F6 config: %s", record)
+        return record
+    except Exception as _e:  # noqa: BLE001 - an announcement must never stop a service booting
+        log.error("F6 config: could not be announced (%s)", str(_e)[:200])
+        return {}
+
+
 #: Which lane repairs which class, and WHAT that lane needs the violation to carry in order to
 #: locate its target. `routable` is the audit instrument: canary `7pucr0hs` shipped a
 #: `beat_execution` that had a lane on paper (the generic structural patch) and no lane in fact,
