@@ -47,8 +47,8 @@ def _pad(text: str, total: int) -> str:
 #: Chapter 1 is 60 words against a 40-word target — a ceiling of 44. Nothing about this defect
 #: involves a model: the server counts the words on both sides.
 LONG1 = _pad("Eun-soo kembali ke kantor lama itu dan menghitung pintu yang sudah ia tutup.", 60)
-SHORT1 = _pad("Eun-soo kembali ke kantor lama dan menghitung pintu yang ia tutup.", 40)
-STILL_LONG1 = _pad("Eun-soo kembali ke kantor lama itu dan menghitung pintu yang ia tutup.", 55)
+SHORT1 = _pad("Eun-soo kembali ke kantor lama dan menghitung pintu yang ia tutup.", 40) + "."
+STILL_LONG1 = _pad("Eun-soo kembali ke kantor lama itu dan menghitung pintu yang ia tutup.", 55) + "."
 
 B2_DRIFT = _pad("Cahaya kota memenuhi jendela sementara Min-jae duduk dan menunggu kabar itu.", 30)
 B2_FIXED = _pad("Cahaya kota memenuhi jendela sementara Min-jae duduk dan menunggu kabar tersebut.", 30)
@@ -124,11 +124,12 @@ def golden(monkeypatch):
 
     def run(*, tense_after=TENSE_CLEAN, tele_after=TELE_CLEAN, beats_after=BEATS_CLEAN,
             revise=_repair, reduce_to=SHORT1, revise_raises=False, reduce_raises=False,
-            reduce_returns=None, book=None, tense_before=TENSE_DIRTY,
+            reduce_returns=None, reduce_sequence=None, book=None, tense_before=TENSE_DIRTY,
             tele_before=TELE_DIRTY, beats_before=BEATS_DIRTY, authority=AUTHORITY,
             body=None):
         seen = {"finalize": [], "refund": 0, "persisted": None, "settle": 0,
-                "critique": 0, "revise": 0, "reduce": 0, "reduce_targets": []}
+                "critique": 0, "revise": 0, "reduce": 0, "reduce_targets": [],
+                "reduce_corrections": [], "final_book": None}
 
         async def _anoop(*_a, **_k):
             return None
@@ -179,11 +180,16 @@ def golden(monkeypatch):
                 raise RuntimeError("revise provider exploded")
             return (revise(text), 0)
 
-        async def _reduce(chapter_text, *, target_words, **_k):
+        async def _reduce(chapter_text, *, target_words, minimum_words=0,
+                          correction="", **_k):
             seen["reduce"] += 1
-            seen["reduce_targets"].append((len(chapter_text.split()), target_words))
+            seen["reduce_targets"].append(
+                (len(chapter_text.split()), minimum_words, target_words))
+            seen["reduce_corrections"].append(correction)
             if reduce_raises:
                 raise RuntimeError("reducer provider exploded")
+            if reduce_sequence is not None:
+                return (reduce_sequence[seen["reduce"] - 1], 0)
             if reduce_returns is not None:
                 return (reduce_returns, 0)
             return (reduce_to, 0)
@@ -219,6 +225,7 @@ def golden(monkeypatch):
         async def _spy_f6_finalize(result, body, **kw):
             out = await _real_f6_finalize(result, body, **kw)
             seen["f6"] = dict(out or {})
+            seen["final_book"] = result.get("book") or result.get("output")
             return out
 
         monkeypatch.setattr(live_na, "_f6_finalize", _spy_f6_finalize)
@@ -521,14 +528,12 @@ def test_an_empty_reducer_candidate_is_never_spliced_into_the_book(golden):
 
 
 def test_a_gutted_reducer_candidate_blocks(golden):
-    """🔴 A CHAPTER REDUCED TO TWO WORDS IS COMFORTABLY UNDER ITS CEILING. This one IS spliced —
-    it is a real, non-empty answer — so the empty-candidate guard never sees it and only the
-    FLOOR refuses it. The floor is the other half of the same `word_target` contract the
-    generator was given, which is why deleting a chapter cannot pass as shortening it."""
+    """A two-word candidate is rejected before it can replace the original chapter."""
     seen = golden(reduce_returns="Eun-soo pulang.")
     assert "chapter_ceiling:1" in seen["f6"]["unresolved_ids"], seen["f6"]
-    assert seen["f6"]["chapters_changed"] == 4, (
-        "the candidate was not spliced — this row would then be about the empty guard instead")
+    assert seen["f6"]["chapters_changed"] == 3
+    failed_book = seen["final_book"]
+    assert LONG1 in failed_book and "Eun-soo pulang." not in failed_book
     _blocked(seen)
 
 
@@ -536,20 +541,43 @@ def test_an_oversized_reducer_candidate_blocks(golden):
     """"Shorter" is not "short enough": 55 words against a ceiling of 44 is still over."""
     seen = golden(reduce_returns=STILL_LONG1)
     assert "chapter_ceiling:1" in seen["f6"]["unresolved_ids"], seen["f6"]
+    assert LONG1 in seen["final_book"]
     _blocked(seen)
 
 
-def test_the_reduction_gets_exactly_one_bounded_attempt(golden):
-    """🔴 BOUNDED MEANS BOUNDED. A provider that returned nothing is the one case where asking
-    again could plausibly help — and it is exactly where a retry ladder grows. The bound is
-    ONE, so a useless answer ends the attempt and leaves the violation unresolved; unresolved
-    blocks.
-
-    🔴 THE EMPTY ANSWER IS THE DISCRIMINATING INPUT, AND THAT IS NOT AN ACCIDENT. A candidate
-    that comes back usable is spliced and the loop breaks, so raising the bound changes nothing
-    on that path and a witness using one cannot see the bound at all."""
+def test_the_reduction_gets_one_bounded_corrective_retry(golden):
+    """The actuator spends at most two calls: the first attempt plus one corrective retry."""
     seen = golden(reduce_returns="")
-    assert seen["reduce"] == 1, "the reducer was called more than once for one chapter"
+    assert seen["reduce"] == 2, "the reducer exceeded its one-retry budget"
+    assert not seen["reduce_corrections"][0]
+    assert seen["reduce_corrections"][1]
+    _blocked(seen)
+
+
+def test_a_truncated_first_reduction_can_recover_without_shipping_it(golden):
+    # In-band but unterminated: only the final-sentence guard can reject this candidate.
+    truncated = _pad("Eun-soo pulang tanpa menyelesaikan kalimat karena", 40)
+    seen = golden(reduce_sequence=[truncated, SHORT1])
+    assert seen["reduce"] == 2
+    assert seen["f6"]["delivery_blocked"] is False, seen["f6"]
+    delivered = seen["persisted"]["book"]
+    assert SHORT1 in delivered and truncated not in delivered
+
+
+def test_a_reducer_echoed_heading_is_rejected_before_splice(golden):
+    with_heading = "## Chapter 9: Palsu\n\n" + SHORT1
+    seen = golden(reduce_sequence=[with_heading, SHORT1])
+    assert seen["reduce"] == 2
+    assert seen["f6"]["delivery_blocked"] is False, seen["f6"]
+    assert "Chapter 9" not in seen["persisted"]["book"]
+
+
+def test_two_invalid_reductions_keep_the_original_chapter(golden):
+    seen = golden(reduce_sequence=["Eun-soo pulang", "Eun-soo pulang."])
+    assert seen["reduce"] == 2
+    failed_book = seen["final_book"]
+    assert LONG1 in failed_book
+    assert "Eun-soo pulang." not in failed_book
     _blocked(seen)
 
 
@@ -557,7 +585,7 @@ def test_the_reducer_is_handed_one_chapter_and_the_server_owned_ceiling(golden):
     """It never sees the book: the other chapters are unreachable by construction, not by
     inspection afterwards. 44 is `word_target 40 × 1.1`, the contract the generator had."""
     seen = golden()
-    assert seen["reduce_targets"] == [(60, 44)], seen["reduce_targets"]
+    assert seen["reduce_targets"] == [(60, 36, 44)], seen["reduce_targets"]
 
 
 @pytest.mark.parametrize("census", [

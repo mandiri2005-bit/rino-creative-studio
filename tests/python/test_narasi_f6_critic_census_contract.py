@@ -110,6 +110,12 @@ def test_the_json_contract_advertises_the_field(critic):
     assert '"tense_by_chapter"' in system
 
 
+def test_executed_beats_require_an_exact_chapter_quote(critic):
+    system = critic({"score": 9, "violations": []})["system"]
+    assert "BEAT EXECUTION CENSUS" in system
+    assert "For `executed`, evidence must be a short verbatim quote" in system
+
+
 # ---------------------------------------------------------------------------
 # What the critic RETURNS
 # ---------------------------------------------------------------------------
@@ -137,6 +143,22 @@ def test_a_critic_that_omits_the_census_leaves_the_field_absent(critic):
     indistinguishable from one reporting an empty book."""
     seen = critic({"score": 9, "violations": []})
     assert "tense_by_chapter" not in seen["verdict"]
+
+
+def test_beat_evidence_survives_bounded_for_final_byte_binding(critic):
+    seen = critic({"score": 9, "violations": [], "beat_states": [
+        {"chapter": 1, "beat": 1, "state": "executed", "evidence": "prose 1"}
+    ]})
+    assert seen["verdict"]["beat_states"] == [
+        {"chapter": 1, "beat": 1, "state": "executed", "evidence": "prose 1"}
+    ]
+
+
+def test_beat_evidence_is_bounded_before_it_can_reach_f6(critic):
+    seen = critic({"score": 9, "violations": [], "beat_states": [
+        {"chapter": 1, "beat": 1, "state": "executed", "evidence": "x" * 100_000}
+    ]})
+    assert len(seen["verdict"]["beat_states"][0]["evidence"]) == 600
 
 
 # ---------------------------------------------------------------------------

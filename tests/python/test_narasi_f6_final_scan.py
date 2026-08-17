@@ -51,7 +51,7 @@ B3 = _pad("Tae-jun menandatangani deposisi lalu ruangan itu kehilangan suaranya.
 B3_BLOATED = _pad("Tae-jun menandatangani deposisi lalu ruangan itu kehilangan suaranya.", 150)
 #: 200 words: the one chapter that starts over its ceiling, for the reducer rows.
 B1_LONG = _pad("Eun-soo menutup pintu terakhir dan menyusuri koridor panjang itu.", 200)
-B1_SHORT = _pad("Eun-soo menutup pintu dan menyusuri koridor.", 100)
+B1_SHORT = _pad("Eun-soo menutup pintu dan menyusuri koridor.", 100) + "."
 
 
 def _book(bodies=(B1, B2, B3), titles=TITLES) -> str:
@@ -77,6 +77,10 @@ TELE_OK = [0, 0, 0]
 
 def _beats_with(chapter, state):
     return [dict(e, state=state) if e["chapter"] == chapter else e for e in BEATS_OK]
+
+
+def _beats_with_evidence(chapter, evidence):
+    return [dict(e, evidence=evidence if e["chapter"] == chapter else "") for e in BEATS_OK]
 
 
 @pytest.fixture
@@ -305,6 +309,83 @@ def test_a_repair_that_regresses_an_outline_beat_blocks(job):
                for i in seen["f6"]["unresolved_ids"]), seen["f6"]
     assert seen["f6"]["delivery_blocked"] is True
     _blocked(seen)
+
+
+def test_a_false_final_beat_regression_is_cleared_only_by_exact_final_byte_evidence(job):
+    quote = "Tae-jun menandatangani deposisi"
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               beats_before=_beats_with_evidence(3, quote),
+               beats_after=_beats_with(3, "absent"),
+               revise=lambda text: text.replace(B2, B2 + " Ia menunggu."))
+    assert seen["f6"]["delivery_blocked"] is False, seen["f6"]
+    _delivered(seen)
+
+
+def test_a_fabricated_beat_quote_cannot_clear_a_final_scan_finding(job):
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               beats_before=_beats_with_evidence(3, "kutipan yang tidak ada"),
+               beats_after=_beats_with(3, "absent"),
+               revise=lambda text: text.replace(B2, B2 + " Ia menunggu."))
+    assert any(i.startswith("final_beat:") for i in seen["f6"]["unresolved_ids"])
+    _blocked(seen)
+
+
+def test_a_too_short_beat_quote_cannot_clear_a_final_scan_finding(job):
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               beats_before=_beats_with_evidence(3, "Tae-jun menandatangani"),
+               beats_after=_beats_with(3, "absent"),
+               revise=lambda text: text.replace(B2, B2 + " Ia menunggu."))
+    assert any(i.startswith("final_beat:") for i in seen["f6"]["unresolved_ids"])
+    _blocked(seen)
+
+
+def test_a_chapter_heading_cannot_be_used_as_executed_beat_evidence(job):
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               # The production gate localises English headings before the first census.
+               beats_before=_beats_with_evidence(3, "Bab 3: Tiga"),
+               beats_after=_beats_with(3, "absent"),
+               revise=lambda text: text.replace(B2, B2 + " Ia menunggu."))
+    assert any(i.startswith("final_beat:") for i in seen["f6"]["unresolved_ids"])
+    _blocked(seen)
+
+
+def test_beat_evidence_from_the_wrong_chapter_cannot_clear_a_finding(job):
+    wrong_chapter_quote = "Cahaya kota jatuh pelan"
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               beats_before=_beats_with_evidence(3, wrong_chapter_quote),
+               beats_after=_beats_with(3, "absent"),
+               revise=lambda text: text.replace(B2, B2 + " Ia menunggu."))
+    assert any(i.startswith("final_beat:") for i in seen["f6"]["unresolved_ids"])
+    _blocked(seen)
+
+
+def test_beat_evidence_removed_by_the_repair_cannot_clear_a_real_regression(job):
+    quote = "Tae-jun menandatangani deposisi"
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               beats_before=_beats_with_evidence(3, quote),
+               beats_after=_beats_with(3, "absent"),
+               revise=lambda text: text.replace(B2, B2 + " Ia menunggu.").replace(
+                   quote, "Tae-jun meninggalkan ruangan"))
+    assert any(i.startswith("final_beat:") for i in seen["f6"]["unresolved_ids"])
+    _blocked(seen)
+
+
+def test_beat_evidence_moved_to_another_chapter_cannot_clear_a_real_regression(job):
+    quote = "Tae-jun menandatangani deposisi"
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               beats_before=_beats_with_evidence(3, quote),
+               beats_after=_beats_with(3, "absent"),
+               revise=lambda text: text.replace(B2, B2 + " " + quote + ".").replace(
+                   quote + " lalu ruangan", "Tae-jun pergi lalu ruangan"))
+    assert any(i.startswith("final_beat:") for i in seen["f6"]["unresolved_ids"])
+    _blocked(seen)
+
+
+def test_no_beat_disagreement_spends_no_extra_provider_call(job):
+    seen = job(tense_before=["past", "present", "past"], tense_after=TENSE_OK,
+               revise=lambda text: text.replace(B2, B2 + " Ia menunggu."))
+    assert seen["critique"] == 2  # detection + the existing final scan; no third call
+    _delivered(seen)
 
 
 def test_a_repair_that_pushes_another_chapter_over_its_ceiling_blocks(job):

@@ -170,6 +170,36 @@ class TestCheapCall:
             "sys", "usr", tenant_id="t", user_id="u", json_mode=True))
         assert cr == 2 and text == '{"facts": []}'
 
+    def test_require_complete_rejects_a_length_capped_response_but_keeps_cost(self, monkeypatch):
+        async def fake_usage(*a, **k):
+            return 2
+        monkeypatch.setattr(laozhang_api, "_log_narasi_usage", fake_usage)
+        monkeypatch.setattr(laozhang_api, "make_narasi_client",
+                            lambda *_a, **_k: _FakeClient("cut off mid sentence", finish="length"))
+        text, cr = asyncio.run(laozhang_api._narasi_cheap_call(
+            "sys", "usr", tenant_id="t", user_id="u", require_complete=True))
+        assert text == "" and cr == 2
+
+
+class TestChapterReducer:
+    def test_forwards_the_exact_range_correction_and_completeness_guard(self, monkeypatch):
+        seen = {}
+
+        async def cheap(system, user, **kwargs):
+            seen.update(system=system, user=user, kwargs=kwargs)
+            return "candidate.", 3
+
+        monkeypatch.setattr(laozhang_api, "_narasi_cheap_call", cheap)
+        text, cr = asyncio.run(laozhang_api._narasi_chapter_reduce(
+            "original chapter.", target_words=44, minimum_words=36,
+            correction="the first response was truncated", style="storytelling",
+            language="id", tenant_id="t", user_id="u"))
+        assert (text, cr) == ("candidate.", 3)
+        assert "WORD RANGE: between 36 and 44 words" in seen["user"]
+        assert "CORRECTION TO YOUR PREVIOUS ATTEMPT: the first response was truncated" \
+            in seen["user"]
+        assert seen["kwargs"]["require_complete"] is True
+
 
 # ── Migration 0055 ───────────────────────────────────────────────────────────
 class TestMigration0055:

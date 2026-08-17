@@ -8304,9 +8304,13 @@ def _narasi_parse_json(text: str):
     return None
 
 
+_NARASI_TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_length")
+
+
 async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_uuid=None,
                              max_tokens: int = 800, temperature: float = 0.2,
-                             json_mode: bool = False, credit_row: bool = True):
+                             json_mode: bool = False, credit_row: bool = True,
+                             require_complete: bool = False):
     """Cheap narasi side-call (fact-extract / rolling-summary). Runs on DALANG_CHEAP_MODEL off
     the event loop. Logs usage with charge=False and RETURNS (text, cr) so the caller folds cr
     into the chapter's kept cost (settled via the umbrella hold → stays crash-safe). Never
@@ -8370,6 +8374,18 @@ async def _narasi_cheap_call(system: str, user: str, *, tenant_id, user_id, job_
                         "cheap call EMPTY again on plain retry (model=%s detail=%s)",
                         model, _resp_err_detail(resp))
                     return "", 0
+        try:
+            finish = str(getattr(resp.choices[0], "finish_reason", "") or "").strip().lower()
+        except Exception:
+            finish = ""
+        if require_complete and finish in _NARASI_TRUNC_REASONS:
+            import logging as _lg
+            _lg.getLogger("narasi").warning(
+                "cheap call rejected incomplete response (model=%s finish_reason=%s)",
+                model, finish)
+            # The provider did real work, so its cost still belongs to the umbrella hold even
+            # though no bytes are eligible to be spliced into a manuscript.
+            return "", int(cr)
         return (resp.choices[0].message.content or "").strip(), int(cr)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("narasi").warning("cheap call failed (non-fatal): %s", _e)
@@ -8699,12 +8715,15 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         "6d. BEAT EXECUTION CENSUS — separately from any finding, report `beat_states`: ONE "
         "entry per outlined beat, as {\"chapter\": <1-based outline chapter>, \"beat\": "
         "<1-based position of that beat inside THAT chapter's ordered outline beats>, "
-        "\"state\": \"absent\"|\"promised\"|\"executed\"}. \"executed\" means the beat HAPPENS "
+        "\"state\": \"absent\"|\"promised\"|\"executed\", \"evidence\": \"<short exact quote "
+        "from that chapter>\"}. \"executed\" means the beat HAPPENS "
         "on the page; \"promised\" means a character announces, agrees or intends it but it is "
         "never shown occurring (\"I will give a deposition\" is promised, not executed); "
         "\"absent\" means it never appears at all. Report the state every beat IS; do not "
         "decide which one is wrong and do not omit a beat you consider correct — the list must "
-        "cover EVERY beat of EVERY outline chapter you were given. Omit the field entirely if "
+        "cover EVERY beat of EVERY outline chapter you were given. For `executed`, evidence "
+        "must be a short verbatim quote copied from that chapter; otherwise use an empty string. "
+        "Omit the field entirely if "
         "you cannot account for all of them.\n"
         if authority_aware else "")
     _enum = ("provenance|timeline|causality|entity_drift|spatial|pov|dropped_hook"
@@ -8888,7 +8907,8 @@ def _consistency_critic_sys(is_fiction: bool = True, canon_aware: bool = False,
         '"time": "explicit"|"continuous"|"missing"}, … one per ADJACENT CHAPTER PAIR in '
         'order, omit the field if unsure], '
         + ('"beat_states": [{"chapter": <int>, "beat": <int>, "state": '
-           '"absent"|"promised"|"executed"}, … one per outlined beat, omit the field if '
+           '"absent"|"promised"|"executed", "evidence": "<exact chapter quote or empty>"}, '
+           '… one per outlined beat, omit the field if '
            'unsure], ' if authority_aware else '') +
         '"summary": "<1-2 sentences>"}'
     )
@@ -9024,8 +9044,9 @@ def _bound_teleport_census_payload(raw):
 def _bound_beat_census_payload(raw):
     """Bound a model-supplied `beat_states` before it is stored or published.
 
-    Only the three keys the census reads survive, and each is bounded: unbounded prose in a
-    `state` field is the same 20MB hazard the tense bound exists for. An entry that is not a
+    Only the census keys plus a bounded evidence quote survive. Evidence is not trusted by the
+    census; F6 separately binds it byte-for-byte to the named chapter before storing it. An
+    entry that is not a
     dict becomes `{}` rather than disappearing — `narasi_gate.beat_census` refuses the whole
     census on a malformed entry, and dropping it would hide that refusal."""
     if not isinstance(raw, list):
@@ -9042,13 +9063,16 @@ def _bound_beat_census_payload(raw):
                 kept[key] = value
         state = entry.get("state")
         kept["state"] = state[:_TENSE_CARRY_MAX_VALUE] if isinstance(state, str) else ""
+        evidence = entry.get("evidence")
+        kept["evidence"] = evidence[:600] if isinstance(evidence, str) else ""
         bounded.append(kept)
     return bounded
 
 
 async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style: str,
                                  language: str, tenant_id, user_id, job_uuid=None,
-                                 credit_row: bool = False):
+                                 credit_row: bool = False, minimum_words: int = 1,
+                                 correction: str = ""):
     """Rewrite ONE chapter shorter. Returns `(candidate_text, cr)`; never a whole book.
 
     🔴 ONE CHAPTER IN, ONE CHAPTER OUT — AND THAT IS A SAFETY PROPERTY, NOT AN OPTIMISATION.
@@ -9058,9 +9082,11 @@ async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style:
     the server already holds makes the other chapters unreachable by construction.
 
     The heading is not sent and the caller re-attaches its own, so a model cannot renumber or
-    translate it. This function does not judge the candidate: whether it is short enough,
-    long enough, or a chapter at all is decided by `narasi_f6.verify_ceiling_resolved` against
-    the delivered bytes."""
+    translate it. Provider truncation is rejected here; the caller still owns the
+    deterministic word-band and terminal-punctuation checks before any candidate can be
+    spliced into the book."""
+    ceiling = max(1, int(target_words))
+    floor = min(ceiling, max(1, int(minimum_words)))
     system = (
         "You are a line editor. You will be given the BODY of one chapter and a word budget. "
         "Rewrite it to fit the budget by tightening prose — cut redundancy, compress "
@@ -9071,13 +9097,17 @@ async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style:
     )
     user = (
         f"STYLE: {style}\nLANGUAGE: {language}\n"
-        f"WORD BUDGET: at most {int(target_words)} words.\n\n"
+        f"WORD RANGE: between {floor} and {ceiling} words, inclusive. "
+        "Finish the final sentence; never stop mid-sentence.\n\n"
         f"CHAPTER BODY:\n{chapter_text}"
     )
+    correction = " ".join(str(correction or "").split())[:400]
+    if correction:
+        user += f"\n\nCORRECTION TO YOUR PREVIOUS ATTEMPT: {correction}"
     return await _narasi_cheap_call(
         system, user, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
-        max_tokens=max(800, int(target_words) * 3), temperature=0.2,
-        json_mode=False, credit_row=credit_row)
+        max_tokens=max(800, ceiling * 3), temperature=0.2,
+        json_mode=False, credit_row=credit_row, require_complete=True)
 
 
 async def _narasi_consistency_critique(full_text, style, language, *, model,
@@ -9298,7 +9328,7 @@ def _envint(key, default):
 # Truncation stop-reasons across providers (OpenAI/Anthropic/KIE) — same set orchestrator/
 # static.py's _TRUNC_REASONS uses; kept as a local copy (not imported) to avoid a module-load
 # cycle (orchestrator.core imports laozhang_api at import time).
-_REVISE_TRUNC_REASONS = ("length", "max_tokens", "max_output_tokens", "model_length")
+_REVISE_TRUNC_REASONS = _NARASI_TRUNC_REASONS
 
 # A chapter rewrite whose last non-whitespace char isn't terminal punctuation (optionally
 # followed by a closing quote/bracket) reads as cut off mid-sentence — deterministic backstop

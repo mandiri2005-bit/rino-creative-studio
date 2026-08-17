@@ -3371,11 +3371,61 @@ _F6_PAYLOAD_MAX_IDS = 20
 _F6_PAYLOAD_MAX_ID_CHARS = 120
 _F6_PAYLOAD_MAX_REASON_CHARS = 200
 
-#: 🔴 ONE. A `chapter_ceiling` repair gets a single bounded reduction attempt; a failure is an
-#: unresolved violation that blocks delivery, never a retry ladder that spends the job's budget
-#: arguing with a model. Raising this is a product decision with a bill attached, so it is a
-#: named constant rather than a literal buried in a loop.
-_F6_CEILING_REDUCTION_ATTEMPTS = 1
+#: One initial reduction plus one corrective retry. Both calls face the same deterministic
+#: acceptance gate, so a provider cannot spend past this bound or put a partial chapter into
+#: the manuscript merely by returning non-empty text.
+_F6_CEILING_REDUCTION_ATTEMPTS = 2
+
+
+def _f6_reduction_candidate_reason(candidate: str, *, floor: int, ceiling: int) -> str:
+    """Return why a reducer candidate is unsafe to splice, or ``""`` when admissible."""
+    text = str(candidate or "").strip()
+    if not text:
+        return "the response was empty"
+    words = len(text.split())
+    if words < floor:
+        return f"it had {words} words, below the {floor}-word floor"
+    if words > ceiling:
+        return f"it had {words} words, above the {ceiling}-word ceiling"
+    import narasi_gate as _ngate
+    if any(_ngate.chapter_heading_line(_block)
+           for _block in _ngate.split_chapter_blocks(text)):
+        return "it contained a chapter heading instead of body-only prose"
+    tail = text.rstrip().rstrip("\"'’”»)]")
+    if not tail.endswith((".", "!", "?", "…", "—", "–", "--")):
+        return "it did not finish with terminal punctuation"
+    return ""
+
+
+def _f6_exact_beat_evidence(evidence, *, chapter_text: str) -> bool:
+    """Bind a non-trivial bounded quote to the exact final chapter bytes."""
+    return (isinstance(evidence, str) and len(evidence) <= 600
+            and len(evidence.split()) >= 3 and evidence in chapter_text)
+
+
+def _f6_executed_beat_evidence(beat_states, *, outline_sizes: dict, chapter_blocks) -> dict:
+    """Keep only executed-beat quotes already proven to occur in their named chapter."""
+    import narasi_gate as _ngate
+    census = _ngate.beat_census(beat_states, outline_sizes=outline_sizes)
+    if not census.get("valid"):
+        return {}
+    blocks = [_b for _b in (chapter_blocks or ()) if _ngate.chapter_heading_line(_b)]
+    out = {}
+    for row in beat_states if isinstance(beat_states, list) else ():
+        if not isinstance(row, dict):
+            continue
+        chapter, beat = row.get("chapter"), row.get("beat")
+        key = (chapter, beat)
+        if ((census.get("states") or {}).get(key) != "executed"
+                or isinstance(chapter, bool) or not isinstance(chapter, int)
+                or chapter < 1 or chapter > len(blocks)):
+            continue
+        evidence = row.get("evidence")
+        block = blocks[chapter - 1]
+        heading = _ngate.chapter_heading_line(block)
+        if _f6_exact_beat_evidence(evidence, chapter_text=block[len(heading):]):
+            out[key] = evidence
+    return out
 
 
 def _f6_enabled() -> bool:
@@ -3676,6 +3726,37 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
                           "unproven": reason}
             result["f6"] = accounting
             return accounting
+        # A post-repair census can falsely regress a beat that the first census observed as
+        # executed. Do not vote model-against-model and do not spend another call: detection
+        # retained only an exact quote already bound to the original named chapter. If those
+        # exact bytes still exist in the SAME final chapter, the event was not removed by the
+        # repair and this one contradictory finding has deterministic counter-evidence. Missing,
+        # short, moved or altered evidence remains blocking.
+        if final_scan is not None and pending.get("beat_evidence_before"):
+            _chapter_blocks = [_b for _b in final_blocks if _ngate.chapter_heading_line(_b)]
+            _kept_findings = []
+            _cleared_beats = []
+            for _finding in final_scan["violations"]:
+                _fclass = _finding.get("f6_class") if isinstance(_finding, dict) else None
+                _bch = _finding.get("outline_chapter") if isinstance(_finding, dict) else None
+                _bno = _finding.get("outline_beat") if isinstance(_finding, dict) else None
+                _evidence = (pending.get("beat_evidence_before") or {}).get((_bch, _bno))
+                _chapter_block = (_chapter_blocks[_bch - 1]
+                                 if isinstance(_bch, int) and not isinstance(_bch, bool)
+                                 and 1 <= _bch <= len(_chapter_blocks) else "")
+                _chapter_heading = _ngate.chapter_heading_line(_chapter_block)
+                _chapter_text = _chapter_block[len(_chapter_heading):]
+                if (_fclass in ("final_beat", "beat_execution")
+                        and _f6_exact_beat_evidence(_evidence,
+                                                    chapter_text=_chapter_text)):
+                    _cleared_beats.append(f"{_bch}|{_bno}")
+                    continue
+                _kept_findings.append(_finding)
+            final_scan["violations"] = _kept_findings
+            if _cleared_beats:
+                log.warning("F6 final beat census contradicted retained exact evidence: "
+                            "%d finding(s) cleared (%s)", len(_cleared_beats),
+                            _cleared_beats[:4])
         # 🔴 THE SCAN'S FINDINGS ENTER THE BOOKS AS DETECTED, AND NOTHING TARGETED THEM. A
         # violation present in the delivered bytes gets no verdict, so the partition marks it
         # UNRESOLVED and delivery is refused. One that WAS targeted and genuinely repaired is
@@ -6375,6 +6456,13 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _v3g_merged = _v3g_merged + _f8_detected
                 log.warning("F8: %d broken seam(s) routed to repair (%s)",
                             len(_f8_detected), [_v["seam"] for _v in _f8_detected])
+            # Bind the first reader's `executed` evidence to the exact original chapter now,
+            # while those bytes are still in hand. A later false regression can be cleared only
+            # if this same quote survives in the same final chapter; no new provider call and no
+            # trust in free prose crosses this boundary.
+            _f6_beat_evidence_before = _f6_executed_beat_evidence(
+                _f6_obs.get("beat_states"), outline_sizes=_f6_outline_sizes,
+                chapter_blocks=_f6_blocks_before)
             result["_f8_pending"] = {
                 "census_before": _f8_before,
                 "targeted": [{"chapter_a": _v["chapter_a"], "chapter_b": _v["chapter_b"]}
@@ -6409,6 +6497,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 "beats_before": [{"chapter": _bc, "beat": _bb, "state": _bs}
                                  for (_bc, _bb), _bs in sorted(
                                      (_f6_seen["beats"].get("states") or {}).items())],
+                "beat_evidence_before": dict(_f6_beat_evidence_before),
                 "outline_sizes": dict(_f6_outline_sizes),
                 "bounds": dict(_f6_bounds),
                 "expected_chapters": _f6_expected,
@@ -6479,18 +6568,17 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
         except Exception as _v3ge:  # noqa: BLE001
             log.warning("merged gate revise failed (non-fatal): %s", _v3ge)
 
-    # ── F6 `chapter_ceiling` — ONE bounded reduction attempt, spliced byte-exactly ──────
+    # ── F6 `chapter_ceiling` — bounded reduction + corrective retry, byte-exact splice ──
     # 🔴 WHY THIS IS NOT PART OF THE MERGED REVISE. That call takes the whole manuscript and
     # returns a whole manuscript, so "only chapter 4 changed" would be a hope. Here the server
     # sends ONE chapter body, keeps its OWN heading, and puts the candidate back between the
     # blocks it already holds — the other chapters are unreachable by construction rather than
     # by inspection afterwards.
     #
-    # 🔴 BOUNDED MEANS BOUNDED. One attempt per over-long chapter, no retry ladder: a reducer
-    # that came back empty, over-long or not at all leaves the violation UNRESOLVED, and
-    # unresolved blocks delivery. Looping until it succeeds is how a cost bound becomes a
-    # suggestion, and the candidate is judged by `verify_ceiling_resolved` against the
-    # delivered bytes either way.
+    # 🔴 BOUNDED MEANS BOUNDED. One initial attempt plus one corrective retry. Every candidate
+    # is checked against the server-owned floor/ceiling and for a completed final sentence
+    # BEFORE it can touch `result`; a second rejection leaves the original chapter in place and
+    # the violation unresolved, which blocks delivery.
     _f6_ceiling_targets = [_v for _v in ((_f6_pending or {}).get("detected") or ())
                            if _v.get("f6_class") == "chapter_ceiling"]
     if _f6_ceiling_targets and _f6_pending is not None:
@@ -6502,6 +6590,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 _f6_lim = (_f6_pending.get("bounds") or {}).get(_f6_cch)
                 if not _f6_lim:
                     continue
+                _f6_feedback = ""
                 for _f6_try in range(_F6_CEILING_REDUCTION_ATTEMPTS):
                     _f6_blocks = _ngate.split_chapter_blocks(result.get(_f6_rk) or "")
                     _f6_idx = [_i for _i, _b in enumerate(_f6_blocks)
@@ -6523,11 +6612,17 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _f6_cand, _f6_ccr = await _narasi_chapter_reduce(
                         _f6_body.strip(), target_words=int(_f6_lim[1]), style=style,
                         language=language, tenant_id=tenant_id, user_id=user_id,
-                        job_uuid=job_uuid, credit_row=False)
+                        job_uuid=job_uuid, credit_row=False,
+                        minimum_words=int(_f6_lim[0]), correction=_f6_feedback)
                     if sink is not None and _f6_ccr:
                         sink.credits += int(_f6_ccr)
                     _f6_cand = str(_f6_cand or "").strip()
-                    if not _f6_cand:
+                    _f6_reject = _f6_reduction_candidate_reason(
+                        _f6_cand, floor=int(_f6_lim[0]), ceiling=int(_f6_lim[1]))
+                    if _f6_reject:
+                        _f6_feedback = (
+                            f"Rejected because {_f6_reject}. Return the complete chapter body "
+                            f"between {int(_f6_lim[0])} and {int(_f6_lim[1])} words.")
                         continue
                     _f6_blocks[_f6_at] = _f6_head + _f6_pre + _f6_cand + _f6_post
                     result[_f6_rk] = "".join(_f6_blocks)

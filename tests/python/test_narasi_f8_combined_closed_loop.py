@@ -258,7 +258,7 @@ class Lanes:
     """One deterministic client serving the structural, legacy and reducer lanes.
 
     Each lane is recognised by the SHAPE of its own request — strict JSON for the addressed
-    patch, the chapter marker for the legacy revise, the word budget for the reducer — so no
+    patch, the chapter marker for the legacy revise, the exact word range for the reducer — so no
     lane is simulated: all three are the real production code asking in their own voice.
     """
 
@@ -284,7 +284,7 @@ class Lanes:
         #    exchange, which is exactly the kind of miscount this file exists to refuse.
         if "[ORIGINAL ADDRESS TABLE]\n" in user:
             return self._structural(user)
-        if "WORD BUDGET: at most" in user and "CHAPTER BODY:\n" in user:
+        if "WORD RANGE: between" in user and "CHAPTER BODY:\n" in user:
             return self._reduce(user)
         if _LEGACY_MARKER in user:
             return self._legacy(user)
@@ -349,7 +349,8 @@ class Lanes:
     def _reduce(self, prompt):
         self.reduce += 1
         self.prompts["reduce"].append(prompt)
-        body = prompt.split("CHAPTER BODY:\n", 1)[1]
+        body = prompt.split("CHAPTER BODY:\n", 1)[1].split(
+            "\n\nCORRECTION TO YOUR PREVIOUS ATTEMPT:", 1)[0]
         if not self.reduce_chapter:
             return _reply(body)
         # Drop the one droppable paragraph — every event, marker and the ledger term stay.

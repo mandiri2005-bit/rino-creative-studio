@@ -36,6 +36,7 @@ TF = "tests/python/test_narasi_f6_chapter_framing.py"
 TC = "tests/python/test_narasi_f6_tense_census.py"
 TA = "tests/python/test_narasi_f6_resolution_accounting.py"
 TCC = "tests/python/test_narasi_f6_critic_census_contract.py"
+TS3 = "tests/python/test_narasi_slice3.py"
 NA = WT / "python/narration_api.py"
 TCL = "tests/python/test_narasi_f6_closed_loop.py"
 TDB = "tests/python/test_narasi_f6_delivery_block.py"
@@ -497,6 +498,16 @@ BREAKS = [
        "        if isinstance(value, str):\n            bounded.append(value[:_TENSE_CARRY_MAX_VALUE])")],
      TCC, "test_bounding_preserves_list_length_so_entry_n_is_still_chapter_n"),
 
+    ("24b. the critic stops being asked for exact evidence on executed beats",
+     [(LZ, r'(?m)^        "cover EVERY beat of EVERY outline chapter you were given\. For `executed`, evidence "$',
+       '        "cover EVERY beat of EVERY outline chapter you were given. For `executed`, a note "')],
+     TCC, "test_executed_beats_require_an_exact_chapter_quote"),
+
+    ("24c. a beat evidence quote crosses the critic boundary unbounded",
+     [(LZ, r'(?m)^        kept\["evidence"\] = evidence\[:600\] if isinstance\(evidence, str\) else ""$',
+       '        kept["evidence"] = evidence if isinstance(evidence, str) else ""')],
+     TCC, "test_beat_evidence_is_bounded_before_it_can_reach_f6"),
+
     # ══════════════════════════════════════════════════════════════════════
     # THE FOUR CLASSES ADDED AFTER `tense_drift`
     #
@@ -573,12 +584,12 @@ BREAKS = [
      #    reaches the floor at all, so the old witness left this line unexecuted and the
      #    mutant SURVIVED. A two-word candidate is a real answer: it gets spliced, and the
      #    floor is the only thing that refuses it.
-     TG, "test_a_gutted_reducer_candidate_blocks"),
+     TCLS, "test_an_emptied_chapter_is_not_resolved"),
 
     ("57. the ceiling verifier accepts an oversized candidate",
      [(F6, r"(?m)^    if not floor <= after\[chapter - 1\] <= ceiling:\n        return False$",
        "    if not floor <= after[chapter - 1]:\n        return False")],
-     TG, "test_an_oversized_reducer_candidate_blocks"),
+     TCLS, "test_shorter_but_still_over_is_not_resolved"),
 
     ("57b. the ceiling verifier lets a reduction push another chapter over its own ceiling",
      [(F6, r"(?m)^        if before\[index - 1\] <= limits\[1\] < after\[index - 1\]:\n"
@@ -617,10 +628,10 @@ BREAKS = [
      TCLS, "test_an_unbounded_reference_yields_no_claim[source0]"),
 
     # ── the bounded reduction ──────────────────────────────────────────────
-    ("61. the bounded reduction attempt becomes a retry ladder",
-     [(NA, r"(?m)^_F6_CEILING_REDUCTION_ATTEMPTS = 1$",
-       "_F6_CEILING_REDUCTION_ATTEMPTS = 2")],
-     TG, "test_the_reduction_gets_exactly_one_bounded_attempt"),
+    ("61. the one corrective retry becomes a retry ladder",
+     [(NA, r"(?m)^_F6_CEILING_REDUCTION_ATTEMPTS = 2$",
+       "_F6_CEILING_REDUCTION_ATTEMPTS = 3")],
+     TG, "test_the_reduction_gets_one_bounded_corrective_retry"),
 
     # 🔴 THE HEADING IS THE SERVER'S, NOT THE MODEL'S. Splicing the candidate in without
     #    re-attaching it destroys the block boundary the whole comparison rests on.
@@ -634,13 +645,90 @@ BREAKS = [
        "                        result.get(_f6_rk) or \"\", target_words=int(_f6_lim[1]), style=style,")],
      TG, "test_the_reducer_is_handed_one_chapter_and_the_server_owned_ceiling"),
 
-    ("62c. an empty reducer candidate is spliced in anyway",
-     [(NA, r"(?m)^                    if not _f6_cand:\n                        continue$",
-       "                    if False:\n                        continue")],
+    ("62c. a rejected reducer candidate is spliced in anyway",
+     [(NA, r"(?m)^                    if _f6_reject:$",
+       "                    if False:")],
      # 🔴 SPLICING THE EMPTY CANDIDATE IN ALSO BLOCKS — it guts the chapter, which fails the
      #    floor — so "it refused" cannot tell the two apart and the mutant SURVIVED. The
      #    witness now asserts the CHANGE SET: with the guard, chapter 1 is never touched.
      TG, "test_an_empty_reducer_candidate_is_never_spliced_into_the_book"),
+
+    ("62d. the pre-splice acceptance gate drops the word floor",
+     [(NA, r"(?m)^    if words < floor:$", "    if False:")],
+     TG, "test_a_gutted_reducer_candidate_blocks"),
+
+    ("62e. the pre-splice acceptance gate drops the word ceiling",
+     [(NA, r"(?m)^    if words > ceiling:$", "    if False:")],
+     TG, "test_an_oversized_reducer_candidate_blocks"),
+
+    ("62f. an in-band response cut off mid-sentence is accepted",
+     [(NA, r"(?m)^    if not tail\.endswith\(\(\"\.\", \"!\", \"\?\", \"…\", \"—\", \"–\", \"--\"\)\):$",
+       "    if False:")],
+     TG, "test_a_truncated_first_reduction_can_recover_without_shipping_it"),
+
+    ("62f2. a reducer-echoed chapter heading is admitted as body prose",
+     [(NA, r"(?m)^    if any\(_ngate\.chapter_heading_line\(_block\)\n"
+           r"           for _block in _ngate\.split_chapter_blocks\(text\)\):$",
+       "    if False:")],
+     TG, "test_a_reducer_echoed_heading_is_rejected_before_splice"),
+
+    ("62g. the cheap-call completeness guard accepts a length-capped response",
+     [(LZ, r"(?m)^        if require_complete and finish in _NARASI_TRUNC_REASONS:$",
+       "        if False:")],
+     TS3, "TestCheapCall::test_require_complete_rejects_a_length_capped_response_but_keeps_cost"),
+
+    ("62g2. the reducer stops requiring a complete cheap-call response",
+     [(LZ, r"(?m)^        json_mode=False, credit_row=credit_row, require_complete=True\)$",
+       "        json_mode=False, credit_row=credit_row, require_complete=False)")],
+     TS3, "TestChapterReducer::test_forwards_the_exact_range_correction_and_completeness_guard"),
+
+    ("62h. the reducer is not told the server-owned floor",
+     [(NA, r"(?m)^                        minimum_words=int\(_f6_lim\[0\]\), correction=_f6_feedback\)$",
+       "                        minimum_words=1, correction=_f6_feedback)")],
+     TG, "test_the_reducer_is_handed_one_chapter_and_the_server_owned_ceiling"),
+
+    ("62h2. the reducer helper ignores the floor it was handed",
+     [(LZ, r"(?m)^    floor = min\(ceiling, max\(1, int\(minimum_words\)\)\)$",
+       "    floor = 1")],
+     TS3, "TestChapterReducer::test_forwards_the_exact_range_correction_and_completeness_guard"),
+
+    ("62i. the second reduction is not told why the first was rejected",
+     [(NA, r"(?m)^                        minimum_words=int\(_f6_lim\[0\]\), correction=_f6_feedback\)$",
+       "                        minimum_words=int(_f6_lim[0]), correction=\"\")")],
+     TG, "test_the_reduction_gets_one_bounded_corrective_retry"),
+
+    ("62i2. the reducer helper drops the corrective reason from its request",
+     [(LZ, r"(?m)^    if correction:$", "    if False:")],
+     TS3, "TestChapterReducer::test_forwards_the_exact_range_correction_and_completeness_guard"),
+
+    ("62j. a fabricated beat quote is treated as exact final-byte evidence",
+     [(NA, r"(?m)^            and len\(evidence\.split\(\)\) >= 3 and evidence in chapter_text\)$",
+       "            and len(evidence.split()) >= 3 and True)")],
+     TFS, "test_a_fabricated_beat_quote_cannot_clear_a_final_scan_finding"),
+
+    ("62k. a two-word fragment is enough to overrule the final beat census",
+     [(NA, r"(?m)^            and len\(evidence\.split\(\)\) >= 3 and evidence in chapter_text\)$",
+       "            and len(evidence.split()) >= 1 and evidence in chapter_text)")],
+     TFS, "test_a_too_short_beat_quote_cannot_clear_a_final_scan_finding"),
+
+    ("62l. beat evidence moved to another chapter still clears the regression",
+     [(NA, r"(?m)^                _chapter_block = \(_chapter_blocks\[_bch - 1\]\n"
+           r"                                 if isinstance\(_bch, int\) and not isinstance\(_bch, bool\)\n"
+           r"                                 and 1 <= _bch <= len\(_chapter_blocks\) else \"\"\)$",
+       "                _chapter_block = final_text")],
+     TFS, "test_beat_evidence_moved_to_another_chapter_cannot_clear_a_real_regression"),
+
+    ("62m. the exact pre-repair beat evidence never reaches the finaliser",
+     [(NA, r'(?m)^                "beat_evidence_before": dict\(_f6_beat_evidence_before\),$',
+       '                "beat_evidence_before": {},')],
+     TFS, "test_a_false_final_beat_regression_is_cleared_only_by_exact_final_byte_evidence"),
+
+    ("62n. a chapter heading is accepted as evidence that a beat executed in the prose",
+     [(NA, r"(?m)^        if _f6_exact_beat_evidence\(evidence, chapter_text=block\[len\(heading\):\]\):$",
+       "        if _f6_exact_beat_evidence(evidence, chapter_text=block):"),
+      (NA, r"(?m)^                _chapter_text = _chapter_block\[len\(_chapter_heading\):\]$",
+       "                _chapter_text = _chapter_block")],
+     TFS, "test_a_chapter_heading_cannot_be_used_as_executed_beat_evidence"),
 
     # ── the five-defect accounting ─────────────────────────────────────────
     ("63. the accounting silently drops one of the five detected violations",
