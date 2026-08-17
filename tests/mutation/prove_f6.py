@@ -686,8 +686,8 @@ BREAKS = [
      TS3, "TestChapterReducer::test_forwards_the_exact_range_correction_and_completeness_guard"),
 
     ("62h. the reducer is not told the server-owned floor",
-     [(NA, r"(?m)^                        minimum_words=int\(_f6_lim\[0\]\), correction=_f6_feedback\)$",
-       "                        minimum_words=1, correction=_f6_feedback)")],
+     [(NA, r"(?m)^                        minimum_words=int\(_f6_lim\[0\]\), correction=_f6_feedback,$",
+       "                        minimum_words=1, correction=_f6_feedback,")],
      TG, "test_the_reducer_is_handed_one_chapter_and_the_server_owned_ceiling"),
 
     ("62h2. the reducer helper ignores the floor it was handed",
@@ -696,8 +696,8 @@ BREAKS = [
      TS3, "TestChapterReducer::test_forwards_the_exact_range_correction_and_completeness_guard"),
 
     ("62i. the second reduction is not told why the first was rejected",
-     [(NA, r"(?m)^                        minimum_words=int\(_f6_lim\[0\]\), correction=_f6_feedback\)$",
-       "                        minimum_words=int(_f6_lim[0]), correction=\"\")")],
+     [(NA, r"(?m)^                        minimum_words=int\(_f6_lim\[0\]\), correction=_f6_feedback,$",
+       "                        minimum_words=int(_f6_lim[0]), correction=\"\",")],
      TG, "test_the_reduction_gets_one_bounded_corrective_retry"),
 
     ("62i2. the reducer helper drops the corrective reason from its request",
@@ -1001,11 +1001,11 @@ BREAKS = [
      TG, "test_all_five_repaired_persists_and_finalises_DONE"),
 
     # ── cheap Claude actuator for the two live-canary failures ────────────
-    ("96. F6 repair silently defaults back to expensive Opus",
-     [(LZ, r'(?m)^    return \(os\.getenv\("NARASI_F6_REPAIR_MODEL", "claude-haiku-4-5"\)\.strip\(\)\n'
-           r'            or "claude-haiku-4-5"\)$',
-       '    return (os.getenv("NARASI_F6_REPAIR_MODEL", "claude-opus-4-6").strip()\n'
-       '            or "claude-opus-4-6")')],
+    ("96. F6 repair defaults to the unavailable undated Haiku alias",
+     [(LZ, r'(?m)^    return \(os\.getenv\("NARASI_F6_REPAIR_MODEL", "claude-haiku-4-5-20251001"\)\.strip\(\)\n'
+           r'            or "claude-haiku-4-5-20251001"\)$',
+       '    return (os.getenv("NARASI_F6_REPAIR_MODEL", "claude-haiku-4-5").strip()\n'
+       '            or "claude-haiku-4-5")')],
      TFCR, "test_ceiling_reducer_sends_an_exact_mandatory_budget_to_cheap_claude"),
 
     ("97. the ceiling reducer ignores its call-scoped Claude model",
@@ -1032,6 +1032,16 @@ BREAKS = [
      [(NA, r'(?m)^                if _v\["f6_class"\] not in \("chapter_ceiling", "teleport"\)\]$',
        '                if _v["f6_class"] != "chapter_ceiling"]')],
      TFS, "test_an_unrelated_critic_finding_cannot_take_teleport_off_its_own_lane"),
+
+    ("102. the ceiling reducer loses the server-owned required beats",
+     [(NA, r"(?m)^                        required_beats=_f6_required_beats\)$",
+       "                        required_beats=\"\")")],
+     TG, "test_the_reducer_is_handed_one_chapter_and_the_server_owned_ceiling"),
+
+    ("103. the cheap reducer drops required beats before building the prompt",
+     [(LZ, r'(?m)^    required_beats = str\(required_beats or ""\)\.strip\(\)\[:6000\]$',
+       '    required_beats = ""')],
+     TFCR, "test_ceiling_reducer_sends_an_exact_mandatory_budget_to_cheap_claude"),
 ]
 
 

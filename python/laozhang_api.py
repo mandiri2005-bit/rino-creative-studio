@@ -7970,8 +7970,8 @@ DALANG_CHEAP_MODEL         = os.getenv("DALANG_CHEAP_MODEL", "gemini-2.5-flash-l
 # dedicated inexpensive Claude model so an operator can tune it without moving every
 # unrelated cheap side-call (fact extraction, summaries, register checks) to another model.
 def _narasi_f6_repair_model() -> str:
-    return (os.getenv("NARASI_F6_REPAIR_MODEL", "claude-haiku-4-5").strip()
-            or "claude-haiku-4-5")
+    return (os.getenv("NARASI_F6_REPAIR_MODEL", "claude-haiku-4-5-20251001").strip()
+            or "claude-haiku-4-5-20251001")
 # Slice 4: fresh-context critic (D3) — sample every K chapters for books longer than MIN,
 # gate at GATE/10 (below ⟹ one revise), plus a whole-book pass at job end. Env-tunable.
 DALANG_CRITIC_MIN_CHAPTERS = int(os.getenv("DALANG_CRITIC_MIN_CHAPTERS", "5"))
@@ -9081,7 +9081,7 @@ def _bound_beat_census_payload(raw):
 async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style: str,
                                  language: str, tenant_id, user_id, job_uuid=None,
                                  credit_row: bool = False, minimum_words: int = 1,
-                                 correction: str = ""):
+                                 correction: str = "", required_beats: str = ""):
     """Rewrite ONE chapter shorter. Returns `(candidate_text, cr)`; never a whole book.
 
     🔴 ONE CHAPTER IN, ONE CHAPTER OUT — AND THAT IS A SAFETY PROPERTY, NOT AN OPTIMISATION.
@@ -9097,24 +9097,45 @@ async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style:
     ceiling = max(1, int(target_words))
     floor = min(ceiling, max(1, int(minimum_words)))
     aim = floor + ((ceiling - floor) // 2)
+    required_beats = str(required_beats or "").strip()[:6000]
+    if required_beats:
+        preservation = (
+            "Preserve every REQUIRED BEAT, including its decisions, reveals, causal links, "
+            "relationship changes, locations, chronology, narration tense, point of view, and "
+            "characters. Those beats are the complete preservation authority: delete minor "
+            "actions and texture absent from them unless strictly needed for causal clarity. "
+        )
+    else:
+        preservation = (
+            "No server-owned REQUIRED BEATS were supplied. Preserve every plot-critical event, "
+            "decision, reveal, causal link, relationship change, location, chronology, narration "
+            "tense, point of view, character, and information-bearing exchange. Delete only "
+            "redundancy and decorative texture; never delete a distinct event. "
+        )
     system = (
-        "You are a line editor. You will be given the BODY of one chapter and a word budget. "
+        "You are a precision compression editor. You will be given the BODY of one chapter, "
+        "its server-owned REQUIRED BEATS, and a word budget. "
         "The server has already measured this chapter above its hard ceiling: this is a "
         "mandatory reduction, not a request to audit whether shortening is needed. Rewrite "
-        "it to fit the budget by tightening prose — cut redundancy, compress "
-        "description, merge sentences. Keep EVERY plot event, decision, reveal and line of "
-        "dialogue that carries information; keep the narration tense, the point of view, the "
-        "characters and the order things happen. Do NOT return the input unchanged. Do NOT "
-        "summarise, do NOT add a heading, do NOT add commentary. Reply with the COMPLETE "
-        "rewritten chapter body and nothing else."
+        "it to fit the budget. "
+        + preservation +
+        "Do not preserve wording. Compress aggressively: merge actions, remove decorative detail "
+        "and repetition, summarize minor exchanges, and convert dialogue to concise indirect "
+        "speech while preserving plot-critical meaning. The result must remain continuous "
+        "narrative prose, not a synopsis or bullets. Do NOT return the input unchanged. Do NOT "
+        "add facts, a heading, notes, or commentary. Reply with the COMPLETE rewritten chapter "
+        "body and nothing else."
     )
     user = (
         f"STYLE: {style}\nLANGUAGE: {language}\n"
         f"WORD RANGE: between {floor} and {ceiling} words, inclusive. "
         f"Aim for approximately {aim} words so counting variance stays inside the range. "
-        "Finish the final sentence; never stop mid-sentence.\n\n"
-        f"CHAPTER BODY:\n{chapter_text}"
+        "Silently count whitespace-separated words before replying. Finish the final sentence; "
+        "never stop mid-sentence.\n\n"
     )
+    if required_beats:
+        user += f"REQUIRED BEATS — PRESERVATION AUTHORITY:\n{required_beats}\n\n"
+    user += f"CHAPTER BODY:\n{chapter_text}"
     correction = " ".join(str(correction or "").split())[:400]
     if correction:
         user += f"\n\nCORRECTION TO YOUR PREVIOUS ATTEMPT: {correction}"

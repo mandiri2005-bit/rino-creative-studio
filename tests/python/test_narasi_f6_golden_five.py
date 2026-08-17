@@ -129,7 +129,8 @@ def golden(monkeypatch):
             body=None):
         seen = {"finalize": [], "refund": 0, "persisted": None, "settle": 0,
                 "critique": 0, "revise": 0, "reduce": 0, "reduce_targets": [],
-                "reduce_corrections": [], "final_book": None}
+                "reduce_corrections": [], "reduce_required_beats": [],
+                "final_book": None}
 
         async def _anoop(*_a, **_k):
             return None
@@ -186,6 +187,7 @@ def golden(monkeypatch):
             seen["reduce_targets"].append(
                 (len(chapter_text.split()), minimum_words, target_words))
             seen["reduce_corrections"].append(correction)
+            seen["reduce_required_beats"].append(_k.get("required_beats"))
             if reduce_raises:
                 raise RuntimeError("reducer provider exploded")
             if reduce_sequence is not None:
@@ -590,6 +592,8 @@ def test_the_reducer_is_handed_one_chapter_and_the_server_owned_ceiling(golden):
     inspection afterwards. 44 is `word_target 40 × 1.1`, the contract the generator had."""
     seen = golden()
     assert seen["reduce_targets"] == [(60, 36, 44)], seen["reduce_targets"]
+    assert len(seen["reduce_required_beats"]) == 1
+    assert "Eun-soo returns" in seen["reduce_required_beats"][0]
 
 
 @pytest.mark.parametrize("census", [

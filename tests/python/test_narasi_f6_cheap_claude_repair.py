@@ -54,17 +54,22 @@ def test_ceiling_reducer_sends_an_exact_mandatory_budget_to_cheap_claude(monkeyp
     text, credits = asyncio.run(lz._narasi_chapter_reduce(
         "Satu dua tiga empat lima enam tujuh delapan sembilan sepuluh.",
         target_words=110, minimum_words=90, style="storytelling", language="id",
-        tenant_id="t", user_id="u"))
+        tenant_id="t", user_id="u",
+        required_beats="1. Tokoh menemukan kunci.\n2. Tokoh menyerahkan kunci."))
 
     assert text == "Bab yang sudah dipadatkan."
     assert credits == 3
-    assert seen["kwargs"]["model_override"] == "claude-haiku-4-5"
+    assert seen["kwargs"]["model_override"] == "claude-haiku-4-5-20251001"
     assert seen["kwargs"]["phase"] == "f6_repair"
     assert seen["kwargs"]["require_complete"] is True
     assert "mandatory reduction" in seen["system"]
     assert "Do NOT return the input unchanged" in seen["system"]
+    assert "complete preservation authority" in seen["system"]
+    assert "delete minor actions and texture" in seen["system"]
     assert "between 90 and 110 words" in seen["user"]
     assert "approximately 100 words" in seen["user"]
+    assert "REQUIRED BEATS — PRESERVATION AUTHORITY" in seen["user"]
+    assert "Tokoh menemukan kunci" in seen["user"]
 
 
 def test_two_server_measured_teleports_force_a_cheap_chapter_repair(monkeypatch):
@@ -124,7 +129,7 @@ def test_two_server_measured_teleports_force_a_cheap_chapter_repair(monkeypatch)
 
     assert output == repaired
     assert seen["calls"] == 1
-    assert seen["requested_model"] == "claude-haiku-4-5"
+    assert seen["requested_model"] == "claude-haiku-4-5-20251001"
     assert seen["phase"] == "f6_repair"
     assert "already verified 2 unbridged location changes" in seen["system"]
     assert "Repair EVERY measured occurrence" in seen["system"]

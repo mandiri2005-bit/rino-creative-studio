@@ -6646,11 +6646,19 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _f6_post = _f6_body[len(_f6_body.rstrip()):]
                     _f6_pending["repair_attempts"] += 1
                     _f6_pending["provider_calls"] += 1
+                    _f6_required_beats = ""
+                    if isinstance(_outline_packets, dict):
+                        _f6_required_beats = (
+                            _outline_packets.get(_f6_cch)
+                            or _outline_packets.get(str(_f6_cch))
+                            or ""
+                        )
                     _f6_cand, _f6_ccr = await _narasi_chapter_reduce(
                         _f6_body.strip(), target_words=int(_f6_lim[1]), style=style,
                         language=language, tenant_id=tenant_id, user_id=user_id,
                         job_uuid=job_uuid, credit_row=False,
-                        minimum_words=int(_f6_lim[0]), correction=_f6_feedback)
+                        minimum_words=int(_f6_lim[0]), correction=_f6_feedback,
+                        required_beats=_f6_required_beats)
                     if sink is not None and _f6_ccr:
                         sink.credits += int(_f6_ccr)
                     _f6_cand = str(_f6_cand or "").strip()
