@@ -688,10 +688,33 @@ BREAKS = [
      [(NG, r"(?m)^    if set\(states\) != expected:$", "    if False:")],
      TCLS, "test_an_incomplete_beat_census_is_refused"),
 
-    ("69. a beat the accepted outline does not have is admitted",
-     [(NG, r"(?m)^        if key not in expected:\n            return \{\*\*empty, \"reason\": \"unknown_beat\"\}$",
-       "        if False:\n            return {**empty, \"reason\": \"unknown_beat\"}")],
-     TCLS, "test_a_beat_the_outline_does_not_have_invalidates_the_census"),
+    # 🔴 MUTANT 69 IS INVERTED FROM ITS FIRST FORM, AND THE REASON IS A PRODUCTION INCIDENT.
+    # It used to assert that an out-of-keyspace row INVALIDATES the census. Live job `lyjzgd69`
+    # (2026-08-17) proved that rule wrong at the customer's expense: complete, correct coverage
+    # plus one invented pair was read as UNPROVED, and UNPROVED blocks. The rule now is "drop
+    # it and count it", so the mutant restores the old fatal return — and its witness is the
+    # BEHAVIOURAL row on the real job path, not the census helper, because what has to stay
+    # dead is the REFUSAL, not a return value.
+    ("69. an out-of-keyspace beat row is fatal again — a sound book is refused",
+     [(NG, r"(?m)^        if key not in expected:\n            ignored_unknown \+= 1\n            continue$",
+       "        if key not in expected:\n            return {**empty, \"reason\": \"unknown_beat\"}")],
+     TG, "test_an_invented_beat_beside_complete_coverage_never_blocks_a_sound_book"),
+
+    ("69c. the dropped rows stop being counted, so the filter is unauditable",
+     [(NG, r"(?m)^            ignored_unknown \+= 1$", "            ignored_unknown += 0")],
+     TCLS, "test_a_beat_the_outline_does_not_have_is_ignored_and_counted"),
+
+    ("69d. an unknown row is allowed to stand in for a beat the outline owns",
+     [(NG, r"(?m)^    if set\(states\) != expected:\n        return \{\*\*empty, \"reason\": \"incomplete_coverage\"\}$",
+       "    if False:\n        return {**empty, \"reason\": \"incomplete_coverage\"}")],
+     TG, "test_an_invented_beat_cannot_hide_a_beat_the_outline_owns"),
+
+    ("69e. a row with no usable identity is swallowed by the filter instead of refused",
+     [(NG, r"(?m)^        if \(isinstance\(chapter, bool\) or not isinstance\(chapter, int\)\n"
+           r"                or isinstance\(beat, bool\) or not isinstance\(beat, int\)\):\n"
+           r"            return \{\*\*empty, \"reason\": \"invalid_entry\"\}$",
+       "        if False:\n            return {**empty, \"reason\": \"invalid_entry\"}")],
+     TCLS, "test_a_row_with_no_usable_identity_is_still_fatal"),
 
     ("69b. two contradictory answers for one beat are silently reconciled",
      [(NG, r"(?m)^        if key in states and states\[key\] != state:\n"

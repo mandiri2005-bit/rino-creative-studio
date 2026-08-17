@@ -2245,15 +2245,31 @@ def beat_census(beat_states, *, outline_sizes) -> dict:
 
     🔴 THE KEYS ARE SERVER-OWNED. `outline_sizes` maps chapter → beat count, counted from the
     packet THIS process rendered (`_f5_outline_beats`). A beat the accepted outline does not
-    have cannot be observed, cannot be repaired and cannot be verified, so an entry naming one
-    invalidates the census rather than being skipped: a model inventing keys is a model that
-    was not reading the outline it was handed.
+    have cannot be observed, cannot be repaired and cannot be verified — so it carries NO
+    AUTHORITY and takes no part in the census.
+
+    🔴 AN EXTRA KEY IS NOT AUTHORITY, BUT IT IS NOT A VERDICT ABOUT THE BOOK EITHER — AND
+    TREATING IT AS ONE COST A REAL CUSTOMER A BOOK. The first version invalidated the whole
+    census on the first out-of-keyspace entry (`unknown_beat`). Live job `lyjzgd69`
+    (2026-08-17) came back with complete, correct coverage PLUS one invented pair; F6 read the
+    census as UNPROVED, and UNPROVED blocks, so a finished three-chapter manuscript was refused
+    and refunded. The model naming a beat that does not exist says nothing about the beats that
+    do. So an unknown key is FILTERED and COUNTED, never fatal.
+
+    🔴 AND FILTERING IS NOT FORGIVENESS. Everything the outline DOES own is still enforced
+    exactly as before: coverage must be complete (an invented pair cannot stand in for a real
+    one, because the real one is then missing and `incomplete_coverage` fires), a malformed
+    state on a real beat is still invalid, and two contradictory answers for one real beat are
+    still invalid. Only rows the outline never authorised are dropped.
 
     🔴 AND THE CENSUS MUST COVER ALL OF THEM. Partial coverage is how a missing beat hides —
     the one class here that is ABOUT something being missing. An uncovered beat would read as
     "not reported" and quietly leave the books.
 
-    Returns ``{"valid", "states", "reason"}`` where `states` maps `(chapter, beat)` → state."""
+    Returns ``{"valid", "states", "reason"}`` where `states` maps `(chapter, beat)` → state; a
+    valid census also carries `ignored_unknown_entries`, a bounded COUNT of rows dropped for
+    naming a beat the outline does not own. A count, never the row — no prose crosses this
+    boundary."""
     empty = {"valid": False, "states": {}, "reason": "absent"}
     if not isinstance(outline_sizes, dict) or not outline_sizes:
         return {**empty, "reason": "no_outline"}
@@ -2271,30 +2287,41 @@ def beat_census(beat_states, *, outline_sizes) -> dict:
         return {**empty, "reason": "too_many_entries"}
 
     states: dict = {}
+    ignored_unknown = 0
     for entry in beat_states:
         if not isinstance(entry, dict):
             return {**empty, "reason": "invalid_entry"}
+        # 🔴 IDENTITY FIRST, AND IDENTITY IS THE PAIR. A row whose chapter/beat is not a pair of
+        # real integers cannot be placed at all — not in the census, not in the ignored count —
+        # so it stays fatal. `state` is deliberately NOT part of this check: judging the state
+        # of a beat the outline does not own would be enforcing a key we just said carries no
+        # authority.
         chapter, beat = entry.get("chapter"), entry.get("beat")
-        state = entry.get("state")
         if (isinstance(chapter, bool) or not isinstance(chapter, int)
-                or isinstance(beat, bool) or not isinstance(beat, int)
-                or not isinstance(state, str)):
+                or isinstance(beat, bool) or not isinstance(beat, int)):
+            return {**empty, "reason": "invalid_entry"}
+        key = (chapter, beat)
+        if key not in expected:
+            ignored_unknown += 1
+            continue
+        state = entry.get("state")
+        if not isinstance(state, str):
             return {**empty, "reason": "invalid_entry"}
         state = state.strip().lower()
         if state not in _BEAT_STATES:
             return {**empty, "reason": "invalid_state"}
-        key = (chapter, beat)
-        if key not in expected:
-            return {**empty, "reason": "unknown_beat"}
         # 🔴 TWO ANSWERS FOR ONE BEAT IS NO ANSWER. Keeping either one lets the census say
         # whatever the reader hopes; the honest reading of a self-contradicting observation is
         # that it cannot be used.
         if key in states and states[key] != state:
             return {**empty, "reason": "contradictory_entry"}
         states[key] = state
+    # 🔴 THE COVERAGE RULE IS WHAT MAKES FILTERING SAFE. An invented pair cannot substitute for
+    # a real one: dropping it leaves the real beat unreported, and this is where that is caught.
     if set(states) != expected:
         return {**empty, "reason": "incomplete_coverage"}
-    return {"valid": True, "states": states, "reason": "ok"}
+    return {"valid": True, "states": states, "reason": "ok",
+            "ignored_unknown_entries": ignored_unknown}
 
 
 def narrator_opening_ratio_scan(text: str, lang: str = "en",

@@ -384,6 +384,55 @@ def test_a_clean_book_finishes_without_a_repair_or_a_false_block(golden):
     assert seen["critique"] == 1, "a verification pass was spent with nothing to verify"
 
 
+#: The exact live shape from job `lyjzgd69` (2026-08-17): complete, correct coverage PLUS one
+#: pair the accepted outline never had. The model naming a beat that does not exist says nothing
+#: about the beats that do.
+_INVENTED = {"chapter": 9, "beat": 1, "state": "executed"}
+
+
+def test_an_invented_beat_beside_complete_coverage_never_blocks_a_sound_book(golden):
+    """🔴 THE REGRESSION THAT COST A CUSTOMER A BOOK, ON THE PRODUCTION PATH.
+
+    Live job `lyjzgd69` came back with every outlined beat reported correctly and ONE invented
+    pair alongside. `beat_census` returned `unknown_beat`, `_f6_scan` recorded
+    `beat_census_unknown_beat` as UNPROVED, and UNPROVED blocks — a finished three-chapter
+    manuscript was refused and refunded.
+
+    This drives the REAL job body, the REAL gates and the REAL finaliser, not the census
+    helper: the unknown row is present in BOTH the pre-repair and post-repair observations,
+    exactly as a live critic would emit it, and the book must still reach DONE."""
+    na = _live("narration_api")
+    seen = golden(book=_book((SHORT1, B2_FIXED, B3_FIXED, B4_FIXED, B5_CLEAN)),
+                  tense_before=TENSE_CLEAN, tele_before=TELE_CLEAN,
+                  beats_before=BEATS_CLEAN + [dict(_INVENTED)],
+                  beats_after=BEATS_CLEAN + [dict(_INVENTED)])
+
+    assert seen["f6"].get("unproven") in (None, ""), seen["f6"]
+    assert seen["f6"]["violations_detected"] == 0, seen["f6"]
+    assert seen["f6"]["delivery_blocked"] is False, seen["f6"]
+    assert na._STATUS_DONE in _statuses(seen), _statuses(seen)
+    assert seen["refund"] == 0, "a sound book was refunded over a row about no real beat"
+    assert seen["persisted"] is not None, "a sound book never reached persistence"
+
+
+def test_an_invented_beat_cannot_hide_a_beat_the_outline_owns(golden):
+    """🔴 FILTERING IS NOT FORGIVENESS, PROVED ON THE SAME PATH. Swap a real beat OUT and the
+    invented one IN: dropping the unknown row leaves the real beat unreported, coverage is
+    incomplete, and the job must still refuse. Without this row, "ignore unknown keys" would be
+    indistinguishable from "accept partial coverage"."""
+    na = _live("narration_api")
+    substituted = [e for e in BEATS_CLEAN
+                   if (e["chapter"], e["beat"]) != (4, 3)] + [dict(_INVENTED)]
+    seen = golden(book=_book((SHORT1, B2_FIXED, B3_FIXED, B4_FIXED, B5_CLEAN)),
+                  tense_before=TENSE_CLEAN, tele_before=TELE_CLEAN,
+                  beats_before=substituted, beats_after=substituted)
+
+    assert seen["f6"]["delivery_blocked"] is True, seen["f6"]
+    assert "incomplete_coverage" in str(seen["f6"].get("unproven") or ""), seen["f6"]
+    assert na._STATUS_DONE not in _statuses(seen)
+    assert seen["refund"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Partial repair — ONE failure out of five is still a refusal
 # ---------------------------------------------------------------------------

@@ -185,13 +185,58 @@ def test_a_complete_beat_census_is_read_as_a_map():
     assert out["states"] == {(1, 1): "executed", (1, 2): "promised", (2, 1): "absent"}
 
 
-def test_a_beat_the_outline_does_not_have_invalidates_the_census():
-    """🔴 A MODEL INVENTING KEYS IS A MODEL THAT WAS NOT READING THE OUTLINE IT WAS HANDED.
-    Skipping the entry instead would let an invented beat sit beside real ones as if the answer
-    were sound."""
+def test_a_beat_the_outline_does_not_have_is_ignored_and_counted():
+    """🔴 THE LIVE SHAPE THAT COST A CUSTOMER A BOOK. Job `lyjzgd69` (2026-08-17) returned
+    COMPLETE, correct coverage plus ONE invented pair. The census called that `unknown_beat`,
+    F6 read it as UNPROVED, and UNPROVED blocks — a finished manuscript refused and refunded
+    over a row that said nothing about any real beat.
+
+    An unknown key carries no authority, so it takes no part in the census. It is dropped and
+    COUNTED, never fatal."""
     out = ng.beat_census(FULL + [{"chapter": 9, "beat": 1, "state": "executed"}],
                          outline_sizes=SIZES)
-    assert out["valid"] is False and out["reason"] == "unknown_beat"
+    assert out["valid"] is True, out
+    assert out["reason"] == "ok"
+    assert out["states"] == {(1, 1): "executed", (1, 2): "promised", (2, 1): "absent"}
+    assert out["ignored_unknown_entries"] == 1
+
+
+def test_an_unknown_beat_cannot_stand_in_for_one_the_outline_owns():
+    """🔴 FILTERING IS NOT FORGIVENESS. Drop the invented row and the real beat it replaced is
+    simply missing — which is `incomplete_coverage`, the rule the whole class rests on. Without
+    this row, "ignore unknown keys" would be indistinguishable from "accept partial coverage"."""
+    substituted = FULL[:2] + [{"chapter": 9, "beat": 1, "state": "executed"}]
+    out = ng.beat_census(substituted, outline_sizes=SIZES)
+    assert out["valid"] is False and out["reason"] == "incomplete_coverage"
+
+
+def test_an_unknown_beat_is_never_judged_on_its_state():
+    """A key the outline does not own is not enforced in any direction — a malformed state on
+    an unauthorised row cannot invalidate a census it was never part of."""
+    out = ng.beat_census(FULL + [{"chapter": 9, "beat": 1, "state": "not-a-state"}],
+                         outline_sizes=SIZES)
+    assert out["valid"] is True and out["ignored_unknown_entries"] == 1
+
+
+def test_a_row_with_no_usable_identity_is_still_fatal():
+    """🔴 THE ONE THING FILTERING MUST NOT SWALLOW. A row whose chapter/beat is not a pair of
+    real integers cannot be placed at all — not in the census, not in the ignored count — so it
+    stays `invalid_entry`. Counting it as "unknown" would turn malformed observations into a
+    silent number."""
+    for bad in ({"chapter": "1", "beat": 1, "state": "executed"},
+                {"chapter": 1, "beat": True, "state": "executed"},
+                {"chapter": None, "beat": 1, "state": "executed"}):
+        out = ng.beat_census(FULL + [bad], outline_sizes=SIZES)
+        assert out["valid"] is False and out["reason"] == "invalid_entry", bad
+
+
+def test_the_raw_row_cap_is_checked_before_filtering():
+    """The bound is on what the observer SENT, not on what survived the filter — otherwise a
+    runaway answer could be trimmed into range by dropping its own unknown rows."""
+    flood = FULL + [{"chapter": 9, "beat": n, "state": "executed"}
+                    for n in range(1, ng._BEAT_CENSUS_MAX_ENTRIES + 2)]
+    out = ng.beat_census(flood, outline_sizes=SIZES)
+    assert out["valid"] is False and out["reason"] == "too_many_entries"
 
 
 def test_an_incomplete_beat_census_is_refused():

@@ -3235,6 +3235,13 @@ def _f6_scan(*, text: str, chapter_count: int, observation: dict, outline_sizes:
     teleports = _ngate.teleport_census(obs.get("teleports_by_chapter"),
                                        chapter_count=chapter_count)
     beats = _ngate.beat_census(obs.get("beat_states"), outline_sizes=outline_sizes)
+    # 🔴 THE DROPPED ROWS ARE COUNTED OUT LOUD. A census that silently discards part of what the
+    # observer said is a census nobody can audit — and this specific number is what turned a
+    # customer-visible refusal (live job `lyjzgd69`, `beat_census_unknown_beat`) into a bounded,
+    # attributable fact. A COUNT only: the row itself is model prose and never leaves the census.
+    if beats.get("ignored_unknown_entries"):
+        log.warning("F6 beat census: %d observed beat row(s) ignored — outside the accepted "
+                    "outline's keyspace", beats["ignored_unknown_entries"])
 
     unproven = []
     # 🔴 THE HEADINGS THEMSELVES ARE A SERVER-OWNED FACT. Every census here is indexed by
