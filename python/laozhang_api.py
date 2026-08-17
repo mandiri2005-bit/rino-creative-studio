@@ -9146,6 +9146,83 @@ async def _narasi_chapter_reduce(chapter_text: str, *, target_words: int, style:
         model_override=_narasi_f6_repair_model(), phase="f6_repair")
 
 
+#: F8 seam repair is a narrow editing task on ONE chapter opening, not a whole-book reasoning
+#: task — the same argument that put F6 on its own cheap Claude route. It gets its OWN variable
+#: so an operator can move the seam actuator without touching F6's reducer or any unrelated
+#: cheap side-call.
+#:
+#: ⚠️ THE DEFAULT IS THE FULL DATED ID ON PURPOSE. The bare alias `claude-haiku-4-5` has no
+#:    channel on the production provider and comes back 503, which would make every seam repair
+#:    a failed call and every broken seam unresolved — a fail-closed gate refusing books because
+#:    its actuator could not be reached.
+def _narasi_f8_repair_model() -> str:
+    return (os.getenv("NARASI_F8_REPAIR_MODEL", "claude-haiku-4-5-20251001").strip()
+            or "claude-haiku-4-5-20251001")
+
+
+async def _narasi_seam_repair(chapter_b_body: str, *, chapter_a_tail: str, missing_dims,
+                              required_beats: str, style: str, language: str,
+                              tenant_id, user_id, job_uuid=None,
+                              credit_row: bool = False, correction: str = ""):
+    """Rewrite ONE chapter's opening so the transition into it is on the page.
+
+    🔴 THE ACTUATOR IS NOT A SECOND VOTER. The server has ALREADY verified this seam broken
+    against its own census; the model's job is to write the handoff, not to re-audit whether
+    one is needed. The canary this exists for (`y2f8i16l`) had the generic structural lane
+    report `chapters_accepted: 1` while the final census still read the 1→2 seam as missing in
+    all three dimensions — an actuator that produced an accepted-looking operation without
+    producing a transition.
+
+    🔴 ONE CHAPTER IN, ONE CHAPTER OUT, HEADING NEVER SENT. Chapter A's tail travels as
+    read-only context so the handoff can name what it is departing from; only chapter B's body
+    comes back, and the caller re-attaches the heading and separators it already holds. Every
+    other chapter is unreachable by construction, not by inspection afterwards.
+
+    Returns `(candidate_body, cr)`. The caller still owns every admissibility check, and the
+    FINAL CENSUS remains the only proof that the seam is actually resolved."""
+    gone = [d for d in (missing_dims or ()) if isinstance(d, str)]
+    named = ", ".join(gone) if gone else "causal, location, time"
+    required_beats = str(required_beats or "").strip()[:6000]
+    tail = str(chapter_a_tail or "").strip()[:1500]
+    system = (
+        "You are a continuity editor repairing the TRANSITION into one chapter of a "
+        "multi-chapter story. "
+        "The server has already verified, against its own structural census, that this "
+        "transition is missing. This is a mandatory repair, not a request to audit whether one "
+        "is needed: do not reply that the chapter is fine, and do not return it unchanged. "
+        "Rewrite the OPENING of the chapter so a reader can see how the story got here from "
+        "the end of the previous chapter. The opening must account explicitly for each missing "
+        f"dimension ({named}): a causal link states what decision or consequence led here, a "
+        "location handoff states the move from where the previous chapter ended to where this "
+        "one begins, and a time handoff states the interval that passed. "
+        "Keep the rest of the chapter substantially as written — you are adding a handoff and "
+        "reworking the first paragraph, not rewriting the chapter. "
+        "Preserve every REQUIRED BEAT, in the order given, along with its decisions, reveals, "
+        "characters, narration tense and point of view. "
+        "Reply with the COMPLETE chapter body, from its new opening to its existing final "
+        "sentence. Do NOT reply with only the bridge, a diff, a summary, notes, a heading, or "
+        "any commentary."
+    )
+    user = f"STYLE: {style}\nLANGUAGE: {language}\n\n"
+    if tail:
+        user += (
+            "END OF THE PREVIOUS CHAPTER — READ-ONLY CONTEXT, do not rewrite or repeat it:\n"
+            f"{tail}\n\n")
+    user += f"MISSING TRANSITION DIMENSIONS (server-verified): {named}\n\n"
+    if required_beats:
+        user += f"REQUIRED BEATS FOR THIS CHAPTER — PRESERVATION AUTHORITY:\n{required_beats}\n\n"
+    user += f"CHAPTER BODY TO REPAIR:\n{chapter_b_body}"
+    correction = " ".join(str(correction or "").split())[:400]
+    if correction:
+        user += f"\n\nCORRECTION TO YOUR PREVIOUS ATTEMPT: {correction}"
+    _words = max(1, len(str(chapter_b_body or "").split()))
+    return await _narasi_cheap_call(
+        system, user, tenant_id=tenant_id, user_id=user_id, job_uuid=job_uuid,
+        max_tokens=max(900, _words * 4), temperature=0.2,
+        json_mode=False, credit_row=credit_row, require_complete=True,
+        model_override=_narasi_f8_repair_model(), phase="f8_repair")
+
+
 async def _narasi_consistency_critique(full_text, style, language, *, model,
                                        tenant_id, user_id, job_uuid,
                                        canonical_facts: str = "", credit_row: bool = True,

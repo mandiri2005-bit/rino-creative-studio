@@ -663,8 +663,22 @@ BREAKS = [
      TG, "test_an_oversized_reducer_candidate_blocks"),
 
     ("62f. an in-band response cut off mid-sentence is accepted",
-     [(NA, r"(?m)^    if not tail\.endswith\(\(\"\.\", \"!\", \"\?\", \"…\", \"—\", \"–\", \"--\"\)\):$",
-       "    if False:")],
+     [(NA, r'(?m)^    if words > ceiling:\n'
+           r'        return f"it had \{words\} words, above the \{ceiling\}-word ceiling"\n'
+           r'    import narasi_gate as _ngate\n'
+           r'    if any\(_ngate\.chapter_heading_line\(_block\)\n'
+           r'           for _block in _ngate\.split_chapter_blocks\(text\)\):\n'
+           r'        return "it contained a chapter heading instead of body-only prose"\n'
+           r'    tail = text\.rstrip\(\)\.rstrip\("\\"\'’”»\)\]"\)\n'
+           r'    if not tail\.endswith\(\("\.", "!", "\?", "…", "—", "–", "--"\)\):$',
+       '    if words > ceiling:\n'
+       '        return f"it had {words} words, above the {ceiling}-word ceiling"\n'
+       '    import narasi_gate as _ngate\n'
+       '    if any(_ngate.chapter_heading_line(_block)\n'
+       '           for _block in _ngate.split_chapter_blocks(text)):\n'
+       '        return "it contained a chapter heading instead of body-only prose"\n'
+       '    tail = text.rstrip().rstrip("\\"\'’”»)]")\n'
+       '    if False:')],
      TG, "test_a_truncated_first_reduction_can_recover_without_shipping_it"),
 
     ("62f2. a reducer-echoed chapter heading is admitted as body prose",
@@ -701,7 +715,12 @@ BREAKS = [
      TG, "test_the_reduction_gets_one_bounded_corrective_retry"),
 
     ("62i2. the reducer helper drops the corrective reason from its request",
-     [(LZ, r"(?m)^    if correction:$", "    if False:")],
+     [(LZ, r'(?m)^    user \+= f"CHAPTER BODY:\\n\{chapter_text\}"\n'
+           r'    correction = " "\.join\(str\(correction or ""\)\.split\(\)\)\[:400\]\n'
+           r'    if correction:$',
+       '    user += f"CHAPTER BODY:\\n{chapter_text}"\n'
+       '    correction = " ".join(str(correction or "").split())[:400]\n'
+       '    if False:')],
      TS3, "TestChapterReducer::test_forwards_the_exact_range_correction_and_completeness_guard"),
 
     ("62j. a fabricated beat quote is treated as exact final-byte evidence",
@@ -1039,7 +1058,9 @@ BREAKS = [
      TG, "test_the_reducer_is_handed_one_chapter_and_the_server_owned_ceiling"),
 
     ("103. the cheap reducer drops required beats before building the prompt",
-     [(LZ, r'(?m)^    required_beats = str\(required_beats or ""\)\.strip\(\)\[:6000\]$',
+     [(LZ, r'(?m)^    aim = floor \+ \(\(ceiling - floor\) // 2\)\n'
+           r'    required_beats = str\(required_beats or ""\)\.strip\(\)\[:6000\]$',
+       '    aim = floor + ((ceiling - floor) // 2)\n'
        '    required_beats = ""')],
      TFCR, "test_ceiling_reducer_sends_an_exact_mandatory_budget_to_cheap_claude"),
 ]

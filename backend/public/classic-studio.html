@@ -5398,11 +5398,14 @@ function NarasiSection({settings,showToast}){
               chapIds.forEach((id,idx)=>{ if(idx<done) n[id]="done"; });
               return n;
             });
-            if(sd.status==="done"||sd.status==="cancelled"||sd.status==="error"){
+            if(sd.status==="done"||sd.status==="failed"||sd.status==="cancelled"||sd.status==="error"){
               clearInterval(iv);
               genErrors=(sd.result&&sd.result.errors)||[];
               if(sd.status==="cancelled") showToast("Narasi dibatalkan","ok");
-              if(sd.status==="error") showToast("Narasi gagal: "+(sd.error||""),"err");
+              if(sd.status==="failed"||sd.status==="error") showToast("Narasi gagal: "+(sd.error||"unknown"),"err");
+              // Reuse the existing terminal return below. A failed/cancelled job must never
+              // fall through to stitch, where an empty response used to strand result view.
+              if(sd.status!=="done") abortRef.current=true;
               resolve();
             }
           },2000);
@@ -5791,6 +5794,15 @@ function NarasiSection({settings,showToast}){
           </div>
         }
       </div>}
+      {!generating&&!narasi&&
+        <div className="card" data-narasi-terminal-fallback="true" style={{border:"1px solid var(--wa)"}}>
+          <div className="lbl" style={{color:"var(--wa)"}}>Narasi belum tersedia</div>
+          <div style={{fontSize:13,color:"var(--td)",lineHeight:1.6,marginBottom:12}}>
+            Job berhenti sebelum naskah final dikirim. Outline Anda tetap aman—kembali ke
+            outline untuk memeriksa bab lalu coba generate lagi.
+          </div>
+          <button className="btn sec" onClick={()=>setStage("outline")}>← Kembali ke Outline &amp; Coba Lagi</button>
+        </div>}
       {narasi&&<>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
           <span style={{fontSize:13,fontWeight:700}}>±{narasi.split(/\s+/).filter(Boolean).length} kata</span>

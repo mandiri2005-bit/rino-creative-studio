@@ -10,9 +10,9 @@
    evidence gathering, the preparation, the journey and the elapsed time all missing. Both are
    reproduced synthetically here — no customer manuscript, no Downloads dependency.
 
-🔴 THE SEAM CENSUS RIDES IN THE CONSISTENCY CALL THAT ALREADY EXISTS. `seen["critique"]` is
-   asserted in `test_f8_buys_no_extra_provider_call`: F8 must add zero calls beyond the
-   detection pass and the single bounded post-repair pass F6 already pays for.
+🔴 THE SEAM CENSUS RIDES IN THE CONSISTENCY CALL THAT ALREADY EXISTS. F8's dedicated
+   actuator does buy one bounded cheap-Claude call per seam (plus at most one corrective retry),
+   but it must not buy a separate detection or verification read.
 """
 from __future__ import annotations
 
@@ -92,10 +92,10 @@ def job(monkeypatch):
 
     def run(*, seams_before=SEAMS_BROKEN, seams_after=SEAMS_CLEAN,
             revise=None, accepted_chapters=None, accepted_ids=None, chapters=3,
-            critic_violations=(),
+            critic_violations=(), seam_candidates=None,
             word_targets=(100, 100, 100)):
         seen = {"finalize": [], "persisted": None, "critique": 0, "revise": 0,
-                "payload": None, "refund": 0, "routed": []}
+                "payload": None, "refund": 0, "routed": [], "seam_calls": []}
 
         async def _anoop(*_a, **_k):
             return None
@@ -135,24 +135,38 @@ def job(monkeypatch):
             # Exactly what the structural lane would be handed.
             seen["routed"] = [dict(v) for v in (_request.get("violations") or [])
                               if isinstance(v, dict)]
-            # The structural lane publishes WHICH chapters it accepted onto the request dict;
-            # the job carries that off as `result["_f8_structural_accepted"]`. Scripted here
-            # exactly as `_narasi_publish_structural_patch_summary`'s neighbour does it.
-            if accepted_chapters is not None and isinstance(_request, dict):
-                # The structural lane publishes its per-SEAM accepted ids and its OWN
-                # counters onto the request; the job carries both off. Scripted exactly as
-                # `_narasi_publish_structural_patch_summary`'s neighbour writes them.
-                _seams = sorted(
-                    _v.get("seam") for _v in (_request.get("violations") or [])
-                    if isinstance(_v, dict) and _v.get("f8_class") == "chapter_seam"
-                    and _v.get("chapter_b") in set(accepted_chapters))
-                _request["_f8_structural_accepted"] = sorted(accepted_chapters)
-                _request["_f8_structural_accepted_ids"] = (
-                    sorted(accepted_ids) if accepted_ids is not None else _seams)
-                _request["_f8_structural_counters"] = {
-                    "targeted": len(accepted_chapters), "attempted": len(accepted_chapters),
-                    "provider_calls": len(accepted_chapters), "accepted": len(_seams)}
             return ((revise or (lambda t: t))(text), 0)
+
+        async def _seam_repair(chapter_b_body, *, chapter_a_tail, missing_dims,
+                               required_beats, correction="", **_k):
+            """Provider double for the REAL dedicated actuator.
+
+            Attribution and counters are deliberately not scripted here: production publishes
+            both only after it accepts and splices this candidate.  The fixture controls only
+            provider bytes, which keeps the delivery test capable of catching broken wiring.
+            """
+            chapter_b = next((i for i, body_text in enumerate(BODIES, 1)
+                              if body_text in chapter_b_body), None)
+            identity = f"seam:{chapter_b - 1}|{chapter_b}" if chapter_b else ""
+            seen["seam_calls"].append({
+                "chapter_b": chapter_b,
+                "identity": identity,
+                "chapter_a_tail": chapter_a_tail,
+                "missing_dims": list(missing_dims or ()),
+                "required_beats": required_beats,
+                "correction": correction,
+            })
+            if seam_candidates is not None:
+                at = min(len(seen["seam_calls"]) - 1, len(seam_candidates) - 1)
+                candidate = seam_candidates[at]
+                return ((candidate(chapter_b_body) if callable(candidate) else candidate), 0)
+            permitted = (set(accepted_ids) if accepted_ids is not None else {
+                f"seam:{c - 1}|{c}" for c in (accepted_chapters or ())})
+            if identity not in permitted:
+                return (chapter_b_body, 0)
+            # Four words: valid for this intentionally tiny fixture, meaningfully changed,
+            # terminally punctuated, and still shares all three original words.
+            return (f"JEMBATAN {BODIES[chapter_b - 1]}.", 0)
 
         async def _reduce(chapter_text, *, target_words, **_k):
             return (chapter_text, 0)
@@ -183,6 +197,7 @@ def job(monkeypatch):
         monkeypatch.setattr(live_lz, "NARASI_CRITIQUE_MIN_CHAPTERS", 1)
         monkeypatch.setattr(live_lz, "_narasi_consistency_critique", critique)
         monkeypatch.setattr(live_lz, "_narasi_consistency_revise", _revise)
+        monkeypatch.setattr(live_lz, "_narasi_seam_repair", _seam_repair)
         monkeypatch.setattr(live_lz, "_narasi_chapter_reduce", _reduce)
         monkeypatch.setattr(live_na, "generate_narration", _gen)
         monkeypatch.setattr(live_na, "_cancel_watcher", lambda *a, **k: asyncio.sleep(3600))
@@ -289,6 +304,68 @@ def test_a_no_op_repair_keeps_the_bytes_and_resolves_nothing(job):
     assert _status(seen) == "failed"
 
 
+@pytest.mark.parametrize("bad_candidate", [
+    "Karena itu kemudian.",                       # bridge fragment, not the full body
+    "## Bab 2: Sisipan\n\nJEMBATAN empat lima enam.",  # heading leaked by provider
+    "JEMBATAN empat lima enam",                  # truncated / no terminal punctuation
+])
+def test_an_inadmissible_seam_candidate_retries_then_stays_blocked(job, bad_candidate):
+    seen = job(seams_before=[seam(1, 2, causal="missing"), seam(2, 3)],
+               seams_after=SEAMS_CLEAN, accepted_chapters={2},
+               seam_candidates=[bad_candidate, bad_candidate])
+    block = _f8(seen)
+    assert len(seen["seam_calls"]) == 2, "one initial attempt plus one corrective retry"
+    assert seen["seam_calls"][1]["correction"].startswith("Rejected because ")
+    assert block["accepted_operations"] == 0
+    assert block["seams_resolved"] == 0
+    assert block["delivery_blocked"] is True
+    assert _status(seen) == "failed"
+
+
+def test_the_seam_provider_call_uses_the_dated_cheap_model_and_dedicated_phase(monkeypatch):
+    lz = _live("laozhang_api")
+    seen = {}
+
+    async def cheap(system, user, **kwargs):
+        seen.update({"system": system, "user": user, **kwargs})
+        return ("repaired body.", 0)
+
+    monkeypatch.delenv("NARASI_F8_REPAIR_MODEL", raising=False)
+    monkeypatch.setattr(lz, "_narasi_cheap_call", cheap)
+    asyncio.run(lz._narasi_seam_repair(
+        "chapter B body.", chapter_a_tail="chapter A ending.",
+        missing_dims=["causal", "time"], required_beats="  1. keep this beat\n",
+        style="storytelling", language="id", tenant_id="t", user_id="u"))
+
+    assert seen["model_override"] == "claude-haiku-4-5-20251001"
+    assert seen["phase"] == "f8_repair"
+    assert seen["require_complete"] is True
+    assert "mandatory repair" in seen["system"]
+    assert "chapter A ending." in seen["user"]
+    assert "causal, time" in seen["user"]
+    assert "1. keep this beat" in seen["user"]
+    assert "chapter B body." in seen["user"]
+
+
+@pytest.mark.parametrize(("candidate", "original", "reason"), [
+    ("satu dua tiga empat lima enam.", "satu dua tiga empat lima enam.",
+     "unchanged"),
+    ("## Bab 2: Judul\n\nsatu dua tiga empat lima enam.",
+     "satu dua tiga empat lima enam.", "chapter heading"),
+    ("satu.", "satu dua tiga empat lima enam.", "chapter was cut"),
+    ("satu dua tiga empat lima enam tujuh delapan sembilan sepuluh.",
+     "satu dua tiga empat lima enam.", "rewrite, not a bridge"),
+    ("satu dua tiga empat lima tujuh", "satu dua tiga empat lima enam.",
+     "terminal punctuation"),
+    ("alpha beta gamma delta epsilon zeta.", "satu dua tiga empat lima enam.",
+     "too little of the original"),
+])
+def test_the_server_rejects_each_unsafe_seam_candidate_for_its_own_reason(
+        candidate, original, reason):
+    na = _live("narration_api")
+    assert reason in na._f8_seam_candidate_reason(candidate, original=original)
+
+
 # ---------------------------------------------------------------------------
 # 6, 7 — the post-verifier census must be present and well formed
 # ---------------------------------------------------------------------------
@@ -320,8 +397,10 @@ def test_a_malformed_post_census_is_unproved_and_blocks(job, bad):
 # ---------------------------------------------------------------------------
 # 8 — collateral
 # ---------------------------------------------------------------------------
-def test_a_repair_that_also_rewrites_chapter_one_is_collateral(job):
-    seen = job(revise=_rewrite({1, 2, 3}), accepted_chapters={2, 3})
+def test_another_lane_rewriting_chapter_one_is_collateral(job):
+    seen = job(revise=_rewrite({1}), accepted_chapters={2, 3},
+               critic_violations=[{"type": "timeline", "severity": "high", "chapter": 2,
+                                   "evidence": "w0", "fix": "align the clock"}])
     block = _f8(seen)
     assert 1 in block["collateral_chapters"]
     assert block["seams_resolved"] == 0
@@ -334,7 +413,9 @@ def test_a_repair_that_also_rewrites_chapter_one_is_collateral(job):
 def test_a_seam_broken_by_the_repair_itself_blocks_delivery(job):
     seen = job(seams_before=[seam(1, 2), seam(2, 3, causal="missing")],
                seams_after=[seam(1, 2, location="missing"), seam(2, 3)],
-               revise=_rewrite({3}), accepted_chapters={3})
+               revise=_rewrite({2}), accepted_chapters={3},
+               critic_violations=[{"type": "timeline", "severity": "high", "chapter": 2,
+                                   "evidence": "w0", "fix": "align the clock"}])
     block = _f8(seen)
     assert block["new_defects"]
     assert block["delivery_blocked"] is True
@@ -351,13 +432,11 @@ def test_a_free_text_boundary_finding_and_the_census_are_one_target(job):
     block = _f8(seen)
     assert block["seams_detected"] == 2
     assert block["seams_targeted"] == 2
-    # 🔴 THE COUNTS ALONE CANNOT SEE THIS. `seams_detected` comes from the census, so a
-    # free-text duplicate riding along beside the server-owned violation leaves them
-    # unchanged while the actuator is asked to repair the same seam twice. What has to be
-    # counted is what was ROUTED.
+    # The census owns seam repair. Its free-text duplicate must not ride the generic lane,
+    # while each canonical seam reaches the dedicated actuator exactly once.
     boundary = [v for v in seen["routed"] if v.get("type") == "chapter_boundary_break"]
-    assert len(boundary) == 2, f"one seam was budgeted twice: {boundary}"
-    assert all(v.get("f8_class") == "chapter_seam" for v in boundary)
+    assert boundary == [], f"a seam leaked back into the generic lane: {boundary}"
+    assert [c["identity"] for c in seen["seam_calls"]] == ["seam:1|2", "seam:2|3"]
 
 
 # ---------------------------------------------------------------------------
@@ -374,10 +453,11 @@ def test_a_single_chapter_job_is_not_applicable_and_buys_nothing(job):
 # ---------------------------------------------------------------------------
 # 12 — provider-call accounting
 # ---------------------------------------------------------------------------
-def test_f8_buys_no_extra_provider_call(job):
+def test_f8_reuses_the_existing_census_reads_and_bounds_its_actuator_calls(job):
     seen = job(revise=_rewrite({2, 3}), accepted_chapters={2, 3})
-    assert seen["critique"] == 2, "F8 must ride the existing detection + post-repair passes"
-    assert _f8(seen)["provider_calls"] <= 2
+    assert seen["critique"] == 2, "F8 must ride the existing detection + post-repair reads"
+    assert len(seen["seam_calls"]) == 2
+    assert _f8(seen)["provider_calls"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -446,29 +526,21 @@ def test_a_free_text_finding_that_contradicts_the_census_blocks(job):
 
 
 def test_the_actuator_receives_a_directive_naming_the_missing_dimensions(job):
-    """🔴 P1 — WHAT THE PROVIDER ACTUALLY GETS. `_narasi_structural_patch_revise` builds its
-    prompt from `evidence` and `fix` alone, so this asserts on the violation as it reaches the
-    merged revise — not on what `detect()` returns in isolation."""
+    """🔴 P1 — WHAT THE PROVIDER ACTUALLY GETS through the dedicated seam lane."""
     seen = job(revise=_rewrite({2, 3}), accepted_chapters={2, 3})
-    routed = [v for v in seen["routed"] if v.get("f8_class") == "chapter_seam"]
-    assert len(routed) == 2, seen["routed"]
-    by_seam = {v["seam"]: v for v in routed}
+    by_seam = {v["identity"]: v for v in seen["seam_calls"]}
+    assert sorted(by_seam) == ["seam:1|2", "seam:2|3"]
 
     one_two = by_seam["seam:1|2"]
-    assert one_two["chapter"] == 2
-    assert one_two["evidence"].endswith("@ch2")
-    assert "empat lima enam" in one_two["evidence"], "the locator is not real manuscript text"
-    assert "causal —" in one_two["fix"] and "time —" in one_two["fix"]
-    assert "location —" not in one_two["fix"], "a sound dimension was demanded anyway"
+    assert one_two["chapter_b"] == 2
+    assert "satu dua tiga" in one_two["chapter_a_tail"]
+    assert one_two["missing_dims"] == ["causal", "time"]
+    assert "Min-jae waits" in one_two["required_beats"]
 
     two_three = by_seam["seam:2|3"]
-    assert two_three["chapter"] == 3
-    for dimension in ("causal —", "location —", "time —"):
-        assert dimension in two_three["fix"]
-    # the empty directive the audit reproduced must be impossible
-    for v in routed:
-        assert f"[{v['severity']}/{v['type']}] {v['evidence']} -> FIX: {v['fix']}".strip() \
-            != f"[{v['severity']}/{v['type']}]  -> FIX:"
+    assert two_three["chapter_b"] == 3
+    assert two_three["missing_dims"] == ["causal", "location", "time"]
+    assert "Tae-jun signs" in two_three["required_beats"]
 
 
 def test_attribution_is_per_seam_not_per_chapter(job):
@@ -487,8 +559,8 @@ def test_attribution_is_per_seam_not_per_chapter(job):
     assert block["delivery_blocked"] is True
 
 
-def test_the_counters_come_from_the_structural_lane_not_from_the_target_list(job):
-    """🔴 P1 — `attempts=len(targeted)` AND `provider_calls=1` WERE ASSUMPTIONS. Two structural
+def test_the_counters_come_from_the_seam_lane_not_from_the_target_list(job):
+    """🔴 P1 — `attempts=len(targeted)` AND `provider_calls=1` WERE ASSUMPTIONS. Two seam
     targets are not one physical call, and a target that was capped or never attempted was still
     reported as attempted."""
     seen = job(revise=_rewrite({2, 3}), accepted_chapters={2, 3})

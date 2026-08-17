@@ -3397,6 +3397,51 @@ def _f6_reduction_candidate_reason(candidate: str, *, floor: int, ceiling: int) 
     return ""
 
 
+#: ONE initial attempt plus ONE corrective retry, exactly like the ceiling reducer. A seam the
+#: actuator cannot repair twice is an unresolved seam, and unresolved blocks — never a retry
+#: ladder that spends the job's budget arguing with a model.
+_F8_SEAM_REPAIR_ATTEMPTS = 2
+
+#: What a seam-repair candidate may do to the chapter it rewrites. It ADDS a handoff and reworks
+#: the opening, so it may grow — but a candidate that shrank the chapter, doubled it, or shares
+#: almost nothing with the original is not the same chapter and must never be spliced.
+_F8_SEAM_WORD_FLOOR = 0.9
+_F8_SEAM_WORD_CEIL = 1.6
+_F8_SEAM_MIN_FIDELITY = 0.5
+
+
+def _f8_seam_candidate_reason(candidate: str, *, original: str) -> str:
+    """Return why a seam-repair candidate is unsafe to splice, or ``""`` when admissible.
+
+    🔴 EVERY CHECK HERE IS ABOUT THE BYTES, NOT ABOUT WHETHER THE SEAM READS BETTER. Whether the
+    transition is actually on the page is the FINAL CENSUS's question, and this function must
+    never pre-empt it — a candidate that passes every check below is still unresolved until the
+    census says otherwise."""
+    import difflib
+    import narasi_gate as _ngate
+    text = str(candidate or "").strip()
+    if not text:
+        return "the response was empty"
+    base = str(original or "").strip()
+    if text == base:
+        return "it returned the chapter unchanged"
+    if any(_ngate.chapter_heading_line(_b) for _b in _ngate.split_chapter_blocks(text)):
+        return "it contained a chapter heading instead of body-only prose"
+    words, base_words = len(text.split()), max(1, len(base.split()))
+    if words < int(base_words * _F8_SEAM_WORD_FLOOR):
+        return f"it had {words} words against {base_words} — the chapter was cut, not bridged"
+    if words > int(base_words * _F8_SEAM_WORD_CEIL):
+        return f"it had {words} words against {base_words} — that is a rewrite, not a bridge"
+    tail = text.rstrip().rstrip("\"'’”»)]")
+    if not tail.endswith((".", "!", "?", "…", "—", "–", "--")):
+        return "it did not finish with terminal punctuation"
+    # 🔴 A REPAIR THAT SHARES NOTHING WITH THE CHAPTER IS A DIFFERENT CHAPTER. The required
+    # beats live in the prose that must survive; a from-scratch answer discards them silently.
+    if difflib.SequenceMatcher(None, base.split(), text.split()).ratio() < _F8_SEAM_MIN_FIDELITY:
+        return "it kept too little of the original chapter to be the same chapter"
+    return ""
+
+
 def _f6_exact_beat_evidence(evidence, *, chapter_text: str) -> bool:
     """Bind a non-trivial bounded quote to the exact final chapter bytes."""
     return (isinstance(evidence, str) and len(evidence) <= 600
@@ -3459,6 +3504,9 @@ async def _f8_finalize(result: dict, *, job_id=None) -> dict:
     observation = result.pop("_f8_post_observation", None)
     accepted_ids = result.pop("_f8_structural_accepted_ids", None)
     counters = result.pop("_f8_structural_counters", None)
+    # The DEDICATED seam actuator's own record, kept on its own channel so the two lanes stay
+    # separable in the accounting. Merged here and nowhere else.
+    seam_lane = result.pop("_f8_seam_repair", None)
     # No pending state means the detection seam never ran (F6's kill switch wraps F8 too), so
     # there is nothing to account and nothing to refuse.
     if not isinstance(pending, dict):
@@ -3509,13 +3557,21 @@ async def _f8_finalize(result: dict, *, job_id=None) -> dict:
         # operation, a legacy tense repair or an L3 rewrite would all satisfy it while the
         # seam opening went untouched.
         attribution = {str(_i) for _i in (accepted_ids or ()) if isinstance(_i, str)}
+        # 🔴 THE DEDICATED LANE ATTRIBUTES TOO — AND ATTRIBUTION IS NOT RESOLUTION. `verify()`
+        # requires the after-census to show the seam sound AND the targeted chapter's bytes to
+        # have changed BEFORE it will honour any attribution, so a lane that spliced a candidate
+        # the census still calls broken resolves exactly nothing.
+        _lane = seam_lane if isinstance(seam_lane, dict) else {}
+        attribution |= {str(_i) for _i in (_lane.get("accepted_ids") or ())
+                        if isinstance(_i, str)}
         # 🔴 THE LANE'S OWN COUNTERS, NEVER DERIVED FROM THE TARGET LIST. `len(targeted)`
         # attempts and one provider call is an assumption that is wrong the moment a target is
         # capped, skipped or retried — and it reports work that was never done.
         counts = counters if isinstance(counters, dict) else {}
-        n_attempts = int(counts.get("attempted") or 0)
-        n_calls = int(counts.get("provider_calls") or 0)
-        n_accepted = int(counts.get("accepted") or 0)
+        # Both lanes did real work on F8's account, so both are billed to it.
+        n_attempts = int(counts.get("attempted") or 0) + int(_lane.get("attempted") or 0)
+        n_calls = int(counts.get("provider_calls") or 0) + int(_lane.get("provider_calls") or 0)
+        n_accepted = int(counts.get("accepted") or 0) + int(_lane.get("accepted") or 0)
         if pending.get("conflicts"):
             # 🔴 THE CENSUS PARSED PERFECTLY — the two observations simply contradict each
             # other. Calling that `before_not_a_row` reported a malformed row that did not
@@ -6320,6 +6376,13 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # describe a manuscript nobody delivers.
     _f6_pending = None
     _f6_teleport_targets = []
+    # 🔴 INITIALISED OUTSIDE THE KILL-SWITCH BLOCK THAT FILLS IT. F8's detected seams are
+    # produced inside `if _f6_enabled():` (F8 rides F6's switch), but the dedicated seam
+    # actuator below runs at gate scope — so with F6 OFF, or after a detection that raised,
+    # the name would not exist and the repair block would die on a NameError inside the very
+    # gate phase it is meant to serve. Empty means "nothing to repair", which is correct for
+    # both of those states.
+    _f8_detected: list = []
     # 🔴 THE KILL SWITCH WRAPS THE WHOLE LIFECYCLE, NOT ONE CALL INSIDE IT. It used to gate
     # only F6's own census request, so with `NARASI_F6_ENABLED=0` detection still ran, the
     # repair was still routed on F6's account, the ceiling reducer still spent provider
@@ -6458,8 +6521,16 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     _f8_conflicts.append(f"free_text_ch{_vc}")
                 _v3g_merged = _f8_kept
             if _f8_detected:
-                _v3g_merged = _v3g_merged + _f8_detected
-                log.warning("F8: %d broken seam(s) routed to repair (%s)",
+                # 🔴 SEAMS DO NOT RIDE THE MERGED REVISE. They used to be appended to
+                # `_v3g_merged`, which routed them into the GENERIC structural addressed-patch
+                # lane — a general editor asked, in passing, to do continuity writing. Canary
+                # `y2f8i16l` is what that costs: the lane reported `chapters_accepted: 1` for a
+                # broken 1→2 seam and the final census still read all three dimensions missing.
+                # A schema-valid operation on the authorised opening unit is not a transition.
+                # Seams now go to their OWN actuator (`_narasi_seam_repair`, dedicated cheap
+                # Claude), which is prompted to write the handoff rather than to audit whether
+                # one is needed. Nothing else about detection, verification or accounting moves.
+                log.warning("F8: %d broken seam(s) routed to the dedicated seam actuator (%s)",
                             len(_f8_detected), [_v["seam"] for _v in _f8_detected])
             # Bind the first reader's `executed` evidence to the exact original chapter now,
             # while those bytes are still in hand. A later false regression can be cleared only
@@ -6478,10 +6549,15 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 # collateral and refused jobs in which every gate had worked. The ceiling
                 # class never rides the merged revise but IS repaired by its own reducer, so
                 # F6's full detected set is folded in too.
+                # 🔴 THE SEAM CHAPTERS ARE AUTHORISED EXPLICITLY, because they no longer ride
+                # `_v3g_merged`. Their own actuator is about to rewrite chapter B; without this
+                # the edit F8 itself commissioned would come back as collateral and zero every
+                # resolution in the run.
                 "authorised_chapters": sorted(
                     {_c for _c in (
                         [_v.get("chapter") for _v in _v3g_merged if isinstance(_v, dict)]
                         + [_v.get("chapter") for _v in _f6_detected if isinstance(_v, dict)]
+                        + [_v.get("chapter_b") for _v in _f8_detected if isinstance(_v, dict)]
                         + list(_f6_co_targeted))
                      if isinstance(_c, int) and not isinstance(_c, bool) and _c >= 1}),
                 "conflicts": list(_f8_conflicts),
@@ -6677,6 +6753,102 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             # exactly like one that returned nothing — the chapter stays over its ceiling, the
             # verifier refuses it and the finaliser blocks. Nothing here decides delivery.
             log.error("F6 ceiling reduction failed — chapter(s) stay over ceiling (%s)", _f6re)
+
+    # ── F8 `chapter_seam` — DEDICATED actuator, one chapter in, one chapter out ──────────
+    # 🔴 WHY THE GENERIC STRUCTURAL LANE IS NOT ENOUGH, MEASURED IN PRODUCTION. Canary
+    # `y2f8i16l` ran the addressed-patch lane over a broken 1→2 seam, the lane reported
+    # `chapters_accepted: 1`, and the FINAL CENSUS still read the seam as missing in all three
+    # dimensions. An operation can be schema-valid, land on the authorised opening unit, change
+    # bytes, and still not put a transition on the page — because that lane is a general
+    # structural editor being asked, in passing, to do continuity writing.
+    #
+    # 🔴 THIS LANE DOES NOT DECIDE ANYTHING. It writes a candidate; `_f8_finalize` still proves
+    # resolution from the post-repair census, and `narasi_f8.verify` still demands BOTH the
+    # census AND attribution. A candidate spliced here is not a resolved seam — it is a chapter
+    # the verifier will judge.
+    #
+    # 🔴 CHAPTER A IS READ-ONLY. Its tail travels as context so the handoff can name what it
+    # departs from; only chapter B is spliced, between blocks the server already holds.
+    _f8_seam_targets = [_v for _v in (_f8_detected or ())
+                        if isinstance(_v, dict) and _v.get("f8_class") == "chapter_seam"]
+    if _f8_seam_targets:
+        _f8_repaired_ids: list = []
+        # 🔴 `attempted` IS COUNTED IN SEAMS, NOT IN RETRIES. The accounting invariant is
+        # `attempts <= targeted`, so counting the corrective retry as a second attempt makes a
+        # one-seam repair report two and the whole accounting reads as a contradiction —
+        # blocking a job whose seam was genuinely repaired. Physical calls have their own
+        # counter, which is where a retry legitimately shows up.
+        _f8_attempted_ids: set = set()
+        _f8_seam_calls = 0
+        try:
+            from laozhang_api import _narasi_seam_repair
+            _f8_rk = "book" if result.get("book") else "output"
+            for _f8_t in _f8_seam_targets:
+                _f8_cb = _f8_t.get("chapter_b")
+                _f8_ca = _f8_t.get("chapter_a")
+                if not isinstance(_f8_cb, int) or not isinstance(_f8_ca, int):
+                    continue
+                _f8_feedback = ""
+                for _f8_try in range(_F8_SEAM_REPAIR_ATTEMPTS):
+                    _f8_blocks = _ngate.split_chapter_blocks(result.get(_f8_rk) or "")
+                    _f8_idx = [_i for _i, _b in enumerate(_f8_blocks)
+                               if _ngate.chapter_heading_line(_b)]
+                    if _f8_cb > len(_f8_idx) or _f8_ca > len(_f8_idx):
+                        break
+                    _f8_at = _f8_idx[_f8_cb - 1]
+                    _f8_block = _f8_blocks[_f8_at]
+                    _f8_head = _ngate.chapter_heading_line(_f8_block)
+                    _f8_body = _f8_block[len(_f8_head):]
+                    # Server-owned framing, re-attached byte-for-byte so the heading stays
+                    # identical and the neighbouring blocks are never touched.
+                    _f8_pre = _f8_body[:len(_f8_body) - len(_f8_body.lstrip())]
+                    _f8_post = _f8_body[len(_f8_body.rstrip()):]
+                    _f8_orig = _f8_body.strip()
+                    _f8_a_block = _f8_blocks[_f8_idx[_f8_ca - 1]]
+                    _f8_a_head = _ngate.chapter_heading_line(_f8_a_block)
+                    _f8_tail = " ".join(_f8_a_block[len(_f8_a_head):].split())[-1200:]
+                    _f8_beats = ""
+                    if isinstance(_outline_packets, dict):
+                        _f8_beats = (_outline_packets.get(_f8_cb)
+                                     or _outline_packets.get(str(_f8_cb)) or "")
+                    if isinstance(_f8_t.get("seam"), str):
+                        _f8_attempted_ids.add(_f8_t["seam"])
+                    _f8_seam_calls += 1
+                    _f8_cand, _f8_cr = await _narasi_seam_repair(
+                        _f8_orig, chapter_a_tail=_f8_tail,
+                        missing_dims=_f8_t.get("missing"), required_beats=_f8_beats,
+                        style=style, language=language, tenant_id=tenant_id,
+                        user_id=user_id, job_uuid=job_uuid, credit_row=False,
+                        correction=_f8_feedback)
+                    if sink is not None and _f8_cr:
+                        sink.credits += int(_f8_cr)
+                    _f8_cand = str(_f8_cand or "").strip()
+                    _f8_reject = _f8_seam_candidate_reason(_f8_cand, original=_f8_orig)
+                    if _f8_reject:
+                        _f8_feedback = (
+                            f"Rejected because {_f8_reject}. Return the COMPLETE chapter body "
+                            f"with an opening that accounts for the missing transition.")
+                        continue
+                    _f8_blocks[_f8_at] = _f8_head + _f8_pre + _f8_cand + _f8_post
+                    result[_f8_rk] = "".join(_f8_blocks)
+                    if isinstance(_f8_t.get("seam"), str):
+                        _f8_repaired_ids.append(_f8_t["seam"])
+                    break
+        except Exception as _f8re:  # noqa: BLE001
+            # One door for "no candidate": a lane that raised produced no usable chapter,
+            # exactly like one that returned nothing. The seam stays broken, the census says so
+            # and the finaliser blocks. Nothing here decides delivery.
+            log.error("F8 seam repair failed — seam(s) stay broken (%s)", _f8re)
+        # 🔴 PUBLISHED ON ITS OWN CHANNEL, NEVER FOLDED INTO THE STRUCTURAL LANE'S. Two lanes
+        # that share one accounting slot cannot be told apart when one of them stops working —
+        # which is exactly the failure this whole lane exists to answer.
+        if _f8_attempted_ids or _f8_seam_calls:
+            result["_f8_seam_repair"] = {
+                "accepted_ids": sorted(set(_f8_repaired_ids)),
+                "attempted": len(_f8_attempted_ids),
+                "provider_calls": _f8_seam_calls,
+                "accepted": len(set(_f8_repaired_ids)),
+            }
 
     _v3g_critic_finalize(_crit_out, _v3g_changed, _v3g_t_rev)
     _v3g_register_finalize(_register_out, _v3g_changed)

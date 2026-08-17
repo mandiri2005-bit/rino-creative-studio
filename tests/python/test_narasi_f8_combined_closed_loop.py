@@ -265,10 +265,11 @@ class Lanes:
     def __init__(self, *, repair_tense=True, repair_teleport=True, repair_seam=True,
                  repair_beats=True, reduce_chapter=True):
         self.structural = self.legacy = self.reduce = self.foreign = 0
+        self.seam = 0
         #: Every prompt each lane actually received. The directives inside them are the only
         #: place the MERGE of F6's and F8's findings is observable without scripting the
         #: revise — which this file may not do.
-        self.prompts: dict = {"structural": [], "legacy": [], "reduce": []}
+        self.prompts: dict = {"structural": [], "legacy": [], "reduce": [], "seam": []}
         self.systems: dict = {"legacy": []}
         self.repair_tense = repair_tense
         self.repair_teleport = repair_teleport
@@ -287,6 +288,8 @@ class Lanes:
             return self._structural(user)
         if "WORD RANGE: between" in user and "CHAPTER BODY:\n" in user:
             return self._reduce(user)
+        if _SEAM_MARKER in user:
+            return self._seam(user)
         if _LEGACY_MARKER in user:
             return self._legacy(user, kwargs["messages"][0]["content"])
         # Any other request belongs to a report-only gate. Answered with an empty object so
@@ -294,6 +297,21 @@ class Lanes:
         # and RECORDED so it can never be mistaken for one of the three lanes.
         self.foreign += 1
         return _reply("{}")
+
+    def _seam(self, prompt):
+        """The DEDICATED seam actuator — the lane that owns `chapter_seam` outright.
+
+        🔴 SEQUENCE STEP 1 IS A NO-OP, and that is the canary reproduced. Live job `y2f8i16l`
+        had the generic structural lane report an accepted operation while the census still
+        read the seam broken; the shape to model is "an answer came back and the transition is
+        still not on the page". The lane must refuse it and spend its one corrective retry."""
+        self.seam += 1
+        self.prompts["seam"].append(prompt)
+        body = prompt.split("CHAPTER BODY TO REPAIR:\n", 1)[1].split("\n\nCORRECTION", 1)[0]
+        if self.seam == 1 or not self.repair_seam:
+            return _reply(body)                       # byte-identical: no transition written
+        bridge = f"{SEAM_CAUSAL} {SEAM_LOCATION} ruang sidang, dua hari {SEAM_TIME}. "
+        return _reply(bridge + _strip_markers(body))
 
     def _structural(self, prompt):
         self.structural += 1
@@ -306,16 +324,11 @@ class Lanes:
                 "operations": [{"op": "obliterate", "unit_id": "u001", "text": "x"}]}))
         units = _units(prompt)
         operations = []
-        if self.repair_seam:
-            # 🔴 THE REWRITTEN PROSE DOES NOT ECHO AN INTERNAL ID. A chapter writer that
-            #    returns a bound marker is the leak F1 exists to catch; a chapter writer that
-            #    returns repaired prose without one is the healthy path, and it is the path a
-            #    combined acceptance has to model — F1's final seam explicitly documents that
-            #    it "never sees this" unless both earlier defences already failed.
-            operations.append({
-                "op": "replace", "unit_id": "u001",
-                "text": (f"{SEAM_CAUSAL} {SEAM_LOCATION} ruang sidang, dua hari {SEAM_TIME}. "
-                         + _strip_markers(units["u001"]))})
+        # 🔴 THIS LANE NO LONGER OWNS SEAMS. `chapter_boundary_break` is routed to the dedicated
+        #    actuator (`_seam` above), so the only directives that reach here are the outline
+        #    beats. A bridge written from this lane would be exactly the mixing the split exists
+        #    to end — and the reason canary `y2f8i16l` could report an accepted operation while
+        #    the census still read the seam broken.
         if self.repair_beats:
             # Addressed by CONTENT, not by a hardcoded ordinal: the unit table is the
             # server's, and a fixture that assumes its numbering silently stops repairing
@@ -361,6 +374,8 @@ class Lanes:
 
 
 _LEGACY_MARKER = "[CHAPTER — return the corrected version, unchanged except for the fixes]\n"
+#: The dedicated seam actuator names its own request shape; nothing else emits it.
+_SEAM_MARKER = "MISSING TRANSITION DIMENSIONS (server-verified):"
 
 
 def _strip_markers(text):
@@ -895,9 +910,14 @@ def test_the_two_gates_share_one_bounded_post_repair_read(job):
     mixed_legacy_prompt = lanes.prompts["legacy"][1]
     teleport_prompt = lanes.prompts["legacy"][-1]
 
-    # F8's seam and F6's beats reached the SAME structural request.
-    assert "chapter_boundary_break" in structural_prompt, \
-        "F8's seam never reached the merged revise"
+    # 🔴 F8's SEAM IS NO LONGER IN THE MERGED REQUEST — IT HAS ITS OWN ACTUATOR. Mixing it into
+    # the generic structural lane is what let canary `y2f8i16l` report an accepted operation
+    # while the census still read the seam broken. The seam must reach the DEDICATED lane and
+    # must NOT appear among the structural directives.
+    assert "chapter_boundary_break" not in structural_prompt, \
+        "the seam is back in the generic structural lane"
+    assert lanes.prompts["seam"], "the dedicated seam actuator was never asked"
+    assert "MISSING TRANSITION DIMENSIONS" in lanes.prompts["seam"][-1]
     assert "outline_missing_beat" in structural_prompt, \
         "F6's beat findings never reached the merged revise"
     # F6 tense remains in the mixed legacy half; teleport gets its own mandatory request.

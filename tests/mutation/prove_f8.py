@@ -219,9 +219,9 @@ BREAKS = [
        '    wanted = []')],
      TB, 'test_the_directive_names_only_the_dimensions_that_are_missing'),
 
-    ('33. production stops handing the openings to detection',
-     [(NA, '(?m)^            _f8_detected = _nf8\\.detect\\(_f8_before, openings=_f8_openings\\)$',
-       '            _f8_detected = _nf8.detect(_f8_before)')],
+    ('33. production stops handing the missing dimensions to the dedicated actuator',
+     [(NA, '(?m)^                        missing_dims=_f8_t\\.get\\("missing"\\), required_beats=_f8_beats,$',
+       '                        missing_dims=(), required_beats=_f8_beats,')],
      TD, 'test_the_actuator_receives_a_directive_naming_the_missing_dimensions'),
 
     ('34. dedup goes back to deleting every free-text finding, disagreement included',
@@ -245,9 +245,9 @@ BREAKS = [
      TD, 'test_attribution_is_per_seam_not_per_chapter'),
 
     ('38. the counters go back to being assumed from the target list',
-     [(NA, '(?m)^        n_attempts = int\\(counts\\.get\\("attempted"\\) or 0\\)\\n        n_calls = int\\(counts\\.get\\("provider_calls"\\) or 0\\)$',
+     [(NA, '(?m)^        n_attempts = int\\(counts\\.get\\("attempted"\\) or 0\\) \\+ int\\(_lane\\.get\\("attempted"\\) or 0\\)\\n        n_calls = int\\(counts\\.get\\("provider_calls"\\) or 0\\) \\+ int\\(_lane\\.get\\("provider_calls"\\) or 0\\)$',
        '        n_attempts = len(targeted)\n        n_calls = 1 if targeted else 0')],
-     TD, 'test_the_counters_come_from_the_structural_lane_not_from_the_target_list'),
+     TD, 'test_the_counters_come_from_the_seam_lane_not_from_the_target_list'),
 
     ('39. the structural lane stops recording WHICH seam it accepted',
      [(LZ, '(?m)^                    accepted_violation_ids\\.add\\(_aid\\[:64\\]\\)$',
@@ -264,9 +264,10 @@ BREAKS = [
        '        pass')],
      TD, 'test_both_v9_seams_are_detected_targeted_and_resolved'),
 
-    ('42. the two gates stop sharing one merged revise',
-     [(NA, '(?m)^                _v3g_merged = _v3g_merged \\+ _f8_detected$',
-       '                _v3g_merged = list(_f8_detected)')],
+    ('42. seams leak back into the generic structural revise',
+     [(NA, '(?m)^            if _f8_detected:$',
+       '            if _f8_detected:\n'
+       '                _v3g_merged = _v3g_merged + _f8_detected')],
      TC, 'test_the_two_gates_share_one_bounded_post_repair_read'),
 
 
@@ -323,6 +324,73 @@ BREAKS = [
            '                return 0                      # an empty body is not a re-derivation$',
        '            if False:\n                return 0')],
      TC, 'test_the_re_sync_never_writes_an_empty_body'),
+
+    # ── dedicated cheap-Claude seam actuator ─────────────────────────────
+    ('53. the F8 model default regresses to the provider-invalid bare alias',
+     [(LZ, '(?m)^    return \\(os\\.getenv\\("NARASI_F8_REPAIR_MODEL", '
+           '"claude-haiku-4-5-20251001"\\)\\.strip\\(\\)\\n'
+           '            or "claude-haiku-4-5-20251001"\\)$',
+       '    return (os.getenv("NARASI_F8_REPAIR_MODEL", "claude-haiku-4-5").strip()\n'
+       '            or "claude-haiku-4-5")')],
+     TD, 'test_the_seam_provider_call_uses_the_dated_cheap_model_and_dedicated_phase'),
+
+    ('54. the corrective seam retry is removed',
+     [(NA, '(?m)^_F8_SEAM_REPAIR_ATTEMPTS = 2$', '_F8_SEAM_REPAIR_ATTEMPTS = 1')],
+     TD, 'test_an_inadmissible_seam_candidate_retries_then_stays_blocked'),
+
+    ('55. a byte-identical provider answer is admitted as a repair candidate',
+     [(NA, '(?m)^    if text == base:$', '    if False:')],
+     TD, 'test_the_server_rejects_each_unsafe_seam_candidate_for_its_own_reason'),
+
+    ('56. a candidate carrying a chapter heading is admitted for body-only splice',
+     [(NA, '(?m)^    if any\\(_ngate\\.chapter_heading_line\\(_b\\) for _b in _ngate\\.split_chapter_blocks\\(text\\)\\):$',
+       '    if False:')],
+     TD, 'test_the_server_rejects_each_unsafe_seam_candidate_for_its_own_reason'),
+
+    ('57. a candidate that cuts away the chapter is admitted',
+     [(NA, '(?m)^    if words < int\\(base_words \\* _F8_SEAM_WORD_FLOOR\\):$',
+       '    if False:')],
+     TD, 'test_the_server_rejects_each_unsafe_seam_candidate_for_its_own_reason'),
+
+    ('58. a candidate that expands into a rewrite is admitted',
+     [(NA, '(?m)^    if words > int\\(base_words \\* _F8_SEAM_WORD_CEIL\\):$',
+       '    if False:')],
+     TD, 'test_the_server_rejects_each_unsafe_seam_candidate_for_its_own_reason'),
+
+    ('59. a truncated seam candidate no longer needs terminal punctuation',
+     [(NA, '(?m)^        return f"it had \\{words\\} words against \\{base_words\\} — that is a rewrite, not a bridge"\\n'
+           '    tail = text\\.rstrip\\(\\)\\.rstrip\\("\\\\"\'’”»\\)\\]"\\)\\n'
+           '    if not tail\\.endswith\\(\\("\\.", "!", "\\?", "…", "—", "–", "--"\\)\\):$',
+       '        return f"it had {words} words against {base_words} — that is a rewrite, not a bridge"\n'
+       '    tail = text.rstrip().rstrip("\\"\'\u2019”»)]")\n'
+       '    if False:')],
+     TD, 'test_an_inadmissible_seam_candidate_retries_then_stays_blocked'),
+
+    ('60. a replacement that shares no prose with chapter B is admitted',
+     [(NA, '(?m)^    if difflib\\.SequenceMatcher\\(None, base\\.split\\(\\), text\\.split\\(\\)\\)\\.ratio\\(\\) < _F8_SEAM_MIN_FIDELITY:$',
+       '    if False:')],
+     TD, 'test_an_inadmissible_seam_candidate_retries_then_stays_blocked'),
+
+    ('61. the seam call is billed and observed as a generic cheap side-call',
+     [(LZ, '(?m)^        model_override=_narasi_f8_repair_model\\(\\), phase="f8_repair"\\)$',
+       '        model_override=_narasi_f8_repair_model(), phase="cheap")')],
+     TD, 'test_the_seam_provider_call_uses_the_dated_cheap_model_and_dedicated_phase'),
+
+    ('62. chapter A read-only context is withheld from the seam actuator',
+     [(NA, '(?m)^                        _f8_orig, chapter_a_tail=_f8_tail,$',
+       '                        _f8_orig, chapter_a_tail="",')],
+     TD, 'test_the_actuator_receives_a_directive_naming_the_missing_dimensions'),
+
+    ('63. chapter B outline authority is withheld from the seam actuator',
+     [(NA, '(?m)^                        missing_dims=_f8_t\\.get\\("missing"\\), required_beats=_f8_beats,$',
+       '                        missing_dims=_f8_t.get("missing"), required_beats="",')],
+     TD, 'test_the_actuator_receives_a_directive_naming_the_missing_dimensions'),
+
+    ('64. the finalizer ignores the dedicated lane attribution',
+     [(NA, '(?m)^        attribution \\|= \\{str\\(_i\\) for _i in \\(_lane\\.get\\("accepted_ids"\\) or \\(\\)\\)\\n'
+           '                        if isinstance\\(_i, str\\)\\}$',
+       '        attribution |= set()')],
+     TD, 'test_both_v9_seams_are_detected_targeted_and_resolved'),
 
 ]
 
