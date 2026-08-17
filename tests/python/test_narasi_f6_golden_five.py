@@ -232,7 +232,9 @@ def golden(monkeypatch):
         monkeypatch.setenv("NARASI_DIET_MAX_LOOPS", "0")
         monkeypatch.setenv("NARASI_REGISTER_GATE", "0")
         monkeypatch.setenv("NARASI_THREAD_TRACKER", "0")
-        monkeypatch.delenv("NARASI_F6_ENABLED", raising=False)
+        # F6 arms ONLY on the literal "1" — absent no longer means ON, so a fixture
+        # that wants the gate running has to say so.
+        monkeypatch.setenv("NARASI_F6_ENABLED", "1")
         monkeypatch.setattr(live_lz, "make_narasi_client", blocked)
         monkeypatch.setattr(live_lz, "_narasi_cheap_call", cheap)
         monkeypatch.setattr(live_lz, "_narasi_critique_enabled", lambda: True)

@@ -115,6 +115,9 @@ def loop(monkeypatch):
         async def cheap(*_a, **_k):
             return ("{}", 0)
 
+        # F6 arms ONLY on the literal "1"; this fixture used to rely on the old
+        # absent-means-ON default and would otherwise run with the gate shut.
+        monkeypatch.setenv("NARASI_F6_ENABLED", "1")
         monkeypatch.setenv("NARASI_DIET_MAX_LOOPS", "0")
         monkeypatch.setenv("NARASI_REGISTER_GATE", "0")
         monkeypatch.setenv("NARASI_THREAD_TRACKER", "0")
@@ -287,15 +290,26 @@ def test_a_post_gates_edit_to_another_chapter_shows_up_as_collateral(loop):
 # ---------------------------------------------------------------------------
 # Default-on, and "we could not tell" is never "nothing was wrong"
 # ---------------------------------------------------------------------------
-def test_f6_is_on_unless_it_is_explicitly_switched_off(monkeypatch):
-    """🔴 THE ORIGINAL F6 FINDING WAS "ENFORCEMENT FLAG DEFAULT OFF". Reading the legacy
-    `NARASI_CRITIQUE_ENABLED` — itself defaulting to "0" — reproduced it exactly."""
+def test_f6_arms_only_on_the_literal_one(monkeypatch):
+    """🔴 THE DEFAULT WAS INVERTED DELIBERATELY, AND BOTH HALVES OF THE TRADE ARE REAL.
+
+    The original F6 finding was "enforcement flag default OFF" — nothing detected, nothing
+    blocked, gate looked implemented. That is why the default used to be ON. But a gate that can
+    REFUSE A CUSTOMER'S BOOK must not arm itself on a typo in a variable NAME (which leaves the
+    value absent) or on a value nobody validated: `true`, `yes`, `ON` are not arming values.
+
+    Silent disablement is the price, and it is paid loudly — every non-"1" value that is not the
+    deliberate "0" brake raises a config error, and `log_f6_config` announces the resolved mode
+    at boot on both entry points."""
     live_na = _live("narration_api")
     monkeypatch.delenv("NARASI_F6_ENABLED", raising=False)
-    assert live_na._f6_enabled() is True
-    for off in ("0", "false", "no", "off", "OFF"):
-        monkeypatch.setenv("NARASI_F6_ENABLED", off)
-        assert live_na._f6_enabled() is False, off
+    assert live_na._f6_enabled() is False, "an absent variable armed a blocking gate"
+    # "only the literal 1" means NO trimming and NO case folding: every one of these is a
+    # value somebody typed that nothing validated exactly.
+    for not_armed in ("0", "", " ", "  ", " 1 ", "1 ", " 1", "\t1", " 0 ",
+                      "false", "no", "off", "OFF", "true", "TRUE", "yes", "ON", "2", "01"):
+        monkeypatch.setenv("NARASI_F6_ENABLED", not_armed)
+        assert live_na._f6_enabled() is False, repr(not_armed)
     monkeypatch.setenv("NARASI_F6_ENABLED", "1")
     assert live_na._f6_enabled() is True
 
@@ -304,7 +318,7 @@ def test_f6_does_not_inherit_the_legacy_critic_flag(monkeypatch):
     """The legacy critic can be off — it is, by default — and F6 must still run."""
     live_lz = _live("laozhang_api")
     monkeypatch.delenv("NARASI_CRITIQUE_ENABLED", raising=False)
-    monkeypatch.delenv("NARASI_F6_ENABLED", raising=False)
+    monkeypatch.setenv("NARASI_F6_ENABLED", "1")   # armed explicitly; absent means OFF now
     assert live_lz._narasi_critique_enabled() is False, (
         "this test is about the case where the legacy critic is OFF")
     assert _live("narration_api")._f6_enabled() is True
@@ -399,6 +413,10 @@ def test_the_private_pending_state_never_survives_the_finaliser(loop):
 def test_an_accounting_that_cannot_be_computed_blocks_rather_than_permits(loop, monkeypatch):
     """Fail closed: "we could not tell" is not "nothing was wrong"."""
     live_na = _live("narration_api")
+    # This row calls the finaliser bare rather than through the `loop` fixture's job, so it
+    # arms the gate itself — F6 runs only on the literal "1".
+    monkeypatch.setenv("NARASI_F6_ENABLED", "1")
+    monkeypatch.delenv("NARASI_F6_MODE", raising=False)
 
     # 🔴 THIS ROW CALLS THE FINALISER BARE, so it must supply its own double. A structural
     # break counts as a mutation now — the final scan has to read the DELIVERED bytes, since a

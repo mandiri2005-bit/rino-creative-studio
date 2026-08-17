@@ -51,6 +51,9 @@ TFS = "tests/python/test_narasi_f6_final_scan.py"
 TFCR = "tests/python/test_narasi_f6_cheap_claude_repair.py"
 #: The `off`/`observe`/`enforce` mode suite — the witness for the INNER brake.
 TOBS = "tests/python/test_narasi_f6_observe_mode.py"
+#: The boot-time configuration announcement — the witness that keeps the inverted
+#: default honest by making silent disablement loud.
+TCFG = "tests/python/test_narasi_f6_config_announcement.py"
 #: The DEDICATED `beat_execution` actuator, driven through the real delivery path — the lane
 #: canary `7pucr0hs` proved the generic structural/chunked route could not do.
 TBA = "tests/python/test_narasi_f6_beat_actuator.py"
@@ -427,10 +430,31 @@ BREAKS = [
 
     # 🔴 ROUND-5 AUDIT: F6 read the legacy critic flag, which defaults to "0" — so on a
     #    default configuration nothing detected and nothing blocked.
-    ("37. F6 defaults to OFF again",
-     [(NA, r'(?m)^    if str\(os\.environ\.get\("NARASI_F6_ENABLED", "1"\)\)\.strip\(\)\.lower\(\) in \($',
-       '    if str(os.environ.get("NARASI_F6_ENABLED", "0")).strip().lower() in (')],
-     TCL, "test_f6_is_on_unless_it_is_explicitly_switched_off"),
+    ("37. F6 arms on anything truthy again, so an absent variable blocks deliveries",
+     [(NA, r'(?m)^    if raw_enabled != "1":$', '    if raw_enabled not in ("1", None, "true"):')],
+     TCL, "test_f6_arms_only_on_the_literal_one"),
+
+    ("37b. the resolver stops reporting an absent/invalid gate, so silent disablement becomes "
+     "silent again",
+     [(NA, r'(?m)^        return \("off", "enabled_absent_or_invalid", "error"\)$',
+       '        return ("off", "enabled_absent_or_invalid", "info")')],
+     TCFG, "test_an_absent_gate_value_is_a_config_error_not_a_quiet_off"),
+
+    ("37c. the mode parser trims and case-folds again, so 'ENFORCE' arms the blocking mode",
+     [(NA, r"(?m)^    mode_invalid = raw_mode is not None and raw_mode not in _F6_MODES$",
+       "    mode_invalid = (raw_mode is not None\n"
+       "                    and str(raw_mode).strip().lower() not in _F6_MODES)")],
+     TCFG, "test_the_gate_truth_table"),
+
+    ("37d. a mode typo staged behind the brake is hidden until the gate opens",
+     [(NA, r'(?m)^        return \("off", "brake_engaged_mode_invalid" if mode_invalid else "brake_engaged",\n'
+           r'                "error" if mode_invalid else "info"\)$',
+       '        return ("off", "brake_engaged", "info")')],
+     TCFG, "test_a_mode_typo_is_reported_while_the_brake_is_still_on"),
+
+    ("37e. an explicitly-empty mode falls back to enforce instead of failing safe",
+     [(NA, r"(?m)^    if raw_mode is None:$", '    if raw_mode in (None, ""):')],
+     TCFG, "test_the_gate_truth_table"),
 
     ("38. F6 stops asking for its own census when the legacy critic did not run",
      [(NA, r"(?m)^            elif _f6_n_ch >= 1 and _f6_enforcing\(\):$",

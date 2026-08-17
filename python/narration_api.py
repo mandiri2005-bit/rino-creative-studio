@@ -3536,6 +3536,82 @@ def _f6_executed_beat_evidence(beat_states, *, outline_sizes: dict, chapter_bloc
 #: it repairs and it blocks.
 _F6_MODES = ("off", "observe", "enforce")
 
+#: Configuration errors are logged ONCE PER PROCESS per distinct problem. `_f6_mode()` is on the
+#: job path and is consulted ~8 times per job; an unbounded error there would turn one
+#: misconfiguration into a log flood and bury the very line an operator is looking for.
+_F6_CONFIG_ERRORS_SEEN: set = set()
+
+
+def _f6_config_error(code: str, message: str, *args) -> None:
+    """Report a configuration problem once per process per distinct cause."""
+    if code in _F6_CONFIG_ERRORS_SEEN:
+        return
+    _F6_CONFIG_ERRORS_SEEN.add(code)
+    log.error(message, *args)
+
+
+def _f6_reset_config_errors_for_tests() -> None:
+    """Test-only. Production never clears the seen-set: one report per boot is the point."""
+    _F6_CONFIG_ERRORS_SEEN.clear()
+
+
+#: Why the configuration resolved the way it did. Keyed by reason so the message, the severity
+#: and the dedup key cannot drift apart.
+_F6_REASONS = {
+    "brake_engaged":
+        "NARASI_F6_ENABLED='0' — F6 is off by an operator's deliberate brake.",
+    "brake_engaged_mode_invalid":
+        "NARASI_F6_ENABLED='0' holds F6 off, but NARASI_F6_MODE is not exactly one of "
+        "'off'/'observe'/'enforce'. The brake wins, and the mode is still WRONG — reported now "
+        "so a typo being staged is not discovered at the moment the gate opens.",
+    "enabled_absent_or_invalid":
+        "NARASI_F6_ENABLED is absent or is not exactly '1' or '0' — F6 is OFF and gating "
+        "NOTHING. Only the literal '1' arms it; a typo in the variable NAME lands here.",
+    "mode_absent_legacy_enforce":
+        "NARASI_F6_ENABLED='1' with NARASI_F6_MODE absent — falling back to ENFORCE (repairs "
+        "and blocks) for compatibility with deployments that predate the mode.",
+    "mode_invalid":
+        "NARASI_F6_MODE is not exactly one of 'off'/'observe'/'enforce' — resolving to 'off'. "
+        "A typo must never start blocking deliveries.",
+    "ok": "resolved from an explicit, exactly-matching configuration.",
+}
+
+
+def _f6_resolve() -> tuple:
+    """THE one place the F6 configuration is read. Returns `(mode, reason, severity)`.
+
+    🔴 ONE RESOLVER, TWO CONSUMERS. `_f6_mode()` and the boot announcement both read this, so a
+    log line can never describe a configuration the job path did not act on. They used to parse
+    the environment separately, and that duplication was not theoretical: it kept a mutant alive
+    that disabled the resolver's own config error, because the announcement's private copy still
+    reported one.
+
+    🔴 EXACT LITERALS, NO `strip()`, NO `lower()`. "Only the literal '1'" has to mean it: `' 1 '`
+    is a value someone typed and nobody validated, and this gate can REFUSE A CUSTOMER'S BOOK.
+    The same applies to the mode — and the dangerous half is not `'observe '` (that mode is
+    harmless) but `'ENFORCE'`, which would arm the blocking mode from a value that never matched
+    anything exactly.
+
+    🔴 THE BRAKE ALWAYS WINS, BUT IT DOES NOT HIDE. `NARASI_F6_ENABLED='0'` resolves `off`
+    whatever the mode says — yet a mode that is present and malformed is still reported, because
+    the activation runbook sets the mode WHILE THE BRAKE IS ON. A typo silent until step 4 would
+    surface at the exact moment the gate opens."""
+    raw_enabled = os.environ.get("NARASI_F6_ENABLED")
+    raw_mode = os.environ.get("NARASI_F6_MODE")
+    # `None` means the variable is absent; `""` means someone deliberately set it empty, which
+    # is a value, and not a valid one.
+    mode_invalid = raw_mode is not None and raw_mode not in _F6_MODES
+    if raw_enabled == "0":
+        return ("off", "brake_engaged_mode_invalid" if mode_invalid else "brake_engaged",
+                "error" if mode_invalid else "info")
+    if raw_enabled != "1":
+        return ("off", "enabled_absent_or_invalid", "error")
+    if raw_mode is None:
+        return ("enforce", "mode_absent_legacy_enforce", "warning")
+    if mode_invalid:
+        return ("off", "mode_invalid", "error")
+    return (raw_mode, "ok", "info")
+
 
 def _f6_mode() -> str:
     """Resolve the F6 mode. Never raises; an unreadable configuration resolves to ``off``.
@@ -3555,19 +3631,21 @@ def _f6_mode() -> str:
                                          guarded against here is a misconfiguration turning a
                                          reporting deployment into a refusing one.
 
-    `NARASI_F6_ENABLED` absent still means ON — the original F6 finding was "enforcement flag
-    default OFF", and that is not being reintroduced."""
-    if str(os.environ.get("NARASI_F6_ENABLED", "1")).strip().lower() in (
-            "0", "false", "no", "off"):
-        return "off"
-    raw = str(os.environ.get("NARASI_F6_MODE", "")).strip().lower()
-    if not raw:
-        return "enforce"
-    if raw not in _F6_MODES:
-        log.error("F6 config error: NARASI_F6_MODE=%r is not one of %s — resolving to 'off' "
-                  "(a typo must never start blocking deliveries)", raw[:40], list(_F6_MODES))
-        return "off"
-    return raw
+    🔴 ONLY THE LITERAL "1" ARMS THIS GATE. Absent, misspelt, `true`, `yes`, `ON` — all resolve
+    to `off`, WITH a configuration error. This inverts the original default, and the reason for
+    that default is worth stating so nobody quietly restores it: the first F6 finding was
+    "enforcement flag default OFF", where nothing detected, nothing blocked, and the gate looked
+    implemented. The trade is real — a variable that goes missing now DISABLES the gate instead
+    of arming it — and it is taken deliberately, because the two failures are not symmetric. A
+    gate that can REFUSE A CUSTOMER'S BOOK must never arm itself on a typo in a variable NAME
+    (which leaves the value absent) or on a value nobody validated. Silent disablement is the
+    price, and it is not silent: every non-"1" value that is not the deliberate "0" brake raises
+    a config error, and `log_f6_config` announces the resolved mode at boot on both entry
+    points. That announcement is what keeps this default honest."""
+    mode, reason, severity = _f6_resolve()
+    if severity == "error":
+        _f6_config_error(reason, "F6 config error (%s): %s", reason, _F6_REASONS[reason])
+    return mode
 
 
 def _f6_enabled() -> bool:
@@ -3667,7 +3745,10 @@ def log_f6_config(service: str) -> dict:
     try:
         raw_enabled = os.environ.get("NARASI_F6_ENABLED")
         raw_mode = os.environ.get("NARASI_F6_MODE")
-        resolved = _f6_mode()
+        # 🔴 THE SAME RESOLVER THE JOB PATH USES — never a second parse. The severity below IS
+        # the resolver's, so this line cannot report INFO for a configuration that is actually
+        # an error.
+        resolved, reason, severity = _f6_resolve()
         record = {
             "service": str(service or "unknown")[:40],
             "raw_enabled": raw_enabled,
@@ -3676,23 +3757,13 @@ def log_f6_config(service: str) -> dict:
             "effective_sample_rate": _f6_observe_sample_rate(),
             "deployment_revision": _f6_deployment_revision(),
         }
-        # The brake is off when it is explicitly off; ABSENT means ON, which is what makes the
-        # warning below matter — an operator who set nothing at all is in `enforce`.
-        brake_shut = str(raw_enabled if raw_enabled is not None else "1").strip().lower() in (
-            "0", "false", "no", "off")
-        mode_text = str(raw_mode or "").strip()
-        if mode_text and mode_text.lower() not in _F6_MODES:
-            log.error("F6 config: INVALID mode — resolved to 'off' (a typo must never start "
-                      "blocking deliveries) %s", record)
-        elif not brake_shut and not mode_text:
-            # 🔴 THE TRAP THIS WHOLE LINE EXISTS TO CATCH. `ENABLED=1` with no mode is `enforce`
-            # by the legacy-compatibility rule — so a deployment meaning to observe, whose mode
-            # variable never landed (wrong service, misspelt NAME rather than value), refuses
-            # customer deliveries and looks configured.
-            log.warning("F6 config: gate is ON with NO mode set — falling back to ENFORCE "
-                        "(repairs and blocks). Set NARASI_F6_MODE to choose. %s", record)
+        message = "F6 config (%s): %s %s"
+        if severity == "error":
+            log.error(message, reason, _F6_REASONS[reason], record)
+        elif severity == "warning":
+            log.warning(message, reason, _F6_REASONS[reason], record)
         else:
-            log.info("F6 config: %s", record)
+            log.info(message, reason, _F6_REASONS[reason], record)
         return record
     except Exception as _e:  # noqa: BLE001 - an announcement must never stop a service booting
         log.error("F6 config: could not be announced (%s)", str(_e)[:200])

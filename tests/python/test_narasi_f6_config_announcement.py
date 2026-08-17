@@ -37,6 +37,8 @@ def announce(monkeypatch):
     na = _live("narration_api")
 
     def run(*, enabled=None, mode=None, rate=None, revision="deadbeefcafe", service="python"):
+        # config errors are reported once per process; each row is its own process, logically
+        na._f6_reset_config_errors_for_tests()
         for key, value in (("NARASI_F6_ENABLED", enabled), ("NARASI_F6_MODE", mode),
                            ("NARASI_F6_OBSERVE_SAMPLE_RATE", rate),
                            ("RAILWAY_GIT_COMMIT_SHA", revision)):
@@ -88,6 +90,97 @@ def test_an_absent_revision_is_reported_as_none_not_invented(announce):
 # ---------------------------------------------------------------------------
 # the level carries the warning
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# the gate arms ONLY on the literal "1" — truth table
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("enabled,mode,expected", [
+    # ── the brake always wins, whatever the mode says ──────────────────────
+    ("0",    None,        "off"),
+    ("0",    "observe",   "off"),
+    ("0",    "enforce",   "off"),
+    ("0",    "OBSERVE",   "off"),     # still off — but reported, see the row below
+    # ── ENABLED arms on the literal "1" ALONE: no trimming, no case folding ─
+    (None,   None,        "off"),     # absent — a typo in the NAME lands here
+    ("",     "observe",   "off"),
+    (" ",    "observe",   "off"),
+    (" 1 ",  "observe",   "off"),     # whitespace is not the literal
+    ("1 ",   "observe",   "off"),
+    (" 1",   "observe",   "off"),
+    (" 0 ",  None,        "off"),
+    ("true", "observe",   "off"),
+    ("TRUE", "observe",   "off"),
+    ("yes",  None,        "off"),
+    ("ON",   "observe",   "off"),
+    ("2",    "observe",   "off"),
+    ("01",   "observe",   "off"),
+    # ── mode: same rule, and the dangerous half is "ENFORCE", not "observe " ─
+    ("1",    None,        "enforce"),  # absent → legacy compatibility
+    ("1",    "",          "off"),      # deliberately empty is a VALUE, and invalid
+    ("1",    " ",         "off"),
+    ("1",    "  ",        "off"),
+    ("1",    "OBSERVE",   "off"),
+    ("1",    "Observe",   "off"),
+    ("1",    "observe ",  "off"),
+    ("1",    " observe",  "off"),
+    ("1",    "ENFORCE",   "off"),      # the one that would otherwise arm blocking
+    ("1",    " enforce",  "off"),
+    ("1",    "Enforce",   "off"),
+    ("1",    "OFF",       "off"),
+    ("1",    "obsereve",  "off"),
+    # ── the only three that resolve to themselves ──────────────────────────
+    ("1",    "observe",   "observe"),
+    ("1",    "enforce",   "enforce"),
+    ("1",    "off",       "off"),
+])
+def test_the_gate_truth_table(announce, enabled, mode, expected):
+    assert announce(enabled=enabled, mode=mode)["resolved_mode"] == expected
+
+
+def test_an_absent_gate_value_is_a_config_error_not_a_quiet_off(announce, caplog):
+    """🔴 THE PRICE OF INVERTING THE DEFAULT, PAID LOUDLY. A variable that goes missing now
+    DISABLES the gate instead of arming it — which is the original F6 finding ("enforcement flag
+    default OFF") reachable by accident. It is acceptable only because it is not silent."""
+    import logging
+    caplog.set_level(logging.INFO)
+    rec = announce(enabled=None, mode="observe")
+    assert rec["resolved_mode"] == "off"
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, "an absent gate variable disabled F6 silently"
+    assert any("gating NOTHING" in r.getMessage() or "only the literal '1'" in r.getMessage().lower()
+               for r in errors)
+
+
+def test_the_deliberate_brake_is_not_an_error(announce, caplog):
+    """`0` is an operator holding the brake on purpose — expected, and quiet."""
+    import logging
+    caplog.set_level(logging.INFO)
+    for mode in (None, "observe", "enforce", "off"):
+        caplog.clear()
+        announce(enabled="0", mode=mode)
+        assert not [r for r in caplog.records if r.levelname == "ERROR"], mode
+
+
+@pytest.mark.parametrize("bad_mode", ["", " ", "OBSERVE", "observe ", "ENFORCE", "obsereve"])
+def test_a_mode_typo_is_reported_while_the_brake_is_still_on(announce, caplog, bad_mode):
+    """🔴 THE RUNBOOK SETS THE MODE WHILE THE BRAKE IS ON (steps 2-3, gate opens at step 4). A
+    malformed mode that stayed silent until the gate opened would surface at the single worst
+    moment. The brake still wins — resolved is `off` either way — but the typo speaks now."""
+    import logging
+    caplog.set_level(logging.INFO)
+    rec = announce(enabled="0", mode=bad_mode)
+    assert rec["resolved_mode"] == "off", "the brake must win regardless"
+    assert [r for r in caplog.records if r.levelname == "ERROR"], \
+        f"a staged mode typo ({bad_mode!r}) was hidden behind the brake"
+
+
+@pytest.mark.parametrize("bad", ["true", "yes", "ON", "2"])
+def test_an_unvalidated_gate_value_is_a_config_error(announce, caplog, bad):
+    import logging
+    caplog.set_level(logging.INFO)
+    assert announce(enabled=bad, mode="observe")["resolved_mode"] == "off"
+    assert [r for r in caplog.records if r.levelname == "ERROR"]
+
+
 def test_gate_on_with_no_mode_is_a_warning_because_it_means_enforce(announce, caplog):
     """🔴 THE TRAP THIS LINE EXISTS TO CATCH. A deployment meaning to observe, whose mode
     variable never landed, refuses customer deliveries and looks configured."""
@@ -101,13 +194,13 @@ def test_gate_on_with_no_mode_is_a_warning_because_it_means_enforce(announce, ca
     assert "ENFORCE" in warnings[0].getMessage()
 
 
-def test_an_unset_gate_with_no_mode_is_also_a_warning(announce, caplog):
-    """Absent `NARASI_F6_ENABLED` means ON — so "I set nothing at all" is the same trap."""
+def test_an_unset_gate_is_off_and_an_error_not_enforce(announce, caplog):
+    """The inverse of the old rule: setting nothing at all no longer lands in `enforce`."""
     import logging
     caplog.set_level(logging.INFO)
     rec = announce(enabled=None, mode=None)
-    assert rec["resolved_mode"] == "enforce"
-    assert [r for r in caplog.records if r.levelname == "WARNING" and "F6 config" in r.getMessage()]
+    assert rec["resolved_mode"] == "off"
+    assert [r for r in caplog.records if r.levelname == "ERROR"]
 
 
 def test_an_invalid_mode_is_an_error_and_resolves_off(announce, caplog):
@@ -119,7 +212,7 @@ def test_an_invalid_mode_is_an_error_and_resolves_off(announce, caplog):
     assert errors
 
 
-@pytest.mark.parametrize("enabled,mode", [("0", "observe"), ("1", "observe"), ("1", "enforce")])
+@pytest.mark.parametrize("enabled,mode", [("0", "observe"), ("1", "observe"), ("1", "enforce")])  # noqa: E501
 def test_a_well_formed_configuration_is_merely_informational(announce, caplog, enabled, mode):
     import logging
     caplog.set_level(logging.INFO)
@@ -129,9 +222,29 @@ def test_a_well_formed_configuration_is_merely_informational(announce, caplog, e
 
 
 def test_the_announcement_never_raises(announce, monkeypatch):
+    """Broken at the seam the announcement ACTUALLY uses. It reads `_f6_resolve` now, not
+    `_f6_mode`; a test still patching the latter would patch a function off the path and prove
+    nothing."""
     na = _live("narration_api")
-    monkeypatch.setattr(na, "_f6_mode", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(na, "_f6_resolve", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert na.log_f6_config("python") == {}, "a broken announcement must not stop a boot"
+
+
+def test_the_announcement_and_the_job_path_read_the_same_resolver(monkeypatch):
+    """🔴 ONE RESOLVER, TWO CONSUMERS — asserted, not assumed. While these parsed the
+    environment separately, a mutant that disabled the resolver's own config error stayed alive
+    because the announcement's private copy still reported one."""
+    na = _live("narration_api")
+    calls = []
+    real = na._f6_resolve
+    monkeypatch.setattr(na, "_f6_resolve",
+                        lambda: (calls.append(1), real())[1])
+    monkeypatch.setenv("NARASI_F6_ENABLED", "1")
+    monkeypatch.setenv("NARASI_F6_MODE", "observe")
+    na._f6_reset_config_errors_for_tests()
+    assert na._f6_mode() == "observe"
+    assert na.log_f6_config("python")["resolved_mode"] == "observe"
+    assert len(calls) == 2, "one of the two consumers is not using the shared resolver"
 
 
 # ---------------------------------------------------------------------------

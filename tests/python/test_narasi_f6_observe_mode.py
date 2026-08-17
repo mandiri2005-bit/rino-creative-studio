@@ -70,7 +70,7 @@ def job(monkeypatch):
     def blocked(*_a, **_k):
         raise AssertionError("a provider client was built — this is not offline")
 
-    def run(*, mode=None, enabled=None, sample_rate="1.0", census_fails=False,
+    def run(*, mode=None, enabled="1", sample_rate="1.0", census_fails=False,
             revise_changes=True, job_uuid="11111111-1111-4111-8111-111111111111",
             critic_on=True):
         seen = {"finalize": [], "persisted": None, "payload": None, "refund": 0,

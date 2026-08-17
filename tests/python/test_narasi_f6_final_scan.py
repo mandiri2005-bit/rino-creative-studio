@@ -165,7 +165,8 @@ def job(monkeypatch):
         monkeypatch.setenv("NARASI_REGISTER_GATE", "0")
         monkeypatch.setenv("NARASI_THREAD_TRACKER", "0")
         if f6_enabled is None:
-            monkeypatch.delenv("NARASI_F6_ENABLED", raising=False)
+            # the fixture default is "F6 running"; absent no longer means ON
+            monkeypatch.setenv("NARASI_F6_ENABLED", "1")
         else:
             monkeypatch.setenv("NARASI_F6_ENABLED", f6_enabled)
         monkeypatch.setattr(live_lz, "make_narasi_client", blocked)

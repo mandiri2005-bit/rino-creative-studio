@@ -575,7 +575,9 @@ def job(monkeypatch, metered_host):
         monkeypatch.setenv("NARASI_DIET_MAX_LOOPS", "0")
         monkeypatch.setenv("NARASI_REGISTER_GATE", "0")
         monkeypatch.setenv("NARASI_THREAD_TRACKER", "0")
-        monkeypatch.delenv("NARASI_F6_ENABLED", raising=False)
+        # F6 arms ONLY on the literal "1" — absent no longer means ON, so a fixture
+        # that wants the gate running has to say so.
+        monkeypatch.setenv("NARASI_F6_ENABLED", "1")
         monkeypatch.setattr(lz, "make_narasi_client", lambda *a, **k: client)
         monkeypatch.setattr(lz, "_log_narasi_usage", _usage)
         monkeypatch.setattr(lz, "_narasi_revise_timeout", lambda *a: 5.0)
