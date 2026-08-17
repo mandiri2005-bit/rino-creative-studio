@@ -752,7 +752,8 @@ def _calc_image_cost(model: str, count: int = 1) -> float:
 
 
 async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, session_id=None, charge=False,
-                            credit_row: bool = True):
+                            credit_row: bool = True, usage_row: bool = True,
+                            usage_out=None):
     """Best-effort usage logging for narasi LLM endpoints — writes to usage_logs
     with endpoint='narasi'. Never raises: cost tracking must not break generation.
     `user_id` MUST be the resolved users.id UUID (not the raw Clerk id).
@@ -767,7 +768,31 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
     into a job's settle-time aggregate, so SUM(usage_logs.credits) for the job doesn't double-
     count it (mirrors the per-chapter _UsageSink._log_one convention, which hardcodes
     credits=0 on its own rows for the identical reason). tokens/cost_usd stay real either way
-    for COGS observability."""
+    for COGS observability.
+
+    usage_row=False (default True): write NO `usage_logs` row at all. Reserved for the F6
+    `observe` final census — a platform measurement that is not the customer's work and must
+    leave no trace on a user-facing surface (`usage_logs` feeds /credits/history). The real cr
+    is still computed and RETURNED; a caller on this path must not fold it into any total.
+    🔴 DEFAULT TRUE ON PURPOSE: every existing caller keeps writing its row, byte for byte.
+
+    usage_out (optional dict): filled ONLY from a response that actually succeeded, with the
+    raw COGS metadata a later audit needs. `served_provider`/`served_model` are read from the
+    RESPONSE; when the response does not carry them they stay None rather than being filled in
+    from the configured model prefix — a guess about who served is not an observation of who
+    served, and this record exists to be adjudicated."""
+    # 🔴 THE ONE COMBINATION THAT IS REFUSED, AND THE ONE PLACE THIS FUNCTION RAISES. Everything
+    # below is best-effort precisely so cost tracking cannot break generation — but
+    # `usage_row=False` with `charge=True` is not a runtime failure, it is a caller asking to
+    # DEBIT A CUSTOMER AND LEAVE NO AUDIT ROW. Degrading quietly is how that ships. It is
+    # unreachable today (every caller takes the default) and a test pins it; refusing before the
+    # try means the refusal cannot be swallowed by the best-effort handler below.
+    if charge and not usage_row:
+        raise ValueError(
+            "narasi usage: charge=True with usage_row=False would debit without an audit row")
+    # Residue from a previous attempt is indistinguishable from an observation of THIS one.
+    if isinstance(usage_out, dict):
+        usage_out.clear()
     try:
         usage = getattr(resp, "usage", None)
         tok_in  = int(getattr(usage, "prompt_tokens",     0) or 0) if usage else 0
@@ -796,18 +821,46 @@ async def _log_narasi_usage(tenant_id, user_id, model, resp, *, job_id=None, ses
         _served_by = getattr(resp, "_narasi_served_by", None)
         if _served_by:
             _provider = _served_by
+        if isinstance(usage_out, dict):
+            # 🔴 OBSERVED, NOT ASSUMED. `_provider` above falls back to a model-prefix guess when
+            # the response says nothing; that guess is fine for a usage row but must never be
+            # published as "this is who served it". Absent evidence stays absent here.
+            _served_model = getattr(resp, "model", None)
+            usage_out.update({
+                "served_provider": _served_by if isinstance(_served_by, str) and _served_by
+                                   else None,
+                "served_model": _served_model if isinstance(_served_model, str)
+                                and _served_model else None,
+                "model_requested": model,
+                "tokens_in": int(tok_in), "tokens_out": int(tok_out),
+                "cost_usd": (str(cost) if cost is not None else None),
+                "credits_would_be": int(cr or 0),
+                # 🔴 THE COST BASIS IS NAMED; THE VERSION IS HONESTLY NULL. Neither
+                # `credit_catalog` nor `pricing_catalog.json` carries a version marker today, so
+                # there is nothing truthful to put here — and an invented one would let a future
+                # audit believe it could pin an estimate to a priced snapshot it cannot.
+                "cost_basis": "credit_catalog.credit_cost + _calc_cost",
+                "pricing_catalog_version": None,
+            })
         if charge and cr:
             try:
                 await credits_lib.charge(tenant_id, cr, op_id=str(uuid.uuid4()),
                                          user_id=user_id, metadata={"op": "narasi", "model": model})
             except Exception as _ce:
                 import logging as _lg; _lg.getLogger("narasi").warning("narasi charge failed: %s", _ce)
-        await db.log_usage(tenant_id, user_id, model, "narasi",
-                           tok_in, tok_out, cost,
-                           job_id=job_id, session_id=session_id, provider=_provider,
-                           credits=(cr if credit_row else 0))
+        if usage_row:
+            await db.log_usage(tenant_id, user_id, model, "narasi",
+                               tok_in, tok_out, cost,
+                               job_id=job_id, session_id=session_id, provider=_provider,
+                               credits=(cr if credit_row else 0))
         return cr
     except Exception as _e:
+        # 🔴 A PARTIAL OBSERVATION IS WORSE THAN NONE. Whatever was written above described an
+        # attempt that did not complete; leaving it behind lets an adjudicator read provider,
+        # model and tokens as if they came from a call that worked. The observe path turns an
+        # empty dict into `final_census_status="unavailable"`, which is the truth.
+        if isinstance(usage_out, dict):
+            usage_out.clear()
         import logging as _lg; _lg.getLogger("narasi").warning("log_usage (narasi) failed (non-fatal): %s", _e)
         return 0
 
@@ -9313,7 +9366,8 @@ async def _narasi_seam_repair(chapter_b_body: str, *, chapter_a_tail: str, missi
 async def _narasi_consistency_critique(full_text, style, language, *, model,
                                        tenant_id, user_id, job_uuid,
                                        canonical_facts: str = "", credit_row: bool = True,
-                                       authority_text: str = ""):
+                                       authority_text: str = "", usage_row: bool = True,
+                                       usage_out=None):
     """Fresh-eyes whole-draft consistency critic → (verdict, cr). verdict =
     {score: float|None, violations: list[dict], summary: str}. Runs a capable model
     (NARASI_CRITIQUE_MODEL, else the chapter model, else the cheap model) over the FULL book
@@ -9433,7 +9487,8 @@ async def _narasi_consistency_critique(full_text, style, language, *, model,
             # Bound each model's TOTAL time (both attempts) so a hung model can't stall GATES.
             resp = await asyncio.wait_for(_run(), timeout=_narasi_critique_timeout(_cm))
             cr  = (await _log_narasi_usage(tenant_id, user_id, _cm, resp, job_id=job_uuid,
-                                          credit_row=credit_row) or 0)
+                                          credit_row=credit_row, usage_row=usage_row,
+                                          usage_out=usage_out) or 0)
             raw = (resp.choices[0].message.content or "").strip()
             if _i > 0:
                 import logging as _lg

@@ -49,6 +49,8 @@ TORD = "tests/python/test_narasi_f6_ordering_behavioral.py"
 #: The FINAL SCAN suite: every row drives the real job and asks what it DELIVERED.
 TFS = "tests/python/test_narasi_f6_final_scan.py"
 TFCR = "tests/python/test_narasi_f6_cheap_claude_repair.py"
+#: The `off`/`observe`/`enforce` mode suite — the witness for the INNER brake.
+TOBS = "tests/python/test_narasi_f6_observe_mode.py"
 #: The DEDICATED `beat_execution` actuator, driven through the real delivery path — the lane
 #: canary `7pucr0hs` proved the generic structural/chunked route could not do.
 TBA = "tests/python/test_narasi_f6_beat_actuator.py"
@@ -399,7 +401,8 @@ BREAKS = [
      TCL, "test_a_real_repair_resolves_and_delivery_is_allowed"),
 
     ("32. the bounded verification pass is skipped and nothing is verified",
-     [(NA, r"(?m)^        if mutated:$", "        if False:")],
+     [(NA, r"(?m)^        _f6_run_final = mutated if _f6_enforcing\(\) else _f6_sampled$",
+       "        _f6_run_final = False")],
      TCL, "test_a_real_repair_resolves_and_delivery_is_allowed"),
 
     # 🔴 THE ORDERING THE AUDIT NAMED: the change set must come from the FINAL bytes, not
@@ -425,13 +428,13 @@ BREAKS = [
     # 🔴 ROUND-5 AUDIT: F6 read the legacy critic flag, which defaults to "0" — so on a
     #    default configuration nothing detected and nothing blocked.
     ("37. F6 defaults to OFF again",
-     [(NA, r'(?m)^    return str\(os\.environ\.get\("NARASI_F6_ENABLED", "1"\)\)\.strip\(\)\.lower\(\) not in \($',
-       '    return str(os.environ.get("NARASI_F6_ENABLED", "0")).strip().lower() not in (')],
+     [(NA, r'(?m)^    if str\(os\.environ\.get\("NARASI_F6_ENABLED", "1"\)\)\.strip\(\)\.lower\(\) in \($',
+       '    if str(os.environ.get("NARASI_F6_ENABLED", "0")).strip().lower() in (')],
      TCL, "test_f6_is_on_unless_it_is_explicitly_switched_off"),
 
     ("38. F6 stops asking for its own census when the legacy critic did not run",
-     [(NA, r"(?m)^            if _f6_cq\.get\(\"tense_by_chapter\"\) is None and _f6_n_ch >= 1:$",
-       "            if False:")],
+     [(NA, r"(?m)^            elif _f6_n_ch >= 1 and _f6_enforcing\(\):$",
+       "            elif False:")],
      TCL, "test_f6_obtains_its_own_census_when_the_legacy_critic_never_ran"),
 
     # 🔴 ROUND-5 AUDIT: an absent or malformed census fell through to `outliers=[]`, which the
@@ -978,20 +981,69 @@ BREAKS = [
      TFS, "test_a_book_with_no_dominant_tense_is_unproved_not_clean"),
 
     # ── the kill switch ────────────────────────────────────────────────────
+    # 🔴 THE BRAKE IS TWO LAYERS, AND EACH LAYER IS WITNESSED ON ITS OWN CONTRACT. `off` is held
+    #    by the outer `_f6_enabled()` wrap AND by `_f6_enforcing()`, which every byte-changing
+    #    and refusing site consults. A COMBINED mutant proves only that the system fails when
+    #    both defences break at once — it says nothing about whether the outer switch still does
+    #    its own job. And `off` means F6 does not RUN: detection executing is already a
+    #    behaviour change, even when the inner brake goes on to prevent every repair. So 85/85b
+    #    stay single-edit on the outer wrap and are witnessed by CALL COUNTS on the production
+    #    seams (`_f6_scan`, `_f6_publish`, `_f8_publish`, `narasi_f8.detect`), which see the
+    #    entry a payload assertion cannot. 85c-85i witness the inner layer separately, and 85j
+    #    is the higher-order pair kept as an addition, never as a replacement.
     ("85. the switch stops wrapping detection, so an off F6 still detects and routes",
      [(NA, r"(?m)^    if _f6_enabled\(\):\n        try:\n            import narasi_f6 as _nf6$",
        "    if True:\n        try:\n            import narasi_f6 as _nf6")],
-     TFS, "test_the_kill_switch_disables_detection_routing_and_the_block"),
+     TOBS, "test_off_never_enters_f6_detection_or_the_finaliser"),
 
-    ("85b. the switch stops wrapping the finaliser, so an off F6 still refuses deliveries",
+    ("85b. the switch stops wrapping the finaliser, so an off F6 still enters it",
      [(NA, r"(?m)^    if not _f6_enabled\(\):\n        return \{\}$",
        "    if False:\n        return {}")],
-     TFS, "test_a_job_with_no_pre_repair_state_is_fine_when_f6_is_off"),
+     TOBS, "test_off_never_enters_f6_detection_or_the_finaliser"),
 
-    # ── one chapter is a book ──────────────────────────────────────────────
+    ("85c. the inner brake fails open, so `observe` repairs and refuses like `enforce`",
+     [(NA, r'(?m)^    return _f6_mode\(\) == "enforce"$', "    return True")],
+     TOBS, "test_observe_never_publishes_delivery_blocked"),
+
+    ("85d. the publish door lets `observe` publish a verdict",
+     [(NA, r'(?m)^    if _f6_enforcing\(\):\n        result\["f6"\] = accounting\n        return accounting$',
+       '    if True:\n        result["f6"] = accounting\n        return accounting')],
+     TOBS, "test_observe_never_publishes_delivery_blocked"),
+
+    ("85e. F8's publish door publishes its accounting in `observe`",
+     [(NA, r'(?m)^    if _f6_enforcing\(\):\n        result\["f8"\] = out\n        return out$',
+       '    if True:\n        result["f8"] = out\n        return out')],
+     TOBS, "test_no_internal_telemetry_reaches_the_user_payload"),
+
+    ("85f. `observe` buys its own initial census and bills it",
+     [(NA, r"(?m)^            elif _f6_n_ch >= 1 and _f6_enforcing\(\):$",
+       "            elif _f6_n_ch >= 1:")],
+     TOBS, "test_observe_never_buys_its_own_initial_census"),
+
+    ("85g. the observation census writes a user-visible usage row again",
+     [(NA, r"(?m)^                usage_row=_f6_enforcing\(\),$", "                usage_row=True,")],
+     TOBS, "test_no_critic_but_sampled_buys_exactly_one_call_and_it_is_the_final_one"),
+
+    ("85h. the observation census is folded into the customer's settlement",
+     [(NA, r"(?m)^            if sink is not None and _cr and _f6_enforcing\(\):$",
+       "            if sink is not None and _cr:")],
+     TOBS, "test_observe_never_folds_its_census_into_the_settlement"),
+
+    ("85i. the observe telemetry guard narrows, so instrumentation can fail a delivery",
+     [(NA, r"(?m)^    except Exception as _pe:  # noqa: BLE001$",
+       "    except ZeroDivisionError as _pe:  # noqa: BLE001")],
+     TOBS, "test_a_telemetry_emitter_failure_never_blocks"),
+
+    ("85j. BOTH brake layers fail together (higher-order; an ADDITION to the outer-only 85/85b, "
+     "never a replacement for them)",
+     [(NA, r"(?m)^    if _f6_enabled\(\):\n        try:\n            import narasi_f6 as _nf6$",
+       "    if True:\n        try:\n            import narasi_f6 as _nf6"),
+      (NA, r'(?m)^    return _f6_mode\(\) == "enforce"$', "    return True")],
+     TFS, "test_the_kill_switch_disables_detection_routing_and_the_block"),
+
     ("86. the own-census call goes back to needing two chapters",
-     [(NA, r"(?m)^            if _f6_cq\.get\(\"tense_by_chapter\"\) is None and _f6_n_ch >= 1:$",
-       "            if _f6_cq.get(\"tense_by_chapter\") is None and _f6_n_ch >= 2:")],
+     [(NA, r"(?m)^            elif _f6_n_ch >= 1 and _f6_enforcing\(\):$",
+       "            elif _f6_n_ch >= 2 and _f6_enforcing():")],
      TFS, "test_a_single_chapter_book_is_censused_and_delivered"),
 
     # ── no pre-repair state ────────────────────────────────────────────────

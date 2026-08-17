@@ -3531,16 +3531,355 @@ def _f6_executed_beat_evidence(beat_states, *, outline_sizes: dict, chapter_bloc
     return out
 
 
-def _f6_enabled() -> bool:
-    """Is F6 enforcement on? DEFAULT-ON, and independent of the legacy critic flag.
+#: The three things F6 can be. `off` — it does not run. `observe` — it measures and reports and
+#: changes NOTHING: no actuator, no repair, no splice, no resync, no byte, no refusal. `enforce` —
+#: it repairs and it blocks.
+_F6_MODES = ("off", "observe", "enforce")
 
-    🔴 THE ORIGINAL F6 FINDING WAS "ENFORCEMENT FLAG DEFAULT OFF". Reading the legacy
-    `NARASI_CRITIQUE_ENABLED` — which itself defaults to "0" — reproduced it exactly: on a
-    default configuration nothing detected, nothing blocked, and the gate looked implemented.
-    `NARASI_F6_ENABLED` is an emergency kill switch, so it must be set to "0" to turn F6 OFF;
-    absent means ON."""
-    return str(os.environ.get("NARASI_F6_ENABLED", "1")).strip().lower() not in (
-        "0", "false", "no", "off")
+
+def _f6_mode() -> str:
+    """Resolve the F6 mode. Never raises; an unreadable configuration resolves to ``off``.
+
+    🔴 THE PRECEDENCE IS THE CONTRACT, and it is deliberately not symmetric:
+
+        NARASI_F6_ENABLED=0            → off, and it ALWAYS wins. It is the emergency brake an
+                                         operator reaches for at 3am; a mode variable set weeks
+                                         ago must never be able to override it.
+        NARASI_F6_ENABLED=1 + MODE     → that mode.
+        NARASI_F6_ENABLED=1, no MODE   → enforce. Every deployment that predates this variable
+                                         meant enforcement, and a rollout must not silently stop
+                                         gating books that were being gated yesterday.
+        MODE invalid                   → off, plus a config error. A TYPO MUST NOT START
+                                         BLOCKING CUSTOMERS. This is the one place where
+                                         fail-closed is the wrong instinct: the failure being
+                                         guarded against here is a misconfiguration turning a
+                                         reporting deployment into a refusing one.
+
+    `NARASI_F6_ENABLED` absent still means ON — the original F6 finding was "enforcement flag
+    default OFF", and that is not being reintroduced."""
+    if str(os.environ.get("NARASI_F6_ENABLED", "1")).strip().lower() in (
+            "0", "false", "no", "off"):
+        return "off"
+    raw = str(os.environ.get("NARASI_F6_MODE", "")).strip().lower()
+    if not raw:
+        return "enforce"
+    if raw not in _F6_MODES:
+        log.error("F6 config error: NARASI_F6_MODE=%r is not one of %s — resolving to 'off' "
+                  "(a typo must never start blocking deliveries)", raw[:40], list(_F6_MODES))
+        return "off"
+    return raw
+
+
+def _f6_enabled() -> bool:
+    """Does F6 run at all? True for `observe` AND `enforce`.
+
+    🔴 THIS IS NO LONGER "IS ENFORCEMENT ON". Detection, the censuses and the accounting run in
+    `observe` too — that is the whole point of the mode. Every caller that used this to decide
+    whether to REPAIR or REFUSE must ask `_f6_mode() == "enforce"` instead; this one only says
+    whether the machinery runs."""
+    return _f6_mode() != "off"
+
+
+def _f6_enforcing() -> bool:
+    """May F6 change bytes or refuse a delivery? Only in `enforce`."""
+    return _f6_mode() == "enforce"
+
+
+#: What fraction of jobs buy the ONE final-census provider call in `observe`. Observation is
+#: measurement, not a side effect, so it is allowed to cost — but not on every job.
+_F6_OBSERVE_SAMPLE_RATE_DEFAULT = "0.10"
+
+
+def _f6_observe_sample_rate() -> float:
+    """The sample rate, clamped to [0, 1]. An unreadable value samples NOTHING rather than
+    everything: a typo must not silently buy a provider call on every job."""
+    try:
+        rate = float(str(os.environ.get(
+            "NARASI_F6_OBSERVE_SAMPLE_RATE", _F6_OBSERVE_SAMPLE_RATE_DEFAULT)).strip())
+    except (TypeError, ValueError):
+        log.error("F6 config error: NARASI_F6_OBSERVE_SAMPLE_RATE is not a number — "
+                  "sampling nothing")
+        return 0.0
+    return min(1.0, max(0.0, rate))
+
+
+def _f6_observe_sampled(job_uuid, *, rate: "Optional[float]" = None) -> bool:
+    """Is THIS job in the observation sample?
+
+    🔴 DERIVED FROM THE SERVER-OWNED JOB UUID, NEVER FROM A COIN FLIP. A retry of the same job
+    must reach the SAME decision, or a job that failed after being sampled comes back unsampled
+    and the two halves of one story land in different buckets. `random()` would also make the
+    telemetry unreproducible: nobody could re-derive which jobs should have records.
+
+    No UUID means no stable identity to hash, which means no sample — an unidentifiable job
+    cannot be adjudicated later anyway."""
+    if rate is None:
+        rate = _f6_observe_sample_rate()
+    # 🔴 CHECKED BEFORE THE RATE, INCLUDING AT rate=1.0. "Sample everything" still must not
+    # sample a job with no stable identity: the call would be spent on a record nobody can
+    # trace back to a job, which is the one thing an adjudication sample cannot afford.
+    key = str(job_uuid or "").strip()
+    if not key:
+        return False
+    if rate <= 0.0:
+        return False
+    if rate >= 1.0:
+        return True
+    import hashlib
+    digest = hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()
+    # 🔴 13 HEX DIGITS = 52 BITS, AND THE WIDTH IS THE POINT. A double's mantissa is 53 bits, so
+    # every integer below 2**53 is representable EXACTLY; at 52 bits both the numerator and
+    # `1 << 52` are exact and the division is a single correctly-rounded operation. An earlier
+    # version took 14 digits (56 bits) while the comment claimed 53 — the numerator was then
+    # wider than the mantissa, so the "exact" it advertised was not true of the code beneath it.
+    return (int(digest[:13], 16) / float(1 << 52)) < rate
+
+
+#: Which lane repairs which class, and WHAT that lane needs the violation to carry in order to
+#: locate its target. `routable` is the audit instrument: canary `7pucr0hs` shipped a
+#: `beat_execution` that had a lane on paper (the generic structural patch) and no lane in fact,
+#: and the only way anyone found out was a blocked customer job. A violation whose required
+#: locator fields are absent is NOT routable, however plausible its prose looks.
+_F6_LANES = {
+    "tense_drift":     ("merged_revise_generic", ("chapter",)),
+    "final_beat":      ("merged_revise_generic", ("chapter", "outline_chapter", "outline_beat")),
+    "teleport":        ("f6_teleport_cheap_claude", ("chapter",)),
+    "beat_execution":  ("f6_beat_execution_actuator",
+                        ("chapter", "outline_chapter", "outline_beat")),
+    "chapter_ceiling": ("f6_ceiling_reducer", ("chapter",)),
+    "chapter_seam":    ("f8_seam_actuator", ("chapter_a", "chapter_b")),
+    # 🔴 A LANE THAT NEEDS A CHAPTER THE PRODUCER NEVER SETS. The thread tracker builds this
+    # with `chapter_introduced` in hand and writes it into the `evidence` PROSE as `@chN`
+    # instead of onto the violation, so the generic lane it routes to has no server-owned
+    # chapter to target. It is listed — not omitted — precisely so it reports
+    # `routable=false, missing=['chapter']` rather than disappearing into "no lane".
+    "unresolved_thread": ("merged_revise_generic", ("chapter",)),
+}
+
+#: Which detector authored a finding. The class is the only honest key available today —
+#: violations do not carry a producer tag — so this map IS the audit's inventory, and every
+#: `producer=unknown` in the telemetry is a producer nobody has claimed yet.
+_F6_PRODUCERS = {
+    "tense_drift": "f6_scan", "teleport": "f6_scan", "final_beat": "f6_scan",
+    "beat_execution": "f6_scan", "chapter_ceiling": "f6_scan",
+    "chapter_seam": "f8_seam_census",
+    "unresolved_thread": "thread_tracker",
+    "chapter_boundary_break": "consistency_critic",
+}
+
+
+def _f6_violation_class(violation) -> str:
+    """The class of a finding, read in the order the PRODUCERS actually write it.
+
+    🔴 `f6_class` IS NOT UNIVERSAL, AND ASSUMING IT LOSES WHOLE PRODUCERS. The thread tracker
+    writes `type` and nothing else; a reader that only knows `f6_class`/`f8_class` sees an empty
+    string for every `unresolved_thread` and files the producer that has caused the most recent
+    accounting failure under "unclassified"."""
+    if not isinstance(violation, dict):
+        return ""
+    for field in ("f6_class", "f8_class", "type"):
+        value = violation.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _f6_routing_report(violation) -> dict:
+    """Can any actuator actually act on this violation, and if not, what is it missing?
+
+    Returns `{"class", "producer", "lane", "routable", "missing"}`. Pure; reads no configuration
+    and calls nothing."""
+    if not isinstance(violation, dict):
+        return {"class": "", "producer": "unknown", "lane": None,
+                "routable": False, "missing": ["not_a_violation"]}
+    vclass = _f6_violation_class(violation)
+    producer = _F6_PRODUCERS.get(vclass, "unknown")
+    lane = _F6_LANES.get(vclass)
+    if lane is None:
+        return {"class": vclass, "producer": producer, "lane": None,
+                "routable": False, "missing": ["no_lane_for_class"]}
+    name, required = lane
+    missing = [f for f in required
+               if not (isinstance(violation.get(f), int)
+                       and not isinstance(violation.get(f), bool)
+                       and violation.get(f) >= 1)]
+    return {"class": vclass, "producer": producer, "lane": name,
+            "routable": not missing, "missing": missing}
+
+
+#: How much of a finding's evidence may appear in a telemetry record. Enough for a human to tell
+#: which finding this is; nowhere near enough to reconstruct the manuscript.
+_F6_OBSERVE_EXCERPT_CHARS = 120
+_F6_OBSERVE_MAX_FINDINGS = 20
+
+
+def _f6_emit_observe(channel: str, record: dict) -> None:
+    """The ONE seam every observe record leaves by.
+
+    One emitter means one place to guard, one place to redirect if these records should ever go
+    somewhere other than the log, and one seam a test can break in order to prove that breaking
+    it cannot break a delivery."""
+    import json as _json
+    log.warning("%s observe: %s", channel,
+                _json.dumps(record, default=str, ensure_ascii=False))
+
+
+def _f6_bytes_digest(text) -> "Optional[str]":
+    """A short, stable fingerprint of the bytes a census actually read.
+
+    🔴 THE RECORD MUST BE PINNABLE TO THE BYTES IT DESCRIBES. Without this, "the final census
+    says the book is clean" is unfalsifiable — nobody can check afterwards that the census read
+    the manuscript the customer received rather than some pre-mutator draft."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        import hashlib
+        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001 - a fingerprint is instrumentation, never a decision
+        return None
+
+
+def _f6_observe_findings(detected) -> list:
+    """The per-violation half of an observe record: identity, locator, routing, producer.
+
+    🔴 NO RAW MANUSCRIPT. Identities and locators are server-owned; the only free text is a hard
+    excerpt of the finding's own evidence, which is the server's summary, not the customer's
+    prose.
+
+    🔴 AND IT NEVER RAISES. This runs only to describe a delivery, never to decide one. A
+    malformed finding must cost its own row in the record, not the customer's book."""
+    out = []
+    try:
+        import narasi_f6 as _nf6
+        for violation in list(detected or ())[:_F6_OBSERVE_MAX_FINDINGS]:
+            if not isinstance(violation, dict):
+                continue
+            try:
+                routing = _f6_routing_report(violation)
+                locator = {k: violation.get(k)
+                           for k in ("chapter", "outline_chapter", "outline_beat",
+                                     "chapter_a", "chapter_b")
+                           if isinstance(violation.get(k), int)
+                           and not isinstance(violation.get(k), bool)}
+                evidence = violation.get("evidence")
+                out.append({
+                    "violation_id": (_nf6.violation_identity(violation)
+                                     or violation.get("f6_claim")),
+                    "class": routing["class"],
+                    "producer": routing["producer"],
+                    "locator": locator or None,
+                    "lane": routing["lane"],
+                    "routable": routing["routable"],
+                    "missing_for_routing": routing["missing"] or None,
+                    "evidence_excerpt": (str(evidence)[:_F6_OBSERVE_EXCERPT_CHARS]
+                                         if isinstance(evidence, str) and evidence else None),
+                })
+            except Exception as _fe:  # noqa: BLE001
+                out.append({"violation_id": None, "describe_error": str(_fe)[:120]})
+    except Exception as _e:  # noqa: BLE001
+        return [{"violation_id": None, "describe_error": str(_e)[:120]}]
+    return out
+
+
+def _f6_publish(result: dict, accounting: dict, *, job_id=None, telemetry=None) -> dict:
+    """The SINGLE door every F6 verdict leaves by.
+
+    🔴 IN `enforce` NOTHING CHANGES: the accounting is published on `result["f6"]` and returned,
+    exactly as it always was.
+
+    🔴 IN `observe` THE VERDICT IS NEVER BORN AS A BLOCK. Publishing `delivery_blocked=True` and
+    then remembering not to act on it at one call site is how a "reporting" deployment refuses a
+    customer: the durable payload, an operator, or a call site added next month would all read it
+    as a block. So the accounting does not reach `result` at all — the user payload stays exactly
+    what `off` would have produced — and the finding is reported as `would_block` instead.
+
+    🔴 AND ONLY A SUCCESSFUL FINAL CENSUS MAY DECIDE `would_block`. An unsampled job, or one
+    whose census call failed, has NOT measured the delivered bytes; claiming a verdict from a
+    pre-mutator read would be exactly the false confidence this mode exists to avoid. Those
+    records carry `would_block=None`."""
+    if _f6_enforcing():
+        result["f6"] = accounting
+        return accounting
+    # 🔴 EVERYTHING BELOW IS INSTRUMENTATION, AND INSTRUMENTATION MAY NOT DECIDE A DELIVERY.
+    # Building the record, serialising it and emitting it are three separate ways to raise, and
+    # any one of them escaping would turn a reporting mode into a mode that fails jobs for a
+    # reason that has nothing to do with the manuscript. The `enforce` branch above is
+    # deliberately outside this guard: its error semantics are unchanged.
+    try:
+        return _f6_publish_observe(result, accounting, job_id=job_id, telemetry=telemetry)
+    except Exception as _pe:  # noqa: BLE001
+        try:
+            log.error("F6 observe telemetry failed (delivery unaffected): %s", str(_pe)[:200])
+        except Exception:  # noqa: BLE001 - even the fallback log must not decide a delivery
+            pass
+        try:
+            result.pop("f6", None)
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
+
+
+def _f6_publish_observe(result: dict, accounting: dict, *, job_id=None, telemetry=None) -> dict:
+    """The observe half of `_f6_publish`. Split out so ONE guard covers record construction,
+    serialisation and emission — see the comment at that guard."""
+    record = dict(telemetry or {})
+    decided = str(record.get("final_census_status") or "") == "ok"
+    record.update({
+        "mode": "observe",
+        "job_id": job_id,
+        "would_block": (bool(accounting.get("delivery_blocked")) if decided else None),
+        "would_block_reason": ((accounting.get("unproven")
+                                or accounting.get("error")
+                                or (f"{accounting.get('violations_unresolved')} unresolved of "
+                                    f"{accounting.get('violations_detected')} detected"))
+                               if decided and accounting.get("delivery_blocked") else None),
+        "violations_detected": accounting.get("violations_detected"),
+        "violations_unresolved": accounting.get("violations_unresolved"),
+        # 🔴 NOT A BOOKING, AND IT SAYS SO. The observation call is real and it cost real money;
+        # it is recorded here and NOWHERE else — no usage row, no credits, no ledger.
+        "accounting_status": "telemetry_only_unbooked",
+    })
+    _f6_emit_observe("F6", record)
+    # `off` leaves no `f6` key; `observe` must leave the payload indistinguishable from it.
+    result.pop("f6", None)
+    return {}
+
+
+def _f8_publish(result: dict, out: dict, *, job_id=None) -> dict:
+    """F8's single publish door — the same rule `_f6_publish` enforces, for the same reason.
+
+    🔴 F8 RIDES F6's MODE, AND THAT HAS TO INCLUDE THE VERDICT. Gating only F8's seam ACTUATOR
+    left its refusal intact: an unsampled `observe` job bought no final census, so F8 had no
+    post-repair observation, called itself UNPROVED and blocked the delivery — a reporting mode
+    refusing customers through the gate nobody remembered to neutralise.
+
+    🔴 AND ITS `would_block` NEEDS A VALID CENSUS TOO. A seam verdict computed from an
+    observation that never arrived is not a finding about the delivered book."""
+    if _f6_enforcing():
+        result["f8"] = out
+        return out
+    # Same isolation as `_f6_publish`: instrumentation may not decide a delivery. `enforce`
+    # above is outside the guard, so its error semantics are unchanged.
+    decided = bool(out.get("census_valid"))
+    try:
+        _f6_emit_observe("F8", {
+            "mode": "observe", "job_id": job_id,
+            "would_block": (bool(out.get("delivery_blocked")) if decided else None),
+            "would_block_reason": out.get("reason") if decided else None,
+            "census_valid": out.get("census_valid"),
+            "seams_detected": out.get("seams_detected"),
+            "seams_unresolved": out.get("seams_unresolved"),
+            "unresolved_ids": out.get("unresolved_ids"),
+            "accounting_status": "telemetry_only_unbooked",
+        })
+    except Exception as _te:  # noqa: BLE001 - telemetry may not decide a delivery
+        try:
+            log.error("F8 observe telemetry failed (delivery unaffected): %s",
+                      str(_te)[:200])
+        except Exception:  # noqa: BLE001
+            pass
+    result.pop("f8", None)
+    return {}
 
 
 async def _f8_finalize(result: dict, *, job_id=None) -> dict:
@@ -3579,8 +3918,7 @@ async def _f8_finalize(result: dict, *, job_id=None) -> dict:
             out = _nf8.accounting(census_before=before, targeted=[], verdict=clean,
                                   attempts=0, provider_calls=0, accepted_operations=0,
                                   byte_changing=0)
-            result["f8"] = out
-            return out
+            return _f8_publish(result, out, job_id=job_id)
 
         _gk = "book" if result.get("book") else "output"
         final_text = result.get(_gk) or ""
@@ -3606,8 +3944,7 @@ async def _f8_finalize(result: dict, *, job_id=None) -> dict:
             out = _nf8.accounting(census_before=before, targeted=[], verdict=clean,
                                   attempts=0, provider_calls=0, accepted_operations=0,
                                   byte_changing=0)
-            result["f8"] = out
-            return out
+            return _f8_publish(result, out, job_id=job_id)
 
         after = _nf8.seam_census((observation or {}).get("seam_states"), chapter_count=n_ch)
         # 🔴 ATTRIBUTION IS THE STRUCTURAL LANE'S OWN PER-SEAM RECORD. A chapter-level record
@@ -3662,8 +3999,7 @@ async def _f8_finalize(result: dict, *, job_id=None) -> dict:
                   job_id, type(_f8e).__name__)
         out = {"schema_version": _nf8.SCHEMA_VERSION, "applicable": True,
                "census_valid": False, "reason": "census_unproved", "delivery_blocked": True}
-    result["f8"] = out
-    return out
+    return _f8_publish(result, out, job_id=job_id)
 
 
 async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None,
@@ -3712,8 +4048,8 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
         accounting = {"violations_detected": 0, "violations_resolved": 0,
                       "violations_unresolved": 0, "delivery_blocked": True,
                       "unproven": "pending_state_missing"}
-        result["f6"] = accounting
-        return accounting
+        return _f6_publish(result, accounting, job_id=job_id,
+                           telemetry={"stage": "no_pending_state"})
     import narasi_f6 as _nf6
     import narasi_gate as _ngate
     # 🔴 UNPROVED BLOCKS. An absent or malformed census, or a detection that raised, means
@@ -3721,19 +4057,59 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
     # nothing wrong". Handled before the per-violation accounting because it is not a
     # statement about any one violation.
     unproven = pending.get("unproven")
+    # 🔴 IN `observe` AN UNPROVEN INPUT IS NOT A REASON TO STOP MEASURING. This short-circuit
+    # exists to REFUSE: with no usable pre-repair census, `enforce` cannot vouch for the book and
+    # must not deliver it. `observe` refuses nothing, so stopping here would only throw away the
+    # measurement it exists to take — and on production's default configuration (no critic to
+    # reuse) that is EVERY job. The delivered bytes are what the final census reads, and reading
+    # them does not depend on the pre-repair census having been readable.
+    if unproven and not _f6_enforcing():
+        log.warning("narration job %s: F6 observe — pre-repair census unusable (%s); "
+                    "continuing to the delivered-bytes measurement", job_id, unproven)
+        unproven = None
     if unproven:
         log.error("narration job %s: F6 UNPROVED (%s) — delivery BLOCKED", job_id, unproven)
         accounting = {"violations_detected": 0, "violations_resolved": 0,
                       "violations_unresolved": 0, "delivery_blocked": True,
                       "unproven": str(unproven)}
-        result["f6"] = accounting
-        return accounting
+        # 🔴 THE MOST COMMON OBSERVE RECORD, SO IT CANNOT BE THE THINNEST. With no critic to
+        # reuse, observe measures nothing and lands here — and a record that omits WHY there was
+        # no census is unadjudicable: an operator cannot tell "we chose not to buy a read" from
+        # "the read came back broken".
+        return _f6_publish(result, accounting, job_id=job_id, telemetry={
+            "stage": "unproven_pre_repair",
+            "initial_census_status": pending.get("initial_provenance") or "unknown",
+            "initial_census_chapters": pending.get("chapter_count"),
+            "sampled": (True if _f6_enforcing() else _f6_observe_sampled(job_uuid)),
+            "sample_rate": (None if _f6_enforcing() else _f6_observe_sample_rate()),
+            "job_uuid_digest": _f6_bytes_digest(str(job_uuid or "")),
+            "final_census_status": "not_run_unproven_input",
+            "findings": _f6_observe_findings(pending.get("detected")),
+        })
+    # Defined before the try so the publish below always has a record to attach, including on
+    # the path where the accounting itself raised.
+    _f6_obs_telemetry: dict = {"stage": "accounting_failed"}
     try:
         detected = list(pending.get("detected") or ())
         targeted = list(pending.get("targeted") or ())
         chapter_count = int(pending.get("chapter_count") or 0)
         attempts = int(pending.get("repair_attempts") or 0)
         calls = int(pending.get("provider_calls") or 0)
+        # ── observe telemetry, assembled as the finalise learns things ──────────────────
+        # 🔴 THE INITIAL CENSUS IS NEVER BOUGHT BY `observe`. Detection either rode a critic
+        # call that was going to happen anyway, or it did not happen at all — and "we reused
+        # someone else's read" and "nobody read it" are different enough that the record says
+        # which. `provider_calls` from detection is 0 exactly when nothing was bought.
+        _f6_sampled = True if _f6_enforcing() else _f6_observe_sampled(job_uuid)
+        _f6_obs_telemetry = {  # noqa: F841 - published by _f6_publish at every exit below
+            "sampled": _f6_sampled,
+            "sample_rate": (None if _f6_enforcing() else _f6_observe_sample_rate()),
+            "job_uuid_digest": _f6_bytes_digest(str(job_uuid or "")),
+            "initial_census_status": pending.get("initial_provenance") or "unknown",
+            "initial_census_chapters": pending.get("chapter_count"),
+            "final_census_status": "not_required_unmutated",
+            "findings": _f6_observe_findings(detected),
+        }
 
         _gk = "book" if result.get("book") else "output"
         final_text = result.get(_gk) or ""
@@ -3757,34 +4133,72 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
                       "delivery BLOCKED", job_id)
             accounting = _f6_refusal("structural_change_unattributable",
                                      detected=len(detected))
-            result["f6"] = accounting
-            return accounting
+            return _f6_publish(result, accounting, job_id=job_id,
+                               telemetry={"stage": "structural_change_unattributable"})
         # 🔴 A MODEL TOUCHED THE MANUSCRIPT ⇒ THE MANUSCRIPT GETS RE-READ. Not "a violation we
         # already knew about was targeted" — that was the old trigger, and it is why a repair
         # could introduce a defect of a class nobody had flagged and ship it.
         mutated = bool(changed) or attempts >= 1
         verdicts: dict = {}
         final_scan = None
-        if mutated:
-            census_after = teleports_after = beats_after = None
+        # 🔴 IN `observe` THE ONE CALL THIS MODE BUYS IS SAMPLED. An unsampled job spends
+        # NOTHING: no census, no provider, no bytes read after the mutators — and therefore no
+        # claim about what the delivery would have been. `enforce` is unchanged: it always
+        # verifies what it repaired, because it is about to refuse a customer on the answer.
+        # 🔴 THE TWO MODES ASK DIFFERENT QUESTIONS, SO THEY BUY THE CALL ON DIFFERENT GROUNDS.
+        # `enforce` re-reads because it CHANGED something and is about to refuse a customer on
+        # the answer — an untouched book needs no second read. `observe` re-reads because the
+        # delivered bytes are the thing it exists to measure; on production's default
+        # configuration nothing has censused them at all (no critic to reuse), and gating that
+        # on `mutated` would make the common case measure NOTHING while still counting itself
+        # as a sample.
+        _f6_run_final = mutated if _f6_enforcing() else _f6_sampled
+        if not _f6_run_final and not _f6_enforcing():
+            _f6_obs_telemetry["final_census_status"] = "not_sampled"
+        # 🔴 INITIALISED OUTSIDE THE BLOCK THAT FILLS THEM. These used to be bound inside the
+        # census branch, which was safe only while `mutated` was the sole condition for entering
+        # it. Sampling added a second one, and an unsampled job then reached the verdict loop
+        # below with the names unbound — a NameError the accounting caught and turned into a
+        # refusal, so a mode whose entire purpose is not to block blocked every unsampled job.
+        census_after = teleports_after = beats_after = None
+        if _f6_run_final:
             # The one bounded verification pass. `_narasi_consistency_critique` is the same
             # primitive the detection rode on, so the censuses come back in the same shape
             # — and it is asked ONCE for all three, so they describe one read of one book.
             from laozhang_api import _narasi_consistency_critique
             calls += 1
+            # 🔴 THE OBSERVATION CALL LEAVES NO ROW AND NO CHARGE. `usage_row=False` keeps it off
+            # /credits/history, `charge` is never set here, and its `cr` is deliberately NOT
+            # folded into `sink.credits` below — it is platform measurement, not the customer's
+            # work. The raw COGS metadata lands in the telemetry record instead.
+            _f6_usage: dict = {}
             _after, _cr = await _narasi_consistency_critique(
                 final_text, str(body.get("style") or ""),
                 str(body.get("language") or "id"),
                 model=(body.get("model") or ""), tenant_id=tenant_id, user_id=user_id,
                 job_uuid=job_uuid, credit_row=False,
+                usage_row=_f6_enforcing(),
+                usage_out=(None if _f6_enforcing() else _f6_usage),
                 # 🔴 WITHOUT THE AUTHORITY THE BEAT CENSUS IS NEVER ASKED FOR, so every
                 # beat violation would verify against an absent observation and block a
                 # repair that worked. The packet is still on `result` here; the job pops
                 # it after this call returns.
                 authority_text=_narrative_authority_text(result))
-            if sink is not None and _cr:
+            # 🔴 `observe` NEVER FOLDS ITS CALL INTO THE JOB'S SETTLEMENT. This is the single
+            # line that decides whether a platform measurement reaches a customer's bill.
+            if sink is not None and _cr and _f6_enforcing():
                 sink.credits += int(_cr)
             _after = _after or {}
+            if not _f6_enforcing():
+                # The census helper never raises — a provider failure comes back as an empty
+                # verdict — so "did it work" is read from whether a census actually arrived.
+                _f6_obs_telemetry.update({
+                    "final_census_status": ("ok" if _after.get("tense_by_chapter") is not None
+                                            else "unavailable"),
+                    "final_census_bytes_digest": _f6_bytes_digest(final_text),
+                    "final_census_chapters": chapter_count,
+                    "usage": (dict(_f6_usage) or None),
+                })
             # F8 verifies against the SAME post-repair read F6 just paid for. Private;
             # `_f8_finalize` pops it before anything is persisted.
             result["_f8_post_observation"] = _after
@@ -3851,8 +4265,9 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
             accounting = {"violations_detected": len(detected), "violations_resolved": 0,
                           "violations_unresolved": len(detected), "delivery_blocked": True,
                           "unproven": reason}
-            result["f6"] = accounting
-            return accounting
+            return _f6_publish(result, accounting, job_id=job_id,
+                               telemetry=dict(_f6_obs_telemetry,
+                                              stage="unproven_final_scan"))
         # A post-repair census can falsely regress a beat that the first census observed as
         # executed. Do not vote model-against-model and do not spend another call: detection
         # retained only an exact quote already bound to the original named chapter. If those
@@ -3908,7 +4323,12 @@ async def _f6_finalize(result: dict, body: dict, *, tenant_id=None, user_id=None
     # to see which lane spent what; a lane's own report must never be able to move a count.
     if isinstance(beat_lane, dict):
         accounting["beat_repair"] = dict(beat_lane)
-    result["f6"] = accounting
+    # 🔴 THE SINGLE DOOR. In `enforce` this publishes and returns exactly as it always did; in
+    # `observe` the verdict never becomes a block and the payload stays what `off` produces.
+    _f6_published = _f6_publish(result, accounting, job_id=job_id,
+                                telemetry=_f6_obs_telemetry)
+    if not _f6_enforcing():
+        return _f6_published
     if accounting.get("delivery_blocked"):
         log.error("narration job %s: F6 blocks delivery — %d unresolved of %d detected "
                   "(unresolved=%s collateral=%s)", job_id,
@@ -6484,7 +6904,19 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             # census, which is UNPROVED, which blocks — every one-chapter narration refused unless
             # the legacy critic happened to be on. A one-chapter census is trivially its own
             # majority and the arithmetic below handles it unchanged.
-            if _f6_cq.get("tense_by_chapter") is None and _f6_n_ch >= 1:
+            # 🔴 `observe` NEVER BUYS ITS OWN DETECTION READ. This branch exists because
+            # `_narasi_critique_enabled()` defaults OFF, so on a default configuration F6 buys
+            # this census on EVERY job — and it folds the cost into `sink.credits`, which is the
+            # customer's bill. In `enforce` that is the price of a gate that refuses deliveries.
+            # In `observe` it would mean a reporting mode charging every customer for a
+            # measurement, on every job, with sampling applying only to the OTHER call. Observe
+            # therefore reuses the critic's read when one exists and otherwise measures nothing
+            # — and says which, because "reused someone else's read" and "nobody read it" are
+            # different facts about the record.
+            if _f6_cq.get("tense_by_chapter") is not None:
+                _f6_own_call = 0
+                _f6_initial_provenance = "reused_critic"
+            elif _f6_n_ch >= 1 and _f6_enforcing():
                 from laozhang_api import _narasi_consistency_critique as _f6_crit
                 _f6_own, _f6_cr = await _f6_crit(
                     _gbook0, style, language, model=(body.get("model") or ""),
@@ -6494,8 +6926,10 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                     sink.credits += int(_f6_cr)
                 _f6_obs = _f6_own or {}
                 _f6_own_call = 1
+                _f6_initial_provenance = "own_call"
             else:
                 _f6_own_call = 0
+                _f6_initial_provenance = "unavailable_no_critic"
             # 🔴 THE OUTLINE SIZES ARE COUNTED FROM THE PACKET THIS PROCESS RENDERED, never from
             # the answer. They are the keyspace the beat census is validated against, so a model
             # that invents a beat cannot smuggle one in — and a book with NO accepted outline has
@@ -6547,7 +6981,11 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
             _f6_routed = [
                 _v for _v in _f6_detected
                 if _v["f6_class"] not in ("chapter_ceiling", "teleport", "beat_execution")]
-            if _f6_routed:
+            # 🔴 ROUTING A VIOLATION INTO THE MERGED REVISE IS A REPAIR, so it belongs to
+            # `enforce` alone. In `observe` the findings are recorded and the revise request is
+            # left exactly as the other gates built it — that byte-identity with `off` is the
+            # property the whole mode rests on.
+            if _f6_routed and _f6_enforcing():
                 _v3g_merged = _v3g_merged + _f6_routed
                 log.warning("F6: %d hard violation(s) routed to repair (%s)", len(_f6_routed),
                             sorted({_v["f6_class"] for _v in _f6_routed}))
@@ -6603,7 +7041,14 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                             and _vc in _f8_broken_ch:
                         continue                      # canonical duplicate — one budget item
                     _f8_conflicts.append(f"free_text_ch{_vc}")
-                _v3g_merged = _f8_kept
+                # 🔴 DETECTION ABOVE RUNS IN EVERY MODE; ONLY THE MUTATION IS WITHHELD. Replacing
+                # `_v3g_merged` drops findings the OTHER gates were going to have repaired, so in
+                # `observe` it would change the delivered bytes even though F8 itself repaired
+                # nothing — and byte-identity with `off` is the property this mode rests on. The
+                # conflict list is still built, because "two observations disagree" is exactly
+                # the kind of thing observe exists to report.
+                if _f6_enforcing():
+                    _v3g_merged = _f8_kept
             if _f8_detected:
                 # 🔴 SEAMS DO NOT RIDE THE MERGED REVISE. They used to be appended to
                 # `_v3g_merged`, which routed them into the GENERIC structural addressed-patch
@@ -6671,6 +7116,7 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
                 "chapter_count": _f6_n_ch,
                 "repair_attempts": 0,
                 "provider_calls": _f6_own_call,
+                "initial_provenance": _f6_initial_provenance,
                 "unproven": ", ".join(_f6_seen["unproven"]) or None,
             }
             result["_f6_pending"] = _f6_pending
@@ -6739,7 +7185,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # instruction can turn a validated F6 census into an unchanged chapter.  The dispatcher
     # recognises this census-only request, forces its safe chunked lane and never falls through
     # to a whole-book rewrite.
-    if _f6_teleport_targets and _f6_pending is not None:
+    # Repair lane: `enforce` only. In `observe` the teleports are recorded, never rewritten.
+    if _f6_teleport_targets and _f6_pending is not None and _f6_enforcing():
         try:
             from laozhang_api import _narasi_consistency_revise as _f6_teleport_revise
             _f6_tk = "book" if result.get("book") else "output"
@@ -6786,7 +7233,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # fresh `chapter_ceiling` that nothing downstream is targeting.
     _f6_beat_targets = [_v for _v in ((_f6_pending or {}).get("detected") or ())
                         if isinstance(_v, dict) and _v.get("f6_class") == "beat_execution"]
-    if _f6_beat_targets and _f6_pending is not None:
+    # Repair lane: `enforce` only. In `observe` the missing beat is recorded, never enacted.
+    if _f6_beat_targets and _f6_pending is not None and _f6_enforcing():
         _f6_beat_accepted: list = []
         _f6_beat_attempted: set = set()
         _f6_beat_calls = 0
@@ -6894,7 +7342,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # the violation unresolved, which blocks delivery.
     _f6_ceiling_targets = [_v for _v in ((_f6_pending or {}).get("detected") or ())
                            if _v.get("f6_class") == "chapter_ceiling"]
-    if _f6_ceiling_targets and _f6_pending is not None:
+    # Repair lane: `enforce` only. In `observe` the over-long chapter is recorded, not cut.
+    if _f6_ceiling_targets and _f6_pending is not None and _f6_enforcing():
         try:
             from laozhang_api import _narasi_chapter_reduce
             _f6_rk = "book" if result.get("book") else "output"
@@ -6971,7 +7420,8 @@ async def _apply_v3_gates(result: dict, body: dict, *, tenant_id=None, user_id=N
     # departs from; only chapter B is spliced, between blocks the server already holds.
     _f8_seam_targets = [_v for _v in (_f8_detected or ())
                         if isinstance(_v, dict) and _v.get("f8_class") == "chapter_seam"]
-    if _f8_seam_targets:
+    # Repair lane: `enforce` only. In `observe` the broken seam is recorded, never bridged.
+    if _f8_seam_targets and _f6_enforcing():
         _f8_repaired_ids: list = []
         # 🔴 `attempted` IS COUNTED IN SEAMS, NOT IN RETRIES. The accounting invariant is
         # `attempts <= targeted`, so counting the corrective retry as a second attempt makes a
