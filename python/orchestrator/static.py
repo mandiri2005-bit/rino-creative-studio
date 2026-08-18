@@ -61,7 +61,19 @@ from .core import (
     max_tokens_for,
 )
 from .context_builder import build_shared_context, SharedContext
-from pakem import render_narrative_grammar, resolve_narrative_grammar
+
+# Narrative grammar is optional at this orchestration boundary for the same reason
+# compose() is soft-imported below: standalone/minimal environments must still be able
+# to import and run the degraded direct-prompt path. A missing or partially importable
+# pakem cannot invent a contract, so fail closed to the fully legacy empty block.
+try:  # pragma: no cover - normal path exercised through narrate_chapters
+    from pakem import render_narrative_grammar, resolve_narrative_grammar
+except Exception:  # noqa: BLE001 - keep module importable, matching compose fallback
+    def resolve_narrative_grammar(_style: Optional[str]):
+        return None
+
+    def render_narrative_grammar(_contract: Any) -> str:
+        return ""
 
 # compose() lives in the pakem package (WS-4). Soft-import so that if pakem is
 # somehow unavailable we still import (the functions then degrade rather than

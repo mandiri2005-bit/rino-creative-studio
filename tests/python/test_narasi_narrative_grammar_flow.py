@@ -7,9 +7,16 @@ polish call are replaced only at their existing provider boundaries.
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 from orchestrator import dynamic, static
 from orchestrator.context_builder import SharedContext
+
+
+REPO = Path(__file__).resolve().parents[2]
 
 
 KDRAMA_BLOCK = (
@@ -26,6 +33,43 @@ EVIDENCE_FIXTURE = (
     "DISCOVERY CHAPTER=2 | AUTHENTICATOR=Im Daeho | "
     "CUSTODY MOVES=Yuna→Daeho→court clerk"
 )
+
+
+def test_static_import_degrades_safely_when_pakem_is_unavailable():
+    script = r"""
+import builtins
+
+real_import = builtins.__import__
+
+def without_pakem(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "pakem" or name.startswith("pakem."):
+        raise ModuleNotFoundError("pakem intentionally unavailable")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = without_pakem
+from orchestrator import static
+
+assert static.resolve_narrative_grammar("kdrama_serial") is None
+assert static.render_narrative_grammar({"person": "third_person_close"}) == ""
+assert static._COMPOSE_OK is False
+"""
+    env = os.environ.copy()
+    python_path = str(REPO / "python")
+    if env.get("PYTHONPATH"):
+        python_path += os.pathsep + env["PYTHONPATH"]
+    env["PYTHONPATH"] = python_path
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _chapters() -> list[dict]:
