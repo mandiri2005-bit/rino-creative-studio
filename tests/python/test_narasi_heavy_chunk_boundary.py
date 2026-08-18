@@ -82,7 +82,7 @@ When adding a bridge, remove or compress equivalent transition setup after the h
 
 5. ROLE AND PROVENANCE CONSISTENCY
 For every recurring person, group, institution, object, or source, preserve the identity and causal role fixed by the Outline and Story Bible. Never swap roles across chapters.
-For every recurring evidence item, document, artifact, dataset, claim, or source, keep its discovery, acquisition, transfer, and use in chronological order. Never show it as possessed, received, or used before the established transition.
+For every recurring evidence item, document, artifact, dataset, or source, preserve exactly one authoritative origin and acquisition event. Keep its discovery, acquisition, transfer, and use in chronological order, and make every later reference match that same event. Never show it as possessed, received, or used before the established transition. If authority is silent, preserve the earliest on-page account.
 If no role or provenance chain applies, make no change.
 
 6. HARD PRESERVATION
@@ -109,7 +109,10 @@ def test_heavy_instruction_is_one_numbered_procedure_with_separate_output_rule()
     )
     assert instruction.index(EXPECTED_HEAVY_PROCEDURE) < instruction.index("FINAL OUTPUT")
     assert instruction.index("2. BOUNDARY CONTINUITY") < instruction.index("3. BRIDGE REPAIR")
-    assert "dataset, claim, or source" in instruction
+    assert "evidence item, document, artifact, dataset, or source" in instruction
+    assert "preserve exactly one authoritative origin and acquisition event" in instruction
+    assert "make every later reference match that same event" in instruction
+    assert "If authority is silent, preserve the earliest on-page account" in instruction
     assert "If no role or provenance chain applies, make no change" in instruction
     assert (
         "Repair sentence fragments, fused clauses, and missing connectors created or "
@@ -171,7 +174,7 @@ def test_whole_book_heavy_repairs_bridge_and_deduplicates_post_heading_setup(mon
     assert EXPECTED_HEAVY_PROCEDURE in calls[0]["instruction"]
 
 
-def test_whole_book_heavy_reconciles_generic_role_and_provenance(monkeypatch):
+def test_whole_book_heavy_normalizes_later_reference_to_one_acquisition(monkeypatch):
     authority = """AUTHORITATIVE OUTLINE
 Mira is the analyst. Director Jon leads the North Quay Observatory. The Review Panel publishes only after Mira transfers the source.
 
@@ -186,15 +189,15 @@ Use: the Review Panel publishes its claim after receiving the dataset"""
         "The Review Panel discovers tide-set-4 and publishes its claim before Mira receives the source. "
         + "The dataset remains central to the report. " * 28
         + "\n\n## Chapter 2: Publication\n\n"
-        "Director Jon says he served as the analyst who acquired tide-set-4. "
+        "Director Jon's later analysis says he acquired tide-set-4 from a field station. "
         + "The publication cites the dataset and its documented transfer. " * 28
     )
     reconciled = book.replace(
         "The Review Panel discovers tide-set-4 and publishes its claim before Mira receives the source.",
-        "Analyst Mira discovers and acquires tide-set-4, then transfers the source to the Review Panel before it publishes its claim.",
+        "Analyst Mira discovers tide-set-4, downloads it from the Observatory archive, then transfers the source to the Review Panel before it publishes its claim.",
     ).replace(
-        "Director Jon says he served as the analyst who acquired tide-set-4.",
-        "Director Jon presents the published claim without taking Mira's analyst role.",
+        "Director Jon's later analysis says he acquired tide-set-4 from a field station.",
+        "Director Jon's later analysis identifies Mira's Observatory-archive download as the sole acquisition event.",
     )
     calls: list[dict] = []
 
@@ -209,13 +212,16 @@ Use: the Review Panel publishes its claim after receiving the dataset"""
     assert (ok, len(calls)) == (True, 1)
     assert polished == reconciled
     assert _headings(polished) == _headings(book)
-    assert "Analyst Mira discovers and acquires tide-set-4" in polished
+    assert "Analyst Mira discovers tide-set-4" in polished
+    assert "downloads it from the Observatory archive" in polished
     assert "transfers the source to the Review Panel before it publishes" in polished
-    assert "without taking Mira's analyst role" in polished
+    assert "Mira's Observatory-archive download as the sole acquisition event" in polished
     assert "before Mira receives the source" not in polished
+    assert "field station" not in polished
     assert authority in calls[0]["system"]
     assert "Never swap roles across chapters." in calls[0]["instruction"]
     assert "discovery, acquisition, transfer, and use in chronological order" in calls[0]["instruction"]
+    assert "make every later reference match that same event" in calls[0]["instruction"]
 
 
 def test_whole_book_clean_heavy_pass_is_a_byte_identical_no_op(monkeypatch):

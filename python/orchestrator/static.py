@@ -2512,7 +2512,7 @@ When adding a bridge, remove or compress equivalent transition setup after the h
 
 5. ROLE AND PROVENANCE CONSISTENCY
 For every recurring person, group, institution, object, or source, preserve the identity and causal role fixed by the Outline and Story Bible. Never swap roles across chapters.
-For every recurring evidence item, document, artifact, dataset, claim, or source, keep its discovery, acquisition, transfer, and use in chronological order. Never show it as possessed, received, or used before the established transition.
+For every recurring evidence item, document, artifact, dataset, or source, preserve exactly one authoritative origin and acquisition event. Keep its discovery, acquisition, transfer, and use in chronological order, and make every later reference match that same event. Never show it as possessed, received, or used before the established transition. If authority is silent, preserve the earliest on-page account.
 If no role or provenance chain applies, make no change.
 
 6. HARD PRESERVATION
