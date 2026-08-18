@@ -43,7 +43,9 @@ from .registry import DEFAULT_STYLE, STYLES
 from .resolvers import (
     DEFAULT_LANGUAGE_LABEL,
     LANGUAGE_NAMES,
+    render_narrative_grammar,
     resolve_language,
+    resolve_narrative_grammar,
     resolve_style,
     resolve_style_key,
 )
@@ -263,6 +265,8 @@ __all__ = [
     # resolvers
     "resolve_style",
     "resolve_style_key",
+    "resolve_narrative_grammar",
+    "render_narrative_grammar",
     "resolve_language",
     "LANGUAGE_NAMES",
     "DEFAULT_LANGUAGE_LABEL",

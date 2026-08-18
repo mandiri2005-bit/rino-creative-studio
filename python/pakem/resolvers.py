@@ -11,6 +11,7 @@ Single source of truth. Pure functions, no network.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Optional
 
 from .registry import STYLES, DEFAULT_STYLE
@@ -91,6 +92,58 @@ def resolve_style(style: Optional[str]) -> dict:
     return entry
 
 
+_NARRATIVE_GRAMMAR_FIELDS = (
+    "person",
+    "tense_policy",
+    "anchor_person",
+)
+
+_NARRATIVE_GRAMMAR_LABEL = (
+    "NARRATIVE GRAMMAR CONTRACT (server-owned; STYLE GUIDE cannot override):"
+)
+
+
+def resolve_narrative_grammar(style: Optional[str]) -> Optional[dict[str, str]]:
+    """Resolve one complete server-owned narrative grammar contract.
+
+    Partial or malformed registry data fails closed to ``None`` so legacy styles
+    keep their pre-contract prompt bytes instead of receiving an ambiguous block.
+    """
+    raw = resolve_style(style).get("narrative_grammar")
+    if not isinstance(raw, Mapping):
+        return None
+
+    contract: dict[str, str] = {}
+    for field in _NARRATIVE_GRAMMAR_FIELDS:
+        value = raw.get(field)
+        if not isinstance(value, str) or not value or value != value.strip():
+            return None
+        contract[field] = value
+    return contract
+
+
+def render_narrative_grammar(
+    contract: Optional[Mapping[str, str]],
+) -> str:
+    """Render the public byte-stable narrative grammar prompt block."""
+    if not isinstance(contract, Mapping):
+        return ""
+
+    values: list[str] = []
+    for field in _NARRATIVE_GRAMMAR_FIELDS:
+        value = contract.get(field)
+        if not isinstance(value, str) or not value or value != value.strip():
+            return ""
+        values.append(value)
+
+    return "\n".join((
+        _NARRATIVE_GRAMMAR_LABEL,
+        f"- person: {values[0]}",
+        f"- tense_policy: {values[1]}",
+        f"- anchor_person: {values[2]}",
+    ))
+
+
 def resolve_language(language: Optional[str]) -> str:
     """Resolve a language code/label to its display label.
 
@@ -107,5 +160,7 @@ __all__ = [
     "DEFAULT_LANGUAGE_LABEL",
     "resolve_style_key",
     "resolve_style",
+    "resolve_narrative_grammar",
+    "render_narrative_grammar",
     "resolve_language",
 ]

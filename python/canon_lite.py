@@ -1820,7 +1820,8 @@ def reset_job_canon_eligibility(token: Optional[contextvars.Token] = None) -> No
 #: rather than letting it drift outside the freeze unnoticed.
 _FROZEN_CONTEXT_ATTRS = (
     "topic", "chapters", "style_guide", "canonical_facts", "facts_are_bible",
-    "passages", "context_text", "sources", "style", "rag_used",
+    "passages", "context_text", "sources", "style", "narrative_grammar_block",
+    "rag_used",
 )
 
 

@@ -177,6 +177,14 @@ COHERENCE_RULES = """COHERENCE CONTRACT (you are ONE writer among several workin
 4. NO CONTRADICTION. The AUTHORITATIVE FULL OUTLINE is immutable and outranks the STORY BIBLE / CANONICAL FACTS. Use the bible only where it is compatible with the outline; never let it add, remove, move, or reinterpret an outlined plot beat. State a name, date, number, place, or quote ONLY if it appears in the compatible CANONICAL FACTS below (or is uncontroversial common knowledge you are certain of). If you need a specific fact that is NOT established, do NOT invent it — write a literal placeholder "[VERIFY: what you need]" and keep the narration flowing around it. A placeholder is always better than a fabricated fact that contradicts another chapter.
 """
 
+_STYLE_GUIDE_GRAMMAR_SENTENCE = (
+    "Hold the exact register, person, and tense fixed in STYLE GUIDE for every sentence."
+)
+_NARRATIVE_GRAMMAR_SENTENCE = (
+    "Hold the exact person, tense policy, and anchor person fixed in NARRATIVE GRAMMAR "
+    "CONTRACT for every sentence, and hold the exact register and tone fixed in STYLE GUIDE."
+)
+
 
 # Safe default style guide when no tenant brand profile exists. Keeps every
 # parallel worker on one register so chapters fuse (kills TONE DRIFT by default).
@@ -221,6 +229,7 @@ class SharedContext:
     context_text: str = ""
     sources: list[str] = field(default_factory=list)
     style: Optional[str] = None
+    narrative_grammar_block: str = ""
     rag_used: bool = False
 
     # -- outline ----------------------------------------------------------
@@ -292,6 +301,8 @@ class SharedContext:
             "- If a requested edit conflicts with this authority, leave the affected prose "
             "unchanged rather than violating the authority."
         ]
+        if self.narrative_grammar_block:
+            parts.append(self.narrative_grammar_block)
         bible = str(self.canonical_facts or "").strip()
         if bible:
             label = ("SUBORDINATE STORY BIBLE" if self.facts_are_bible
@@ -317,11 +328,18 @@ class SharedContext:
     # -- cached-prefix payload -------------------------------------------
     def brief_block(self) -> str:
         """The job-static block that rides the CACHED system prefix: the coherence
-        RULES + STYLE GUIDE + CANONICAL FACTS. Feed this straight into
+        RULES + NARRATIVE GRAMMAR + STYLE GUIDE + CANONICAL FACTS. Feed this straight into
         `compose(brief=ctx.brief_block())` — it is identical for every chapter, so
         WS-4's prefix cache pays for it once per job.
         """
-        parts = [COHERENCE_RULES.rstrip()]
+        coherence_rules = COHERENCE_RULES.rstrip()
+        if self.narrative_grammar_block:
+            coherence_rules = coherence_rules.replace(
+                _STYLE_GUIDE_GRAMMAR_SENTENCE,
+                _NARRATIVE_GRAMMAR_SENTENCE,
+                1,
+            )
+        parts = [coherence_rules]
         # CC v3 R-FG4 prevention: previously-flagged wrong claims are corrected at the
         # SOURCE — every worker sees the same hard corrections in the cached prefix, so
         # the known-bad error is prevented, not just patched by the terminal gate.
@@ -335,6 +353,8 @@ class SharedContext:
         if self.style_guide and self.style_guide.strip():
             parts.append("STYLE GUIDE (hold this register for the entire book):\n"
                          + self.style_guide.strip())
+        if self.narrative_grammar_block:
+            parts.append(self.narrative_grammar_block)
         # Prompt-integration (Rino 2026-07-06): pull register_spec.required_moves +
         # banned_tells from the pakem registry and inject as an explicit checklist
         # section. style_rules_book already carries these constraints in prose; giving

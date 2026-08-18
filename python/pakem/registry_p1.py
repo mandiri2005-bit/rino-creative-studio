@@ -1762,6 +1762,11 @@ _KDRAMA_SERIAL_SPEC = {
     "tts_risk": False,
     "output_support": "both",
     "factual_regime": "fiction",
+    "narrative_grammar": {
+        "person": "third_person_close",
+        "tense_policy": "present_throughout",
+        "anchor_person": "third_person_only",
+    },
     "rag": {
         "query_instruction": (
             "Retrieve a K-drama serial-episode passage in present-tense close-third, "
