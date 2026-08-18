@@ -61,6 +61,7 @@ from .core import (
     max_tokens_for,
 )
 from .context_builder import build_shared_context, SharedContext
+from pakem import render_narrative_grammar, resolve_narrative_grammar
 
 # compose() lives in the pakem package (WS-4). Soft-import so that if pakem is
 # somehow unavailable we still import (the functions then degrade rather than
@@ -1007,6 +1008,11 @@ async def narrate_chapters(
     ctx = shared_context or await build_shared_context(
         topic, chapters, tenant_id, style=style,
     )
+    effective_style = style if style is not None else ctx.style
+    ctx.style = effective_style
+    ctx.narrative_grammar_block = render_narrative_grammar(
+        resolve_narrative_grammar(effective_style)
+    )
 
     # 1.5) STORY BIBLE — for EVERY multi-chapter book (Rino: "semua style WAJIB pake brief"),
     #   default ON (NARASI_STORY_BIBLE=0 disables). Before the parallel MAP, pin the piece's
@@ -1083,6 +1089,7 @@ async def narrate_chapters(
                         topic, list(ctx.chapters or chapters), is_fiction=_fic,
                         style=style, language=language,
                         manager_model=m_model, telemetry_sink=telemetry_sink,
+                        narrative_grammar_block=ctx.narrative_grammar_block,
                         structured_semantic=_cl_wants_semantic)
                       for _ in range(_bo_n)],
                     return_exceptions=True)
@@ -1195,6 +1202,7 @@ async def narrate_chapters(
                     topic, list(ctx.chapters or chapters), is_fiction=_fic,
                     style=style, language=language,
                     manager_model=m_model, telemetry_sink=telemetry_sink,
+                    narrative_grammar_block=ctx.narrative_grammar_block,
                     structured_semantic=True,
                 )
             else:
@@ -1202,6 +1210,7 @@ async def narrate_chapters(
                     topic, list(ctx.chapters or chapters), is_fiction=_fic,
                     style=style, language=language,
                     manager_model=m_model, telemetry_sink=telemetry_sink,
+                    narrative_grammar_block=ctx.narrative_grammar_block,
                 )
             if _bible:
                 ctx.canonical_facts = _bible
@@ -1619,13 +1628,15 @@ async def narrate_chapters(
                                                 style=style, language=language,
                                                 manager_model=m_model, telemetry_sink=telemetry_sink,
                                                 extra_negative=", ".join(_terms),
+                                                narrative_grammar_block=ctx.narrative_grammar_block,
                                                 structured_semantic=True)
                                         else:
                                             _bible2 = await build_story_bible(
                                                 topic, list(ctx.chapters or chapters), is_fiction=_fic,
                                                 style=style, language=language,
                                                 manager_model=m_model, telemetry_sink=telemetry_sink,
-                                                extra_negative=", ".join(_terms))
+                                                extra_negative=", ".join(_terms),
+                                                narrative_grammar_block=ctx.narrative_grammar_block)
                                         _rep2 = (_lnc.ledger_hits_scan("", bible=_bible2, style_key=_lrsk(style))
                                                  if _bible2 else {})
                                         if _bible2 and int(_rep2.get("bible_hits") or 0) < int(_lrep.get("bible_hits") or 0):
@@ -2482,7 +2493,10 @@ def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool 
             f"You are the editor-in-chief doing a HEAVY final edit of a {unit} about \"{topic}\". "
             "Reconcile any contradictions, remove cross-chapter repetition and re-introductions, "
             "tighten flabby passages, and hold ONE consistent voice and tense throughout. PRESERVE "
-            "every concrete fact, name, date, number and quote exactly. Keep every chapter-heading "
+            "every authoritative fact, name, date, number and quote. When two draft variants conflict, "
+            "rewrite them to the variant fixed by the authoritative Outline or Story Bible EVIDENCE "
+            "MAP; do not choose between variants unless that authority decides the fact. Keep every "
+            "chapter-heading "
             "line (each begins with `## `) exactly as given — do not remove, rename, renumber, "
             "translate or move them, and never write a new heading of your own. Make the narration "
             f"read as ONE seamless, continuous flow. Return ONLY the {ret} in {language}, no notes.")

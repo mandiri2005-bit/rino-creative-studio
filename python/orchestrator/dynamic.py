@@ -1602,6 +1602,7 @@ async def build_story_bible(
     timeout: Optional[float] = None,
     telemetry_sink: Optional[Any] = None,
     extra_negative: Optional[str] = None,
+    narrative_grammar_block: str = "",
     structured_semantic: bool = False,
 ):
     """ONE manager call → a canonical fact-sheet pinning the piece's load-bearing specifics
@@ -1663,6 +1664,8 @@ async def build_story_bible(
         return _bible_return("", None)
     _to = float(timeout if timeout is not None else os.environ.get("NARASI_BIBLE_TIMEOUT", "120"))
     system = _STORY_BIBLE_SYSTEM_FICTION if is_fiction else _STORY_BIBLE_SYSTEM_NONFICTION
+    if narrative_grammar_block:
+        system = system + "\n\n" + narrative_grammar_block
     # SECONDARY WANT (9.0->9.x craft lever) — pin ONE want/friction per recurring NAMED secondary so
     # they read as people, not plot-functions. FICTION-only (never invent wants for real people) and
     # flag-gated NARASI_CRAFT_LEVERS (default OFF — SAME flag as PROSE VARIATION, so one flip turns
@@ -1912,13 +1915,16 @@ async def build_story_bible(
             "SANCTIONED DIVERGENCES: continuity tools treat the two values as ONE designed fact, "
             "never a contradiction — and writers must never average, reconcile, or 'correct' one "
             "toward the other. If the premise has no counterpoint pair, write 'none'.\n"
-            "18. EVIDENCE CHAIN & CUSTODY — for EVERY evidence item that accuses or convicts "
-            "anyone (an altered report, a bank transfer, a suppressed casualty list, a phone "
-            "log), pin ONE line: WHO finds it, WHERE it survived the intervening years and WHY it "
-            "survived (a carbon copy believed destroyed; a registrar who quietly kept it), who "
-            "can AUTHENTICATE it, and the chapter where its DISCOVERY happens ON-PAGE. No "
-            "convicting document may simply exist at the moment it is needed: if the climax uses "
-            "it, an earlier chapter must dramatize the finding. For any falsified COUNT, also pin "
+            "18. EVIDENCE CHAIN & CUSTODY — cover EVERY evidence item that accuses or convicts "
+            "anyone, whether physical or non-physical. For every NON-PHYSICAL item (a bank "
+            "transfer, a phone log, testimony, or an act), pin ONE line: WHO finds it, WHERE it "
+            "survived the intervening years and WHY it survived (a registrar who quietly kept a phone log), "
+            "who can AUTHENTICATE it, and the chapter where its DISCOVERY happens ON-PAGE. For a "
+            "PHYSICAL evidence object, reference that object's exact row in heading 20 EVIDENCE "
+            "MAP for the overlapping survival/hiding, finder, discovery-chapter, authentication, "
+            "and custody facts; do not pin a second version here. No convicting evidence may "
+            "simply exist at the moment it is needed: if the climax uses it, an earlier chapter "
+            "must dramatize the finding ON-PAGE. For any falsified COUNT, also pin "
             "the concealment mechanism (how 14 dead became an official 3: which categories — "
             "missing at sea, unrelated landslide, departed migrant workers — absorbed the "
             "difference). For any named culprit, pin the ONE document or act that ties THEM "
@@ -1931,9 +1937,10 @@ async def build_story_bible(
             "and travel mode ONCE, here, and every chapter touching the scene reuses them "
             "verbatim. If no scene spans chapters, write 'none'.\n"
             "20. EVIDENCE MAP — for EVERY physical evidence object (a negative, a tape, a "
-            "letter bundle, an altered report): ONE line each — WHAT it is, WHO created it, "
-            "the ONE place it has been hidden all these years, WHO finds it, in WHICH "
-            "chapter, and each custody move after that. Two objects may NEVER swap hiding "
+            "letter bundle, an altered report): ONE line each in this exact eight-field order — "
+            "IDENTITY (what the object is); CREATOR; CONCEALMENT MECHANISM (WHY/HOW it survived, "
+            "not the falsified-count rule in heading 18); HIDING PLACE; FINDER; DISCOVERY CHAPTER; "
+            "AUTHENTICATOR; CUSTODY MOVES. Two objects may NEVER swap hiding "
             "places, finders, or discovery chapters; if the story holds both a document and "
             "a recording, give each its own line and keep them distinct in every chapter "
             "that touches them. If no evidence objects exist, write 'none'.\n"
