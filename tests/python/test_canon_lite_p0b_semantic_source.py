@@ -113,7 +113,8 @@ def _make_bible_double(*, entities=(), anchors=(), one_time_events=(), text="FAK
     False` — unless entities/anchors/one_time_events are supplied)."""
     async def _fake(topic, outline, *, is_fiction=True, style=None, language="id",
                     manager_model=None, timeout=None, telemetry_sink=None,
-                    extra_negative=None, structured_semantic=False):
+                    extra_negative=None, narrative_grammar_block="",
+                    structured_semantic=False):
         if raise_exc is not None:
             raise raise_exc
         if not structured_semantic:
@@ -543,6 +544,7 @@ def test_best_of_n_pairs_each_candidates_own_envelope_with_its_own_prose(monkeyp
     async def two_candidates(topic, outline, *, is_fiction=True, style=None,
                              language="id", manager_model=None, timeout=None,
                              telemetry_sink=None, extra_negative=None,
+                             narrative_grammar_block="",
                              structured_semantic=False):
         calls["n"] += 1
         i = calls["n"]
@@ -656,7 +658,8 @@ def _double_returning_none_source(text="prose, no fence at all"):
     seam actually has to handle for "extraction produced nothing usable"."""
     async def _fake(topic, outline, *, is_fiction=True, style=None, language="id",
                     manager_model=None, timeout=None, telemetry_sink=None,
-                    extra_negative=None, structured_semantic=False):
+                    extra_negative=None, narrative_grammar_block="",
+                    structured_semantic=False):
         return text if not structured_semantic else (text, None, None)
     return _fake
 
@@ -694,6 +697,7 @@ def test_assist_refuses_cleanly_even_if_build_story_bible_violates_its_own_contr
     async def _lying_double(topic, outline, *, is_fiction=True, style=None,
                             language="id", manager_model=None, timeout=None,
                             telemetry_sink=None, extra_negative=None,
+                            narrative_grammar_block="",
                             structured_semantic=False):
         text = "prose"
         if not structured_semantic:
@@ -736,6 +740,7 @@ def test_a_summary_edit_after_binding_is_detected_and_assist_refuses(monkeypatch
     async def mutating_bible(topic, outline, *, is_fiction=True, style=None,
                              language="id", manager_model=None, timeout=None,
                              telemetry_sink=None, extra_negative=None,
+                             narrative_grammar_block="",
                              structured_semantic=False):
         calls["n"] += 1
         source = css.build_semantic_source_v1(
@@ -773,7 +778,8 @@ def test_off_mode_never_calls_build_story_bible_with_structured_semantic(monkeyp
 
     async def spy(topic, outline, *, is_fiction=True, style=None, language="id",
                   manager_model=None, timeout=None, telemetry_sink=None,
-                  extra_negative=None, structured_semantic=False):
+                  extra_negative=None, narrative_grammar_block="",
+                  structured_semantic=False):
         captured["structured_semantic"] = structured_semantic
         captured["called"] = captured.get("called", 0) + 1
         return "bible text"   # the EXACT pre-P0-B return shape
@@ -1116,7 +1122,8 @@ def test_event_identity_survives_into_the_canon_and_the_qc_projection(monkeypatc
     def _double(desc):
         async def _fake(topic, outline, *, is_fiction=True, style=None, language="id",
                         manager_model=None, timeout=None, telemetry_sink=None,
-                        extra_negative=None, structured_semantic=False):
+                        extra_negative=None, narrative_grammar_block="",
+                        structured_semantic=False):
             if not structured_semantic:
                 return BIBLE
             return BIBLE, css.parse_semantic_source_envelope(
@@ -1151,7 +1158,8 @@ def test_a_surgical_bible_mutation_after_extraction_makes_assist_refuse(monkeypa
     """
     async def _surgical(topic, outline, *, is_fiction=True, style=None, language="id",
                         manager_model=None, timeout=None, telemetry_sink=None,
-                        extra_negative=None, structured_semantic=False):
+                        extra_negative=None, narrative_grammar_block="",
+                        structured_semantic=False):
         original = "ORIGINAL BIBLE TEXT"
         if not structured_semantic:
             return original
@@ -1173,6 +1181,7 @@ def test_a_reroll_without_its_own_envelope_makes_assist_refuse(monkeypatch):
     async def _reroll_lost_envelope(topic, outline, *, is_fiction=True, style=None,
                                     language="id", manager_model=None, timeout=None,
                                     telemetry_sink=None, extra_negative=None,
+                                    narrative_grammar_block="",
                                     structured_semantic=False):
         if not structured_semantic:
             return "REROLLED BIBLE"
@@ -1236,7 +1245,8 @@ def test_shadow_never_requests_the_structured_envelope(monkeypatch):
 
     async def spy(topic, outline, *, is_fiction=True, style=None, language="id",
                   manager_model=None, timeout=None, telemetry_sink=None,
-                  extra_negative=None, structured_semantic=False):
+                  extra_negative=None, narrative_grammar_block="",
+                  structured_semantic=False):
         captured["structured_semantic"] = structured_semantic
         return "bible prose only"
 
@@ -1290,7 +1300,8 @@ def test_nonfiction_never_requests_the_structured_envelope(monkeypatch):
 
     async def spy(topic, outline, *, is_fiction=True, style=None, language="id",
                   manager_model=None, timeout=None, telemetry_sink=None,
-                  extra_negative=None, structured_semantic=False):
+                  extra_negative=None, narrative_grammar_block="",
+                  structured_semantic=False):
         captured["structured_semantic"] = structured_semantic
         return "continuity sheet prose"
 

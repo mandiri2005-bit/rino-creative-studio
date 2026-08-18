@@ -180,7 +180,8 @@ def _candidates(valid_flags, *, registry=None, invalid_kind="bible"):
 
     async def _fake(topic, outline, *, is_fiction=True, style=None, language="id",
                     manager_model=None, timeout=None, telemetry_sink=None,
-                    extra_negative=None, structured_semantic=False):
+                    extra_negative=None, narrative_grammar_block="",
+                    structured_semantic=False):
         calls["n"] += 1
         i = calls["n"]
         text = f"CANDIDATE {i} PROSE"

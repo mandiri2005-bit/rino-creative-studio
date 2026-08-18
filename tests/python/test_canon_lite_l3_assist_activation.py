@@ -63,6 +63,7 @@ OUTSIDER = "t-outsider"
 async def _fake_story_bible_with_semantics(topic, outline, *, is_fiction=True, style=None,
                                            language="id", manager_model=None, timeout=None,
                                            telemetry_sink=None, extra_negative=None,
+                                           narrative_grammar_block="",
                                            structured_semantic=False):
     """P0-B test double for `orchestrator.dynamic.build_story_bible` — see the identical
     double in test_canon_lite_l3_assist_stage1.py for the full rationale. This file's own
