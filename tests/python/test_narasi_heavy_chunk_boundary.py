@@ -41,7 +41,7 @@ def _force_two_chunks(monkeypatch, *, parallel: int) -> tuple[str, list[str]]:
     return book, chunks
 
 
-def _run_reduce(book: str, *, mode: str):
+def _run_reduce(book: str, *, mode: str, authority_text: str = AUTHORITY):
     return asyncio.run(static._polish_reduce(
         book=book,
         topic="A buried negative",
@@ -51,7 +51,7 @@ def _run_reduce(book: str, *, mode: str):
         manager_model="test-model",
         timeout=2,
         telemetry_sink=None,
-        authority_text=AUTHORITY,
+        authority_text=authority_text,
     ))
 
 
@@ -63,6 +63,170 @@ def _read_only_tail(system: str) -> str:
 
 def _headings(text: str) -> tuple[str, ...]:
     return tuple(line for line, _offset in static._polish_heading_records(text))
+
+
+EXPECTED_HEAVY_PROCEDURE = """MANDATORY HEAVY-POLISH PROCEDURE
+(The authoritative Outline and Story Bible remain the factual authority.)
+
+1. FACT AUTHORITY
+Preserve every fact fixed by the Outline and Story Bible. Do not invent plot events or choose a conflicting variant without authority.
+
+2. BOUNDARY INSPECTION
+Treat the final two paragraphs before each chapter heading and the first two paragraphs after it as one editable seam.
+
+3. BRIDGE REPAIR
+If the seam is broken, add at most one or two short paragraphs immediately before the next chapter heading. Show only the necessary cause or decision, location change, and elapsed time.
+
+4. SEAM DEDUPLICATION
+When adding a bridge, remove or compress equivalent transition setup after the heading. Preserve the first unique plot action.
+
+5. EVIDENCE PROVENANCE
+For every recurring evidence object, enforce one origin, hiding place, finder, acquisition event, and custody chain from the Story Bible EVIDENCE MAP. A legal challenge must match the acquisition actually depicted. If authority is silent, preserve the earliest on-page acquisition unless the Outline explicitly says otherwise.
+
+6. HARD PRESERVATION
+Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
+
+7. NO-OP WHEN CLEAN
+If a boundary or evidence chain is already consistent, leave it unchanged."""
+
+
+def test_heavy_instruction_is_one_numbered_procedure_with_separate_output_rule():
+    instruction, role = static._polish_instruction(
+        "heavy", "The sealed ledger", "English"
+    )
+
+    assert role == "synthesize"
+    assert static._HEAVY_POLISH_PROCEDURE == EXPECTED_HEAVY_PROCEDURE
+    assert instruction.count(EXPECTED_HEAVY_PROCEDURE) == 1
+    assert instruction.endswith(
+        "FINAL OUTPUT\nReturn ONLY the edited book in English, no notes."
+    )
+    assert instruction.index(EXPECTED_HEAVY_PROCEDURE) < instruction.index("FINAL OUTPUT")
+    assert "voice and tense" not in instruction
+
+
+def test_whole_book_heavy_repairs_bridge_and_deduplicates_post_heading_setup(monkeypatch):
+    book = (
+        "## Chapter 1: Decision\n\n"
+        "Mira finds the address and weighs the risk. " + "She checks every detail. " * 22
+        + "\n\n## Chapter 2: Vault\n\n"
+        "Without explanation, Mira is suddenly inside the archive. "
+        "Mira decides to cross town, takes the night train, and reaches the archive. "
+        "She opens the first unique locker and photographs its seal. "
+        + "She records the contents carefully. " * 22
+    )
+    repaired = book.replace(
+        "\n\n## Chapter 2: Vault\n\n"
+        "Without explanation, Mira is suddenly inside the archive. "
+        "Mira decides to cross town, takes the night train, and reaches the archive. ",
+        "\n\nMira accepts the risk, takes the night train across town, and reaches the "
+        "archive two hours later.\n\n"
+        "## Chapter 2: Vault\n\n",
+    )
+    calls: list[dict] = []
+
+    async def fake_synthesize(instruction, results, **kwargs):
+        calls.append({"instruction": instruction, "input": results[0]["output"], **kwargs})
+        return {"ok": True, "output": repaired, "telemetry": {}}
+
+    monkeypatch.setattr(static, "synthesize", fake_synthesize)
+    monkeypatch.setattr(static, "max_tokens_for", lambda _model: 100000)
+    polished, ok = _run_reduce(book, mode="heavy")
+
+    assert (ok, len(calls)) == (True, 1)
+    assert polished == repaired
+    assert _headings(polished) == _headings(book)
+    assert "two hours later.\n\n## Chapter 2: Vault" in polished
+    assert "Mira decides to cross town" not in polished
+    assert "She opens the first unique locker" in polished
+    assert EXPECTED_HEAVY_PROCEDURE in calls[0]["instruction"]
+
+
+def test_whole_book_heavy_reconciles_evidence_map_and_legal_challenge(monkeypatch):
+    authority = """AUTHORITATIVE OUTLINE
+The ledger is the recurring physical evidence.
+
+STORY BIBLE EVIDENCE MAP
+Object: red ledger
+Origin: the North Quay accounts office
+Hiding place: archive locker 17
+Finder: Mira
+Acquisition: Mira cuts locker 17's wax seal on-page
+Custody: Mira -> counsel
+Legal challenge: defense disputes the wax seal Mira cut at locker 17"""
+    book = (
+        "## Chapter 1: Ledger\n\n"
+        "Jon says he found the red ledger at Central Station and handed it to counsel. "
+        + "The ledger remains the case's central evidence. " * 28
+        + "\n\n## Chapter 2: Hearing\n\n"
+        "The defense challenges a warrantless seizure by Jon at Central Station. "
+        + "The court examines the acquisition and custody record. " * 28
+    )
+    reconciled = book.replace(
+        "Jon says he found the red ledger at Central Station and handed it to counsel.",
+        "Mira finds the red ledger in archive locker 17, cuts its wax seal, and hands it to counsel.",
+    ).replace(
+        "The defense challenges a warrantless seizure by Jon at Central Station.",
+        "The defense challenges the wax seal Mira cut when acquiring the ledger from locker 17.",
+    )
+    calls: list[dict] = []
+
+    async def fake_synthesize(instruction, results, **kwargs):
+        calls.append({"instruction": instruction, "input": results[0]["output"], **kwargs})
+        return {"ok": True, "output": reconciled, "telemetry": {}}
+
+    monkeypatch.setattr(static, "synthesize", fake_synthesize)
+    monkeypatch.setattr(static, "max_tokens_for", lambda _model: 100000)
+    polished, ok = _run_reduce(book, mode="heavy", authority_text=authority)
+
+    assert (ok, len(calls)) == (True, 1)
+    assert polished == reconciled
+    assert _headings(polished) == _headings(book)
+    assert "Mira finds the red ledger in archive locker 17" in polished
+    assert "wax seal Mira cut when acquiring the ledger from locker 17" in polished
+    assert "Central Station" not in polished
+    assert authority in calls[0]["system"]
+    assert "A legal challenge must match the acquisition actually depicted." in calls[0]["instruction"]
+
+
+def test_whole_book_clean_heavy_pass_is_a_byte_identical_no_op(monkeypatch):
+    book = (
+        "## Chapter 1: Custody\n\nMira logs the sealed ledger before dawn. "
+        + "The custody record remains intact. " * 24
+        + "\n\n## Chapter 2: Hearing\n\nTwo hours later, counsel presents that same ledger. "
+        + "The hearing follows the documented chain. " * 24
+    )
+    calls = 0
+
+    async def fake_synthesize(_instruction, results, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"ok": True, "output": results[0]["output"], "telemetry": {}}
+
+    monkeypatch.setattr(static, "synthesize", fake_synthesize)
+    monkeypatch.setattr(static, "max_tokens_for", lambda _model: 100000)
+    polished, ok = _run_reduce(book, mode="heavy")
+
+    assert (ok, calls) == (True, 1)
+    assert polished == book
+    assert _headings(polished) == _headings(book)
+
+
+def test_light_instruction_bytes_are_unchanged():
+    instruction, role = static._polish_instruction(
+        "light", "The sealed ledger", "English"
+    )
+
+    assert role == "polish"
+    assert instruction == (
+        'You are the editor-in-chief doing a LIGHT final pass of a multi-chapter narrative '
+        'about "The sealed ledger". ONLY smooth the seams between chapters, remove obvious '
+        'cross-chapter repetition, and keep the register consistent. Do NOT rewrite content, '
+        'do NOT change any fact, name, date or number, do NOT shorten the text. Keep every '
+        'chapter-heading line (each begins with `## `) exactly as given — do not remove, rename, '
+        'renumber, translate or move them, and never write a new heading of your own. Return '
+        'ONLY the lightly-edited edited book in English.'
+    )
 
 
 def test_bounded_tail_is_confined_to_the_previous_chunks_final_chapter():

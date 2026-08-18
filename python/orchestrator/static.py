@@ -2495,6 +2495,31 @@ async def narrate_chapters(
 # Shared by narrate_chapters() and the router. A standalone helper so the router
 # can apply the same semantics to any strategy's output.
 # ===========================================================================
+_HEAVY_POLISH_PROCEDURE = """MANDATORY HEAVY-POLISH PROCEDURE
+(The authoritative Outline and Story Bible remain the factual authority.)
+
+1. FACT AUTHORITY
+Preserve every fact fixed by the Outline and Story Bible. Do not invent plot events or choose a conflicting variant without authority.
+
+2. BOUNDARY INSPECTION
+Treat the final two paragraphs before each chapter heading and the first two paragraphs after it as one editable seam.
+
+3. BRIDGE REPAIR
+If the seam is broken, add at most one or two short paragraphs immediately before the next chapter heading. Show only the necessary cause or decision, location change, and elapsed time.
+
+4. SEAM DEDUPLICATION
+When adding a bridge, remove or compress equivalent transition setup after the heading. Preserve the first unique plot action.
+
+5. EVIDENCE PROVENANCE
+For every recurring evidence object, enforce one origin, hiding place, finder, acquisition event, and custody chain from the Story Bible EVIDENCE MAP. A legal challenge must match the acquisition actually depicted. If authority is silent, preserve the earliest on-page acquisition unless the Outline explicitly says otherwise.
+
+6. HARD PRESERVATION
+Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
+
+7. NO-OP WHEN CLEAN
+If a boundary or evidence chain is already consistent, leave it unchanged."""
+
+
 def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool = False):
     """Build (instruction, synthesize-role) for a polish pass. is_chunk swaps 'book'→'section'
     so a chunk pass does not think it is the whole book."""
@@ -2503,22 +2528,11 @@ def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool 
     if mode == "heavy":
         instruction = (
             f"You are the editor-in-chief doing a HEAVY final edit of a {unit} about \"{topic}\". "
-            "Reconcile any contradictions, remove cross-chapter repetition and re-introductions, "
-            "tighten flabby passages, and hold ONE consistent voice and tense throughout. PRESERVE "
-            "every authoritative fact, name, date, number and quote. When two draft variants conflict, "
-            "rewrite them to the variant fixed by the authoritative Outline or Story Bible EVIDENCE "
-            "MAP; do not choose between variants unless that authority decides the fact. "
-            "Inspect every chapter boundary. If the transition is broken, add at most one or two "
-            "short paragraphs immediately before the next chapter heading, so the next chapter's "
-            "opening does not feel like a jump. Show the necessary cause or decision, location "
-            "change, and elapsed time. Use only facts established by the authoritative Outline "
-            "and Story Bible. Do not invent plot events, repeat setup, move beats, or "
-            "alter/remove chapter headings. If the transition is already clear, leave it "
-            "unchanged. Keep every "
-            "chapter-heading "
-            "line (each begins with `## `) exactly as given — do not remove, rename, renumber, "
-            "translate or move them, and never write a new heading of your own. Make the narration "
-            f"read as ONE seamless, continuous flow. Return ONLY the {ret} in {language}, no notes.")
+            "Reconcile contradictions, remove cross-chapter repetition and re-introductions, and "
+            "tighten flabby passages.\n\n"
+            f"{_HEAVY_POLISH_PROCEDURE}\n\n"
+            "FINAL OUTPUT\n"
+            f"Return ONLY the {ret} in {language}, no notes.")
         return instruction, "synthesize"
     instruction = (
         f"You are the editor-in-chief doing a LIGHT final pass of a {unit} about \"{topic}\". "

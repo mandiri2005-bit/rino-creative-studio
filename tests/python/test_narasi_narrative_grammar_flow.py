@@ -290,9 +290,13 @@ def test_heavy_arbitrates_against_authority_instead_of_preserving_conflicts():
         "PRESERVE every concrete fact, name, date, number and quote exactly"
         not in instruction
     )
-    assert "PRESERVE every authoritative fact, name, date, number and quote" in instruction
-    assert "authoritative Outline or Story Bible EVIDENCE MAP" in instruction
-    assert "do not choose between variants unless that authority decides the fact" in instruction
+    assert "1. FACT AUTHORITY" in instruction
+    assert "Preserve every fact fixed by the Outline and Story Bible" in instruction
+    assert "choose a conflicting variant without authority" in instruction
+    assert (
+        "The authoritative Outline and Story Bible remain the factual authority"
+        in instruction
+    )
 
 
 def test_heavy_repairs_broken_chapter_boundaries_within_authority():
@@ -308,32 +312,35 @@ def test_heavy_repairs_broken_chapter_boundaries_within_authority():
     )
 
     assert role == "synthesize"
-    assert "Inspect every chapter boundary" in instruction
+    assert "2. BOUNDARY INSPECTION" in instruction
+    assert (
+        "Treat the final two paragraphs before each chapter heading and the first "
+        "two paragraphs after it as one editable seam"
+    ) in instruction
+    assert "3. BRIDGE REPAIR" in instruction
     assert (
         "add at most one or two short paragraphs immediately before the next "
         "chapter heading"
     ) in instruction
-    assert "the necessary cause or decision, location change, and elapsed time" in instruction
+    assert "only the necessary cause or decision, location change, and elapsed time" in instruction
+    assert "4. SEAM DEDUPLICATION" in instruction
+    assert "remove or compress equivalent transition setup after the heading" in instruction
     assert (
-        "Use only facts established by the authoritative Outline and Story Bible"
-        in instruction
-    )
-    assert (
-        "Do not invent plot events, repeat setup, move beats, or alter/remove "
-        "chapter headings"
+        "Do not move beats, repeat setup, create new scenes, or alter, remove, rename, "
+        "renumber, translate, or move any chapter heading"
     ) in instruction
-    assert "If the transition is already clear, leave it unchanged" in instruction
+    assert "If a boundary or evidence chain is already consistent, leave it unchanged" in instruction
 
 
 def test_heavy_boundary_repair_never_loosens_the_heading_contract():
     """Adding paragraphs must not license touching a `## ` heading line."""
     instruction, _ = static._polish_instruction("heavy", "A buried negative", "English")
 
+    assert "6. HARD PRESERVATION" in instruction
     assert (
-        "Keep every chapter-heading line (each begins with `## `) exactly as given "
-        "— do not remove, rename, renumber, translate or move them, and never "
-        "write a new heading of your own."
-    ) in instruction
+        "alter, remove, rename, renumber, translate, or move any chapter heading"
+        in instruction
+    )
 
 
 def test_light_polish_gains_no_boundary_repair_licence():
@@ -343,8 +350,8 @@ def test_light_polish_gains_no_boundary_repair_licence():
     )
 
     assert role == "polish"
-    assert "Inspect every chapter boundary" not in instruction
-    assert "add at most one or two short paragraphs" not in instruction
+    assert "MANDATORY HEAVY-POLISH PROCEDURE" not in instruction
+    assert "BRIDGE REPAIR" not in instruction
     assert "do NOT shorten the text" in instruction
     assert "Do NOT rewrite content" in instruction
 
@@ -361,6 +368,6 @@ def test_chunked_heavy_carries_the_same_boundary_rule():
     )
 
     assert role == "synthesize"
-    assert "Inspect every chapter boundary" in chunked
+    assert static._HEAVY_POLISH_PROCEDURE in chunked
     assert "section of a multi-chapter narrative" in chunked
-    assert "Return ONLY the edited section" in chunked
+    assert "FINAL OUTPUT\nReturn ONLY the edited section" in chunked
