@@ -2499,25 +2499,31 @@ _HEAVY_POLISH_PROCEDURE = """MANDATORY HEAVY-POLISH PROCEDURE
 (The authoritative Outline and Story Bible remain the factual authority.)
 
 1. FACT AUTHORITY
-Preserve every fact fixed by the Outline and Story Bible. Do not invent plot events or choose a conflicting variant without authority.
+Preserve every fact fixed by the Outline and Story Bible. Do not invent events, claims, or conflicting variants without authority.
 
-2. BOUNDARY INSPECTION
-Treat the final two paragraphs before each chapter heading and the first two paragraphs after it as one editable seam.
+2. BOUNDARY CONTINUITY
+Treat the final two paragraphs before each chapter heading and the first two paragraphs after it as one editable seam. A boundary is broken when the next chapter depends on an unstated causal, temporal, spatial, or argumentative link.
 
 3. BRIDGE REPAIR
-If the seam is broken, add at most one or two short paragraphs immediately before the next chapter heading. Show only the necessary cause or decision, location change, and elapsed time.
+If a boundary is broken, add at most one or two short paragraphs immediately before the next chapter heading. Add only the minimum information needed to establish the missing link.
 
 4. SEAM DEDUPLICATION
-When adding a bridge, remove or compress equivalent transition setup after the heading. Preserve the first unique plot action.
+When adding a bridge, remove or compress equivalent transition setup after the heading. Preserve the first unique event, action, claim, or argument.
 
-5. EVIDENCE PROVENANCE
-For every recurring evidence object, enforce one origin, hiding place, finder, acquisition event, and custody chain from the Story Bible EVIDENCE MAP. A legal challenge must match the acquisition actually depicted. If authority is silent, preserve the earliest on-page acquisition unless the Outline explicitly says otherwise.
+5. ROLE AND PROVENANCE CONSISTENCY
+For every recurring person, group, institution, object, or source, preserve the identity and causal role fixed by the Outline and Story Bible. Never swap roles across chapters.
+For every recurring evidence item, document, artifact, dataset, claim, or source, keep its discovery, acquisition, transfer, and use in chronological order. Never show it as possessed, received, or used before the established transition.
+If no role or provenance chain applies, make no change.
 
 6. HARD PRESERVATION
-Preserve every unique plot event, action beat, scene outcome, and evidentiary fact. Retain at least 80% of the input word count. Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
+Preserve every unique plot event, action beat, scene outcome, argument, and authoritative fact. Retain at least 80% of the input word count.
+Do not move beats, create new scenes or claims, or alter, remove, rename, renumber, translate, or move any chapter heading.
 
-7. NO-OP WHEN CLEAN
-If a boundary or evidence chain is already consistent, leave it unchanged."""
+7. MECHANICAL CLEANUP
+Repair sentence fragments, fused clauses, and missing connectors created or exposed at an edited seam. Do not rewrite otherwise clean prose.
+
+8. NO-OP WHEN CLEAN
+If a boundary, role, or provenance chain is already clear and consistent, leave it unchanged."""
 
 
 def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool = False):

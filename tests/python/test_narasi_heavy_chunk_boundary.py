@@ -69,25 +69,31 @@ EXPECTED_HEAVY_PROCEDURE = """MANDATORY HEAVY-POLISH PROCEDURE
 (The authoritative Outline and Story Bible remain the factual authority.)
 
 1. FACT AUTHORITY
-Preserve every fact fixed by the Outline and Story Bible. Do not invent plot events or choose a conflicting variant without authority.
+Preserve every fact fixed by the Outline and Story Bible. Do not invent events, claims, or conflicting variants without authority.
 
-2. BOUNDARY INSPECTION
-Treat the final two paragraphs before each chapter heading and the first two paragraphs after it as one editable seam.
+2. BOUNDARY CONTINUITY
+Treat the final two paragraphs before each chapter heading and the first two paragraphs after it as one editable seam. A boundary is broken when the next chapter depends on an unstated causal, temporal, spatial, or argumentative link.
 
 3. BRIDGE REPAIR
-If the seam is broken, add at most one or two short paragraphs immediately before the next chapter heading. Show only the necessary cause or decision, location change, and elapsed time.
+If a boundary is broken, add at most one or two short paragraphs immediately before the next chapter heading. Add only the minimum information needed to establish the missing link.
 
 4. SEAM DEDUPLICATION
-When adding a bridge, remove or compress equivalent transition setup after the heading. Preserve the first unique plot action.
+When adding a bridge, remove or compress equivalent transition setup after the heading. Preserve the first unique event, action, claim, or argument.
 
-5. EVIDENCE PROVENANCE
-For every recurring evidence object, enforce one origin, hiding place, finder, acquisition event, and custody chain from the Story Bible EVIDENCE MAP. A legal challenge must match the acquisition actually depicted. If authority is silent, preserve the earliest on-page acquisition unless the Outline explicitly says otherwise.
+5. ROLE AND PROVENANCE CONSISTENCY
+For every recurring person, group, institution, object, or source, preserve the identity and causal role fixed by the Outline and Story Bible. Never swap roles across chapters.
+For every recurring evidence item, document, artifact, dataset, claim, or source, keep its discovery, acquisition, transfer, and use in chronological order. Never show it as possessed, received, or used before the established transition.
+If no role or provenance chain applies, make no change.
 
 6. HARD PRESERVATION
-Preserve every unique plot event, action beat, scene outcome, and evidentiary fact. Retain at least 80% of the input word count. Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
+Preserve every unique plot event, action beat, scene outcome, argument, and authoritative fact. Retain at least 80% of the input word count.
+Do not move beats, create new scenes or claims, or alter, remove, rename, renumber, translate, or move any chapter heading.
 
-7. NO-OP WHEN CLEAN
-If a boundary or evidence chain is already consistent, leave it unchanged."""
+7. MECHANICAL CLEANUP
+Repair sentence fragments, fused clauses, and missing connectors created or exposed at an edited seam. Do not rewrite otherwise clean prose.
+
+8. NO-OP WHEN CLEAN
+If a boundary, role, or provenance chain is already clear and consistent, leave it unchanged."""
 
 
 def test_heavy_instruction_is_one_numbered_procedure_with_separate_output_rule():
@@ -102,13 +108,30 @@ def test_heavy_instruction_is_one_numbered_procedure_with_separate_output_rule()
         "FINAL OUTPUT\nReturn ONLY the edited book in English, no notes."
     )
     assert instruction.index(EXPECTED_HEAVY_PROCEDURE) < instruction.index("FINAL OUTPUT")
+    assert instruction.index("2. BOUNDARY CONTINUITY") < instruction.index("3. BRIDGE REPAIR")
+    assert "dataset, claim, or source" in instruction
+    assert "If no role or provenance chain applies, make no change" in instruction
+    assert (
+        "Repair sentence fragments, fused clauses, and missing connectors created or "
+        "exposed at an edited seam"
+    ) in instruction
+    assert "Do not rewrite otherwise clean prose" in instruction
     assert "voice and tense" not in instruction
+    assert "grammatical person" not in instruction
+    assert "tense" not in instruction
     assert "tighten flabby passages" not in instruction
     assert (
-        "Preserve every unique plot event, action beat, scene outcome, and evidentiary fact"
+        "Preserve every unique plot event, action beat, scene outcome, argument, and "
+        "authoritative fact"
         in instruction
     )
     assert "Retain at least 80% of the input word count" in instruction
+    for fiction_only_term in ("culprit", "victim", "fall_taker"):
+        assert fiction_only_term not in instruction.casefold()
+    for retired_specific_term in (
+        "evidence map", "legal challenge", "hiding place", "finder", "custody chain"
+    ):
+        assert retired_specific_term not in instruction.casefold()
 
 
 def test_whole_book_heavy_repairs_bridge_and_deduplicates_post_heading_setup(monkeypatch):
@@ -148,32 +171,30 @@ def test_whole_book_heavy_repairs_bridge_and_deduplicates_post_heading_setup(mon
     assert EXPECTED_HEAVY_PROCEDURE in calls[0]["instruction"]
 
 
-def test_whole_book_heavy_reconciles_evidence_map_and_legal_challenge(monkeypatch):
+def test_whole_book_heavy_reconciles_generic_role_and_provenance(monkeypatch):
     authority = """AUTHORITATIVE OUTLINE
-The ledger is the recurring physical evidence.
+Mira is the analyst. Director Jon leads the North Quay Observatory. The Review Panel publishes only after Mira transfers the source.
 
-STORY BIBLE EVIDENCE MAP
-Object: red ledger
-Origin: the North Quay accounts office
-Hiding place: archive locker 17
-Finder: Mira
-Acquisition: Mira cuts locker 17's wax seal on-page
-Custody: Mira -> counsel
-Legal challenge: defense disputes the wax seal Mira cut at locker 17"""
+STORY BIBLE ROLE AND PROVENANCE MAP
+Dataset: tide-set-4
+Discovery: analyst Mira locates the raw dataset
+Acquisition: Mira downloads tide-set-4 from the Observatory archive
+Transfer: Mira -> Review Panel
+Use: the Review Panel publishes its claim after receiving the dataset"""
     book = (
-        "## Chapter 1: Ledger\n\n"
-        "Jon says he found the red ledger at Central Station and handed it to counsel. "
-        + "The ledger remains the case's central evidence. " * 28
-        + "\n\n## Chapter 2: Hearing\n\n"
-        "The defense challenges a warrantless seizure by Jon at Central Station. "
-        + "The court examines the acquisition and custody record. " * 28
+        "## Chapter 1: Dataset\n\n"
+        "The Review Panel discovers tide-set-4 and publishes its claim before Mira receives the source. "
+        + "The dataset remains central to the report. " * 28
+        + "\n\n## Chapter 2: Publication\n\n"
+        "Director Jon says he served as the analyst who acquired tide-set-4. "
+        + "The publication cites the dataset and its documented transfer. " * 28
     )
     reconciled = book.replace(
-        "Jon says he found the red ledger at Central Station and handed it to counsel.",
-        "Mira finds the red ledger in archive locker 17, cuts its wax seal, and hands it to counsel.",
+        "The Review Panel discovers tide-set-4 and publishes its claim before Mira receives the source.",
+        "Analyst Mira discovers and acquires tide-set-4, then transfers the source to the Review Panel before it publishes its claim.",
     ).replace(
-        "The defense challenges a warrantless seizure by Jon at Central Station.",
-        "The defense challenges the wax seal Mira cut when acquiring the ledger from locker 17.",
+        "Director Jon says he served as the analyst who acquired tide-set-4.",
+        "Director Jon presents the published claim without taking Mira's analyst role.",
     )
     calls: list[dict] = []
 
@@ -188,11 +209,13 @@ Legal challenge: defense disputes the wax seal Mira cut at locker 17"""
     assert (ok, len(calls)) == (True, 1)
     assert polished == reconciled
     assert _headings(polished) == _headings(book)
-    assert "Mira finds the red ledger in archive locker 17" in polished
-    assert "wax seal Mira cut when acquiring the ledger from locker 17" in polished
-    assert "Central Station" not in polished
+    assert "Analyst Mira discovers and acquires tide-set-4" in polished
+    assert "transfers the source to the Review Panel before it publishes" in polished
+    assert "without taking Mira's analyst role" in polished
+    assert "before Mira receives the source" not in polished
     assert authority in calls[0]["system"]
-    assert "A legal challenge must match the acquisition actually depicted." in calls[0]["instruction"]
+    assert "Never swap roles across chapters." in calls[0]["instruction"]
+    assert "discovery, acquisition, transfer, and use in chronological order" in calls[0]["instruction"]
 
 
 def test_whole_book_clean_heavy_pass_is_a_byte_identical_no_op(monkeypatch):

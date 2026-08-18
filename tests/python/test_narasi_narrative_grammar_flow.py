@@ -292,7 +292,7 @@ def test_heavy_arbitrates_against_authority_instead_of_preserving_conflicts():
     )
     assert "1. FACT AUTHORITY" in instruction
     assert "Preserve every fact fixed by the Outline and Story Bible" in instruction
-    assert "choose a conflicting variant without authority" in instruction
+    assert "Do not invent events, claims, or conflicting variants without authority" in instruction
     assert (
         "The authoritative Outline and Story Bible remain the factual authority"
         in instruction
@@ -302,34 +302,37 @@ def test_heavy_arbitrates_against_authority_instead_of_preserving_conflicts():
 def test_heavy_repairs_broken_chapter_boundaries_within_authority():
     """HEAVY may bridge a broken chapter transition, but only from established facts.
 
-    The bridge is a REPAIR, not an invention: the rule names what a bridge must
-    show (cause/decision, location change, elapsed time), pins its source to the
-    Outline and Story Bible, and caps it at one or two short paragraphs so a
-    seam fix cannot grow into a new scene.
+    The bridge is a REPAIR, not an invention: the rule defines a broken seam,
+    limits the response to the missing causal/temporal/spatial/argumentative link,
+    and caps it at one or two short paragraphs so it cannot grow into a new scene.
     """
     instruction, role = static._polish_instruction(
         "heavy", "A buried negative", "English"
     )
 
     assert role == "synthesize"
-    assert "2. BOUNDARY INSPECTION" in instruction
+    assert "2. BOUNDARY CONTINUITY" in instruction
     assert (
         "Treat the final two paragraphs before each chapter heading and the first "
         "two paragraphs after it as one editable seam"
     ) in instruction
+    assert "unstated causal, temporal, spatial, or argumentative link" in instruction
     assert "3. BRIDGE REPAIR" in instruction
     assert (
         "add at most one or two short paragraphs immediately before the next "
         "chapter heading"
     ) in instruction
-    assert "only the necessary cause or decision, location change, and elapsed time" in instruction
+    assert "only the minimum information needed to establish the missing link" in instruction
     assert "4. SEAM DEDUPLICATION" in instruction
     assert "remove or compress equivalent transition setup after the heading" in instruction
     assert (
-        "Do not move beats, repeat setup, create new scenes, or alter, remove, rename, "
+        "Do not move beats, create new scenes or claims, or alter, remove, rename, "
         "renumber, translate, or move any chapter heading"
     ) in instruction
-    assert "If a boundary or evidence chain is already consistent, leave it unchanged" in instruction
+    assert (
+        "If a boundary, role, or provenance chain is already clear and consistent, "
+        "leave it unchanged"
+    ) in instruction
 
 
 def test_heavy_boundary_repair_never_loosens_the_heading_contract():
