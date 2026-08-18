@@ -84,7 +84,7 @@ When adding a bridge, remove or compress equivalent transition setup after the h
 For every recurring evidence object, enforce one origin, hiding place, finder, acquisition event, and custody chain from the Story Bible EVIDENCE MAP. A legal challenge must match the acquisition actually depicted. If authority is silent, preserve the earliest on-page acquisition unless the Outline explicitly says otherwise.
 
 6. HARD PRESERVATION
-Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
+Preserve every unique plot event, action beat, scene outcome, and evidentiary fact. Retain at least 80% of the input word count. Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
 
 7. NO-OP WHEN CLEAN
 If a boundary or evidence chain is already consistent, leave it unchanged."""
@@ -103,6 +103,12 @@ def test_heavy_instruction_is_one_numbered_procedure_with_separate_output_rule()
     )
     assert instruction.index(EXPECTED_HEAVY_PROCEDURE) < instruction.index("FINAL OUTPUT")
     assert "voice and tense" not in instruction
+    assert "tighten flabby passages" not in instruction
+    assert (
+        "Preserve every unique plot event, action beat, scene outcome, and evidentiary fact"
+        in instruction
+    )
+    assert "Retain at least 80% of the input word count" in instruction
 
 
 def test_whole_book_heavy_repairs_bridge_and_deduplicates_post_heading_setup(monkeypatch):
@@ -227,6 +233,141 @@ def test_light_instruction_bytes_are_unchanged():
         'renumber, translate or move them, and never write a new heading of your own. Return '
         'ONLY the lightly-edited edited book in English.'
     )
+
+
+def _chapter_with_word_count(heading: str, word_count: int) -> str:
+    body_words = word_count - len(heading.split())
+    assert body_words >= 1
+    body = " ".join(
+        [f"kept{i}" for i in range(body_words - 1)] + ["end."]
+    )
+    chapter = f"{heading}\n\n{body}"
+    assert len(chapter.split()) == word_count
+    return chapter
+
+
+def _retained_candidate(text: str, word_count: int) -> str:
+    headings = _headings(text)
+    assert len(headings) == 1
+    return _chapter_with_word_count(headings[0], word_count)
+
+
+def test_whole_book_heavy_rejects_79_percent_and_accepts_exactly_80(monkeypatch):
+    book = _chapter_with_word_count("## Chapter 1: Retention", 100)
+    candidates = [
+        _retained_candidate(book, 79),
+        _retained_candidate(book, 80),
+    ]
+    calls = 0
+
+    async def fake_synthesize(_instruction, _results, **_kwargs):
+        nonlocal calls
+        output = candidates[calls]
+        calls += 1
+        return {"ok": True, "output": output, "telemetry": {}}
+
+    monkeypatch.setattr(static, "synthesize", fake_synthesize)
+    monkeypatch.setattr(static, "max_tokens_for", lambda _model: 100000)
+
+    rejected, rejected_ok = _run_reduce(book, mode="heavy")
+    accepted, accepted_ok = _run_reduce(book, mode="heavy")
+
+    assert (rejected, rejected_ok) == (book, False)
+    assert (accepted, accepted_ok) == (candidates[1], True)
+    assert calls == 2
+
+
+def test_chunked_heavy_applies_80_percent_to_each_editable_chunk(monkeypatch):
+    first = _chapter_with_word_count("## Chapter 1: First", 100)
+    second = _chapter_with_word_count("## Chapter 2: Second", 100)
+    book = f"{first}\n\n{second}"
+    monkeypatch.setattr(static, "max_tokens_for", lambda _model: 150)
+    monkeypatch.setenv("NARASI_POLISH_CHUNK", "1")
+    monkeypatch.setenv("NARASI_POLISH_CHUNK_WORDS", "90")
+    monkeypatch.setenv("NARASI_POLISH_MAX_WORDS", "5000")
+    monkeypatch.setenv("NARASI_POLISH_BIG_MODEL", "")
+    chunks = static._split_into_chunks(book, 90)
+    assert chunks == [first, second]
+    calls = 0
+
+    async def fake_synthesize(_instruction, results, **_kwargs):
+        nonlocal calls
+        current = results[0]["output"]
+        calls += 1
+        if calls == 1:
+            output = _retained_candidate(current, 79)
+        elif calls == 3:
+            output = _retained_candidate(current, 80)
+        else:
+            output = current
+        return {"ok": True, "output": output, "telemetry": {}}
+
+    monkeypatch.setattr(static, "synthesize", fake_synthesize)
+
+    rejected, rejected_ok = _run_reduce(book, mode="heavy")
+    accepted, accepted_ok = _run_reduce(book, mode="heavy")
+
+    assert rejected == book
+    assert rejected_ok is True  # chunk 2 is a successful no-op; chunk 1 was discarded
+    assert accepted == f"{_retained_candidate(first, 80)}\n\n{second}"
+    assert accepted_ok is True
+    assert calls == 4
+
+
+def test_chunked_heavy_final_rejoin_rejects_79_percent_and_accepts_80(monkeypatch):
+    first = _chapter_with_word_count("## Chapter 1: First", 100)
+    second = _chapter_with_word_count("## Chapter 2: Second", 100)
+    book = f"{first}\n\n{second}"
+    monkeypatch.setattr(static, "max_tokens_for", lambda _model: 150)
+    monkeypatch.setenv("NARASI_POLISH_CHUNK", "1")
+    monkeypatch.setenv("NARASI_POLISH_CHUNK_WORDS", "90")
+    monkeypatch.setenv("NARASI_POLISH_MAX_WORDS", "5000")
+    monkeypatch.setenv("NARASI_POLISH_BIG_MODEL", "")
+    target = 79
+    calls = 0
+
+    async def fake_polish_one(text, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _retained_candidate(text, target), True
+
+    monkeypatch.setattr(static, "_polish_one", fake_polish_one)
+
+    rejected, rejected_ok = _run_reduce(book, mode="heavy")
+    target = 80
+    accepted, accepted_ok = _run_reduce(book, mode="heavy")
+
+    assert (rejected, rejected_ok) == (book, False)
+    assert accepted == (
+        f"{_retained_candidate(first, 80)}\n\n{_retained_candidate(second, 80)}"
+    )
+    assert accepted_ok is True
+    assert calls == 4
+
+
+def test_light_retains_legacy_75_percent_acceptance_floor(monkeypatch):
+    book = _chapter_with_word_count("## Chapter 1: Retention", 100)
+    candidates = [
+        _retained_candidate(book, 74),
+        _retained_candidate(book, 75),
+    ]
+    calls = 0
+
+    async def fake_synthesize(_instruction, _results, **_kwargs):
+        nonlocal calls
+        output = candidates[calls]
+        calls += 1
+        return {"ok": True, "output": output, "telemetry": {}}
+
+    monkeypatch.setattr(static, "synthesize", fake_synthesize)
+    monkeypatch.setattr(static, "max_tokens_for", lambda _model: 100000)
+
+    rejected, rejected_ok = _run_reduce(book, mode="light")
+    accepted, accepted_ok = _run_reduce(book, mode="light")
+
+    assert (rejected, rejected_ok) == (book, False)
+    assert (accepted, accepted_ok) == (candidates[1], True)
+    assert calls == 2
 
 
 def test_bounded_tail_is_confined_to_the_previous_chunks_final_chapter():
@@ -393,8 +534,8 @@ def test_bridge_prefix_cannot_mask_editable_chunk_truncation(monkeypatch):
         if calls == 2:
             heading = "## Chapter 2: Consequence"
             bridge = " ".join(f"bridge{i}" for i in range(150)) + "."
-            # Total words clear 75% only because of the bridge; the editable
-            # manuscript after its unchanged heading retains far less than 75%.
+            # Total words clear the retention floor only because of the bridge;
+            # the editable manuscript after its unchanged heading is far below it.
             short_body = " ".join(current.split()[4:104]) + " truncated."
             current = f"{bridge}\n\n{heading}\n\n{short_body}"
         return {"ok": True, "output": current, "telemetry": {}}

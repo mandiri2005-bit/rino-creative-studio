@@ -2514,7 +2514,7 @@ When adding a bridge, remove or compress equivalent transition setup after the h
 For every recurring evidence object, enforce one origin, hiding place, finder, acquisition event, and custody chain from the Story Bible EVIDENCE MAP. A legal challenge must match the acquisition actually depicted. If authority is silent, preserve the earliest on-page acquisition unless the Outline explicitly says otherwise.
 
 6. HARD PRESERVATION
-Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
+Preserve every unique plot event, action beat, scene outcome, and evidentiary fact. Retain at least 80% of the input word count. Do not move beats, repeat setup, create new scenes, or alter, remove, rename, renumber, translate, or move any chapter heading.
 
 7. NO-OP WHEN CLEAN
 If a boundary or evidence chain is already consistent, leave it unchanged."""
@@ -2528,8 +2528,7 @@ def _polish_instruction(mode: str, topic: str, language: str, *, is_chunk: bool 
     if mode == "heavy":
         instruction = (
             f"You are the editor-in-chief doing a HEAVY final edit of a {unit} about \"{topic}\". "
-            "Reconcile contradictions, remove cross-chapter repetition and re-introductions, and "
-            "tighten flabby passages.\n\n"
+            "Reconcile contradictions and remove cross-chapter repetition and re-introductions.\n\n"
             f"{_HEAVY_POLISH_PROCEDURE}\n\n"
             "FINAL OUTPUT\n"
             f"Return ONLY the {ret} in {language}, no notes.")
@@ -2751,16 +2750,24 @@ _HEAVY_INCOMING_SEAM_INSTRUCTION = (
 )
 
 
+def _polish_retention_floor(input_words: int, min_retained_percent: int) -> int:
+    """Return the accepted-output floor without changing legacy LIGHT rounding."""
+    if min_retained_percent == 75:
+        return int(input_words * 0.75)
+    return (input_words * min_retained_percent + 99) // 100
+
+
 async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink, task_id,
                       authority_text: str = "", previous_chapter_tail: str = "",
-                      guard_heavy_chunk: bool = False):
+                      guard_heavy_chunk: bool = False, min_retained_percent: int = 75):
     """Polish ONE blob (whole book or a chunk) via synthesize. Returns (out, ok). Post-
-    truncation guard (>=75% words) keeps the original on a cut/degraded pass. Post-bloat guard
-    (<=135% words) does the SAME for the opposite failure: neither a "light" (preserve length)
-    nor a "heavy" (same-length reconciling edit) polish instruction should legitimately double a
-    chunk's length — a materially LONGER output is exactly as anomalous as a shorter one and was
-    previously accepted unconditionally. narasi round-16 postmortem (job nny3va3j): a long-input
-    polish chunk degenerated on a long-context failure mode (the instruction requires preserving
+    truncation guard (legacy LIGHT >=75%; HEAVY >=80%) keeps the original on a cut/degraded pass.
+    Post-bloat guard (<=135% words) does the SAME for the opposite failure: neither a "light"
+    (preserve length) nor a "heavy" (same-length reconciling edit) polish instruction should
+    legitimately double a chunk's length — a materially LONGER output is exactly as anomalous as
+    a shorter one and was previously accepted unconditionally. narasi round-16 postmortem (job
+    nny3va3j): a long-input polish chunk degenerated on a long-context failure mode (the
+    instruction requires preserving
     every "## Chapter N" heading exactly, and the model echoed/re-derived the section instead of
     only editing it), producing one completion with each "## Chapter N" heading TWICE — silently
     accepted, landing as a 14K-word divergent duplicate of Ch1-4 prepended to the real book.
@@ -2798,7 +2805,7 @@ async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink
                 return text, False
         _in_w, _out_w = len(text.split()), len(out.split())
         # A bridge is additive seam repair, not replacement manuscript. Exclude it from
-        # the 75% retention numerator so a large allowed prefix cannot mask a truncated
+        # the retention numerator so a large allowed prefix cannot mask a truncated
         # editable chunk. Keep the 135% ceiling on the COMPLETE output so the bridge gets
         # no free bloat allowance either.
         _retained_w = _out_w
@@ -2806,9 +2813,15 @@ async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink
             _records = _polish_heading_records(out)
             if _records:
                 _retained_w = len(out[_records[0][1]:].split())
-        if _retained_w < int(_in_w * 0.75):
-            log.warning("_polish_reduce: %s output %d words < 75%% of %d — discarding (truncation guard)",
-                        task_id, _retained_w, _in_w)
+        # Preserve the legacy LIGHT rounding exactly. HEAVY uses a firm minimum:
+        # ceiling(input * 80%) means each accepted integer word count is >=80%, while
+        # an exact 80% remains admissible.
+        _minimum_retained_w = _polish_retention_floor(
+            _in_w, min_retained_percent
+        )
+        if _retained_w < _minimum_retained_w:
+            log.warning("_polish_reduce: %s output %d words < %d%% of %d — discarding (truncation guard)",
+                        task_id, _retained_w, min_retained_percent, _in_w)
             return text, False
         if _out_w > int(_in_w * 1.35):
             log.warning("_polish_reduce: %s output %d words > 135%% of %d — discarding (bloat/duplication guard)",
@@ -2848,12 +2861,14 @@ async def _polish_reduce(
     model's single-call OUTPUT ceiling, CHUNK it — split by chapter into <=NARASI_POLISH_CHUNK_WORDS
     groups, polish each, rejoin — instead of skipping, so a long book (up to NARASI_POLISH_MAX_WORDS,
     default the 40k generation cap) still gets a full pass. Cross-chunk boundaries are always
-    chapter breaks. Each chunk has its own >=75%-word truncation guard. Chunked HEAVY runs
-    dependency-serial so each call can inspect the accepted preceding tail; this makes no extra
-    provider calls but can increase latency. LIGHT keeps its existing parallel option. Never raises."""
+    chapter breaks. Each chunk has its own retention guard (HEAVY >=80%; LIGHT's legacy >=75%).
+    Chunked HEAVY runs dependency-serial so each call can inspect the accepted preceding tail;
+    this makes no extra provider calls but can increase latency. LIGHT keeps its existing
+    parallel option. Never raises."""
     mode = (polish or "light").strip().lower()
     if mode == "none" or not book.strip():
         return book, False
+    min_retained_percent = 80 if mode == "heavy" else 75
     if any_failures:
         log.info("_polish_reduce: skipping polish — book has failed-chapter placeholders")
         return book, False
@@ -2877,7 +2892,8 @@ async def _polish_reduce(
     if (not _ceil) or _need <= int(_ceil * 0.95):
         return await _polish_one(book, instruction=instruction, role=role, model=manager_model,
                                  timeout=timeout, telemetry_sink=telemetry_sink,
-                                 task_id=f"polish:{mode}", authority_text=authority_text)
+                                 task_id=f"polish:{mode}", authority_text=authority_text,
+                                 min_retained_percent=min_retained_percent)
 
     # Too big for one call → CHUNK by chapter (default on; NARASI_POLISH_CHUNK=0 disables).
     if str(os.environ.get("NARASI_POLISH_CHUNK", "1")).strip().lower() not in ("0", "false", "no", "off"):
@@ -2924,6 +2940,7 @@ async def _polish_reduce(
                         authority_text=authority_text,
                         previous_chapter_tail=previous_tail,
                         guard_heavy_chunk=True,
+                        min_retained_percent=min_retained_percent,
                     )
                     polished.append(_o)
                     any_ok = any_ok or _ok
@@ -2935,7 +2952,8 @@ async def _polish_reduce(
                         return await _polish_one(_ch, instruction=c_instr, role=c_role, model=manager_model,
                                                  timeout=timeout, telemetry_sink=telemetry_sink,
                                                  task_id=f"polish:{mode}:chunk{_i + 1}/{len(chunks)}",
-                                                 authority_text=authority_text)
+                                                 authority_text=authority_text,
+                                                 min_retained_percent=min_retained_percent)
 
                 for _o, _ok in await asyncio.gather(*[_polish_chunk(i, ch) for i, ch in enumerate(chunks)]):
                     polished.append(_o)
@@ -2945,19 +2963,22 @@ async def _polish_reduce(
                     _o, _ok = await _polish_one(ch, instruction=c_instr, role=c_role, model=manager_model,
                                                 timeout=timeout, telemetry_sink=telemetry_sink,
                                                 task_id=f"polish:{mode}:chunk{i + 1}/{len(chunks)}",
-                                                authority_text=authority_text)
+                                                authority_text=authority_text,
+                                                min_retained_percent=min_retained_percent)
                     polished.append(_o)
                     any_ok = any_ok or _ok
             rejoined = "\n\n".join(polished)
-            # Align with the per-chunk 75%/135% guards in _polish_one: heavy mode legitimately
-            # compresses, so a rejoin in [75%,85%) is real editing, not truncation — an 85%
-            # floor would nuke a valid heavy polish that every chunk already accepted. The
-            # upper bound is defense-in-depth (round-16 postmortem): each chunk is already
-            # capped individually, so this should be structurally unreachable, but mirrors the
-            # same symmetry in case a future change bypasses _polish_one's own check.
+            # Align with the per-chunk retention/135% guards in _polish_one. The upper bound
+            # is defense-in-depth (round-16 postmortem): each chunk is already capped
+            # individually, so this should be structurally unreachable, but mirrors the same
+            # symmetry in case a future change bypasses _polish_one's own check.
             _rejoined_w = len(rejoined.split())
-            if _rejoined_w < int(_book_words * 0.75):   # lost too much → keep original
-                log.warning("_polish_reduce: chunked polish lost >25%% words — discarding, keeping original")
+            _minimum_rejoined_w = _polish_retention_floor(
+                _book_words, min_retained_percent
+            )
+            if _rejoined_w < _minimum_rejoined_w:   # lost too much → keep original
+                log.warning("_polish_reduce: chunked polish retained < %d%% words — "
+                            "discarding, keeping original", min_retained_percent)
                 return book, False
             if _rejoined_w > int(_book_words * 1.35):   # gained too much → keep original
                 log.warning("_polish_reduce: chunked polish rejoin %d words > 135%% of %d — "
@@ -2975,7 +2996,8 @@ async def _polish_reduce(
         log.info("_polish_reduce: promoting to %s (ceiling %d) instead of skipping", _big, _big_ceil)
         return await _polish_one(book, instruction=instruction, role=role, model=_big,
                                  timeout=timeout, telemetry_sink=telemetry_sink,
-                                 task_id=f"polish:{mode}", authority_text=authority_text)
+                                 task_id=f"polish:{mode}", authority_text=authority_text,
+                                 min_retained_percent=min_retained_percent)
     log.info("_polish_reduce: skipping polish — book needs ~%d tokens but %s ceiling is %d "
              "(no chunking, no big-model)", _need, manager_model, _ceil)
     return book, False
