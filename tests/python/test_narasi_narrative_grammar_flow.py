@@ -293,3 +293,74 @@ def test_heavy_arbitrates_against_authority_instead_of_preserving_conflicts():
     assert "PRESERVE every authoritative fact, name, date, number and quote" in instruction
     assert "authoritative Outline or Story Bible EVIDENCE MAP" in instruction
     assert "do not choose between variants unless that authority decides the fact" in instruction
+
+
+def test_heavy_repairs_broken_chapter_boundaries_within_authority():
+    """HEAVY may bridge a broken chapter transition, but only from established facts.
+
+    The bridge is a REPAIR, not an invention: the rule names what a bridge must
+    show (cause/decision, location change, elapsed time), pins its source to the
+    Outline and Story Bible, and caps it at one or two short paragraphs so a
+    seam fix cannot grow into a new scene.
+    """
+    instruction, role = static._polish_instruction(
+        "heavy", "A buried negative", "English"
+    )
+
+    assert role == "synthesize"
+    assert "Inspect every chapter boundary" in instruction
+    assert (
+        "add at most one or two short paragraphs immediately before the next "
+        "chapter heading"
+    ) in instruction
+    assert "the necessary cause or decision, location change, and elapsed time" in instruction
+    assert (
+        "Use only facts established by the authoritative Outline and Story Bible"
+        in instruction
+    )
+    assert (
+        "Do not invent plot events, repeat setup, move beats, or alter/remove "
+        "chapter headings"
+    ) in instruction
+    assert "If the transition is already clear, leave it unchanged" in instruction
+
+
+def test_heavy_boundary_repair_never_loosens_the_heading_contract():
+    """Adding paragraphs must not license touching a `## ` heading line."""
+    instruction, _ = static._polish_instruction("heavy", "A buried negative", "English")
+
+    assert (
+        "Keep every chapter-heading line (each begins with `## `) exactly as given "
+        "— do not remove, rename, renumber, translate or move them, and never "
+        "write a new heading of your own."
+    ) in instruction
+
+
+def test_light_polish_gains_no_boundary_repair_licence():
+    """LIGHT must stay a seam-smoother: no added paragraphs, no rewriting."""
+    instruction, role = static._polish_instruction(
+        "light", "A buried negative", "English"
+    )
+
+    assert role == "polish"
+    assert "Inspect every chapter boundary" not in instruction
+    assert "add at most one or two short paragraphs" not in instruction
+    assert "do NOT shorten the text" in instruction
+    assert "Do NOT rewrite content" in instruction
+
+
+def test_chunked_heavy_carries_the_same_boundary_rule():
+    """A chunk is chapter-aligned, so its internal boundaries are real ones.
+
+    `_split_into_chunks` only ever splits at a chapter heading, and the outline
+    plus bible ride along as `authority_text`, so a chunk pass has the same
+    basis for a bridge as the whole-book pass.
+    """
+    chunked, role = static._polish_instruction(
+        "heavy", "A buried negative", "English", is_chunk=True
+    )
+
+    assert role == "synthesize"
+    assert "Inspect every chapter boundary" in chunked
+    assert "section of a multi-chapter narrative" in chunked
+    assert "Return ONLY the edited section" in chunked
