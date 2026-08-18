@@ -2649,8 +2649,97 @@ def _split_into_chunks(book: str, chunk_words: int):
     return chunks
 
 
+_POLISH_PREVIOUS_TAIL_WORDS = 300
+_POLISH_TAIL_LEAK_WINDOW_WORDS = 20
+_POLISH_BRIDGE_MAX_WORDS = 160
+_POLISH_TAIL_LABEL = "READ-ONLY PREVIOUS-CHAPTER TAIL (context only; never reproduce)"
+
+
+def _bounded_polish_tail(text: str, max_words: int = _POLISH_PREVIOUS_TAIL_WORDS) -> str:
+    """Return the bounded tail of the previous chunk's final chapter only."""
+    raw = str(text or "")
+    parts = [p for p in _chp.chapter_split_rx_for(raw).split(raw) if p.strip()]
+    final_chapter = parts[-1] if parts else raw
+    words = final_chapter.split()
+    return " ".join(words[-max(0, int(max_words)):]) if words and max_words > 0 else ""
+
+
+def _polish_heading_records(text: str) -> tuple[tuple[str, int], ...]:
+    """Return each detected heading line and its byte-preserving string offset, in order."""
+    raw = str(text or "")
+    records: list[tuple[str, int]] = []
+    for match in _chp.chapter_split_rx_for(raw).finditer(raw):
+        start = match.start()
+        end = raw.find("\n", start)
+        if end < 0:
+            end = len(raw)
+        records.append((raw[start:end], start))
+    return tuple(records)
+
+
+def _previous_tail_leaked(candidate: str, previous_tail: str, original: str = "") -> bool:
+    """Detect a verbatim tail echo without a model/parser call.
+
+    A 20-word sliding window is long enough to avoid ordinary phrase collisions while
+    catching the harmful failure mode: the model copying READ-ONLY context into the bridge
+    or editable chunk. Short tails are checked in full. Only occurrences added beyond the
+    original chunk count as a leak, so an existing deliberate refrain does not waste the call.
+    """
+    candidate_text = " ".join(str(candidate or "").split()).casefold()
+    original_text = " ".join(str(original or "").split()).casefold()
+    if _POLISH_TAIL_LABEL.casefold() in candidate_text:
+        return True
+    tail_words = str(previous_tail or "").split()
+    if not candidate_text or not tail_words:
+        return False
+    window = min(_POLISH_TAIL_LEAK_WINDOW_WORDS, len(tail_words))
+    for start in range(len(tail_words) - window + 1):
+        phrase = " ".join(tail_words[start:start + window]).casefold()
+        if phrase and candidate_text.count(phrase) > original_text.count(phrase):
+            return True
+    return False
+
+
+def _heavy_chunk_rejection_reason(
+    original: str,
+    candidate: str,
+    previous_tail: str,
+) -> Optional[str]:
+    """Return a bounded reason when a HEAVY chunk candidate is unsafe to accept."""
+    expected = _polish_heading_records(original)
+    actual = _polish_heading_records(candidate)
+    if tuple(line for line, _ in actual) != tuple(line for line, _ in expected):
+        return "heading_sequence_changed"
+    if not actual:
+        return "heading_sequence_missing"
+
+    bridge = candidate[:actual[0][1]].strip()
+    if bridge:
+        if not previous_tail:
+            return "bridge_without_previous_context"
+        paragraphs = [p for p in re.split(r"\n\s*\n", bridge) if p.strip()]
+        if len(paragraphs) > 2 or len(bridge.split()) > _POLISH_BRIDGE_MAX_WORDS:
+            return "bridge_prefix_too_large"
+    if previous_tail and _previous_tail_leaked(candidate, previous_tail, original):
+        return "previous_tail_leaked"
+    return None
+
+
+_HEAVY_INCOMING_SEAM_INSTRUCTION = (
+    "\n\nINCOMING CROSS-CHUNK SEAM: the system message supplies a bounded READ-ONLY "
+    "tail from the already-polished previous chapter. Inspect that tail against the first "
+    "chapter opening already present in the editable section. Never quote, paraphrase, "
+    "summarize, or reproduce the tail. If and only if the seam is broken, emit at most one "
+    "or two short bridge paragraphs immediately BEFORE the editable section's first chapter "
+    "heading, followed by the complete edited section. That optional prefix is appended to "
+    "the previous chapter on rejoin; it must contain no heading. If the seam is already "
+    "clear, begin directly with the unchanged first chapter heading and emit no prefix."
+)
+
+
 async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink, task_id,
-                      authority_text: str = ""):
+                      authority_text: str = "", previous_chapter_tail: str = "",
+                      guard_heavy_chunk: bool = False):
     """Polish ONE blob (whole book or a chunk) via synthesize. Returns (out, ok). Post-
     truncation guard (>=75% words) keeps the original on a cut/degraded pass. Post-bloat guard
     (<=135% words) does the SAME for the opposite failure: neither a "light" (preserve length)
@@ -2661,12 +2750,25 @@ async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink
     every "## Chapter N" heading exactly, and the model echoed/re-derived the section instead of
     only editing it), producing one completion with each "## Chapter N" heading TWICE — silently
     accepted, landing as a 14K-word divergent duplicate of Ch1-4 prepended to the real book.
-    Never raises."""
+    HEAVY chunk callers may additionally supply a read-only previous tail and require exact
+    heading-sequence preservation; the tail never enters ``wrapped`` editable text. Never raises."""
     wrapped = [{"ok": True, "output": text, "model": model}]
     _t = time.monotonic()
+    system_text = _polish_system(authority_text)
+    if previous_chapter_tail:
+        tail_block = (
+            f"{_POLISH_TAIL_LABEL}:\n"
+            "Use this only to judge the incoming seam. It is not editable manuscript text. "
+            "Do not quote, paraphrase, summarize, or reproduce any of it in the response.\n"
+            "--- BEGIN READ-ONLY TAIL ---\n"
+            f"{previous_chapter_tail}\n"
+            "--- END READ-ONLY TAIL ---"
+        )
+        # Keep narrative authority positionally last/highest, matching its own contract.
+        system_text = f"{tail_block}\n\n{system_text}" if system_text else tail_block
     res = await synthesize(
         instruction, wrapped, role=role, model=model,
-        system=_polish_system(authority_text), timeout=timeout,
+        system=system_text, timeout=timeout,
         telemetry_sink=telemetry_sink, task_id=task_id)
     _tel = res.get("telemetry") or {}
     log.info("_polish_reduce: %s role=%s model=%s served_by=%s ok=%s in %.1fs (tok_in=%s tok_out=%s)",
@@ -2674,10 +2776,25 @@ async def _polish_one(text, *, instruction, role, model, timeout, telemetry_sink
              time.monotonic() - _t, _tel.get("tokens_in"), _tel.get("tokens_out"))
     if res.get("ok") and res.get("output"):
         out = str(res["output"])
+        if guard_heavy_chunk:
+            rejection = _heavy_chunk_rejection_reason(text, out, previous_chapter_tail)
+            if rejection:
+                log.warning("_polish_reduce: %s rejected (%s) — keeping original chunk",
+                            task_id, rejection)
+                return text, False
         _in_w, _out_w = len(text.split()), len(out.split())
-        if _out_w < int(_in_w * 0.75):
+        # A bridge is additive seam repair, not replacement manuscript. Exclude it from
+        # the 75% retention numerator so a large allowed prefix cannot mask a truncated
+        # editable chunk. Keep the 135% ceiling on the COMPLETE output so the bridge gets
+        # no free bloat allowance either.
+        _retained_w = _out_w
+        if guard_heavy_chunk:
+            _records = _polish_heading_records(out)
+            if _records:
+                _retained_w = len(out[_records[0][1]:].split())
+        if _retained_w < int(_in_w * 0.75):
             log.warning("_polish_reduce: %s output %d words < 75%% of %d — discarding (truncation guard)",
-                        task_id, _out_w, _in_w)
+                        task_id, _retained_w, _in_w)
             return text, False
         if _out_w > int(_in_w * 1.35):
             log.warning("_polish_reduce: %s output %d words > 135%% of %d — discarding (bloat/duplication guard)",
@@ -2717,7 +2834,9 @@ async def _polish_reduce(
     model's single-call OUTPUT ceiling, CHUNK it — split by chapter into <=NARASI_POLISH_CHUNK_WORDS
     groups, polish each, rejoin — instead of skipping, so a long book (up to NARASI_POLISH_MAX_WORDS,
     default the 40k generation cap) still gets a full pass. Cross-chunk boundaries are always
-    chapter breaks. Each chunk has its own >=75%-word truncation guard. Never raises."""
+    chapter breaks. Each chunk has its own >=75%-word truncation guard. Chunked HEAVY runs
+    dependency-serial so each call can inspect the accepted preceding tail; this makes no extra
+    provider calls but can increase latency. LIGHT keeps its existing parallel option. Never raises."""
     mode = (polish or "light").strip().lower()
     if mode == "none" or not book.strip():
         return book, False
@@ -2757,18 +2876,44 @@ async def _polish_reduce(
         if len(chunks) > 1:
             c_instr, c_role = _polish_instruction(mode, topic, language, is_chunk=True)
             polished, any_ok = [], False
-            # ── PARALLEL polish (NARASI_POLISH_PARALLEL>=2; default 0 = the serial loop below runs
-            #    verbatim / byte-identical). Chunks are INDEPENDENT — each polishes its own chapter group,
+            # ── PARALLEL LIGHT polish (NARASI_POLISH_PARALLEL>=2; default 0 = the serial loop below runs
+            #    verbatim / byte-identical). LIGHT chunks are INDEPENDENT — each polishes its own chapter group,
             #    rejoined IN ORDER — so run them concurrently: N serial chunks (job rsmyws7s = 752s, of
             #    which 2 flaky chunks wasted ~458s) collapse to ~one wave (the slowest chunk). asyncio.gather
             #    preserves input order → identical rejoin. _polish_one NEVER raises (keeps its original
             #    chunk on truncation/timeout), so a bad chunk cannot abort the gather — its waste just
-            #    OVERLAPS the good chunks instead of adding serially. ──
+            #    OVERLAPS the good chunks instead of adding serially. HEAVY takes the dependency-serial
+            #    branch below regardless of this flag. ──
             try:
                 _pp = int(str(os.environ.get("NARASI_POLISH_PARALLEL", "0")).strip() or "0")
             except Exception:
                 _pp = 0
-            if _pp >= 2:
+            if mode == "heavy":
+                # HEAVY chunks are intentionally dependency-serial: chunk N needs the
+                # accepted output of chunk N-1 to inspect the real cross-chunk seam. This
+                # keeps the provider-call count unchanged (one per chunk) but can increase
+                # wall-clock latency versus NARASI_POLISH_PARALLEL; LIGHT retains the old
+                # independent/parallel path below.
+                log.info("_polish_reduce: HEAVY chunk seam repair uses %d serial call(s); "
+                         "parallel=%d ignored for dependency ordering (latency may increase)",
+                         len(chunks), _pp)
+                for i, ch in enumerate(chunks):
+                    previous_tail = _bounded_polish_tail(polished[-1]) if polished else ""
+                    chunk_instruction = (
+                        c_instr + _HEAVY_INCOMING_SEAM_INSTRUCTION
+                        if previous_tail else c_instr
+                    )
+                    _o, _ok = await _polish_one(
+                        ch, instruction=chunk_instruction, role=c_role, model=manager_model,
+                        timeout=timeout, telemetry_sink=telemetry_sink,
+                        task_id=f"polish:{mode}:chunk{i + 1}/{len(chunks)}",
+                        authority_text=authority_text,
+                        previous_chapter_tail=previous_tail,
+                        guard_heavy_chunk=True,
+                    )
+                    polished.append(_o)
+                    any_ok = any_ok or _ok
+            elif _pp >= 2:
                 _psem = asyncio.Semaphore(_pp)
 
                 async def _polish_chunk(_i, _ch):
