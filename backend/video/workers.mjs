@@ -857,6 +857,22 @@ export async function checkProcessor(job, deps) {
   return advance(job.data.jobId, deps);
 }
 
+// Whiteboard delivery gate (whiteboard/qa.mjs). A gate that cannot run (ffprobe missing,
+// import failure) must never fail a job — it degrades to "warn" and the clip ships as before.
+async function runWhiteboardGate(outPath, expectedDuration, jobId) {
+  try {
+    const { runDeliveryGate } = await import("./whiteboard/qa.mjs");
+    const qa = await runDeliveryGate(outPath, { expectedDuration, expectAudio: true });
+    if (qa.verdict !== "pass") {
+      console.warn(`[stitch ${jobId}] delivery gate ${qa.verdict}${qa.enforce ? "" : " (observe)"}: ${[...qa.reasons, ...qa.warnings].slice(0, 4).join("; ")}`);
+    }
+    return qa;
+  } catch (e) {
+    console.warn(`[stitch ${jobId}] delivery gate skipped: ${e.message}`);
+    return { verdict: "warn", reasons: [], warnings: [`gate skipped: ${e.message}`], enforce: false };
+  }
+}
+
 export async function stitchProcessor(job, deps) {
   const { jobId } = job.data;
   const meta = await deps.store.getMeta(jobId);
@@ -998,12 +1014,25 @@ export async function stitchProcessor(job, deps) {
         const { renderWhiteboard } = await import("./whiteboard/render.mjs");
         result = await renderWhiteboard(scenes, meta, outPath, { tmpDir });
       }
-      // §N non-fatal QA: probe the produced MP4 (exists, video stream, duration ≈ expected)
-      try {
-        const { validateRenderedClip } = await import("./whiteboard/qa.mjs");
-        const clipQA = await validateRenderedClip(outPath, { expectedDuration: result?.duration || 0 });
-        if (!clipQA.ok || clipQA.warnings.length) console.warn(`[stitch ${jobId}] rendered-clip QA: ${[...clipQA.errors, ...clipQA.warnings].slice(0, 4).join("; ")} (streams: ${clipQA.streams})`);
-      } catch (qe) { console.warn(`[stitch ${jobId}] clip QA skipped: ${qe.message}`); }
+      // Delivery gate: a broken clip (missing, no video, truncated, blank board, or narration
+      // silent throughout) is never uploaded or charged. Non-svg renders get ONE re-render on the
+      // Chromium-free svg_ffmpeg backend (plan engine only); if that is also rejected the job fails → refund (catch
+      // below). WB_QA_MODE=observe reports without rejecting. Runs BEFORE the render fee is metered.
+      const _expectedSec = result?.duration || 0;
+      let _qa = await runWhiteboardGate(outPath, _expectedSec, jobId);
+      // Only plan-engine jobs can re-render on svg_ffmpeg: legacy scenes carry no plan for it.
+      const _canSvgRetry = !_forcePlanSvg && (process.env.WB_ENGINE || "legacy") === "plan";
+      if (_qa.verdict === "reject" && _qa.enforce && _canSvgRetry) {
+        console.warn(`[stitch ${jobId}] delivery gate rejected (${_qa.reasons.join("; ")}) → svg_ffmpeg re-render`);
+        const { renderWhiteboardPlanSvg } = await import("./whiteboard/renderers/svgFfmpeg.mjs");
+        result = await renderWhiteboardPlanSvg(scenes, { ...meta, jobId }, outPath, { tmpDir,
+          onProgress: (d, t) => deps.store.patchMeta(jobId, { renderProgress: Math.round(d / t * 100), renderScenesDone: d, renderScenesTotal: t }).catch(() => {}) });
+        _qa = await runWhiteboardGate(outPath, result?.duration || _expectedSec, jobId);
+      }
+      deps.store.patchMeta(jobId, { qa: { verdict: _qa.verdict, reasons: _qa.reasons, warnings: _qa.warnings } }).catch(() => {});
+      if (_qa.verdict === "reject" && _qa.enforce) {
+        throw new Error(`whiteboard QA rejected: ${_qa.reasons.slice(0, 3).join("; ")}`);
+      }
       // flat render fee — 3 credits/sec of output video (post-hoc, tagged for refund). STABLE op_id
       // keyed to the job → idempotent: a stitch re-run (BullMQ attempts:2 after a post-render crash,
       // or a recovery re-stitch) re-meters with the SAME op_id, which charge() dedups → the user is
